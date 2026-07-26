@@ -751,17 +751,28 @@ CompletionEngine::Context CompletionEngine::extractContext(std::string_view src,
         // We need at least 4 chars before to match "new " or "return ".
         std::string_view before = lineUpToCursor.substr(0, lineUpToCursor.size() - prefixLen);
 
+        /// @brief Tests whether a view ends with an exact suffix.
+        /// @param sv Text to inspect.
+        /// @param suffix Null-terminated suffix.
+        /// @return `true` when the suffix matches.
         auto endsWith = [](std::string_view sv, const char *suffix) -> bool {
             size_t n = std::strlen(suffix);
             return sv.size() >= n && sv.substr(sv.size() - n) == suffix;
         };
 
+        /// @brief Removes trailing whitespace from a view.
+        /// @param sv Text to trim.
+        /// @return Trimmed view.
         auto trimRight = [](std::string_view sv) -> std::string_view {
             while (!sv.empty() && std::isspace(static_cast<unsigned char>(sv.back())))
                 sv.remove_suffix(1);
             return sv;
         };
 
+        /// @brief Tests whether a view ends with a complete identifier word.
+        /// @param sv Text to inspect.
+        /// @param word Null-terminated word.
+        /// @return `true` when the word occurs at an identifier boundary.
         auto endsWithWord = [](std::string_view sv, const char *word) -> bool {
             size_t n = std::strlen(word);
             if (sv.size() < n || sv.substr(sv.size() - n) != word)
@@ -1223,6 +1234,9 @@ void CompletionEngine::filterByPrefix(std::vector<CompletionItem> &items,
     if (prefix.empty())
         return;
 
+    /// @brief Tests whether an item fails the case-insensitive prefix filter.
+    /// @param item Completion candidate.
+    /// @return `true` when the item should be removed.
     items.erase(
         std::remove_if(items.begin(),
                        items.end(),
@@ -1245,6 +1259,10 @@ void CompletionEngine::filterByPrefix(std::vector<CompletionItem> &items,
 /// @param prefix Typed prefix.
 void CompletionEngine::rank(std::vector<CompletionItem> &items, const std::string &prefix) const {
     if (prefix.empty()) {
+        /// @brief Orders completion items by provider priority.
+        /// @param a Left item.
+        /// @param b Right item.
+        /// @return `true` when `a` has higher priority.
         std::stable_sort(
             items.begin(), items.end(), [](const CompletionItem &a, const CompletionItem &b) {
                 return a.sortPriority < b.sortPriority;
@@ -1253,6 +1271,9 @@ void CompletionEngine::rank(std::vector<CompletionItem> &items, const std::strin
     }
 
     // Score: 0 = exact, 1 = prefix (case-sensitive), 2 = prefix (insensitive), 3 = other.
+    /// @brief Scores an item's textual match against the typed prefix.
+    /// @param item Completion candidate.
+    /// @return Zero for exact, one for case-sensitive prefix, otherwise two.
     auto score = [&](const CompletionItem &item) -> int {
         if (item.label == prefix)
             return 0;
@@ -1261,6 +1282,10 @@ void CompletionEngine::rank(std::vector<CompletionItem> &items, const std::strin
         return 2;
     };
 
+    /// @brief Orders completion items by match score then provider priority.
+    /// @param a Left item.
+    /// @param b Right item.
+    /// @return `true` when `a` ranks before `b`.
     std::stable_sort(
         items.begin(), items.end(), [&](const CompletionItem &a, const CompletionItem &b) {
             int sa = score(a), sb = score(b);
@@ -1274,6 +1299,9 @@ void CompletionEngine::rank(std::vector<CompletionItem> &items, const std::strin
 /// @param items Ranked completion list to deduplicate in place.
 void CompletionEngine::deduplicate(std::vector<CompletionItem> &items) const {
     std::unordered_set<std::string> seen;
+    /// @brief Tests whether an item's label was already emitted.
+    /// @param item Completion candidate.
+    /// @return `true` for a duplicate label.
     items.erase(
         std::remove_if(items.begin(),
                        items.end(),
@@ -1457,6 +1485,8 @@ std::string CompletionEngine::signatureHelp(std::string_view source,
     std::vector<std::string> signatures;
     std::unordered_set<std::string> seen;
 
+    /// @brief Formats and deduplicates one callable signature.
+    /// @param sym Function or method symbol.
     auto addFunctionSymbol = [&](const Symbol &sym) {
         std::string formatted =
             formatFunctionSignature(call.name, sym.type, call.activeParameter, &sym.paramNames);
@@ -1469,6 +1499,8 @@ std::string CompletionEngine::signatureHelp(std::string_view source,
             signatures.push_back(std::move(formatted));
     };
 
+    /// @brief Adds member overloads matching the active call name.
+    /// @param members Candidate member symbols.
     auto addMatchingMembers = [&](const std::vector<Symbol> &members) {
         for (const auto &sym : members) {
             if (equalsIgnoreCase(sym.name, call.name))
@@ -1476,11 +1508,15 @@ std::string CompletionEngine::signatureHelp(std::string_view source,
         }
     };
 
+    /// @brief Adds all visible free-function overloads for the active call.
     auto addFunctionDeclOverloads = [&]() {
         for (const auto &sym : sema.getFunctionOverloadSymbols(call.name))
             addFunctionSymbol(sym);
     };
 
+    /// @brief Resolves a receiver spelling to a runtime class name.
+    /// @param receiver Dotted receiver expression.
+    /// @return Runtime class name, or an empty string when unresolved.
     auto runtimeClassNameFromReceiver = [&](const std::string &receiver) -> std::string {
         auto parts = splitDotted(receiver);
         if (parts.empty())

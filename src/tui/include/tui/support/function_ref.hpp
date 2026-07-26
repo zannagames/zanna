@@ -5,11 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the FunctionRef class template, a lightweight
-// non-owning callable reference for Zanna's TUI framework. FunctionRef
-// provides a type-erased view of a callable (lambda, function pointer,
-// or functor) without incurring the heap allocation overhead of
-// std::function.
+/// @file
+/// @brief Declares a lightweight non-owning callable reference.
+/// @details FunctionRef provides allocation-free type erasure for lambdas,
+///          function pointers, and functors whose lifetime is managed by the
+///          caller, making it suitable for short-lived callback parameters.
 //
 // FunctionRef is designed for use in callback parameters where the
 // callable's lifetime is guaranteed to exceed the FunctionRef's usage
@@ -81,17 +81,30 @@ template <typename Ret, typename... Args> class FunctionRef<Ret(Args...)> {
     }
 
   private:
+    /// @brief Dispatch an invocation to an erased callable object.
+    /// @tparam Callable Original callable reference type captured by the constructor.
+    /// @param obj Erased pointer to the callable object.
+    /// @param args Invocation arguments forwarded to the callable.
+    /// @return Callable result.
     template <typename Callable> static Ret invoke(void *obj, Args... args) {
         return std::invoke(*static_cast<std::remove_reference_t<Callable> *>(obj),
                            std::forward<Args>(args)...);
     }
 
+    /// @brief Dispatch an invocation to an erased plain function pointer.
+    /// @param obj Function pointer encoded in the erased storage slot.
+    /// @param args Invocation arguments forwarded to the function.
+    /// @return Function result.
     static Ret invokeFunctionPtr(void *obj, Args... args) {
         auto *fn = reinterpret_cast<Ret (*)(Args...)>(obj);
         return std::invoke(fn, std::forward<Args>(args)...);
     }
 
-    void *obj_{};
+    void *obj_{}; ///< Non-owning erased callable or encoded function pointer.
+    /// @brief Type-specific invocation trampoline.
+    /// @param obj Erased callable storage.
+    /// @param args Signature arguments forwarded to the callable.
+    /// @return Callable result.
     Ret (*callback_)(void *, Args...){};
 };
 } // namespace zanna::tui

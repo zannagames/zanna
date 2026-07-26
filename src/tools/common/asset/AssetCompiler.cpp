@@ -24,6 +24,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements secure, cached compilation of project asset directives.
+/// @details The implementation validates project-root containment, fingerprints
+///          inputs by metadata and content, bounds process-local caches, creates
+///          deterministic ZPAK entries, and can wrap an embedded archive in a
+///          native object file using Zanna's internal object writer.
+
 #include "AssetCompiler.hpp"
 
 #include "ZpakWriter.hpp"
@@ -67,6 +74,8 @@ struct CachedAssetFile {
 };
 
 /// @brief Return a stable cache key for an asset path.
+/// @param path Asset filesystem path to canonicalize when possible.
+/// @return UTF-8 canonical path, or a lexically normalized fallback.
 static std::string assetFileCacheKey(const fs::path &path) {
     std::error_code ec;
     const fs::path canonical = fs::weakly_canonical(path, ec);
@@ -74,24 +83,29 @@ static std::string assetFileCacheKey(const fs::path &path) {
 }
 
 /// @brief Shared cache for asset file payloads read during one process.
+/// @return Mutable process-local mapping from path keys to immutable payloads.
 static std::unordered_map<std::string, std::shared_ptr<const CachedAssetFile>> &assetFileCache() {
     static std::unordered_map<std::string, std::shared_ptr<const CachedAssetFile>> cache;
     return cache;
 }
 
 /// @brief Return the total byte size currently retained by @ref assetFileCache.
+/// @return Mutable process-local retained-byte counter.
 static std::uintmax_t &assetFileCacheBytes() {
     static std::uintmax_t bytes = 0;
     return bytes;
 }
 
 /// @brief Mutex protecting @ref assetFileCache.
+/// @return Process-local mutex shared by all asset-cache operations.
 static std::mutex &assetFileCacheMutex() {
     static std::mutex mutex;
     return mutex;
 }
 
 /// @brief Remove one arbitrary cached asset payload when the cache reaches its cap.
+/// @details Updates the retained-byte counter before erasing the selected entry.
+/// @pre Caller holds @ref assetFileCacheMutex.
 static void evictOneAssetFileCacheEntry() {
     auto &cache = assetFileCache();
     if (!cache.empty()) {
@@ -101,6 +115,11 @@ static void evictOneAssetFileCacheEntry() {
 }
 
 /// @brief Read and validate an asset file payload from disk.
+/// @param path Validated file path to open in binary mode.
+/// @param expectedSize Exact number of bytes expected from the file.
+/// @return Byte vector containing the complete payload.
+/// @throws std::runtime_error If the file cannot be opened or read completely.
+/// @throws std::bad_alloc If storage for the expected payload cannot be allocated.
 static std::vector<uint8_t> readAssetFileUncached(const fs::path &path,
                                                   std::uintmax_t expectedSize) {
     std::ifstream in(path, std::ios::binary);
@@ -116,6 +135,10 @@ static std::vector<uint8_t> readAssetFileUncached(const fs::path &path,
 }
 
 /// @brief Return cached asset bytes when size and mtime still match disk.
+/// @param path Asset path whose canonical cache entry should be queried.
+/// @param size Current file size in bytes.
+/// @param mtime Current filesystem modification time.
+/// @return Shared immutable cache entry on a metadata match, otherwise null.
 static std::shared_ptr<const CachedAssetFile> lookupCachedAssetFile(const fs::path &path,
                                                                     std::uintmax_t size,
                                                                     fs::file_time_type mtime) {
@@ -127,6 +150,13 @@ static std::shared_ptr<const CachedAssetFile> lookupCachedAssetFile(const fs::pa
 }
 
 /// @brief Store asset bytes and hash for later payload writing.
+/// @param path Asset path used to derive the cache key.
+/// @param size Validated source size.
+/// @param mtime Validated source modification time.
+/// @param hash SHA-256 digest of @p data.
+/// @param data Complete payload transferred into the cache.
+/// @details Replaces an existing path entry and evicts arbitrary entries until
+///          both count and retained-byte bounds permit the new payload.
 static void rememberCachedAssetFile(const fs::path &path,
                                     std::uintmax_t size,
                                     fs::file_time_type mtime,
@@ -154,6 +184,8 @@ static void rememberCachedAssetFile(const fs::path &path,
 ///          coarse modification timestamps across an edit. The helper is used only
 ///          after source validation has enforced the asset size cap, so reading the
 ///          file here does not introduce an unbounded allocation.
+/// @param path Validated asset file to fingerprint.
+/// @return Lowercase SHA-256 hexadecimal digest of the complete payload.
 static std::string contentHashForFile(const fs::path &path) {
     std::error_code ec;
     const auto size = fs::file_size(path, ec);
@@ -221,11 +253,17 @@ static void appendSourceFingerprint(const fs::path &rootDir,
     std::error_code ec;
     if (fs::is_directory(absPath, ec)) {
         std::vector<fs::path> files;
+        /// @brief Collect each regular file resolved beneath the asset directory.
+        /// @param entry Validated directory entry.
         zanna::pkg::safeDirectoryIterateResolved(
             absPath, rootDir, [&](const zanna::pkg::SafeDirectoryEntry &entry) {
                 if (entry.regularFile)
                     files.push_back(entry.resolvedPath);
             });
+        /// Order paths by portable UTF-8 spelling for deterministic fingerprints.
+        /// @param a First path.
+        /// @param b Second path.
+        /// @return `true` when @p a has the earlier portable spelling.
         std::sort(files.begin(), files.end(), [](const fs::path &a, const fs::path &b) {
             return zanna::filesystem::genericPathToUtf8(a) <
                    zanna::filesystem::genericPathToUtf8(b);
@@ -265,6 +303,8 @@ static std::string assetCacheKey(const il::tools::common::ProjectConfig &config,
 }
 
 /// @brief Estimate retained memory for an AssetBundle stored in the process cache.
+/// @param bundle Cached bundle whose owned dynamic payloads should be counted.
+/// @return Approximate retained bytes excluding container/object overhead.
 static std::uintmax_t retainedBytesForBundle(const AssetBundle &bundle) {
     std::uintmax_t bytes = bundle.embeddedBlob.size();
     for (const auto &path : bundle.packFilePaths)
@@ -276,6 +316,7 @@ static std::uintmax_t retainedBytesForBundle(const AssetBundle &bundle) {
 }
 
 /// @brief Return the total retained bytes for cached AssetBundle values.
+/// @return Mutable process-local retained-byte counter.
 static std::uintmax_t &assetBundleCacheBytes() {
     static std::uintmax_t bytes = 0;
     return bytes;
@@ -285,6 +326,8 @@ static std::uintmax_t &assetBundleCacheBytes() {
 /// @details Pack files are expected to be much smaller than the process memory
 ///          limit enforced by asset validation. Reading here keeps cache
 ///          validation self-contained and catches same-size external rewrites.
+/// @param path Generated pack path to read and hash.
+/// @return Lowercase SHA-256 hexadecimal digest of the complete pack.
 static std::string hashGeneratedPackFile(const fs::path &path) {
     const auto data = zanna::pkg::readFile(path);
     return data.empty() ? zanna::pkg::sha256Hex(nullptr, 0)
@@ -292,6 +335,7 @@ static std::string hashGeneratedPackFile(const fs::path &path) {
 }
 
 /// @brief Return true when asset compilation should print progress messages.
+/// @return True when `ZANNA_ASSET_VERBOSE` is set to a nonempty value other than `"0"`.
 static bool assetVerboseEnabled() {
     const char *value = std::getenv("ZANNA_ASSET_VERBOSE");
     return value && value[0] != '\0' && std::string_view(value) != "0";
@@ -302,7 +346,14 @@ static bool assetVerboseEnabled() {
 // ─── File reading helper ────────────────────────────────────────────────────
 
 /// @brief Read an entire file into a byte vector.
-/// @return true on success; sets err on failure.
+/// @param path Validated asset file to read.
+/// @param out Destination receiving the complete bytes after a successful read.
+/// @param err Receives a human-readable failure reason.
+/// @return True on success; false with @p err populated on failure.
+/// @details Enforces the per-file size cap and reuses a metadata-validated
+///          payload cache when possible.
+/// @throws std::bad_alloc If digest or cache bookkeeping allocation fails after
+///         the bounded file read has completed.
 static bool readFile(const fs::path &path, std::vector<uint8_t> &out, std::string &err) {
     std::error_code ec;
     const auto size = fs::file_size(path, ec);
@@ -351,6 +402,8 @@ static bool enumerateDir(const fs::path &dir,
                          std::vector<std::pair<std::string, fs::path>> &entries,
                          std::string &err) {
     try {
+        /// @brief Append one validated regular file to the archive-entry list.
+        /// @param entry Validated directory entry.
         zanna::pkg::safeDirectoryIterateResolved(
             dir, rootDir, [&](const zanna::pkg::SafeDirectoryEntry &entry) {
                 if (!entry.regularFile)
@@ -368,6 +421,10 @@ static bool enumerateDir(const fs::path &dir,
         err = e.what();
         return false;
     }
+    /// Sort archive names to make recursive directory output deterministic.
+    /// @param lhs First name/path pair.
+    /// @param rhs Second name/path pair.
+    /// @return `true` when @p lhs has the earlier archive name.
     std::sort(entries.begin(), entries.end(), [](const auto &lhs, const auto &rhs) {
         return lhs.first < rhs.first;
     });
@@ -498,11 +555,15 @@ static bool addSourceToWriter(const std::string &sourcePath,
 /// @brief Compile a project's embed/pack directives into an AssetBundle.
 /// @details Validates all sources first, then consults a process-local cache
 ///          keyed by assetCacheKey() and guarded by a static mutex: a hit whose
-///          pack files still exist on disk is returned without rebuilding. On a
-///          miss, embed directives are gathered into a single in-memory ZPAK blob
-///          and each pack group is written to `<outputDir>/<project>-<pack>.zpak`,
-///          and the resulting bundle is cached before returning. See the header
-///          for the parameter and return contract.
+///          pack files still match their recorded sizes and hashes is returned
+///          without rebuilding. On a miss, embed directives are gathered into a
+///          single in-memory ZPAK blob and each pack group is written to
+///          `<outputDir>/<project>-<pack>.zpak`; the bounded result cache is then
+///          updated before returning.
+/// @param config Validated project configuration supplying asset directives.
+/// @param outputDir Directory in which standalone pack files are created.
+/// @param err Receives the first validation, I/O, hashing, or serialization error.
+/// @return Compiled bundle on success, or std::nullopt on failure.
 std::optional<AssetBundle> compileAssets(const il::tools::common::ProjectConfig &config,
                                          const std::string &outputDir,
                                          std::string &err) {
@@ -637,6 +698,10 @@ std::optional<AssetBundle> compileAssets(const il::tools::common::ProjectConfig 
         while (!cache.empty() &&
                (cache.size() >= kMaxAssetCacheEntries ||
                 assetBundleCacheBytes() + bundleBytes > kMaxAssetBundleCacheBytes)) {
+            /// Evict the lexicographically smallest cache key deterministically.
+            /// @param lhs First cache entry.
+            /// @param rhs Second cache entry.
+            /// @return `true` when @p lhs has the earlier cache key.
             auto victim =
                 std::min_element(cache.begin(), cache.end(), [](const auto &lhs, const auto &rhs) {
                     return lhs.first < rhs.first;
@@ -658,8 +723,11 @@ std::optional<AssetBundle> compileAssets(const il::tools::common::ProjectConfig 
 /// @details Builds an object file (via Zanna's own ObjectFileWriter for the host
 ///          format/arch, so no external assembler is needed) containing an empty
 ///          .text and a .rodata section defining `zanna_asset_blob` (the bytes)
-///          and `zanna_asset_blob_size` (a uint64 length). See the header for the
-///          parameter and return contract.
+///          and `zanna_asset_blob_size` (a uint64 length).
+/// @param blob Complete ZPAK bytes to place in read-only data.
+/// @param outPath Destination path for the native object file.
+/// @param err Receives writer-selection or output failure details.
+/// @return True after the object is written successfully; false on failure.
 bool writeAssetBlobObject(const std::vector<uint8_t> &blob,
                           const std::string &outPath,
                           std::string &err) {

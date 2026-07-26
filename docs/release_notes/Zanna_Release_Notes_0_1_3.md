@@ -488,7 +488,7 @@ IL_ENABLE_X64_NATIVE_RUN    # Enable native execution support
 
 - Windows (x86-64)
 - Linux (x86-64)
-- macOS (x86-64 and Apple Silicon)
+- macOS (Apple Silicon / ARM64)
 - Dedicated macOS build script (`buildmac.sh`)
 
 ### Project Statistics

@@ -30,6 +30,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements bounded recursive-descent parsing of CLDR plural rules.
+ * @details Tokenizes operands, modulus clauses, comparisons, range lists, and
+ * precedence-aware logical operators into arena-owned AST nodes while making
+ * syntax, capacity, allocation, and integer-overflow failures sticky.
+ */
+
 #include "rt_locale_manager.h"
 #include "rt_asset.h"
 #include "rt_box.h"

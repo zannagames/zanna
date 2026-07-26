@@ -29,6 +29,14 @@
 //        src/runtime/rt_crc32.h (CRC32 checksum utility)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements the managed ZIP archive API and transactional writer.
+ * @details Coordinates bounded archive creation and opening, normalized
+ * entry naming, CRC and DEFLATE decisions, synchronized property snapshots,
+ * traversal-safe extraction, central-directory generation, rollback, and
+ * durable atomic replacement.
+ */
 
 #include "rt_archive.h"
 #include "rt_archive_internal.h"
@@ -74,15 +82,21 @@
 #define PATH_SEP '/'
 #endif
 
+/** @name Default and hard archive resource ceilings
+ * @{ */
 #define RT_ARCHIVE_DEFAULT_MAX_FILE_BYTES (UINT64_C(512) * 1024u * 1024u)
 #define RT_ARCHIVE_HARD_MAX_FILE_BYTES (UINT64_C(2) * 1024u * 1024u * 1024u)
 #define RT_ARCHIVE_DEFAULT_MAX_ENTRY_BYTES (UINT64_C(256) * 1024u * 1024u)
 #define RT_ARCHIVE_HARD_MAX_ENTRY_BYTES (UINT64_C(1) * 1024u * 1024u * 1024u)
 #define RT_ARCHIVE_DEFAULT_MAX_TOTAL_ENTRY_BYTES (UINT64_C(1) * 1024u * 1024u * 1024u)
 #define RT_ARCHIVE_HARD_MAX_TOTAL_ENTRY_BYTES (UINT64_C(4) * 1024u * 1024u * 1024u)
+/** @} */
 
+/// @copydoc rt_trap_set_recovery()
 void rt_trap_set_recovery(jmp_buf *buf);
+/// @copydoc rt_trap_clear_recovery()
 void rt_trap_clear_recovery(void);
+/// @copydoc rt_trap_get_error()
 const char *rt_trap_get_error(void);
 
 //=============================================================================

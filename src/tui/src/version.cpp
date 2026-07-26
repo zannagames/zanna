@@ -16,6 +16,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the public Zanna TUI version query.
+/// @details The implementation exposes the build-provided version literal
+///          without allocation, copying, or runtime initialization.
+
 #include "tui/version.hpp"
 #include "zanna/version.hpp"
 

@@ -5,10 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the StatusBar widget for Zanna's TUI framework.
-// The status bar displays a single-line informational strip, typically
-// positioned at the bottom of the screen, with left-aligned and
-// right-aligned text segments.
+/// @file
+/// @brief Declares a themed single-row status bar widget.
+/// @details StatusBar owns independently updated left- and right-aligned text,
+///          clips both to its width, and paints the full row using a borrowed
+///          theme's accent style.
 //
 // Common uses include showing the current file name on the left and
 // cursor position or mode indicator on the right. The bar fills its
@@ -46,17 +47,21 @@ class StatusBar : public ui::Widget {
     StatusBar(std::string left, std::string right, const style::Theme &theme);
 
     /// @brief Set text on the left segment.
+    /// @param left Replacement text, moved into owned storage.
     void setLeft(std::string left);
+
     /// @brief Set text on the right segment.
+    /// @param right Replacement text, moved into owned storage.
     void setRight(std::string right);
 
     /// @brief Paint status bar into screen buffer.
+    /// @param sb Screen buffer receiving background fill and aligned text.
     void paint(render::ScreenBuffer &sb) override;
 
   private:
-    std::string left_{};
-    std::string right_{};
-    const style::Theme &theme_;
+    std::string left_{};          ///< Owned left-aligned status text.
+    std::string right_{};         ///< Owned right-aligned status text.
+    const style::Theme &theme_;   ///< Borrowed render palette.
 };
 
 } // namespace zanna::tui::widgets

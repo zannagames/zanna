@@ -20,6 +20,18 @@
 // Links: il/core/fwd.hpp, il/transform/AnalysisManager.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares IL pass abstractions, preservation summaries, and registration.
+ *
+ * @details Transformation passes report module- and function-analysis validity
+ *          through `PreservedAnalyses`. `PassRegistry` type-erases factories or
+ *          callbacks behind stable identifiers, records execution scope and
+ *          parallel-safety metadata, and transfers newly constructed pass
+ *          ownership to the pipeline executor.
+ */
+
 #pragma once
 
 #include "il/core/fwd.hpp"
@@ -139,10 +151,15 @@ class PreservedAnalyses {
     bool isChangedFunction(const std::string &name) const;
 
   private:
+    /// @brief Whether every module-level analysis remains valid.
     bool preserveAllModules_ = false;
+    /// @brief Whether every function-level analysis remains valid.
     bool preserveAllFunctions_ = false;
+    /// @brief Individually preserved module-analysis identifiers.
     std::unordered_set<std::string> moduleAnalyses_;
+    /// @brief Individually preserved function-analysis identifiers.
     std::unordered_set<std::string> functionAnalyses_;
+    /// @brief Functions explicitly changed by a selective module pass.
     std::unordered_set<std::string> changedFunctions_;
 };
 
@@ -193,13 +210,13 @@ enum class PassKind { Module, Function };
 
 /// @brief Type-erased construction metadata stored for one pass id.
 struct PassFactory {
-    /// Scope selecting which factory member is valid.
+    /// @brief Scope selecting which factory member is valid.
     PassKind kind{PassKind::Function};
-    /// Constructor for a module pass when @ref kind is module scope.
+    /// @brief Constructor for a module pass when @ref kind is module scope.
     std::function<std::unique_ptr<ModulePass>()> makeModule;
-    /// Constructor for a function pass when @ref kind is function scope.
+    /// @brief Constructor for a function pass when @ref kind is function scope.
     std::function<std::unique_ptr<FunctionPass>()> makeFunction;
-    /// Whether execution has been audited for the executor's parallel mode.
+    /// @brief Whether execution has been audited for the executor's parallel mode.
     bool parallelSafe = false;
 };
 } // namespace detail
@@ -274,6 +291,7 @@ class PassRegistry {
     const detail::PassFactory *lookup(std::string_view id) const;
 
   private:
+    /// @brief Type-erased pass construction metadata indexed by stable identifier.
     std::unordered_map<std::string, detail::PassFactory> registry_;
 };
 

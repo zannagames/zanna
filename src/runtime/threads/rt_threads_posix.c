@@ -17,11 +17,20 @@
 //     callback and unbinds it before publishing completion.
 // Ownership/Lifetime:
 //   - The thread inner object owns pthread state and retained construction data
-//     until join/detach cleanup; the callback argument itself is borrowed.
+//     until detach/finalization cleanup. Ordinary callback arguments are
+//     borrowed; Owned start variants retain managed arguments until callback exit.
 //
 // Links: rt_threads_internal.h, rt_threads_win.c, rt_threads_common.c, rt_threads.h
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements native Thread operations with POSIX pthreads.
+/// @details Thread records use mutex/condition synchronization for repeatable
+///          completion observation, detach each pthread exactly once, inherit
+///          the caller's reserved runtime-context binding, and support
+///          monotonic timed joins. Legacy opaque callbacks are decoded only at
+///          the public ABI boundary.
 
 #include "rt_threads_internal.h"
 
@@ -32,12 +41,15 @@
 #include <time.h>
 #if defined(__APPLE__)
 /// @brief macOS-specific relative-time condvar wait (declared here when the SDK header omits it).
+/// @param cond Condition variable to wait on.
+/// @param mutex Locked mutex atomically released during the wait.
+/// @param rel_time Relative timeout measured from the start of the wait.
+/// @return Zero after a signal, `ETIMEDOUT` on expiry, or another pthread error code.
 extern int pthread_cond_timedwait_relative_np(pthread_cond_t *cond,
                                               pthread_mutex_t *mutex,
                                               const struct timespec *rel_time);
 #endif
 
-/// @brief Function pointer type for thread entry functions.
 /// @brief Internal representation of a Zanna thread.
 ///
 /// This structure holds all state for a single thread, including synchronization
@@ -91,6 +103,8 @@ typedef struct RtThread {
 ///        size, and RT_THREAD_MAGIC guard) — distinguishes it from SafeThread
 ///        and stale/foreign pointers before any RtThread deref.
 /// @note Defined once per platform backend branch; both copies are identical.
+/// @param obj Candidate runtime object.
+/// @return Non-zero only for a valid live regular Thread handle.
 int is_regular_thread_handle(void *obj) {
     return rt_obj_is_instance(obj, RT_THREAD_CLASS_ID, sizeof(RtThread)) &&
            thread_handle_magic(obj) == RT_THREAD_MAGIC;
@@ -112,6 +126,7 @@ static int64_t next_thread_id(void) {
 }
 
 /// @brief Drop the GC reference held on `t->arg` (only if `t->owns_arg` was set on start).
+/// @param t Thread record whose retained callback argument is released and cleared.
 static void rt_thread_release_owned_arg(RtThread *t) {
     if (!t || !t->owns_arg || !t->arg)
         return;
@@ -163,6 +178,9 @@ static int rt_thread_ensure_detached(RtThread *t, pthread_t native_thread, int w
 /// which can jump around (NTP, manual changes). Setting the
 /// monotonic clock attribute makes timed waits robust to wall-clock changes.
 /// Sets `*uses_monotonic` to 1 if monotonic worked, 0 otherwise.
+/// @param cond Uninitialized completion condition variable.
+/// @param uses_monotonic Optional output indicating the selected deadline clock.
+/// @return Zero on success or a pthread initialization error code.
 static int thread_cond_init(pthread_cond_t *cond, int8_t *uses_monotonic) {
     if (uses_monotonic)
         *uses_monotonic = 0;
@@ -198,6 +216,8 @@ typedef struct {
 
 /// @brief Read the current `timespec` from the monotonic or realtime clock based on
 /// `use_monotonic`.
+/// @param use_monotonic Whether to prefer `CLOCK_MONOTONIC`.
+/// @return Current timestamp from the selected available clock.
 static struct timespec thread_now_clock(int8_t use_monotonic) {
     struct timespec ts;
     memset(&ts, 0, sizeof(ts));
@@ -211,6 +231,9 @@ static struct timespec thread_now_clock(int8_t use_monotonic) {
 
 /// @brief Compute an absolute deadline `ms` milliseconds from now (used by
 /// `pthread_cond_timedwait`).
+/// @param ms Wait duration in milliseconds.
+/// @param use_monotonic Whether to base the deadline on a monotonic clock.
+/// @return Saturating absolute deadline on the selected clock.
 static thread_deadline_t thread_deadline_from_now(int64_t ms, int8_t use_monotonic) {
     thread_deadline_t d;
     d.deadline = thread_now_clock(use_monotonic);
@@ -238,6 +261,10 @@ static thread_deadline_t thread_deadline_from_now(int64_t ms, int8_t use_monoton
 
 #if defined(__APPLE__)
 /// @brief Milliseconds remaining until `deadline` (negative if already past).
+/// @param deadline Absolute deadline to compare with the selected clock.
+/// @param use_monotonic Whether to read the monotonic rather than realtime clock.
+/// @return Remaining whole milliseconds, zero after expiry, or `INT64_MAX`
+///         when the interval cannot be represented.
 static int64_t thread_remaining_ms(thread_deadline_t deadline, int8_t use_monotonic) {
     struct timespec now = thread_now_clock(use_monotonic);
     int64_t sec = (int64_t)deadline.deadline.tv_sec - (int64_t)now.tv_sec;
@@ -259,6 +286,10 @@ static int64_t thread_remaining_ms(thread_deadline_t deadline, int8_t use_monoto
 /// Picks the right pthread call: `pthread_cond_timedwait` with the
 /// monotonic clock when supported, or
 /// `pthread_cond_timedwait_relative_np` on macOS as a fallback.
+/// @param cond Completion condition variable.
+/// @param mutex Locked Thread-state mutex released atomically during the wait.
+/// @param deadline Absolute timeout on the selected clock.
+/// @param use_monotonic Whether @p deadline uses a monotonic clock.
 /// @return 0 on signal, ETIMEDOUT on deadline, other errno on failure.
 static int thread_cond_timedwait_deadline(pthread_cond_t *cond,
                                           pthread_mutex_t *mutex,
@@ -305,6 +336,8 @@ static void rt_thread_finalize(void *obj) {
 ///      join condvar so blocking `Thread.Join` returns.
 ///   3. Drop the self-reference taken in `rt_thread_start_impl`.
 /// Safe threads install trap recovery in `safe_thread_entry`.
+/// @param p Self-retained `RtThread` record passed to `pthread_create`.
+/// @return Always NULL, as required by the pthread entry signature.
 static void *rt_thread_trampoline(void *p) {
     RtThread *t = (RtThread *)p;
     int context_adopted =
@@ -377,6 +410,7 @@ static RtThread *require_thread(void *thread, const char *what) {
 /// @param entry Function pointer to the thread entry point. Must not be NULL.
 ///              Signature: void entry(void *arg)
 /// @param arg Argument to pass to the entry function. May be NULL.
+/// @param retain_arg Whether a managed @p arg is retained through callback exit.
 ///
 /// @return A Thread object that can be used for joining, or NULL if creation
 ///         failed after trapping.
@@ -468,22 +502,34 @@ static void *rt_thread_start_impl(rt_thread_entry_fn entry, void *arg, int8_t re
     return t;
 }
 
-/// @brief POSIX typed `Thread.Start` implementation for native callers.
+/// @brief Start a POSIX Thread with a typed callback and borrowed argument.
+/// @param entry Typed callback executed once on the new thread.
+/// @param arg Borrowed callback argument, or NULL.
+/// @return New caller-owned Thread handle, or NULL after a reported failure.
 void *rt_thread_start_fn(rt_thread_entry_fn entry, void *arg) {
     return rt_thread_start_impl(entry, arg, 0);
 }
 
-/// @brief POSIX typed `Thread.StartOwned` implementation for native callers.
+/// @brief Start a POSIX Thread while retaining its managed argument.
+/// @param entry Typed callback executed once on the new thread.
+/// @param arg Managed value retained through callback exit, borrowed unmanaged pointer, or NULL.
+/// @return New caller-owned Thread handle, or NULL after a reported failure.
 void *rt_thread_start_owned_fn(rt_thread_entry_fn entry, void *arg) {
     return rt_thread_start_impl(entry, arg, 1);
 }
 
-/// @brief POSIX `Thread.Start` — see Win32 version above for semantics.
+/// @brief Start a POSIX Thread through the legacy opaque callback ABI.
+/// @param entry Opaque representation of `void (*)(void *)`.
+/// @param arg Borrowed callback argument, or NULL.
+/// @return New caller-owned Thread handle, or NULL after a reported failure.
 void *rt_thread_start(void *entry, void *arg) {
     return rt_thread_start_fn(thread_entry_from_opaque(entry), arg);
 }
 
-/// @brief POSIX `Thread.StartOwned` — see Win32 version above.
+/// @brief Start an owned-argument POSIX Thread through the legacy callback ABI.
+/// @param entry Opaque representation of `void (*)(void *)`.
+/// @param arg Managed value retained through callback exit, borrowed unmanaged pointer, or NULL.
+/// @return New caller-owned Thread handle, or NULL after a reported failure.
 void *rt_thread_start_owned(void *entry, void *arg) {
     return rt_thread_start_owned_fn(thread_entry_from_opaque(entry), arg);
 }

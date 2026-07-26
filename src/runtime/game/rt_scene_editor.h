@@ -192,6 +192,18 @@ void rt_game_scene_set_layer_name(void *scene, int64_t layer, rt_string name);
 /// @return `1` for a visible valid layer; otherwise `0`.
 int8_t rt_game_scene_layer_visible(void *scene, int64_t layer);
 
+/// @brief Return a layer's authored opacity in [0, 1] (ADR 0195; default 1).
+/// @param scene Borrowed SceneDocument handle.
+/// @param layer Zero-based layer index.
+/// @return Stored opacity, or `1` for an invalid layer.
+double rt_game_scene_layer_opacity(void *scene, int64_t layer);
+
+/// @brief Set a layer's authored opacity, clamped to [0, 1].
+/// @param scene Borrowed SceneDocument handle.
+/// @param layer Zero-based layer index; invalid indices are ignored.
+/// @param opacity Replacement opacity; non-finite input becomes opaque.
+void rt_game_scene_set_layer_opacity(void *scene, int64_t layer, double opacity);
+
 /// @brief Set a layer's visibility.
 /// @param scene Borrowed SceneDocument handle.
 /// @param layer Zero-based layer index.

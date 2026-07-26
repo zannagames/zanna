@@ -1139,6 +1139,10 @@ hide func DispatchBuildDebugCommands(ctx: command_context.CommandContext,
        and ctx.scene2DEditor.TakeRunSceneRequested() {
         runSceneTriggered = true;
     }
+    if ctx.scene3DEditor != null
+       and ctx.scene3DEditor.TakeRunSceneRequested() {
+        runSceneTriggered = true;
+    }
     if runSceneTriggered {
         if dispatch_helpers.CanStartBuildCommand(ctx.shell, ctx.dbgSession, "Run Scene") {
             build_commands.handleRunScene(ctx.shell, ctx.docMgr, ctx.projMgr,

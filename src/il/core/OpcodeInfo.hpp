@@ -13,6 +13,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares canonical signature, parser, effect, and VM metadata for opcodes.
+ *
+ * @details Every valid `Opcode` indexes exactly one immutable `OpcodeInfo`
+ *          record describing result arity, operand constraints, control-flow
+ *          shape, parser strategy, and interpreter dispatch. Shared helpers
+ *          expose that table and conservatively classify memory behavior for
+ *          analyses and transformations.
+ */
+
 #pragma once
 
 #include "il/core/Opcode.hpp"

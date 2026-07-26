@@ -26,6 +26,8 @@ namespace zanna::tui::input {
 /// @details Equality requires the same key code, modifier mask, and Unicode
 ///          codepoint.  Treating chords as value types simplifies their use as
 ///          keys in associative containers.
+/// @param other Chord to compare with this value.
+/// @return true when every chord component matches.
 bool KeyChord::operator==(const KeyChord &other) const {
     return code == other.code && mods == other.mods && codepoint == other.codepoint;
 }
@@ -34,6 +36,8 @@ bool KeyChord::operator==(const KeyChord &other) const {
 /// @details Mixes the three components into a single size_t value suitable for
 ///          unordered maps.  Bit shifting keeps the fields from overlapping and
 ///          yields stable hashes across architectures.
+/// @param kc Key chord to hash.
+/// @return Combined hash compatible with chord equality.
 std::size_t KeyChordHash::operator()(const KeyChord &kc) const {
     return static_cast<std::size_t>(kc.code) ^ (static_cast<std::size_t>(kc.mods) << 8U) ^
            (static_cast<std::size_t>(kc.codepoint) << 16U);
@@ -43,6 +47,9 @@ std::size_t KeyChordHash::operator()(const KeyChord &kc) const {
 /// @details If the identifier already exists the function refreshes the
 ///          metadata and callback.  Otherwise it appends a new command to the
 ///          registry and records its index for quick lookup during dispatch.
+/// @param id Stable command identifier.
+/// @param name Human-readable command label.
+/// @param action Callback invoked by execution.
 void Keymap::registerCommand(CommandId id, std::string name, std::function<void()> action) {
     auto it = index_.find(id);
     if (it != index_.end()) {
@@ -60,6 +67,8 @@ void Keymap::registerCommand(CommandId id, std::string name, std::function<void(
 /// @brief Associate a key chord with a command across the entire application.
 /// @details Inserts or overwrites the mapping in the global binding table so
 ///          the shortcut applies regardless of widget focus.
+/// @param kc Key chord to bind.
+/// @param id Registered command identifier to dispatch.
 void Keymap::bindGlobal(const KeyChord &kc, const CommandId &id) {
     global_[kc] = id;
 }
@@ -68,6 +77,9 @@ void Keymap::bindGlobal(const KeyChord &kc, const CommandId &id) {
 /// @details Widget bindings override global shortcuts when the given widget is
 ///          focused, enabling contextual behaviour without affecting other UI
 ///          components.
+/// @param w Non-owning widget key identifying the binding scope.
+/// @param kc Key chord to bind.
+/// @param id Registered command identifier to dispatch.
 void Keymap::bindWidget(ui::Widget *w, const KeyChord &kc, const CommandId &id) {
     widget_[w][kc] = id;
 }
@@ -76,6 +88,8 @@ void Keymap::bindWidget(ui::Widget *w, const KeyChord &kc, const CommandId &id) 
 /// @details Looks up the command in the registry, invokes the stored callback
 ///          when present, and returns whether execution occurred.  Missing or
 ///          unbound commands report false so callers can fall back gracefully.
+/// @param id Command identifier to look up.
+/// @return true when a nonempty callback was found and invoked.
 bool Keymap::execute(const CommandId &id) const {
     auto it = index_.find(id);
     if (it != index_.end()) {
@@ -92,6 +106,8 @@ bool Keymap::execute(const CommandId &id) const {
 /// @details Returns nullptr when the identifier is unknown.  The pointer remains
 ///          valid for the lifetime of the keymap because commands are stored in a
 ///          vector that only grows.
+/// @param id Command identifier to find.
+/// @return Borrowed command pointer, or nullptr when absent.
 const Command *Keymap::find(const CommandId &id) const {
     auto it = index_.find(id);
     if (it != index_.end()) {
@@ -105,6 +121,9 @@ const Command *Keymap::find(const CommandId &id) const {
 ///          focused widget has an override.  If not, it falls back to the global
 ///          bindings.  Successful dispatch executes the associated command and
 ///          returns true; otherwise the event remains unhandled.
+/// @param w Currently focused widget, or nullptr.
+/// @param key Decoded key event to convert into a chord.
+/// @return true when a matching command callback executed.
 bool Keymap::handle(ui::Widget *w, const term::KeyEvent &key) const {
     KeyChord kc{key.code, key.mods, key.codepoint};
     if (w) {
@@ -127,6 +146,7 @@ bool Keymap::handle(ui::Widget *w, const term::KeyEvent &key) const {
 /// @details Exposes the internal vector so UI components can enumerate available
 ///          commands for display purposes.  The reference remains valid as long
 ///          as the keymap outlives the caller.
+/// @return Const reference to the owned command vector.
 const std::vector<Command> &Keymap::commands() const {
     return commands_;
 }

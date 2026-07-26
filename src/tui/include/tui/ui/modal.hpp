@@ -5,8 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the ModalHost and Popup classes for Zanna's TUI modal
-// dialog system.
+/// @file
+/// @brief Declares stacked modal routing and centered popup widgets.
+/// @details ModalHost owns a root and LIFO overlay stack, paints overlays above
+///          the root, and routes input exclusively to the topmost modal; Popup
+///          provides a bordered dismissible overlay.
 //
 // ModalHost is a special widget that wraps a root widget and manages a stack
 // of modal widgets rendered on top. When modals are present, they receive
@@ -80,8 +83,8 @@ class ModalHost : public Widget {
     [[nodiscard]] Widget *root();
 
   private:
-    std::unique_ptr<Widget> root_{};
-    std::vector<std::unique_ptr<Widget>> modals_{};
+    std::unique_ptr<Widget> root_{}; ///< Owned underlying application widget.
+    std::vector<std::unique_ptr<Widget>> modals_{}; ///< Owned overlays in bottom-to-top order.
 };
 
 /// @brief Simple popup widget with a bordered rectangle and dismiss callback.
@@ -116,10 +119,10 @@ class Popup : public Widget {
     [[nodiscard]] bool wantsFocus() const override;
 
   private:
-    int width_{0};
-    int height_{0};
-    Rect box_{};
-    std::function<void()> onClose_{};
+    int width_{0};                   ///< Requested popup width in columns.
+    int height_{0};                  ///< Requested popup height in rows.
+    Rect box_{};                     ///< Centered rectangle computed during layout.
+    std::function<void()> onClose_{}; ///< Optional dismissal callback.
 };
 
 } // namespace zanna::tui::ui

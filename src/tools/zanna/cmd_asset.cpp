@@ -5,27 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/tools/zanna/cmd_asset.cpp
-// Purpose: `zanna asset` subcommands — offline 3D asset conditioning. `bake`
-//   loads a glTF/GLB/FBX/OBJ/STL model through the full runtime import
-//   pipeline (including the compressed-codec decoders and import options),
-//   optionally generates LOD chains, saves the complete SceneAsset as the
-//   versioned .vscn baked form, then reloads it to report fidelity losses.
-//   `validate` loads an asset and prints the AssetDiagnostics3D import report.
-// Key invariants:
-//   - Requires a graphics-enabled runtime build; other builds get a clear
-//     diagnostic instead of unresolved behavior.
-//   - Bake reports compare public SceneAsset resource counts plus every persisted material
-//     texture reference, exact source span, decoded surface, native metadata, and alias.
-//   - `--json` writes exactly one v1 report object to stdout and keeps stderr
-//     empty on success. Human mode retains the historical `baked` line and
-//     writes one stable-code warning per detected resource class reduction.
-//   - Exit codes: 0 success, 1 usage error, 2 load/bake failure.
-// Ownership/Lifetime:
-//   - Runtime objects are released through the runtime's release-check
-//     protocol before exit.
-// Links: src/runtime/graphics/3d/render/rt_model3d.h,
-//   src/runtime/graphics/3d/scene/rt_scene3d.h
+/// @file cmd_asset.cpp
+/// @brief Implements offline 3D asset baking and validation.
+///
+/// Baking loads supported model formats through the full runtime import pipeline, optionally
+/// generates LOD chains, writes a versioned scene, reloads it, and reports resource and texture
+/// fidelity. Validation prints the runtime import report. Graphics-disabled builds fail with a
+/// clear diagnostic.
+///
+/// JSON mode emits exactly one v1 report object on success. Human mode retains the historical
+/// baked line and stable-code fidelity warnings. Runtime objects follow the release-check protocol.
 //
 //===----------------------------------------------------------------------===//
 #include "cmd_asset.hpp"
@@ -140,6 +129,9 @@ struct TextureFidelityReport {
     std::vector<TextureFidelityEntry> entries;
 };
 
+/// @brief Encode optional C text as a complete JSON string literal.
+/// @param text NUL-terminated bytes, or null for an empty string.
+/// @return Quoted JSON with control bytes escaped.
 std::string jsonQuote(const char *text) {
     static const char hex[] = "0123456789abcdef";
     std::string out;
@@ -184,6 +176,10 @@ std::string jsonQuote(const char *text) {
     return out;
 }
 
+/// @brief Add a nonnegative resource count without signed overflow.
+/// @param lhs Accumulated count.
+/// @param rhs Count to add; nonpositive values are ignored.
+/// @return Sum clamped to @c int64_t maximum.
 int64_t saturatingAddNonnegative(int64_t lhs, int64_t rhs) {
     if (rhs <= 0)
         return lhs;
@@ -192,6 +188,9 @@ int64_t saturatingAddNonnegative(int64_t lhs, int64_t rhs) {
     return lhs + rhs;
 }
 
+/// @brief Capture every public resource count used by bake fidelity reporting.
+/// @param model Borrowed runtime model.
+/// @return Counts for meshes, materials, animation data, scene objects, cameras, and variants.
 AssetSnapshot snapshotAsset(void *model) {
     AssetSnapshot snapshot;
     snapshot.meshes = rt_model3d_get_mesh_count(model);
@@ -211,6 +210,9 @@ AssetSnapshot snapshotAsset(void *model) {
     return snapshot;
 }
 
+/// @brief Describe a persisted texture reference and its resolved decoded pixels.
+/// @param reference Borrowed runtime texture reference, possibly null.
+/// @return Reference kind, source-container metadata, native format, dimensions, and pixels.
 TextureDescriptor describeTexture(void *reference) {
     TextureDescriptor descriptor;
     descriptor.reference = reference;
@@ -248,6 +250,10 @@ TextureDescriptor describeTexture(void *reference) {
     return descriptor;
 }
 
+/// @brief Compare resolved RGBA texels with overflow-safe byte sizing.
+/// @param source Source texture descriptor.
+/// @param baked Reloaded baked texture descriptor.
+/// @return @c true when both resolution state, dimensions, and raw texels match.
 bool decodedTexelsEqual(const TextureDescriptor &source, const TextureDescriptor &baked) {
     if (!source.pixels || !baked.pixels)
         return source.pixels == baked.pixels;
@@ -274,6 +280,11 @@ bool decodedTexelsEqual(const TextureDescriptor &source, const TextureDescriptor
                sourcePixels, bakedPixels, static_cast<size_t>(pixelCount) * sizeof(uint32_t)) == 0;
 }
 
+/// @brief Select the most specific stable code for a texture fidelity mismatch.
+/// @param source Source texture descriptor.
+/// @param baked Reloaded baked descriptor.
+/// @param entry Precomputed field-by-field comparison state.
+/// @return Stable machine-readable loss code.
 std::string textureLossCode(const TextureDescriptor &source,
                             const TextureDescriptor &baked,
                             const TextureFidelityEntry &entry) {
@@ -302,6 +313,12 @@ std::string textureLossCode(const TextureDescriptor &source,
     return "texture-fidelity-mismatch";
 }
 
+/// @brief Compare every persisted material texture slot across source and baked models.
+/// @param sourceModel Borrowed source runtime model.
+/// @param bakedModel Borrowed reloaded baked model.
+/// @param sourceMaterialCount Source material count.
+/// @param bakedMaterialCount Baked material count.
+/// @return Detailed entries and aggregate preservation/loss counters.
 TextureFidelityReport compareTextureFidelity(void *sourceModel,
                                              void *bakedModel,
                                              int64_t sourceMaterialCount,
@@ -417,6 +434,12 @@ TextureFidelityReport compareTextureFidelity(void *sourceModel,
     return report;
 }
 
+/// @brief Record a resource-count loss when the baked count is smaller.
+/// @param losses Output collection.
+/// @param code Stable loss code.
+/// @param resource User-facing resource category.
+/// @param source Source resource count.
+/// @param baked Baked resource count.
 void appendLoss(std::vector<FidelityLoss> &losses,
                 const char *code,
                 const char *resource,
@@ -426,6 +449,10 @@ void appendLoss(std::vector<FidelityLoss> &losses,
         losses.push_back(FidelityLoss{code, resource, source, baked});
 }
 
+/// @brief Compare source and baked resource-count snapshots.
+/// @param source Snapshot captured before saving.
+/// @param baked Snapshot captured after reload.
+/// @return One stable loss record per reduced resource category.
 std::vector<FidelityLoss> compareSnapshots(const AssetSnapshot &source,
                                            const AssetSnapshot &baked) {
     std::vector<FidelityLoss> losses;
@@ -456,6 +483,9 @@ std::vector<FidelityLoss> compareSnapshots(const AssetSnapshot &source,
     return losses;
 }
 
+/// @brief Append one compact resource snapshot object to a JSON buffer.
+/// @param out Output buffer to extend.
+/// @param snapshot Counts to serialize.
 void appendSnapshotJson(std::string &out, const AssetSnapshot &snapshot) {
     out += "{\"meshes\":" + std::to_string(snapshot.meshes);
     out += ",\"materials\":" + std::to_string(snapshot.materials);
@@ -470,6 +500,9 @@ void appendSnapshotJson(std::string &out, const AssetSnapshot &snapshot) {
     out += ",\"variants\":" + std::to_string(snapshot.variants) + "}";
 }
 
+/// @brief Append texture-fidelity summary and entries to a JSON buffer.
+/// @param out Output buffer to extend.
+/// @param textureReport Comparison report to serialize.
 void appendTextureFidelityJson(std::string &out, const TextureFidelityReport &textureReport) {
     out += "{\"summary\":{\"preserved-source\":" + std::to_string(textureReport.preservedSource);
     out += ",\"preserved-decoded\":" + std::to_string(textureReport.preservedDecoded);
@@ -509,6 +542,15 @@ void appendTextureFidelityJson(std::string &out, const TextureFidelityReport &te
     out += "]}";
 }
 
+/// @brief Build the complete successful asset-bake v1 JSON report.
+/// @param input Source asset path.
+/// @param output Baked scene path.
+/// @param source Pre-save resource snapshot.
+/// @param baked Reloaded resource snapshot.
+/// @param losses Reduced resource categories.
+/// @param textureReport Detailed persisted-texture comparison.
+/// @param importReport Runtime import diagnostics JSON.
+/// @return Compact JSON object without a trailing newline.
 std::string bakeReportJson(const char *input,
                            const char *output,
                            const AssetSnapshot &source,
@@ -544,6 +586,11 @@ std::string bakeReportJson(const char *input,
     return report;
 }
 
+/// @brief Print a complete asset-bake v1 JSON error object.
+/// @param stage Stable load, save, or verify stage token.
+/// @param input Source asset path.
+/// @param output Requested baked scene path.
+/// @param importReport Runtime import diagnostics JSON.
 void printBakeJsonError(const char *stage,
                         const char *input,
                         const char *output,
@@ -558,6 +605,8 @@ void printBakeJsonError(const char *stage,
     std::printf("%s\n", report.c_str());
 }
 
+/// @brief Copy the runtime's current asset-import diagnostics report.
+/// @return Nonempty JSON text, defaulting to an empty object.
 std::string currentImportReport() {
     rt_string report = rt_assets3d_get_import_report();
     const char *text = report ? rt_string_cstr(report) : nullptr;
@@ -566,6 +615,8 @@ std::string currentImportReport() {
 
 #endif
 
+/// @brief Print asset subcommand syntax and behavior.
+/// @param out Destination C stream.
 void printAssetUsage(std::FILE *out) {
     std::fprintf(out,
                  "usage: zanna asset <bake|validate> ...\n"
@@ -582,6 +633,10 @@ void printAssetUsage(std::FILE *out) {
 
 } // namespace
 
+/// @brief Dispatch asset validation or bake workflows.
+/// @param argc Number of arguments beginning with the asset operation.
+/// @param argv Argument vector.
+/// @return Zero on success, one on usage error, or two on unavailable graphics/load/bake failure.
 int cmdAsset(int argc, char **argv) {
     if (argc < 1) {
         printAssetUsage(stderr);
@@ -727,6 +782,9 @@ int cmdAsset(int argc, char **argv) {
 #endif
 }
 
+/// @brief Print asset help for the top-level help dispatcher.
+/// @param out Destination C stream.
+/// @return Zero after writing usage.
 int cmdAssetHelp(std::FILE *out) {
     printAssetUsage(out);
     return 0;

@@ -39,6 +39,9 @@ namespace zanna::codegen::x64 {
 ///          value both as uses. The fallback at the end conservatively
 ///          treats unknown operands as both use and def so liveness analysis
 ///          cannot accidentally drop live values or miss implicit writes.
+/// @param instr MIR instruction whose operand is classified.
+/// @param idx Zero-based index into @p instr's operand vector.
+/// @return Pair whose first element denotes a use and whose second denotes a definition.
 std::pair<bool, bool> operandRoles(const MInstr &instr, std::size_t idx) noexcept {
     switch (instr.opcode) {
         case MOpcode::PUSH:
@@ -191,6 +194,8 @@ std::pair<bool, bool> operandRoles(const MInstr &instr, std::size_t idx) noexcep
 /// @details Only branch/setcc/cmov family opcodes consume EFLAGS. Used by
 ///          peephole and scheduler passes to determine whether a flag-defining
 ///          instruction is still observable.
+/// @param opcode MIR opcode to classify.
+/// @return `true` when the opcode consumes the current EFLAGS value.
 bool usesEFlags(MOpcode opcode) noexcept {
     switch (opcode) {
         case MOpcode::JCC:
@@ -205,6 +210,8 @@ bool usesEFlags(MOpcode opcode) noexcept {
 /// @brief Predicate: does @p opcode unconditionally write x86 EFLAGS?
 /// @details Almost every ALU instruction defines EFLAGS; MOVs and LEA do not.
 ///          Used to bound the "live EFLAGS" window scanned by peepholes.
+/// @param opcode MIR opcode to classify.
+/// @return `true` when executing the opcode overwrites EFLAGS.
 bool definesEFlags(MOpcode opcode) noexcept {
     switch (opcode) {
         case MOpcode::ADDrr:
@@ -260,6 +267,8 @@ bool definesEFlags(MOpcode opcode) noexcept {
 ///          observable program behavior. Pure register-to-register data
 ///          movement instructions return false so DCE can remove them when
 ///          their destinations are dead.
+/// @param opcode MIR opcode to classify.
+/// @return `true` when deleting an otherwise dead instruction could change behavior.
 bool hasObservableSideEffects(MOpcode opcode) noexcept {
     switch (opcode) {
         case MOpcode::PUSH:

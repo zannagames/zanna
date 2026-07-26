@@ -53,6 +53,10 @@ ReplSession::ReplSession(std::unique_ptr<ReplAdapter> adapter) : adapter_(std::m
 
     // Wire up tab completion
     editor_.setCompletionCallback(
+        /// @brief Request language-specific completions from the owned adapter.
+        /// @param input Complete editable input buffer.
+        /// @param cursor Cursor byte offset within @p input.
+        /// @return Candidate completion strings in adapter-defined order.
         [this](const std::string &input, size_t cursor) -> std::vector<std::string> {
             return adapter_->complete(input, cursor);
         });
@@ -93,25 +97,40 @@ void ReplSession::registerDefaultCommands() {
     metaCmds_.registerCommand(
         "help",
         "Show this help message",
+        /// @brief Print the registered meta-command help table.
+        /// @param session Dispatch session; the captured session is used instead.
+        /// @param args Unused argument tail.
         [this](ReplSession & /*session*/, const std::string & /*args*/) { metaCmds_.printHelp(); });
 
     metaCmds_.registerCommand(
+        /// @brief Request an orderly REPL exit through the dispatched session.
+        /// @param session Session whose exit flag is set.
+        /// @param args Unused argument tail.
         "quit", "Exit the REPL", [](ReplSession &session, const std::string & /*args*/) {
             session.requestExit();
         });
 
     metaCmds_.registerCommand(
+        /// @brief Handle the `.exit` alias by requesting an orderly REPL exit.
+        /// @param session Session whose exit flag is set.
+        /// @param args Unused argument tail.
         "exit", "Exit the REPL", [](ReplSession &session, const std::string & /*args*/) {
             session.requestExit();
         });
 
     metaCmds_.registerCommand(
+        /// @brief Reset adapter state and acknowledge the cleared session.
+        /// @param session Session whose language adapter is reset.
+        /// @param args Unused argument tail.
         "clear", "Reset session state", [](ReplSession &session, const std::string & /*args*/) {
             session.adapter().reset();
             std::cout << "Session state cleared.\n";
         });
 
     metaCmds_.registerCommand(
+        /// @brief List persistent variables reported by the language adapter.
+        /// @param session Session whose adapter supplies variable metadata.
+        /// @param args Unused argument tail.
         "vars", "List session variables", [](ReplSession &session, const std::string & /*args*/) {
             auto vars = session.adapter().listVariables();
             if (vars.empty()) {
@@ -125,6 +144,9 @@ void ReplSession::registerDefaultCommands() {
         });
 
     metaCmds_.registerCommand(
+        /// @brief List persistent functions reported by the language adapter.
+        /// @param session Session whose adapter supplies function metadata.
+        /// @param args Unused argument tail.
         "funcs", "List defined functions", [](ReplSession &session, const std::string & /*args*/) {
             auto funcs = session.adapter().listFunctions();
             if (funcs.empty()) {
@@ -139,6 +161,9 @@ void ReplSession::registerDefaultCommands() {
 
     metaCmds_.registerCommand("binds",
                               "List active bind statements",
+                              /// @brief List active bind statements reported by the adapter.
+                              /// @param session Session whose adapter supplies bind text.
+                              /// @param args Unused argument tail.
                               [](ReplSession &session, const std::string & /*args*/) {
                                   auto binds = session.adapter().listBinds();
                                   if (binds.empty()) {
@@ -152,6 +177,9 @@ void ReplSession::registerDefaultCommands() {
                               });
 
     metaCmds_.registerCommand(
+        /// @brief Print the adapter-inferred type of an expression argument.
+        /// @param session Session whose adapter performs type inference.
+        /// @param args Unparsed expression text.
         "type", "Show type of expression", [](ReplSession &session, const std::string &args) {
             if (args.empty()) {
                 std::cout << colors::warning() << "Usage: .type <expression>" << colors::reset()
@@ -164,6 +192,9 @@ void ReplSession::registerDefaultCommands() {
 
     metaCmds_.registerCommand("il",
                               "Show generated IL for expression",
+                              /// @brief Print adapter-generated IL for an expression.
+                              /// @param session Session whose adapter lowers the expression.
+                              /// @param args Unparsed expression text.
                               [](ReplSession &session, const std::string &args) {
                                   if (args.empty()) {
                                       std::cout << colors::warning() << "Usage: .il <expression>"
@@ -179,6 +210,9 @@ void ReplSession::registerDefaultCommands() {
     metaCmds_.registerCommand(
         "time",
         "Evaluate and show execution time",
+        /// @brief Evaluate an expression and report its wall-clock duration.
+        /// @param session Session whose adapter evaluates the expression.
+        /// @param args Unparsed expression text.
         [](ReplSession &session, const std::string &args) {
             if (args.empty()) {
                 std::cout << colors::warning() << "Usage: .time <expression>" << colors::reset()
@@ -216,6 +250,9 @@ void ReplSession::registerDefaultCommands() {
     metaCmds_.registerCommand(
         "load",
         "Load and execute a source file",
+        /// @brief Load and execute the source file named by the argument tail.
+        /// @param session Session used to load and evaluate the file.
+        /// @param args File-system path text.
         [](ReplSession &session, const std::string &args) {
             if (args.empty()) {
                 std::cout << colors::warning() << "Usage: .load <filepath>" << colors::reset()
@@ -228,6 +265,9 @@ void ReplSession::registerDefaultCommands() {
 
     metaCmds_.registerCommand("save",
                               "Save session history to a file",
+                              /// @brief Save the current editor history to a requested path.
+                              /// @param session Dispatch session; captured editor state is used.
+                              /// @param args File-system path text.
                               [this](ReplSession & /*session*/, const std::string &args) {
                                   if (args.empty()) {
                                       std::cout << colors::warning() << "Usage: .save <filepath>"

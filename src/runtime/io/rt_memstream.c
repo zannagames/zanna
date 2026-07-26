@@ -29,6 +29,14 @@
 //        src/runtime/io/rt_stream.h (generic stream wrapping MemStream)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements growable seekable memory streams with portable encodings.
+ * @details Validates managed handles, grows storage geometrically, zero-fills
+ * newly observable sparse gaps, bounds cursor arithmetic and reads, encodes
+ * integers explicitly in little-endian order, copies string and Bytes values,
+ * and recovers constructor/result allocation traps without leaking storage.
+ */
 
 #include "rt_memstream.h"
 
@@ -44,8 +52,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @copydoc rt_trap_set_recovery()
 void rt_trap_set_recovery(jmp_buf *buf);
+/// @copydoc rt_trap_clear_recovery()
 void rt_trap_clear_recovery(void);
+/// @copydoc rt_trap_get_error()
 const char *rt_trap_get_error(void);
 
 /// @brief Initial buffer capacity for new streams.

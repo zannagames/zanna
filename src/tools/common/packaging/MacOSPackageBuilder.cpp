@@ -23,6 +23,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements macOS application ZIP/DMG and toolchain PKG/DMG packaging.
+/// @details Stages bundle layouts, metadata, permissions, scripts, signatures,
+///          native package archives, and optional Finder disk-image presentation.
+
 #include "MacOSPackageBuilder.hpp"
 #include "CpioWriter.hpp"
 #include "IconGenerator.hpp"
@@ -57,6 +62,8 @@ constexpr std::string_view kMacOSToolchainAppPath = "/Applications/Zanna Toolcha
 /// @brief Create a unique temporary packaging directory under the system temp directory.
 /// @details Uses exclusive directory creation with a randomized suffix and never removes
 ///          a pre-existing path before creation.
+/// @param stem Prefix used for the generated directory name.
+/// @return Path to the newly created directory.
 fs::path uniqueTempPackagingDir(std::string_view stem) {
     return createUniqueTempDirectory(fs::temp_directory_path(), stem);
 }
@@ -130,8 +137,11 @@ std::string macOSApplicationCategory(const std::string &category) {
 /// @brief RAII guard that removes the directory tree at `path_` on destruction.
 class TempDirGuard {
   public:
+    /// @brief Take ownership of a temporary directory.
+    /// @param path Directory tree removed at destruction.
     explicit TempDirGuard(fs::path path) : path_(std::move(path)) {}
 
+    /// @brief Best-effort recursive removal of the owned directory.
     ~TempDirGuard() {
         if (!path_.empty()) {
             std::error_code ec;
@@ -146,6 +156,8 @@ class TempDirGuard {
 /// @brief Validate that `name` is a legal macOS bundle display name.
 /// Must be non-empty, single-line, free of path separators (`/`, `\`, `:`), and pass Windows
 /// filename checks.
+/// @param name Candidate user-visible bundle name.
+/// @throws std::runtime_error If the name is empty, multiline, or filename-unsafe.
 void validateBundleDisplayName(const std::string &name) {
     if (name.empty())
         throw std::runtime_error("macOS bundle display name must not be empty");
@@ -158,6 +170,10 @@ void validateBundleDisplayName(const std::string &name) {
 }
 
 /// @brief Write `data` to `path`, creating parent directories as needed, and apply `perms`.
+/// @param path Destination filesystem path.
+/// @param data Bytes to write.
+/// @param perms Final Unix permissions.
+/// @throws std::runtime_error If directory creation, writing, or permission changes fail.
 void writeFileBytes(const fs::path &path, const std::vector<uint8_t> &data, fs::perms perms) {
     std::error_code ec;
     const fs::path parent = path.parent_path();
@@ -180,12 +196,19 @@ void writeFileBytes(const fs::path &path, const std::vector<uint8_t> &data, fs::
 }
 
 /// @brief Write `text` to `path` as UTF-8 bytes with the given Unix permissions.
+/// @param path Destination filesystem path.
+/// @param text UTF-8 text to write.
+/// @param perms Final Unix permissions.
+/// @throws std::runtime_error If writing or permission changes fail.
 void writeFileString(const fs::path &path, const std::string &text, fs::perms perms) {
     const auto *bytes = reinterpret_cast<const uint8_t *>(text.data());
     writeFileBytes(path, std::vector<uint8_t>(bytes, bytes + text.size()), perms);
 }
 
 /// @brief Preserve whether a source file is executable while normalizing package permissions.
+/// @param path Source file whose mode is inspected.
+/// @return Mode 0755 when any execute bit is set, otherwise 0644.
+/// @throws std::runtime_error If the source permissions cannot be read.
 fs::perms normalizedPackageFilePermissions(const fs::path &path) {
     std::error_code ec;
     const fs::perms source = fs::status(path, ec).permissions();
@@ -205,6 +228,12 @@ fs::perms normalizedPackageFilePermissions(const fs::path &path) {
 
 /// @brief Copy a package asset (file or directory tree) from `srcPath` into the .app `Resources`
 /// dir. Executable source files get mode 0755 and other regular files get 0644.
+/// @param srcPath Resolved source file or directory.
+/// @param projectRoot Trusted root used for safe recursive traversal.
+/// @param resourcesDir Destination `.app/Contents/Resources` directory.
+/// @param targetDir Sanitized package-relative resource subdirectory.
+/// @param sourceText Original manifest path used in diagnostics.
+/// @throws std::runtime_error If validation, traversal, reading, or writing fails.
 void copyPackageAssetToResources(const fs::path &srcPath,
                                  const fs::path &projectRoot,
                                  const fs::path &resourcesDir,
@@ -229,6 +258,9 @@ void copyPackageAssetToResources(const fs::path &srcPath,
                 throw std::runtime_error("cannot create asset resource directory '" +
                                          targetRoot.string() + "': " + ec.message());
         }
+        /// @brief Copy one safely resolved asset-tree entry into the application resources.
+        /// @param entry Directory entry with verified logical and physical paths.
+        /// @throws std::runtime_error If an entry path, directory creation, or file copy fails.
         safeDirectoryIterateResolved(srcPath, projectRoot, [&](const SafeDirectoryEntry &entry) {
             const auto relPath = sanitizePackageRelativePath(
                 entry.logicalPath.lexically_relative(srcPath).generic_string(), "asset path");
@@ -258,6 +290,9 @@ void copyPackageAssetToResources(const fs::path &srcPath,
 
 /// @brief Run a command and throw `std::runtime_error` if it exits non-zero.
 /// The error message includes `what` plus the captured stdout and stderr.
+/// @param args Executable and argument vector.
+/// @param what Human-readable operation name used in failures.
+/// @throws std::runtime_error If the process exits unsuccessfully.
 void runChecked(const std::vector<std::string> &args, const std::string &what) {
     RunResult rr = run_process(args);
     if (rr.exit_code != 0)
@@ -265,6 +300,8 @@ void runChecked(const std::vector<std::string> &args, const std::string &what) {
 }
 
 /// @brief Decode the XML entities that can appear in an hdiutil plist string value.
+/// @param text XML text to decode in place.
+/// @return Text with the five predefined XML entities replaced.
 std::string decodeSimpleXmlEntities(std::string text) {
     const std::pair<std::string_view, std::string_view> entities[] = {
         {"&amp;", "&"}, {"&lt;", "<"}, {"&gt;", ">"}, {"&quot;", "\""}, {"&apos;", "'"}};
@@ -279,6 +316,10 @@ std::string decodeSimpleXmlEntities(std::string text) {
 }
 
 /// @brief Attach a writable DMG where Finder can see it and return hdiutil's actual mount point.
+/// @param dmgPath Disk image to attach.
+/// @param what Human-readable operation name used in failures.
+/// @return Accessible mount point parsed from hdiutil's plist output.
+/// @throws std::runtime_error If attachment fails or no usable mount point is reported.
 fs::path attachMacOSDmgForStyling(const fs::path &dmgPath, const std::string &what) {
     const RunResult result =
         run_process({"hdiutil", "attach", dmgPath.string(), "-noverify", "-noautoopen", "-plist"});
@@ -307,6 +348,10 @@ fs::path attachMacOSDmgForStyling(const fs::path &dmgPath, const std::string &wh
 }
 
 /// @brief Quote arbitrary single-line text as an AppleScript string literal.
+/// @param text Text to quote.
+/// @param fieldName Human-readable field name used for validation errors.
+/// @return Double-quoted AppleScript literal with slash and quote escaping.
+/// @throws std::runtime_error If `text` contains a line break.
 std::string appleScriptStringLiteral(std::string_view text, const char *fieldName) {
     validateSingleLineField(std::string(text), fieldName);
     std::string quoted;
@@ -322,6 +367,10 @@ std::string appleScriptStringLiteral(std::string_view text, const char *fieldNam
 }
 
 /// @brief Validate a leaf filename placed at the root of a disk image.
+/// @param name Candidate leaf name.
+/// @param fieldName Human-readable field name used in diagnostics.
+/// @return Validated name.
+/// @throws std::runtime_error If the name is empty, special, multiline, or contains separators.
 std::string validateDmgItemName(std::string name, const char *fieldName) {
     validateSingleLineField(name, fieldName);
     if (name.empty() || name == "." || name == ".." || name.find('/') != std::string::npos ||
@@ -333,6 +382,8 @@ std::string validateDmgItemName(std::string name, const char *fieldName) {
 }
 
 /// @brief Run optional Finder styling and surface failures without invalidating the image.
+/// @param args Executable and argument vector.
+/// @param what Human-readable styling operation printed with warnings.
 void runBestEffortMacOSStyling(const std::vector<std::string> &args, const std::string &what) {
     const RunResult result = run_process(args);
     if (result.exit_code != 0) {
@@ -347,6 +398,12 @@ void runBestEffortMacOSStyling(const std::vector<std::string> &args, const std::
 }
 
 /// @brief Mount a completed DMG read-only and verify its expected root items.
+/// @param dmgPath Completed disk image to inspect.
+/// @param regularFiles Expected non-empty regular-file leaf names.
+/// @param directories Expected directory leaf names.
+/// @param symlinks Expected symbolic-link leaf names.
+/// @param what Human-readable operation name used in diagnostics.
+/// @throws std::runtime_error If mounting, content validation, or detachment fails.
 void verifyMountedMacOSDmgContents(const fs::path &dmgPath,
                                    const std::vector<std::string> &regularFiles,
                                    const std::vector<std::string> &directories,
@@ -407,6 +464,8 @@ void verifyMountedMacOSDmgContents(const fs::path &dmgPath,
 }
 
 /// @brief Return true when a regular file begins with a supported Mach-O magic value.
+/// @param path Candidate regular file.
+/// @return Whether its first four bytes match a thin or fat Mach-O magic.
 bool isMachOFile(const fs::path &path) {
     std::ifstream in(path, std::ios::binary);
     std::array<uint8_t, 4> magic{};
@@ -428,6 +487,9 @@ bool isMachOFile(const fs::path &path) {
 }
 
 /// @brief Developer-ID-sign and verify every Mach-O payload file, then containing app bundles.
+/// @param payloadRoot Staged package tree to scan recursively.
+/// @param identity Developer ID Application identity; empty disables signing.
+/// @throws std::runtime_error If validation, traversal, signing, or verification fails.
 void signMacOSToolchainPayload(const fs::path &payloadRoot, const std::string &identity) {
     if (identity.empty())
         return;
@@ -453,6 +515,10 @@ void signMacOSToolchainPayload(const fs::path &payloadRoot, const std::string &i
                                      ec.message());
     }
     std::sort(machOFiles.begin(), machOFiles.end());
+    /// @brief Order application bundles from deepest to shallowest for nested signing.
+    /// @param lhs Left-hand bundle path.
+    /// @param rhs Right-hand bundle path.
+    /// @return `true` when `lhs` has a longer native path than `rhs`.
     std::sort(appBundles.begin(), appBundles.end(), [](const fs::path &lhs, const fs::path &rhs) {
         return lhs.native().size() > rhs.native().size();
     });
@@ -488,6 +554,9 @@ void signMacOSToolchainPayload(const fs::path &payloadRoot, const std::string &i
 /// @brief Resolve the version string for a macOS toolchain package.
 /// Returns the validated override if non-empty; otherwise validates and returns the manifest
 /// version.
+/// @param manifestVersion Version from the staged manifest.
+/// @param packageVersionOverride Optional installer-specific version override.
+/// @return Validated dotted-numeric package version.
 std::string resolveMacOSToolchainPackageVersion(const std::string &manifestVersion,
                                                 const std::string &packageVersionOverride) {
     if (!packageVersionOverride.empty()) {
@@ -500,6 +569,8 @@ std::string resolveMacOSToolchainPackageVersion(const std::string &manifestVersi
 }
 
 /// @brief Return a shell-safe single-quoted string for generated package scripts.
+/// @param value Text to quote as one shell word.
+/// @return POSIX single-quoted literal.
 std::string shQuote(const std::string &value) {
     std::string out = "'";
     for (char ch : value) {
@@ -513,6 +584,8 @@ std::string shQuote(const std::string &value) {
 }
 
 /// @brief Escape the five XML metacharacters for embedding in plist/Distribution XML.
+/// @param text Raw XML text-node or attribute value.
+/// @return XML-safe text.
 std::string xmlEscape(const std::string &text) {
     std::string out;
     out.reserve(text.size());
@@ -542,6 +615,9 @@ std::string xmlEscape(const std::string &text) {
 }
 
 /// @brief Convert filesystem permissions to low POSIX permission bits.
+/// @param path Filesystem entry whose mode is inspected.
+/// @param executableFallback Select mode 0755 rather than 0644 if status is unavailable or empty.
+/// @return Low nine permission bits.
 uint32_t modeBitsForPath(const fs::path &path, bool executableFallback) {
     std::error_code ec;
     const auto status = fs::status(path, ec);
@@ -572,6 +648,9 @@ uint32_t modeBitsForPath(const fs::path &path, bool executableFallback) {
 }
 
 /// @brief Return a sorted list of paths under root, including root itself.
+/// @param root Existing tree root.
+/// @return Lexicographically sorted entry paths, starting with `root`.
+/// @throws std::runtime_error If recursive traversal fails.
 std::vector<fs::path> sortedTreeEntries(const fs::path &root) {
     std::vector<fs::path> entries;
     entries.push_back(root);
@@ -584,6 +663,10 @@ std::vector<fs::path> sortedTreeEntries(const fs::path &root) {
     }
     if (ec)
         throw std::runtime_error("cannot traverse macOS package payload: " + ec.message());
+    /// @brief Order staged tree entries by their portable path spelling.
+    /// @param a Left-hand filesystem path.
+    /// @param b Right-hand filesystem path.
+    /// @return `true` when `a` sorts before `b`.
     std::sort(entries.begin(), entries.end(), [](const fs::path &a, const fs::path &b) {
         return a.generic_string() < b.generic_string();
     });
@@ -591,6 +674,9 @@ std::vector<fs::path> sortedTreeEntries(const fs::path &root) {
 }
 
 /// @brief Add a staged filesystem tree to a portable ASCII CPIO archive with root-owned metadata.
+/// @param cpio Archive writer to populate.
+/// @param root Staging root represented as the archive's `.` entry.
+/// @throws std::runtime_error If traversal, reading, path mapping, or archive insertion fails.
 void addFilesystemTreeToCpio(CpioWriter &cpio, const fs::path &root) {
     std::set<std::string> emittedPaths;
     for (const fs::path &entryPath : sortedTreeEntries(root)) {
@@ -642,6 +728,9 @@ void addFilesystemTreeToCpio(CpioWriter &cpio, const fs::path &root) {
 }
 
 /// @brief Create or replace a symlink, making parent directories first.
+/// @param linkPath Link to create.
+/// @param target Target recorded in the symbolic link.
+/// @throws std::runtime_error If link creation fails.
 void createPackageSymlink(const fs::path &linkPath, const fs::path &target) {
     fs::create_directories(linkPath.parent_path());
     std::error_code ec;
@@ -655,6 +744,9 @@ void createPackageSymlink(const fs::path &linkPath, const fs::path &target) {
 }
 
 /// @brief Write text file and mark it executable.
+/// @param path Destination script path.
+/// @param text Script contents.
+/// @throws std::runtime_error If writing or permission changes fail.
 void writeExecutableScript(const fs::path &path, const std::string &text) {
     writeFileString(path,
                     text,
@@ -666,12 +758,17 @@ void writeExecutableScript(const fs::path &path, const std::string &text) {
 /// @brief Collect the sorted, unique leaf names of the toolchain's `bin/` tools.
 /// @details Includes manifest entries marked as Binary or located under `bin/`;
 ///          used to create CLI symlinks and reference tools in install scripts.
+/// @param manifest Staged toolchain manifest.
+/// @return Sorted unique executable leaf names.
 std::vector<std::string> macOSToolNames(const ToolchainInstallManifest &manifest) {
     std::vector<std::string> names;
     for (const auto &file : manifest.files) {
         const std::string rel =
             sanitizePackageRelativePath(file.stagedRelativePath, "macOS tool path");
         std::string extension = fs::path(rel).extension().generic_string();
+        /// @brief Convert one extension byte to lowercase for case-insensitive filtering.
+        /// @param ch Byte to fold.
+        /// @return Lowercase representation of `ch` in the active C locale.
         std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char ch) {
             return static_cast<char>(std::tolower(ch));
         });
@@ -688,6 +785,8 @@ std::vector<std::string> macOSToolNames(const ToolchainInstallManifest &manifest
 
 /// @brief Collect the sorted, unique man-page paths (relative to `share/man/`).
 /// @details Used to create man-page symlinks under the system man hierarchy.
+/// @param manifest Staged toolchain manifest.
+/// @return Sorted unique paths below `share/man/`.
 std::vector<std::string> macOSManPagePaths(const ToolchainInstallManifest &manifest) {
     static constexpr std::string_view kManPrefix = "share/man/";
     std::vector<std::string> paths;
@@ -709,6 +808,9 @@ std::vector<std::string> macOSManPagePaths(const ToolchainInstallManifest &manif
 /// @details Non-recursive; includes regular files and symlinks only. Permission
 ///          errors are treated as package-build failures so verification expectations
 ///          cannot silently omit files.
+/// @param names Existing name list to extend and normalize.
+/// @param dir Directory whose immediate entries are inspected.
+/// @throws std::runtime_error If inspection or iteration fails.
 void appendLeafNamesFromDirectory(std::vector<std::string> &names, const fs::path &dir) {
     std::error_code ec;
     if (!fs::is_directory(dir, ec)) {
@@ -739,6 +841,9 @@ void appendLeafNamesFromDirectory(std::vector<std::string> &names, const fs::pat
 /// @details Recursive companion to appendLeafNamesFromDirectory; permission
 ///          errors are treated as package-build failures so post-build verification
 ///          cannot silently accept an incomplete expected payload set.
+/// @param paths Existing relative-path list to extend and normalize.
+/// @param dir Root directory to traverse.
+/// @throws std::runtime_error If inspection, traversal, or path validation fails.
 void appendRelativeFilePathsFromDirectory(std::vector<std::string> &paths, const fs::path &dir) {
     std::error_code ec;
     if (!fs::is_directory(dir, ec)) {
@@ -773,6 +878,8 @@ void appendRelativeFilePathsFromDirectory(std::vector<std::string> &paths, const
 ///          `share/man/` prefix plus any subdirectories) followed by
 ///          `zanna/share/man/<manRelPath>`, so the installed man page is a stable
 ///          relative link regardless of install root.
+/// @param manRelPath Validated path relative to `share/man/`.
+/// @return Relative link target from the corresponding system man directory.
 fs::path macOSManSymlinkTarget(const std::string &manRelPath) {
     const fs::path relPath = fs::path(manRelPath);
     const fs::path parentPath = relPath.parent_path();
@@ -790,6 +897,8 @@ fs::path macOSManSymlinkTarget(const std::string &manRelPath) {
 }
 
 /// @brief Return the association's file extension with any leading dot(s) removed.
+/// @param assoc File association to inspect.
+/// @return Extension without leading dots.
 std::string fileAssociationExtensionWithoutDot(const FileAssoc &assoc) {
     std::string ext = assoc.extension;
     while (!ext.empty() && ext.front() == '.')
@@ -800,6 +909,8 @@ std::string fileAssociationExtensionWithoutDot(const FileAssoc &assoc) {
 /// @brief Map a file association to its Uniform Type Identifier (UTI).
 /// @details Uses well-known UTIs for the built-in zia/bas/il types and a
 ///          generic "org.zanna.<ext>" for anything else.
+/// @param assoc File association to map.
+/// @return Validated exported Uniform Type Identifier.
 std::string macOSFileAssociationUTI(const FileAssoc &assoc) {
     std::string ext = fileAssociationExtensionWithoutDot(assoc);
     for (char &c : ext)
@@ -821,8 +932,13 @@ std::string macOSFileAssociationUTI(const FileAssoc &assoc) {
 }
 
 /// @brief Locate the staged `libexec/zanna/zanna-file-handler` entry, if present.
+/// @param manifest Manifest to search.
 /// @return Pointer to the manifest entry, or nullptr when no handler is staged.
 const ToolchainFileEntry *findMacOSFileHandler(const ToolchainInstallManifest &manifest) {
+    /// @brief Identify the staged macOS file-handler executable.
+    /// @param file Manifest entry to inspect.
+    /// @return `true` when `file` is the non-symlink file-handler payload entry.
+    /// @throws std::runtime_error If the staged path is invalid.
     auto it = std::find_if(manifest.files.begin(), manifest.files.end(), [](const auto &file) {
         return !file.symlink &&
                sanitizePackageRelativePath(file.stagedRelativePath, "macOS file handler path") ==
@@ -911,6 +1027,8 @@ std::string generateMacOSFileHandlerInfoPlist(const MacOSToolchainBuildParams &p
 /// @brief Render the newline-separated installed-file manifest embedded in the package.
 /// @details Lists every staged file's install-relative path so the uninstall
 ///          script knows exactly what to remove.
+/// @param manifest Staged toolchain manifest whose paths are recorded.
+/// @return Sorted, unique install-relative paths separated by newlines.
 std::string macOSInstallManifestText(const ToolchainInstallManifest &manifest) {
     std::vector<std::string> paths;
     paths.reserve(manifest.files.size() + 2);
@@ -930,6 +1048,8 @@ std::string macOSInstallManifestText(const ToolchainInstallManifest &manifest) {
 /// @brief Generate the `uninstall.sh` shell script shipped with the toolchain pkg.
 /// @details Removes the installed CMake config files and the files recorded in the
 ///          install manifest for the given package identifier.
+/// @param packageIdentifier Installer receipt identifier passed to `pkgutil --forget`.
+/// @return POSIX shell script text.
 std::string generateMacOSUninstallScript(const std::string &packageIdentifier) {
     std::ostringstream sh;
     sh << "#!/bin/sh\n";
@@ -986,6 +1106,8 @@ std::string generateMacOSUninstallScript(const std::string &packageIdentifier) {
 /// @brief Generate the installer `preinstall` script.
 /// @details Removes any prior CLI symlinks for @p toolNames before the payload is
 ///          laid down, so a reinstall/upgrade starts from a clean state.
+/// @param toolNames Installed executable leaf names whose owned links may be replaced.
+/// @return POSIX preinstall script text.
 std::string generateMacOSPreinstallScript(const std::vector<std::string> &toolNames) {
     std::ostringstream sh;
     sh << "#!/bin/sh\n";
@@ -1040,6 +1162,10 @@ std::string generateMacOSPreinstallScript(const std::vector<std::string> &toolNa
 /// @details Creates `/usr/local/bin` CLI symlinks for @p toolNames and man-page
 ///          symlinks for @p manPagePaths, and registers the file-handler app with
 ///          Launch Services when @p registerFileAssociationApp is true.
+/// @param toolNames Executable leaf names linked under `/usr/local/bin`.
+/// @param manPagePaths Paths relative to `share/man/` linked into the system tree.
+/// @param registerFileAssociationApp Whether to register the staged handler app.
+/// @return POSIX postinstall script text.
 std::string generateMacOSPostinstallScript(const std::vector<std::string> &toolNames,
                                            const std::vector<std::string> &manPagePaths,
                                            bool registerFileAssociationApp) {
@@ -1121,6 +1247,7 @@ std::string generateMacOSToolchainPackageInfo(const MacOSToolchainBuildParams &p
 }
 
 /// @brief Map a payload arch to the Distribution `hostArchitectures` attribute.
+/// @param arch Portable manifest architecture.
 /// @return "arm64", "x86_64", or "x86_64,arm64" (universal) for unknown/empty.
 std::string macOSHostArchitectures(const std::string &arch) {
     if (arch == "arm64")
@@ -1131,6 +1258,9 @@ std::string macOSHostArchitectures(const std::string &arch) {
 }
 
 /// @brief Resolve and validate the minimum supported macOS version for the payload architecture.
+/// @param params Toolchain settings and manifest architecture.
+/// @return Explicit minimum version or the architecture-specific default.
+/// @throws std::runtime_error If the version is not dotted numeric text.
 std::string minimumMacOSVersion(const MacOSToolchainBuildParams &params) {
     const std::string version = params.minimumMacOSVersion.empty()
                                     ? (params.manifest.arch == "x64" ? "10.15" : "11.0")
@@ -1145,6 +1275,8 @@ std::string minimumMacOSVersion(const MacOSToolchainBuildParams &params) {
 /// @param params Toolchain build parameters (display name, identifier, arch).
 /// @param pkgVersion Dotted-numeric package version string.
 /// @param installKBytes Estimated installed size in KiB.
+/// @param hasBackground Whether a light installer background resource is present.
+/// @param hasDarkBackground Whether a dark-appearance background resource is present.
 /// @return The Distribution XML text.
 std::string generateMacOSToolchainDistribution(const MacOSToolchainBuildParams &params,
                                                const std::string &pkgVersion,
@@ -1201,6 +1333,8 @@ std::string generateMacOSToolchainDistribution(const MacOSToolchainBuildParams &
 }
 
 /// @brief Generate a dependency-free branded Installer.app background image.
+/// @param dark Select the dark-appearance palette when true.
+/// @return RGBA image sized for the installer presentation pane.
 PkgImage defaultMacOSInstallerBackground(bool dark) {
     PkgImage image;
     image.width = 620;
@@ -1252,6 +1386,9 @@ PkgImage defaultMacOSInstallerBackground(bool dark) {
 }
 
 /// @brief Generate the HTML welcome pane shown first in the macOS toolchain installer.
+/// @param displayName User-visible toolchain package name.
+/// @param version Installer version displayed in the heading.
+/// @return Complete HTML document.
 std::string generateMacOSToolchainWelcomeHtml(const std::string &displayName,
                                               const std::string &version) {
     std::ostringstream html;
@@ -1274,6 +1411,8 @@ std::string generateMacOSToolchainWelcomeHtml(const std::string &displayName,
 }
 
 /// @brief Generate the pre-install summary pane for the macOS toolchain installer.
+/// @param minimumVersion Minimum supported macOS version shown to the user.
+/// @return Complete HTML document.
 std::string generateMacOSToolchainReadmeHtml(const std::string &minimumVersion) {
     std::ostringstream html;
     html << "<!DOCTYPE html>\n<html><body "
@@ -1303,6 +1442,8 @@ std::string generateMacOSToolchainConclusionHtml() {
 }
 
 /// @brief Generate the plain-text license pane for the macOS toolchain installer.
+/// @param spdx Declared license identifier; empty defaults to GPL-3.0-only.
+/// @return Plain-text license summary.
 std::string generateMacOSToolchainLicenseText(const std::string &spdx) {
     const std::string id = spdx.empty() ? std::string("GPL-3.0-only") : spdx;
     std::ostringstream txt;
@@ -1333,6 +1474,11 @@ const ToolchainFileEntry *findMacOSToolchainLicenseFile(const ToolchainInstallMa
 
 /// @brief Walk the staged .app bundle and write all entries to a ZIP at `outputPath`.
 /// The file at `execPath` gets Unix mode 0100755; all other files get 0100644.
+/// @param stageRoot Root used to derive archive-relative paths.
+/// @param appPath Staged `.app` directory to traverse.
+/// @param execPath Main executable, which must retain executable permissions.
+/// @param outputPath Destination ZIP path.
+/// @throws std::runtime_error If traversal, path mapping, reading, or output fails.
 void addStagedAppToZip(const fs::path &stageRoot,
                        const fs::path &appPath,
                        const fs::path &execPath,
@@ -1391,6 +1537,8 @@ void addStagedAppToZip(const fs::path &stageRoot,
 
 /// @brief Verify the codesign signature of `appPath` using `codesign --verify --deep --strict`.
 /// Only runs on Apple hosts; no-op on all other platforms.
+/// @param appPath Application bundle to verify.
+/// @throws std::runtime_error On Apple hosts when codesign verification fails.
 void verifyMacOSBundleSignatureIfAvailable(const fs::path &appPath) {
 #if defined(__APPLE__)
     runChecked({"codesign", "--verify", "--deep", "--strict", "--verbose=2", appPath.string()},
@@ -1403,6 +1551,12 @@ void verifyMacOSBundleSignatureIfAvailable(const fs::path &appPath) {
 /// @brief Sign the .app bundle using `codesign` with the mode resolved from `pkg`.
 /// Supports Developer ID (with optional notarization/stapling), ad-hoc, and no-op modes.
 /// "ad-hoc" and "developer-id" modes throw on non-Apple hosts.
+/// @param stageRoot Temporary staging root used for notarization ZIP output.
+/// @param appPath Application bundle to sign.
+/// @param execPath Main executable used while constructing notarization ZIPs.
+/// @param projectRoot Trusted root for resolving optional entitlements.
+/// @param pkg Signing, notarization, and entitlement configuration.
+/// @throws std::runtime_error If configuration, signing, notarization, or verification fails.
 void signMacOSBundle(const fs::path &stageRoot,
                      const fs::path &appPath,
                      const fs::path &execPath,
@@ -1502,6 +1656,10 @@ struct StagedMacOSApp {
 /// @details Shared by the .app-in-.zip and .app-in-.dmg builders so both emit an
 ///          identical, signed bundle. The caller owns @p stageRoot and its
 ///          TempDirGuard; this only populates it.
+/// @param params Application metadata, executable, assets, and signing configuration.
+/// @param stageRoot Existing temporary directory to populate.
+/// @return Absolute staged app and primary-executable paths.
+/// @throws std::runtime_error If validation, staging, asset copying, or signing fails.
 static StagedMacOSApp stageMacOSAppBundle(const MacOSBuildParams &params,
                                           const fs::path &stageRoot) {
     const auto &pkg = params.pkgConfig;
@@ -1721,6 +1879,8 @@ static void addStagedAppToDmg(const MacOSBuildParams &params,
 /// @brief Build a macOS .app bundle inside a ZIP archive from the given build parameters.
 /// Stages the bundle in a temp directory (exec, Resources, PkgInfo, Info.plist, ICNS),
 /// optionally signs it with codesign, then packs the result into a ZIP at `params.outputPath`.
+/// @param params Application metadata, input paths, signing options, and output ZIP.
+/// @throws std::runtime_error If staging, signing, or ZIP creation fails.
 void buildMacOSPackage(const MacOSBuildParams &params) {
     const fs::path stageRoot =
         uniqueTempPackagingDir("zanna-macos-app-" + normalizeExecName(params.projectName));
@@ -1733,6 +1893,8 @@ void buildMacOSPackage(const MacOSBuildParams &params) {
 /// @details Stages and signs the bundle exactly like buildMacOSPackage, then wraps it
 ///          (with an /Applications symlink) into a compressed .dmg instead of a .zip.
 ///          macOS-only (hdiutil).
+/// @param params Application metadata, DMG presentation settings, and output path.
+/// @throws std::runtime_error If staging, signing, disk-image creation, or verification fails.
 void buildMacOSAppDmg(const MacOSBuildParams &params) {
     const auto &pkg = params.pkgConfig;
     const std::string displayName = pkg.displayName.empty() ? params.projectName : pkg.displayName;
@@ -1747,6 +1909,8 @@ void buildMacOSAppDmg(const MacOSBuildParams &params) {
 /// Stages files under `/usr/local/zanna/`, creates receipt-owned command and
 /// manpage symlinks, emits native CPIO/XAR archives, and wraps the component in
 /// a product distribution package.
+/// @param params Staged manifest, package identity, presentation, signing, and output settings.
+/// @throws std::runtime_error If validation, staging, signing, or archive construction fails.
 void buildMacOSToolchainPackage(const MacOSToolchainBuildParams &params) {
     namespace fs = std::filesystem;
     validateToolchainInstallManifest(params.manifest);
@@ -1968,6 +2132,10 @@ void buildMacOSToolchainPackage(const MacOSToolchainBuildParams &params) {
 // MacOS Toolchain DMG Builder
 //=============================================================================
 
+/// @brief Wrap a completed toolchain installer package in a styled compressed DMG.
+/// @param params Input PKG, output path, volume naming, and optional presentation assets.
+/// @throws std::runtime_error If invoked off macOS or if staging, hdiutil, styling,
+///         conversion, or mounted-content verification fails.
 void buildMacOSToolchainDmg(const MacOSToolchainDmgParams &params) {
 #if !defined(__APPLE__)
     (void)params;

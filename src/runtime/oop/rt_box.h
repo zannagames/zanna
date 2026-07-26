@@ -23,15 +23,29 @@
 // Links: src/runtime/oop/rt_box.c (implementation), src/runtime/core/rt_string.h
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_box.h
+ * @brief Declares primitive boxing and copied value-type boxing APIs.
+ * @details The interface creates tagged managed boxes for integers, floating
+ *          values, booleans, and Strings; supports strict or non-trapping
+ *          unboxing; and records object or String fields inside copied value
+ *          types for correct runtime ownership and equality behavior.
+ */
+
 #pragma once
 
 #include "rt_string.h"
 #include <stdint.h>
 
+/// @brief Stable managed identity for primitive Box payloads.
 #define RT_BOX_CLASS_ID INT64_C(-0x430101)
+/// @brief Stable managed identity for compiler-allocated boxed value types.
 #define RT_VALUE_TYPE_CLASS_ID INT64_C(-0x430102)
 
+/// @brief Managed field kind for a general object reference.
 #define RT_VALUE_FIELD_OBJ INT64_C(1)
+/// @brief Managed field kind for a runtime String reference.
 #define RT_VALUE_FIELD_STR INT64_C(2)
 
 #ifdef __cplusplus
@@ -120,15 +134,24 @@ int8_t rt_box_try_to_i1(void *box, int8_t *out);
 int8_t rt_box_try_to_str(void *box, rt_string *out);
 
 /// @brief Convert to integer Option without exposing an out pointer.
+/// @param[in] box Candidate managed box.
+/// @return Caller-owned Some<i64> for a matching box, otherwise caller-owned None.
 void *rt_box_to_i64_option(void *box);
 
 /// @brief Convert to float Option without exposing an out pointer.
+/// @param[in] box Candidate managed box.
+/// @return Caller-owned Some<f64> for a matching box, otherwise caller-owned None.
 void *rt_box_to_f64_option(void *box);
 
 /// @brief Convert to boolean Option without exposing an out pointer.
+/// @param[in] box Candidate managed box.
+/// @return Caller-owned Some<i1> for a matching box, otherwise caller-owned None.
 void *rt_box_to_i1_option(void *box);
 
 /// @brief Convert to string Option without exposing an out pointer.
+/// @param[in] box Candidate managed box.
+/// @return Caller-owned Some<String> for a matching box, caller-owned None for
+///         mismatch, or NULL after a returning allocation trap.
 void *rt_box_to_str_option(void *box);
 
 /// @brief Get the type tag of a boxed value.
@@ -195,6 +218,8 @@ int8_t rt_box_equal(void *a, void *b);
 ///          within class by value (boxed i64/i1 exactly; f64 with NaN last;
 ///          raw or boxed strings lexicographically), and falls back to a
 ///          well-defined uintptr_t pointer order for other objects.
+/// @param[in] a First collection element.
+/// @param[in] b Second collection element.
 /// @return Negative, zero, or positive for a<b, a==b, a>b.
 int64_t rt_box_default_sort_compare(void *a, void *b);
 

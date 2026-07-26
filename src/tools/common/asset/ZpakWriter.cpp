@@ -23,6 +23,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements validation, compression, and ZPAK v2 serialization.
+/// @details The writer rejects extraction-unsafe names, optionally applies
+///          Zanna's dependency-free DEFLATE encoder, computes per-entry CRC-32,
+///          emits little-endian metadata, and uses atomic standalone file writes.
+
 #include "ZpakWriter.hpp"
 
 #include "PkgDeflate.hpp"
@@ -121,8 +127,14 @@ bool ZpakWriter::isPreCompressed(const std::string &name) {
 ///          compressed form is kept only if it is actually smaller; otherwise the
 ///          bytes are stored verbatim. CRC-32 is always computed over the
 ///          original bytes. A failed copy/compression removes the provisional
-///          name-index insertion so the writer remains retryable. See the
-///          header for the parameter contract.
+///          name-index insertion so the writer remains retryable.
+/// @param name Relative, forward-slash UTF-8 archive entry path.
+/// @param data Raw payload pointer, nullable only for an empty payload.
+/// @param size Number of bytes available at @p data.
+/// @param compress Whether beneficial DEFLATE compression should be attempted.
+/// @throws std::invalid_argument For unsafe, empty, duplicate, or inconsistent input.
+/// @throws std::length_error When format width limits would be exceeded.
+/// @throws std::runtime_error When DEFLATE reports a compression failure.
 void ZpakWriter::addEntry(const std::string &name,
                           const uint8_t *data,
                           size_t size,
@@ -184,12 +196,16 @@ void ZpakWriter::addEntry(const std::string &name,
 // ─── Little-endian write helpers ────────────────────────────────────────────
 
 /// @brief Append a 16-bit value to @p out in little-endian byte order.
+/// @param out Byte buffer extended by two bytes.
+/// @param v Unsigned value to encode.
 static void write16LE(std::vector<uint8_t> &out, uint16_t v) {
     out.push_back(static_cast<uint8_t>(v));
     out.push_back(static_cast<uint8_t>(v >> 8));
 }
 
 /// @brief Append a 32-bit value to @p out in little-endian byte order.
+/// @param out Byte buffer extended by four bytes.
+/// @param v Unsigned value to encode.
 static void write32LE(std::vector<uint8_t> &out, uint32_t v) {
     out.push_back(static_cast<uint8_t>(v));
     out.push_back(static_cast<uint8_t>(v >> 8));
@@ -198,6 +214,8 @@ static void write32LE(std::vector<uint8_t> &out, uint32_t v) {
 }
 
 /// @brief Append a 64-bit value to @p out in little-endian byte order.
+/// @param out Byte buffer extended by eight bytes.
+/// @param v Unsigned value to encode.
 static void write64LE(std::vector<uint8_t> &out, uint64_t v) {
     for (int i = 0; i < 8; ++i)
         out.push_back(static_cast<uint8_t>(v >> (i * 8)));
@@ -206,6 +224,9 @@ static void write64LE(std::vector<uint8_t> &out, uint64_t v) {
 /// @brief Pad @p out with zero bytes up to the next @p alignment boundary.
 /// @details No-op when the buffer is already aligned; used to keep data entries
 ///          and the TOC 8-byte aligned for fast runtime reads.
+/// @param out Byte buffer to extend.
+/// @param alignment Positive byte alignment to reach.
+/// @pre @p alignment is nonzero.
 static void alignTo(std::vector<uint8_t> &out, size_t alignment) {
     size_t rem = out.size() % alignment;
     if (rem != 0)
@@ -223,7 +244,10 @@ static void alignTo(std::vector<uint8_t> &out, size_t alignment) {
 ///          name length, name, data offset, original size, stored size, and
 ///          flags, followed by CRC-32 of the original bytes). The TOC
 ///          offset/size placeholders in the header are patched once the TOC is
-///          written. See the header for the return contract.
+///          written.
+/// @return Complete ZPAK byte sequence in writer insertion order.
+/// @throws std::length_error When archive counts or size estimates overflow.
+/// @throws std::bad_alloc When output or offset storage cannot be allocated.
 std::vector<uint8_t> ZpakWriter::writeToMemory() const {
     std::vector<uint8_t> out;
     if (entries_.size() > std::numeric_limits<uint32_t>::max())
@@ -324,8 +348,11 @@ std::vector<uint8_t> ZpakWriter::writeToMemory() const {
 
 /// @brief Serialize the archive and write it to a file.
 /// @details Builds the archive with writeToMemory() and writes it in one binary,
-///          truncating pass; open or write failures set @p err. See the header
-///          for the parameter and return contract.
+///          atomic replacement operation; caught open or write failures set
+///          @p err. Serialization exceptions propagate before file I/O begins.
+/// @param path Destination path for the standalone archive.
+/// @param err Receives the atomic-write failure reason.
+/// @return True when the complete archive is committed; false on caught I/O failure.
 bool ZpakWriter::writeToFile(const std::string &path, std::string &err) const {
     auto blob = writeToMemory();
     try {

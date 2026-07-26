@@ -25,6 +25,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements runtime bindings for box, Flex, grid, and dock layouts.
+ *
+ * @details Public logical dimensions are sanitized and converted once through
+ *          the owning application's effective scale. Stable runtime enum
+ *          ordinals are explicitly mapped to toolkit values, while checked
+ *          placement and docking preserve ownership and prior layout state
+ *          when validation or allocation fails.
+ */
+
 #include "rt_gui_internal.h"
 #include "rt_platform.h"
 

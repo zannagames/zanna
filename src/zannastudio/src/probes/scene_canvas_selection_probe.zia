@@ -37,6 +37,7 @@ bind "../core/document_manager";
 bind "../services/file_utils";
 bind "../ui/app_shell";
 bind "../ui/scene_editor_2d";
+bind "../ui/scene_panels_2d";
 bind "../ui/scene_selection";
 
 bind Color = Zanna.Graphics.Color;
@@ -90,7 +91,7 @@ func main() {
     shell.Build("Zanna Studio 2D Canvas Selection Probe", 1120, 760);
 
     var editor = new scene_editor_2d.SceneEditor2D();
-    editor.Setup(shell.workbench.scene2DHost, shell.app);
+    scene_panels_2d.Build(editor,shell.workbench.scene2DHost, shell.app);
     var documents = new document_manager.DocumentManager();
     var sceneDoc = documents.NewScene2DDocument();
     shell.SelectSurface(file_utils.DOC_KIND_SCENE_2D);
@@ -394,6 +395,35 @@ func main() {
         Fail(shell, harness, "undoing the flip did not restore bytes");
         return;
     }
+
+    // Pane float/dock (Phase 5): every 2D pane floats into the dock
+    // substrate's floating panel and returns, collapsing its split cell
+    // while away; all workspace-only.
+    var paneBaseline = sceneDoc.content;
+    if editor.hierarchyDock.Float() == false
+       or editor.hierarchySplit.GetCollapsedSide() != 1
+       or editor.hierarchyDock.Dock() == false
+       or editor.hierarchySplit.GetCollapsedSide() == 1 {
+        Fail(shell, harness, "2D objects pane float/dock cycle failed");
+        return;
+    }
+    if editor.inspectorDock.Float() == false
+       or editor.bodySplit.GetCollapsedSide() != 2
+       or editor.inspectorDock.Dock() == false
+       or editor.bodySplit.GetCollapsedSide() == 2 {
+        Fail(shell, harness, "2D inspector pane float/dock cycle failed");
+        return;
+    }
+    if editor.paletteDock.Float() == false
+       or editor.canvasSplit.GetCollapsedSide() != 2
+       or editor.paletteDock.Dock() == false
+       or editor.canvasSplit.GetCollapsedSide() == 2
+       or sceneDoc.content != paneBaseline {
+        Fail(shell, harness, "2D palette pane float/dock cycle failed");
+        return;
+    }
+    editor.Pump(sceneDoc);
+    shell.Render();
 
     harness.UnbindApp();
     shell.Destroy();

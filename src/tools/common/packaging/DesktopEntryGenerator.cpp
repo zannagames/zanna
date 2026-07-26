@@ -19,6 +19,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements escaped freedesktop desktop-entry and MIME XML generation.
+/// @details Manifest metadata is validated before emission, executable arguments
+///          are parsed into literal tokens, reserved syntax is escaped for the
+///          destination format, and output ordering remains deterministic.
+
 #include "DesktopEntryGenerator.hpp"
 #include "PkgUtils.hpp"
 
@@ -32,9 +38,12 @@ namespace zanna::pkg {
 namespace {
 
 /// @brief Escape a value string for inclusion in a .desktop file field.
-/// Backslash is the only character requiring escaping per the Desktop Entry Spec;
-/// also validates that the value is single-line (no embedded newlines), since the
-/// spec treats each line as a key=value pair.
+/// @details Validates that the value is single-line, because each physical line
+///          is a separate key/value record, then doubles backslashes required by
+///          desktop-entry string-value syntax.
+/// @param s Raw manifest field value.
+/// @return Escaped single-line field text.
+/// @throws std::runtime_error When @p s contains forbidden line breaks.
 std::string desktopEscape(const std::string &s) {
     validateSingleLineField(s, "desktop entry field");
     std::string out;
@@ -135,8 +144,10 @@ std::vector<std::string> parseExecArgumentTokens(const std::string &text, const 
 }
 
 /// @brief Escape a string for safe embedding in XML attribute values and text content.
-/// Replaces the five predefined XML entities: & with &amp;, < with &lt;, > with &gt;,
-/// " with &quot;, and ' with &apos;.
+/// @details Replaces all five predefined XML entity characters so the result is
+///          safe in both quoted attributes and element text.
+/// @param s Raw text to escape.
+/// @return XML-safe text with reserved characters replaced by entity references.
 std::string xmlEscape(const std::string &s) {
     std::string out;
     out.reserve(s.size());
@@ -166,9 +177,11 @@ std::string xmlEscape(const std::string &s) {
 }
 
 /// @brief Validate all file associations before generating any output.
-/// Delegates to validatePackageFileAssociations() which checks for duplicate
-/// extensions, well-formed MIME type strings, and legal extension characters;
-/// throws on any violation.
+/// @param assocs Association list to validate as one collection.
+/// @details Delegates to validatePackageFileAssociations(), which checks for
+///          duplicate extensions, well-formed MIME type strings, and legal
+///          extension characters.
+/// @throws std::runtime_error On the first invalid or duplicate association.
 void validateAssociations(const std::vector<FileAssoc> &assocs) {
     validatePackageFileAssociations(assocs);
 }
@@ -196,9 +209,13 @@ std::string normalizeDesktopKeywords(const std::string &keywords) {
 } // namespace
 
 /// @brief Build a complete freedesktop.org .desktop file from the given parameters.
-/// Validates file associations and normalizes the categories string before writing.
-/// Appends "%f" to the Exec= line when file associations or acceptsFileArgument is set,
-/// enabling the desktop environment to pass the opened file path to the application.
+/// @param params Desktop metadata and execution settings to validate and render.
+/// @return Complete `[Desktop Entry]` document with a trailing newline.
+/// @details Validates file associations and normalizes categories before writing.
+///          Appends `%f` to `Exec=` when associations or
+///          @ref DesktopEntryParams::acceptsFileArgument request file opening.
+///          Optional keys are omitted when their corresponding values are empty.
+/// @throws std::runtime_error When any field or collection is malformed.
 std::string generateDesktopEntry(const DesktopEntryParams &params) {
     validateAssociations(params.fileAssociations);
     const std::string categories =
@@ -246,9 +263,12 @@ std::string generateDesktopEntry(const DesktopEntryParams &params) {
 }
 
 /// @brief Build a shared-mime-info XML document registering each file association.
-/// Returns an empty string when `assocs` is empty to avoid writing a stub file.
-/// Each association produces a <mime-type> element with a <comment> and a glob
-/// pattern derived from the extension (leading dot is normalized if missing).
+/// @param packageName Reserved package identifier; currently unused.
+/// @param assocs Validated extension, MIME type, and description records.
+/// @return Complete XML document, or an empty string when @p assocs is empty.
+/// @details Each association produces a `<mime-type>` element with a comment and
+///          glob pattern; a missing leading dot is added to the extension.
+/// @throws std::runtime_error When association validation fails.
 std::string generateMimeTypeXml(const std::string &packageName,
                                 const std::vector<FileAssoc> &assocs) {
     if (assocs.empty())

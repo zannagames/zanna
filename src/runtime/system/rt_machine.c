@@ -29,6 +29,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_machine.c
+ * @brief Implements cross-platform host and operating-system information queries.
+ * @details Stateless adapters report OS identity, host and account strings,
+ *          directories, CPU and memory availability, architecture, page and
+ *          pointer size, and endianness using bounded native queries and
+ *          documented fallbacks on failure.
+ */
+
 // Define feature test macros before any includes
 #if !defined(_WIN32)
 #ifndef _POSIX_C_SOURCE
@@ -57,6 +66,13 @@
 
 #include "rt_file_path.h" // rt_file_path_wide_to_string for UTF-8 conversion (VDOC-217)
 
+/// @brief Read one nonempty Win32 environment variable as a stable snapshot.
+/// @details Queries the required UTF-16 capacity and retries up to eight times
+///          if a concurrent environment change enlarges the value between the
+///          sizing and retrieval calls.
+/// @param name NUL-terminated environment-variable name; must be nonempty.
+/// @return Caller-owned UTF-16 buffer, or NULL when the variable is absent,
+///         empty, too large, unstable across retries, or cannot be allocated.
 static wchar_t *machine_win32_environment(const wchar_t *name) {
     DWORD capacity;
     if (!name || !*name)
@@ -83,6 +99,11 @@ static wchar_t *machine_win32_environment(const wchar_t *name) {
     return NULL;
 }
 
+/// @brief Query the current Win32 user name with bounded capacity retries.
+/// @details Starts with space for 256 UTF-16 code units and honors the required
+///          capacity returned with ERROR_INSUFFICIENT_BUFFER.
+/// @return Caller-owned, NUL-terminated UTF-16 user name, or NULL on an API,
+///         size, allocation, or repeated-race failure.
 static wchar_t *machine_win32_user_name(void) {
     DWORD capacity = 256;
     for (int attempt = 0; attempt < 8; attempt++) {
@@ -105,6 +126,11 @@ static wchar_t *machine_win32_user_name(void) {
     return NULL;
 }
 
+/// @brief Query the Win32 temporary directory with bounded capacity retries.
+/// @details Repeats GetTempPathW up to eight times when the initially allocated
+///          buffer is no longer large enough.
+/// @return Caller-owned, NUL-terminated UTF-16 path, including any trailing
+///         separator returned by Windows, or NULL on failure.
 static wchar_t *machine_win32_temp_path(void) {
     DWORD capacity = 512;
     for (int attempt = 0; attempt < 8; attempt++) {
@@ -146,7 +172,10 @@ static wchar_t *machine_win32_temp_path(void) {
 #include "rt_machine_linux_helpers.h"
 #endif
 
-/// @brief Helper to create a string from a C string.
+/// @brief Copy a nullable C string into a fresh runtime string.
+/// @param s Borrowed NUL-terminated text, or NULL to request an empty string.
+/// @return Newly allocated runtime string containing @p s, or an empty runtime
+///         string when @p s is NULL.
 static rt_string make_str(const char *s) {
     if (!s)
         return rt_string_from_bytes("", 0);
@@ -154,11 +183,22 @@ static rt_string make_str(const char *s) {
 }
 
 #if !RT_PLATFORM_WINDOWS
+/// @brief Read a nonempty process environment value.
+/// @param name Borrowed, NUL-terminated variable name.
+/// @return Borrowed pointer to the environment value, or NULL when the variable
+///         is absent or set to an empty string.
 static const char *nonempty_env(const char *name) {
     const char *value = getenv(name);
     return value && value[0] != '\0' ? value : NULL;
 }
 
+/// @brief Copy the current POSIX account name or home directory.
+/// @details Uses the reentrant passwd lookup and expands its scratch buffer on
+///          ERANGE. A missing record, empty field, allocation error, or other
+///          lookup failure produces an owned empty string.
+/// @param home_directory Nonzero to select @c pw_dir; zero to select @c pw_name.
+/// @return Newly allocated runtime string containing the selected passwd field,
+///         or an empty runtime string when it is unavailable.
 static rt_string machine_passwd_field(int home_directory) {
     long hint = sysconf(_SC_GETPW_R_SIZE_MAX);
     size_t size = hint > 0 && (unsigned long)hint <= SIZE_MAX ? (size_t)hint : 4096u;
@@ -185,17 +225,33 @@ static rt_string machine_passwd_field(int home_directory) {
 #endif
 
 #if RT_PLATFORM_LINUX
+/// @brief Convert a value-and-unit pair to a saturating signed byte count.
+/// @param value Unsigned quantity to scale.
+/// @param unit Number of bytes represented by each unit.
+/// @return @p value multiplied by @p unit, saturated at INT64_MAX.
 static int64_t checked_u64_bytes(unsigned long long value, unsigned long long unit) {
     if (unit != 0 && value > (unsigned long long)INT64_MAX / unit)
         return INT64_MAX;
     return (int64_t)(value * unit);
 }
 
+/// @brief Add two unsigned counters without wrapping.
+/// @param left First addend.
+/// @param right Second addend.
+/// @return Sum of the inputs, or ULLONG_MAX when the exact sum is unrepresentable.
 static unsigned long long linux_saturating_add_u64(unsigned long long left,
                                                    unsigned long long right) {
     return ULLONG_MAX - left < right ? ULLONG_MAX : left + right;
 }
 
+/// @brief Read Linux available-memory information from a proc-style file.
+/// @details Returns MemAvailable immediately when present. Otherwise estimates
+///          availability as MemFree + Buffers + Cached + SReclaimable - Shmem,
+///          using saturating arithmetic and converting the documented KiB
+///          fields to bytes.
+/// @param path NUL-terminated path to a meminfo-format file; may be NULL.
+/// @return Available-memory estimate in bytes, saturated at INT64_MAX, or zero
+///         when the file cannot be opened or contains no usable counters.
 int64_t rt_machine_linux_parse_meminfo_file(const char *path) {
     FILE *file = path ? fopen(path, "r") : NULL;
     if (!file)
@@ -231,6 +287,13 @@ int64_t rt_machine_linux_parse_meminfo_file(const char *path) {
     return checked_u64_bytes(available_kb, 1024ULL);
 }
 
+/// @brief Read one complete, nonempty Linux control-file line.
+/// @details Rejects values that do not fit in @p buffer, removes a trailing CR
+///          or LF sequence, and never returns a partial value.
+/// @param path NUL-terminated control-file path.
+/// @param buffer Destination byte buffer.
+/// @param capacity Writable size of @p buffer, including the terminator.
+/// @return 1 when a complete nonempty line was read, otherwise 0.
 static int linux_read_control_line(const char *path, char *buffer, size_t capacity) {
     if (!path || !buffer || capacity < 2)
         return 0;
@@ -246,6 +309,12 @@ static int linux_read_control_line(const char *path, char *buffer, size_t capaci
     return buffer[0] != '\0';
 }
 
+/// @brief Read a bounded unsigned cgroup control value.
+/// @details Rejects the cgroup-v2 sentinel @c max, malformed text, values above
+///          INT64_MAX, empty files, and overlong lines.
+/// @param path NUL-terminated control-file path.
+/// @param out Optional destination initialized to zero and set on success.
+/// @return 1 when a representable integer was read, otherwise 0.
 static int linux_try_read_control_u64(const char *path, int64_t *out) {
     if (out)
         *out = 0;
@@ -260,11 +329,19 @@ static int linux_try_read_control_u64(const char *path, int64_t *out) {
     return 1;
 }
 
+/// @brief Read a cgroup integer while collapsing invalid or unlimited values.
+/// @param path NUL-terminated control-file path.
+/// @return Representable nonnegative value, or zero when unavailable, invalid,
+///         or marked unlimited.
 static int64_t linux_read_control_u64(const char *path) {
     int64_t value = 0;
     return linux_try_read_control_u64(path, &value) ? value : 0;
 }
 
+/// @brief Resolve the process's active Linux cgroup controller directories.
+/// @details Uses mountinfo and membership data when available; otherwise fills
+///          conventional unified and legacy controller roots as probe fallbacks.
+/// @param paths Destination structure, cleared before resolution.
 static void linux_active_cgroup_paths(rt_machine_linux_cgroup_paths_t *paths) {
     memset(paths, 0, sizeof(*paths));
     if (!zanna_machine_linux_resolve_cgroups(
@@ -276,6 +353,12 @@ static void linux_active_cgroup_paths(rt_machine_linux_cgroup_paths_t *paths) {
     }
 }
 
+/// @brief Join a resolved cgroup directory with a control-file name.
+/// @param out Destination byte buffer.
+/// @param capacity Writable size of @p out, including the terminator.
+/// @param directory Nonempty controller directory.
+/// @param control Nonempty control-file basename.
+/// @return 1 when the complete joined path fits, otherwise 0.
 static int linux_cgroup_control_path(char *out,
                                      size_t capacity,
                                      const char *directory,
@@ -286,6 +369,15 @@ static int linux_cgroup_control_path(char *out,
     return written > 0 && (size_t)written < capacity;
 }
 
+/// @brief Read one supported memory control across cgroup v2 and v1.
+/// @details Maps @c memory.max to memory.limit_in_bytes and @c memory.current
+///          to memory.usage_in_bytes when the unified control is unavailable.
+/// @param name Canonical cgroup-v2 control name; only @c memory.max and
+///        @c memory.current are recognized.
+/// @param found Optional flag cleared initially and set when a numeric value is
+///        successfully obtained.
+/// @return Parsed nonnegative byte count, or zero when no supported value is
+///         available. Consult @p found to distinguish a real zero.
 static int64_t linux_cgroup_memory_value(const char *name, int *found) {
     if (found)
         *found = 0;
@@ -324,6 +416,12 @@ static int64_t linux_cgroup_memory_value(const char *name, int *found) {
     return 0;
 }
 
+/// @brief Determine the process's effective cgroup CPU ceiling.
+/// @details Reads v2 cpu.max or legacy CFS quota/period controls, rounds the
+///          quota through rt_machine_linux_cpu_quota(), and further restricts
+///          it by an effective or legacy cpuset when present.
+/// @return Positive logical-CPU ceiling, or zero when the cgroup is unlimited
+///         or its controls cannot be resolved.
 static int64_t linux_cgroup_cpu_limit(void) {
     char line[128];
     char path[RT_MACHINE_CGROUP_PATH_CAPACITY + 64];
@@ -371,6 +469,13 @@ static int64_t linux_cgroup_cpu_limit(void) {
     return limit;
 }
 
+/// @brief Extract VERSION_ID from an os-release file.
+/// @details Accepts unquoted, single-quoted, and double-quoted values; removes
+///          supported backslash escapes outside single quotes; and rejects
+///          mismatched quotes, control characters, or empty values.
+/// @param path NUL-terminated os-release file path.
+/// @return Newly allocated VERSION_ID string, or NULL when the file cannot be
+///         opened or no valid nonempty value is found.
 rt_string rt_machine_linux_parse_os_release_file(const char *path) {
     FILE *file = fopen(path, "r");
     if (!file)
@@ -422,6 +527,7 @@ rt_string rt_machine_linux_parse_os_release_file(const char *path) {
 
 /// @brief Return a lowercase platform identifier ("windows", "macos", "linux",
 /// "unknown"). Compile-time selected from `_WIN32`/`__APPLE__`/`__linux__`.
+/// @return Newly allocated runtime string naming the compiled target platform.
 rt_string rt_machine_os(void) {
 #if defined(_WIN32)
     return make_str("windows");
@@ -444,6 +550,8 @@ rt_string rt_machine_os(void) {
 ///   `uname.release`.
 ///   - **Other Unix:** `uname.release`.
 /// Returns "unknown" if every probe fails.
+/// @return Newly allocated runtime string containing the discovered version or
+///         the literal "unknown".
 rt_string rt_machine_os_ver(void) {
 #ifdef _WIN32
     // Prefer RtlGetVersion (ntdll): unlike GetVersionExA it returns the TRUE OS
@@ -535,8 +643,12 @@ rt_string rt_machine_os_ver(void) {
 // Host and User
 // ============================================================================
 
-/// @brief Return the machine's hostname. Uses `GetComputerNameA` (Win32) or `gethostname` (POSIX).
-/// Truncated to 256 characters and NUL-terminated. "unknown" if the syscall fails.
+/// @brief Return the machine's current hostname.
+/// @details Uses GetComputerNameW on Windows and gethostname on POSIX. The
+///          fixed 256-code-unit/byte query buffer bounds the returned name;
+///          failures produce "unknown".
+/// @return Newly allocated UTF-8 runtime string containing the hostname or
+///         "unknown".
 rt_string rt_machine_host(void) {
 #ifdef _WIN32
     // Wide API + validated UTF-8 conversion so non-ASCII host names survive,
@@ -556,8 +668,12 @@ rt_string rt_machine_host(void) {
 #endif
 }
 
-/// @brief Return the current user's login name. Win32 uses `GetUserNameA` (then `%USERNAME%`);
-/// POSIX uses `getpwuid(getuid())` (then `$USER` / `$LOGNAME`). "unknown" if all probes fail.
+/// @brief Return the current user's login name.
+/// @details Windows uses GetUserNameW and then the USERNAME environment value.
+///          POSIX uses getpwuid_r(getuid()) and then USER or LOGNAME. Failed or
+///          empty probes fall through to the next source.
+/// @return Newly allocated UTF-8 runtime string containing the login name or
+///         "unknown" when every source fails.
 rt_string rt_machine_user(void) {
 #ifdef _WIN32
     wchar_t *user = machine_win32_user_name();
@@ -591,6 +707,8 @@ rt_string rt_machine_user(void) {
 /// @brief Return the current user's home directory. Win32 prefers `%USERPROFILE%`, falling back
 /// to `HOMEDRIVE+HOMEPATH`. POSIX prefers `$HOME`, falling back to `pw_dir` from the passwd
 /// entry. Empty string if no probe succeeds (rare on a properly configured system).
+/// @return Newly allocated UTF-8 runtime string containing the selected path,
+///         or an empty string when it cannot be determined.
 rt_string rt_machine_home(void) {
 #ifdef _WIN32
     wchar_t *home = machine_win32_environment(L"USERPROFILE");
@@ -630,8 +748,12 @@ rt_string rt_machine_home(void) {
 #endif
 }
 
-/// @brief Return the platform's temp directory. Win32 uses `GetTempPathA` (trailing `\` stripped).
-/// POSIX checks `$TMPDIR` → `$TMP` → `$TEMP` → fixed `/tmp` fallback.
+/// @brief Return the platform's temporary directory.
+/// @details Windows uses GetTempPathW, removes one trailing separator except
+///          from a drive root, and falls back to `C:\Temp`. POSIX selects the
+///          first nonempty TMPDIR, TMP, or TEMP value only when it is an
+///          absolute existing directory, otherwise falling back to `/tmp`.
+/// @return Newly allocated UTF-8 runtime string containing the selected path.
 rt_string rt_machine_temp(void) {
 #ifdef _WIN32
     wchar_t *path = machine_win32_temp_path();
@@ -662,11 +784,14 @@ rt_string rt_machine_temp(void) {
 // Hardware Information
 // ============================================================================
 
-/// @brief Return the number of logical CPU cores. Win32: `GetSystemInfo.dwNumberOfProcessors`.
+/// @brief Return the number of logical CPUs available to this process.
+/// Win32: all active processors across processor groups.
 /// macOS: `sysctlbyname("hw.logicalcpu")`, validated and falling back to a
 /// positive `sysconf(_SC_NPROCESSORS_ONLN)`, else 1.
-/// Linux/other: `sysconf(_SC_NPROCESSORS_ONLN)`, with 1 as the safe minimum.
+/// Linux: online processors restricted by cgroup CPU quota and cpuset controls.
+/// Other POSIX: `sysconf(_SC_NPROCESSORS_ONLN)`.
 /// Every platform returns at least 1 (VDOC-219).
+/// @return Positive logical-CPU count, with 1 as the failure fallback.
 int64_t rt_machine_cores(void) {
 #ifdef _WIN32
     DWORD count = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
@@ -703,6 +828,8 @@ int64_t rt_machine_cores(void) {
 }
 
 /// @brief Return a stable CPU architecture identifier.
+/// @return Newly allocated runtime string containing "x86_64", "arm64", "x86",
+///         "arm", "wasm32", or "unknown", selected at compile time.
 rt_string rt_machine_arch(void) {
 #if defined(__x86_64__) || defined(_M_X64)
     return make_str("x86_64");
@@ -720,6 +847,8 @@ rt_string rt_machine_arch(void) {
 }
 
 /// @brief Return the system page size in bytes.
+/// @return Positive Win32 or POSIX page size, or 4096 when a POSIX query is
+///         unavailable or invalid.
 int64_t rt_machine_page_size(void) {
 #ifdef _WIN32
     SYSTEM_INFO sysinfo;
@@ -738,13 +867,17 @@ int64_t rt_machine_page_size(void) {
 }
 
 /// @brief Return native pointer width in bits.
+/// @return Compile-time size of @c void* multiplied by eight.
 int64_t rt_machine_pointer_size(void) {
     return (int64_t)(sizeof(void *) * 8);
 }
 
 /// @brief Return total physical RAM in bytes. Win32: `GlobalMemoryStatusEx.ullTotalPhys`.
 /// macOS: `sysctlbyname("hw.memsize")`. Linux: `sysinfo.totalram * mem_unit`. Generic POSIX
-/// fallback: `sysconf(_SC_PHYS_PAGES) * _SC_PAGE_SIZE`. Returns 0 if no probe succeeds.
+/// fallback: `sysconf(_SC_PHYS_PAGES) * _SC_PAGE_SIZE`. On Linux, a finite cgroup
+/// memory limit smaller than host RAM bounds the reported total.
+/// @return Total or process-constrained physical-memory capacity in bytes,
+///         saturated where supported, or zero if no probe succeeds.
 int64_t rt_machine_mem_total(void) {
 #ifdef _WIN32
     MEMORYSTATUSEX meminfo;
@@ -794,6 +927,10 @@ int64_t rt_machine_mem_total(void) {
 ///     slab minus shared memory on kernels lacking it.
 ///   - Generic POSIX: `sysconf(_SC_AVPHYS_PAGES) * _SC_PAGE_SIZE`.
 /// Mach paths carefully `mach_port_deallocate` on every exit (success or failure).
+/// On Linux, a finite cgroup limit minus current usage further bounds the host
+/// estimate when both controls are available.
+/// @return Available or process-constrained physical-memory estimate in bytes,
+///         saturated where supported, or zero if no probe succeeds.
 int64_t rt_machine_mem_free(void) {
 #ifdef _WIN32
     MEMORYSTATUSEX meminfo;
@@ -878,6 +1015,7 @@ int64_t rt_machine_mem_free(void) {
 /// @brief Detect endianness at runtime via the classic "byte-of-an-int" trick:
 /// `union { uint32_t i; char c[4]; } = {0x01020304}` — `c[0]==1` means big-endian (MSB first),
 /// otherwise little-endian. Branchless, no syscalls. Returns "big" or "little".
+/// @return Newly allocated runtime string containing "big" or "little".
 rt_string rt_machine_endian(void) {
     // Detect endianness at runtime
     union {

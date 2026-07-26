@@ -28,6 +28,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements synchronous HTTP/2 framing over callback transports.
+ * @details Validates frames, settings, stream identifiers, header blocks, and
+ * flow-control windows; coordinates connection-scoped HPACK state; performs
+ * client round trips and single-active-stream server exchanges; and transfers
+ * owned decoded headers and bodies only after complete protocol success.
+ */
+
 #include "rt_http2.h"
 
 #include <ctype.h>
@@ -38,9 +47,12 @@
 #include <string.h>
 
 #ifdef _WIN32
+/** Restrict the Windows SDK surface to core declarations. */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+/** Windows compatibility alias for case-insensitive string comparison. */
 #define strcasecmp _stricmp
+/** Windows compatibility alias for bounded case-insensitive comparison. */
 #define strncasecmp _strnicmp
 #else
 #include <pthread.h>
@@ -92,14 +104,16 @@
 #define H2_DEFAULT_MAX_HEADER_LIST_SIZE (64u * 1024u)
 #define H2_MAX_BUFFER_BYTES (32u * 1024u * 1024u)
 
+/** Decoded HTTP/2 frame header plus its owned payload bytes. */
 typedef struct {
-    uint8_t type;
-    uint8_t flags;
-    uint32_t stream_id;
-    uint8_t *payload;
-    size_t payload_len;
+    uint8_t type;       ///< Frame type code.
+    uint8_t flags;      ///< Type-specific flag bits.
+    uint32_t stream_id; ///< Reserved-bit-cleared stream identifier.
+    uint8_t *payload;   ///< Owned frame payload.
+    size_t payload_len; ///< Number of bytes in @ref payload.
 } h2_frame_t;
 
+/** Connection-scoped framing, flow-control, diagnostic, and HPACK state. */
 struct rt_http2_conn {
     rt_http2_io_t io;
     int is_server;
@@ -118,6 +132,7 @@ struct rt_http2_conn {
     hpack_dyn_table_t decode_table;
 };
 
+/** Exact HTTP/2 client connection preface required by RFC 9113. */
 static const char kClientPreface[] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 /// @brief Store a 16-bit integer in HTTP/2 network-byte order.

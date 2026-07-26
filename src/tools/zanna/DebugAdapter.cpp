@@ -5,14 +5,12 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/tools/zanna/DebugAdapter.cpp
-// Purpose: Interactive VM-backed debug adapter for Zanna Studio — breakpoints, stop,
-//          and step control over a newline-JSON protocol.
-// Key invariants:
-//   - Events are emitted as "@@VDBG@@ <compact-json>\n" on stderr; the debuggee's
-//     own stdout/stderr remain its own.
-//   - Commands arrive as newline-delimited JSON on stdin.
-// Links: src/tools/zanna/DebugAdapter.hpp, include/zanna/vm/debug/DebugFrontend.hpp
+/// @file DebugAdapter.cpp
+/// @brief Implements Zanna Studio's interactive VM-backed debug adapter.
+///
+/// Breakpoint, stop, stepping, evaluation, and variable-expansion events are emitted as sentinel-
+/// prefixed compact JSON lines on stderr, leaving debuggee stdout and stderr intact. Commands arrive
+/// as newline-delimited JSON on stdin and are queued by a background reader.
 //
 //===----------------------------------------------------------------------===//
 #include "tools/zanna/DebugAdapter.hpp"
@@ -47,6 +45,8 @@ constexpr const char *kSentinel = "@@VDBG@@ ";
 
 /// @brief Trailing path component, for tolerant file matching (the adapter reports
 ///        canonical paths while the IDE sends its own spelling).
+/// @param p Source path in either platform spelling.
+/// @return Final path component, or the original string when it has no separator.
 std::string baseNameOf(const std::string &p) {
     const size_t s = p.find_last_of("/\\");
     return s == std::string::npos ? p : p.substr(s + 1);
@@ -61,6 +61,10 @@ struct BpMeta {
 
 using BpMetaMap = std::unordered_map<std::string, BpMeta>;
 
+/// @brief Build the tolerant basename-and-line key used for breakpoint metadata.
+/// @param path IDE or VM source path.
+/// @param line One-based source line.
+/// @return Stable @c basename:line key.
 std::string metaKey(const std::string &path, uint32_t line) {
     return baseNameOf(path) + ":" + std::to_string(line);
 }
@@ -68,6 +72,8 @@ std::string metaKey(const std::string &path, uint32_t line) {
 /// @brief Apply a setBreakpoints command's optional `meta` to @p map, replacing any
 ///        prior condition/logpoint for the lines it lists (so a cleared condition
 ///        drops out). Lines without a meta entry hold no entry (plain breakpoint).
+/// @param map Mutable basename-and-line metadata map.
+/// @param cmd Parsed @c setBreakpoints command.
 void applyBpMeta(BpMetaMap &map, const JsonValue &cmd) {
     const std::string &path = cmd["path"].asString();
     if (const JsonValue *lines = cmd.get("lines")) {
@@ -89,6 +95,9 @@ void applyBpMeta(BpMetaMap &map, const JsonValue &cmd) {
 }
 
 /// @brief Build a logpoint output event (adapter -> IDE).
+/// @param line Source line that triggered the logpoint.
+/// @param message Interpolated logpoint text.
+/// @return Compact event object ready for channel emission.
 JsonValue logEvent(uint32_t line, const std::string &message) {
     return JsonValue::object({
         {"type", JsonValue("log")},
@@ -103,12 +112,17 @@ JsonValue logEvent(uint32_t line, const std::string &message) {
 ///        non-blockingly (a poll callback checking for Pause while running).
 class DebugChannel {
   public:
+    /// @brief Start the background stdin reader after synchronization state is initialized.
+    /// @details The thread callback enters readerLoop() on this channel instance.
     DebugChannel() : reader_([this] { readerLoop(); }) {}
 
+    /// @brief Detach the reader because debugger termination exits the process directly.
     ~DebugChannel() {
         reader_.detach();
     } // the process exits via _Exit; no join
 
+    /// @brief Serialize one event atomically to the sentinel-prefixed control stream.
+    /// @param event Event object to emit as compact JSON.
     void emit(const JsonValue &event) {
         std::lock_guard<std::mutex> lock(outMutex_);
         std::cerr << kSentinel << event.toCompactString() << "\n";
@@ -116,8 +130,11 @@ class DebugChannel {
     }
 
     /// @brief Block for the next command (used while the debuggee is stopped).
+    /// @return Next parsed command, or @c std::nullopt after input EOF and queue drain.
     std::optional<JsonValue> readCommand() {
         std::unique_lock<std::mutex> lock(mutex_);
+        /// @brief Test whether a queued command or end-of-input makes the wait ready.
+        /// @return `true` when the queue is nonempty or EOF has been observed.
         cv_.wait(lock, [this] { return !queue_.empty() || eof_; });
         if (queue_.empty())
             return std::nullopt;
@@ -128,6 +145,7 @@ class DebugChannel {
 
     /// @brief Pop the next queued command without blocking, or nullopt if none
     ///        (used by the poll callback while the debuggee is running).
+    /// @return Next parsed command, or @c std::nullopt when the queue is empty.
     std::optional<JsonValue> tryReadCommand() {
         std::lock_guard<std::mutex> lock(mutex_);
         if (queue_.empty())
@@ -138,6 +156,7 @@ class DebugChannel {
     }
 
   private:
+    /// @brief Parse nonempty stdin lines into the synchronized command queue until EOF.
     void readerLoop() {
         std::string line;
         while (std::getline(std::cin, line)) {
@@ -170,6 +189,9 @@ class DebugChannel {
     std::thread reader_;
 };
 
+/// @brief Serialize a VM stop snapshot with stack frames and top-frame locals.
+/// @param info Immutable stop information supplied by the VM.
+/// @return Adapter @c stopped event, including structured-variable references.
 JsonValue stoppedEvent(const il::vm::DebugStopInfo &info) {
     JsonValue::ArrayType frames;
     frames.reserve(info.frames.size());
@@ -209,6 +231,11 @@ JsonValue stoppedEvent(const il::vm::DebugStopInfo &info) {
 ///        by @p start / @p count. Children carry their own varRef>0 when they are
 ///        themselves expandable, so the IDE can drill down. Refs are only valid at
 ///        the current stop; a stale ref (after resume) yields an empty child list.
+/// @param info Current VM stop and variable-expansion provider.
+/// @param varRef Stop-scoped composite reference.
+/// @param start Zero-based child offset, clamped to zero.
+/// @param count Maximum child count; nonpositive values select the default page size.
+/// @return Adapter @c variables response.
 JsonValue variablesEvent(const il::vm::DebugStopInfo &info,
                          int64_t varRef,
                          int64_t start,
@@ -237,6 +264,10 @@ JsonValue variablesEvent(const il::vm::DebugStopInfo &info,
     });
 }
 
+/// @brief Build the final adapter termination event.
+/// @param reason Stable exit, crash, or terminated reason token.
+/// @param exitCode Debuggee or adapter exit code.
+/// @return Adapter @c terminated event.
 JsonValue terminatedEvent(const char *reason, int exitCode) {
     return JsonValue::object({
         {"type", JsonValue("terminated")},
@@ -253,6 +284,11 @@ JsonValue terminatedEvent(const char *reason, int exitCode) {
 /// @param info VM stop information containing the locals visible to the IDE.
 /// @return Resolver callback suitable for condition, logpoint, and watch evaluation.
 zanna::dbgexpr::Resolver localResolver(const il::vm::DebugStopInfo &info) {
+    /// @brief Resolve one local name to debugger value and type text.
+    /// @param name Local variable name to find.
+    /// @param[out] val Receives the formatted value.
+    /// @param[out] ty Receives the formatted type.
+    /// @return `true` when a matching local is present.
     return [&info](const std::string &name, std::string &val, std::string &ty) -> bool {
         for (const auto &l : info.locals) {
             if (l.name == name) {
@@ -289,6 +325,9 @@ std::string debugValueType(const zanna::dbgexpr::Value &value) {
 ///          logpoints: literals, locals, arithmetic, comparisons, boolean ops,
 ///          and parentheses. Parse/type errors return ok=false so the IDE can
 ///          show an unavailable expression instead of a stale value.
+/// @param info Current VM stop containing visible locals.
+/// @param expr Expression text received from the IDE.
+/// @return Adapter @c evaluated event with a scalar value or @c ok set to false.
 JsonValue evaluatedEvent(const il::vm::DebugStopInfo &info, const std::string &expr) {
     auto resolve = localResolver(info);
     zanna::dbgexpr::Value value = zanna::dbgexpr::Eval(expr, resolve).run();
@@ -323,8 +362,14 @@ JsonValue evaluatedEvent(const il::vm::DebugStopInfo &info, const std::string &e
 ///          only when the line changes (or a breakpoint intervenes).
 class AdapterFrontend : public il::vm::DebugFrontend {
   public:
+    /// @brief Bind the VM frontend to its control channel and initial breakpoint metadata.
+    /// @param chan Debugger control channel that outlives this frontend.
+    /// @param meta Initial conditional-breakpoint and logpoint metadata.
     AdapterFrontend(DebugChannel &chan, BpMetaMap meta) : chan_(chan), bpMeta_(std::move(meta)) {}
 
+    /// @brief Surface a VM stop, apply breakpoint policy, and await the next execution action.
+    /// @param info Current immutable stop snapshot.
+    /// @return VM action selected by stepping policy or the IDE.
     il::vm::DebugAction onStop(const il::vm::DebugStopInfo &info) override {
         // Run-to-cursor: keep stepping over until the target line is reached. A
         // real breakpoint or exception cancels it; the step bound guards against a
@@ -434,6 +479,10 @@ class AdapterFrontend : public il::vm::DebugFrontend {
   private:
     enum class StepMode { None, Over, In, Out };
 
+    /// @brief Record the source origin and begin one line-oriented step.
+    /// @param mode Step-in, step-over, or step-out policy.
+    /// @param info Current stop providing the origin line and path.
+    /// @return Corresponding VM instruction-level action.
     il::vm::DebugAction beginStep(StepMode mode, const il::vm::DebugStopInfo &info) {
         mode_ = mode;
         originLine_ = info.line;
@@ -442,6 +491,9 @@ class AdapterFrontend : public il::vm::DebugFrontend {
         return stepAction(mode);
     }
 
+    /// @brief Convert adapter line-step state to the VM's next debug action.
+    /// @param mode Current adapter step mode.
+    /// @return VM step, step-over, step-out, or continue action.
     static il::vm::DebugAction stepAction(StepMode mode) {
         switch (mode) {
             case StepMode::In:
@@ -479,6 +531,13 @@ class AdapterFrontend : public il::vm::DebugFrontend {
 
 } // namespace
 
+/// @brief Run a verified IL module under interactive newline-JSON debugger control.
+/// @param module Caller-owned verified module executed by the VM.
+/// @param programArgs Arguments exposed to the debuggee.
+/// @param maxSteps Optional VM step budget; zero means unlimited.
+/// @param sm Caller-owned source manager used for source locations.
+/// @param debugLayouts Class-layout metadata moved into the VM debug configuration.
+/// @return Debuggee exit code, normalized to one when the VM result exceeds @c int range or traps.
 int runDebugAdapter(il::core::Module &module,
                     const std::vector<std::string> &programArgs,
                     uint64_t maxSteps,
@@ -529,6 +588,9 @@ int runDebugAdapter(il::core::Module &module,
     // or a terminate. requestDebugPause makes the frontend stop at the next
     // instruction without ending the run, so execution can resume.
     runCfg.interruptEveryN = 20000;
+    /// @brief Drain pause and terminate commands while the VM runs freely.
+    /// @param vm Active virtual machine that can receive a cooperative pause request.
+    /// @return Always `true` to continue execution after polling.
     runCfg.pollCallback = [&chan](il::vm::VM &vm) -> bool {
         while (auto cmd = chan.tryReadCommand()) {
             const std::string &type = (*cmd)["type"].asString();

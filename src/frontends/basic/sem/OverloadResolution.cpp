@@ -132,8 +132,11 @@ std::optional<ResolvedMethod> resolveMethodOverload(const OopIndex &index,
 
     std::vector<Cand> cands;
 
-    // Helper to add candidates from a class
+    /// @brief Adds non-shadowed candidates declared by one class.
+    /// @param classInfo Class whose methods are inspected.
     auto addFromClass = [&](const ClassInfo *classInfo) {
+        /// @brief Adds a named method unless a derived class already supplied it.
+        /// @param name Method or property-accessor name.
         auto addIf = [&](const std::string &name) {
             auto it = classInfo->methods.find(name);
             if (it != classInfo->methods.end()) {

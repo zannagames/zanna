@@ -115,6 +115,8 @@ std::string TypeResolver::tryResolveInNamespace(const std::string &ns,
 }
 
 /// @brief Map a NamespaceRegistry type kind to the resolver's public Kind enum.
+/// @param nsk Registry classification to translate.
+/// @return Corresponding resolver classification, or `Kind::Unknown`.
 TypeResolver::Kind TypeResolver::convertKind(NamespaceRegistry::TypeKind nsk) {
     switch (nsk) {
         case NamespaceRegistry::TypeKind::Class:
@@ -230,6 +232,10 @@ TypeResolver::Result TypeResolver::resolve(std::string_view name,
     }
 
     // Ambiguous: sort candidates case-insensitively for stable diagnostics.
+    /// @brief Orders ambiguous type candidates case-insensitively.
+    /// @param a Left qualified name.
+    /// @param b Right qualified name.
+    /// @return `true` when the lowercase form of `a` precedes `b`.
     std::sort(candidates.begin(), candidates.end(), [](const std::string &a, const std::string &b) {
         return toLower(a) < toLower(b);
     });

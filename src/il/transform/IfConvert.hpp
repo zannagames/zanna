@@ -18,6 +18,18 @@
 // Links: docs/adr/0063-il-select-and-if-conversion.md
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares the function-level IL if-conversion optimization pass.
+ *
+ * @details The pass replaces eligible conditional diamonds, triangles, and
+ *          collapsed same-target branches with `select` instructions and a
+ *          single successor edge. Only small, side-effect-free, non-trapping
+ *          arms are speculated, and unsupported block-parameter types or
+ *          edge-dependent range proofs preserve the original CFG.
+ */
+
 #pragma once
 
 #include "il/transform/PassRegistry.hpp"

@@ -189,11 +189,8 @@ build_macos() {
         arm64|aarch64)
             target_arch="arm64"
             ;;
-        x86_64|amd64)
-            target_arch="x64"
-            ;;
         *)
-            echo -e "${RED}Error: build_ide.sh currently supports x86_64 and arm64 macOS only${NC}"
+            echo -e "${RED}Error: macOS support is Apple Silicon (arm64) only; macOS x86-64 is not a supported target${NC}"
             return 1
             ;;
     esac

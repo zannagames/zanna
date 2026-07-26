@@ -38,6 +38,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_cipher.c
+ * @brief Implements the high-level authenticated-encryption facade.
+ * @details Password forms derive 256-bit keys with PBKDF2 and random salts;
+ *          raw-key forms validate fixed key sizes. Both generate full-width
+ *          random nonces, authenticate framing plus optional application AAD,
+ *          select ChaCha20-Poly1305 or approved AES-GCM policy, and expose
+ *          nullable, Result, and Option decryption outcomes.
+ */
+
 #include "rt_cipher.h"
 #include "rt_bytes.h"
 #include "rt_crypto.h"
@@ -80,15 +90,34 @@ static const uint8_t CIPHER_KEY_APPROVED_MAGIC[4] = {'V', 'K', 'A', '1'};
 // HKDF info string for key derivation
 static const char *HKDF_INFO = "zanna-cipher-v1";
 
+/// @brief Decrypt password-protected ciphertext without associated data.
+/// @param ciphertext Borrowed encrypted Bytes object.
+/// @param password Borrowed password string.
+/// @return New plaintext Bytes object, or NULL on authentication or decoding failure.
 typedef void *(*cipher_password_decrypt_fn)(void *ciphertext, rt_string password);
+/// @brief Decrypt password-protected ciphertext with associated data.
+/// @param ciphertext Borrowed encrypted Bytes object.
+/// @param password Borrowed password string.
+/// @param aad Borrowed associated-data Bytes object.
+/// @return New plaintext Bytes object, or NULL on authentication or decoding failure.
 typedef void *(*cipher_password_aad_decrypt_fn)(void *ciphertext, rt_string password, void *aad);
+/// @brief Decrypt key-protected ciphertext without associated data.
+/// @param ciphertext Borrowed encrypted Bytes object.
+/// @param key Borrowed key Bytes object.
+/// @return New plaintext Bytes object, or NULL on authentication or decoding failure.
 typedef void *(*cipher_key_decrypt_fn)(void *ciphertext, void *key);
+/// @brief Decrypt key-protected ciphertext with associated data.
+/// @param ciphertext Borrowed encrypted Bytes object.
+/// @param key Borrowed key Bytes object.
+/// @param aad Borrowed associated-data Bytes object.
+/// @return New plaintext Bytes object, or NULL on authentication or decoding failure.
 typedef void *(*cipher_key_aad_decrypt_fn)(void *ciphertext, void *key, void *aad);
 
 /// @brief Release a temporary runtime object created by a decryptor.
 /// @details `Result.Ok` and `Option.Some` retain object payloads. Wrappers that
 ///          move a freshly allocated plaintext object into those containers
 ///          call this helper to drop the decryptor's original ownership.
+/// @param obj Temporary runtime object reference; NULL is ignored.
 static void cipher_release_temp_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
@@ -97,6 +126,8 @@ static void cipher_release_temp_object(void *obj) {
 /// @brief Return a string handle for the active trap message or a fallback.
 /// @details The returned string is a runtime literal/constant handle suitable
 ///          for passing to Result.ErrStr without transferring ownership.
+/// @param fallback Message selected when no nonempty trap diagnostic is active.
+/// @return Borrowed constant runtime string containing the chosen diagnostic.
 static rt_string cipher_current_error_message(const char *fallback) {
     const char *err = rt_trap_get_error();
     if (!err || !err[0])
@@ -108,6 +139,9 @@ static rt_string cipher_current_error_message(const char *fallback) {
 /// @details Returns `Err(str)` when @p plaintext is NULL. On success the
 ///          Result retains @p plaintext and this helper releases the caller's
 ///          temporary ownership reference.
+/// @param plaintext Newly allocated plaintext Bytes object, or NULL.
+/// @param null_message Diagnostic used for a NULL plaintext result.
+/// @return Caller-owned Result containing plaintext Bytes or an error string.
 static void *cipher_plaintext_result(void *plaintext, const char *null_message) {
     if (!plaintext)
         return rt_result_err_str(rt_const_cstr(null_message));
@@ -120,6 +154,8 @@ static void *cipher_plaintext_result(void *plaintext, const char *null_message) 
 /// @details Returns `None` when @p plaintext is NULL. On success the Option
 ///          retains @p plaintext and this helper releases the decryptor's
 ///          temporary ownership reference.
+/// @param plaintext Newly allocated plaintext Bytes object, or NULL.
+/// @return Caller-owned Option containing plaintext Bytes or None.
 static void *cipher_plaintext_option(void *plaintext) {
     if (!plaintext)
         return rt_option_none();
@@ -129,6 +165,12 @@ static void *cipher_plaintext_option(void *plaintext) {
 }
 
 /// @brief Run a password decryptor and convert traps/NULL into `Result`.
+/// @param fn Decryptor invoked inside the temporary trap recovery scope.
+/// @param ciphertext Opaque ciphertext argument forwarded to @p fn.
+/// @param password Runtime password forwarded to @p fn.
+/// @param null_message Diagnostic used when @p fn returns NULL.
+/// @param trap_fallback Diagnostic used when a caught trap has no message.
+/// @return Caller-owned Result containing plaintext Bytes or diagnostic string.
 static void *cipher_password_result(cipher_password_decrypt_fn fn,
                                     void *ciphertext,
                                     rt_string password,
@@ -147,6 +189,11 @@ static void *cipher_password_result(cipher_password_decrypt_fn fn,
 }
 
 /// @brief Run a password decryptor and convert traps/NULL into `Option`.
+/// @param fn Decryptor invoked inside the temporary trap recovery scope.
+/// @param ciphertext Opaque ciphertext argument forwarded to @p fn.
+/// @param password Runtime password forwarded to @p fn.
+/// @return Caller-owned Option containing plaintext Bytes, or None after a trap
+///         or NULL decryptor result.
 static void *cipher_password_option(cipher_password_decrypt_fn fn,
                                     void *ciphertext,
                                     rt_string password) {
@@ -162,6 +209,13 @@ static void *cipher_password_option(cipher_password_decrypt_fn fn,
 }
 
 /// @brief Run a password-plus-AAD decryptor and convert traps/NULL into `Result`.
+/// @param fn Decryptor invoked inside the temporary trap recovery scope.
+/// @param ciphertext Opaque ciphertext argument forwarded to @p fn.
+/// @param password Runtime password forwarded to @p fn.
+/// @param aad Optional additional-authenticated-data argument forwarded to @p fn.
+/// @param null_message Diagnostic used when @p fn returns NULL.
+/// @param trap_fallback Diagnostic used when a caught trap has no message.
+/// @return Caller-owned Result containing plaintext Bytes or diagnostic string.
 static void *cipher_password_aad_result(cipher_password_aad_decrypt_fn fn,
                                         void *ciphertext,
                                         rt_string password,
@@ -181,6 +235,12 @@ static void *cipher_password_aad_result(cipher_password_aad_decrypt_fn fn,
 }
 
 /// @brief Run a password-plus-AAD decryptor and convert traps/NULL into `Option`.
+/// @param fn Decryptor invoked inside the temporary trap recovery scope.
+/// @param ciphertext Opaque ciphertext argument forwarded to @p fn.
+/// @param password Runtime password forwarded to @p fn.
+/// @param aad Optional additional-authenticated-data argument forwarded to @p fn.
+/// @return Caller-owned Option containing plaintext Bytes, or None after any
+///         authentication, validation, or trapped failure.
 static void *cipher_password_aad_option(cipher_password_aad_decrypt_fn fn,
                                         void *ciphertext,
                                         rt_string password,
@@ -197,6 +257,12 @@ static void *cipher_password_aad_option(cipher_password_aad_decrypt_fn fn,
 }
 
 /// @brief Run a raw-key decryptor and convert traps/NULL into `Result`.
+/// @param fn Decryptor invoked inside the temporary trap recovery scope.
+/// @param ciphertext Opaque ciphertext argument forwarded to @p fn.
+/// @param key Opaque raw-key argument forwarded to @p fn.
+/// @param null_message Diagnostic used when @p fn returns NULL.
+/// @param trap_fallback Diagnostic used when a caught trap has no message.
+/// @return Caller-owned Result containing plaintext Bytes or diagnostic string.
 static void *cipher_key_result(cipher_key_decrypt_fn fn,
                                void *ciphertext,
                                void *key,
@@ -215,6 +281,11 @@ static void *cipher_key_result(cipher_key_decrypt_fn fn,
 }
 
 /// @brief Run a raw-key decryptor and convert traps/NULL into `Option`.
+/// @param fn Decryptor invoked inside the temporary trap recovery scope.
+/// @param ciphertext Opaque ciphertext argument forwarded to @p fn.
+/// @param key Opaque raw-key argument forwarded to @p fn.
+/// @return Caller-owned Option containing plaintext Bytes, or None after a trap
+///         or NULL decryptor result.
 static void *cipher_key_option(cipher_key_decrypt_fn fn, void *ciphertext, void *key) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
@@ -228,6 +299,13 @@ static void *cipher_key_option(cipher_key_decrypt_fn fn, void *ciphertext, void 
 }
 
 /// @brief Run a raw-key-plus-AAD decryptor and convert traps/NULL into `Result`.
+/// @param fn Decryptor invoked inside the temporary trap recovery scope.
+/// @param ciphertext Opaque ciphertext argument forwarded to @p fn.
+/// @param key Opaque raw-key argument forwarded to @p fn.
+/// @param aad Optional additional-authenticated-data argument forwarded to @p fn.
+/// @param null_message Diagnostic used when @p fn returns NULL.
+/// @param trap_fallback Diagnostic used when a caught trap has no message.
+/// @return Caller-owned Result containing plaintext Bytes or diagnostic string.
 static void *cipher_key_aad_result(cipher_key_aad_decrypt_fn fn,
                                    void *ciphertext,
                                    void *key,
@@ -247,6 +325,12 @@ static void *cipher_key_aad_result(cipher_key_aad_decrypt_fn fn,
 }
 
 /// @brief Run a raw-key-plus-AAD decryptor and convert traps/NULL into `Option`.
+/// @param fn Decryptor invoked inside the temporary trap recovery scope.
+/// @param ciphertext Opaque ciphertext argument forwarded to @p fn.
+/// @param key Opaque raw-key argument forwarded to @p fn.
+/// @param aad Optional additional-authenticated-data argument forwarded to @p fn.
+/// @return Caller-owned Option containing plaintext Bytes, or None after any
+///         authentication, validation, or trapped failure.
 static void *cipher_key_aad_option(cipher_key_aad_decrypt_fn fn,
                                    void *ciphertext,
                                    void *key,
@@ -267,6 +351,9 @@ static void *cipher_key_aad_option(cipher_key_aad_decrypt_fn fn,
 //=============================================================================
 
 /// @brief Read the raw byte buffer pointer from a Bytes object handle (NULL-safe).
+/// @param obj Candidate Bytes object; NULL is accepted.
+/// @return Borrowed mutable data pointer, NULL for a NULL/empty object or after
+///         trapping for an invalid runtime type.
 static inline uint8_t *bytes_data(void *obj) {
     if (obj && !rt_bytes_is_bytes(obj)) {
         rt_trap("Cipher: invalid Bytes object");
@@ -276,6 +363,8 @@ static inline uint8_t *bytes_data(void *obj) {
 }
 
 /// @brief Read the byte length from a Bytes object handle (NULL -> 0).
+/// @param obj Candidate Bytes object; NULL is accepted.
+/// @return Byte length, zero for NULL, or -1 after trapping for an invalid type.
 static inline int64_t bytes_len(void *obj) {
     if (obj && !rt_bytes_is_bytes(obj)) {
         rt_trap("Cipher: invalid Bytes object");
@@ -284,6 +373,10 @@ static inline int64_t bytes_len(void *obj) {
     return rt_bytes_len(obj);
 }
 
+/// @brief Allocate a runtime Bytes object or raise an operation-specific trap.
+/// @param len Requested byte length.
+/// @param op Trap diagnostic used when allocation fails.
+/// @return New caller-owned Bytes object, or NULL after trapping.
 static void *cipher_bytes_new_or_trap(int64_t len, const char *op) {
     void *bytes = rt_bytes_new(len);
     if (!bytes)
@@ -322,6 +415,8 @@ static uint8_t *cipher_plain_temp_alloc(int64_t len, const char *trap_msg) {
 ///          every key-derivation and AEAD operation so transient
 ///          secrets don't linger in stack frames where a later memory
 ///          dump (core file, swap, leaked mapping) could expose them.
+/// @param ptr Start of the writable sensitive-memory span.
+/// @param len Number of bytes to overwrite.
 static void cipher_secure_zero(void *ptr, size_t len) {
     volatile uint8_t *p = (volatile uint8_t *)ptr;
     while (len-- > 0)
@@ -331,6 +426,12 @@ static void cipher_secure_zero(void *ptr, size_t len) {
 /// @brief Extract a C string pointer and byte length from an rt_string password.
 ///        Calls rt_trap with @p op if the password handle is NULL.
 ///        Returns an empty string and sets *len = 0 for zero-length input.
+/// @param password Runtime password string to validate.
+/// @param len Required destination for its byte length.
+/// @param op Trap diagnostic for a NULL password.
+/// @param ok Optional success flag cleared initially and set for a valid view.
+/// @return Borrowed password bytes, or an empty static string for valid empty
+///         input and all failure fallbacks.
 static const char *cipher_password_bytes(rt_string password, size_t *len, const char *op, int *ok) {
     if (len)
         *len = 0;
@@ -376,6 +477,11 @@ static const char *cipher_password_bytes(rt_string password, size_t *len, const 
 /// @brief Compute and validate the output length for an encryption operation.
 ///        Traps if input_len is negative, would overflow when added to @p overhead,
 ///        or exceeds the AEAD single-key stream limit.
+/// @param input_len Plaintext length to validate.
+/// @param overhead Fixed framing and authentication bytes added to the output.
+/// @param max_input_len Algorithm-specific per-message plaintext limit.
+/// @param op Trap diagnostic for a negative input length.
+/// @return Validated sum of input and overhead, or 0 after trapping.
 static int64_t cipher_checked_output_len(int64_t input_len,
                                          int64_t overhead,
                                          uint64_t max_input_len,
@@ -407,6 +513,11 @@ static int64_t cipher_checked_output_len(int64_t input_len,
 ///          PRK; Expand stretches the PRK into the 32-byte cipher key,
 ///          domain-separated by the `HKDF_INFO` string. PRK is zeroed before
 ///          return so it can't linger in heap memory.
+/// @param password Borrowed password bytes.
+/// @param password_len Password byte count.
+/// @param salt Borrowed legacy salt bytes.
+/// @param salt_len Salt byte count.
+/// @param key Receives the 32-byte derived key and must later be zeroized.
 static void derive_key_legacy(const char *password,
                               size_t password_len,
                               const uint8_t *salt,
@@ -434,6 +545,11 @@ static void derive_key_legacy(const char *password,
 ///          (~50–100 ms on a typical desktop CPU). This is the path all new
 ///          encryption uses; `derive_key_legacy` is only invoked when
 ///          decrypting older ciphertexts that carry a legacy version tag.
+/// @param password Borrowed password bytes.
+/// @param password_len Password byte count.
+/// @param salt Borrowed random salt bytes.
+/// @param salt_len Salt byte count.
+/// @param key Receives the 32-byte derived key and must later be zeroized.
 static void derive_key_pbkdf2(const char *password,
                               size_t password_len,
                               const uint8_t *salt,
@@ -452,6 +568,8 @@ static void derive_key_pbkdf2(const char *password,
 /// @details Used by the wire-format header builder to encode parameter
 ///          fields (PBKDF2 iteration count, version flags) into the
 ///          ciphertext envelope.
+/// @param out Writable four-byte destination.
+/// @param v Value to encode.
 static void write_be32(uint8_t *out, uint32_t v) {
     out[0] = (uint8_t)(v >> 24);
     out[1] = (uint8_t)(v >> 16);
@@ -459,7 +577,6 @@ static void write_be32(uint8_t *out, uint32_t v) {
     out[3] = (uint8_t)v;
 }
 
-/// @brief Write a 64-bit unsigned integer to @p out in big-endian byte order.
 /// @brief Fill a 96-bit AEAD nonce with full-width CSPRNG output.
 /// @details All 12 bytes are drawn from the CSPRNG, so every nonce is
 ///          independently random per message AND per process (VDOC-172): the
@@ -480,6 +597,8 @@ static void cipher_random_nonce(uint8_t nonce[CIPHER_NONCE_SIZE]) {
 /// @brief Read a big-endian 32-bit unsigned integer from @p in.
 /// @details Inverse of write_be32. Used during decrypt to recover the
 ///          encoded iteration count and version flags from the envelope.
+/// @param in Borrowed four-byte encoded value.
+/// @return Decoded host-order value.
 static uint32_t read_be32(const uint8_t *in) {
     return ((uint32_t)in[0] << 24) | ((uint32_t)in[1] << 16) | ((uint32_t)in[2] << 8) |
            (uint32_t)in[3];
@@ -490,6 +609,10 @@ static uint32_t read_be32(const uint8_t *in) {
 ///          handler — CIPHER_PW_MAGIC ("VCP2") for password-derived
 ///          ciphertexts versus CIPHER_KEY_MAGIC ("VCK2") for raw-key
 ///          ciphertexts. NULL pointer or len < 4 returns 0.
+/// @param data Borrowed frame bytes; may be NULL.
+/// @param len Number of available bytes.
+/// @param magic Four-byte format identifier to compare.
+/// @return 1 for an exact prefix match, otherwise 0.
 static int has_magic(const uint8_t *data, int64_t len, const uint8_t magic[4]) {
     return data && len >= 4 && memcmp(data, magic, 4) == 0;
 }
@@ -503,6 +626,14 @@ static int has_magic(const uint8_t *data, int64_t len, const uint8_t magic[4]) {
 ///          allocating. Caller frees the returned buffer (NULL when no
 ///          allocation occurred). Traps on bytes_len < 0 or arithmetic
 ///          overflow.
+/// @param header Borrowed framing header bytes.
+/// @param header_len Header byte count.
+/// @param aad_obj Optional Bytes object containing caller AAD.
+/// @param aad_out Required destination for the combined borrowed/allocated span.
+/// @param aad_len_out Required destination for combined length; SIZE_MAX marks
+///        failure.
+/// @return Caller-owned combined allocation when user AAD is nonempty; NULL
+///         when the header can be used directly or after a reported failure.
 static uint8_t *combine_aad(const uint8_t *header,
                             size_t header_len,
                             void *aad_obj,
@@ -562,8 +693,8 @@ static uint8_t *combine_aad(const uint8_t *header,
 /// @brief Encrypt data using a password with the mode-selected AEAD.
 /// @details Derives a 256-bit key from the password using PBKDF2-HMAC-SHA256
 ///          (`CIPHER_PBKDF2_ITERATIONS`, currently 300,000 iterations) with a
-///          fresh random 16-byte salt. Generates a 12-byte random-prefix/counter
-///          nonce. Encrypts and authenticates the plaintext using the active
+///          fresh random 16-byte salt. Generates a fully random 12-byte nonce.
+///          Encrypts and authenticates the plaintext using the active
 ///          ChaCha20-Poly1305 or AES-256-GCM service and produces a 16-byte tag.
 ///
 ///          Wire format: [magic(4) | iterations(4) | salt(16) | nonce(12) |
@@ -582,7 +713,7 @@ void *rt_cipher_encrypt(void *plaintext, rt_string password) {
 /// @details Implements `Zanna.Crypto.Cipher.EncryptAAD(plaintext, password, aad)`.
 ///          Generates a fresh 16-byte salt, runs PBKDF2-HMAC-SHA256
 ///          (CIPHER_PBKDF2_ITERATIONS rounds) to derive a 32-byte key,
-///          generates a fresh random-prefix/counter nonce, and produces the wire
+///          generates a fresh full-width random nonce, and produces the wire
 ///          format [magic | iterations | salt | nonce | ciphertext | tag]. The
 ///          active AEAD tag authenticates [magic||iterations||salt||nonce] plus the
 ///          application-supplied @p aad, so any tampering with format header
@@ -625,7 +756,7 @@ void *rt_cipher_encrypt_aad(void *plaintext, rt_string password, void *aad) {
     if (out_len == 0)
         return NULL;
 
-    // Generate an independent salt and a process-scoped prefix/counter nonce.
+    // Generate an independent salt and full-width random nonce.
     uint8_t salt[CIPHER_SALT_SIZE];
     uint8_t nonce[CIPHER_NONCE_SIZE];
     rt_crypto_random_bytes(salt, CIPHER_SALT_SIZE);

@@ -20,6 +20,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares tagged IL operand values, factories, equality, and hashing.
+ *
+ * @details `Value` compactly represents SSA temporaries, scalar literals,
+ *          string literals, global addresses, and null pointers. Factory
+ *          functions establish valid tag/payload pairs, while the free
+ *          comparison and hashing helpers apply payload-aware semantics
+ *          suitable for analysis maps and sets.
+ */
+
 #pragma once
 
 #include <string>
@@ -31,8 +42,10 @@ namespace il::core {
 ///          one payload is active at a time based on the kind discriminant.
 struct Value {
     /// @brief Enumerates the different value forms.
+    /// @details The active kind selects either the numeric union member, the
+    ///          owned string payload, or no payload for `NullPtr`.
     enum class Kind { Temp, ConstInt, ConstFloat, ConstStr, GlobalAddr, NullPtr };
-    /// Discriminant selecting which payload is active.
+    /// @brief Discriminant selecting which payload is active.
     Kind kind{Kind::NullPtr};
 
     /// @brief Union of mutually exclusive payloads (only one active per kind).
@@ -40,15 +53,15 @@ struct Value {
     ///          matching the current kind: i64 for ConstInt, f64 for ConstFloat,
     ///          id for Temp. Other kinds use the str field instead.
     union {
-        /// Integer payload used when kind == Kind::ConstInt.
+        /// @brief Integer payload used when kind == Kind::ConstInt.
         long long i64;
-        /// Floating-point payload used when kind == Kind::ConstFloat.
+        /// @brief Floating-point payload used when kind == Kind::ConstFloat.
         double f64;
-        /// Temporary identifier used when kind == Kind::Temp.
+        /// @brief Temporary identifier used when kind == Kind::Temp.
         unsigned id;
     };
 
-    /// String payload for string constants and global names.
+    /// @brief String payload for string constants and global names.
     std::string str;
 
     /// @brief Flag set when the integer literal represents an i1 boolean.
@@ -134,16 +147,16 @@ size_t valueHash(const Value &v) noexcept;
 ///          provenance of magic numbers used in hash functions.
 /// @{
 
-/// Murmur-like mixing constant for combining hash values.
+/// @brief Murmur-like mixing constant for combining hash values.
 inline constexpr size_t kHashKindMix = 1469598103934665603ULL;
 
-/// Golden ratio fractional constant (phi * 2^64), commonly used in hash mixing.
+/// @brief Golden ratio fractional constant used in hash mixing.
 inline constexpr size_t kHashPhiMix = 0x9e3779b97f4a7c15ULL;
 
-/// Sentinel hash value for null pointers.
+/// @brief Sentinel hash value for null pointers.
 inline constexpr size_t kHashNullSentinel = 0xabcdefULL;
 
-/// Sentinel hash bit for boolean flag discrimination.
+/// @brief Sentinel hash bit for boolean flag discrimination.
 inline constexpr size_t kHashBoolFlag = 0xBEEF;
 
 /// @}

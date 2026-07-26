@@ -26,6 +26,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements layered Tilemap storage, projection, drawing, animation, and collision.
+ *
+ * @details The runtime maintains fixed logical cell geometry while supporting
+ *          imported orthogonal, isometric, staggered, hexagonal, and oblique
+ *          source layouts. Native and scaled rendering share deterministic
+ *          traversal, saturating coordinate math, animation resolution, layer
+ *          metadata, hit testing, and grid-based collision behavior.
+ */
+
 #include "rt_tilemap.h"
 #include "rt_tilemap_internal.h"
 
@@ -46,9 +57,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-/// Collision type constants — use public enum from rt_tilemap.h.
+/// @brief Internal alias for a cell with no collision response.
 #define TILE_COLLISION_NONE RT_TILE_COLLISION_NONE
+/// @brief Internal alias for a fully solid collision cell.
 #define TILE_COLLISION_SOLID RT_TILE_COLLISION_SOLID
+/// @brief Internal alias for an upward-facing one-way collision cell.
 #define TILE_COLLISION_ONE_WAY RT_TILE_COLLISION_ONE_WAY_UP
 
 /// @brief Integer floor division that rounds toward -∞ rather than toward zero.
@@ -488,10 +501,10 @@ static int64_t tilemap_ceil_double_saturating(double value) {
 
 /// @brief Diagonal neighbor choices used by staggered diamond corner tests.
 enum tilemap_stagger_neighbor {
-    TILEMAP_NEIGHBOR_TOP_LEFT = 0,
-    TILEMAP_NEIGHBOR_TOP_RIGHT = 1,
-    TILEMAP_NEIGHBOR_BOTTOM_LEFT = 2,
-    TILEMAP_NEIGHBOR_BOTTOM_RIGHT = 3,
+    TILEMAP_NEIGHBOR_TOP_LEFT = 0,    ///< Diagonal cell above and to the left.
+    TILEMAP_NEIGHBOR_TOP_RIGHT = 1,   ///< Diagonal cell above and to the right.
+    TILEMAP_NEIGHBOR_BOTTOM_LEFT = 2, ///< Diagonal cell below and to the left.
+    TILEMAP_NEIGHBOR_BOTTOM_RIGHT = 3, ///< Diagonal cell below and to the right.
 };
 
 /// @brief Move one source-grid coordinate to a stagger-aware diagonal neighbor.
@@ -1436,16 +1449,16 @@ static void tilemap_visit_draw_order(const rt_tilemap_impl *tilemap,
 
 /// @brief Immutable state shared by callbacks during one native layer draw.
 typedef struct {
-    rt_tilemap_impl *tilemap;
-    void *canvas;
-    tm_layer *layer;
-    void *tileset;
-    int64_t tileset_cols;
-    int64_t tile_count;
-    int64_t source_width;
-    int64_t source_height;
-    double layer_offset_x;
-    double layer_offset_y;
+    rt_tilemap_impl *tilemap; ///< Borrowed map being rendered.
+    void *canvas;             ///< Borrowed destination Canvas.
+    tm_layer *layer;          ///< Borrowed layer traversed by the callback.
+    void *tileset;            ///< Borrowed Pixels source for this layer.
+    int64_t tileset_cols;     ///< Number of source frames per tileset row.
+    int64_t tile_count;       ///< Number of complete source frames.
+    int64_t source_width;     ///< Source frame width in pixels.
+    int64_t source_height;    ///< Source frame height in pixels.
+    double layer_offset_x;    ///< Effective native destination X offset.
+    double layer_offset_y;    ///< Effective native destination Y offset.
 } tilemap_native_draw_context;
 
 /// @brief Draw one imported-layout cell visited by tilemap_visit_draw_order.
@@ -1714,10 +1727,10 @@ static void tilemap_release_temp(void *obj) {
 /// @brief One open-addressed entry in a per-draw scaled-tile cache.
 /// @details The entry owns @c scaled_pixels until the draw releases the cache.
 typedef struct {
-    void *tileset;
-    int64_t tile_index;
-    void *scaled_pixels;
-    uint8_t used;
+    void *tileset;       ///< Borrowed tileset identity forming part of the key.
+    int64_t tile_index;  ///< One-based tile identifier forming part of the key.
+    void *scaled_pixels; ///< Owned scaled Pixels result.
+    uint8_t used;        ///< Nonzero when this hash slot is occupied.
 } tilemap_scaled_tile_cache_entry;
 
 /// @brief Hash a tileset pointer plus tile id for the scaled-tile cache.
@@ -1867,27 +1880,27 @@ static void tilemap_scaled_cache_release(tilemap_scaled_tile_cache_entry *entrie
 
 /// @brief Shared state for scaled-cell callbacks during one layer traversal.
 typedef struct {
-    rt_tilemap_impl *tilemap;
-    void *canvas;
-    tm_layer *layer;
-    void *tileset;
-    int64_t tileset_cols;
-    int64_t tile_count;
-    int64_t source_width;
-    int64_t source_height;
-    int64_t destination_width;
-    int64_t destination_height;
-    int64_t logical_destination_width;
-    int64_t logical_destination_height;
-    int64_t camera_x;
-    int64_t camera_y;
-    double map_scale;
-    double layer_offset_x;
-    double layer_offset_y;
-    int default_layout;
-    tilemap_scaled_tile_cache_entry **cache;
-    size_t *cache_count;
-    size_t *cache_capacity;
+    rt_tilemap_impl *tilemap; ///< Borrowed map being rendered.
+    void *canvas;             ///< Borrowed destination Canvas.
+    tm_layer *layer;          ///< Borrowed layer traversed by the callback.
+    void *tileset;            ///< Borrowed Pixels source for this layer.
+    int64_t tileset_cols;     ///< Number of source frames per tileset row.
+    int64_t tile_count;       ///< Number of complete source frames.
+    int64_t source_width;     ///< Unscaled source frame width.
+    int64_t source_height;    ///< Unscaled source frame height.
+    int64_t destination_width; ///< Scaled source-frame draw width.
+    int64_t destination_height; ///< Scaled source-frame draw height.
+    int64_t logical_destination_width; ///< Scaled logical cell width.
+    int64_t logical_destination_height; ///< Scaled logical cell height.
+    int64_t camera_x;         ///< Destination-pixel camera X.
+    int64_t camera_y;         ///< Destination-pixel camera Y.
+    double map_scale;         ///< Positive editor zoom multiplier.
+    double layer_offset_x;    ///< Effective scaled destination X offset.
+    double layer_offset_y;    ///< Effective scaled destination Y offset.
+    int default_layout;       ///< Nonzero for direct logical-grid placement.
+    tilemap_scaled_tile_cache_entry **cache; ///< Shared cache allocation address.
+    size_t *cache_count;      ///< Shared occupied-entry count.
+    size_t *cache_capacity;   ///< Shared hash-slot capacity.
 } tilemap_scaled_draw_context;
 
 /// @brief Scale and draw one source-frame cell at its projected zoomed position.

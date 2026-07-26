@@ -28,6 +28,22 @@
 //        il/analysis/CFG.hpp, il/transform/DSE.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares coarse MemorySSA construction and dead-store queries.
+ *
+ * @details The analysis assigns dense access nodes to memory-reading and
+ *          memory-defining instructions, inserts merge nodes at CFG joins, and
+ *          records def-use relationships rooted at a synthetic live-on-entry
+ *          state. It additionally identifies stores to non-escaping allocas
+ *          that are overwritten or reach an exit without an intervening read.
+ *
+ *          Results own their graph containers but borrow basic-block pointers
+ *          from the analyzed function, so structural function mutations
+ *          invalidate the analysis.
+ */
+
 #pragma once
 
 #include <cstdint>
@@ -63,6 +79,7 @@ enum class MemAccessKind {
 /// MemoryAccess nodes are owned and indexed inside @ref MemorySSA.  Consumers
 /// hold IDs (uint32_t) and look up nodes through the owning analysis.
 struct MemoryAccess {
+    /// @brief Role this node plays in the memory-version graph.
     MemAccessKind kind{MemAccessKind::LiveOnEntry};
     uint32_t id{0};                 ///< Dense ID; 0 is reserved for LiveOnEntry.
     il::core::Block *block{nullptr}; ///< Containing block; nullptr for LiveOnEntry.
@@ -129,14 +146,14 @@ class MemorySSA {
   private:
     friend MemorySSA computeMemorySSA(il::core::Function &F, zanna::analysis::BasicAA &AA);
 
-    /// All MemoryAccess nodes; index 0 = LiveOnEntry placeholder.
+    /// @brief All access nodes, with index zero reserved for live-on-entry.
     std::vector<MemoryAccess> accesses_;
 
-    /// (block, instrIdx) → MemoryAccess index in accesses_.
+    /// @brief Maps block/instruction positions to dense access-node identifiers.
     std::unordered_map<const il::core::Block *, std::unordered_map<size_t, uint32_t>>
         instrToAccess_;
 
-    /// Set of MemoryAccess IDs that represent dead stores.
+    /// @brief Access-node identifiers proven to represent dead stores.
     std::unordered_set<uint32_t> deadStoreIds_;
 };
 

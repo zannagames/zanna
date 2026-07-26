@@ -30,6 +30,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_version.c
+ * @brief Implements SemVer parsing, precedence, constraints, and component bumps.
+ * @details Managed Version objects store bounded signed core components plus
+ *          owned prerelease and build text. Comparison follows SemVer
+ *          identifier precedence while ignoring build metadata, and constraint
+ *          evaluation supports relational, caret, and tilde operators.
+ */
+
 #include "rt_version.h"
 
 #include "rt_internal.h"
@@ -58,6 +67,7 @@ typedef struct rt_version_impl {
 ///          but the optional `-pre` and `+build` portions are
 ///          heap-allocated copies. `free(NULL)` is a no-op so we
 ///          don't need to guard the optional fields explicitly.
+/// @param obj Version object being finalized; null is ignored.
 static void version_finalizer(void *obj) {
     rt_version_impl *v = (rt_version_impl *)obj;
     if (!v)
@@ -67,6 +77,9 @@ static void version_finalizer(void *obj) {
 }
 
 /// @brief NUL-terminated heap copy of `s[0..len)`. Returns NULL on allocation failure.
+/// @param s Source byte span.
+/// @param len Number of bytes to copy.
+/// @return Newly allocated C string, or null on allocation failure.
 static char *dup_str(const char *s, size_t len) {
     char *r = (char *)malloc(len + 1);
     if (!r)
@@ -76,16 +89,25 @@ static char *dup_str(const char *s, size_t len) {
     return r;
 }
 
+/// @brief Release a runtime-managed Version reference.
+/// @param v Version object; null is ignored.
 static void release_version(void *v) {
     if (v && rt_obj_release_check0(v))
         rt_obj_free(v);
 }
 
+/// @brief Trap when a version string-builder operation fails.
+/// @param status Builder status to inspect.
+/// @param op Null-terminated trap message.
 static void check_sb(rt_sb_status_t status, const char *op) {
     if (status != RT_SB_OK)
         rt_trap(op);
 }
 
+/// @brief Copy a byte range after trimming C-library whitespace at both ends.
+/// @param start Inclusive range start.
+/// @param end Exclusive range end.
+/// @return Newly allocated trimmed runtime string.
 static rt_string trimmed_slice_string(const char *start, const char *end) {
     while (start < end && isspace((unsigned char)*start))
         start++;
@@ -94,10 +116,20 @@ static rt_string trimmed_slice_string(const char *start, const char *end) {
     return rt_string_from_bytes(start, (size_t)(end - start));
 }
 
+/// @brief Test whether a byte is legal in a SemVer identifier.
+/// @param c Byte to classify.
+/// @return Nonzero for an alphanumeric byte or hyphen.
 static int semver_ident_char(char c) {
     return isalnum((unsigned char)c) || c == '-';
 }
 
+/// @brief Validate dot-separated prerelease or build identifiers.
+/// @details Empty identifiers are rejected. Numeric prerelease identifiers
+///          additionally reject leading zeros; build identifiers do not.
+/// @param s Identifier-list bytes.
+/// @param len Number of bytes in @p s.
+/// @param prerelease Nonzero to apply prerelease numeric rules.
+/// @return Nonzero when the complete list is valid.
 static int semver_validate_identifiers(const char *s, size_t len, int prerelease) {
     if (len == 0)
         return 0;
@@ -131,6 +163,10 @@ static int semver_validate_identifiers(const char *s, size_t len, int prerelease
 ///          malformed input, leaving `*pos` unchanged for the
 ///          caller to react. Leaves `*pos` pointing at the first
 ///          non-digit byte after a successful parse.
+/// @param str Complete version byte buffer.
+/// @param len Number of bytes in @p str.
+/// @param pos In/out parse offset.
+/// @return Parsed component in `[0, INT64_MAX]`, or `-1` on failure.
 static int64_t parse_num(const char *str, size_t len, size_t *pos) {
     if (*pos >= len || !isdigit((unsigned char)str[*pos]))
         return -1;
@@ -153,6 +189,10 @@ static int64_t parse_num(const char *str, size_t len, size_t *pos) {
 /// @brief Parse a SemVer 2.0 string ("1.2.3-rc.1+build.5") into a Version object. Returns NULL
 /// for malformed input. Optional prerelease (after `-`) and build metadata (after `+`) are kept
 /// separate; build metadata is ignored by `_cmp` per SemVer spec.
+/// @details Accepts an optional leading `v` or `V`. Core components must fit
+///          signed 64-bit integers and follow the no-leading-zero rule.
+/// @param str Borrowed version text.
+/// @return Caller-owned runtime-managed Version, or null for invalid input.
 void *rt_version_parse(rt_string str) {
     if (!str)
         return NULL;
@@ -249,6 +289,8 @@ void *rt_version_parse(rt_string str) {
 }
 
 /// @brief Check whether a string is a valid semantic version (major.minor.patch).
+/// @param str Borrowed version text.
+/// @return `1` when `rt_version_parse` succeeds, otherwise `0`.
 int8_t rt_version_is_valid(rt_string str) {
     void *v = rt_version_parse(str);
     if (!v)
@@ -258,6 +300,8 @@ int8_t rt_version_is_valid(rt_string str) {
 }
 
 /// @brief Return the MAJOR component of the parsed version.
+/// @param ver Borrowed Version object; null reports zero.
+/// @return Major component.
 int64_t rt_version_major(void *ver) {
     if (!ver)
         return 0;
@@ -265,13 +309,17 @@ int64_t rt_version_major(void *ver) {
 }
 
 /// @brief Return the MINOR component of the parsed version.
+/// @param ver Borrowed Version object; null reports zero.
+/// @return Minor component.
 int64_t rt_version_minor(void *ver) {
     if (!ver)
         return 0;
     return ((rt_version_impl *)ver)->minor;
 }
 
-/// @brief Return the PATCH component (defaults to 0 if absent in source).
+/// @brief Return the PATCH component of the parsed version.
+/// @param ver Borrowed Version object; null reports zero.
+/// @return Patch component.
 int64_t rt_version_patch(void *ver) {
     if (!ver)
         return 0;
@@ -279,6 +327,8 @@ int64_t rt_version_patch(void *ver) {
 }
 
 /// @brief Return the prerelease label (text after `-`), or empty string if absent.
+/// @param ver Borrowed Version object.
+/// @return Newly allocated prerelease text or empty string.
 rt_string rt_version_prerelease(void *ver) {
     if (!ver || !((rt_version_impl *)ver)->prerelease)
         return rt_string_from_bytes("", 0);
@@ -290,6 +340,8 @@ rt_string rt_version_prerelease(void *ver) {
 /// @details Per SemVer 2.0, build metadata does not affect comparison
 ///          ordering — it's metadata for the consumer's bookkeeping
 ///          (CI build numbers, commit hashes, etc.).
+/// @param ver Borrowed Version object.
+/// @return Newly allocated build metadata or empty string.
 rt_string rt_version_build(void *ver) {
     if (!ver || !((rt_version_impl *)ver)->build)
         return rt_string_from_bytes("", 0);
@@ -298,6 +350,8 @@ rt_string rt_version_build(void *ver) {
 }
 
 /// @brief Convert the version to a human-readable string representation.
+/// @param ver Borrowed Version object.
+/// @return Newly allocated canonical version text, or empty string for null.
 rt_string rt_version_to_string(void *ver) {
     if (!ver)
         return rt_string_from_bytes("", 0);
@@ -324,9 +378,13 @@ rt_string rt_version_to_string(void *ver) {
     return result;
 }
 
-// Compare pre-release identifiers per SemVer spec.
-// No pre-release > with pre-release.
-// Numeric identifiers compared numerically, alphanumeric lexically.
+/// @brief Compare prerelease identifier lists by SemVer precedence.
+/// @details Absence sorts after any prerelease. Numeric identifiers sort by
+///          magnitude and before alphanumeric identifiers; remaining text uses
+///          bytewise lexical order.
+/// @param a Null-terminated prerelease text, or null for a release.
+/// @param b Null-terminated prerelease text, or null for a release.
+/// @return `-1`, `0`, or `1` according to precedence.
 static int cmp_prerelease(const char *a, const char *b) {
     // Both NULL -> equal
     if (!a && !b)
@@ -390,7 +448,12 @@ static int cmp_prerelease(const char *a, const char *b) {
     return 0;
 }
 
-/// @brief Cmp the version.
+/// @brief Compare two parsed versions by SemVer precedence.
+/// @details Build metadata is ignored. Null sorts before a non-null Version;
+///          two null pointers compare equal.
+/// @param a Borrowed first Version, or null.
+/// @param b Borrowed second Version, or null.
+/// @return `-1`, `0`, or `1`.
 int64_t rt_version_cmp(void *a, void *b) {
     if (!a && !b)
         return 0;
@@ -413,6 +476,11 @@ int64_t rt_version_cmp(void *a, void *b) {
 }
 
 /// @brief Parse and compare two semantic version strings.
+/// @details Invalid input parses as null and therefore follows
+///          `rt_version_cmp`'s null ordering.
+/// @param a Borrowed first version text.
+/// @param b Borrowed second version text.
+/// @return `-1`, `0`, or `1`.
 int64_t rt_version_compare(rt_string a, rt_string b) {
     void *av = rt_version_parse(a);
     void *bv = rt_version_parse(b);
@@ -423,6 +491,8 @@ int64_t rt_version_compare(rt_string a, rt_string b) {
 }
 
 /// @brief Parse a semantic version string and return its major component.
+/// @param str Borrowed version text.
+/// @return Parsed major component, or zero when parsing fails.
 int64_t rt_version_major_str(rt_string str) {
     void *ver = rt_version_parse(str);
     int64_t result = rt_version_major(ver);
@@ -431,6 +501,8 @@ int64_t rt_version_major_str(rt_string str) {
 }
 
 /// @brief Parse a semantic version string and return its minor component.
+/// @param str Borrowed version text.
+/// @return Parsed minor component, or zero when parsing fails.
 int64_t rt_version_minor_str(rt_string str) {
     void *ver = rt_version_parse(str);
     int64_t result = rt_version_minor(ver);
@@ -439,6 +511,8 @@ int64_t rt_version_minor_str(rt_string str) {
 }
 
 /// @brief Parse a semantic version string and return its patch component.
+/// @param str Borrowed version text.
+/// @return Parsed patch component, or zero when parsing fails.
 int64_t rt_version_patch_str(rt_string str) {
     void *ver = rt_version_parse(str);
     int64_t result = rt_version_patch(ver);
@@ -446,7 +520,15 @@ int64_t rt_version_patch_str(rt_string str) {
     return result;
 }
 
-/// @brief Satisfies the version.
+/// @brief Test a parsed Version against one simple SemVer constraint.
+/// @details Supports exact/no operator, `=`, `!=`, `<`, `<=`, `>`, `>=`,
+///          caret, and tilde. Constraint whitespace is trimmed. Empty
+///          constraints match every non-null Version. Caret compatibility
+///          follows major/minor/patch zero rules; tilde requires equal
+///          major/minor and no lower precedence.
+/// @param ver Borrowed parsed Version.
+/// @param constraint Borrowed constraint containing a complete three-part version.
+/// @return `1` when satisfied, otherwise `0` for mismatch or invalid input.
 int8_t rt_version_satisfies(void *ver, rt_string constraint) {
     if (!ver || !constraint)
         return 0;
@@ -564,6 +646,9 @@ int8_t rt_version_satisfies(void *ver, rt_string constraint) {
 
 /// @brief Return a new version string with the major component incremented and minor/patch reset to
 /// 0.
+/// @details Prerelease and build metadata are discarded. Component overflow traps.
+/// @param ver Borrowed Version object.
+/// @return Newly allocated bumped version text, or empty string for null/overflow.
 rt_string rt_version_bump_major(void *ver) {
     if (!ver)
         return rt_string_from_bytes("", 0);
@@ -582,6 +667,9 @@ rt_string rt_version_bump_major(void *ver) {
 }
 
 /// @brief Return a new version string with the minor component incremented and patch reset to 0.
+/// @details Prerelease and build metadata are discarded. Component overflow traps.
+/// @param ver Borrowed Version object.
+/// @return Newly allocated bumped version text, or empty string for null/overflow.
 rt_string rt_version_bump_minor(void *ver) {
     if (!ver)
         return rt_string_from_bytes("", 0);
@@ -602,6 +690,9 @@ rt_string rt_version_bump_minor(void *ver) {
 }
 
 /// @brief Return a new version string with the patch component incremented.
+/// @details Prerelease and build metadata are discarded. Component overflow traps.
+/// @param ver Borrowed Version object.
+/// @return Newly allocated bumped version text, or empty string for null/overflow.
 rt_string rt_version_bump_patch(void *ver) {
     if (!ver)
         return rt_string_from_bytes("", 0);

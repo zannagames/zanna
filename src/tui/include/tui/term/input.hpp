@@ -5,9 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the InputDecoder class, which transforms raw terminal
-// byte sequences into structured input events (KeyEvent, MouseEvent,
-// PasteEvent) for Zanna's TUI framework.
+/// @file
+/// @brief Declares incremental terminal-byte decoding into structured input events.
+/// @details InputDecoder coordinates UTF-8, CSI, SS3, and bracketed-paste state
+///          machines and owns chronological key, mouse, and paste output queues.
 //
 // The decoder maintains an internal state machine that handles:
 //   - UTF-8 multi-byte character sequences (via Utf8Decoder)
@@ -72,20 +73,32 @@ class InputDecoder {
     [[nodiscard]] std::vector<PasteEvent> drain_paste();
 
   private:
+    /// @brief Active terminal-input grammar state.
     enum class State { Utf8, Esc, CSI, SS3, Paste, PasteEsc, PasteCSI };
 
+    /// @brief Emit one decoded Unicode code point as a key event.
+    /// @param cp Unicode scalar value produced by the UTF-8 decoder.
     void emit(uint32_t cp);
+
+    /// @brief Decode a completed CSI sequence and select the next state.
+    /// @param final CSI final byte.
+    /// @param params Parameter bytes preceding @p final.
+    /// @return State to enter after handling the sequence.
     State handle_csi(char final, std::string_view params);
+
+    /// @brief Decode a completed SS3 special-key sequence.
+    /// @param final SS3 final byte identifying the key.
+    /// @param params Optional parameter bytes preceding @p final.
     void handle_ss3(char final, std::string_view params);
 
-    State state_{State::Utf8};
-    std::string seq_{};
-    Utf8Decoder utf8_decoder_{};
-    std::vector<KeyEvent> key_events_{};
-    std::vector<MouseEvent> mouse_events_{};
-    std::vector<PasteEvent> paste_events_{};
-    std::string paste_buf_{};
-    CsiParser csi_parser_;
+    State state_{State::Utf8};              ///< Current input grammar state.
+    std::string seq_{};                     ///< Incomplete escape-sequence bytes.
+    Utf8Decoder utf8_decoder_{};            ///< Incremental Unicode decoder.
+    std::vector<KeyEvent> key_events_{};    ///< Pending key events.
+    std::vector<MouseEvent> mouse_events_{}; ///< Pending mouse events.
+    std::vector<PasteEvent> paste_events_{}; ///< Pending completed paste events.
+    std::string paste_buf_{};               ///< Text accumulated during bracketed paste.
+    CsiParser csi_parser_;                  ///< CSI decoder bound to owned queues.
 };
 
 } // namespace zanna::tui::term

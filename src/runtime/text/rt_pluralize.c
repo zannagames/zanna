@@ -16,7 +16,8 @@
 //   - Uncountable nouns (mass nouns) return the input unchanged.
 //   - Pluralize(1, "cat") returns "1 cat"; Pluralize(2, "cat") returns "2 cats".
 //   - Rules are English-specific; other languages are not supported.
-//   - Case of the first letter is preserved in the output.
+//   - Title-case irregulars retain an uppercase initial, and all-uppercase
+//     inputs produce uppercase replacement text and suffixes.
 //   - All lookups are case-insensitive for the irregular/uncountable tables.
 //
 // Ownership/Lifetime:
@@ -26,6 +27,15 @@
 // Links: src/runtime/text/rt_pluralize.h (public API)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_pluralize.c
+ * @brief Implements lightweight English noun inflection and count labels.
+ * @details Case-insensitive irregular and uncountable tables precede ordered
+ *          suffix heuristics for plural and singular forms. Replacement case
+ *          is coarsely preserved, and count formatting combines a complete
+ *          signed integer with the selected noun form.
+ */
 
 #include "rt_pluralize.h"
 
@@ -41,12 +51,13 @@
 
 #include "rt_trap.h"
 
-// Irregular plural forms (singular -> plural)
+/// Singular/plural spelling pair used before heuristic suffix rules.
 typedef struct {
     const char *singular;
     const char *plural;
 } irregular_t;
 
+/// Null-terminated table of common irregular English inflections.
 static const irregular_t irregulars[] = {{"child", "children"},
                                          {"foot", "feet"},
                                          {"goose", "geese"},
@@ -86,13 +97,20 @@ static const irregular_t irregulars[] = {{"child", "children"},
                                          {"self", "selves"},
                                          {NULL, NULL}};
 
-// Uncountable nouns
+/// Null-terminated table of nouns returned unchanged in either direction.
 static const char *uncountables[] = {
     "sheep",   "fish",        "deer",      "series",   "species",  "money",
     "rice",    "information", "equipment", "news",     "advice",   "furniture",
     "luggage", "traffic",     "music",     "software", "hardware", "knowledge",
     "weather", "research",    "evidence",  "homework", NULL};
 
+/// @brief Test whether a byte string ends with a case-insensitive suffix.
+/// @details Case conversion uses the C library's byte-oriented `tolower`; this
+///          is not Unicode case folding.
+/// @param str Input byte buffer.
+/// @param len Number of bytes in @p str.
+/// @param suffix Null-terminated suffix to compare.
+/// @return Nonzero when @p suffix matches the final bytes of @p str.
 static int str_ends_with_ci(const char *str, size_t len, const char *suffix) {
     size_t slen = strlen(suffix);
     if (slen > len)
@@ -105,11 +123,15 @@ static int str_ends_with_ci(const char *str, size_t len, const char *suffix) {
     return 1;
 }
 
-/// @brief Case-insensitive ASCII string comparison (`a == b` with `toLower` on both sides).
+/// @brief Compare a byte span with a null-terminated word case-insensitively.
 /// @details Used to match user input against the irregular and
 ///          uncountable word tables, which are stored lowercase.
-///          ASCII-only — locale-aware folds (e.g. Turkish `İ`) are
-///          out of scope.
+///          Folding is byte-oriented through the C library and does not
+///          implement Unicode case equivalence.
+/// @param a Input byte span.
+/// @param a_len Number of bytes in @p a.
+/// @param b Null-terminated table word.
+/// @return Nonzero when lengths and case-folded bytes match.
 static int str_eq_nocase_len(const char *a, size_t a_len, const char *b) {
     size_t b_len = strlen(b);
     if (a_len != b_len)
@@ -121,6 +143,13 @@ static int str_eq_nocase_len(const char *a, size_t a_len, const char *b) {
     return 1;
 }
 
+/// @brief Determine whether a byte span contains letters but no lowercase letters.
+/// @details Letter classification uses the C library's byte-oriented ctype
+///          functions. Nonletters are ignored.
+/// @param src Input byte span.
+/// @param len Number of bytes in @p src.
+/// @return Nonzero when at least one byte is alphabetic and every alphabetic
+///         byte is uppercase.
 static int is_ascii_all_caps_word(const char *src, size_t len) {
     int saw_alpha = 0;
     for (size_t i = 0; i < len; i++) {
@@ -134,6 +163,15 @@ static int is_ascii_all_caps_word(const char *src, size_t len) {
     return saw_alpha;
 }
 
+/// @brief Copy a table inflection while applying the input word's coarse casing.
+/// @details All-uppercase input uppercases the entire replacement; otherwise an
+///          uppercase first input byte uppercases only the replacement initial.
+///          Allocation failure traps and falls back to a runtime copy of the
+///          lowercase replacement.
+/// @param src Original input word bytes.
+/// @param src_len Number of bytes in @p src.
+/// @param replacement Lowercase null-terminated irregular form.
+/// @return Newly allocated runtime string containing the case-adjusted form.
 static rt_string inflection_with_input_case(const char *src,
                                             size_t src_len,
                                             const char *replacement) {
@@ -157,6 +195,12 @@ static rt_string inflection_with_input_case(const char *src,
     return result;
 }
 
+/// @brief Copy a suffix and uppercase it for an all-uppercase source word.
+/// @param dst Writable destination with room for @p suffix_len bytes.
+/// @param src Original source word bytes.
+/// @param src_len Number of bytes in @p src.
+/// @param suffix Suffix bytes to copy.
+/// @param suffix_len Number of bytes in @p suffix.
 static void copy_suffix_with_input_case(
     char *dst, const char *src, size_t src_len, const char *suffix, size_t suffix_len) {
     memcpy(dst, suffix, suffix_len);
@@ -166,6 +210,14 @@ static void copy_suffix_with_input_case(
     }
 }
 
+/// @brief Append a case-adjusted suffix to a word.
+/// @details Preserves the source bytes verbatim and uppercases the suffix when
+///          the source is all uppercase. Size overflow or temporary allocation
+///          failure traps and returns a runtime copy of the source.
+/// @param src Source word bytes.
+/// @param len Number of bytes in @p src.
+/// @param suffix Lowercase null-terminated suffix.
+/// @return Newly allocated runtime string containing the inflected word.
 static rt_string append_suffix(const char *src, size_t len, const char *suffix) {
     size_t suffix_len = strlen(suffix);
     if (len > SIZE_MAX - suffix_len || len + suffix_len == SIZE_MAX) {
@@ -186,6 +238,15 @@ static rt_string append_suffix(const char *src, size_t len, const char *suffix) 
     return result;
 }
 
+/// @brief Replace trailing source bytes with a case-adjusted suffix.
+/// @details If @p remove_len exceeds @p len, the entire source is removed.
+///          Size overflow or temporary allocation failure traps and returns a
+///          runtime copy of the source.
+/// @param src Source word bytes.
+/// @param len Number of bytes in @p src.
+/// @param remove_len Number of trailing source bytes to discard.
+/// @param replacement Lowercase null-terminated replacement suffix.
+/// @return Newly allocated runtime string containing the inflected word.
 static rt_string replace_suffix(const char *src,
                                 size_t len,
                                 size_t remove_len,
@@ -215,6 +276,9 @@ static rt_string replace_suffix(const char *src,
 ///          lookup wouldn't pay off. Words like "sheep", "rice",
 ///          "information" pluralize to themselves, so the caller
 ///          short-circuits with "return the word as-is" on a hit.
+/// @param word Input noun bytes.
+/// @param len Number of bytes in @p word.
+/// @return Nonzero when @p word matches a table entry case-insensitively.
 static int is_uncountable(const char *word, size_t len) {
     for (int i = 0; uncountables[i]; ++i) {
         if (str_eq_nocase_len(word, len, uncountables[i]))
@@ -233,7 +297,11 @@ static int is_uncountable(const char *word, size_t len) {
 ///             - consonant + `y` → `-y +ies` ("city" → "cities")
 ///             - `-f/-fe` → `-f/-fe +ves` ("life" → "lives")
 ///             - default → `+s` ("cat" → "cats")
-///          Case is preserved for the original portion of the word.
+///          A consonant-plus-`o` heuristic also adds `es`. Source bytes are
+///          preserved, while generated text follows title-case or all-uppercase
+///          input. Null, unbacked, and empty strings yield an empty string.
+/// @param word Borrowed singular noun to inflect.
+/// @return Newly allocated plural-form runtime string.
 rt_string rt_pluralize(rt_string word) {
     if (!word)
         return rt_string_from_bytes("", 0);
@@ -305,6 +373,9 @@ rt_string rt_pluralize(rt_string word) {
 ///          For ambiguous forms ("foxes" could come from "fox" or
 ///          "foxe"), the rules pick the more common reverse — never
 ///          perfect but matches typical English.
+///          Null, unbacked, and empty strings yield an empty string.
+/// @param word Borrowed plural noun to inflect.
+/// @return Newly allocated singular-form runtime string.
 rt_string rt_singularize(rt_string word) {
     if (!word)
         return rt_string_from_bytes("", 0);
@@ -364,7 +435,11 @@ rt_string rt_singularize(rt_string word) {
 ///          Matches the convention of natural English where "0 items"
 ///          and "5 items" both use the plural form (unlike Russian or
 ///          Polish which have separate "few" / "many" forms — out of
-///          scope here).
+///          scope here). Both `1` and `-1` retain the supplied singular noun.
+///          A null noun produces an empty string rather than a count alone.
+/// @param count Signed item count to render.
+/// @param word Borrowed singular noun.
+/// @return Newly allocated `"count noun"` runtime string.
 rt_string rt_pluralize_count(int64_t count, rt_string word) {
     if (!word)
         return rt_string_from_bytes("", 0);

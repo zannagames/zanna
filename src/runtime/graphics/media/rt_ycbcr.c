@@ -20,6 +20,14 @@
 // Links: src/runtime/graphics/media/rt_ycbcr.h (public conversion API)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements fixed-point BT.601 planar YCbCr-to-RGBA conversion.
+ * @details A shared bounded converter maps chroma coordinates for 4:2:0,
+ * 4:2:2, and 4:4:4 layouts, converts each limited-range sample with
+ * integer arithmetic, saturates color channels, and writes opaque Zanna
+ * packed pixels into caller-owned storage.
+ */
 
 #include "rt_ycbcr.h"
 

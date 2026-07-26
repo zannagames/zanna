@@ -183,6 +183,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Defines VM opcode-dispatch metadata, generation macros, and
+///        compile-time handler coverage checks.
+/// @details The declarations connect opcode registry entries to function-table,
+///          switch, and computed-goto dispatch implementations.  Validation
+///          helpers allow generated tables to prove complete coverage at compile
+///          time or inspect handler availability in constant expressions.
+
 #pragma once
 
 #include "il/core/Opcode.hpp"
@@ -213,12 +221,14 @@ constexpr size_t kDispatchCount = static_cast<size_t>(VMDispatch::Count);
 /// @brief Assert that the handler table covers all opcodes.
 /// @details Use this macro in handler table definitions to catch mismatches
 ///          at compile time rather than runtime.
+/// @param TABLE Fixed-size handler table expression checked with @c std::size.
 #define ZANNA_ASSERT_HANDLER_TABLE_SIZE(TABLE)                                                     \
     static_assert(std::size(TABLE) == il::core::kNumOpcodes,                                       \
                   "Handler table size mismatch: missing or extra opcode handlers")
 
 /// @brief Assert that a specific table has the expected size.
 /// @details For arrays where std::size() isn't available.
+/// @param COUNT Constant expression containing the number of handlers.
 #define ZANNA_ASSERT_HANDLER_COUNT(COUNT)                                                          \
     static_assert((COUNT) == il::core::kNumOpcodes,                                                \
                   "Handler count mismatch: missing or extra opcode handlers")
@@ -229,10 +239,12 @@ constexpr size_t kDispatchCount = static_cast<size_t>(VMDispatch::Count);
 
 /// @brief Generate a handler table entry using the opcode name.
 /// @details Expands to the handler function address for TABLE dispatch.
+/// @param NAME Opcode suffix appended to the @c handle function prefix.
 #define ZANNA_HANDLER_ENTRY(NAME) &il::vm::detail::handle##NAME
 
 /// @brief Generate a switch case for an opcode.
 /// @details Expands to a case statement calling the inline handler.
+/// @param NAME Opcode enumerator and inline-handler suffix.
 #define ZANNA_SWITCH_CASE(NAME)                                                                    \
     case il::core::Opcode::NAME:                                                                   \
         inline_handle_##NAME(state);                                                               \
@@ -240,6 +252,7 @@ constexpr size_t kDispatchCount = static_cast<size_t>(VMDispatch::Count);
 
 /// @brief Generate a threaded dispatch label.
 /// @details Expands to a computed goto label address.
+/// @param NAME Opcode suffix appended to the threaded label prefix.
 #define ZANNA_THREADED_LABEL(NAME) &&LBL_##NAME
 
 //===----------------------------------------------------------------------===//
@@ -247,17 +260,21 @@ constexpr size_t kDispatchCount = static_cast<size_t>(VMDispatch::Count);
 //===----------------------------------------------------------------------===//
 
 /// @brief Check if an opcode has a valid handler at runtime.
+/// @tparam Table Indexable fixed-size handler-table type supported by
+///         @c std::size.
 /// @param op Opcode to check.
 /// @param table Handler table to search.
-/// @return true if a non-null handler exists.
+/// @return @c true if @p op indexes a non-null handler.
 template <typename Table> constexpr bool hasHandler(il::core::Opcode op, const Table &table) {
     const size_t index = static_cast<size_t>(op);
     return index < std::size(table) && table[index] != nullptr;
 }
 
 /// @brief Verify all opcodes have handlers (for debug builds).
+/// @tparam Table Indexable fixed-size handler-table type supported by
+///         @c std::size.
 /// @param table Handler table to verify.
-/// @return true if all opcodes have non-null handlers.
+/// @return @c true if every registered opcode has a non-null table entry.
 template <typename Table> constexpr bool verifyAllHandlers(const Table &table) {
     for (size_t i = 0; i < il::core::kNumOpcodes; ++i) {
         if (i >= std::size(table) || table[i] == nullptr)

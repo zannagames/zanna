@@ -30,6 +30,14 @@
 //        src/runtime/io/rt_archive.c (consumes this for ZIP DEFLATE entries)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements raw DEFLATE, zlib-wrapped inflate, and GZIP APIs.
+ * @details Provides sticky bounded bit reading, canonical fixed and dynamic
+ * Huffman decoding, stored-block handling, sliding-window expansion,
+ * allocation limits, zlib Adler-32 and GZIP CRC/trailer validation, and
+ * transactional managed Bytes/string wrappers.
+ */
 
 #include "rt_compress.h"
 
@@ -65,20 +73,29 @@ typedef enum {
     RT_HUFFMAN_DYNAMIC = 2, ///< Dynamic Huffman codes.
 } rt_huffman_type_t;
 
+/** @name Inflate alphabet sizes and default compression level
+ * @{ */
 #define DEFLATE_DEFAULT_LEVEL 6
 #define MAX_BITS 15           // Maximum Huffman code length
 #define MAX_LIT_CODES 286     // 0-255 literals + 256 end + 257-285 lengths
 #define MAX_DIST_CODES 30     // Distance codes
 #define MAX_CODE_LEN_CODES 19 // Code length alphabet size
+/** @} */
 
+/// @copydoc rt_trap_set_recovery()
 extern void rt_trap_set_recovery(jmp_buf *buf);
+/// @copydoc rt_trap_clear_recovery()
 extern void rt_trap_clear_recovery(void);
+/// @copydoc rt_trap_get_error()
 extern const char *rt_trap_get_error(void);
 
 
 // Fixed Huffman code lengths (RFC 1951)
+/** @name Fixed-Huffman alphabet sizes
+ * @{ */
 #define FIXED_LIT_CODES 288
 #define FIXED_DIST_CODES 32
+/** @} */
 
 //=============================================================================
 // Internal Bytes Access
@@ -456,11 +473,15 @@ static void free_huffman_tree(huffman_tree_t *tree) {
 // Fixed Huffman Trees (for block type 1)
 //=============================================================================
 
+/** Process-lifetime fixed literal/length decoder table. */
 huffman_tree_t fixed_lit_tree = {0};
+/** Process-lifetime fixed distance decoder table. */
 huffman_tree_t fixed_dist_tree = {0};
 #ifdef _WIN32
+/** Windows one-time token guarding fixed-tree publication. */
 static INIT_ONCE fixed_trees_once = INIT_ONCE_STATIC_INIT;
 #else
+/** POSIX one-time token guarding fixed-tree publication. */
 static pthread_once_t fixed_trees_once = PTHREAD_ONCE_INIT;
 #endif
 
@@ -533,6 +554,7 @@ void init_fixed_trees(void) {
 // Extra bits for length codes 257-285
 
 // Code length alphabet order (for dynamic Huffman)
+/** RFC 1951 transmission order for the dynamic code-length alphabet. */
 static const int code_length_order[MAX_CODE_LEN_CODES] = {
     16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
 
@@ -595,6 +617,7 @@ static int out_init_fixed(output_buffer_t *out, uint8_t *data, size_t size) {
 }
 
 /* S-20: Maximum decompressed output size (256 MB) to prevent decompression bombs */
+/** Default decoded-output ceiling for public inflate and gunzip entry points. */
 #define INFLATE_DEFAULT_MAX_OUTPUT (256u * 1024u * 1024u)
 
 /// @brief Ensure room for more decoded bytes without exceeding the configured cap.

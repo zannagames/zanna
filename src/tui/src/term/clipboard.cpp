@@ -180,6 +180,9 @@ std::string MockClipboard::paste() {
     std::string_view b64 =
         std::string_view(last_).substr(find_last_semicolon + 1, end - (find_last_semicolon + 1));
 
+    /// @brief Decode one Base64 alphabet character.
+    /// @param c Character to decode.
+    /// @return Sextet value, `-2` for padding, or `-1` for invalid input.
     auto dec = [](char c) -> int {
         if (c >= 'A' && c <= 'Z')
             return c - 'A';

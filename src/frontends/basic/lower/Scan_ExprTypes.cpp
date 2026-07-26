@@ -460,6 +460,8 @@ Lowerer::ExprType scanBuiltinExprTypes(Lowerer &lowerer, const BuiltinCallExpr &
     const auto &rule = getBuiltinScanRule(expr.builtin);
     std::vector<std::optional<Lowerer::ExprType>> argTypes(expr.args.size());
 
+    /// @brief Scans one present builtin argument into the type cache.
+    /// @param idx Argument index to scan.
     auto scanArg = [&](std::size_t idx) {
         if (idx >= expr.args.size())
             return;
@@ -478,6 +480,9 @@ Lowerer::ExprType scanBuiltinExprTypes(Lowerer &lowerer, const BuiltinCallExpr &
             scanArg(idx);
     }
 
+    /// @brief Retrieves a cached builtin argument type.
+    /// @param idx Argument index to query.
+    /// @return Cached type, or `std::nullopt` when absent or out of range.
     auto argType = [&](std::size_t idx) -> std::optional<Lowerer::ExprType> {
         if (idx >= argTypes.size())
             return std::nullopt;

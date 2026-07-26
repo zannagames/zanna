@@ -25,6 +25,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements dependency-free Linux package/archive assembly and external RPM signing.
+/// @details Provides shared FHS payload collection, metadata generation, archive
+///          construction, toolchain packaging, and self-extracting bundle support.
+
 #include "LinuxPackageBuilder.hpp"
 #include "ArWriter.hpp"
 #include "DesktopEntryGenerator.hpp"
@@ -59,20 +64,30 @@ namespace {
 
 /// @brief Track a data file for md5sums generation.
 struct DataFile {
-    std::string installPath; ///< e.g. "usr/bin/hello"
-    std::vector<uint8_t> data;
-    uint32_t mode{0644};
-    bool symlink{false};
-    bool directory{false};
-    std::string symlinkTarget;
+    std::string installPath; ///< Sanitized package-relative destination, such as `usr/bin/hello`.
+    std::vector<uint8_t> data; ///< Regular-file payload bytes; empty for links/directories.
+    uint32_t mode{0644};       ///< Unix permission bits stored in the archive.
+    bool symlink{false};       ///< Whether this entry represents a symbolic link.
+    bool directory{false};     ///< Whether this entry represents a directory.
+    std::string symlinkTarget; ///< Link target when `symlink` is true.
 
+    /// @brief Construct a regular data-file entry with mode 0644.
+    /// @param path Package-relative installation path.
+    /// @param bytes File payload bytes.
     DataFile(std::string path, std::vector<uint8_t> bytes)
         : installPath(std::move(path)), data(std::move(bytes)) {}
 
+    /// @brief Construct a regular data-file entry with explicit Unix permissions.
+    /// @param path Package-relative installation path.
+    /// @param bytes File payload bytes.
+    /// @param modeBits Unix permission bits stored in the archive.
     DataFile(std::string path, std::vector<uint8_t> bytes, uint32_t modeBits)
         : installPath(std::move(path)), data(std::move(bytes)), mode(modeBits) {}
 
     /// @brief Create a symbolic link entry pointing to `target`.
+    /// @param path Package-relative link path.
+    /// @param target Link target recorded in the archive.
+    /// @return Link entry with mode 0777 and no payload bytes.
     static DataFile link(std::string path, std::string target) {
         DataFile file(std::move(path), {});
         file.symlink = true;
@@ -82,6 +97,8 @@ struct DataFile {
     }
 
     /// @brief Create a directory entry (no data; mode 0755).
+    /// @param path Package-relative directory path.
+    /// @return Directory entry with mode 0755.
     static DataFile dir(std::string path) {
         DataFile file(std::move(path), {});
         file.directory = true;
@@ -91,12 +108,17 @@ struct DataFile {
 };
 
 /// @brief Map a Zanna arch string ("x64", "arm64") to the Debian architecture field value.
+/// @param arch Portable architecture name.
+/// @return `amd64` for `x64`, otherwise validated `arm64`.
+/// @throws std::runtime_error If the architecture is unsupported.
 std::string debArchFor(const std::string &arch) {
     validateToolchainArchitecture(arch);
     return arch == "arm64" ? "arm64" : "amd64";
 }
 
 /// @brief Return `text` with all ASCII letters converted to lowercase.
+/// @param text Text to normalize in place.
+/// @return Lowercase copy.
 std::string lowerAscii(std::string text) {
     for (char &c : text)
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -104,6 +126,9 @@ std::string lowerAscii(std::string text) {
 }
 
 /// @brief Read a little-endian 16-bit integer from an ELF byte buffer.
+/// @param data Complete input byte buffer.
+/// @param off Starting byte offset.
+/// @return Decoded value, or zero when two bytes are unavailable.
 uint16_t readLe16(const std::vector<uint8_t> &data, size_t off) {
     if (off + 2u > data.size())
         return 0;
@@ -111,6 +136,9 @@ uint16_t readLe16(const std::vector<uint8_t> &data, size_t off) {
 }
 
 /// @brief Read a little-endian 32-bit integer from an ELF byte buffer.
+/// @param data Complete input byte buffer.
+/// @param off Starting byte offset.
+/// @return Decoded value, or zero when four bytes are unavailable.
 uint32_t readLe32(const std::vector<uint8_t> &data, size_t off) {
     if (off + 4u > data.size())
         return 0;
@@ -119,6 +147,9 @@ uint32_t readLe32(const std::vector<uint8_t> &data, size_t off) {
 }
 
 /// @brief Read a little-endian 64-bit integer from an ELF byte buffer.
+/// @param data Complete input byte buffer.
+/// @param off Starting byte offset.
+/// @return Decoded value assembled from two bounded 32-bit reads.
 uint64_t readLe64(const std::vector<uint8_t> &data, size_t off) {
     uint64_t lo = readLe32(data, off);
     uint64_t hi = readLe32(data, off + 4u);
@@ -239,6 +270,8 @@ std::vector<std::string> elfNeededLibraries(const std::vector<uint8_t> &data) {
 /// @brief Return Unix permission bits for a toolchain file.
 /// Uses the stored `unixMode` if non-zero; otherwise defaults to 0755 for executables and 0644 for
 /// data files.
+/// @param file Manifest entry whose stored or inferred mode is required.
+/// @return Stored permission bits, or an executable/data default when absent.
 uint32_t permissionBitsFor(const ToolchainFileEntry &file) {
     const uint32_t bits = file.unixMode & 07777u;
     if (bits != 0)
@@ -249,6 +282,7 @@ uint32_t permissionBitsFor(const ToolchainFileEntry &file) {
 /// @brief Choose archive permission bits for a staged file from its on-disk mode.
 /// @return 0755 when any execute bit is set on the source file, else 0644 (also
 ///         the fallback when the file cannot be stat'd).
+/// @param path Filesystem path to inspect.
 uint32_t permissionBitsForFilesystemPath(const fs::path &path) {
     std::error_code ec;
     const fs::perms perms = fs::status(path, ec).permissions();
@@ -265,6 +299,7 @@ uint32_t permissionBitsForFilesystemPath(const fs::path &path) {
 ///          such as `2:1.0` by accepting `:` here, then mapping it to `_` in the
 ///          filename component. Path separators and special path components remain rejected.
 /// @param version Version text from project metadata or a toolchain manifest.
+/// @throws std::runtime_error If the value is empty, multiline, special, or contains a separator.
 void validatePortableTarballVersion(const std::string &version) {
     if (version.empty())
         throw std::runtime_error("package version must not be empty");
@@ -279,6 +314,9 @@ void validatePortableTarballVersion(const std::string &version) {
 /// @details Keeps alphanumerics and `._+~-`, and replaces other safe metadata
 ///          separators such as Debian epoch `:` with `_` so the version can
 ///          appear safely in a tarball filename.
+/// @param version Validated package version text.
+/// @return Portable filename component derived from `version`.
+/// @throws std::runtime_error If validation fails or no safe component results.
 std::string portableArchiveVersionComponent(const std::string &version) {
     validatePortableTarballVersion(version);
     std::string out;
@@ -298,6 +336,11 @@ std::string portableArchiveVersionComponent(const std::string &version) {
 /// @brief Append a hidden terminal-type .desktop file to `dataFiles` for the given file
 /// associations. Writes a `noDisplay=true` desktop entry under
 /// `usr/share/applications/<desktopName>`. No-op when `associations` is empty.
+/// @param dataFiles Payload list to extend.
+/// @param desktopName Filename for the generated desktop entry.
+/// @param execPath Absolute installed command path.
+/// @param execArguments Arguments placed after the executable.
+/// @param associations File associations handled by the entry.
 void addToolchainDesktopMetadata(std::vector<DataFile> &dataFiles,
                                  const std::string &desktopName,
                                  const std::string &execPath,
@@ -327,6 +370,10 @@ void addToolchainDesktopMetadata(std::vector<DataFile> &dataFiles,
 /// @brief Append MIME XML and separate .desktop files (one for .il, one for source types) to
 /// `dataFiles`. Splits `manifest.fileAssociations` into IL vs. source groups so each gets its own
 /// desktop handler. No-op when `manifest.fileAssociations` is empty.
+/// @param dataFiles Payload list to extend.
+/// @param manifest Manifest supplying file associations.
+/// @param packageName Normalized package name used for generated filenames and MIME types.
+/// @param zannaExecPath Installed path to the Zanna command.
 void addToolchainFileAssociationMetadata(std::vector<DataFile> &dataFiles,
                                          const ToolchainInstallManifest &manifest,
                                          const std::string &packageName,
@@ -355,6 +402,8 @@ void addToolchainFileAssociationMetadata(std::vector<DataFile> &dataFiles,
 }
 
 /// @brief Append the visible Zanna Studio desktop launcher for Linux package menus.
+/// @param dataFiles Payload list to extend.
+/// @param execPath Installed path to the Zanna Studio executable.
 void addZannaStudioDesktopMetadata(std::vector<DataFile> &dataFiles, const std::string &execPath) {
     DesktopEntryParams desktop;
     desktop.name = "Zanna Studio";
@@ -388,6 +437,9 @@ void addZannaToolchainHicolorIcons(std::vector<DataFile> &dataFiles, const std::
 
 /// @brief Collect all Linux install files from the manifest, mapping each to its FHS path under
 /// /usr via `LinuxUsrRoot` policy, then appending generated file-association metadata entries.
+/// @param manifest Validated staged toolchain manifest.
+/// @param packageName Normalized package name used by generated metadata.
+/// @return Complete regular-file/link payload list for Linux package formats.
 std::vector<DataFile> collectToolchainLinuxFiles(const ToolchainInstallManifest &manifest,
                                                  const std::string &packageName) {
     std::vector<DataFile> dataFiles;
@@ -410,8 +462,12 @@ std::vector<DataFile> collectToolchainLinuxFiles(const ToolchainInstallManifest 
 
 /// @brief Add all parent directory entries to `tar` for every path in `dataFiles`.
 /// Deduplicates entries and sorts them so parent directories always precede their children.
+/// @param tar Archive writer to populate.
+/// @param dataFiles Payload paths whose parent directories are required.
 void addDirectoriesForDataFiles(TarWriter &tar, const std::vector<DataFile> &dataFiles) {
     std::vector<std::string> dirs;
+    /// @brief Record one normalized archive-directory path unless it is already present.
+    /// @param dirPath Directory path to normalize and add.
     auto ensureDir = [&](const std::string &dirPath) {
         std::string d = dirPath;
         if (!d.empty() && d.back() != '/')
@@ -438,6 +494,9 @@ void addDirectoriesForDataFiles(TarWriter &tar, const std::vector<DataFile> &dat
 
 /// @brief Map a Zanna arch string ("x64", "arm64") to the RPM architecture name
 /// ("x86_64"/"aarch64").
+/// @param arch Portable architecture name.
+/// @return RPM architecture identifier.
+/// @throws std::runtime_error If the architecture is unsupported.
 std::string rpmArchFor(const std::string &arch) {
     validateToolchainArchitecture(arch);
     return arch == "arm64" ? "aarch64" : "x86_64";
@@ -445,6 +504,9 @@ std::string rpmArchFor(const std::string &arch) {
 
 /// @brief Validate that `manifest` is a well-formed Linux toolchain manifest.
 /// Throws if the manifest platform is not "linux", naming `packageKind` in the error message.
+/// @param manifest Staged manifest to validate.
+/// @param packageKind Human-readable package kind used in diagnostics.
+/// @throws std::runtime_error If the manifest is invalid or targets another platform.
 void requireLinuxToolchainManifest(const ToolchainInstallManifest &manifest,
                                    const char *packageKind) {
     validateToolchainInstallManifest(manifest);
@@ -456,6 +518,8 @@ void requireLinuxToolchainManifest(const ToolchainInstallManifest &manifest,
 }
 
 /// @brief Join strings with ", " — used to render Debian Depends/Requires lines.
+/// @param items Ordered strings to join.
+/// @return Comma-and-space-delimited text, or an empty string for no items.
 std::string joinCommaSeparated(const std::vector<std::string> &items) {
     std::ostringstream out;
     for (size_t i = 0; i < items.size(); ++i) {
@@ -470,6 +534,9 @@ std::string joinCommaSeparated(const std::vector<std::string> &items) {
 ///        contains @p name (case-insensitive substring match).
 /// @details Used to derive runtime package dependencies from which Zanna support
 ///          libraries are actually included in the staged tree.
+/// @param manifest Manifest whose library entries are examined.
+/// @param name Lowercase-insensitive filename fragment to locate.
+/// @return `true` if a support/library filename contains `name`.
 bool manifestHasSupportLibrary(const ToolchainInstallManifest &manifest, std::string_view name) {
     for (const auto &file : manifest.files) {
         if (file.kind != ToolchainFileKind::SupportLibrary &&
@@ -514,6 +581,8 @@ std::vector<std::string> manifestNeededLibraries(const ToolchainInstallManifest 
 }
 
 /// @brief True if the manifest includes graphics/GUI libraries that need X11.
+/// @param manifest Staged toolchain manifest to inspect.
+/// @return Whether ELF dependencies or bundled library names imply X11.
 bool manifestNeedsX11(const ToolchainInstallManifest &manifest) {
     const auto needed = manifestNeededLibraries(manifest);
     if (std::find(needed.begin(), needed.end(), "libX11.so.6") != needed.end())
@@ -523,6 +592,8 @@ bool manifestNeedsX11(const ToolchainInstallManifest &manifest) {
 }
 
 /// @brief True if the manifest includes the audio library that needs ALSA.
+/// @param manifest Staged toolchain manifest to inspect.
+/// @return Whether ELF dependencies or bundled library names imply ALSA.
 bool manifestNeedsAlsa(const ToolchainInstallManifest &manifest) {
     const auto needed = manifestNeededLibraries(manifest);
     if (std::find(needed.begin(), needed.end(), "libasound.so.2") != needed.end())
@@ -537,6 +608,8 @@ enum class ToolchainCxxRuntime { Unknown, LibStdCxx, LibCxx };
 ///        libstdc++ / libc++ SONAME in its dynamic string table. Returns Unknown when the
 ///        binary is absent, not an ELF, or references neither/both — callers then keep the
 ///        conservative default dependency.
+/// @param manifest Staged manifest containing candidate primary binaries.
+/// @return Detected runtime family, or ToolchainCxxRuntime::Unknown.
 ToolchainCxxRuntime detectToolchainCxxRuntime(const ToolchainInstallManifest &manifest) {
     const ToolchainFileEntry *primary = nullptr;
     for (const auto &entry : manifest.files) {
@@ -582,6 +655,8 @@ ToolchainCxxRuntime detectToolchainCxxRuntime(const ToolchainInstallManifest &ma
 /// @details Narrows the C++ runtime dependency to the library the staged binary actually links
 ///          (libstdc++6 or libc++1); falls back to the `libstdc++6 | libc++1` alternative when
 ///          detection is inconclusive.
+/// @param manifest Manifest used for runtime and optional-library detection.
+/// @return Debian control-file dependency expression.
 std::string toolchainDebDepends(const ToolchainInstallManifest &manifest) {
     std::string cxxRuntime = "libstdc++6 | libc++1";
     switch (detectToolchainCxxRuntime(manifest)) {
@@ -727,6 +802,8 @@ std::string generateAppStreamMetaInfo(const std::string &pkgName,
 /// @details Always requires the base C/C++ runtime and build tools, and adds
 ///          libX11 / alsa-lib when the manifest stages the graphics/audio support
 ///          libraries.
+/// @param manifest Manifest used for runtime and optional-library detection.
+/// @return Ordered RPM requirement names.
 std::vector<std::string> toolchainRpmRequires(const ToolchainInstallManifest &manifest) {
     std::string cxxRuntime = "libstdc++";
     if (detectToolchainCxxRuntime(manifest) == ToolchainCxxRuntime::LibCxx)
@@ -749,6 +826,8 @@ std::vector<std::string> toolchainRpmRecommends() {
 }
 
 /// @brief Sort @p paths and remove exact duplicates (taken by value).
+/// @param paths Paths to sort and deduplicate.
+/// @return Sorted unique paths.
 std::vector<std::string> sortedUniquePaths(std::vector<std::string> paths) {
     std::sort(paths.begin(), paths.end());
     paths.erase(std::unique(paths.begin(), paths.end()), paths.end());
@@ -758,6 +837,8 @@ std::vector<std::string> sortedUniquePaths(std::vector<std::string> paths) {
 /// @brief Render the PREFIX-relative installed-files manifest written into tarballs.
 /// @details Sorts and de-duplicates @p paths and emits one path per line under a
 ///          header comment, so the uninstall script knows what to remove.
+/// @param paths Prefix-relative installed paths.
+/// @return Text manifest containing one sorted unique path per line.
 std::string renderInstallManifest(std::vector<std::string> paths) {
     paths = sortedUniquePaths(std::move(paths));
     std::ostringstream out;
@@ -1248,6 +1329,12 @@ bool rpmbuildAvailable() {
 /// @brief Find the .rpm produced by rpmbuild under `tmpRoot/RPMS/<arch>/`.
 /// Expects exactly one file matching `<packageName>-<version>-*.<arch>.rpm`; throws if none or more
 /// than one.
+/// @param tmpRoot Temporary rpmbuild top directory.
+/// @param packageName Expected RPM package name.
+/// @param version Expected RPM version.
+/// @param arch RPM architecture subdirectory and filename suffix.
+/// @return Path to the sole matching generated RPM.
+/// @throws std::runtime_error If zero or multiple matching artifacts exist.
 fs::path findGeneratedRpm(const fs::path &tmpRoot,
                           const std::string &packageName,
                           const std::string &version,
@@ -1283,6 +1370,9 @@ fs::path findGeneratedRpm(const fs::path &tmpRoot,
 }
 
 /// @brief Run rpmbuild with deterministic metadata controls when SOURCE_DATE_EPOCH is set.
+/// @param tmpRoot Temporary rpmbuild top directory.
+/// @param specPath Path to the generated RPM spec.
+/// @return Process launch result, including exit status and captured diagnostics.
 RunResult runRpmBuild(const fs::path &tmpRoot, const fs::path &specPath) {
     std::vector<std::string> args = {"rpmbuild",
                                      "--define",
@@ -1313,6 +1403,8 @@ RunResult runRpmBuild(const fs::path &tmpRoot, const fs::path &specPath) {
 
 /// @brief Map a freedesktop.org Category string to the closest Debian section name.
 /// Falls back to "utils" for unrecognized or empty categories.
+/// @param category Semicolon-delimited desktop category string.
+/// @return Debian section name derived from the first category.
 std::string debSectionFor(const std::string &category) {
     if (category.empty())
         return "utils";
@@ -1345,6 +1437,11 @@ std::string debSectionFor(const std::string &category) {
 /// @brief Validate all metadata fields required for a Debian package.
 /// Checks display name, version format, architecture, author, description, homepage URL,
 /// license, categories, dependency syntax, and file association entries.
+/// @param pkg Manifest package configuration.
+/// @param displayName Resolved user-visible package name.
+/// @param version Resolved Debian version.
+/// @param arch Debian architecture field.
+/// @throws std::runtime_error If any metadata field violates its format contract.
 void validateDebMetadata(const PackageConfig &pkg,
                          const std::string &displayName,
                          const std::string &version,
@@ -1364,6 +1461,10 @@ void validateDebMetadata(const PackageConfig &pkg,
 
 /// @brief Validate metadata fields required for a portable tarball.
 /// Checks display name, version format, author, description, homepage URL, and license.
+/// @param pkg Manifest package configuration.
+/// @param displayName Resolved user-visible package name.
+/// @param version Portable archive version.
+/// @throws std::runtime_error If any metadata field violates its format contract.
 void validatePortableMetadata(const PackageConfig &pkg,
                               const std::string &displayName,
                               const std::string &version) {
@@ -1378,6 +1479,9 @@ void validatePortableMetadata(const PackageConfig &pkg,
 /// @brief Build the Debian `Maintainer:` field from `pkg.author`.
 /// Appends `<noreply@example.invalid>` when the author string does not already contain an email,
 /// satisfying the required `Name <email>` format.
+/// @param pkg Package configuration supplying author and optional maintainer email.
+/// @param displayName Fallback maintainer name when the author is empty.
+/// @return Validated Debian maintainer field.
 std::string debMaintainerFor(const PackageConfig &pkg, const std::string &displayName) {
     std::string maintainer = trimAsciiWhitespace(pkg.author);
     if (maintainer.empty())
@@ -1398,6 +1502,8 @@ std::string debMaintainerFor(const PackageConfig &pkg, const std::string &displa
 /// @details Uses manifest.maintainer (default "Zanna Project") and manifest.maintainerEmail,
 ///          falling back to the project's GitHub contact address when no email is configured.
 ///          Always yields the required `Name <email>` form.
+/// @param manifest Toolchain manifest supplying maintainer metadata.
+/// @return Validated `Name <email>` maintainer string.
 std::string toolchainMaintainer(const ToolchainInstallManifest &manifest) {
     std::string name = trimAsciiWhitespace(manifest.maintainer);
     if (name.empty())
@@ -1418,6 +1524,8 @@ std::string toolchainMaintainer(const ToolchainInstallManifest &manifest) {
 /// @details Escapes embedded single quotes using the standard close/escape/reopen
 ///          sequence. Used for package-generated maintainer scripts where
 ///          normalized package names are still embedded as data, not syntax.
+/// @param value Arbitrary text to quote as one shell word.
+/// @return POSIX single-quoted literal.
 std::string shellSingleQuote(std::string_view value) {
     std::string out;
     out.reserve(value.size() + 2);
@@ -1437,6 +1545,8 @@ std::string shellSingleQuote(std::string_view value) {
 ///          Desktop directories and then restores ownership to the directory's
 ///          owner when `stat` is available. Failures remain non-fatal because
 ///          per-user desktop folders vary widely across Linux systems.
+/// @param script Maintainer-script stream to append to.
+/// @param pkgName Normalized package name used for the desktop filename.
 void appendHomeDesktopShortcutInstallScript(std::ostream &script, const std::string &pkgName) {
     const std::string desktopName = shellSingleQuote(pkgName + ".desktop");
     const std::string source = shellSingleQuote("/usr/share/applications/" + pkgName + ".desktop");
@@ -1469,6 +1579,8 @@ void appendHomeDesktopShortcutInstallScript(std::ostream &script, const std::str
 ///          install script, ignoring missing or inaccessible user Desktop
 ///          directories so package removal does not fail on home-directory
 ///          permission edge cases.
+/// @param script Maintainer-script stream to append to.
+/// @param pkgName Normalized package name used for the desktop filename.
 void appendHomeDesktopShortcutRemovalScript(std::ostream &script, const std::string &pkgName) {
     const std::string desktopName = shellSingleQuote(pkgName + ".desktop");
     script << "for d in /root/Desktop /home/*/Desktop; do\n"
@@ -1484,6 +1596,11 @@ void appendHomeDesktopShortcutRemovalScript(std::ostream &script, const std::str
 /// @details The tarball layout is intentionally self-contained; this text tells
 ///          users where the executable and optional asset payloads live without
 ///          requiring an installer script.
+/// @param displayName User-visible application name.
+/// @param version Package version displayed in the title.
+/// @param exeName Executable filename shown in run instructions.
+/// @param pkg Package metadata used for optional description and attribution.
+/// @return Generated README text.
 std::string appTarballReadme(const std::string &displayName,
                              const std::string &version,
                              const std::string &exeName,
@@ -1510,6 +1627,9 @@ std::string appTarballReadme(const std::string &displayName,
 ///          not full license body text, so the packaged file records the declared
 ///          identifier and points consumers back to the project distribution for
 ///          complete terms when needed.
+/// @param displayName User-visible application name.
+/// @param pkg Package configuration supplying the license identifier.
+/// @return Generated package license metadata text.
 std::string appTarballLicenseText(const std::string &displayName, const PackageConfig &pkg) {
     std::ostringstream out;
     out << displayName << "\n";
@@ -1590,6 +1710,8 @@ std::vector<uint8_t> defaultZannaAppImageIconPng() {
 }
 
 /// @brief Append Linux bundle desktop/icon metadata at the payload root.
+/// @param tar Payload archive writer to extend.
+/// @param packageName Normalized name used for desktop and icon filenames.
 void addToolchainBundleMetadata(TarWriter &tar, const std::string &packageName) {
     DesktopEntryParams desktop;
     desktop.name = "Zanna Toolchain";
@@ -1625,6 +1747,8 @@ std::string toolchainAppRunScript() {
 
 /// @brief Validate all install paths in `dataFiles` are normalized and unique.
 /// Throws on path traversal, duplicate paths, or non-normalized separators.
+/// @param dataFiles Payload entries to validate.
+/// @throws std::runtime_error If a path is unsafe, non-normalized, or duplicated.
 void validateDataFilePaths(const std::vector<DataFile> &dataFiles) {
     std::set<std::string> seen;
     for (const auto &df : dataFiles) {
@@ -1638,6 +1762,9 @@ void validateDataFilePaths(const std::vector<DataFile> &dataFiles) {
 
 /// @brief Validate that `path` is normalized for portable archive use (no `..`, no absolute
 /// prefix). Throws with `fieldName` in the error message if the path is not canonical.
+/// @param path Package-relative path to validate.
+/// @param fieldName Human-readable field name used in diagnostics.
+/// @throws std::runtime_error If `path` is unsafe or non-normalized.
 void validatePortableArchivePath(const std::string &path, const char *fieldName) {
     const std::string clean = sanitizePackageRelativePath(path, fieldName);
     if (clean != path)
@@ -1647,6 +1774,9 @@ void validatePortableArchivePath(const std::string &path, const char *fieldName)
 /// @brief Format a relative install path for use in an RPM spec `%files` section.
 /// Prepends `/`, escapes `%` characters (RPM macro start), and quotes the result if it
 /// contains spaces or tabs.
+/// @param path Normalized package-relative payload path.
+/// @return Absolute, escaped RPM spec path expression.
+/// @throws std::runtime_error If `path` is unsafe or non-normalized.
 std::string rpmSpecFilePath(const std::string &path) {
     const std::string clean = sanitizePackageRelativePath(path, "rpm payload path");
     if (clean != path)
@@ -1675,8 +1805,13 @@ std::string rpmSpecFilePath(const std::string &path) {
 }
 
 /// @brief Return true when an RPM payload path represents license terms.
+/// @param path Package-relative payload path.
+/// @return Whether the case-insensitive leaf name denotes common license terms.
 bool isRpmLicensePath(const std::string &path) {
     std::string leaf = fs::path(path).filename().string();
+    /// @brief Convert one path byte to lowercase for case-insensitive matching.
+    /// @param c Byte to fold.
+    /// @return Lowercase representation of `c` in the active C locale.
     std::transform(leaf.begin(), leaf.end(), leaf.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
     });
@@ -1684,6 +1819,8 @@ bool isRpmLicensePath(const std::string &path) {
 }
 
 /// @brief Format a payload file with the appropriate RPM `%license`/`%doc` marker.
+/// @param path Normalized package-relative payload path.
+/// @return Escaped `%files` line, optionally prefixed with `%license` or `%doc`.
 std::string rpmSpecOwnedFileLine(const std::string &path) {
     const std::string formatted = rpmSpecFilePath(path);
     if (isRpmLicensePath(path))
@@ -1695,6 +1832,8 @@ std::string rpmSpecOwnedFileLine(const std::string &path) {
 
 /// @brief Validate that `path` can safely appear in an RPM spec `%files` section.
 /// Must pass the standard normalize check and must not contain embedded line breaks.
+/// @param path Package-relative payload path to validate.
+/// @throws std::runtime_error If the path is unsafe, non-normalized, or multiline.
 void validateRpmSpecPath(const std::string &path) {
     (void)rpmSpecFilePath(path);
     for (char c : path) {
@@ -1727,8 +1866,11 @@ fs::path uniqueTempPackagingDir(std::string_view stem) {
 /// Used to clean up the rpmbuild temp workspace on success or failure.
 class TempDirGuard {
   public:
+    /// @brief Take ownership of a temporary directory path.
+    /// @param path Directory tree to remove at destruction.
     explicit TempDirGuard(fs::path path) : path_(std::move(path)) {}
 
+    /// @brief Best-effort removal of the owned directory tree.
     ~TempDirGuard() {
         if (!path_.empty()) {
             std::error_code ec;
@@ -1747,6 +1889,11 @@ class TempDirGuard {
 /// @details Shared by the Debian (.deb) and RPM application builders so both emit
 ///          an identical install layout (`/usr/bin/<exe>`, `/usr/share/<pkg>/...`,
 ///          `/usr/share/applications/<pkg>.desktop`, hicolor icons, MIME XML).
+/// @param params Application inputs and package configuration.
+/// @param pkgName Normalized Linux package name.
+/// @param exeName Normalized installed executable name.
+/// @param displayName Resolved user-visible application name.
+/// @return Validated FHS payload entries shared by DEB and RPM builders.
 static std::vector<DataFile> collectAppLinuxDataFiles(const LinuxBuildParams &params,
                                                       const std::string &pkgName,
                                                       const std::string &exeName,
@@ -1774,6 +1921,9 @@ static std::vector<DataFile> collectAppLinuxDataFiles(const LinuxBuildParams &pa
 
         if (fs::is_directory(srcPath)) {
             dataFiles.push_back(DataFile::dir(sharePrefix));
+            /// @brief Convert one safely resolved asset-tree entry into a Linux payload item.
+            /// @param entry Directory entry with verified logical and physical paths.
+            /// @throws std::runtime_error If an entry path or file read is invalid.
             safeDirectoryIterateResolved(
                 srcPath, params.projectRoot, [&](const SafeDirectoryEntry &entry) {
                     auto relPath = sanitizePackageRelativePath(
@@ -1882,6 +2032,8 @@ static std::vector<DataFile> collectAppLinuxDataFiles(const LinuxBuildParams &pa
 /// @brief Build a Debian .deb package from the given build parameters.
 /// Assembles control.tar.gz (control + md5sums + maintainer scripts) and data.tar.gz
 /// (binary, assets, .desktop, icons, MIME XML) then wraps them in an ar archive.
+/// @param params Application metadata, payload paths, architecture, and output destination.
+/// @throws std::runtime_error If validation, input reading, archive assembly, or output fails.
 void buildDebPackage(const LinuxBuildParams &params) {
     const auto &pkg = params.pkgConfig;
     std::string pkgName = normalizeDebName(params.projectName);
@@ -1911,6 +2063,8 @@ void buildDebPackage(const LinuxBuildParams &params) {
 
     // Collect unique directories
     std::vector<std::string> dirs;
+    /// @brief Record one normalized Debian archive directory unless already present.
+    /// @param dirPath Directory path to normalize and add.
     auto ensureDir = [&](const std::string &dirPath) {
         std::string d = dirPath;
         if (!d.empty() && d.back() != '/')
@@ -2082,6 +2236,8 @@ void buildDebPackage(const LinuxBuildParams &params) {
 
 /// @brief Build a portable .tar.gz archive from the given build parameters.
 /// Creates a top-level `<name>-<version>/` directory containing the binary and assets.
+/// @param params Application metadata, payload paths, and output destination.
+/// @throws std::runtime_error If validation, input reading, archive assembly, or output fails.
 void buildTarball(const LinuxBuildParams &params) {
     const auto &pkg = params.pkgConfig;
     std::string pkgName = normalizeDebName(params.projectName);
@@ -2123,6 +2279,9 @@ void buildTarball(const LinuxBuildParams &params) {
         if (fs::is_directory(srcPath)) {
             if (!targetDir.empty())
                 tar.addDirectory(prefix, 0755);
+            /// @brief Append one safely resolved asset-tree entry to the generic Linux archive.
+            /// @param entry Directory entry with verified logical and physical paths.
+            /// @throws std::runtime_error If an entry cannot be represented or read safely.
             safeDirectoryIterateResolved(
                 srcPath, params.projectRoot, [&](const SafeDirectoryEntry &entry) {
                     if (entry.directory) {
@@ -2198,6 +2357,8 @@ void buildTarball(const LinuxBuildParams &params) {
 ///          single executable, bundled assets, `.desktop` launcher, and icon from
 ///          an application's `LinuxBuildParams`/`PackageConfig` rather than a
 ///          staged toolchain manifest.
+/// @param params Application metadata, payload paths, portable architecture, and output path.
+/// @throws std::runtime_error If validation, stub generation, payload assembly, or output fails.
 void buildAppImage(const LinuxBuildParams &params) {
     const auto &pkg = params.pkgConfig;
     const std::string pkgName = normalizeDebName(params.projectName);
@@ -2239,6 +2400,9 @@ void buildAppImage(const LinuxBuildParams &params) {
 
         if (fs::is_directory(srcPath)) {
             tar.addDirectory(prefix, 0755);
+            /// @brief Append one safely resolved asset-tree entry to the RPM source archive.
+            /// @param entry Directory entry with verified logical and physical paths.
+            /// @throws std::runtime_error If an entry cannot be represented or read safely.
             safeDirectoryIterateResolved(
                 srcPath, params.projectRoot, [&](const SafeDirectoryEntry &entry) {
                     const auto relPath = sanitizePackageRelativePath(
@@ -2331,6 +2495,9 @@ void buildAppImage(const LinuxBuildParams &params) {
 ///          source tarball and .spec from the application's shared FHS data files
 ///          (collectAppLinuxDataFiles), then invokes rpmbuild. Requires rpmbuild on
 ///          PATH (Fedora/RHEL build hosts) and throws a clear diagnostic otherwise.
+/// @param params Application metadata, payload paths, portable architecture, and output path.
+/// @throws std::runtime_error If validation fails, rpmbuild is unavailable/fails,
+///         or the generated artifact cannot be located or copied.
 void buildRpmPackage(const LinuxBuildParams &params) {
     const auto &pkg = params.pkgConfig;
     const std::string pkgName = normalizeDebName(params.projectName);
@@ -2465,6 +2632,8 @@ void buildRpmPackage(const LinuxBuildParams &params) {
 /// @brief Build a Debian .deb toolchain package from a staged install manifest.
 /// Validates the manifest, collects FHS-mapped files, generates control/md5sums/postinst/postrm,
 /// and assembles the ar-format .deb output file.
+/// @param params Staged manifest, package name, and output destination.
+/// @throws std::runtime_error If validation, payload reading, archive assembly, or output fails.
 void buildToolchainDebPackage(const LinuxToolchainBuildParams &params) {
     const auto &manifest = params.manifest;
     requireLinuxToolchainManifest(manifest, "Debian toolchain package");
@@ -2525,6 +2694,9 @@ void buildToolchainDebPackage(const LinuxToolchainBuildParams &params) {
                 md5s << md5hex(df.data.data(), df.data.size()) << "  " << df.installPath << "\n";
         controlTar.addFileString("./md5sums", md5s.str(), 0644);
     }
+    /// @brief Determine whether a manifest entry installs a manual page.
+    /// @param entry Manifest entry inspected by the `std::any_of` predicate.
+    /// @return `true` when `entry` is classified as a manual page.
     const bool hasManPages = std::any_of(
         manifest.files.begin(), manifest.files.end(), [](const ToolchainFileEntry &entry) {
             return entry.kind == ToolchainFileKind::ManPage;
@@ -2569,6 +2741,8 @@ void buildToolchainDebPackage(const LinuxToolchainBuildParams &params) {
 /// @brief Build a portable toolchain tarball from a staged install manifest.
 /// Supports Linux, macOS, and Windows payloads; universal arch is accepted for macOS only.
 /// Writes a `<name>-<version>-<platform>-<arch>/` top-level directory into a .tar.gz file.
+/// @param params Staged manifest, package name, and output destination.
+/// @throws std::runtime_error If validation, payload reading, archive assembly, or output fails.
 void buildToolchainTarball(const LinuxToolchainBuildParams &params) {
     const auto &manifest = params.manifest;
     validateToolchainInstallManifest(manifest);
@@ -2657,6 +2831,8 @@ void buildToolchainTarball(const LinuxToolchainBuildParams &params) {
 }
 
 /// @brief Build a self-extracting Linux `.run` bundle from a staged install manifest.
+/// @param params Linux staged manifest, package name, and output destination.
+/// @throws std::runtime_error If validation, stub generation, payload assembly, or output fails.
 void buildToolchainBundle(const LinuxToolchainBuildParams &params) {
     const auto &manifest = params.manifest;
     requireLinuxToolchainManifest(manifest, "Linux self-extracting bundle");
@@ -2718,6 +2894,9 @@ void buildToolchainBundle(const LinuxToolchainBuildParams &params) {
 /// Creates a temporary rpmbuild workspace, generates a source tarball and .spec file,
 /// invokes rpmbuild, then copies the resulting .rpm to `params.outputPath`.
 /// Throws if rpmbuild is not on PATH or if the build fails.
+/// @param params Linux staged manifest, package name, and output destination.
+/// @throws std::runtime_error If validation fails, rpmbuild is unavailable/fails,
+///         or the generated artifact cannot be located or copied.
 void buildToolchainRpmPackage(const LinuxToolchainBuildParams &params) {
     const auto &manifest = params.manifest;
     requireLinuxToolchainManifest(manifest, "RPM toolchain package");
@@ -2794,6 +2973,9 @@ void buildToolchainRpmPackage(const LinuxToolchainBuildParams &params) {
     spec << "%build\n:\n\n";
     spec << "%install\nrm -rf %{buildroot}\nmkdir -p %{buildroot}/usr\ncp -a . "
             "%{buildroot}/usr/\n\n";
+    /// @brief Determine whether a manifest entry installs a manual page.
+    /// @param entry Manifest entry inspected by the `std::any_of` predicate.
+    /// @return `true` when `entry` is classified as a manual page.
     const bool hasManPages = std::any_of(
         manifest.files.begin(), manifest.files.end(), [](const ToolchainFileEntry &entry) {
             return entry.kind == ToolchainFileKind::ManPage;
@@ -2857,6 +3039,10 @@ void buildToolchainRpmPackage(const LinuxToolchainBuildParams &params) {
 /// @details rpmsign and dpkg-sig are the standard signing tools and are not present on
 ///          every host. run_process reports a missing binary via launch_failed, which is
 ///          surfaced here distinctly from a signing failure.
+/// @param packagePath Existing package artifact to modify in place.
+/// @param gpgKeyId GPG key identifier passed to the external signing tool.
+/// @param isRpm Selects `rpmsign` when true and `dpkg-sig` otherwise.
+/// @throws std::runtime_error If inputs are invalid, the tool cannot launch, or signing fails.
 void signLinuxPackage(const std::string &packagePath, const std::string &gpgKeyId, bool isRpm) {
     if (gpgKeyId.empty())
         throw std::runtime_error("Linux package signing key must not be empty");
@@ -2899,6 +3085,9 @@ void signLinuxPackage(const std::string &packagePath, const std::string &gpgKeyI
                                  verifyTool + " was not found on PATH");
     }
     std::string verificationText = verifyResult.out + verifyResult.err;
+    /// @brief Convert one verification-output byte to uppercase.
+    /// @param c Byte to fold.
+    /// @return Uppercase representation of `c` in the active C locale.
     std::transform(verificationText.begin(),
                    verificationText.end(),
                    verificationText.begin(),

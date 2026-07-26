@@ -359,14 +359,17 @@ void Emitter::storeArray(Value slot, Value value, AstType elementType, bool isOb
     }
 }
 
-/// @brief Release array locals that fall out of scope.
-///
-/// @details Iterates over tracked symbols, skipping parameters and unreferenced
-///          variables, and calls the runtime release helper for each active
-///          array handle.  Slots are cleared to @c null after release so repeated
-///          epilogues remain idempotent.
-///
-/// @param paramNames Names of parameters that should remain alive.
+/// @brief Emits the element-type-specific runtime release for one array handle.
+/// @details Requests each required runtime helper at most once through @p state.
+///          Object arrays can be left to their caller when
+///          @p skipObjectArrays is set; all other supported array kinds emit
+///          their matching release call.
+/// @param handle Runtime array handle to release.
+/// @param info Symbol metadata describing the element and ownership category.
+/// @param[in,out] state Per-cleanup helper-request state.
+/// @param skipObjectArrays Whether object arrays should be reported as skipped.
+/// @return `true` when a release call was emitted, or `false` when an object
+///         array was intentionally skipped.
 bool Emitter::emitArrayRelease(Value handle,
                                const SymbolInfo &info,
                                ArrayReleaseState &state,
@@ -404,6 +407,7 @@ bool Emitter::emitArrayRelease(Value handle,
     return true;
 }
 
+/// @copydoc Emitter::releaseArrayLocals()
 void Emitter::releaseArrayLocals(const std::unordered_set<std::string> &paramNames) {
     ArrayReleaseState state;
     for (auto &[name, info] : lowerer_.symbols) {

@@ -20,6 +20,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares canonical reassociation of associative integer expressions.
+ *
+ * @details The transform flattens supported commutative expression trees and
+ *          rebuilds them in a deterministic operand-rank order so equivalent
+ *          forms become visible to constant folding and CSE. Floating-point
+ *          and checked-overflow operations are excluded because reassociation
+ *          could change IEEE results or observable traps.
+ */
+
 #pragma once
 
 #include "il/core/fwd.hpp"

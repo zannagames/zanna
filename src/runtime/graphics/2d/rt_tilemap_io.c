@@ -31,6 +31,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements Tilemap persistence, CSV import, properties, and auto-tiling.
+ *
+ * @details This module serializes and validates bounded versioned JSON,
+ *          transactionally replaces saved files, imports strict rectangular
+ *          CSV grids, persists imported layout and animation metadata, manages
+ *          fixed tile-property/rule storage, and applies deterministic
+ *          two-pass neighbor-mask auto-tiling.
+ */
+
 #include "rt_tilemap.h"
 #include "rt_tilemap_internal.h"
 
@@ -56,10 +67,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Maximum accepted serialized Tilemap file size in bytes.
 #define TMIO_MAX_FILE_BYTES (INT64_C(256) * 1024 * 1024)
+/// @brief Largest exactly representable integer magnitude in an IEEE double.
 #define TMIO_JSON_SAFE_INTEGER_LIMIT 9007199254740992.0
 
+/// @brief Route Tilemap seeks through the runtime's 64-bit stdio adapter.
+/// @param fp Open stream.
+/// @param off Signed 64-bit byte offset.
+/// @param whence Seek origin constant.
 #define tmio_fseek(fp, off, whence) rt_file_stdio_seek64((fp), (off), (whence))
+/// @brief Route Tilemap position queries through the 64-bit stdio adapter.
+/// @param fp Open stream.
 #define tmio_ftell(fp) rt_file_stdio_tell64((fp))
 
 /// @brief Read exactly @p len bytes from @p f into @p data.

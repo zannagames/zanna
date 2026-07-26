@@ -17,6 +17,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Defines the process-wide opcode-to-handler function table.
+/// @details The generated ordering mirrors Opcode.def exactly and is checked at
+///          compile time so every opcode index selects its canonical VM handler.
+
 #pragma once
 
 #include "vm/DispatchMacros.hpp"
@@ -29,6 +34,7 @@ namespace il::vm::generated {
 /// @details Each entry is a function pointer to the handler for the
 ///          corresponding opcode. The table order MUST match the opcode
 ///          declaration order in Opcode.def.
+/// @return Immutable process-lifetime handler table indexed by opcode value.
 inline const VM::OpcodeHandlerTable &opcodeHandlers() {
     static const VM::OpcodeHandlerTable table = {
         // =================================================================

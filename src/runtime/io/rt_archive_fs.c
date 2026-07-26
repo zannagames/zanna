@@ -25,6 +25,14 @@
 //        src/runtime/io/rt_archive_internal.h (shared contract)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements native filesystem and atomic-write services for archives.
+ * @details Provides reader-writer locks, exact bounded reads, secure
+ * extraction beneath verified roots, adjacent temporary-file creation,
+ * durable replacement, UTF-8 path adaptation, and symlink or reparse-point
+ * rejection in the approved platform boundary.
+ */
 
 #include "rt_archive.h"
 #include "rt_archive_internal.h"
@@ -65,8 +73,11 @@
 #define PATH_SEP '/'
 #endif
 
+/// @copydoc rt_trap_set_recovery()
 void rt_trap_set_recovery(jmp_buf *buf);
+/// @copydoc rt_trap_clear_recovery()
 void rt_trap_clear_recovery(void);
+/// @copydoc rt_trap_get_error()
 const char *rt_trap_get_error(void);
 
 // Trivial Bytes accessors — defined per-TU as static inline (not shared via the

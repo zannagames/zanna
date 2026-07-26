@@ -80,6 +80,7 @@ bool ImportResolver::resolve(ModuleDecl &module, const std::string &modulePath) 
 }
 
 /// @brief Normalize a path to a stable, absolute, lexically-normalized form.
+/// @param path Input path in UTF-8 spelling.
 /// @return The canonical path string used as the dedup/cache key for files.
 std::string ImportResolver::normalizePath(const std::string &path) const {
     namespace fs = std::filesystem;
@@ -304,6 +305,9 @@ bool ImportResolver::processModule(ModuleDecl &module,
     std::unordered_set<std::string> seenFileBinds;
     std::unordered_set<std::string> seenNamespaceBinds;
 
+    /// @brief Builds a deterministic deduplication key for a namespace bind.
+    /// @param bind Namespace bind declaration.
+    /// @return Key containing path, alias, and selected items.
     auto makeNamespaceBindKey = [](const BindDecl &bind) {
         std::string key = bind.path;
         key.push_back('\n');
@@ -316,6 +320,10 @@ bool ImportResolver::processModule(ModuleDecl &module,
         return key;
     };
 
+    /// @brief Builds a deterministic deduplication key for a file bind.
+    /// @param bind File bind declaration.
+    /// @param normalizedPath Canonical imported path.
+    /// @return Key containing path, source file, alias, and selected items.
     auto makeFileBindKey = [](const BindDecl &bind, const std::string &normalizedPath) {
         std::string key = normalizedPath;
         key.push_back('\n');

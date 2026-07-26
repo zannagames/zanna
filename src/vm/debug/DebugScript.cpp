@@ -33,6 +33,7 @@ namespace il::vm {
 ///          "step-over" / "step-out" request frame-depth-aware stepping.
 ///          Unknown lines emit `[DEBUG]` messages to stderr but do not abort
 ///          parsing, allowing iterative script development.
+/// @param path File-system path to the debugger command script.
 DebugScript::DebugScript(const std::string &path) {
     std::ifstream f(path);
     if (!f) {
@@ -41,6 +42,9 @@ DebugScript::DebugScript(const std::string &path) {
     }
     std::string line;
     while (std::getline(f, line)) {
+        /// @brief Test whether one byte is classified as whitespace.
+        /// @param ch Byte to inspect.
+        /// @return Nonzero when `ch` is whitespace in the active C locale.
         auto isAsciiSpace = [](unsigned char ch) { return std::isspace(ch); };
         auto beginIt = std::find_if_not(line.begin(), line.end(), isAsciiSpace);
         auto endIt = std::find_if_not(line.rbegin(), line.rend(), isAsciiSpace).base();
@@ -76,6 +80,7 @@ DebugScript::DebugScript(const std::string &path) {
 /// @details Allows tooling to append scripted actions after construction without
 ///          re-reading a file.  Actions are enqueued in FIFO order so appended
 ///          steps execute after any previously loaded commands.
+/// @param count Number of instruction boundaries to advance before pausing.
 void DebugScript::addStep(uint64_t count) {
     actions.push({DebugActionKind::Step, count});
 }
@@ -85,6 +90,7 @@ void DebugScript::addStep(uint64_t count) {
 ///          when the queue is empty.  Returning a Continue action in the empty
 ///          case lets the debugger resume execution naturally without checking
 ///          for null results.
+/// @return Oldest queued action, or a Continue action when the queue is empty.
 DebugAction DebugScript::nextAction() {
     if (actions.empty())
         return {DebugActionKind::Continue, 0};
@@ -96,6 +102,7 @@ DebugAction DebugScript::nextAction() {
 /// @brief Determine whether all actions have been consumed.
 /// @details Exposes the queue emptiness predicate so driver code can decide when
 ///          to re-read scripts or fall back to interactive mode.
+/// @return @c true when no scripted actions remain.
 bool DebugScript::empty() const {
     return actions.empty();
 }

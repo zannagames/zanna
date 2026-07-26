@@ -27,6 +27,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_process.c
+ * @brief Implements streaming managed child-process handles.
+ * @details Direct platform launch connects runtime-owned stdin, stdout, and
+ *          stderr pipes, supports optional working directories and complete
+ *          environment replacement, drains bounded output incrementally,
+ *          reaps completion once, and finalizes live children and native
+ *          resources idempotently.
+ */
+
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE 1
 #endif
@@ -62,22 +72,35 @@
 extern char **environ;
 #endif
 
+/// @brief Initial allocation size for each incremental output buffer.
 #define PROCESS_BUFFER_INITIAL_SIZE 4096
+/// @brief Maximum retained bytes per stdout or stderr buffer.
 #define PROCESS_BUFFER_MAX_SIZE (16 * 1024 * 1024)
 
+/// @brief Incremental byte buffer for one redirected child output stream.
+/// @details Storage is retained between reads for reuse. Once the 16 MiB cap is
+///          reached, additional bytes are discarded and @c truncated remains
+///          set until the next take operation reports and clears it.
 typedef struct process_buffer {
-    char *data;
-    size_t len;
-    size_t cap;
-    int truncated;
+    char *data;   ///< Owned allocation, or NULL before first append.
+    size_t len;   ///< Number of unread bytes currently retained.
+    size_t cap;   ///< Allocated byte capacity of @c data.
+    int truncated; ///< Whether bytes were discarded since the previous take.
 } process_buffer;
 
+/// @brief Temporary NULL-terminated C-string vector for argv or envp.
+/// @details The vector owns references to runtime strings whose byte pointers
+///          appear in @c values, keeping those pointers valid through spawning.
 typedef struct process_string_vector {
-    char **values;
-    rt_string *owned_strings;
-    int64_t owned_count;
+    char **values;             ///< Owned pointer array ending in NULL.
+    rt_string *owned_strings;  ///< Owned array of retained runtime strings.
+    int64_t owned_count;       ///< Number of entries in @c owned_strings.
 } process_string_vector;
 
+/// @brief Platform process state stored in a Zanna.System.Process object.
+/// @details Owns redirected stream buffers and all parent-side process, thread,
+///          pipe, or descriptor handles until explicit destruction or GC
+///          finalization.
 typedef struct rt_process_impl {
     int8_t started;
     int8_t running;
@@ -102,10 +125,16 @@ typedef struct rt_process_impl {
 
 static void process_finalize(void *obj);
 
+/// @brief Allocate an empty runtime string for process API fallbacks.
+/// @return Newly allocated empty runtime string owned by the caller.
 static rt_string empty_string(void) {
     return rt_string_from_bytes("", 0);
 }
 
+/// @brief Validate and cast an opaque runtime process handle.
+/// @param handle Candidate object pointer.
+/// @return Borrowed process implementation pointer when the object has the
+///         expected class and payload size, otherwise NULL.
 static rt_process_impl *process_checked(void *handle) {
     if (!rt_obj_is_instance(handle, RT_PROCESS_CLASS_ID, sizeof(rt_process_impl)))
         return NULL;
@@ -184,6 +213,15 @@ static void buffer_mark_truncated(process_buffer *buf) {
         buf->truncated = 1;
 }
 
+/// @brief Append captured bytes to a bounded process output buffer.
+/// @details Retains at most PROCESS_BUFFER_MAX_SIZE bytes. Excess input is
+///          discarded after setting the truncation flag; allocation grows
+///          geometrically and existing unread bytes are preserved on failure.
+/// @param buf Destination output buffer.
+/// @param data Borrowed bytes to append.
+/// @param len Number of bytes available at @p data.
+/// @return 1 on success, including a recorded truncation or a no-op input; 0
+///         only when storage growth fails.
 static int buffer_append(process_buffer *buf, const char *data, size_t len) {
     if (!buf || !data || len == 0)
         return 1;
@@ -222,6 +260,14 @@ static int buffer_append(process_buffer *buf, const char *data, size_t len) {
     return 1;
 }
 
+/// @brief Move the currently unread bytes into a runtime string.
+/// @details Clears the buffer's unread length and truncation marker while
+///          retaining its allocation for later appends. A NULL or empty buffer
+///          yields a fresh empty string.
+/// @param buf Buffer to consume; may be NULL.
+/// @param was_truncated Optional destination for the pre-consumption
+///        truncation state.
+/// @return Newly allocated runtime string containing all retained unread bytes.
 static rt_string buffer_take_string(process_buffer *buf, int *was_truncated) {
     int truncated = buf ? buf->truncated : 0;
     if (was_truncated)
@@ -237,6 +283,9 @@ static rt_string buffer_take_string(process_buffer *buf, int *was_truncated) {
     return out;
 }
 
+/// @brief Consume a process output buffer and trap if bytes were discarded.
+/// @param buf Buffer to consume; may be NULL.
+/// @return Newly allocated string containing the retained unread bytes.
 static rt_string buffer_take(process_buffer *buf) {
     int truncated = 0;
     rt_string out = buffer_take_string(buf, &truncated);
@@ -246,12 +295,25 @@ static rt_string buffer_take(process_buffer *buf) {
     return out;
 }
 
+/// @brief Store a runtime string under a constant text key in a runtime map.
+/// @details Supplies an empty constant string when @p value is NULL. The map
+///          operation acquires its own value ownership; this helper does not
+///          consume the caller's reference.
+/// @param map Destination runtime map; NULL is ignored.
+/// @param key Borrowed non-NULL C-string key.
+/// @param value Borrowed runtime string value; may be NULL.
 static void map_set_string_owned(void *map, const char *key, rt_string value) {
     if (!map || !key)
         return;
     rt_map_set_str(map, rt_const_cstr(key), value ? value : rt_const_cstr(""));
 }
 
+/// @brief Consume buffered output into a structured nontrapping read result.
+/// @details Returns a map with a string @c text entry and Boolean @c truncated
+///          entry, clearing both unread bytes and the source truncation marker.
+/// @param buf Output buffer to consume; NULL represents an empty,
+///        nontruncated source.
+/// @return Caller-owned runtime map, or NULL when map allocation fails.
 static void *buffer_take_result(process_buffer *buf) {
     int truncated = 0;
     rt_string text = buffer_take_string(buf, &truncated);
@@ -266,6 +328,8 @@ static void *buffer_take_result(process_buffer *buf) {
     return result;
 }
 
+/// @brief Release all storage and reset an output buffer.
+/// @param buf Buffer to clear; NULL is ignored.
 static void buffer_free(process_buffer *buf) {
     if (!buf)
         return;
@@ -276,6 +340,16 @@ static void buffer_free(process_buffer *buf) {
     buf->truncated = 0;
 }
 
+/// @brief Build a temporary C-string vector from a runtime string sequence.
+/// @details Optionally prepends the borrowed @p first pointer, retains every
+///          sequence string whose byte view enters the vector, and appends a
+///          NULL terminator.
+/// @param first Borrowed leading C string used when @p include_first is nonzero.
+/// @param items Optional runtime sequence of strings.
+/// @param include_first Nonzero to prepend @p first.
+/// @return Owned vector aggregate. A zeroed aggregate with NULL @c values
+///         indicates invalid size or allocation failure; release successful
+///         aggregates with free_string_vector().
 static process_string_vector build_string_vector(const char *first,
                                                  void *items,
                                                  int include_first) {
@@ -313,6 +387,9 @@ static process_string_vector build_string_vector(const char *first,
     return vector;
 }
 
+/// @brief Release a temporary string vector and all retained elements.
+/// @param vector Aggregate returned by build_string_vector(); NULL is ignored
+///        and the aggregate is zeroed after release.
 static void free_string_vector(process_string_vector *vector) {
     if (!vector)
         return;
@@ -325,6 +402,10 @@ static void free_string_vector(process_string_vector *vector) {
     memset(vector, 0, sizeof(*vector));
 }
 
+/// @brief Allocate and initialize a GC-managed process object.
+/// @details Installs process_finalize(), sets the unknown exit code to -1, and
+///          initializes every platform handle to its invalid sentinel.
+/// @return New process implementation object, or NULL after an allocation trap.
 static rt_process_impl *process_alloc(void) {
     rt_process_impl *proc =
         (rt_process_impl *)rt_obj_new_i64(RT_PROCESS_CLASS_ID, (int64_t)sizeof(rt_process_impl));
@@ -352,6 +433,11 @@ static rt_process_impl *process_alloc(void) {
 
 #if defined(_WIN32)
 
+/// @brief Compute the encoded size of one quoted Windows command-line argument.
+/// @details Applies CommandLineToArgvW-compatible backslash escaping. The count
+///          includes outer quotes and excludes a final NUL.
+/// @param s Borrowed NUL-terminated UTF-8 argument.
+/// @return Required byte count, or SIZE_MAX on arithmetic overflow.
 static size_t cmdline_quoted_len(const char *s) {
     size_t len = 2;
     size_t backslashes = 0;
@@ -378,6 +464,10 @@ static size_t cmdline_quoted_len(const char *s) {
     return len;
 }
 
+/// @brief Append one quoted Windows command-line argument.
+/// @param out Destination cursor with cmdline_quoted_len(@p s) bytes available.
+/// @param s Borrowed NUL-terminated UTF-8 argument.
+/// @return Cursor immediately after the appended closing quote; no NUL is added.
 static char *cmdline_append_quoted(char *out, const char *s) {
     *out++ = '"';
     size_t backslashes = 0;
@@ -403,6 +493,13 @@ static char *cmdline_append_quoted(char *out, const char *s) {
     return out;
 }
 
+/// @brief Build a direct-execution Windows command line.
+/// @details Quotes the executable name and every argument independently so the
+///          child can reconstruct literal argv values without a shell.
+/// @param program Borrowed validated executable path or lookup name.
+/// @param args Optional runtime sequence of validated argument strings.
+/// @return Caller-owned NUL-terminated UTF-8 command line, or NULL on overflow
+///         or allocation failure.
 static char *build_cmdline(const char *program, void *args) {
     int64_t nargs = args ? rt_seq_len(args) : 0;
     size_t len = cmdline_quoted_len(program);
@@ -579,6 +676,10 @@ static INIT_ONCE g_process_compare_once = INIT_ONCE_STATIC_INIT;
 static process_compare_string_ordinal_fn g_process_compare_string_ordinal = NULL;
 
 /// @brief Resolve CompareStringOrdinal without expanding the native import surface.
+/// @param once Win32 one-time initialization token; unused by the resolver.
+/// @param param Optional caller parameter; unused.
+/// @param context Optional callback context destination; unused.
+/// @return TRUE so InitOnce records the resolution attempt as complete.
 static BOOL CALLBACK process_resolve_compare_ordinal(PINIT_ONCE once, PVOID param, PVOID *context) {
     (void)once;
     (void)param;
@@ -593,6 +694,14 @@ static BOOL CALLBACK process_resolve_compare_ordinal(PINIT_ONCE once, PVOID para
 }
 
 /// @brief Invoke CompareStringOrdinal after thread-safe lazy resolution.
+/// @details Falls back to exact wide-string equality when the API cannot be
+///          resolved; callers use a binary comparison to order unequal values.
+/// @param left First UTF-16 string.
+/// @param left_len First string length, or -1 for NUL-terminated input.
+/// @param right Second UTF-16 string.
+/// @param right_len Second string length, or -1 for NUL-terminated input.
+/// @return A CSTR_* ordering value from CompareStringOrdinal, CSTR_EQUAL for
+///         equal fallback inputs, or 0 for unequal fallback inputs.
 static int process_compare_ordinal(const wchar_t *left,
                                    int left_len,
                                    const wchar_t *right,
@@ -605,6 +714,13 @@ static int process_compare_ordinal(const wchar_t *left,
     return wcsncmp(left, right, (size_t)left_len) == 0 ? CSTR_EQUAL : 0;
 }
 
+/// @brief Compare two UTF-16 environment-entry pointers for qsort.
+/// @details Orders entries case-insensitively first, then uses case-sensitive
+///          binary order to make equivalent spellings deterministic.
+/// @param left Pointer to the first wchar_t pointer.
+/// @param right Pointer to the second wchar_t pointer.
+/// @return Negative, zero, or positive according to the required environment
+///         block ordering.
 static int compare_env_entry_wide(const void *left, const void *right) {
     const wchar_t *lhs = *(const wchar_t *const *)left;
     const wchar_t *rhs = *(const wchar_t *const *)right;
@@ -617,6 +733,10 @@ static int compare_env_entry_wide(const void *left, const void *right) {
 }
 
 /// @brief Test whether two UTF-16 environment entries name the same variable.
+/// @param lhs First NUL-terminated NAME=VALUE entry.
+/// @param rhs Second NUL-terminated NAME=VALUE entry.
+/// @return 1 when the nonempty names before '=' compare case-insensitively
+///         equal, otherwise 0.
 static int env_entry_names_equal_wide(const wchar_t *lhs, const wchar_t *rhs) {
     size_t lhs_len = 0;
     size_t rhs_len = 0;
@@ -700,6 +820,12 @@ fail:
     return NULL;
 }
 
+/// @brief Create a Windows pipe whose write end is inherited by the child.
+/// @details Both ends are initially inheritable; the parent-side read handle is
+///          then made noninheritable for stdout or stderr capture.
+/// @param read_pipe Receives the parent-owned noninheritable read handle.
+/// @param write_pipe Receives the inheritable child write handle.
+/// @return 1 on success, otherwise 0 after closing and clearing created handles.
 static int create_child_pipe(HANDLE *read_pipe, HANDLE *write_pipe) {
     SECURITY_ATTRIBUTES sa;
     memset(&sa, 0, sizeof(sa));
@@ -720,6 +846,9 @@ static int create_child_pipe(HANDLE *read_pipe, HANDLE *write_pipe) {
 
 /// @brief Create a pipe whose READ end the child inherits (its stdin) and whose
 ///        WRITE end stays private to the parent. Mirror of create_child_pipe.
+/// @param read_pipe Receives the inheritable child stdin handle.
+/// @param write_pipe Receives the parent-owned noninheritable write handle.
+/// @return 1 on success, otherwise 0 after closing and clearing created handles.
 static int create_parent_write_pipe(HANDLE *read_pipe, HANDLE *write_pipe) {
     SECURITY_ATTRIBUTES sa;
     memset(&sa, 0, sizeof(sa));
@@ -738,6 +867,8 @@ static int create_parent_write_pipe(HANDLE *read_pipe, HANDLE *write_pipe) {
     return 1;
 }
 
+/// @brief Close and clear an optional Win32 handle slot.
+/// @param handle Address of the owned handle; NULL or an empty slot is ignored.
 static void close_handle(HANDLE *handle) {
     if (handle && *handle) {
         CloseHandle(*handle);
@@ -745,6 +876,11 @@ static void close_handle(HANDLE *handle) {
     }
 }
 
+/// @brief Nonblockingly drain immediately available bytes from a Windows pipe.
+/// @details Uses PeekNamedPipe before each bounded read. EOF/API failure closes
+///          the read handle; buffer allocation failure traps and also closes it.
+/// @param read_pipe Address of the owned parent read handle.
+/// @param buf Destination bounded output buffer.
 static void drain_pipe(HANDLE *read_pipe, process_buffer *buf) {
     if (!read_pipe || !*read_pipe)
         return;
@@ -773,6 +909,8 @@ static void drain_pipe(HANDLE *read_pipe, process_buffer *buf) {
     }
 }
 
+/// @brief Drain immediately available Windows stdout and stderr data.
+/// @param proc Process object whose capture pipes feed its output buffers.
 static void process_drain(rt_process_impl *proc) {
     if (!proc)
         return;
@@ -780,6 +918,13 @@ static void process_drain(rt_process_impl *proc) {
     drain_pipe(&proc->stderr_read, &proc->stderr_buf);
 }
 
+/// @brief Poll or wait for a Windows child while continuously draining output.
+/// @details A blocking wait uses short intervals to prevent full stdout/stderr
+///          pipes from deadlocking the child. The first observed completion
+///          stores its exit code and clears @c running; wait failure stores -1
+///          and raises a runtime trap.
+/// @param proc Process object to update.
+/// @param wait Nonzero to wait until a terminal result; zero for one poll.
 static void process_poll_internal(rt_process_impl *proc, int wait) {
     if (!proc || proc->destroyed)
         return;
@@ -814,6 +959,20 @@ static void process_poll_internal(rt_process_impl *proc, int wait) {
     }
 }
 
+/// @brief Start a redirected Windows child process.
+/// @details Validates all OS-bound strings, builds a literal quoted command
+///          line, optionally replaces the complete environment with a sorted
+///          UTF-16 block, and redirects all three standard streams through a
+///          constrained handle allow-list. An empty cwd inherits the parent's
+///          directory; a NULL environment inherits the parent's environment.
+/// @param program Runtime executable path or lookup name; must be nonempty and
+///        contain no embedded NUL.
+/// @param args Optional Seq of literal argument strings.
+/// @param cwd Optional working-directory string; NULL or empty means inherit.
+/// @param env Optional Seq of NAME=VALUE strings replacing the environment;
+///        NULL means inherit.
+/// @return New GC-managed running process object, or NULL on validation,
+///         allocation, conversion, pipe, startup, or CreateProcess failure.
 static rt_process_impl *process_start_impl(rt_string program,
                                            void *args,
                                            rt_string cwd,
@@ -1004,6 +1163,8 @@ static ssize_t process_write_no_sigpipe(int fd, const char *bytes, size_t len) {
     return n;
 }
 
+/// @brief Close and invalidate an optional POSIX descriptor slot.
+/// @param fd Address of an owned descriptor; NULL or a negative slot is ignored.
 static void close_fd(int *fd) {
     if (fd && *fd >= 0) {
         close(*fd);
@@ -1034,12 +1195,20 @@ static int process_pipe_cloexec(int pipefd[2]) {
     return 0;
 }
 
+/// @brief Best-effort enable O_NONBLOCK on a POSIX descriptor.
+/// @param fd Open descriptor whose existing file status flags are preserved.
 static void set_nonblocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags >= 0)
         (void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
+/// @brief Drain all immediately available bytes from a nonblocking descriptor.
+/// @details Retries interrupted reads, leaves the descriptor open on EAGAIN,
+///          and closes it on EOF, other read errors, or output-buffer
+///          allocation failure. Allocation failure also raises a runtime trap.
+/// @param fd Address of the owned stdout or stderr descriptor.
+/// @param buf Destination bounded output buffer.
 static void drain_fd(int *fd, process_buffer *buf) {
     if (!fd || *fd < 0)
         return;
@@ -1068,6 +1237,8 @@ static void drain_fd(int *fd, process_buffer *buf) {
     }
 }
 
+/// @brief Drain immediately available POSIX stdout and stderr data.
+/// @param proc Process object whose descriptors feed its output buffers.
 static void process_drain(rt_process_impl *proc) {
     if (!proc)
         return;
@@ -1075,6 +1246,10 @@ static void process_drain(rt_process_impl *proc) {
     drain_fd(&proc->stderr_fd, &proc->stderr_buf);
 }
 
+/// @brief Normalize a POSIX wait status for the Process API.
+/// @param status Raw status produced by waitpid.
+/// @return Exit code for normal completion, the negated signal number for
+///         signalled termination, or -1 for any other wait state.
 static int64_t decode_exit_status(int status) {
     if (WIFEXITED(status))
         return (int64_t)WEXITSTATUS(status);
@@ -1083,6 +1258,14 @@ static int64_t decode_exit_status(int status) {
     return -1;
 }
 
+/// @brief Poll or wait for a POSIX child while draining redirected output.
+/// @details Uses WNOHANG even for the blocking mode, interleaving 10 ms waits
+///          with pipe drains so a child cannot block forever on full output
+///          pipes. Completion is reaped once and its normalized status is
+///          retained. ECHILD marks the process stopped with status -1.
+/// @param proc Process object to update.
+/// @param wait Nonzero to continue until a terminal waitpid result; zero to poll
+///        once.
 static void process_poll_internal(rt_process_impl *proc, int wait) {
     if (!proc || proc->destroyed)
         return;
@@ -1144,7 +1327,10 @@ static void process_wait_after_sigterm(rt_process_impl *proc, int grace_ms) {
     }
 }
 
-/// @brief Look up a `KEY` in a NULL-terminated `KEY=value` environment vector.
+/// @brief Look up a key in a NULL-terminated KEY=value environment vector.
+/// @param envp Optional environment vector.
+/// @param key Non-NULL exact key name without '='.
+/// @return Borrowed pointer to the matching value bytes, or NULL when absent.
 static const char *process_env_lookup(char *const *envp, const char *key) {
     if (!envp)
         return NULL;
@@ -1166,6 +1352,12 @@ static const char *process_env_lookup(char *const *envp, const char *key) {
 ///          found the name is left unchanged so the spawn fails with ENOENT
 ///          just as `execvp` would. Returns 0 only when a path would overflow
 ///          @p out.
+/// @param program Borrowed nonempty executable path or bare name.
+/// @param envp Optional explicit child environment used as the first PATH source.
+/// @param out Destination buffer for a resolved path or unchanged program name.
+/// @param out_size Writable size of @p out, including the terminator.
+/// @return 1 when a complete result was written, or 0 when it would exceed the
+///         destination capacity.
 static int process_resolve_program_path(const char *program,
                                         char *const *envp,
                                         char *out,
@@ -1212,6 +1404,20 @@ static int process_resolve_program_path(const char *program,
     return 1;
 }
 
+/// @brief Start a redirected POSIX child process.
+/// @details Validates OS-bound strings, constructs retained argv/envp vectors,
+///          creates close-on-exec pipes for all standard streams, optionally
+///          installs a child working directory, resolves bare executable names,
+///          and invokes posix_spawn. Parent pipe ends are nonblocking. A non-NULL
+///          environment sequence replaces the complete inherited environment.
+/// @param program Runtime executable path or lookup name; must be nonempty and
+///        contain no embedded NUL.
+/// @param args Optional Seq of literal argument strings.
+/// @param cwd Optional working-directory string; NULL or empty means inherit.
+/// @param env Optional Seq of NAME=VALUE strings replacing the environment;
+///        NULL means inherit.
+/// @return New GC-managed running process object, or NULL on validation,
+///         allocation, path, pipe, spawn-action, or posix_spawn failure.
 static rt_process_impl *process_start_impl(rt_string program,
                                            void *args,
                                            rt_string cwd,
@@ -1378,6 +1584,14 @@ static rt_process_impl *process_start_impl(rt_string program,
 
 #endif
 
+/// @brief Terminate if necessary and release every resource owned by a process.
+/// @details Idempotently marks the handle destroyed. Windows terminates a live
+///          child with status 1 and waits. POSIX sends SIGTERM, drains and polls
+///          for up to 500 ms, then escalates to SIGKILL and reaps. Any remaining
+///          stream bytes are drained before both buffers and all handles are
+///          released.
+/// @param proc Process object to close; NULL or an already destroyed object is
+///        ignored.
 static void process_close(rt_process_impl *proc) {
     if (!proc || proc->destroyed)
         return;
@@ -1419,27 +1633,63 @@ static void process_close(rt_process_impl *proc) {
     proc->destroyed = 1;
 }
 
+/// @brief GC finalizer for a process object's operating-system resources.
+/// @param obj Process implementation object being finalized.
 static void process_finalize(void *obj) {
     process_close((rt_process_impl *)obj);
 }
 
+/// @brief Start a child with inherited working directory and environment.
+/// @param program Executable path or lookup name; must be nonempty and contain
+///        no embedded NUL byte.
+/// @param args Optional Seq of literal argument strings.
+/// @return New GC-managed process handle with redirected stdin/stdout/stderr, or
+///         NULL when validation or startup fails.
 void *rt_process_start(rt_string program, void *args) {
     return rt_process_start_with_env(program, args, NULL, NULL);
 }
 
+/// @brief Start a child in an optional working directory.
+/// @param program Executable path or lookup name; must be nonempty and contain
+///        no embedded NUL byte.
+/// @param args Optional Seq of literal argument strings.
+/// @param cwd Optional working directory; NULL or empty means inherit.
+/// @return New GC-managed process handle with redirected stdin/stdout/stderr, or
+///         NULL when validation or startup fails.
 void *rt_process_start_in(rt_string program, void *args, rt_string cwd) {
     return rt_process_start_with_env(program, args, cwd, NULL);
 }
 
+/// @brief Start a child with optional cwd and complete environment replacement.
+/// @details A non-NULL @p env replaces rather than augments the inherited
+///          environment. Arguments and environment entries cross directly to
+///          the OS without shell interpretation.
+/// @param program Executable path or lookup name; must be nonempty and contain
+///        no embedded NUL byte.
+/// @param args Optional Seq of literal argument strings.
+/// @param cwd Optional working directory; NULL or empty means inherit.
+/// @param env Optional Seq of nonempty NAME=VALUE strings; NULL means inherit.
+/// @return New GC-managed process handle with redirected stdin/stdout/stderr, or
+///         NULL when validation or startup fails.
 void *rt_process_start_with_env(rt_string program, void *args, rt_string cwd, void *env) {
     return process_start_impl(program, args, cwd, env);
 }
 
+/// @brief Test whether an object is an initialized, undestroyed process handle.
+/// @details A normally exited process remains a valid handle until destroyed.
+/// @param handle Candidate opaque runtime object.
+/// @return 1 for a started process object whose resources have not been
+///         destroyed, otherwise 0.
 int64_t rt_process_is_valid(void *handle) {
     rt_process_impl *proc = process_checked(handle);
     return proc && proc->started && !proc->destroyed ? 1 : 0;
 }
 
+/// @brief Nonblockingly collect output and check for child completion.
+/// @details Reaps a newly exited POSIX child or records a completed Windows
+///          process exactly once, preserving its exit status for later queries.
+/// @param handle Candidate process handle.
+/// @return 1 while the validated process is still running, otherwise 0.
 int64_t rt_process_poll(void *handle) {
     rt_process_impl *proc = process_checked(handle);
     if (!proc || !proc->started || proc->destroyed)
@@ -1448,10 +1698,20 @@ int64_t rt_process_poll(void *handle) {
     return proc->running ? 1 : 0;
 }
 
+/// @brief Poll and report whether a child process is still running.
+/// @param handle Candidate process handle.
+/// @return 1 while running, otherwise 0 for exited or invalid handles.
 int64_t rt_process_is_running(void *handle) {
     return rt_process_poll(handle);
 }
 
+/// @brief Consume stdout bytes buffered or immediately available.
+/// @details The process remains running; later output is returned by later
+///          reads. If more than 16 MiB accumulated since the previous read, the
+///          retained prefix is returned after raising an output-truncated trap.
+/// @param handle Candidate process handle.
+/// @return Newly allocated string containing incremental stdout, or an empty
+///         string for no bytes or an invalid/destroyed handle.
 rt_string rt_process_read_stdout(void *handle) {
     rt_process_impl *proc = process_checked(handle);
     if (!proc || !proc->started || proc->destroyed)
@@ -1460,6 +1720,12 @@ rt_string rt_process_read_stdout(void *handle) {
     return buffer_take(&proc->stdout_buf);
 }
 
+/// @brief Consume stdout into a structured truncation-aware result.
+/// @details Does not trap when the 16 MiB buffer discarded bytes. Instead the
+///          returned map contains @c text and Boolean @c truncated entries.
+/// @param handle Candidate process handle.
+/// @return Caller-owned result map, including an empty nontruncated result for
+///         an invalid handle, or NULL when map allocation fails.
 void *rt_process_read_stdout_result(void *handle) {
     rt_process_impl *proc = process_checked(handle);
     if (!proc || !proc->started || proc->destroyed)
@@ -1468,6 +1734,13 @@ void *rt_process_read_stdout_result(void *handle) {
     return buffer_take_result(&proc->stdout_buf);
 }
 
+/// @brief Consume stderr bytes buffered or immediately available.
+/// @details The process remains running; later output is returned by later
+///          reads. If more than 16 MiB accumulated since the previous read, the
+///          retained prefix is returned after raising an output-truncated trap.
+/// @param handle Candidate process handle.
+/// @return Newly allocated string containing incremental stderr, or an empty
+///         string for no bytes or an invalid/destroyed handle.
 rt_string rt_process_read_stderr(void *handle) {
     rt_process_impl *proc = process_checked(handle);
     if (!proc || !proc->started || proc->destroyed)
@@ -1476,6 +1749,12 @@ rt_string rt_process_read_stderr(void *handle) {
     return buffer_take(&proc->stderr_buf);
 }
 
+/// @brief Consume stderr into a structured truncation-aware result.
+/// @details Does not trap when the 16 MiB buffer discarded bytes. Instead the
+///          returned map contains @c text and Boolean @c truncated entries.
+/// @param handle Candidate process handle.
+/// @return Caller-owned result map, including an empty nontruncated result for
+///         an invalid handle, or NULL when map allocation fails.
 void *rt_process_read_stderr_result(void *handle) {
     rt_process_impl *proc = process_checked(handle);
     if (!proc || !proc->started || proc->destroyed)
@@ -1484,6 +1763,16 @@ void *rt_process_read_stderr_result(void *handle) {
     return buffer_take_result(&proc->stderr_buf);
 }
 
+/// @brief Write all possible bytes to the redirected child stdin stream.
+/// @details Runtime-string length is honored, so embedded NUL bytes are written.
+///          Windows writes bounded chunks; POSIX suppresses only the SIGPIPE
+///          attributable to this write and uses a nonblocking descriptor.
+/// @param handle Candidate running or exited process handle with an open stdin
+///        pipe.
+/// @param data Runtime byte string; NULL is treated as empty.
+/// @return Number of bytes written, zero for empty input, a positive partial
+///         count when a later write fails or would block, or -1 when no byte can
+///         be written.
 int64_t rt_process_write_stdin(void *handle, rt_string data) {
     rt_process_impl *proc = process_checked(handle);
     if (!proc || !proc->started || proc->destroyed)
@@ -1527,6 +1816,10 @@ int64_t rt_process_write_stdin(void *handle, rt_string data) {
 #endif
 }
 
+/// @brief Poll and read a process's retained exit status.
+/// @param handle Candidate process handle.
+/// @return Normal exit code, a negated signal number on POSIX, or -1 while
+///         running, after wait failure, or for an invalid/destroyed handle.
 int64_t rt_process_exit_code(void *handle) {
     rt_process_impl *proc = process_checked(handle);
     if (!proc || !proc->started || proc->destroyed)
@@ -1535,6 +1828,11 @@ int64_t rt_process_exit_code(void *handle) {
     return proc->running ? -1 : proc->exit_code;
 }
 
+/// @brief Request termination of a running child without waiting for it.
+/// @details Uses TerminateProcess with status 1 on Windows and SIGTERM on POSIX.
+///          Poll or wait afterward to observe and reap completion.
+/// @param handle Candidate process handle.
+/// @return 1 when the OS accepted a termination request, otherwise 0.
 int64_t rt_process_kill(void *handle) {
     rt_process_impl *proc = process_checked(handle);
     if (!proc || !proc->started || proc->destroyed || !proc->running)
@@ -1551,6 +1849,10 @@ int64_t rt_process_kill(void *handle) {
 #endif
 }
 
+/// @brief Wait for a child to exit while continuously draining output.
+/// @param handle Candidate process handle.
+/// @return Retained normal exit code, negated POSIX signal number, or -1 for an
+///         invalid handle or wait/status failure.
 int64_t rt_process_wait(void *handle) {
     rt_process_impl *proc = process_checked(handle);
     if (!proc || !proc->started || proc->destroyed)
@@ -1559,6 +1861,11 @@ int64_t rt_process_wait(void *handle) {
     return proc->exit_code;
 }
 
+/// @brief Idempotently terminate if needed and release process resources.
+/// @details The GC-managed object remains allocated but becomes invalid for all
+///          subsequent process operations.
+/// @param handle Candidate process handle; invalid and already destroyed
+///        objects are ignored.
 void rt_process_destroy(void *handle) {
     rt_process_impl *proc = process_checked(handle);
     process_close(proc);

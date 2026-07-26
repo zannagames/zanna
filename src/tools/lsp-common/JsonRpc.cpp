@@ -5,15 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tools/lsp-common/JsonRpc.cpp
-// Purpose: JSON-RPC 2.0 message parsing and construction.
-// Key invariants:
-//   - All responses include "jsonrpc": "2.0"
-//   - Notifications have no "id" field in the output
-//   - Error responses have {code, message, data?} in the "error" field
-// Ownership/Lifetime:
-//   - All functions return owned strings
-// Links: tools/lsp-common/JsonRpc.hpp
+/// @file
+/// @brief Implements JSON-RPC 2.0 request validation and compact message
+///        construction.
+///
+/// Every constructed message carries the required @c "jsonrpc":"2.0" member.
+/// Requests distinguish an omitted identifier from an explicit null
+/// identifier, notifications omit identifiers, and returned strings own their
+/// serialized data.
+///
+/// @see JsonRpc.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,6 +22,14 @@
 
 namespace zanna::server {
 
+/// @brief Validate and decode a JSON-RPC request or notification.
+/// @param msg Parsed JSON value expected to contain a protocol object.
+/// @param out Destination reset before validation and populated on success.
+/// @return @c true when the version, method, parameters, and optional identifier
+///         satisfy the accepted JSON-RPC request shape; @c false otherwise.
+/// @details The method must be a nonempty string. Parameters default to null.
+///          Identifiers may be null, strings, or integers; an absent identifier
+///          marks a notification, while explicit null remains a request ID.
 bool parseRequest(const JsonValue &msg, JsonRpcRequest &out) {
     out = JsonRpcRequest{};
     if (msg.type() != JsonType::Object)
@@ -53,6 +62,10 @@ bool parseRequest(const JsonValue &msg, JsonRpcRequest &out) {
     return true;
 }
 
+/// @brief Serialize a successful JSON-RPC response.
+/// @param id Request identifier to echo verbatim.
+/// @param result Successful result payload.
+/// @return Owned compact JSON object containing @c jsonrpc, @c id, and @c result.
 std::string buildResponse(const JsonValue &id, const JsonValue &result) {
     auto response = JsonValue::object({
         {"jsonrpc", JsonValue("2.0")},
@@ -62,6 +75,12 @@ std::string buildResponse(const JsonValue &id, const JsonValue &result) {
     return response.toCompactString();
 }
 
+/// @brief Serialize a JSON-RPC error response.
+/// @param id Request identifier to echo, commonly null when it cannot be recovered.
+/// @param code Numeric JSON-RPC or application error code.
+/// @param message Human-readable error description.
+/// @param data Optional structured details; omitted from the error object when null.
+/// @return Owned compact JSON object containing the protocol error response.
 std::string buildError(const JsonValue &id,
                        int code,
                        const std::string &message,
@@ -80,6 +99,10 @@ std::string buildError(const JsonValue &id,
     return response.toCompactString();
 }
 
+/// @brief Serialize a JSON-RPC notification.
+/// @param method Nonempty notification method name supplied by the caller.
+/// @param params Notification parameter payload.
+/// @return Owned compact JSON object with no request identifier.
 std::string buildNotification(const std::string &method, const JsonValue &params) {
     auto notification = JsonValue::object({
         {"jsonrpc", JsonValue("2.0")},

@@ -122,6 +122,9 @@ Lowerer::Module Lowerer::lower(ModuleDecl &module) {
     nextIfaceId_ = 1;
 
     // Setup string table emitter
+    /// @brief Materializes a newly interned Zia string as a module global.
+    /// @param label Stable string-table label.
+    /// @param content String bytes to emit.
     stringTable_.setEmitter([this](const std::string &label, const std::string &content) {
         builder_->addGlobalStr(label, content);
     });

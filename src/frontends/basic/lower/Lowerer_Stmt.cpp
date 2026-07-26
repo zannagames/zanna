@@ -543,6 +543,9 @@ void Lowerer::lowerCallStmt(const CallStmt &stmt) {
         const il::runtime::RuntimeSignature *rtSig = il::runtime::findRuntimeSignature(calleeKey);
         if (!rtSig && calleeKey.find('.') == std::string::npos && !ce->callee.empty()) {
             // Helper to convert canonical namespace to title-case for runtime lookup
+            /// @brief Converts canonical namespace segments to runtime title-case spelling.
+            /// @param ns Canonical dotted namespace.
+            /// @return Dotted namespace with each segment's first character uppercased.
             auto titleCaseNs = [](const std::string &ns) -> std::string {
                 std::string out;
                 out.reserve(ns.size());

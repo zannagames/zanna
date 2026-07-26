@@ -21,6 +21,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_restclient.c
+ * @brief Implements the synchronized managed REST-client facade.
+ * @details RestClient combines copied base URLs, persistent headers,
+ *          authentication helpers, JSON encoding, connection pooling, and
+ *          last-response tracking over the native HTTP request core. Mutable
+ *          configuration is snapshotted under a platform mutex so transport
+ *          work and managed publication occur without exposing partial state.
+ */
+
 #include "rt_restclient.h"
 #include "rt_codec.h"
 #include "rt_heap.h"

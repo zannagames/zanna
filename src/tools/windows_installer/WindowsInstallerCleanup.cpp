@@ -5,21 +5,17 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/tools/windows_installer/WindowsInstallerCleanup.cpp
-// Purpose: Delete the native maintenance cache after its owning process exits.
-//
-// Key invariants:
-//   - The helper receives only explicit absolute files/directories from the host.
-//   - It waits for the parent process before attempting any deletion.
-//   - The helper renames its mapped primary NTFS stream and deletes the base
-//     file before waiting, so no second process or reboot residue is required.
-//   - Directories are removed non-recursively and only when already empty.
-//   - The launch self-test exits before the helper marks or deletes anything.
-//
-// Ownership/Lifetime:
-//   - CommandLineToArgvW memory and the optional parent handle are always closed.
-//
-// Links: WindowsInstallerLifecycle.cpp, WindowsInstallerCleanup.rc.in
+/// @file
+/// @brief Implements the detached helper that removes installer maintenance
+///        caches after their owning process exits.
+///
+/// The host supplies explicit validated files and directories. The helper marks
+/// its own base file for POSIX-style deletion, waits for the parent, retries
+/// exact file deletion, and removes directories non-recursively. The self-test
+/// path exits before any deletion. Command-line storage and process handles are
+/// always released.
+///
+/// @see WindowsInstallerLifecycle.cpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -50,6 +46,10 @@ constexpr size_t kMaximumFiles = 64;
 constexpr size_t kMaximumDirectories = 64;
 constexpr int kMaximumArguments = 3 + static_cast<int>((kMaximumFiles + kMaximumDirectories) * 2);
 
+/// @brief Wait a bounded interval for the owning installer process to exit.
+/// @param processId Nonzero Windows process identifier.
+/// @return ERROR_SUCCESS when the process exits or no longer exists; otherwise
+///         a wait/open error or WAIT_TIMEOUT.
 DWORD waitForParent(DWORD processId) {
     if (processId == 0)
         return ERROR_INVALID_PARAMETER;
@@ -68,6 +68,10 @@ DWORD waitForParent(DWORD processId) {
     return error ? error : ERROR_INVALID_FUNCTION;
 }
 
+/// @brief Rename the running helper's primary stream and mark its base file deleted.
+/// @return ERROR_SUCCESS on complete self-unlink, otherwise a stable helper exit code.
+/// @details Uses a named-stream rename followed by FileDispositionInfoEx so the
+///          mapped image can disappear without a second process or reboot action.
 DWORD markSelfForDeletion() {
     std::vector<wchar_t> path(512);
     while (path.size() <= 32768U) {
@@ -131,6 +135,10 @@ DWORD markSelfForDeletion() {
     return deleted ? ERROR_SUCCESS : kExitSelfDeleteFailed;
 }
 
+/// @brief Delete one exact non-directory, non-reparse-point file with retries.
+/// @param path Validated absolute target path.
+/// @return @c true when deleted or already absent; @c false for unsafe attributes,
+///         nontransient failures, or retry exhaustion.
 bool deleteFileWithRetry(const std::wstring &path) {
     for (unsigned attempt = 0; attempt < 200; ++attempt) {
         DWORD attributes = GetFileAttributesW(path.c_str());
@@ -156,6 +164,11 @@ bool deleteFileWithRetry(const std::wstring &path) {
     return false;
 }
 
+/// @brief Remove one exact ordinary directory with bounded retries.
+/// @param path Validated absolute directory path.
+/// @param allowNonEmpty Whether a persistently nonempty directory counts as success.
+/// @return @c true when removed, absent, or allowed to remain nonempty.
+/// @details Never traverses contents and rejects reparse points.
 bool removeEmptyDirectoryWithRetry(const std::wstring &path, bool allowNonEmpty) {
     DWORD lastError = ERROR_SUCCESS;
     for (unsigned attempt = 0; attempt < 600; ++attempt) {
@@ -196,7 +209,14 @@ struct DirectoryRequest {
     bool allowNonEmpty{false};
 };
 
+/// @brief Test whether a cleanup target duplicates an earlier validated target.
+/// @param targets Previously accepted absolute paths.
+/// @param candidate Candidate path.
+/// @return @c true for a case- and separator-insensitive exact match.
 bool containsTarget(const std::vector<std::wstring> &targets, const std::wstring &candidate) {
+    /// @brief Compare one accepted cleanup target with the candidate path.
+    /// @param target Previously accepted absolute path.
+    /// @return `true` when `target` denotes the same Windows path as `candidate`.
     return std::any_of(targets.begin(), targets.end(), [&candidate](const std::wstring &target) {
         return zanna::installer::cleanup::pathsEqual(target, candidate);
     });
@@ -204,6 +224,12 @@ bool containsTarget(const std::vector<std::wstring> &targets, const std::wstring
 
 } // namespace
 
+/// @brief Parse cleanup requests and run the detached deletion sequence.
+/// @details Accepts one parent PID plus bounded @c /delete, @c /rmdir, and
+///          @c /rmdir-if-empty pairs. The WinMain parameters are intentionally
+///          unnamed because parsing uses GetCommandLineW for exact Unicode input.
+/// @return ERROR_SUCCESS on complete cleanup, otherwise a stable validation,
+///         self-delete, parent-wait, or target-cleanup exit code.
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     int argc = 0;
     wchar_t **argv = CommandLineToArgvW(GetCommandLineW(), &argc);

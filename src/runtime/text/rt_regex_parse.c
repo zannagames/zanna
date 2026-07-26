@@ -13,8 +13,8 @@
 //          rt_regex_internal.h.
 //
 // Key invariants:
-//   - Parsing traps (via parse_error) on malformed syntax; it never returns
-//     a partially-built tree to the caller on error.
+//   - Malformed syntax is reported through parse_error; owned partial subtrees
+//     are released on parser-detected unclosed class/group paths.
 //   - Node allocation/teardown is owned by the core (node_new/node_free);
 //     this file only assembles nodes.
 //   - parse_alternation is the grammar entry point used by compile_pattern.
@@ -27,6 +27,15 @@
 //        src/runtime/text/rt_regex_internal.h (shared engine types)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_regex_parse.c
+ * @brief Implements recursive-descent parsing for the in-tree regex syntax.
+ * @details Pattern bytes are assembled into owned AST nodes for literals,
+ *          anchors, character classes, groups, quantifiers, concatenation, and
+ *          alternation. Syntax failures report their cursor position and
+ *          release any partially constructed subtrees before returning.
+ */
 
 #include "rt_regex.h"
 #include "rt_regex_internal.h"
@@ -47,25 +56,34 @@
 //=============================================================================
 
 /// @brief Return the next byte without advancing; '\\0' at EOF.
+/// @param p Parser state to inspect.
+/// @return Current pattern byte, or the null sentinel at end-of-input.
 static char peek(parser_state *p) {
     return p->pos < p->len ? p->src[p->pos] : '\0';
 }
 
 /// @brief Consume and return the next byte; '\\0' at EOF.
+/// @param p Parser state to advance.
+/// @return Consumed pattern byte, or the null sentinel at end-of-input.
 static char advance(parser_state *p) {
     return p->pos < p->len ? p->src[p->pos++] : '\0';
 }
 
 /// @brief True if the parser cursor is past the end of the pattern.
+/// @param p Parser state to inspect.
+/// @return `true` when @p p has no source bytes remaining.
 bool at_end(parser_state *p) {
     return p->pos >= p->len;
 }
 
 /// @brief Trap with a contextual parse-error message including the cursor position.
 ///
-/// Always traps; never returns. Used by the parser when it encounters
-/// malformed regex syntax (unclosed bracket / group, trailing
-/// backslash, etc.).
+/// Used by the parser when it encounters malformed regex syntax such as an
+/// unclosed bracket/group or trailing backslash. If the active runtime trap
+/// handler resumes execution, this helper itself has no additional recovery
+/// behavior.
+/// @param p Parser state supplying the current byte position.
+/// @param msg Null-terminated diagnostic detail.
 void parse_error(parser_state *p, const char *msg) {
     char buf[256];
     snprintf(buf, sizeof(buf), "Pattern error at position %d: %s", p->pos, msg);
@@ -80,6 +98,8 @@ void parse_error(parser_state *p, const char *msg) {
 ///   - Ranges (`a-z`).
 ///   - Literal `-` when at end (`[abc-]`).
 /// Traps via `parse_error` if `]` is missing.
+/// @param p Parser cursor positioned immediately after the opening bracket.
+/// @return Newly allocated character-class node.
 static re_node *parse_class(parser_state *p) {
     re_node *n = node_new(RE_CLASS);
     memset(n->data.char_class.bits, 0, sizeof(n->data.char_class.bits));
@@ -160,6 +180,8 @@ static re_node *parse_class(parser_state *p) {
 /// boundary (`* + ? | )` or EOF) — the caller treats that as
 /// "no more atoms in this concat". Group atoms recursively invoke
 /// `parse_alternation` for the body.
+/// @param p Parser state to consume and update.
+/// @return Newly allocated atom node, or `NULL` at an expression boundary.
 static re_node *parse_atom(parser_state *p) {
     char c = peek(p);
 
@@ -247,6 +269,9 @@ static re_node *parse_atom(parser_state *p) {
 /// Wraps the atom in an `RE_QUANT` node when a quantifier follows;
 /// otherwise returns the bare atom. The trailing `?` after a quantifier
 /// flips it to non-greedy mode.
+/// @param p Parser state to consume and update.
+/// @return Newly allocated quantified or bare atom, or `NULL` when no atom
+///         begins at the cursor.
 static re_node *parse_quantified(parser_state *p) {
     re_node *atom = parse_atom(p);
     if (!atom)
@@ -288,6 +313,9 @@ static re_node *parse_quantified(parser_state *p) {
 /// Stops at `)`, `|`, or EOF. As an optimization, the result is
 /// flattened: empty concat returns NULL, single-child concat returns
 /// just the child (avoids one indirection in the matcher).
+/// @param p Parser state to consume and update.
+/// @return Owned concat subtree, a single owned child, or `NULL` for an empty
+///         sequence.
 static re_node *parse_concat(parser_state *p) {
     re_node *concat = node_new(RE_CONCAT);
 
@@ -324,6 +352,9 @@ static re_node *parse_concat(parser_state *p) {
 /// Empty alternatives (e.g., `(|x)`) get an explicit empty `RE_CONCAT`
 /// branch so they can match the empty string. Single-branch
 /// alternations are flattened to just the branch (matcher optimization).
+/// @param p Parser state to consume and update.
+/// @return Owned alternation subtree, a single owned branch, or `NULL` for an
+///         entirely empty expression.
 re_node *parse_alternation(parser_state *p) {
     re_node *first = parse_concat(p);
 

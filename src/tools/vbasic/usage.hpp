@@ -5,11 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tools/vbasic/usage.hpp
-// Purpose: Declarations for vbasic help and usage text.
-// Key invariants: None.
-// Ownership/Lifetime: N/A.
-// Links: docs/cli-redesign-plan.md
+/// @file
+/// @brief Declares the vbasic command-line help and version presenters.
+///
+/// Usage text is written to standard error, while version information is
+/// written to standard output.
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,10 +20,11 @@ namespace vbasic {
 /// @brief Print usage information for the vbasic command-line tool.
 ///
 /// @details Displays synopsis, common usage patterns, and available options.
-/// Designed to be user-friendly for newcomers to Zanna BASIC.
+///          Designed to be user-friendly for newcomers to Zanna BASIC.
 void printUsage();
 
 /// @brief Print version information for vbasic.
+/// @details Includes the executable, product, and supported IL versions.
 void printVersion();
 
 } // namespace vbasic

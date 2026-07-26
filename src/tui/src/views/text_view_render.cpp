@@ -87,6 +87,9 @@ void TextView::paint(render::ScreenBuffer &sb) {
         const std::size_t availableCols =
             availableWidth > 0 ? static_cast<std::size_t>(availableWidth) : 0U;
         const bool lineHasSelection = hasSelection && lineStart < selFinish && lineEnd > selBegin;
+        /// @brief Test whether one highlight interval overlaps the rendered line.
+        /// @param h Highlight start and byte length.
+        /// @return `true` when the nonempty interval intersects this line.
         const bool lineHasHighlights =
             std::any_of(highlights_.begin(), highlights_.end(), [&](const auto &h) {
                 if (h.second == 0)
@@ -97,6 +100,9 @@ void TextView::paint(render::ScreenBuffer &sb) {
 
         std::size_t lineByte = 0;
         std::size_t col = 0;
+        /// @brief Render one contiguous storage segment of the current logical line.
+        /// @param segment UTF-8 text segment to decode and paint.
+        /// @return `true` to continue with another segment, or `false` when the row is full.
         lineView.forEachSegment([&](std::string_view segment) -> bool {
             std::size_t segOffset = 0;
             while (segOffset < segment.size()) {

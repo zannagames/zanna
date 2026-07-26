@@ -19,12 +19,22 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements Windows system-preferred CSPRNG acquisition.
+ * @details Chunks caller requests to the BCrypt length type, erases the full
+ * destination after any provider failure, and exposes no persistent provider
+ * handle or global entropy state.
+ */
+
 #include "rt_entropy_platform.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
+/** Restrict the Windows SDK surface to core declarations. */
 #define WIN32_LEAN_AND_MEAN
 #endif
 #ifndef NOMINMAX
+/** Prevent Windows headers from defining conflicting min/max macros. */
 #define NOMINMAX
 #endif
 #include <stdint.h>
@@ -35,6 +45,7 @@
 #pragma comment(lib, "bcrypt.lib")
 
 #ifndef NT_SUCCESS
+/** Test whether an NTSTATUS value denotes success. */
 #define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
 #endif
 

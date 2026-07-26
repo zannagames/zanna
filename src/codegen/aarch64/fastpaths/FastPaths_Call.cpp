@@ -130,6 +130,9 @@ bool computeTempTo(const il::core::Instr &prod,
                    const std::array<PhysReg, kMaxGPRArgs> &argOrder,
                    MBasicBlock &bbMir) {
     /// @brief Emits a three-register operation from two entry parameters.
+    /// @param opc Machine opcode to emit.
+    /// @param p0 Index of the first entry parameter.
+    /// @param p1 Index of the second entry parameter.
     auto rr_emit = [&](MOpcode opc, unsigned p0, unsigned p1) {
         const PhysReg r0 = argOrder[p0];
         const PhysReg r1 = argOrder[p1];
@@ -138,6 +141,9 @@ bool computeTempTo(const il::core::Instr &prod,
     };
 
     /// @brief Emits or legalizes a parameter/immediate operation.
+    /// @param opc Machine opcode to emit.
+    /// @param p0 Index of the register entry parameter.
+    /// @param imm Immediate operand.
     auto ri_emit = [&](MOpcode opc, unsigned p0, long long imm) {
         const PhysReg r0 = argOrder[p0];
         if (opc == MOpcode::AddRI || opc == MOpcode::SubRI || opc == MOpcode::AddOvfRI ||
@@ -158,6 +164,8 @@ bool computeTempTo(const il::core::Instr &prod,
                 (opc == MOpcode::AddOvfRI || opc == MOpcode::SubOvfRI) ? MOpcode::SubOvfRRR
                                                                        : MOpcode::SubRRR,
                 /// @brief Materializes a non-encodable immediate in reserved `x16`.
+                /// @param materializedImm Immediate value selected by the legalizer.
+                /// @return Operand naming reserved register `x16`.
                 [&](long long materializedImm) {
                     const MOperand scratch = MOperand::regOp(PhysReg::X16);
                     bbMir.instrs.push_back(
@@ -344,6 +352,8 @@ std::optional<MFunction> tryCallFastPaths(FastPathContext &ctx) {
         for (const auto &entry : paramHomes)
             homeAllocas.insert(entry.second);
         /// @brief Tests whether a preceding producer supplies a direct call argument.
+        /// @param pre Candidate producer.
+        /// @return `true` when the producer result occurs in the call operands.
         auto feedsCall = [&](const il::core::Instr &pre) {
             if (!pre.result)
                 return false;
@@ -558,6 +568,9 @@ std::optional<MFunction> tryCallFastPaths(FastPathContext &ctx) {
             } else {
                 // Attempt to compute temp into a scratch then marshal it
                 if (arg.kind == il::core::Value::Kind::Temp && scratchUsed < kScratchPoolSize) {
+                    /// @brief Tests whether an instruction produces the call argument.
+                    /// @param I Candidate instruction.
+                    /// @return `true` when `I` defines `arg`.
                     auto it = std::find_if(
                         bb.instructions.begin(),
                         bb.instructions.end(),

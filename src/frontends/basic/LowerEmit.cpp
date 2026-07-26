@@ -55,7 +55,8 @@ Lowerer::ProgramEmitContext Lowerer::collectProgramDeclarations(const Program &p
 
     // Also predeclare and lower procedures declared inside namespace blocks in the main body
     // so fully-qualified calls can resolve at runtime.
-    /// Recursively lower procedure declarations contained in namespace bodies.
+    /// @brief Recursively lowers procedure declarations contained in namespace bodies.
+    /// @param stmts Statement list to scan.
     std::function<void(const std::vector<StmtPtr> &)> scan;
     scan = [&](const std::vector<StmtPtr> &stmts) {
         for (const auto &stmtPtr : stmts) {
@@ -184,6 +185,8 @@ void Lowerer::emitMainBodyAndEpilogue(ProgramEmitContext &state) {
         emitRet(Value::constInt(0));
     } else {
         ctx.setCurrent(state.entry);
+        /// @brief Updates the lowerer's current source location before a statement.
+        /// @param stmt Statement about to be lowered.
         lowerStatementSequence(state.mainStmts,
                                /*stopOnTerminated=*/false,
                                [&](const Stmt &stmt) { curLoc = stmt.loc; });

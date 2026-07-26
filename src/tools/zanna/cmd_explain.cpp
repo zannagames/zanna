@@ -5,17 +5,12 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/tools/zanna/cmd_explain.cpp
-// Purpose: Entry point for `zanna explain` and the `--print-error-codes`
-//          driver flag. Resolves diagnostic codes against the central catalog
-//          and prints human- or machine-readable descriptions.
-// Key invariants:
-//   - Lookup degrades gracefully: uncataloged codes with a recognized prefix
-//     still report their subsystem family.
-//   - JSON output is a stable array of {code, subsystem, summary} objects.
-// Ownership/Lifetime:
-//   - Catalog data is static; no allocation beyond output formatting.
-// Links: support/diag_catalog.hpp, docs/tools/debugging.md, docs/tools/cli.md
+/// @file cmd_explain.cpp
+/// @brief Implements diagnostic-code explanation and catalog output.
+///
+/// Exact lookup falls back to recognized subsystem prefixes for uncataloged codes. JSON output uses
+/// stable code, subsystem, and summary fields. Catalog storage is static; commands allocate only
+/// transient output formatting.
 //
 //===----------------------------------------------------------------------===//
 
@@ -30,11 +25,15 @@
 namespace {
 
 /// @brief Emit a string as a JSON-escaped, double-quoted literal.
+/// @param os Destination stream.
+/// @param text Unquoted bytes to escape.
 void printJsonString(std::ostream &os, std::string_view text) {
     il::support::printJsonStringEscaped(os, text);
 }
 
 /// @brief Print every cataloged code, optionally as JSON.
+/// @param json Whether to emit one JSON array instead of tab-delimited lines.
+/// @return Zero after complete catalog output.
 int printAllCodes(bool json) {
     const auto &entries = il::support::diagCatalog();
     if (json) {
@@ -60,6 +59,8 @@ int printAllCodes(bool json) {
     return 0;
 }
 
+/// @brief Print explain-command syntax and supported modes.
+/// @param os Destination stream.
 void printExplainUsage(std::ostream &os) {
     os << "Usage: zanna explain <code> [--json]\n"
        << "       zanna explain --list [--json]\n"

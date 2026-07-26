@@ -25,6 +25,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements Future-based adapters over blocking network operations.
+ * @details Lazily configures a shared bounded worker pool, snapshots or retains
+ * arguments across thread boundaries, contains worker traps, and settles every
+ * Promise for asynchronous TCP connect/send/receive and one-shot HTTP work.
+ */
+
 #include "rt_async_socket.h"
 
 #include "rt_box.h"
@@ -54,9 +62,12 @@
 // Default Thread Pool (lazy singleton)
 //=============================================================================
 
+/** Published process-wide worker Pool after successful initialization. */
 static void *default_pool = NULL;
+/** Atomic state gate serializing Pool configuration and publication. */
 static volatile int pool_init_state = 0;
 
+/** States of the shared AsyncSocket Pool initialization state machine. */
 enum {
     ASYNC_POOL_UNINITIALIZED = 0,
     ASYNC_POOL_INITIALIZING = 1,

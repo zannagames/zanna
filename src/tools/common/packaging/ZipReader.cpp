@@ -21,6 +21,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements strict read-only parsing and extraction of classic ZIP archives.
+/// @details Construction validates central/local record bounds, path safety, and
+///          non-overlap; extraction supports stored and DEFLATE entries and
+///          cross-checks metadata and CRC-32.
+
 #include "ZipReader.hpp"
 #include "PkgDeflate.hpp"
 
@@ -39,11 +45,15 @@ namespace zanna::pkg {
 namespace {
 
 /// @brief Read a 16-bit little-endian unsigned integer from an unaligned byte pointer.
+/// @param p Pointer to at least two readable bytes.
+/// @return Decoded host-order 16-bit value.
 uint16_t rdLE16(const uint8_t *p) {
     return static_cast<uint16_t>(p[0] | (p[1] << 8));
 }
 
 /// @brief Read a 32-bit little-endian unsigned integer from an unaligned byte pointer.
+/// @param p Pointer to at least four readable bytes.
+/// @return Decoded host-order 32-bit value.
 uint32_t rdLE32(const uint8_t *p) {
     return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
            (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
@@ -83,6 +93,8 @@ bool isUnsafeZipName(const std::string &name) {
 /// @details Directory markers such as `foo/` and file entries such as `foo`
 ///          address the same extraction path. The reader rejects both by trimming
 ///          trailing slashes before inserting the name in the seen set.
+/// @param name Central-directory entry name, taken by value.
+/// @return Name without trailing slash characters.
 std::string normalizedZipDuplicateKey(std::string name) {
     while (!name.empty() && name.back() == '/')
         name.pop_back();
@@ -93,6 +105,9 @@ std::string normalizedZipDuplicateKey(std::string name) {
 
 /// @brief Construct a ZipReader over the given memory buffer and immediately parse
 /// the central directory. data must remain valid for the lifetime of this object.
+/// @param data Caller-owned complete archive bytes.
+/// @param len Number of bytes available at @p data.
+/// @throws ZipReadError If the buffer is null, truncated, unsafe, or unsupported.
 ZipReader::ZipReader(const uint8_t *data, size_t len) : data_(data), len_(len) {
     if (!data || len < 22)
         throw ZipReadError("ZIP: buffer too small");
@@ -223,6 +238,8 @@ void ZipReader::parseCentralDirectory() {
 
 /// @brief Return a pointer to the entry whose name matches exactly, or nullptr if not found.
 /// Linear search is acceptable because manifests typically contain < 1000 entries.
+/// @param name Exact case-sensitive central-directory name.
+/// @return Stable pointer into the reader's entry vector, or null when absent.
 const ZipEntry *ZipReader::find(const std::string &name) const {
     for (const auto &e : entries_) {
         if (e.name == name)
@@ -234,6 +251,10 @@ const ZipEntry *ZipReader::find(const std::string &name) const {
 /// @brief Extract entry from the archive and return its uncompressed content.
 /// Cross-validates flags, method, CRC, and sizes against the central directory.
 /// After decompression, the CRC-32 is re-computed and checked against the stored value.
+/// @param entry Entry descriptor obtained from this reader.
+/// @return Caller-owned uncompressed bytes.
+/// @throws ZipReadError On inconsistent headers, invalid bounds/method, size
+///         mismatch, decompression failure, or CRC mismatch.
 std::vector<uint8_t> ZipReader::extract(const ZipEntry &entry) const {
     // Navigate to local file header
     size_t lhOff = entry.localHeaderOffset;

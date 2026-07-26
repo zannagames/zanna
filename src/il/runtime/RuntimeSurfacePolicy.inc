@@ -20,6 +20,53 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Enumerates deliberate frontend-visible and internal runtime surface policy.
+ *
+ * @details This multi-include policy file is expanded by runtime-surface audit
+ *          tooling. It suppresses headers and C symbols that are intentionally
+ *          implementation-only and asserts canonical functions, methods, and
+ *          properties that must remain exposed with exact frontend signatures.
+ *          The includer supplies every expansion macro; this file owns no
+ *          declarations or runtime state.
+ */
+
+/**
+ * @def RUNTIME_SURFACE_INTERNAL_HEADER
+ * @brief Marks one runtime header as intentionally excluded from inferred frontend API.
+ * @param path Repository-relative header path as a string literal.
+ */
+
+/**
+ * @def RUNTIME_SURFACE_INTERNAL_SYMBOL
+ * @brief Marks one C runtime symbol as implementation-only.
+ * @param symbol Linkage name as a string literal.
+ */
+
+/**
+ * @def RUNTIME_SURFACE_EXPECT_FUNCTION
+ * @brief Requires a canonical frontend function to resolve to a specific runtime symbol.
+ * @param canonical Fully qualified frontend function name.
+ * @param symbol Required C runtime linkage name.
+ */
+
+/**
+ * @def RUNTIME_SURFACE_EXPECT_METHOD
+ * @brief Requires a frontend class method with an exact callable signature.
+ * @param class_name Fully qualified frontend class name.
+ * @param method_name Frontend method name.
+ * @param signature Canonical result-and-parameter signature.
+ */
+
+/**
+ * @def RUNTIME_SURFACE_EXPECT_PROPERTY
+ * @brief Requires a frontend class property with an exact exposed type.
+ * @param class_name Fully qualified frontend class name.
+ * @param property_name Frontend property name.
+ * @param type_name Canonical property type.
+ */
+
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/network/rt_crypto.h")
 
 // These headers intentionally expose additional C-runtime helpers that are not

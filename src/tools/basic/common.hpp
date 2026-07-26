@@ -13,6 +13,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares shared source-loading support for BASIC developer tools.
+/// @details The helper centralizes usage reporting, bounded file loading,
+///          diagnostic formatting, and SourceManager registration so small
+///          BASIC command-line utilities expose identical failure behavior.
+
 #pragma once
 
 #include <cstdint>
@@ -35,6 +41,9 @@ namespace il::tools::basic {
 ///
 /// @return The assigned file identifier on success; std::nullopt if the usage check or
 /// file loading fails.
+/// @details Emits the configured BASIC-tool usage text when @p path is null.
+///          Other loading and registration failures are printed as canonical
+///          diagnostics. The destination buffer changes only on success.
 std::optional<std::uint32_t> loadBasicSource(const char *path,
                                              std::string &buffer,
                                              il::support::SourceManager &sm);

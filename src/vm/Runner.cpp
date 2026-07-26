@@ -16,6 +16,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the public VM runner façade and its debugger-oriented
+///        stepping, watch, profiling, and diagnostic operations.
+/// @details The façade owns a hidden interpreter instance, forwards run
+///          configuration, lazily prepares step-mode state, and translates
+///          internal debug records into stable public value types.
+
 #include "zanna/vm/VM.hpp"
 
 #include "support/source_manager.hpp"
@@ -104,6 +111,8 @@ class Runner::Impl {
     }
 
 #if ZANNA_VM_OPCOUNTS
+    /// @brief Access the VM's per-opcode execution counters.
+    /// @return Immutable counter array indexed by opcode value.
     const std::array<uint64_t, il::core::kNumOpcodes> &opcodeCounts() const {
         return vm.opcodeCounts();
     }
@@ -115,6 +124,9 @@ class Runner::Impl {
         vm.resetOpcodeCounts();
     }
 
+    /// @brief Return the most frequently executed opcodes.
+    /// @param n Maximum number of ranked entries to return.
+    /// @return Opcode/count pairs ordered by the VM profiling implementation.
     std::vector<std::pair<int, uint64_t>> topOpcodes(std::size_t n) const {
         return vm.topOpcodes(n);
     }
@@ -146,11 +158,14 @@ class Runner::Impl {
     }
 
     /// @brief Get the current call stack depth.
+    /// @return Number of execution states on the active VM stack.
     size_t currentDepth() const {
         return detail::VMAccess::execStack(vm).size();
     }
 
     /// @brief Get the current source line (-1 if unknown).
+    /// @return One-based source line for the active instruction, or @c -1 when
+    ///         no location is available.
     int32_t currentSourceLine() const {
         const auto &stack = detail::VMAccess::execStack(vm);
         if (stack.empty())
@@ -163,6 +178,8 @@ class Runner::Impl {
     }
 
     /// @brief Step over: execute until a new source line at same/shallower depth.
+    /// @return Status describing the breakpoint, pause, trap, or halt that
+    ///         stopped stepping.
     RunStatus stepOver() {
         ensurePrepared();
         const size_t startDepth = currentDepth();
@@ -196,6 +213,8 @@ class Runner::Impl {
     }
 
     /// @brief Step out: execute until the current function returns.
+    /// @return Status describing the breakpoint, pause, trap, or halt that
+    ///         stopped stepping.
     RunStatus stepOut() {
         ensurePrepared();
         const size_t startDepth = currentDepth();
@@ -288,16 +307,28 @@ class Runner::Impl {
         detail::VMAccess::refreshDebugFlags(vm); // Update fast-path flag
     }
 
+    /// @brief Remove a previously registered memory watch.
+    /// @param addr Start address used when the watch was registered.
+    /// @param size Watched byte count.
+    /// @param tag Label used to disambiguate matching watch ranges.
+    /// @return @c true when a matching watch was removed.
     bool removeMemWatch(const void *addr, std::size_t size, std::string_view tag) {
         bool removed = detail::VMAccess::debug(vm).removeMemWatch(addr, size, tag);
         detail::VMAccess::refreshDebugFlags(vm); // Update fast-path flag
         return removed;
     }
 
+    /// @brief Consume all queued memory-watch events.
+    /// @return Collected hit records, leaving the internal event queue empty.
     std::vector<MemWatchHit> drainMemWatchHits() {
         return detail::VMAccess::debug(vm).drainMemWatchEvents();
     }
 
+    /// @brief Build a newest-to-oldest snapshot of the active call stack.
+    /// @details Captures function, block, instruction index, and source line,
+    ///          falling back to the lazily prepared step state when it is not
+    ///          represented on the VM execution stack.
+    /// @return Value-owned backtrace frames safe to retain after the call.
     std::vector<BacktraceFrame> backtrace() const {
         std::vector<BacktraceFrame> frames;
         const auto &stack = detail::VMAccess::execStack(vm);
@@ -350,6 +381,11 @@ class Runner::Impl {
         return frames;
     }
 
+    /// @brief Materialize comprehensive information for the most recent trap.
+    /// @details Copies internal trap state into @ref cachedTrap so the returned
+    ///          pointer remains valid until the next query or runner mutation.
+    /// @return Pointer to façade-owned trap information, or @c nullptr when no
+    ///         trap message is available.
     const TrapInfo *lastTrap() const {
         // Populate on demand from VM's trap state.
         auto msg = vm.lastTrapMessage();
@@ -369,6 +405,9 @@ class Runner::Impl {
     }
 
   private:
+    /// @brief Lazily prepare the module's @c main function for step-mode use.
+    /// @details When no entry function exists, installs an empty state so
+    ///          repeated calls remain idempotent.
     void ensurePrepared() {
         if (state)
             return;
@@ -386,8 +425,8 @@ class Runner::Impl {
 
     DebugScript *script = nullptr; ///< Borrowed debug script used for breakpoints.
     VM vm;                         ///< Owning interpreter instance.
-    std::unique_ptr<detail::VMAccess::ExecState> state; // prepared on first step
-    mutable TrapInfo cachedTrap{};
+    std::unique_ptr<detail::VMAccess::ExecState> state; ///< Lazily prepared step state.
+    mutable TrapInfo cachedTrap{}; ///< Stable storage returned by @ref lastTrap.
 };
 
 /// @brief Create a runner façade for the supplied module and configuration.
@@ -395,6 +434,8 @@ class Runner::Impl {
 ///          any debug handles stored in the configuration.  The façade keeps the
 ///          header minimal while allowing callers to construct runners on the
 ///          stack.
+/// @param module Borrowed IL module that must outlive the runner.
+/// @param config Runtime, debug, polling, argument, and resource configuration.
 Runner::Runner(const il::core::Module &module, RunConfig config)
     : impl(std::make_unique<Impl>(module, std::move(config))) {}
 
@@ -403,9 +444,12 @@ Runner::Runner(const il::core::Module &module, RunConfig config)
 Runner::~Runner() = default;
 
 /// @brief Move-construct a runner by transferring ownership of the implementation.
+/// @param other Runner whose implementation is transferred.
 Runner::Runner(Runner &&) noexcept = default;
 
 /// @brief Move-assign a runner by swapping private implementation pointers.
+/// @param other Runner whose implementation is transferred.
+/// @return Reference to this runner after assignment.
 Runner &Runner::operator=(Runner &&) noexcept = default;
 
 /// @brief Run the module associated with this runner.
@@ -432,6 +476,10 @@ std::optional<std::string> Runner::lastTrapMessage() const {
     return impl->lastTrapMessage();
 }
 
+/// @brief Access per-opcode execution counters.
+/// @details Returns live VM counters when opcode profiling is compiled in and a
+///          process-wide zero-filled array otherwise.
+/// @return Immutable counter array indexed by opcode value.
 const std::array<uint64_t, il::core::kNumOpcodes> &Runner::opcodeCounts() const {
 #if ZANNA_VM_OPCOUNTS
     return impl->opcodeCounts();
@@ -441,12 +489,18 @@ const std::array<uint64_t, il::core::kNumOpcodes> &Runner::opcodeCounts() const 
 #endif
 }
 
+/// @brief Reset opcode counters when profiling support is enabled.
+/// @details This operation is a no-op in builds without opcode counting.
 void Runner::resetOpcodeCounts() {
 #if ZANNA_VM_OPCOUNTS
     impl->resetOpcodeCounts();
 #endif
 }
 
+/// @brief Return the most frequently executed opcodes.
+/// @param n Maximum number of ranked entries requested.
+/// @return Opcode/count pairs when profiling is enabled, or an empty vector
+///         otherwise.
 std::vector<std::pair<int, uint64_t>> Runner::topOpcodes(std::size_t n) const {
 #if ZANNA_VM_OPCOUNTS
     return impl->topOpcodes(n);
@@ -455,10 +509,15 @@ std::vector<std::pair<int, uint64_t>> Runner::topOpcodes(std::size_t n) const {
 #endif
 }
 
+/// @brief Register a runtime external for subsequent VM calls.
+/// @param ext External name, signature, and function descriptor to publish.
 void Runner::registerExtern(const ExternDesc &ext) {
     il::vm::RuntimeBridge::registerExtern(ext);
 }
 
+/// @brief Remove a runtime external by name.
+/// @param name Fully qualified external name.
+/// @return @c true when a matching registration was removed.
 bool Runner::unregisterExtern(std::string_view name) {
     return il::vm::RuntimeBridge::unregisterExtern(name);
 }
@@ -471,50 +530,76 @@ Runner::StepResult Runner::step() {
     return impl->step();
 }
 
-/// @brief Resume execution until a stopping condition is reached.
-/// @details Forwards to the private implementation, which loops over single
-///          steps until a breakpoint, pause, trap, or halt interrupts execution.
-/// @return A RunStatus describing why execution stopped.
+/// @brief Step over the current source line without stopping inside callees.
+/// @details Continues until execution reaches a different source line at the
+///          same or shallower call depth, or another debugger stop condition
+///          occurs first.
+/// @return Status describing the line pause, breakpoint, trap, or halt.
 Runner::RunStatus Runner::stepOver() {
     return impl->stepOver();
 }
 
+/// @brief Continue until the current function returns or another stop occurs.
+/// @return Status describing the breakpoint, pause, trap, or halt.
 Runner::RunStatus Runner::stepOut() {
     return impl->stepOut();
 }
 
+/// @brief Resume execution until a debugger-visible stopping condition.
+/// @return Status describing the breakpoint, pause, trap, or halt.
 Runner::RunStatus Runner::continueRun() {
     return impl->continueRun();
 }
 
+/// @brief Register a source breakpoint.
+/// @param loc File and line location at which execution should pause.
 void Runner::setBreakpoint(const il::support::SourceLoc &loc) {
     impl->setBreakpoint(loc);
 }
 
+/// @brief Remove every source breakpoint while preserving source lookup state.
 void Runner::clearBreakpoints() {
     impl->clearBreakpoints();
 }
 
+/// @brief Set the interpreter instruction budget.
+/// @param max Maximum instructions before pausing; zero disables the limit.
 void Runner::setMaxSteps(uint64_t max) {
     impl->setMaxSteps(max);
 }
 
+/// @brief Retrieve comprehensive information about the most recent trap.
+/// @return Pointer to runner-owned trap information, or @c nullptr when no trap
+///         has occurred.
 const Runner::TrapInfo *Runner::lastTrap() const {
     return impl->lastTrap();
 }
 
+/// @brief Watch a half-open memory range for writes.
+/// @param addr Start of the watched range.
+/// @param size Number of bytes covered.
+/// @param tag Value-owned label included in watch events.
 void Runner::addMemWatch(const void *addr, std::size_t size, std::string tag) {
     impl->addMemWatch(addr, size, std::move(tag));
 }
 
+/// @brief Remove a matching memory watch.
+/// @param addr Start address used when the watch was registered.
+/// @param size Watched byte count.
+/// @param tag Watch label used for matching.
+/// @return @c true when a watch was removed.
 bool Runner::removeMemWatch(const void *addr, std::size_t size, std::string_view tag) {
     return impl->removeMemWatch(addr, size, tag);
 }
 
+/// @brief Consume queued memory-watch events.
+/// @return Value-owned hit records in debugger queue order.
 std::vector<MemWatchHit> Runner::drainMemWatchHits() {
     return impl->drainMemWatchHits();
 }
 
+/// @brief Capture the current VM backtrace.
+/// @return Newest-to-oldest value-owned frame descriptions.
 std::vector<Runner::BacktraceFrame> Runner::backtrace() const {
     return impl->backtrace();
 }

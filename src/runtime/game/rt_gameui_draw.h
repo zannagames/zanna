@@ -40,30 +40,93 @@ extern "C" {
 typedef struct rt_gameui_draw_ops {
     /// Borrowed concrete canvas handle supplied to every operation.
     void *canvas;
-    /// Draw an opaque axis-aligned filled rectangle.
+    /// @brief Draw an opaque axis-aligned filled rectangle.
+    /// @param canvas Borrowed target canvas.
+    /// @param x Left canvas coordinate.
+    /// @param y Top canvas coordinate.
+    /// @param w Rectangle width in pixels.
+    /// @param h Rectangle height in pixels.
+    /// @param color Packed runtime color.
     void (*box)(void *canvas, int64_t x, int64_t y, int64_t w, int64_t h, int64_t color);
-    /// Draw an alpha-blended axis-aligned filled rectangle.
+    /// @brief Draw an alpha-blended axis-aligned filled rectangle.
+    /// @param canvas Borrowed target canvas.
+    /// @param x Left canvas coordinate.
+    /// @param y Top canvas coordinate.
+    /// @param w Rectangle width in pixels.
+    /// @param h Rectangle height in pixels.
+    /// @param color Packed runtime color.
+    /// @param alpha Blend alpha accepted by the concrete canvas.
     void (*box_alpha)(
         void *canvas, int64_t x, int64_t y, int64_t w, int64_t h, int64_t color, int64_t alpha);
-    /// Draw a one-pixel axis-aligned rectangular outline.
+    /// @brief Draw a one-pixel axis-aligned rectangular outline.
+    /// @param canvas Borrowed target canvas.
+    /// @param x Left canvas coordinate.
+    /// @param y Top canvas coordinate.
+    /// @param w Rectangle width in pixels.
+    /// @param h Rectangle height in pixels.
+    /// @param color Packed runtime color.
     void (*frame)(void *canvas, int64_t x, int64_t y, int64_t w, int64_t h, int64_t color);
-    /// Draw a line segment between two canvas coordinates.
+    /// @brief Draw a line segment between two canvas coordinates.
+    /// @param canvas Borrowed target canvas.
+    /// @param x1 Starting X coordinate.
+    /// @param y1 Starting Y coordinate.
+    /// @param x2 Ending X coordinate.
+    /// @param y2 Ending Y coordinate.
+    /// @param color Packed runtime color.
     void (*line)(void *canvas, int64_t x1, int64_t y1, int64_t x2, int64_t y2, int64_t color);
-    /// Draw an opaque filled rounded rectangle.
+    /// @brief Draw an opaque filled rounded rectangle.
+    /// @param canvas Borrowed target canvas.
+    /// @param x Left canvas coordinate.
+    /// @param y Top canvas coordinate.
+    /// @param w Rectangle width in pixels.
+    /// @param h Rectangle height in pixels.
+    /// @param radius Corner radius in pixels.
+    /// @param color Packed runtime color.
     void (*round_box)(
         void *canvas, int64_t x, int64_t y, int64_t w, int64_t h, int64_t radius, int64_t color);
-    /// Draw a rounded rectangular outline.
+    /// @brief Draw a rounded rectangular outline.
+    /// @param canvas Borrowed target canvas.
+    /// @param x Left canvas coordinate.
+    /// @param y Top canvas coordinate.
+    /// @param w Rectangle width in pixels.
+    /// @param h Rectangle height in pixels.
+    /// @param radius Corner radius in pixels.
+    /// @param color Packed runtime color.
     void (*round_frame)(
         void *canvas, int64_t x, int64_t y, int64_t w, int64_t h, int64_t radius, int64_t color);
-    /// Draw default-font text at native scale.
+    /// @brief Draw default-font text at native scale.
+    /// @param canvas Borrowed target canvas.
+    /// @param x Text origin X coordinate.
+    /// @param y Text origin Y coordinate.
+    /// @param text Borrowed runtime string to draw.
+    /// @param color Packed runtime color.
     void (*text)(void *canvas, int64_t x, int64_t y, rt_string text, int64_t color);
-    /// Draw default-font text at an integer scale.
+    /// @brief Draw default-font text at an integer scale.
+    /// @param canvas Borrowed target canvas.
+    /// @param x Text origin X coordinate.
+    /// @param y Text origin Y coordinate.
+    /// @param text Borrowed runtime string to draw.
+    /// @param scale Integer glyph scale.
+    /// @param color Packed runtime color.
     void (*text_scaled)(
         void *canvas, int64_t x, int64_t y, rt_string text, int64_t scale, int64_t color);
-    /// Draw native-scale text with an explicit BitmapFont.
+    /// @brief Draw native-scale text with an explicit BitmapFont.
+    /// @param canvas Borrowed target canvas.
+    /// @param x Text origin X coordinate.
+    /// @param y Text origin Y coordinate.
+    /// @param text Borrowed runtime string to draw.
+    /// @param font Borrowed BitmapFont handle.
+    /// @param color Packed runtime color.
     void (*text_font)(
         void *canvas, int64_t x, int64_t y, rt_string text, void *font, int64_t color);
-    /// Draw scaled text with an explicit BitmapFont.
+    /// @brief Draw scaled text with an explicit BitmapFont.
+    /// @param canvas Borrowed target canvas.
+    /// @param x Text origin X coordinate.
+    /// @param y Text origin Y coordinate.
+    /// @param text Borrowed runtime string to draw.
+    /// @param font Borrowed BitmapFont handle.
+    /// @param scale Integer glyph scale.
+    /// @param color Packed runtime color.
     void (*text_font_scaled)(void *canvas,
                              int64_t x,
                              int64_t y,
@@ -71,7 +134,15 @@ typedef struct rt_gameui_draw_ops {
                              void *font,
                              int64_t scale,
                              int64_t color);
-    /// Copy a rectangular Pixels source region to the canvas.
+    /// @brief Copy a rectangular Pixels source region to the canvas.
+    /// @param canvas Borrowed target canvas.
+    /// @param dx Destination X coordinate.
+    /// @param dy Destination Y coordinate.
+    /// @param pixels Borrowed source Pixels handle.
+    /// @param sx Source-region X coordinate.
+    /// @param sy Source-region Y coordinate.
+    /// @param w Region width in pixels.
+    /// @param h Region height in pixels.
     void (*blit_region)(void *canvas,
                         int64_t dx,
                         int64_t dy,
@@ -80,9 +151,13 @@ typedef struct rt_gameui_draw_ops {
                         int64_t sy,
                         int64_t w,
                         int64_t h);
-    /// Query the target canvas width.
+    /// @brief Query the target canvas width.
+    /// @param canvas Borrowed target canvas.
+    /// @return Canvas width in pixels.
     int64_t (*width)(void *canvas);
-    /// Query the target canvas height.
+    /// @brief Query the target canvas height.
+    /// @param canvas Borrowed target canvas.
+    /// @return Canvas height in pixels.
     int64_t (*height)(void *canvas);
 } rt_gameui_draw_ops_t;
 

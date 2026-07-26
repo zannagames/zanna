@@ -34,6 +34,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_pty.c
+ * @brief Implements managed pseudo-terminal child sessions.
+ * @details POSIX PTYs or dynamically resolved Windows ConPTY connect a direct
+ *          child process to one interactive terminal stream. Sessions support
+ *          bounded incremental reads, writes, window resize, polling,
+ *          termination, retained exit status, and idempotent native cleanup.
+ */
+
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE 1
 #endif
@@ -78,23 +87,36 @@ typedef VOID(WINAPI *pty_close_pseudoconsole_fn)(void *);
 extern char **environ;
 #endif
 
+/// @brief Initial allocation size for incremental terminal output.
 #define PTY_BUFFER_INITIAL_SIZE 4096
+/// @brief Maximum retained unread terminal-output bytes.
 #define PTY_BUFFER_MAX_SIZE (16 * 1024 * 1024)
+/// @brief Capacity of the per-thread PTY diagnostic buffer.
 #define PTY_LAST_ERROR_MAX 256
 
+/// @brief Incremental merged-output buffer for one PTY session.
+/// @details Storage is retained for reuse between reads. Bytes beyond the
+///          16 MiB cap are discarded and reported by the next take operation.
 typedef struct pty_buffer {
-    char *data;
-    size_t len;
-    size_t cap;
-    int truncated;
+    char *data;    ///< Owned allocation, or NULL before the first append.
+    size_t len;    ///< Number of unread bytes currently retained.
+    size_t cap;    ///< Allocated byte capacity of @c data.
+    int truncated; ///< Whether bytes were discarded since the previous take.
 } pty_buffer;
 
+/// @brief Temporary NULL-terminated argv or envp representation.
+/// @details Retained runtime strings keep every byte view in @c values valid
+///          until the fork/exec or process-creation setup is complete.
 typedef struct pty_string_vector {
-    char **values;
-    rt_string *owned_strings;
-    int64_t owned_count;
+    char **values;            ///< Owned pointer array ending in NULL.
+    rt_string *owned_strings; ///< Owned array of retained runtime strings.
+    int64_t owned_count;      ///< Number of entries in @c owned_strings.
 } pty_string_vector;
 
+/// @brief Platform state stored in a Zanna.System.Pty session object.
+/// @details Owns the merged terminal buffer, child identity, and every
+///          parent-side ConPTY handle or POSIX master descriptor until Destroy
+///          or GC finalization.
 typedef struct rt_pty_impl {
     int8_t started;
     int8_t running;
@@ -121,10 +143,16 @@ static void pty_finalize(void *obj);
 // thread reads back the error from the operation it just performed.
 static RT_THREAD_LOCAL char pty_last_error[PTY_LAST_ERROR_MAX];
 
+/// @brief Allocate an empty runtime string for PTY API fallbacks.
+/// @return Newly allocated empty runtime string owned by the caller.
 static rt_string empty_string(void) {
     return rt_string_from_bytes("", 0);
 }
 
+/// @brief Validate and cast an opaque runtime PTY handle.
+/// @param handle Candidate runtime object.
+/// @return Borrowed PTY implementation pointer when class and payload size
+///         match, otherwise NULL.
 static rt_pty_impl *pty_checked(void *handle) {
     if (!rt_obj_is_instance(handle, RT_PTY_CLASS_ID, sizeof(rt_pty_impl)))
         return NULL;
@@ -157,6 +185,14 @@ static void pty_set_last_errno(const char *prefix) {
 
 // --- Shared helpers (mirrors of the proven rt_process.c implementations) ----
 
+/// @brief Extract a C-string-safe byte view for an OS PTY interface.
+/// @details Rejects NULL, invalid lengths, and embedded NUL bytes so program,
+///          cwd, argv, and environment values cannot be silently truncated.
+///          Empty strings remain valid for callers to interpret.
+/// @param value Runtime string to inspect.
+/// @param out_text Optional destination for a borrowed NUL-terminated pointer.
+/// @param out_len Optional destination for byte length excluding the terminator.
+/// @return 1 for a valid OS-safe view, otherwise 0.
 static int pty_string_cstr_view(rt_string value, const char **out_text, size_t *out_len) {
     const char *text = value ? rt_string_cstr(value) : NULL;
     int64_t len64 = value ? rt_str_len(value) : -1;
@@ -176,6 +212,12 @@ static int pty_string_cstr_view(rt_string value, const char **out_text, size_t *
     return 1;
 }
 
+/// @brief Validate every PTY argument or environment sequence element.
+/// @param items Optional runtime sequence of strings.
+/// @param require_env_assignment Nonzero to require a nonempty name followed by
+///        '=' in every item.
+/// @param trap_msg Diagnostic raised for the first invalid element.
+/// @return 1 when all elements are valid, or 0 after raising a trap.
 static int pty_validate_string_sequence(void *items,
                                         int require_env_assignment,
                                         const char *trap_msg) {
@@ -200,11 +242,22 @@ static int pty_validate_string_sequence(void *items,
     return 1;
 }
 
+/// @brief Record that terminal output exceeded the retained-byte limit.
+/// @param buf Buffer to mark; NULL is ignored.
 static void buffer_mark_truncated(pty_buffer *buf) {
     if (buf)
         buf->truncated = 1;
 }
 
+/// @brief Append terminal bytes to a bounded output buffer.
+/// @details Retains at most PTY_BUFFER_MAX_SIZE bytes, marking rather than
+///          failing when excess bytes are discarded. Storage grows
+///          geometrically and existing unread bytes survive allocation failure.
+/// @param buf Destination buffer.
+/// @param data Borrowed byte span.
+/// @param len Number of bytes available at @p data.
+/// @return 1 on success, recorded truncation, or no-op input; 0 only when
+///         storage growth fails.
 static int buffer_append(pty_buffer *buf, const char *data, size_t len) {
     if (!buf || !data || len == 0)
         return 1;
@@ -243,6 +296,12 @@ static int buffer_append(pty_buffer *buf, const char *data, size_t len) {
     return 1;
 }
 
+/// @brief Consume retained terminal bytes into a runtime string.
+/// @details Clears the unread length and truncation marker but retains allocated
+///          storage for subsequent output.
+/// @param buf Buffer to consume; NULL represents empty output.
+/// @param was_truncated Optional destination for the prior truncation state.
+/// @return Newly allocated string containing all retained unread bytes.
 static rt_string buffer_take_string(pty_buffer *buf, int *was_truncated) {
     int truncated = buf ? buf->truncated : 0;
     if (was_truncated)
@@ -258,6 +317,9 @@ static rt_string buffer_take_string(pty_buffer *buf, int *was_truncated) {
     return out;
 }
 
+/// @brief Consume terminal output and trap when bytes were discarded.
+/// @param buf Buffer to consume; may be NULL.
+/// @return Newly allocated string containing the retained output prefix.
 static rt_string buffer_take(pty_buffer *buf) {
     int truncated = 0;
     rt_string out = buffer_take_string(buf, &truncated);
@@ -267,12 +329,22 @@ static rt_string buffer_take(pty_buffer *buf) {
     return out;
 }
 
+/// @brief Store a runtime string under a constant text key in a runtime map.
+/// @details Uses an empty constant string for NULL values. The map acquires its
+///          own ownership; the caller's string reference is not consumed.
+/// @param map Destination runtime map; NULL is ignored.
+/// @param key Borrowed non-NULL C-string key.
+/// @param value Borrowed runtime string; may be NULL.
 static void map_set_string_owned(void *map, const char *key, rt_string value) {
     if (!map || !key)
         return;
     rt_map_set_str(map, rt_const_cstr(key), value ? value : rt_const_cstr(""));
 }
 
+/// @brief Consume terminal output into a structured nontrapping read result.
+/// @param buf Buffer to consume; NULL represents empty, nontruncated output.
+/// @return Caller-owned map containing string @c text and Boolean @c truncated,
+///         or NULL when map allocation fails.
 static void *buffer_take_result(pty_buffer *buf) {
     int truncated = 0;
     rt_string text = buffer_take_string(buf, &truncated);
@@ -287,6 +359,8 @@ static void *buffer_take_result(pty_buffer *buf) {
     return result;
 }
 
+/// @brief Release all storage and reset a PTY output buffer.
+/// @param buf Buffer to clear; NULL is ignored.
 static void buffer_free(pty_buffer *buf) {
     if (!buf)
         return;
@@ -297,6 +371,15 @@ static void buffer_free(pty_buffer *buf) {
     buf->truncated = 0;
 }
 
+/// @brief Build a temporary C-string vector from a runtime sequence.
+/// @details Optionally prepends @p first, retains each runtime string whose byte
+///          view enters the vector, and appends a NULL sentinel.
+/// @param first Borrowed leading string used when @p include_first is nonzero.
+/// @param items Optional runtime sequence of strings.
+/// @param include_first Nonzero to prepend @p first.
+/// @return Owned vector aggregate; a zeroed aggregate indicates size or
+///         allocation failure and successful results must be released with
+///         free_string_vector().
 static pty_string_vector build_string_vector(const char *first, void *items, int include_first) {
     pty_string_vector vector;
     memset(&vector, 0, sizeof(vector));
@@ -332,6 +415,9 @@ static pty_string_vector build_string_vector(const char *first, void *items, int
     return vector;
 }
 
+/// @brief Release a temporary vector and all retained runtime strings.
+/// @param vector Aggregate returned by build_string_vector(); NULL is ignored
+///        and the aggregate is zeroed after release.
 static void free_string_vector(pty_string_vector *vector) {
     if (!vector)
         return;
@@ -344,6 +430,11 @@ static void free_string_vector(pty_string_vector *vector) {
     memset(vector, 0, sizeof(*vector));
 }
 
+/// @brief Allocate and initialize a GC-managed PTY session object.
+/// @details Installs pty_finalize(), records an unknown exit code of -1, and
+///          initializes every platform resource to its invalid sentinel.
+/// @return New PTY implementation object, or NULL after recording and trapping
+///         an allocation failure.
 static rt_pty_impl *pty_alloc(void) {
     rt_pty_impl *pty = (rt_pty_impl *)rt_obj_new_i64(RT_PTY_CLASS_ID, (int64_t)sizeof(rt_pty_impl));
     if (!pty) {
@@ -367,6 +458,11 @@ static rt_pty_impl *pty_alloc(void) {
     return pty;
 }
 
+/// @brief Normalize a requested terminal window size in place.
+/// @details Nonpositive columns and rows become 80 and 24 respectively; values
+///          above 4096 are capped so they fit both supported backend types.
+/// @param cols Mutable column count.
+/// @param rows Mutable row count.
 static void pty_clamp_size(int64_t *cols, int64_t *rows) {
     if (*cols <= 0)
         *cols = 80;
@@ -401,6 +497,8 @@ static void pty_set_last_win32_error(const char *prefix) {
 }
 
 /// @brief Store a ConPTY HRESULT without relying on unrelated Win32 last-error state.
+/// @param prefix Context prefix, or NULL for a generic PTY label.
+/// @param hr HRESULT value returned by a ConPTY operation.
 static void pty_set_hresult_error(const char *prefix, HRESULT hr) {
     snprintf(pty_last_error,
              sizeof(pty_last_error),
@@ -410,6 +508,10 @@ static void pty_set_hresult_error(const char *prefix, HRESULT hr) {
 }
 
 /// @brief Resolve the optional ConPTY entry points exactly once per process.
+/// @param once Win32 one-time initialization token; unused.
+/// @param param Optional caller parameter; unused.
+/// @param context Optional callback context destination; unused.
+/// @return TRUE so InitOnce records the resolution attempt as complete.
 static BOOL CALLBACK pty_load_conpty_once(PINIT_ONCE once, PVOID param, PVOID *context) {
     (void)once;
     (void)param;
@@ -426,10 +528,14 @@ static BOOL CALLBACK pty_load_conpty_once(PINIT_ONCE once, PVOID param, PVOID *c
     return TRUE;
 }
 
+/// @brief Ensure the process-wide ConPTY capability probe has run.
 static void pty_load_conpty(void) {
     (void)InitOnceExecuteOnce(&pty_conpty_once, pty_load_conpty_once, NULL, NULL);
 }
 
+/// @brief Close and clear an optional valid Win32 handle slot.
+/// @param h Address of an owned handle; NULL, empty, and INVALID_HANDLE_VALUE
+///        slots are ignored.
 static void close_handle(HANDLE *h) {
     if (h && *h && *h != INVALID_HANDLE_VALUE) {
         CloseHandle(*h);
@@ -437,7 +543,10 @@ static void close_handle(HANDLE *h) {
     }
 }
 
-/// @brief Convert a UTF-8 byte run to a freshly allocated wide string.
+/// @brief Convert a NUL-terminated UTF-8 string to strict UTF-16.
+/// @param text Borrowed UTF-8 text; NULL is treated as empty.
+/// @return Caller-owned NUL-terminated wide string, or NULL on invalid UTF-8 or
+///         allocation/conversion failure.
 static wchar_t *pty_widen(const char *text) {
     if (!text)
         text = "";
@@ -455,6 +564,14 @@ static wchar_t *pty_widen(const char *text) {
 }
 
 /// @brief Invoke the dynamically resolved Windows ordinal comparator.
+/// @details Uses case-insensitive CompareStringOrdinal when available and falls
+///          back to exact wide-string equality otherwise.
+/// @param left First UTF-16 string.
+/// @param left_len First length, or -1 for NUL-terminated input.
+/// @param right Second UTF-16 string.
+/// @param right_len Second length, or -1 for NUL-terminated input.
+/// @return CSTR_* ordering value, CSTR_EQUAL for equal fallback inputs, or zero
+///         for unequal fallback inputs.
 static int pty_compare_ordinal(const wchar_t *left,
                                int left_len,
                                const wchar_t *right,
@@ -468,6 +585,11 @@ static int pty_compare_ordinal(const wchar_t *left,
 }
 
 /// @brief Compare complete UTF-16 environment entries using Win32 ordinal rules.
+/// @details Applies case-insensitive ordinal order first and binary wide-string
+///          order as a deterministic tie breaker.
+/// @param left Pointer to the first wchar_t pointer.
+/// @param right Pointer to the second wchar_t pointer.
+/// @return Negative, zero, or positive for qsort ordering.
 static int pty_compare_env_entry_wide(const void *left, const void *right) {
     const wchar_t *lhs = *(const wchar_t *const *)left;
     const wchar_t *rhs = *(const wchar_t *const *)right;
@@ -480,6 +602,9 @@ static int pty_compare_env_entry_wide(const void *left, const void *right) {
 }
 
 /// @brief Test whether two UTF-16 environment entries name the same variable.
+/// @param lhs First NUL-terminated NAME=VALUE entry.
+/// @param rhs Second NUL-terminated NAME=VALUE entry.
+/// @return 1 when the nonempty names compare case-insensitively equal, otherwise 0.
 static int pty_env_names_equal_wide(const wchar_t *lhs, const wchar_t *rhs) {
     size_t lhs_len = 0;
     size_t rhs_len = 0;
@@ -492,7 +617,14 @@ static int pty_env_names_equal_wide(const wchar_t *lhs, const wchar_t *rhs) {
     return pty_compare_ordinal(lhs, (int)lhs_len, rhs, (int)rhs_len) == CSTR_EQUAL;
 }
 
-/// @brief Build a strict, sorted, double-NUL-terminated CreateProcessW environment block.
+/// @brief Build a strict, sorted CreateProcessW environment block.
+/// @details Converts every validated NAME=VALUE entry independently, sorts
+///          case-insensitively, rejects duplicate names, and emits the required
+///          double-NUL terminator. A non-NULL empty sequence creates an explicit
+///          empty environment block.
+/// @param env Runtime environment sequence, or NULL to inherit.
+/// @return Caller-owned UTF-16 block, or NULL for inheritance or on conversion,
+///         duplicate-name, overflow, or allocation failure.
 static wchar_t *pty_build_env_block_wide(void *env) {
     int64_t count;
     size_t total_wchars = 1;
@@ -551,7 +683,15 @@ fail:
     return NULL;
 }
 
-/// @brief Append @p arg to a Windows command line with standard quoting.
+/// @brief Append one argument to a growing Windows command line.
+/// @details Adds a separating space when needed and applies conventional
+///          backslash/quote escaping, quoting empty values and values containing
+///          spaces, tabs, or quotes. Grows @p buf as necessary.
+/// @param buf Address of the caller-owned command-line allocation.
+/// @param len Address of the current byte length excluding the terminator.
+/// @param cap Address of the allocated byte capacity.
+/// @param arg Borrowed NUL-terminated UTF-8 argument.
+/// @return 1 after appending and NUL-terminating, or 0 on allocation failure.
 static int pty_cmdline_append(char **buf, size_t *len, size_t *cap, const char *arg) {
     int need_quote = (arg[0] == '\0');
     for (const char *p = arg; *p; p++) {
@@ -613,6 +753,21 @@ static int pty_cmdline_append(char **buf, size_t *len, size_t *cap, const char *
     return 1;
 }
 
+/// @brief Open a Windows ConPTY-backed child session.
+/// @details Validates all OS-bound strings, builds a quoted command line,
+///          optionally constructs a complete UTF-16 replacement environment,
+///          creates a pseudoconsole and startup attribute, and launches the
+///          child with merged terminal output. NULL or empty cwd inherits.
+/// @param program Runtime executable command; must be nonempty and contain no
+///        embedded NUL.
+/// @param args Optional Seq of literal argument strings.
+/// @param cwd Optional working directory; NULL or empty means inherit.
+/// @param env Optional Seq of NAME=VALUE strings replacing the environment;
+///        NULL means inherit.
+/// @param cols Normalized initial terminal columns.
+/// @param rows Normalized initial terminal rows.
+/// @return New GC-managed running PTY object, or NULL after recording any
+///         validation, availability, conversion, setup, or launch failure.
 static rt_pty_impl *pty_open_impl(
     rt_string program, void *args, rt_string cwd, void *env, int64_t cols, int64_t rows) {
     const char *program_text = NULL;
@@ -796,6 +951,10 @@ static rt_pty_impl *pty_open_impl(
     return pty;
 }
 
+/// @brief Nonblockingly drain immediately available ConPTY output.
+/// @details Reads bounded chunks after PeekNamedPipe and appends them to the
+///          merged output buffer. Allocation failure raises a runtime trap.
+/// @param pty Session whose output pipe and buffer are updated.
 static void pty_drain(rt_pty_impl *pty) {
     if (!pty || !pty->output_read)
         return;
@@ -817,6 +976,12 @@ static void pty_drain(rt_pty_impl *pty) {
     }
 }
 
+/// @brief Poll or wait for Windows PTY child completion.
+/// @details Drains before waiting, records the process exit code on completion,
+///          and performs a final drain. Wait failure records -1 and updates the
+///          thread-local diagnostic.
+/// @param pty Session to update.
+/// @param wait Nonzero for an infinite wait, zero for a nonblocking poll.
 static void pty_poll_internal(rt_pty_impl *pty, int wait) {
     if (!pty || pty->destroyed)
         return;
@@ -837,6 +1002,12 @@ static void pty_poll_internal(rt_pty_impl *pty, int wait) {
     }
 }
 
+/// @brief Apply a normalized window size to a Windows pseudoconsole.
+/// @param pty Session owning a live ConPTY handle.
+/// @param cols Normalized terminal columns.
+/// @param rows Normalized terminal rows.
+/// @return 1 on successful ResizePseudoConsole, otherwise 0 after recording an
+///         HRESULT diagnostic when applicable.
 static int pty_resize_impl(rt_pty_impl *pty, int64_t cols, int64_t rows) {
     if (!pty || !pty->hpc || !pty_resize_pc)
         return 0;
@@ -851,6 +1022,12 @@ static int pty_resize_impl(rt_pty_impl *pty, int64_t cols, int64_t rows) {
     return 1;
 }
 
+/// @brief Write terminal input through the Windows ConPTY pipe.
+/// @param pty Session owning the parent input handle.
+/// @param bytes Borrowed byte span.
+/// @param len Number of bytes to write.
+/// @return Complete byte count, a positive partial count after later failure,
+///         or -1 when no byte can be written.
 static int64_t pty_write_impl(rt_pty_impl *pty, const char *bytes, size_t len) {
     if (!pty->input_write)
         return -1;
@@ -866,6 +1043,12 @@ static int64_t pty_write_impl(rt_pty_impl *pty, const char *bytes, size_t len) {
     return (int64_t)off;
 }
 
+/// @brief Terminate and release a Windows PTY session.
+/// @details Idempotently terminates a running child with status 1, waits when
+///          termination succeeds, drains remaining output, closes the
+///          pseudoconsole and all handles, frees buffering, and invalidates the
+///          object.
+/// @param pty Session to close; NULL or already destroyed is ignored.
 static void pty_close(rt_pty_impl *pty) {
     if (!pty || pty->destroyed)
         return;
@@ -890,6 +1073,8 @@ static void pty_close(rt_pty_impl *pty) {
     pty->destroyed = 1;
 }
 
+/// @brief Report dynamically detected Windows ConPTY availability.
+/// @return 1 when all required ConPTY functions resolved, otherwise 0.
 static int64_t pty_supported(void) {
     pty_load_conpty();
     return pty_conpty_available ? 1 : 0;
@@ -899,6 +1084,14 @@ static int64_t pty_supported(void) {
 #else
 // --- POSIX (macOS / Linux): posix_openpt + fork + setsid + execvp ----------
 
+/// @brief Write to a POSIX PTY without changing process-wide SIGPIPE handling.
+/// @details Temporarily blocks SIGPIPE for the calling thread, retries an
+///          interrupted write, consumes only a newly generated EPIPE signal,
+///          and restores the prior mask.
+/// @param fd PTY master descriptor.
+/// @param bytes Borrowed bytes to write.
+/// @param len Maximum bytes for this write call.
+/// @return Result from write(2).
 static ssize_t pty_write_no_sigpipe(int fd, const char *bytes, size_t len) {
     sigset_t set, old_set, pending;
     int blocked = 0, had_pending = 0;
@@ -923,6 +1116,8 @@ static ssize_t pty_write_no_sigpipe(int fd, const char *bytes, size_t len) {
     return n;
 }
 
+/// @brief Close and invalidate an optional POSIX descriptor slot.
+/// @param fd Address of an owned descriptor; NULL or a negative slot is ignored.
 static void close_fd(int *fd) {
     if (fd && *fd >= 0) {
         close(*fd);
@@ -930,6 +1125,11 @@ static void close_fd(int *fd) {
     }
 }
 
+/// @brief Best-effort report a pre-exec child error to the parent.
+/// @details Writes the native integer representation using only
+///          async-signal-safe operations and retries interruptions.
+/// @param fd Child write end of the close-on-exec status pipe.
+/// @param error_value errno value to transmit.
 static void pty_child_report_errno(int fd, int error_value) {
     const unsigned char *bytes = (const unsigned char *)&error_value;
     size_t off = 0;
@@ -945,6 +1145,14 @@ static void pty_child_report_errno(int fd, int error_value) {
     }
 }
 
+/// @brief Signal an entire PTY child session with single-process fallback.
+/// @details Targets the process group whose id equals @p pid. If that group no
+///          longer exists, retries the child pid and treats an already absent
+///          child as success.
+/// @param pid Session leader and child process id.
+/// @param signal_number POSIX signal to deliver.
+/// @return 1 when delivered, unnecessary for a nonpositive/already absent pid,
+///         or otherwise accepted; 0 on a substantive kill error.
 static int pty_signal_session(pid_t pid, int signal_number) {
     if (pid <= 0)
         return 1;
@@ -957,6 +1165,9 @@ static int pty_signal_session(pid_t pid, int signal_number) {
     return 0;
 }
 
+/// @brief Enable O_NONBLOCK while preserving existing descriptor status flags.
+/// @param fd Open PTY master descriptor.
+/// @return 1 when already or successfully nonblocking, otherwise 0.
 static int pty_set_nonblocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags < 0)
@@ -966,6 +1177,10 @@ static int pty_set_nonblocking(int fd) {
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
 }
 
+/// @brief Enable FD_CLOEXEC on a PTY master descriptor.
+/// @param fd Open descriptor.
+/// @return 1 when already or successfully close-on-exec; 0 on fcntl failure or
+///         platforms without FD_CLOEXEC support.
 static int pty_set_close_on_exec(int fd) {
 #if defined(FD_CLOEXEC)
     int flags = fcntl(fd, F_GETFD, 0);
@@ -981,6 +1196,8 @@ static int pty_set_close_on_exec(int fd) {
 #endif
 }
 
+/// @brief Reap a specific POSIX child, retrying interrupted waits.
+/// @param pid Child process id; nonpositive values are ignored.
 static void pty_reap_child_blocking(pid_t pid) {
     if (pid <= 0)
         return;
@@ -990,6 +1207,11 @@ static void pty_reap_child_blocking(pid_t pid) {
     } while (result < 0 && errno == EINTR);
 }
 
+/// @brief Drain all immediately available merged PTY output.
+/// @details Retries interrupted reads, preserves the master on EAGAIN, and
+///          closes it on EOF, EIO, other errors, or buffer-allocation failure.
+///          Allocation failure also raises a runtime trap.
+/// @param pty Session whose nonblocking master and output buffer are updated.
 static void pty_drain(rt_pty_impl *pty) {
     if (!pty || pty->master_fd < 0)
         return;
@@ -1019,6 +1241,10 @@ static void pty_drain(rt_pty_impl *pty) {
     }
 }
 
+/// @brief Normalize a POSIX wait status for the PTY API.
+/// @param status Raw status returned by waitpid.
+/// @return Normal exit code, negated terminating signal number, or -1 for any
+///         other state.
 static int64_t decode_exit_status(int status) {
     if (WIFEXITED(status))
         return (int64_t)WEXITSTATUS(status);
@@ -1027,6 +1253,13 @@ static int64_t decode_exit_status(int status) {
     return -1;
 }
 
+/// @brief Poll or wait for a POSIX PTY child while draining output.
+/// @details Blocking mode alternates WNOHANG waitpid calls with drains and
+///          10 ms delays. The child is reaped once and its normalized status is
+///          retained; ECHILD stores -1, while other wait failures update the
+///          thread-local diagnostic without marking completion.
+/// @param pty Session to update.
+/// @param wait Nonzero to continue until a terminal result; zero to poll once.
 static void pty_poll_internal(rt_pty_impl *pty, int wait) {
     if (!pty || pty->destroyed)
         return;
@@ -1058,6 +1291,10 @@ static void pty_poll_internal(rt_pty_impl *pty, int wait) {
     }
 }
 
+/// @brief Give a SIGTERM-targeted PTY session a bounded cleanup interval.
+/// @details Polls and drains every 10 ms until exit or the grace period expires.
+/// @param pty Session to observe.
+/// @param grace_ms Maximum wait interval in milliseconds.
 static void pty_wait_after_sigterm(rt_pty_impl *pty, int grace_ms) {
     if (!pty || grace_ms <= 0)
         return;
@@ -1072,6 +1309,13 @@ static void pty_wait_after_sigterm(rt_pty_impl *pty, int grace_ms) {
     }
 }
 
+/// @brief Apply a normalized POSIX PTY window size.
+/// @details TIOCSWINSZ also causes the terminal driver to notify the foreground
+///          process group with SIGWINCH. Failure updates the last-error text.
+/// @param pty Session owning an open master descriptor.
+/// @param cols Normalized terminal columns.
+/// @param rows Normalized terminal rows.
+/// @return 1 when ioctl succeeds, otherwise 0.
 static int pty_resize_impl(rt_pty_impl *pty, int64_t cols, int64_t rows) {
     if (!pty || pty->master_fd < 0)
         return 0;
@@ -1086,6 +1330,12 @@ static int pty_resize_impl(rt_pty_impl *pty, int64_t cols, int64_t rows) {
     return 1;
 }
 
+/// @brief Write terminal input through the nonblocking POSIX master.
+/// @param pty Session owning the master descriptor.
+/// @param bytes Borrowed byte span.
+/// @param len Number of bytes to write.
+/// @return Complete byte count, a positive partial count after later failure or
+///         would-block, or -1 when no byte can be written.
 static int64_t pty_write_impl(rt_pty_impl *pty, const char *bytes, size_t len) {
     if (pty->master_fd < 0)
         return -1;
@@ -1102,6 +1352,23 @@ static int64_t pty_write_impl(rt_pty_impl *pty, const char *bytes, size_t len) {
     return (int64_t)off;
 }
 
+/// @brief Open a controlling-terminal-backed POSIX child session.
+/// @details Validates OS-bound strings, creates and unlocks a PTY pair, forks a
+///          session leader, attaches the slave as controlling terminal and all
+///          three standard streams, optionally replaces cwd and environment,
+///          then PATH-searches with execvp. A close-on-exec status pipe lets the
+///          parent distinguish successful exec from pre-exec failure before it
+///          publishes a handle.
+/// @param program Runtime executable path or lookup name; must be nonempty and
+///        contain no embedded NUL.
+/// @param args Optional Seq of literal argument strings.
+/// @param cwd Optional working directory; NULL or empty means inherit.
+/// @param env Optional Seq of NAME=VALUE strings replacing the environment;
+///        NULL means inherit.
+/// @param cols Normalized initial terminal columns.
+/// @param rows Normalized initial terminal rows.
+/// @return New GC-managed running PTY object, or NULL after recording any
+///         validation, allocation, PTY, fork, child-setup, or exec failure.
 static rt_pty_impl *pty_open_impl(
     rt_string program, void *args, rt_string cwd, void *env, int64_t cols, int64_t rows) {
     const char *program_text = NULL;
@@ -1346,6 +1613,12 @@ static rt_pty_impl *pty_open_impl(
     return pty;
 }
 
+/// @brief Terminate and release a POSIX PTY session.
+/// @details Idempotently signals the full child session with SIGTERM, grants a
+///          500 ms drain/reap interval, escalates to SIGKILL when still running,
+///          drains and closes the master, frees buffering, and invalidates the
+///          object.
+/// @param pty Session to close; NULL or already destroyed is ignored.
 static void pty_close(rt_pty_impl *pty) {
     if (!pty || pty->destroyed)
         return;
@@ -1369,6 +1642,8 @@ static void pty_close(rt_pty_impl *pty) {
     pty->destroyed = 1;
 }
 
+/// @brief Report compile-time POSIX PTY backend availability.
+/// @return Always 1 for this POSIX implementation.
 static int64_t pty_supported(void) {
     return 1;
 }
@@ -1376,10 +1651,26 @@ static int64_t pty_supported(void) {
 #endif
 // ===========================================================================
 
+/// @brief GC finalizer for a PTY session's operating-system resources.
+/// @param obj PTY implementation object being finalized.
 static void pty_finalize(void *obj) {
     pty_close((rt_pty_impl *)obj);
 }
 
+/// @brief Open an interactive pseudoterminal-backed child session.
+/// @details Clears the calling thread's prior diagnostic, normalizes the
+///          requested window to defaults 80x24 and maximum 4096x4096, then
+///          starts the platform PTY backend. Program and arguments bypass any
+///          command shell; a non-NULL environment replaces all inherited entries.
+/// @param program Executable path or lookup name; must be nonempty and contain
+///        no embedded NUL byte.
+/// @param args Optional Seq of literal argument strings.
+/// @param cwd Optional working directory; NULL or empty means inherit.
+/// @param env Optional Seq of NAME=VALUE strings; NULL means inherit.
+/// @param cols Initial columns; nonpositive selects 80 and values above 4096 clamp.
+/// @param rows Initial rows; nonpositive selects 24 and values above 4096 clamp.
+/// @return New GC-managed PTY handle with merged terminal output, or NULL after
+///         recording the startup failure for rt_pty_last_error().
 void *rt_pty_open(
     rt_string program, void *args, rt_string cwd, void *env, int64_t cols, int64_t rows) {
     pty_set_last_error(NULL);
@@ -1392,8 +1683,8 @@ void *rt_pty_open(
 
 /// @brief Wrap a PTY open attempt in a Result object.
 /// @details Validation traps from rt_pty_open() are converted into Err strings
-///          so callers can handle startup failures without consulting the
-///          process-global LastError side channel.
+///          so callers can handle startup failures without separately reading
+///          the thread-local LastError side channel.
 /// @param program Program path.
 /// @param args Argument sequence, or NULL.
 /// @param cwd Working directory, or NULL/empty.
@@ -1430,6 +1721,11 @@ void *rt_pty_open_result(
     return result;
 }
 
+/// @brief Report whether this runtime can create PTY sessions.
+/// @details POSIX builds always report support. Windows dynamically requires
+///          CreatePseudoConsole, ResizePseudoConsole, and ClosePseudoConsole;
+///          an unavailable backend installs a default thread-local diagnostic.
+/// @return 1 when the platform backend is available, otherwise 0.
 int64_t rt_pty_is_supported(void) {
     int64_t supported = pty_supported();
     if (!supported && pty_last_error[0] == '\0')
@@ -1437,17 +1733,30 @@ int64_t rt_pty_is_supported(void) {
     return supported;
 }
 
+/// @brief Copy the calling thread's latest PTY support or operation diagnostic.
+/// @details Successful rt_pty_open() clears the slot. Other successful
+///          operations do not necessarily clear an older diagnostic.
+/// @return Newly allocated diagnostic string, or a newly allocated empty string
+///         when no error is recorded.
 rt_string rt_pty_last_error(void) {
     if (pty_last_error[0] == '\0')
         return empty_string();
     return rt_string_from_bytes(pty_last_error, strlen(pty_last_error));
 }
 
+/// @brief Test whether an object is a started, undestroyed PTY session.
+/// @details A child that has exited remains a valid session until destruction,
+///          allowing buffered output and status to be consumed.
+/// @param handle Candidate opaque runtime object.
+/// @return 1 for a valid PTY handle, otherwise 0.
 int64_t rt_pty_is_valid(void *handle) {
     rt_pty_impl *pty = pty_checked(handle);
     return pty && pty->started && !pty->destroyed ? 1 : 0;
 }
 
+/// @brief Nonblockingly drain terminal output and check child completion.
+/// @param handle Candidate PTY session handle.
+/// @return 1 while the child is running, otherwise 0.
 int64_t rt_pty_poll(void *handle) {
     rt_pty_impl *pty = pty_checked(handle);
     if (!pty || !pty->started || pty->destroyed)
@@ -1456,10 +1765,20 @@ int64_t rt_pty_poll(void *handle) {
     return pty->running ? 1 : 0;
 }
 
+/// @brief Poll and report whether a PTY child is still running.
+/// @param handle Candidate PTY session handle.
+/// @return 1 while running, otherwise 0 for exited or invalid handles.
 int64_t rt_pty_is_running(void *handle) {
     return rt_pty_poll(handle);
 }
 
+/// @brief Consume merged terminal output buffered or immediately available.
+/// @details The stream combines child stdout and stderr and may contain terminal
+///          control sequences. If more than 16 MiB accumulated since the prior
+///          read, returns the retained prefix after raising a truncation trap.
+/// @param handle Candidate PTY session handle.
+/// @return Newly allocated incremental output string, or an empty string for no
+///         bytes or an invalid handle.
 rt_string rt_pty_read(void *handle) {
     rt_pty_impl *pty = pty_checked(handle);
     if (!pty || !pty->started || pty->destroyed)
@@ -1468,6 +1787,12 @@ rt_string rt_pty_read(void *handle) {
     return buffer_take(&pty->output_buf);
 }
 
+/// @brief Consume terminal output into a structured truncation-aware result.
+/// @details Avoids the truncation trap by returning a map with string @c text
+///          and Boolean @c truncated entries.
+/// @param handle Candidate PTY session handle.
+/// @return Caller-owned result map, including an empty nontruncated result for
+///         invalid handles, or NULL when map allocation fails.
 void *rt_pty_read_result(void *handle) {
     rt_pty_impl *pty = pty_checked(handle);
     if (!pty || !pty->started || pty->destroyed)
@@ -1476,6 +1801,14 @@ void *rt_pty_read_result(void *handle) {
     return buffer_take_result(&pty->output_buf);
 }
 
+/// @brief Write raw bytes to the interactive terminal input.
+/// @details Honors runtime-string byte length, including embedded NUL. POSIX
+///          writes use a nonblocking master and suppress only SIGPIPE caused by
+///          the current write.
+/// @param handle Candidate PTY session handle with open input.
+/// @param data Runtime byte string; NULL is treated as empty.
+/// @return Complete byte count, zero for empty input, a positive partial count
+///         after later failure or would-block, or -1 when no byte can be written.
 int64_t rt_pty_write(void *handle, rt_string data) {
     rt_pty_impl *pty = pty_checked(handle);
     if (!pty || !pty->started || pty->destroyed)
@@ -1487,6 +1820,14 @@ int64_t rt_pty_write(void *handle, rt_string data) {
     return pty_write_impl(pty, bytes, len);
 }
 
+/// @brief Resize the pseudoterminal window.
+/// @details Applies the same 80x24 defaults and 4096 maxima as open. POSIX uses
+///          TIOCSWINSZ, which notifies the foreground terminal group; Windows
+///          calls ResizePseudoConsole. Backend failures update LastError.
+/// @param handle Candidate PTY session handle.
+/// @param cols Requested columns.
+/// @param rows Requested rows.
+/// @return 1 only when the OS applies the normalized size, otherwise 0.
 int64_t rt_pty_resize(void *handle, int64_t cols, int64_t rows) {
     rt_pty_impl *pty = pty_checked(handle);
     if (!pty || !pty->started || pty->destroyed)
@@ -1498,6 +1839,10 @@ int64_t rt_pty_resize(void *handle, int64_t cols, int64_t rows) {
     return pty_resize_impl(pty, cols, rows) ? 1 : 0;
 }
 
+/// @brief Poll and read the retained PTY child exit status.
+/// @param handle Candidate PTY session handle.
+/// @return Normal exit code, negated signal number on POSIX, or -1 while
+///         running, after status failure, or for an invalid handle.
 int64_t rt_pty_exit_code(void *handle) {
     rt_pty_impl *pty = pty_checked(handle);
     if (!pty || !pty->started || pty->destroyed)
@@ -1506,6 +1851,12 @@ int64_t rt_pty_exit_code(void *handle) {
     return pty->running ? -1 : pty->exit_code;
 }
 
+/// @brief Request termination of a running PTY child without waiting.
+/// @details Windows requests termination with status 1. POSIX sends SIGTERM to
+///          the child session/process group, falling back to the child pid when
+///          that group no longer exists.
+/// @param handle Candidate PTY session handle.
+/// @return 1 when a termination request is accepted, otherwise 0.
 int64_t rt_pty_kill(void *handle) {
     rt_pty_impl *pty = pty_checked(handle);
     if (!pty || !pty->started || pty->destroyed || !pty->running)
@@ -1525,6 +1876,10 @@ int64_t rt_pty_kill(void *handle) {
 #endif
 }
 
+/// @brief Wait for PTY child completion and retain its exit status.
+/// @param handle Candidate PTY session handle.
+/// @return Normal exit code, negated signal number on POSIX, or -1 for an
+///         invalid handle or wait/status failure.
 int64_t rt_pty_wait(void *handle) {
     rt_pty_impl *pty = pty_checked(handle);
     if (!pty || !pty->started || pty->destroyed)
@@ -1533,6 +1888,10 @@ int64_t rt_pty_wait(void *handle) {
     return pty->exit_code;
 }
 
+/// @brief Idempotently terminate if needed and release PTY resources.
+/// @details The GC-managed object remains allocated but is invalid for all
+///          subsequent PTY operations.
+/// @param handle Candidate PTY session handle; invalid values are ignored.
 void rt_pty_destroy(void *handle) {
     rt_pty_impl *pty = pty_checked(handle);
     pty_close(pty);

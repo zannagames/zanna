@@ -23,6 +23,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements staged-toolchain discovery, validation, classification,
+///        provenance extraction, and platform install-path mapping.
+/// @details All filesystem-derived paths are boundary-checked against the staging
+///          root before being recorded in an owned, deterministic manifest.
+
 #include "ToolchainInstallManifest.hpp"
 
 #include "PkgUtils.hpp"
@@ -45,17 +51,26 @@ namespace zanna::pkg {
 namespace {
 
 /// @brief Encode a native path as UTF-8 for package metadata and diagnostics.
+/// @param path Native filesystem path.
+/// @return Platform-native path syntax encoded as UTF-8.
 std::string pathText(const fs::path &path) {
     return zanna::filesystem::pathToUtf8(path);
 }
 
 /// @brief Encode a native path as portable UTF-8 package syntax.
+/// @param path Native filesystem path.
+/// @return UTF-8 path using generic forward-slash separators.
 std::string genericPathText(const fs::path &path) {
     return zanna::filesystem::genericPathToUtf8(path);
 }
 
 /// @brief Return a copy of text with all ASCII letters lowercased.
+/// @param text Text to normalize in place.
+/// @return Lowercase copy; non-ASCII bytes are passed through `std::tolower`.
 std::string lowerCopy(std::string text) {
+    /// @brief Fold one byte through ctype without signed-char undefined behavior.
+    /// @param ch Unsigned source byte.
+    /// @return Lowercase byte converted back to plain char.
     std::transform(text.begin(), text.end(), text.begin(), [](unsigned char ch) {
         return static_cast<char>(std::tolower(ch));
     });
@@ -65,6 +80,8 @@ std::string lowerCopy(std::string text) {
 /// @brief Strip the platform-specific extension and "lib" prefix from a filename to
 /// get the canonical base name used for manifest lookups.
 /// e.g. "libzannagfx.a" → "zannagfx", "zanna.exe" → "zanna".
+/// @param filename Filename without directory components.
+/// @return Lowercase logical component name without a recognized suffix or `lib` prefix.
 std::string toolchainBaseNameFromFilename(std::string filename) {
     filename = lowerCopy(filename);
     if (filename.size() > 4 && filename.substr(filename.size() - 4) == ".lib")
@@ -80,6 +97,8 @@ std::string toolchainBaseNameFromFilename(std::string filename) {
 
 /// @brief Return true if base (after toolchainBaseNameFromFilename) matches a known
 /// Zanna runtime component archive as listed in RuntimeComponentManifest.hpp.
+/// @param base Canonical lowercase archive base name.
+/// @return true when @p base occurs in the runtime component registry.
 bool isRuntimeArchiveBaseName(const std::string &base) {
     return std::find(runtime_manifest::kRuntimeComponentArchives.begin(),
                      runtime_manifest::kRuntimeComponentArchives.end(),
@@ -87,11 +106,16 @@ bool isRuntimeArchiveBaseName(const std::string &base) {
 }
 
 /// @brief Return true if base is a Zanna optional support library (graphics, GUI, audio).
+/// @param base Canonical lowercase library base name.
+/// @return true for the graphics, GUI, or audio support-library names.
 bool isSupportLibraryBaseName(const std::string &base) {
     return base == "zannagfx" || base == "zannagui" || base == "zannaaud";
 }
 
 /// @brief Thin wrapper around isPathWithin for stage-prefix boundary checks.
+/// @param stage Canonical staging root.
+/// @param path Canonical candidate path.
+/// @return true when @p path is equal to or descends from @p stage.
 bool pathWithinStage(const fs::path &stage, const fs::path &path) {
     return isPathWithin(stage, path);
 }
@@ -99,6 +123,9 @@ bool pathWithinStage(const fs::path &stage, const fs::path &path) {
 /// @brief Verify that path (after resolving any symlink) lies within stagePrefix.
 /// Throws std::runtime_error if the path escapes the stage boundary or if
 /// canonical resolution fails (e.g. dangling symlink).
+/// @param stagePrefix Canonical staging root that owns package inputs.
+/// @param path Existing regular file or symlink to validate.
+/// @throws std::runtime_error If resolution fails or resolves outside @p stagePrefix.
 void validateStagedPathDoesNotEscape(const fs::path &stagePrefix, const fs::path &path) {
     std::error_code ec;
     if (fs::is_symlink(path, ec)) {
@@ -120,6 +147,10 @@ void validateStagedPathDoesNotEscape(const fs::path &stagePrefix, const fs::path
 /// @brief Compute path's lexical relative path from stagePrefix without touching the
 /// filesystem. Throws if the result would start with ".." (escapes the prefix)
 /// or if the paths have no common root.
+/// @param stagePrefix Staging root used as the lexical base.
+/// @param path Candidate path below the staging root.
+/// @return Non-empty lexical path relative to @p stagePrefix.
+/// @throws std::runtime_error If no contained non-root relative path can be formed.
 fs::path stagedLexicalRelativePath(const fs::path &stagePrefix, const fs::path &path) {
     const fs::path normalizedStage = stagePrefix.lexically_normal();
     const fs::path normalizedPath = path.lexically_normal();
@@ -135,6 +166,9 @@ fs::path stagedLexicalRelativePath(const fs::path &stagePrefix, const fs::path &
 /// @brief Read the real POSIX permission bits from the filesystem and return them as
 /// a USTAR-compatible uint32_t (regular file type bits ORed in). Falls back to
 /// 0100755 or 0100644 if stat fails so the archive is still well-formed.
+/// @param path Existing staged filesystem entry.
+/// @param executable Whether fallback permissions should include execute bits.
+/// @return POSIX type and permission bits suitable for archive metadata.
 uint32_t unixModeFor(const fs::path &path, bool executable) {
     std::error_code ec;
     const fs::file_status status = fs::status(path, ec);
@@ -168,6 +202,8 @@ uint32_t unixModeFor(const fs::path &path, bool executable) {
 /// @brief Scan text for a version string using two heuristic patterns:
 /// CMake: set(PACKAGE_VERSION "<version>"), C++ header: #define ZANNA_VERSION_STR "<version>".
 /// Returns the extracted version or empty string if neither pattern is found.
+/// @param text CMake or C++ configuration text to inspect.
+/// @return First recognized version value, or an empty string when absent/malformed.
 std::string parseVersionFromText(const std::string &text) {
     const char *patterns[] = {"set(PACKAGE_VERSION \"", "#define ZANNA_VERSION_STR \""};
     for (const char *pattern : patterns) {
@@ -183,6 +219,9 @@ std::string parseVersionFromText(const std::string &text) {
 }
 
 /// @brief Extract one quoted preprocessor definition from configured build metadata.
+/// @param text Generated header contents.
+/// @param name Exact macro identifier following `#define`.
+/// @return Text between the first following quote pair, or empty when unavailable.
 std::string parseQuotedDefine(const std::string &text, std::string_view name) {
     const std::string prefix = "#define " + std::string(name);
     const std::size_t define = text.find(prefix);
@@ -197,14 +236,17 @@ std::string parseQuotedDefine(const std::string &text, std::string_view name) {
     return text.substr(quote + 1U, end - quote - 1U);
 }
 
+/// @brief Source identity recovered from the staged generated version header.
 struct StagedBuildProvenance {
-    std::string productVersion;
-    std::string snapshot;
-    std::string commit;
-    std::string state{"unknown"};
+    std::string productVersion; ///< Exact configured product version.
+    std::string snapshot;       ///< Optional descriptive snapshot identity.
+    std::string commit;         ///< Optional lowercase source commit hash.
+    std::string state{"unknown"}; ///< Source cleanliness state.
 };
 
 /// @brief Read immutable source provenance from the installed generated header.
+/// @param stagePrefix Staging root expected to contain `include/zanna/version.hpp`.
+/// @return Parsed provenance, retaining empty/default fields if the header is absent.
 StagedBuildProvenance detectBuildProvenance(const fs::path &stagePrefix) {
     StagedBuildProvenance result;
     const fs::path header = stagePrefix / "include" / "zanna" / "version.hpp";
@@ -226,6 +268,8 @@ StagedBuildProvenance detectBuildProvenance(const fs::path &stagePrefix) {
 /// @brief Probe well-known files in the staged install tree to infer the toolchain
 /// version without requiring a separate manifest argument. Tries CMake config
 /// first, then the C++ version header. Returns empty if neither file exists.
+/// @param stagePrefix Staging root containing installed metadata.
+/// @return First detected package version, or an empty string when none is readable.
 std::string detectManifestVersion(const fs::path &stagePrefix) {
     const fs::path versionCandidates[] = {
         stagePrefix / "lib" / "cmake" / "Zanna" / "ZannaConfigVersion.cmake",
@@ -257,7 +301,10 @@ struct StagedToolchainIdentity {
 };
 
 /// @brief Read up to @p maxBytes from @p path for executable header inspection.
+/// @param path Staged executable to open in binary mode.
+/// @param maxBytes Maximum prefix size to allocate and read.
 /// @return A byte vector containing the prefix; empty only for an empty file.
+/// @throws std::runtime_error If the file cannot be opened or read.
 std::vector<uint8_t> readBinaryPrefix(const fs::path &path, std::size_t maxBytes) {
     std::ifstream in(path, std::ios::binary);
     if (!in)
@@ -272,6 +319,10 @@ std::vector<uint8_t> readBinaryPrefix(const fs::path &path, std::size_t maxBytes
 }
 
 /// @brief Read a little-endian 16-bit value from @p bytes at @p offset.
+/// @param bytes Buffer containing an executable header.
+/// @param offset Zero-based field offset.
+/// @return Decoded host-order 16-bit value.
+/// @throws std::runtime_error If fewer than two bytes remain.
 uint16_t readLe16(const std::vector<uint8_t> &bytes, std::size_t offset) {
     if (offset + 2 > bytes.size())
         throw std::runtime_error("truncated staged executable header");
@@ -279,6 +330,10 @@ uint16_t readLe16(const std::vector<uint8_t> &bytes, std::size_t offset) {
 }
 
 /// @brief Read a little-endian 32-bit value from @p bytes at @p offset.
+/// @param bytes Buffer containing an executable header.
+/// @param offset Zero-based field offset.
+/// @return Decoded host-order 32-bit value.
+/// @throws std::runtime_error If fewer than four bytes remain.
 uint32_t readLe32(const std::vector<uint8_t> &bytes, std::size_t offset) {
     if (offset + 4 > bytes.size())
         throw std::runtime_error("truncated staged executable header");
@@ -288,6 +343,10 @@ uint32_t readLe32(const std::vector<uint8_t> &bytes, std::size_t offset) {
 }
 
 /// @brief Read a big-endian 32-bit value from @p bytes at @p offset.
+/// @param bytes Buffer containing an executable header.
+/// @param offset Zero-based field offset.
+/// @return Decoded host-order 32-bit value.
+/// @throws std::runtime_error If fewer than four bytes remain.
 uint32_t readBe32(const std::vector<uint8_t> &bytes, std::size_t offset) {
     if (offset + 4 > bytes.size())
         throw std::runtime_error("truncated staged executable header");
@@ -298,6 +357,11 @@ uint32_t readBe32(const std::vector<uint8_t> &bytes, std::size_t offset) {
 }
 
 /// @brief Read an endian-selected 64-bit value from @p bytes at @p offset.
+/// @param bytes Buffer containing an executable header.
+/// @param offset Zero-based field offset.
+/// @param bigEndian true to decode most-significant byte first.
+/// @return Decoded host-order 64-bit value.
+/// @throws std::runtime_error If fewer than eight bytes remain.
 uint64_t readEndian64(const std::vector<uint8_t> &bytes, std::size_t offset, bool bigEndian) {
     if (offset + 8 > bytes.size())
         throw std::runtime_error("truncated staged executable header");
@@ -316,11 +380,20 @@ uint64_t readEndian64(const std::vector<uint8_t> &bytes, std::size_t offset, boo
 /// @return x64, arm64, or universal; nullopt when the bytes are not Mach-O.
 /// @details Fat headers are parsed rather than trusted by magic alone. Every declared slice must
 ///          have a non-empty range inside the file, and `universal` requires both x86_64 and arm64.
+/// @param path Full file path used for size queries and diagnostics.
+/// @param bytes Prefix containing the complete Mach-O header and fat slice table.
+/// @throws std::runtime_error For truncated, unsupported, or out-of-bounds Mach-O metadata.
 std::optional<std::string> detectMachOArchitecture(const fs::path &path,
                                                    const std::vector<uint8_t> &bytes) {
     if (bytes.size() < 4)
         return std::nullopt;
 
+    /// @brief Compare the file prefix against one four-byte executable magic.
+    /// @param a Expected first byte.
+    /// @param b Expected second byte.
+    /// @param c Expected third byte.
+    /// @param d Expected fourth byte.
+    /// @return `true` when the prefix matches exactly.
     const auto hasMagic = [&](uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
         return bytes[0] == a && bytes[1] == b && bytes[2] == c && bytes[3] == d;
     };
@@ -361,6 +434,9 @@ std::optional<std::string> detectMachOArchitecture(const fs::path &path,
 
     if (bytes.size() < 8)
         throw std::runtime_error("truncated universal Mach-O header: " + pathText(path));
+    /// @brief Read one 32-bit fat-header field using its detected byte order.
+    /// @param offset Byte offset within @p bytes.
+    /// @return Decoded unsigned field value.
     const auto read32 = [&](std::size_t offset) {
         return headerBigEndian ? readBe32(bytes, offset) : readLe32(bytes, offset);
     };
@@ -415,6 +491,9 @@ std::optional<std::string> detectMachOArchitecture(const fs::path &path,
 /// @details Supports PE (Windows), ELF (Linux), thin Mach-O, and universal Mach-O
 ///          headers. Throws when the executable format or CPU is unsupported so
 ///          cross-packaging cannot silently inherit the build host identity.
+/// @param path Staged executable to inspect.
+/// @return Canonical platform and architecture inferred from its binary header.
+/// @throws std::runtime_error If the header is unreadable, malformed, or unsupported.
 StagedToolchainIdentity detectStagedExecutableIdentity(const fs::path &path) {
     const std::vector<uint8_t> bytes = readBinaryPrefix(path, 4096);
     if (bytes.size() >= 64 && bytes[0] == 'M' && bytes[1] == 'Z') {
@@ -447,6 +526,10 @@ StagedToolchainIdentity detectStagedExecutableIdentity(const fs::path &path) {
 }
 
 /// @brief Require every Mach-O payload file to match the staged zanna architecture.
+/// @param stagePrefix Canonical staging root used to report relative paths.
+/// @param files Gathered staged entries to inspect when they are regular files.
+/// @param expectedArch Architecture detected from the primary `zanna` executable.
+/// @throws std::runtime_error If inspection fails or any Mach-O payload differs.
 void validateMacOSPayloadArchitectures(const fs::path &stagePrefix,
                                        const std::vector<fs::path> &files,
                                        const std::string &expectedArch) {
@@ -491,6 +574,8 @@ StagedToolchainIdentity detectStagedToolchainIdentity(const fs::path &stagePrefi
 /// prefix, then its lowercased filename base when the prefix alone is ambiguous
 /// (lib/ can contain runtime archives, support libs, or generic libraries).
 /// The order of checks matters: more specific prefixes must come before general ones.
+/// @param relativePath Sanitized staged path using forward slashes.
+/// @return Most specific install-manifest classification for the entry.
 ToolchainFileKind classifyFileKind(const std::string &relativePath) {
     const std::string rel = lowerCopy(relativePath);
     const fs::path relPath = zanna::filesystem::pathFromUtf8(relativePath);
@@ -528,6 +613,9 @@ ToolchainFileKind classifyFileKind(const std::string &relativePath) {
 /// @brief Return path's lexical relative path from prefix, or std::nullopt if path is
 /// not under prefix. Used to remap cmake_install.cmake paths that were written
 /// with a build-time alias prefix instead of the final staging root.
+/// @param prefix Candidate lexical ancestor.
+/// @param path Path to express relative to @p prefix.
+/// @return Non-root relative path, or `std::nullopt` if containment is not lexical.
 std::optional<fs::path> lexicalRelativeIfUnder(const fs::path &prefix, const fs::path &path) {
     const fs::path rel = path.lexically_normal().lexically_relative(prefix.lexically_normal());
     if (rel.empty() || rel == fs::path("."))
@@ -542,6 +630,11 @@ std::optional<fs::path> lexicalRelativeIfUnder(const fs::path &prefix, const fs:
 /// paths to all regular files and symlinks it lists. Handles both absolute paths
 /// (emitted by cmake) and paths written with a build-alias prefix by remapping
 /// them through stageAlias → stagePrefix. Duplicate entries are silently dropped.
+/// @param stagePrefix Canonical root containing actual installed entries.
+/// @param stageAliasPrefix Build-time prefix that manifest lines may reference.
+/// @param installManifestPath Text manifest to read one path per line.
+/// @return Unique existing regular-file and symlink paths in manifest order.
+/// @throws std::runtime_error If the manifest is unreadable or lists unsafe entries.
 std::vector<fs::path> gatherFromInstallManifest(const fs::path &stagePrefix,
                                                 const fs::path &stageAliasPrefix,
                                                 const fs::path &installManifestPath) {
@@ -583,6 +676,9 @@ std::vector<fs::path> gatherFromInstallManifest(const fs::path &stagePrefix,
 /// @brief Fallback when no install manifest is provided: recursively enumerate all
 /// regular files and symlinks under stagePrefix. Traversal errors are fatal so
 /// packaging cannot silently omit unreadable files from a release installer.
+/// @param stagePrefix Existing staging directory to traverse.
+/// @return Unique contained regular-file and symlink paths in traversal order.
+/// @throws std::runtime_error On traversal, inspection, resolution, or safety failure.
 std::vector<fs::path> gatherFromStageWalk(const fs::path &stagePrefix) {
     std::vector<fs::path> files;
     std::set<std::string> seen;
@@ -622,6 +718,10 @@ std::vector<fs::path> gatherFromStageWalk(const fs::path &stagePrefix) {
 /// @brief Construct a ToolchainFileEntry for filePath by computing its relative path,
 /// classifying its kind, reading its POSIX mode, and — for symlinks — rebasing
 /// absolute link targets to relative ones so they stay valid after installation.
+/// @param stagePrefix Canonical staging root.
+/// @param filePath Contained regular file or symlink to describe.
+/// @return Fully populated owned manifest entry.
+/// @throws std::runtime_error If metadata cannot be read or normalized safely.
 ToolchainFileEntry makeEntry(const fs::path &stagePrefix, const fs::path &filePath) {
     std::error_code ec;
     const fs::path rel = stagedLexicalRelativePath(stagePrefix, filePath);
@@ -675,8 +775,14 @@ ToolchainFileEntry makeEntry(const fs::path &stagePrefix, const fs::path &filePa
 /// @brief Return true if the manifest contains an entry whose stagedRelativePath equals
 /// relPath. Used by validateToolchainInstallManifest to check for specific
 /// required files like ZannaConfig.cmake and ZannaTargets.cmake.
+/// @param manifest Manifest inventory to search.
+/// @param relPath Case-insensitive staged-relative path to locate.
+/// @return true when an entry's path matches @p relPath.
 bool manifestHasRelativePath(const ToolchainInstallManifest &manifest, std::string_view relPath) {
     const std::string needle = lowerCopy(std::string(relPath));
+    /// @brief Match one manifest entry against the normalized relative path.
+    /// @param entry Candidate manifest file.
+    /// @return `true` when its staged path equals @c needle.
     return std::any_of(
         manifest.files.begin(), manifest.files.end(), [&](const ToolchainFileEntry &entry) {
             return lowerCopy(entry.stagedRelativePath) == needle;
@@ -687,9 +793,16 @@ bool manifestHasRelativePath(const ToolchainInstallManifest &manifest, std::stri
 /// name (after stripping extension and "lib" prefix). Used to detect that all
 /// required runtime archives and support libraries are present regardless of
 /// platform-specific naming ("librt_core.a" vs "rt_core.lib").
+/// @param manifest Manifest inventory to search.
+/// @param kind Required file classification.
+/// @param baseName Canonical logical name without platform prefix or extension.
+/// @return true when one entry matches both classification and base name.
 bool manifestHasBaseNameKind(const ToolchainInstallManifest &manifest,
                              ToolchainFileKind kind,
                              std::string_view baseName) {
+    /// @brief Match one manifest entry by classification and logical base name.
+    /// @param entry Candidate manifest file.
+    /// @return `true` when both requested attributes match.
     return std::any_of(
         manifest.files.begin(), manifest.files.end(), [&](const ToolchainFileEntry &entry) {
             if (entry.kind != kind)
@@ -703,6 +816,10 @@ bool manifestHasBaseNameKind(const ToolchainInstallManifest &manifest,
 /// @brief Scan every CMakeConfig entry in the manifest for needle (case-insensitive).
 /// Used to detect optional support-library components declared in ZannaTargets.cmake
 /// so validation can require their corresponding library archives to be present.
+/// @param manifest Manifest whose readable CMake metadata should be searched.
+/// @param needle Case-insensitive text fragment to locate.
+/// @return true when any non-symlink CMake configuration contains @p needle.
+/// @throws std::runtime_error If a listed metadata file cannot be read fully.
 bool stagedCMakeMetadataMentions(const ToolchainInstallManifest &manifest,
                                  std::string_view needle) {
     const std::string lowerNeedle = lowerCopy(std::string(needle));
@@ -820,6 +937,8 @@ void validateManifestFileEntries(const ToolchainInstallManifest &manifest) {
 /// @brief Return the sum of sizeBytes across all non-symlink entries. Used by package
 /// builders to populate the "Installed-Size" field in control files and to
 /// estimate required disk space in installer UI dialogs.
+/// @return Sum of all recorded entry sizes; symlinks contribute their stored zero size.
+/// @throws std::overflow_error If the total exceeds `uint64_t`.
 uint64_t ToolchainInstallManifest::totalSizeBytes() const {
     uint64_t total = 0;
     for (const auto &file : files) {
@@ -833,6 +952,7 @@ uint64_t ToolchainInstallManifest::totalSizeBytes() const {
 /// @brief Return the canonical set of file type associations for the Zanna toolchain:
 /// .zia (Zia source), .bas (BASIC source), .il (Zanna IL module). These are
 /// registered with the OS by all platform package builders (deb, pkg, msi).
+/// @return Owned association descriptors in stable Zia, BASIC, then IL order.
 std::vector<FileAssoc> defaultToolchainFileAssociations() {
     return {
         {".zia", "Zia Source File", "text/x-zia", ""},
@@ -847,6 +967,11 @@ std::vector<FileAssoc> defaultToolchainFileAssociations() {
 /// absent or yields no files, falls back to a full recursive walk. After gathering,
 /// each entry is classified, validated against stage-escape rules, and the
 /// manifest is sorted by stagedRelativePath before being returned.
+/// @param stagePrefix Existing staged installation root.
+/// @param installManifestPath Optional CMake install manifest used instead of a walk.
+/// @return Validated, path-sorted, self-contained toolchain manifest.
+/// @throws std::runtime_error If discovery, identity detection, metadata parsing,
+///         containment checks, or final validation fails.
 ToolchainInstallManifest gatherToolchainInstallManifest(
     const fs::path &stagePrefix, std::optional<fs::path> installManifestPath) {
     std::error_code ec;
@@ -883,6 +1008,10 @@ ToolchainInstallManifest gatherToolchainInstallManifest(
 
     std::sort(manifest.files.begin(),
               manifest.files.end(),
+              /// @brief Order manifest entries by staged relative path.
+              /// @param a First entry.
+              /// @param b Second entry.
+              /// @return `true` when @p a has the earlier path.
               [](const ToolchainFileEntry &a, const ToolchainFileEntry &b) {
                   return a.stagedRelativePath < b.stagedRelativePath;
               });
@@ -892,6 +1021,7 @@ ToolchainInstallManifest gatherToolchainInstallManifest(
 }
 
 /// @brief Return the canonical binary tools that every Zanna toolchain installer ships.
+/// @return Stable list of logical binary base names without platform extensions.
 std::vector<std::string> requiredToolchainBinaryNames() {
     return {"zanna",
             "zia",
@@ -910,6 +1040,9 @@ std::vector<std::string> requiredToolchainBinaryNames() {
 /// Checks arch/platform/version strings, required binaries and cmake configs, all
 /// runtime archives from RuntimeComponentManifest, and any support libraries
 /// (gfx/gui/aud) referenced by CMake metadata. Throws on the first violation.
+/// @param manifest Candidate staged-toolchain manifest.
+/// @throws std::runtime_error If metadata, file entries, required components,
+///         provenance, architecture, or associations violate the contract.
 void validateToolchainInstallManifest(const ToolchainInstallManifest &manifest) {
     validateToolchainPlatform(manifest.platform);
     if (manifest.arch == "universal") {
@@ -928,6 +1061,9 @@ void validateToolchainInstallManifest(const ToolchainInstallManifest &manifest) 
     if (!manifest.sourceCommit.empty() &&
         (manifest.sourceCommit.size() < 7U || manifest.sourceCommit.size() > 64U ||
          !std::all_of(
+             /// @brief Validate one source-commit byte as lowercase hexadecimal.
+             /// @param ch Candidate byte.
+             /// @return `true` for `0-9` or `a-f`.
              manifest.sourceCommit.begin(), manifest.sourceCommit.end(), [](unsigned char ch) {
                  return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
              }))) {
@@ -941,7 +1077,13 @@ void validateToolchainInstallManifest(const ToolchainInstallManifest &manifest) 
     validatePackageFileAssociations(manifest.fileAssociations);
     validateManifestFileEntries(manifest);
 
+    /// @brief Test whether the manifest contains one required binary base name.
+    /// @param nameNoExt Logical binary name without a platform extension.
+    /// @return `true` when a matching binary entry exists.
     auto hasBinary = [&](const char *nameNoExt) {
+        /// @brief Match one manifest entry against the requested binary base name.
+        /// @param entry Candidate manifest file.
+        /// @return `true` when it is the requested binary.
         return std::any_of(
             manifest.files.begin(), manifest.files.end(), [&](const ToolchainFileEntry &entry) {
                 if (entry.kind != ToolchainFileKind::Binary)
@@ -992,6 +1134,10 @@ void validateToolchainInstallManifest(const ToolchainInstallManifest &manifest) 
 /// Windows: "bin/zanna.exe" → "C:\Program Files\Zanna\bin\zanna.exe";
 /// macOS: "bin/zanna" → "/usr/local/zanna/bin/zanna";
 /// Linux: "bin/zanna" → "/usr/bin/zanna" (FHS merge); PortableArchive: unchanged.
+/// @param file Manifest entry whose staged-relative path should be mapped.
+/// @param policy Destination root and layout convention.
+/// @return Sanitized platform destination path under the selected policy.
+/// @throws std::runtime_error If the staged path is unsafe.
 std::string mapInstallPath(const ToolchainFileEntry &file, InstallPathPolicy policy) {
     const std::string rel =
         sanitizePackageRelativePath(file.stagedRelativePath, "staged install path");

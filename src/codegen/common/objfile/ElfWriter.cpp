@@ -170,6 +170,8 @@ static uint32_t elfRelocType(RelocKind kind, ObjArch arch) {
     return 0;
 }
 
+/// @brief Adapts the shared symbol-value validator to ELF writer diagnostics.
+///
 /// Adapter to the shared @ref zanna::codegen::objfile::physicalSymbolValue helper
 /// that pins the writerName to "ElfWriter:" so existing call sites compile
 /// unchanged.

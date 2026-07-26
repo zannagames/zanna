@@ -17,9 +17,19 @@
 //   - Thread handle objects are runtime-managed; join releases the OS thread handle.
 //   - Safe* values are reference-counted; multiple readers/writers share ownership.
 //
-// Links: src/runtime/threads/rt_threads.c (implementation), src/runtime/core/rt_string.h
+// Links: src/runtime/threads/rt_threads_common.c (shared implementation),
+//        src/runtime/threads/rt_threads_posix.c and rt_threads_win.c (platform backends),
+//        src/runtime/core/rt_string.h
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Declares core thread, monitor, SafeI64, gate, barrier, and RW-lock APIs.
+/// @details This umbrella header exposes the low-level `Zanna.Threads`
+///          primitives shared by higher-level async, pool, channel, and
+///          synchronization components. Opaque callback entry points preserve
+///          the generated-code ABI, while typed variants provide portable
+///          native C integration and explicit managed-argument ownership.
+
 #pragma once
 
 #include "rt_string.h"
@@ -159,8 +169,12 @@ void *rt_thread_start_owned_fn(rt_thread_entry_fn entry, void *arg);
 void *rt_thread_start(void *entry, void *arg);
 
 /// @brief Start a new thread and retain a runtime-managed argument for it.
-/// @details Like rt_thread_start, but @p arg must be a runtime-managed object
-///          or string handle and is retained until the entry function returns.
+/// @details Like @ref rt_thread_start, but a managed object or String is
+///          retained until the entry function returns. Unmanaged native
+///          pointers remain borrowed.
+/// @param entry Opaque ABI representation of a native thread callback.
+/// @param arg Managed value to retain, unmanaged borrowed pointer, or NULL.
+/// @return Runtime-managed thread handle, or NULL after a reported failure.
 void *rt_thread_start_owned(void *entry, void *arg);
 
 /// @brief Join a thread, blocking until it finishes.
@@ -243,8 +257,12 @@ void *rt_thread_start_safe_owned_fn(rt_thread_entry_fn entry, void *arg);
 void *rt_thread_start_safe(void *entry, void *arg);
 
 /// @brief Start a safe thread and retain a runtime-managed argument for it.
-/// @details Like rt_thread_start_safe, but retains @p arg until the entry
-///          function returns or traps.
+/// @details Like @ref rt_thread_start_safe, but retains a managed object or
+///          String until the entry returns or traps. Unmanaged pointers remain
+///          borrowed.
+/// @param entry Opaque ABI representation of a native thread callback.
+/// @param arg Managed value to retain, unmanaged borrowed pointer, or NULL.
+/// @return Runtime-managed SafeThread handle, or NULL after a reported failure.
 void *rt_thread_start_safe_owned(void *entry, void *arg);
 
 /// @brief Check whether a safe-started thread exited with a trap error.

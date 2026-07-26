@@ -767,6 +767,7 @@ static bool fitsBranchDispWords(int64_t deltaBytes, int immBits) {
  */
 size_t A64BinaryEncoder::movImm64Size(uint64_t imm) const {
     size_t count = 0;
+    /// @brief Counts one instruction in the selected move-wide sequence.
     forEachMoveWideInst(imm, [&](const MoveWideInst &) { ++count; });
     return count * 4;
 }
@@ -892,6 +893,10 @@ size_t A64BinaryEncoder::measureInstructionSize(
     std::unordered_set<size_t> *discoveredLongConditionalBranches) {
     validateOperandCount(mi);
 
+    /// @brief Selects the short or expanded size for a conditional branch.
+    /// @param target Branch target label.
+    /// @param dispBits Signed displacement field width.
+    /// @return Four bytes for an in-range branch, otherwise eight bytes.
     auto conditionalBranchSize = [&](const std::string &target, unsigned dispBits) {
         if (target.empty())
             throw std::runtime_error(
@@ -921,6 +926,9 @@ size_t A64BinaryEncoder::measureInstructionSize(
         unsigned bytes;
     };
 
+    /// @brief Describes the offset operand and access width of a load/store opcode.
+    /// @param opc Opcode to classify.
+    /// @return Load/store metadata, or `std::nullopt` for another opcode family.
     auto classifyLdSt = [](MOpcode opc) -> std::optional<LdStInfo> {
         switch (opc) {
             // FP-relative, single-width-8.
@@ -1069,6 +1077,9 @@ A64BinaryEncoder::LabelOffsetMap A64BinaryEncoder::computeFunctionLabelOffsets(
         std::unordered_set<size_t> nextLongConditionalBranches;
         next.reserve(estimated.size() + fn.blocks.size());
 
+        /// @brief Adds a sanitized label at its current estimated offset.
+        /// @param name Original MIR label.
+        /// @param offset Function-relative byte offset.
         auto assignLabel = [&](const std::string &name, size_t offset) {
             if (name.empty())
                 return;
@@ -1422,40 +1433,55 @@ void A64BinaryEncoder::encodePrologue(const MFunction &fn, objfile::CodeSection 
               uint32_t linkRegister)
             : self(encoder), cs(section), sp(stackPointer), fp(framePointer), lr(linkRegister) {}
 
+        /// @brief Emits pointer-authentication signing of the link register with SP.
         void paciasp() const {
             self.emit32(kPaciasp, cs);
         }
 
+        /// @brief Saves FP and LR with the canonical 16-byte SP pre-decrement.
         void stpFpLrPre() const {
             self.emit32(encodePair(kStpGprPre, fp, lr, sp, static_cast<int32_t>(-16 / 8)), cs);
         }
 
+        /// @brief Establishes the frame pointer from the current stack pointer.
         void movFpSp() const {
             self.emit32(encodeAddSubImm(kAddRI, fp, sp, 0), cs);
         }
 
+        /// @brief Reserves local-frame storage below the current stack pointer.
+        /// @param n Non-negative, ABI-aligned byte count selected by frame iteration.
         void subSp(int32_t n) const {
             self.encodeSubSp(n, cs);
         }
 
+        /// @brief Saves one adjacent callee-saved GPR pair with 16-byte pre-decrement.
+        /// @param r0 First general-purpose register in the pair.
+        /// @param r1 Second general-purpose register in the pair.
         void stpGprPair(PhysReg r0, PhysReg r1) const {
             self.emit32(
                 encodePair(kStpGprPre, hwGPR(r0), hwGPR(r1), sp, static_cast<int32_t>(-16 / 8)),
                 cs);
         }
 
+        /// @brief Saves one callee-saved GPR in a 16-byte stack slot.
+        /// @param r0 General-purpose register to save.
         void strGprSingle(PhysReg r0) const {
             self.emit32(kStrGprPre | ((static_cast<uint32_t>(-16) & 0x1FF) << 12) | (sp << 5) |
                             hwGPR(r0),
                         cs);
         }
 
+        /// @brief Saves one adjacent callee-saved FPR pair with 16-byte pre-decrement.
+        /// @param r0 First floating-point register in the pair.
+        /// @param r1 Second floating-point register in the pair.
         void stpFprPair(PhysReg r0, PhysReg r1) const {
             self.emit32(
                 encodePair(kStpFprPre, hwFPR(r0), hwFPR(r1), sp, static_cast<int32_t>(-16 / 8)),
                 cs);
         }
 
+        /// @brief Saves one callee-saved FPR in a 16-byte stack slot.
+        /// @param r0 Floating-point register to save.
         void strFprSingle(PhysReg r0) const {
             self.emit32(kStrFprPre | ((static_cast<uint32_t>(-16) & 0x1FF) << 12) | (sp << 5) |
                             hwFPR(r0),
@@ -1500,38 +1526,53 @@ void A64BinaryEncoder::encodeEpilogue(const MFunction &fn, objfile::CodeSection 
               uint32_t linkRegister)
             : self(encoder), cs(section), sp(stackPointer), fp(framePointer), lr(linkRegister) {}
 
+        /// @brief Restores one adjacent callee-saved FPR pair with 16-byte post-increment.
+        /// @param r0 First floating-point register in the pair.
+        /// @param r1 Second floating-point register in the pair.
         void ldpFprPair(PhysReg r0, PhysReg r1) const {
             self.emit32(
                 encodePair(kLdpFprPost, hwFPR(r0), hwFPR(r1), sp, static_cast<int32_t>(16 / 8)),
                 cs);
         }
 
+        /// @brief Restores one callee-saved FPR and releases its 16-byte stack slot.
+        /// @param r0 Floating-point register to restore.
         void ldrFprSingle(PhysReg r0) const {
             self.emit32(kLdrFprPost | ((16u & 0x1FF) << 12) | (sp << 5) | hwFPR(r0), cs);
         }
 
+        /// @brief Restores one adjacent callee-saved GPR pair with 16-byte post-increment.
+        /// @param r0 First general-purpose register in the pair.
+        /// @param r1 Second general-purpose register in the pair.
         void ldpGprPair(PhysReg r0, PhysReg r1) const {
             self.emit32(
                 encodePair(kLdpGprPost, hwGPR(r0), hwGPR(r1), sp, static_cast<int32_t>(16 / 8)),
                 cs);
         }
 
+        /// @brief Restores one callee-saved GPR and releases its 16-byte stack slot.
+        /// @param r0 General-purpose register to restore.
         void ldrGprSingle(PhysReg r0) const {
             self.emit32(kLdrGprPost | ((16u & 0x1FF) << 12) | (sp << 5) | hwGPR(r0), cs);
         }
 
+        /// @brief Releases local-frame storage above the current stack pointer.
+        /// @param n Non-negative, ABI-aligned byte count selected by frame iteration.
         void addSp(int32_t n) const {
             self.encodeAddSp(n, cs);
         }
 
+        /// @brief Restores FP and LR and releases their canonical 16-byte stack slot.
         void ldpFpLrPost() const {
             self.emit32(encodePair(kLdpGprPost, fp, lr, sp, static_cast<int32_t>(16 / 8)), cs);
         }
 
+        /// @brief Authenticates the restored link register against the stack pointer.
         void autiasp() const {
             self.emit32(kAutiasp, cs);
         }
 
+        /// @brief Emits the architectural return instruction.
         void ret() const {
             self.emit32(kRet, cs);
         }
@@ -1558,17 +1599,26 @@ void A64BinaryEncoder::recordWindowsArm64UnwindEntry(const MFunction &fn,
     std::vector<std::vector<uint8_t>> forwardOps;
     forwardOps.reserve(16);
 
+    /// @brief Builds one encoded unwind operation with a supplied emitter.
+    /// @param emit Callback that appends bytes to the operation buffer.
+    /// @return Encoded bytes for the operation.
     const auto oneOp = [](auto emit) {
         std::vector<uint8_t> op;
         emit(op);
         return op;
     };
 
+    /// @brief Appends one Windows ARM64 stack-allocation unwind operation.
+    /// @param bytes Allocation size represented by the operation.
     const auto appendAllocOp = [&](uint32_t bytes) {
         forwardOps.push_back(
+            /// @brief Emits an allocation operation into its byte buffer.
+            /// @param op Operation byte buffer.
             oneOp([&](std::vector<uint8_t> &op) { appendWindowsArm64AllocCode(op, bytes); }));
     };
 
+    /// @brief Splits a stack allocation according to the smart add/sub strategy.
+    /// @param bytes Total allocation size to encode.
     const auto appendAllocOpsForAddSubSmart = [&](uint32_t bytes) {
         if (bytes <= 4095) {
             appendAllocOp(bytes);
@@ -1601,23 +1651,39 @@ void A64BinaryEncoder::recordWindowsArm64UnwindEntry(const MFunction &fn,
 
     forEachSaveReg(
         fn.savedGPRs,
+        /// @brief Appends unwind data for a saved pair of GPRs.
+        /// @param r0 First register in the pair; the adjacent register is implicit.
         [&](PhysReg r0, PhysReg) {
             forwardOps.push_back(
+                /// @brief Emits a paired-GPR save operation into its byte buffer.
+                /// @param op Operation byte buffer.
                 oneOp([&](std::vector<uint8_t> &op) { appendWindowsArm64SaveGprPairX(op, r0); }));
         },
+        /// @brief Appends unwind data for one saved GPR.
+        /// @param r0 Register to describe.
         [&](PhysReg r0) {
             forwardOps.push_back(
+                /// @brief Emits a single-GPR save operation into its byte buffer.
+                /// @param op Operation byte buffer.
                 oneOp([&](std::vector<uint8_t> &op) { appendWindowsArm64SaveGprX(op, r0); }));
         });
 
     forEachSaveReg(
         fn.savedFPRs,
+        /// @brief Appends unwind data for a saved pair of FPRs.
+        /// @param r0 First register in the pair; the adjacent register is implicit.
         [&](PhysReg r0, PhysReg) {
             forwardOps.push_back(
+                /// @brief Emits a paired-FPR save operation into its byte buffer.
+                /// @param op Operation byte buffer.
                 oneOp([&](std::vector<uint8_t> &op) { appendWindowsArm64SaveFprPairX(op, r0); }));
         },
+        /// @brief Appends unwind data for one saved FPR.
+        /// @param r0 Register to describe.
         [&](PhysReg r0) {
             forwardOps.push_back(
+                /// @brief Emits a single-FPR save operation into its byte buffer.
+                /// @param op Operation byte buffer.
                 oneOp([&](std::vector<uint8_t> &op) { appendWindowsArm64SaveFprX(op, r0); }));
         });
 
@@ -1661,6 +1727,8 @@ void A64BinaryEncoder::encodeMovImm64(uint32_t rd, uint64_t imm, objfile::CodeSe
     static constexpr uint32_t movnTmpl[4] = {kMovN, kMovN16, kMovN32, kMovN48};
     static constexpr uint32_t movkTmpl[4] = {kMovK, kMovK16, kMovK32, kMovK48};
 
+    /// @brief Encodes one instruction in the selected move-wide sequence.
+    /// @param inst Move-wide operation and halfword selected for emission.
     forEachMoveWideInst(imm, [&](const MoveWideInst &inst) {
         const unsigned lane = inst.shift / 16;
         switch (inst.opcode) {

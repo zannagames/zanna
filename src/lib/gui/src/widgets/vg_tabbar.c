@@ -276,6 +276,7 @@ static vg_tab_t *find_tab_at_x(vg_tabbar_t *tabbar, float x) {
 /// @details `x`/`y` are in the same canvas-pixel space as the tab strip's bounds
 ///          (i.e. the values reported by the input layer). Used for right-click
 ///          tab context menus. Scroll offset is handled by find_tab_at_x.
+/// @copydetails vg_tabbar_index_at
 int vg_tabbar_index_at(vg_tabbar_t *tabbar, int x, int y) {
     if (!tabbar)
         return -1;
@@ -416,6 +417,7 @@ static bool tab_close_button_hit(vg_tabbar_t *tabbar, vg_tab_t *tab, float local
 
 /// @brief Updates the widget tooltip to show the hovered tab's tooltip, saving and restoring the
 /// global tooltip when hover changes.
+/// @param tabbar TabBar whose hovered tab and tooltip state are synchronized.
 static void tabbar_sync_hover_tooltip(vg_tabbar_t *tabbar) {
     if (!tabbar)
         return;
@@ -448,6 +450,8 @@ static void tabbar_sync_hover_tooltip(vg_tabbar_t *tabbar) {
 }
 
 /// @brief Record a close-click as a versioned runtime-visible event.
+/// @param tabbar TabBar whose close-click latch is updated.
+/// @param index Zero-based index of the tab whose close affordance was activated.
 static void tabbar_record_close_clicked(vg_tabbar_t *tabbar, int index) {
     if (!tabbar || index < 0)
         return;
@@ -458,12 +462,16 @@ static void tabbar_record_close_clicked(vg_tabbar_t *tabbar, int index) {
 }
 
 /// @brief VTable can_focus: returns true when the widget is both enabled and visible.
+/// @param widget TabBar base widget whose focus eligibility is queried.
+/// @return True when the widget is enabled and visible.
 static bool tabbar_can_focus(vg_widget_t *widget) {
     return widget && widget->enabled && widget->visible;
 }
 
 /// @brief Adjusts scroll_x so that @p tab's button is fully visible within the current widget
 /// width.
+/// @param tabbar TabBar whose horizontal scroll offset may be changed.
+/// @param tab Tab that must be brought fully into view.
 static void tabbar_ensure_tab_visible(vg_tabbar_t *tabbar, vg_tab_t *tab) {
     if (!tabbar || !tab)
         return;
@@ -588,6 +596,7 @@ vg_tabbar_t *vg_tabbar_create(vg_widget_t *parent) {
 
 /// @brief VTable destroy: releases input capture if held, frees all tab nodes (title, tooltip,
 /// struct), and saved tooltip text.
+/// @param widget TabBar base widget being destroyed.
 static void tabbar_destroy(vg_widget_t *widget) {
     vg_tabbar_t *tabbar = (vg_tabbar_t *)widget;
 
@@ -607,6 +616,9 @@ static void tabbar_destroy(vg_widget_t *widget) {
 
 /// @brief VTable measure: sums all tab widths into total_width, claims available_width, and
 /// re-clamps scroll_x to prevent over-scroll after tab removal.
+/// @param widget TabBar base widget whose measured dimensions are updated.
+/// @param available_width Parent-provided horizontal space.
+/// @param available_height Parent-provided height; used only by fixed strip sizing.
 static void tabbar_measure(vg_widget_t *widget, float available_width, float available_height) {
     vg_tabbar_t *tabbar = (vg_tabbar_t *)widget;
     (void)available_height;
@@ -641,6 +653,8 @@ static void tabbar_measure(vg_widget_t *widget, float available_width, float ava
 
 /// @brief VTable paint: renders the bar background, clips tabs, draws each tab with background,
 /// active accent bar, truncated title, modified dot, and close button.
+/// @param widget Arranged TabBar base widget to render.
+/// @param canvas Backend canvas used for text and primitive drawing.
 static void tabbar_paint(vg_widget_t *widget, void *canvas) {
     vg_tabbar_t *tabbar = (vg_tabbar_t *)widget;
     vg_theme_t *theme = vg_theme_get_current();
@@ -811,6 +825,9 @@ static void tabbar_paint(vg_widget_t *widget, void *canvas) {
 
 /// @brief VTable handle_event: handles tab click/select, close-button click, drag-to-reorder
 /// gesture, hover tracking, mouse-wheel scroll, and left/right arrow key navigation.
+/// @param widget TabBar base widget receiving the event.
+/// @param event Mutable GUI event to interpret.
+/// @return True when tab interaction consumes the event.
 static bool tabbar_handle_event(vg_widget_t *widget, vg_event_t *event) {
     vg_tabbar_t *tabbar = (vg_tabbar_t *)widget;
     vg_theme_t *theme = vg_theme_get_current();
@@ -1173,6 +1190,7 @@ void vg_tabbar_remove_tab(vg_tabbar_t *tabbar, vg_tab_t *tab) {
 ///          vg_tab_is_live() can reject stale handles safely. This explicit
 ///          pruning hook lets owners reclaim memory after they have discarded
 ///          all tab handles returned before the corresponding remove calls.
+/// @copydetails vg_tabbar_prune_retired_tabs
 void vg_tabbar_prune_retired_tabs(vg_tabbar_t *tabbar) {
     free_retired_tabs(tabbar);
 }
@@ -1180,6 +1198,7 @@ void vg_tabbar_prune_retired_tabs(vg_tabbar_t *tabbar) {
 /// @brief Unlink and free one exact retained tab record.
 /// @details The function compares addresses while walking the owner's valid retirement chain and
 ///          therefore never dereferences a foreign caller-supplied pointer.
+/// @copydetails vg_tabbar_reclaim_retired_tab
 bool vg_tabbar_reclaim_retired_tab(vg_tabbar_t *tabbar, vg_tab_t *tab) {
     if (!tabbar || !tab)
         return false;

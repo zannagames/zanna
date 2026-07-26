@@ -169,6 +169,8 @@ VM::ExecResult handleCastNarrowChkImpl(const Slot &value,
             return {};
     }
 
+    /// @brief Apply the signed or unsigned checked-narrowing semantics selected by `Traits`.
+    /// @return Narrowed semantic result with an explicit trap classification.
     const auto result =
         [&]() -> il::semantics::SemanticResult<int64_t> {
         if constexpr (std::is_same_v<Traits, UnsignedNarrowCastTraits>) {

@@ -40,6 +40,9 @@ using namespace il::core;
 
 namespace il::vm::detail::floating {
 namespace {
+/// @brief Convert an IL integer type to its semantic bit width.
+/// @param kind Integer result type requested by a checked conversion.
+/// @return 16, 32, or 64 bits; unsupported kinds conservatively select 64.
 [[nodiscard]] int integerTypeBits(Type::Kind kind) {
     switch (kind) {
         case Type::Kind::I16:
@@ -76,27 +79,24 @@ namespace {
 }
 
 /// @brief Round @p operand to the nearest unsigned 64-bit integer or raise a trap.
-/// @details Implements the semantics of `cast.fp_to_ui.rte.chk` in four stages:
-///          1. Validate that the operand is finite and non-negative, trapping
-///             with @ref TrapKind::InvalidCast when the preconditions fail.
-///          2. Reject magnitudes greater than or equal to 2^64 by emitting an
-///             @ref TrapKind::Overflow diagnostic via the runtime bridge.
-///          3. Use @ref std::modf to split the operand into integer and
-///             fractional parts, then apply banker’s rounding (ties to even).
-///          4. Perform a final overflow check before casting to `uint64_t` so
-///             rounding does not silently wrap.
-///          Any trap is raised through @ref RuntimeBridge::trap so diagnostics
-///          include the instruction location and owning function.
+/// @details Delegates round-to-nearest, ties-to-even and width checking to the
+///          shared scalar semantics layer. Invalid inputs and overflow are
+///          translated to VM trap categories and reported with the current
+///          instruction, function, and block context.
 /// @param operand Floating-point value requested for conversion.
 /// @param in Instruction descriptor providing source information for diagnostics.
-/// @param fr Active frame containing the function and destination slot.
+/// @param fr Active frame identifying the function for diagnostics.
 /// @param bb Basic block label used in diagnostic output; may be null.
+/// @param resultBits Width of the unsigned integer result.
 /// @return Rounded unsigned integer when conversion succeeds without trapping.
 [[nodiscard]] uint64_t castFpToUiRoundedOrTrap(
     double operand, const Instr &in, Frame &fr, const BasicBlock *bb, int resultBits) {
     constexpr const char *kInvalidOperandMessage = "invalid fp operand in cast.fp_to_ui.rte.chk";
     constexpr const char *kOverflowMessage = "fp overflow in cast.fp_to_ui.rte.chk";
 
+    /// @brief Record one checked-conversion trap in the current execution context.
+    /// @param kind VM trap classification.
+    /// @param message Stable diagnostic text.
     auto trap = [&](TrapKind kind, const char *message) {
         RuntimeBridge::trap(kind,
                             message,
@@ -142,6 +142,10 @@ VM::ExecResult handleFAdd(VM &vm,
     (void)blocks;
     (void)bb;
     (void)ip;
+    /// @brief Add two floating-point operands.
+    /// @param lhs Left operand.
+    /// @param rhs Right operand.
+    /// @return IEEE-754 sum.
     return il::vm::internal::binaryOp<double>(
         vm, fr, in, [](double lhs, double rhs) { return lhs + rhs; });
 }
@@ -167,6 +171,10 @@ VM::ExecResult handleFSub(VM &vm,
     (void)blocks;
     (void)bb;
     (void)ip;
+    /// @brief Subtract one floating-point slot value from another.
+    /// @param[out] out Destination slot.
+    /// @param lhsVal Left operand slot.
+    /// @param rhsVal Right operand slot.
     return ops::applyBinary(vm, fr, in, [](Slot &out, const Slot &lhsVal, const Slot &rhsVal) {
         out.f64 = lhsVal.f64 - rhsVal.f64;
     });
@@ -194,6 +202,10 @@ VM::ExecResult handleFMul(VM &vm,
     (void)blocks;
     (void)bb;
     (void)ip;
+    /// @brief Multiply two floating-point slot values.
+    /// @param[out] out Destination slot.
+    /// @param lhsVal Left operand slot.
+    /// @param rhsVal Right operand slot.
     return ops::applyBinary(vm, fr, in, [](Slot &out, const Slot &lhsVal, const Slot &rhsVal) {
         out.f64 = lhsVal.f64 * rhsVal.f64;
     });
@@ -221,6 +233,10 @@ VM::ExecResult handleFDiv(VM &vm,
     (void)blocks;
     (void)bb;
     (void)ip;
+    /// @brief Divide two floating-point slot values.
+    /// @param[out] out Destination slot.
+    /// @param lhsVal Dividend slot.
+    /// @param rhsVal Divisor slot.
     return ops::applyBinary(vm, fr, in, [](Slot &out, const Slot &lhsVal, const Slot &rhsVal) {
         out.f64 = lhsVal.f64 / rhsVal.f64;
     });
@@ -248,6 +264,10 @@ VM::ExecResult handleFCmpEQ(VM &vm,
     (void)blocks;
     (void)bb;
     (void)ip;
+    /// @brief Compare two floating-point slots for equality.
+    /// @param lhsVal Left operand slot.
+    /// @param rhsVal Right operand slot.
+    /// @return IEEE-754 equality result.
     return ops::applyCompare(vm, fr, in, [](const Slot &lhsVal, const Slot &rhsVal) {
         return lhsVal.f64 == rhsVal.f64;
     });
@@ -275,6 +295,10 @@ VM::ExecResult handleFCmpNE(VM &vm,
     (void)blocks;
     (void)bb;
     (void)ip;
+    /// @brief Compare two floating-point slots for inequality.
+    /// @param lhsVal Left operand slot.
+    /// @param rhsVal Right operand slot.
+    /// @return IEEE-754 inequality result.
     return ops::applyCompare(vm, fr, in, [](const Slot &lhsVal, const Slot &rhsVal) {
         return lhsVal.f64 != rhsVal.f64;
     });
@@ -301,6 +325,10 @@ VM::ExecResult handleFCmpGT(VM &vm,
     (void)blocks;
     (void)bb;
     (void)ip;
+    /// @brief Compare whether the left floating-point slot is greater than the right.
+    /// @param lhsVal Left operand slot.
+    /// @param rhsVal Right operand slot.
+    /// @return IEEE-754 greater-than result.
     return ops::applyCompare(
         vm, fr, in, [](const Slot &lhsVal, const Slot &rhsVal) { return lhsVal.f64 > rhsVal.f64; });
 }
@@ -326,6 +354,10 @@ VM::ExecResult handleFCmpLT(VM &vm,
     (void)blocks;
     (void)bb;
     (void)ip;
+    /// @brief Compare whether the left floating-point slot is less than the right.
+    /// @param lhsVal Left operand slot.
+    /// @param rhsVal Right operand slot.
+    /// @return IEEE-754 less-than result.
     return ops::applyCompare(
         vm, fr, in, [](const Slot &lhsVal, const Slot &rhsVal) { return lhsVal.f64 < rhsVal.f64; });
 }
@@ -352,6 +384,10 @@ VM::ExecResult handleFCmpLE(VM &vm,
     (void)blocks;
     (void)bb;
     (void)ip;
+    /// @brief Compare whether the left floating-point slot is at most the right.
+    /// @param lhsVal Left operand slot.
+    /// @param rhsVal Right operand slot.
+    /// @return IEEE-754 less-than-or-equal result.
     return ops::applyCompare(vm, fr, in, [](const Slot &lhsVal, const Slot &rhsVal) {
         return lhsVal.f64 <= rhsVal.f64;
     });
@@ -378,6 +414,10 @@ VM::ExecResult handleFCmpGE(VM &vm,
     (void)blocks;
     (void)bb;
     (void)ip;
+    /// @brief Compare whether the left floating-point slot is at least the right.
+    /// @param lhsVal Left operand slot.
+    /// @param rhsVal Right operand slot.
+    /// @return IEEE-754 greater-than-or-equal result.
     return ops::applyCompare(vm, fr, in, [](const Slot &lhsVal, const Slot &rhsVal) {
         return lhsVal.f64 >= rhsVal.f64;
     });
@@ -403,6 +443,10 @@ VM::ExecResult handleFCmpOrd(VM &vm,
     (void)blocks;
     (void)bb;
     (void)ip;
+    /// @brief Test whether both floating-point operands are ordered.
+    /// @param lhsVal Left operand slot.
+    /// @param rhsVal Right operand slot.
+    /// @return `true` when neither value is NaN.
     return ops::applyCompare(vm, fr, in, [](const Slot &lhsVal, const Slot &rhsVal) {
         return !std::isnan(lhsVal.f64) && !std::isnan(rhsVal.f64);
     });
@@ -428,6 +472,10 @@ VM::ExecResult handleFCmpUno(VM &vm,
     (void)blocks;
     (void)bb;
     (void)ip;
+    /// @brief Test whether either floating-point operand is unordered.
+    /// @param lhsVal Left operand slot.
+    /// @param rhsVal Right operand slot.
+    /// @return `true` when either value is NaN.
     return ops::applyCompare(vm, fr, in, [](const Slot &lhsVal, const Slot &rhsVal) {
         return std::isnan(lhsVal.f64) || std::isnan(rhsVal.f64);
     });
@@ -518,11 +566,11 @@ VM::ExecResult handleFptosi(VM &vm,
 /// @brief Execute the `cast.fp_to_si.rte.chk` opcode with checked round-to-nearest conversion.
 /// @details The workflow mirrors the IL specification:
 ///          1. Evaluate the operand via @ref VMAccess::eval.
-///          2. Trap with @ref TrapKind::InvalidCast when the value is not finite.
-///          3. Round to the nearest integer using @ref std::nearbyint (ties to even).
-///          4. Trap with @ref TrapKind::Overflow when the rounded value falls
-///             outside the signed 64-bit range or becomes non-finite.
-///          5. Store the rounded result in the destination slot.
+///          2. Use the shared scalar semantics layer to round ties to even at
+///             the destination integer width.
+///          3. Trap with @ref TrapKind::InvalidCast for non-finite values or
+///             @ref TrapKind::Overflow when the rounded value is out of range.
+///          4. Store the checked result in the destination slot.
 ///          All traps flow through @ref RuntimeBridge so diagnostics include
 ///          instruction and block context.
 /// @param vm Virtual machine coordinating execution (unused).
@@ -570,10 +618,9 @@ VM::ExecResult handleCastFpToSiRteChk(VM &vm,
 /// @details The helper delegates to @ref castFpToUiRoundedOrTrap to enforce the
 ///          conversion semantics: reject NaNs or negative inputs with
 ///          @ref TrapKind::InvalidCast, trap on overflow when the rounded value
-///          exceeds the unsigned 64-bit range, and otherwise return the rounded
-///          integer using banker’s rounding (ties to even).  The resulting value
-///          is stored in the destination slot as a signed 64-bit integer so the
-///          interpreter can continue processing.
+///          exceeds the destination width, and otherwise return the rounded
+///          integer using ties-to-even. The resulting bits are stored in the
+///          VM's 64-bit integer slot representation.
 /// @param vm Virtual machine coordinating execution (unused).
 /// @param fr Active frame providing operand and destination slots.
 /// @param in Instruction describing the checked conversion.

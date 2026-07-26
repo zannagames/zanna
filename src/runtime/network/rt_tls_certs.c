@@ -25,6 +25,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_tls_certs.c
+ * @brief Implements TLS certificate and private-key loading and parsing.
+ * @details The bounded loaders decode PEM or DER certificate chains and
+ *          SEC1, PKCS#8, or PKCS#1 private keys, validate strict TLV and OID
+ *          structure, and identify supported public-key types for server
+ *          signature selection. Parsed material is returned through explicitly
+ *          owned caller storage.
+ */
+
 #include "rt_crypto.h"
 #include "rt_crypto_module.h"
 #include "rt_ecdsa_p256.h"
@@ -46,6 +56,13 @@
 ///          forcing unbounded allocations through ftell()/malloc().
 #define TLS_TEXT_FILE_MAX_BYTES (4u * 1024u * 1024u)
 
+/// @brief Read a bounded text file into a NUL-terminated native buffer.
+/// @details UTF-8 path opening is platform-adapted. Files larger than 4 MiB,
+///          seek/read failures, and allocation failure return NULL with all
+///          partial resources released.
+/// @param path Nonempty UTF-8 filesystem path.
+/// @param len_out Optional destination for the byte length excluding NUL.
+/// @return Caller-owned heap buffer, or NULL on failure.
 char *tls_read_text_file(const char *path, size_t *len_out) {
     FILE *f = NULL;
     char *buf = NULL;
@@ -88,6 +105,11 @@ fail:
 /// @brief Decode the Base64 body of a PEM block into a DER byte buffer.
 ///        Skips whitespace and stops at '=' padding characters or non-Base64 bytes.
 ///        Returns the number of DER bytes written; returns 0 if out_der overflows max_der.
+/// @param pem_b64 Base64 text bytes between PEM markers.
+/// @param b64_len Number of input bytes.
+/// @param out_der Caller-provided DER destination.
+/// @param max_der Destination capacity.
+/// @return Number of decoded bytes, or zero for invalid input or overflow.
 size_t tls_pem_base64_decode(const char *pem_b64,
                              size_t b64_len,
                              uint8_t *out_der,
@@ -133,6 +155,13 @@ size_t tls_pem_base64_decode(const char *pem_b64,
 ///        Sets *body_out and *body_len_out to the Base64 text between the markers.
 ///        Sets *next_out to the character after the end marker for chained iteration.
 ///        Returns 1 if a block was found, 0 otherwise.
+/// @param pem NUL-terminated PEM document or remaining suffix.
+/// @param begin_marker NUL-terminated begin delimiter.
+/// @param end_marker NUL-terminated end delimiter.
+/// @param body_out Destination for a borrowed body pointer.
+/// @param body_len_out Destination for body byte length.
+/// @param next_out Optional destination for the suffix after the end marker.
+/// @return One when a complete block is located; otherwise zero.
 int tls_find_pem_block(const char *pem,
                        const char *begin_marker,
                        const char *end_marker,
@@ -164,6 +193,11 @@ int tls_find_pem_block(const char *pem,
 /// @brief Copy up to 32 DER integer bytes into a right-aligned 32-byte big-endian buffer.
 ///        Strips leading zero padding bytes (required for DER positive-integer encoding).
 ///        Returns 1 on success; 0 if the remaining value exceeds 32 bytes.
+/// @param data DER integer or OCTET STRING content bytes.
+/// @param len Number of input bytes.
+/// @param out Destination 32-byte right-aligned value.
+/// @param out_len Destination for significant byte length.
+/// @return One on success; zero for empty, invalid, or oversized input.
 static int tls_copy_der_octets(const uint8_t *data, size_t len, uint8_t out[32], size_t *out_len) {
     size_t skip = 0;
     if (len == 0 || !out || !out_len)
@@ -183,6 +217,10 @@ static int tls_copy_der_octets(const uint8_t *data, size_t len, uint8_t out[32],
 /// @brief Extract the 32-byte scalar from a SEC 1 (RFC 5915) DER-encoded EC private key.
 ///        SEC 1 structure: SEQUENCE { INTEGER (version), OCTET STRING (key), ... }.
 ///        Returns 1 on success, 0 on parse failure or key too long.
+/// @param der Complete SEC 1 ECPrivateKey DER bytes.
+/// @param der_len Number of DER bytes.
+/// @param out_priv Destination 32-byte right-aligned private scalar.
+/// @return One on success; zero for malformed or oversized input.
 int tls_parse_sec1_ec_private_key(const uint8_t *der, size_t der_len, uint8_t out_priv[32]) {
     uint8_t tag;
     size_t vl, hl;
@@ -207,6 +245,10 @@ int tls_parse_sec1_ec_private_key(const uint8_t *der, size_t der_len, uint8_t ou
 ///        Verifies the AlgorithmIdentifier contains id-ecPublicKey + prime256v1 OIDs before
 ///        delegating the inner SEC 1 ECPrivateKey to tls_parse_sec1_ec_private_key.
 ///        Returns 1 on success, 0 on parse failure or OID mismatch.
+/// @param der Complete PKCS#8 PrivateKeyInfo DER bytes.
+/// @param der_len Number of DER bytes.
+/// @param out_priv Destination 32-byte P-256 private scalar.
+/// @return One on success; zero for malformed input or unsupported algorithm.
 int tls_parse_pkcs8_ec_private_key(const uint8_t *der, size_t der_len, uint8_t out_priv[32]) {
     static const uint8_t OID_EC_PUBLIC_KEY[] = {0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01};
     static const uint8_t OID_PRIME256V1[] = {0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07};
@@ -252,6 +294,11 @@ int tls_parse_pkcs8_ec_private_key(const uint8_t *der, size_t der_len, uint8_t o
 ///        Navigates TBSCertificate → SubjectPublicKeyInfo, checks the ec-public-key +
 ///        prime256v1 OIDs, then reads the 04-prefixed 65-byte uncompressed point.
 ///        Returns 1 on success, 0 on parse failure or wrong key type.
+/// @param cert_der Complete X.509 certificate DER bytes.
+/// @param cert_len Number of certificate bytes.
+/// @param x_out Destination 32-byte affine x coordinate.
+/// @param y_out Destination 32-byte affine y coordinate.
+/// @return One on success; zero for malformed input or a non-P-256 key.
 int tls_extract_cert_ec_pubkey(const uint8_t *cert_der,
                                size_t cert_len,
                                uint8_t x_out[32],
@@ -330,6 +377,10 @@ int tls_extract_cert_ec_pubkey(const uint8_t *cert_der,
 ///        Navigates TBSCertificate → SubjectPublicKeyInfo, verifies the rsaEncryption OID,
 ///        then parses the RSAPublicKey (modulus + exponent) via rt_rsa_key_from_der.
 ///        Returns 1 on success, 0 on parse failure or wrong key type.
+/// @param cert_der Complete X.509 certificate DER bytes.
+/// @param cert_len Number of certificate bytes.
+/// @param out Initialized RSA key receiving public components.
+/// @return One on success; zero for malformed input or a non-RSA key.
 int tls_extract_cert_rsa_pubkey(const uint8_t *cert_der, size_t cert_len, rt_rsa_key_t *out) {
     static const uint8_t OID_RSA_ENCRYPTION[] = {
         0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01};
@@ -398,6 +449,9 @@ int tls_extract_cert_rsa_pubkey(const uint8_t *cert_der, size_t cert_len, rt_rsa
 /// @brief Return TLS_SERVER_KEY_ECDSA_P256 or TLS_SERVER_KEY_RSA_PSS_SHA256 by inspecting
 ///        the SubjectPublicKeyInfo algorithm OID in the leaf certificate.
 ///        Returns TLS_SERVER_KEY_NONE if the key type is not recognised.
+/// @param cert_der Complete X.509 certificate DER bytes.
+/// @param cert_len Number of certificate bytes.
+/// @return Supported server key type, or @c TLS_SERVER_KEY_NONE.
 int tls_extract_cert_key_type(const uint8_t *cert_der, size_t cert_len) {
     static const uint8_t OID_EC_PUBLIC_KEY[] = {0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01};
     static const uint8_t OID_PRIME256V1[] = {0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07};

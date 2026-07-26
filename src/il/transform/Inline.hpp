@@ -20,6 +20,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares the configurable direct-call IL inliner module pass.
+ *
+ * @details The inliner evaluates non-recursive callees with a bounded cost
+ *          model, clones supported CFGs into callers, remaps SSA values and
+ *          block parameters, and joins returns through a continuation block.
+ *          Configuration limits candidate size, nesting depth, call frequency,
+ *          and aggregate module code growth.
+ */
+
 #pragma once
 
 #include "il/transform/PassRegistry.hpp"
@@ -28,37 +39,37 @@ namespace il::transform {
 
 /// @brief Configuration for the inline cost model.
 struct InlineCostConfig {
-    /// Base instruction count threshold for inlining.
+    /// @brief Base instruction count threshold for inlining.
     /// Raised from 32 to 80 to capture medium-sized helper functions.
     unsigned instrThreshold = 80;
 
-    /// Maximum number of blocks in callee.
+    /// @brief Maximum number of blocks in a callee.
     /// Limited to single-block callees until multi-block inlining value-flow
     /// issues are resolved (zannastudio, chess-zia crash at O1 with blockBudget>1).
     unsigned blockBudget = 1;
 
-    /// Maximum inline depth for nested inlining.
+    /// @brief Maximum inline depth for nested inlining.
     /// Raised from 2 to 3 to allow deeper utility-function chains to collapse.
     unsigned maxInlineDepth = 3;
 
-    /// Bonus (subtracted from cost) for each constant argument.
+    /// @brief Bonus subtracted from cost for each constant argument.
     unsigned constArgBonus = 4;
 
-    /// Bonus for functions with only one call site (can be DCE'd after).
+    /// @brief Bonus for functions with one call site and subsequent DCE potential.
     unsigned singleUseBonus = 10;
 
-    /// Bonus for very small functions (<=8 instructions).
+    /// @brief Bonus for functions containing at most eight instructions.
     unsigned tinyFunctionBonus = 16;
 
-    /// Maximum total instruction count growth allowed per module.
+    /// @brief Maximum total instruction-count growth allowed per module.
     /// Raised from 1000 to 2000 to allow more aggressive inlining in O2
     /// where multiple call sites benefit from constant-argument specialization.
     unsigned maxCodeGrowth = 2000;
 
-    /// Enable aggressive inlining mode.
+    /// @brief Enable bounded repeated inlining rounds and aggressive settings.
     bool aggressive = false;
 
-    /// Require multi-block callees to have a single return continuation.
+    /// @brief Require multi-block callees to have a single return continuation.
     bool requireSingleReturnForMultiBlock = true;
 };
 
@@ -100,6 +111,7 @@ class Inliner : public ModulePass {
     }
 
   private:
+    /// @brief Cost-model configuration retained by value for each run.
     InlineCostConfig config_;
 };
 

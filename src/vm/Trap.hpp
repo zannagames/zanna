@@ -13,6 +13,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares VM trap categories, structured diagnostics, token storage,
+///        formatting, and escalation helpers.
+/// @details Trap tokens use VM-owned storage during interpreted execution and a
+///          thread-local fallback otherwise.  Raising a trap enriches its error
+///          record with frame context before transferring to an installed
+///          handler or the runtime failure hook.
+
 #pragma once
 
 #include "support/source_location.hpp"
@@ -165,15 +173,15 @@ std::string vm_current_trap_message();
 void vm_raise(TrapKind kind, int32_t code = 0);
 
 /// @brief Raise a trap from an existing VmError record.
-/// @details Copies the provided error into the trap token storage and triggers
-///          the same handling logic as vm_raise(). Use this overload when the
-///          error record has already been constructed externally.
+/// @details Enriches the provided error with active instruction metadata,
+///          offers it to any installed VM handler, records frame information,
+///          and otherwise reports it through the runtime trap hook.
 /// @param error Fully populated error record to propagate.
 void vm_raise_from_error(const VmError &error);
 
 /// @brief Format a human-readable diagnostic message for a trap.
 /// @details Combines the error classification, code, and frame context into a
-///          multi-line string suitable for display to users or logging.
+///          single-line string suitable for display to users or logging.
 /// @param error Error record containing trap kind, code, and location info.
 /// @param frame Execution context (function name, block label, source line).
 /// @return Formatted diagnostic message string.

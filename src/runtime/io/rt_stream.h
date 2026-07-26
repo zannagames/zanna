@@ -30,6 +30,13 @@
 // src/runtime/io/rt_memstream.h
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares the unified managed Stream wrapper for files and memory.
+ * @details Defines backing discriminants, owning constructors, retained
+ * wrappers, position/length/EOF properties, byte and Bytes I/O, flushing,
+ * close semantics, backing extraction, and memory snapshot conversion.
+ */
 #pragma once
 
 #include "rt_string.h"

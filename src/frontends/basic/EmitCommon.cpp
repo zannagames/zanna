@@ -17,6 +17,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements source-aware convenience emission for BASIC lowering.
+/// @details Emit centralizes integer width conversions, overflow policy,
+///          bitwise construction, type selection, and propagation of staged
+///          source locations into the underlying Lowerer.
+
 #include "frontends/basic/EmitCommon.hpp"
 
 #include "frontends/basic/DiagnosticEmitter.hpp"

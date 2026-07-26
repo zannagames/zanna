@@ -86,6 +86,8 @@ struct Context {
 /// @details Converts the enum value used by the printer into the uppercase token expected by
 ///          canonical BASIC output.  The helper provides a default branch so unexpected enum
 ///          values still produce a sensible fallback during debugging.
+/// @param ty BASIC scalar type tag to render.
+/// @return Static uppercase type keyword.
 inline const char *typeToString(Type ty) {
     switch (ty) {
         case Type::I64:
@@ -104,6 +106,8 @@ inline const char *typeToString(Type ty) {
 /// @details Maps the strongly-typed mode enum to the uppercase keyword that appears in BASIC
 ///          source.  The helper uses a defensive default return so unhandled enumeration
 ///          values degrade gracefully when new modes are introduced.
+/// @param mode File-open mode to render.
+/// @return Static uppercase OPEN mode keyword.
 inline const char *openModeToString(OpenStmt::Mode mode) {
     switch (mode) {
         case OpenStmt::Mode::Input:

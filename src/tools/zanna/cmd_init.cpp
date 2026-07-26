@@ -5,8 +5,12 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tools/zanna/cmd_init.cpp
-// Purpose: Implements `zanna init` to scaffold a new Zanna project.
+/// @file cmd_init.cpp
+/// @brief Implements safe Zia or BASIC project scaffolding for @c zanna init.
+///
+/// Project names are constrained before filesystem use, generated files are written beneath one
+/// newly created directory, and failures remove the partial scaffold. The printed run hint is
+/// shell-quoted for validated names.
 //
 //===----------------------------------------------------------------------===//
 
@@ -24,6 +28,9 @@
 namespace fs = std::filesystem;
 
 /// @brief Write a text file, returning false on failure.
+/// @param path Destination file.
+/// @param content Complete bytes to write.
+/// @return @c true after a complete write; otherwise @c false after printing a diagnostic.
 static bool writeFile(const fs::path &path, const std::string &content) {
     std::ofstream out(path, std::ios::binary);
     if (!out) {
@@ -74,6 +81,9 @@ static bool validateProjectName(const std::string &projectName) {
 /// @param value Raw argument text to quote.
 /// @return Either @p value unchanged or a single-quoted shell token.
 static std::string shellQuoteArgument(std::string_view value) {
+    /// @brief Test whether one shell-token byte can remain unquoted.
+    /// @param c Byte to inspect.
+    /// @return `true` for alphanumeric bytes or `_`, `-`, `.`, and `/`.
     const auto safeChar = [](char c) {
         const unsigned char uc = static_cast<unsigned char>(c);
         return std::isalnum(uc) || c == '_' || c == '-' || c == '.' || c == '/';
@@ -113,6 +123,10 @@ static void printInitUsage() {
               << "  -h, --help         Show this help\n";
 }
 
+/// @brief Parse options and scaffold a new single-entry Zanna project.
+/// @param argc Number of arguments following @c init.
+/// @param argv Argument vector.
+/// @return Zero on success or help; one on usage, validation, or filesystem failure.
 int cmdInit(int argc, char **argv) {
     std::string projectName;
     std::string lang = "zia";

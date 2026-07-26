@@ -64,7 +64,7 @@ constexpr LinkPlatform detectLinkPlatform() {
     return LinkPlatform::Linux;
 }
 
-/// Detect the default native link architecture for this build.
+/// @brief Detects the default native link architecture for this build.
 /// @details The generated platform capability header records which native
 ///          linker backends were compiled. When exactly one backend is present,
 ///          that backend is the only valid default. Multi-backend builds keep
@@ -170,7 +170,7 @@ enum class SectionClass : uint8_t {
     Other,     ///< Non-allocatable, debug, etc.
 };
 
-/// Check whether a Mach-O section name is ObjC metadata that must be preserved.
+/// @brief Checks whether a Mach-O section name is ObjC metadata that must be preserved.
 /// The ObjC runtime locates classes, selectors, protocols, etc. by section name.
 /// @param name Mach-O `segment,section` name.
 /// @return `true` for recognized Objective-C metadata namespaces.
@@ -179,7 +179,7 @@ inline bool isObjCSection(const std::string &name) {
            name.rfind("__TEXT,__objc_", 0) == 0 || name.rfind("__OBJC,", 0) == 0;
 }
 
-/// Check whether a Windows PE/COFF metadata section name must be preserved.
+/// @brief Checks whether a Windows PE/COFF metadata section name must be preserved.
 /// The PE loader and unwinder expect these sections to remain separately
 /// addressable so the exe writer can publish the matching data directories.
 /// @param name COFF section name.
@@ -204,7 +204,7 @@ inline bool isMachOConstDataSection(const std::string &name) {
     return name.rfind("__DATA_CONST,", 0) == 0 || name.rfind("__AUTH_CONST,", 0) == 0;
 }
 
-/// Check whether a Mach-O section contains dyld-discovered module initializer
+/// @brief Checks whether a Mach-O section contains dyld-discovered module initializer
 /// or terminator pointers. These names and their section-type flags must
 /// survive section merging so dyld invokes C/C++ global lifetime functions.
 /// @param name Mach-O `segment,section` name.
@@ -226,7 +226,7 @@ inline bool isPreservedNamedSection(const std::string &name) {
            isMachOConstDataSection(name) || isMachOModInitTermSection(name);
 }
 
-/// Symbols synthesized by the Windows native linker rather than imported from
+/// @brief Tests for symbols synthesized by the Windows native linker rather than imported from
 /// a DLL or provided by a runtime archive.
 /// @param name COFF symbol name.
 /// @return `true` for MSVC local stdio option-storage symbols.

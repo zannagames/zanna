@@ -31,6 +31,14 @@
 //        src/runtime/io/rt_path.h (path component splitting)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements bounded glob matching and directory traversal.
+ * @details Parses byte-oriented wildcard and class syntax, explores the
+ * finite pattern/text state space iteratively to avoid recursive blowup,
+ * applies platform separator and case rules, and enumerates direct or
+ * recursive matches without following directory links or reparse points.
+ */
 
 #include "rt_glob.h"
 
@@ -56,8 +64,11 @@
 #include <sys/stat.h>
 #endif
 
+/// @copydoc rt_trap_set_recovery()
 void rt_trap_set_recovery(jmp_buf *buf);
+/// @copydoc rt_trap_clear_recovery()
 void rt_trap_clear_recovery(void);
+/// @copydoc rt_trap_get_error()
 const char *rt_trap_get_error(void);
 
 //=============================================================================
@@ -195,6 +206,7 @@ static int glob_match_class(const char **pattern_ptr, char ch, int allow_slash) 
     return negate ? !matched : matched;
 }
 
+/** One pending position and separator-policy state in iterative glob matching. */
 typedef struct {
     size_t pi;
     size_t ti;

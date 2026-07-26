@@ -87,6 +87,11 @@ std::vector<const FieldDecl *> collectStructFieldDecls(Sema &sema, const std::st
 ///          string/list/map/set, and runtime-class `get_<Prop>` getters. Unknown fields fall
 ///          back to a zero value typed from sema (BUG-FE-006 safety net).
 LowerResult Lowerer::lowerField(FieldExpr *expr) {
+    /// @brief Reconstructs a dotted identifier/field expression name.
+    /// @param node Expression node to inspect.
+    /// @param[out] out Receives the reconstructed name.
+    /// @param self Recursive callback reference.
+    /// @return `true` when the expression is a pure name chain.
     auto dottedName = [](Expr *node, std::string &out, auto &self) -> bool {
         if (auto *ident = dynamic_cast<IdentExpr *>(node)) {
             out = ident->name;

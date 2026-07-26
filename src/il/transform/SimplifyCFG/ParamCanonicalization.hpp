@@ -20,6 +20,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares block-parameter and edge-argument canonicalization.
+ *
+ * @details The SimplifyCFG subtransform removes redundant or unused block
+ *          parameters and keeps every incoming edge's argument vector aligned
+ *          with the resulting block signature.
+ */
+
 #pragma once
 
 #include "il/transform/SimplifyCFG.hpp"

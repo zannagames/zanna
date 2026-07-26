@@ -14,6 +14,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares local elimination of redundant runtime ownership traffic.
+ *
+ * @details The function pass removes a balanced result-free retain/release pair
+ *          only when both calls act on the same value and every intervening
+ *          instruction is proven not to consume, expose, or perturb the
+ *          temporary ownership increment.
+ */
+
 #pragma once
 
 #include "il/transform/PassRegistry.hpp"

@@ -44,6 +44,9 @@ void ReplMetaCommands::registerCommand(
     const std::string &help,
     std::function<void(ReplSession &, const std::string &)> handler) {
     std::string normalizedName = name;
+    /// @brief Normalize one command-name byte to lowercase.
+    /// @param c Unsigned byte passed safely to the C locale classifier.
+    /// @return Lowercase representation of @p c.
     std::transform(normalizedName.begin(),
                    normalizedName.end(),
                    normalizedName.begin(),
@@ -78,6 +81,9 @@ bool ReplMetaCommands::tryHandle(const std::string &input, ReplSession &session)
     std::string cmdName = input.substr(cmdStart, cmdEnd - cmdStart);
 
     // Convert to lowercase for case-insensitive matching
+    /// @brief Normalize one parsed command-name byte to lowercase.
+    /// @param c Unsigned byte passed safely to the C locale classifier.
+    /// @return Lowercase representation of @p c.
     std::transform(cmdName.begin(), cmdName.end(), cmdName.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
     });

@@ -30,6 +30,14 @@
 //        src/runtime/io/rt_path_exe.c
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements layered embedded, ZPAK, and filesystem asset resolution.
+ * @details Serializes registry initialization and publication, discovers
+ * adjacent packs, normalizes logical names, snapshots and retains selected
+ * sources outside the lock, dispatches recognized formats to typed decoders,
+ * and supports concurrent mount, unmount, query, and load operations.
+ */
 
 #include "rt_asset.h"
 #include "rt_file_path.h"
@@ -48,9 +56,12 @@
 #include <wchar.h>
 #include <windows.h>
 
+/** Signature of the optional Win32 ordinal string comparison entry point. */
 typedef int(WINAPI *asset_compare_string_ordinal_fn)(LPCWCH, int, LPCWCH, int, BOOL);
 
+/** One-time initialization token for resolving the optional ordinal comparator. */
 static INIT_ONCE g_asset_compare_once = INIT_ONCE_STATIC_INIT;
+/** Dynamically resolved `CompareStringOrdinal` entry point, or NULL for fallback comparison. */
 static asset_compare_string_ordinal_fn g_asset_compare_string_ordinal = NULL;
 
 /// @brief Resolve CompareStringOrdinal without extending the native import table.
@@ -169,17 +180,25 @@ static wchar_t *asset_win_join_wide(const wchar_t *dir, const wchar_t *leaf) {
 // ─── External declarations ──────────────────────────────────────────────────
 
 #include "rt_trap.h"
+/// @copydoc rt_string_from_bytes()
 extern rt_string rt_string_from_bytes(const char *data, size_t len);
+/// @copydoc rt_string_cstr()
 extern const char *rt_string_cstr(rt_string s);
+/// @copydoc rt_string_len()
 extern size_t rt_string_len(rt_string s);
+/// @copydoc rt_const_cstr()
 extern rt_string rt_const_cstr(const char *s);
+/// @copydoc rt_bytes_from_raw()
 extern void *rt_bytes_from_raw(const uint8_t *data, size_t len);
 
 // Type-dispatched decoder (rt_asset_decode.c)
+/// @copydoc rt_asset_decode_typed()
 extern void *rt_asset_decode_typed(const char *name, const uint8_t *data, size_t size);
+/// @copydoc rt_asset_extension_is_typed()
 extern int rt_asset_extension_is_typed(const char *name);
 
 // Exe directory detection
+/// @copydoc rt_path_exe_dir_cstr()
 extern char *rt_path_exe_dir_cstr(void);
 
 /// @brief Duplicate a path in canonical/full form when the platform can resolve it.
@@ -242,15 +261,20 @@ static int asset_path_equal(const char *a, const char *b) {
 // When no assets are embedded, these defaults ensure clean linking.
 
 #if RT_PLATFORM_WINDOWS
+/** Link-time-overridable empty embedded-asset payload for Windows builds. */
 __declspec(selectany) const unsigned char zanna_asset_blob[1] = {0};
+/** Link-time-overridable byte size corresponding to @ref zanna_asset_blob. */
 __declspec(selectany) const unsigned long long zanna_asset_blob_size = 0;
 #else
+/** Weak empty embedded-asset payload replaced when a project embeds assets. */
 __attribute__((weak)) const unsigned char zanna_asset_blob[1] = {0};
+/** Weak byte size corresponding to @ref zanna_asset_blob. */
 __attribute__((weak)) const unsigned long long zanna_asset_blob_size = 0;
 #endif
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
+/** Maximum number of dynamically mounted filesystem ZPAK archives. */
 #define RT_ASSET_MAX_PACKS 32
 
 /// @brief Asset-registry initialization states guarded by @ref g_asset_lock.
@@ -272,8 +296,11 @@ static struct {
 } g_asset_mgr;
 
 #if RT_PLATFORM_WINDOWS
+/** One-time token used to construct the Windows registry lock. */
 static INIT_ONCE g_asset_lock_once = INIT_ONCE_STATIC_INIT;
+/** Windows critical section guarding @ref g_asset_mgr. */
 static CRITICAL_SECTION g_asset_lock;
+/** Condition signaled after registry initialization publishes or rolls back. */
 static CONDITION_VARIABLE g_asset_init_condition = CONDITION_VARIABLE_INIT;
 
 /// @brief `InitOnce` callback that initializes the asset manager critical section.
@@ -301,7 +328,9 @@ static void asset_unlock(void) {
     LeaveCriticalSection(&g_asset_lock);
 }
 #else
+/** POSIX mutex guarding @ref g_asset_mgr and initialization transitions. */
 static pthread_mutex_t g_asset_lock = PTHREAD_MUTEX_INITIALIZER;
+/** POSIX condition signaled after registry initialization completes or rolls back. */
 static pthread_cond_t g_asset_init_condition = PTHREAD_COND_INITIALIZER;
 
 /// @brief Acquire the asset-manager lock (POSIX mutex).

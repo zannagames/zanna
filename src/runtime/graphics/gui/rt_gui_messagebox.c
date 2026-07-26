@@ -25,6 +25,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements localizable message boxes, prompts, and reusable dialog controllers.
+ *
+ * @details The runtime provides compatibility blocking helpers and explicit
+ *          asynchronous state machines, maps stable semantic button roles,
+ *          preserves accepted-empty prompt results through Option values, and
+ *          authenticates managed wrappers while coordinating modal ownership
+ *          with the GUI application's normal polling and rendering loop.
+ */
+
 #include "rt_gui_internal.h"
 #include "rt_option.h"
 #include "rt_platform.h"
@@ -36,6 +47,7 @@
 // Phase 5: MessageBox Dialog
 //=============================================================================
 
+/// @brief Magic value authenticating live managed MessageBox controller data.
 #define RT_MESSAGEBOX_DATA_MAGIC UINT64_C(0x52544D5347424F58)
 
 /// @brief Return the active GUI app for message box hosting (falls back to `s_current_app`).
@@ -259,10 +271,10 @@ int64_t rt_messagebox_confirm(rt_string title, rt_string message) {
     return (result == VG_DIALOG_RESULT_OK) ? 1 : 0;
 }
 
-// Prompt commit callback data
+/// @brief Borrowed state supplied to the synchronous prompt commit callback.
 typedef struct {
-    uint64_t magic;
-    vg_dialog_t *dialog;
+    uint64_t magic;       ///< Reserved callback-state authentication value.
+    vg_dialog_t *dialog;  ///< Borrowed prompt dialog closed on Enter.
 } rt_prompt_commit_data_t;
 
 /// @brief Text-input `on_commit` callback — closes the prompt dialog as OK when Enter is pressed.
@@ -390,29 +402,31 @@ void *rt_messagebox_prompt_option(rt_string title, rt_string message) {
     return option;
 }
 
-// Custom MessageBox structure for tracking state
+/// @brief Managed MessageBox controller state and owned custom-button metadata.
 typedef struct {
-    uint64_t magic;
-    vg_dialog_t *dialog;
-    int64_t result;
-    int64_t status;
-    const char *error;
-    uint64_t completed_edges;
-    int64_t default_button;
-    int has_default_button;
-    int64_t cancel_button;
-    int has_cancel_button;
-    rt_gui_app_t *owner_app;
-    // Custom button tracking for rt_messagebox_add_button
-    vg_dialog_button_def_t *custom_buttons;
-    int64_t *custom_button_ids;
-    int64_t *custom_button_roles;
-    size_t custom_button_count;
-    size_t custom_button_cap;
+    uint64_t magic;        ///< Must equal @ref RT_MESSAGEBOX_DATA_MAGIC while live.
+    vg_dialog_t *dialog;   ///< Owned lower dialog, or NULL when not constructed.
+    int64_t result;        ///< Stable terminal button/result identifier.
+    int64_t status;        ///< Current controller lifecycle status.
+    const char *error;     ///< Borrowed static error text for the latest failure.
+    uint64_t completed_edges; ///< Number of newly observable completion transitions.
+    int64_t default_button; ///< Stable ID activated by Enter.
+    int has_default_button; ///< Nonzero when @ref default_button is configured.
+    int64_t cancel_button;  ///< Stable ID activated by Escape or close.
+    int has_cancel_button;  ///< Nonzero when @ref cancel_button is configured.
+    rt_gui_app_t *owner_app; ///< Borrowed app that owns modal routing.
+    vg_dialog_button_def_t *custom_buttons; ///< Owned lower button definitions.
+    int64_t *custom_button_ids; ///< Stable IDs parallel to @ref custom_buttons.
+    int64_t *custom_button_roles; ///< Semantic roles parallel to @ref custom_buttons.
+    size_t custom_button_count; ///< Number of initialized custom-button entries.
+    size_t custom_button_cap; ///< Allocated capacity of every parallel button array.
 } rt_messagebox_data_t;
 
+/// @brief Global registry authenticating opaque MessageBox wrapper handles.
 static rt_messagebox_data_t **s_messagebox_wrappers = NULL;
+/// @brief Number of live entries in @ref s_messagebox_wrappers.
 static size_t s_messagebox_wrapper_count = 0;
+/// @brief Allocated registry capacity.
 static size_t s_messagebox_wrapper_cap = 0;
 
 /// @brief Record a wrapper in the global message-box registry (idempotent).

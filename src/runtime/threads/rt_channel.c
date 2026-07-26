@@ -30,6 +30,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Bounded FIFO and synchronous rendezvous channels for runtime objects.
+/// @details A monitor serializes channel state, while short GC mutator barriers
+///          publish or remove strong item edges. Timed operations use one
+///          absolute deadline across monitor acquisition and condition waits.
+
 #include "rt_channel.h"
 
 #include "rt_gc.h"
@@ -72,12 +78,19 @@ typedef struct channel_impl {
 // Forward Declarations
 //=============================================================================
 
+/// @brief Finalize a channel and release its monitor, buffer, and retained items.
+/// @param obj Channel payload to finalize; null is ignored.
 static void channel_finalizer(void *obj);
 
 #include "rt_trap.h"
 
+/// @brief Install a jump target for recovering a runtime trap on this thread.
+/// @param buf Recovery buffer to install.
 void rt_trap_set_recovery(jmp_buf *buf);
+/// @brief Clear the current thread's installed trap recovery target.
 void rt_trap_clear_recovery(void);
+/// @brief Read the current thread's most recent trap diagnostic.
+/// @return Borrowed null-terminated diagnostic text, or null.
 const char *rt_trap_get_error(void);
 
 #if defined(_WIN32)
@@ -91,6 +104,8 @@ typedef struct {
 ///          relative timeout into a fixed point that survives spurious
 ///          wakeups during the wait loop. Saturates at the per-platform
 ///          maximum so an absurdly large @p ms can't roll over the clock.
+/// @param ms Relative timeout in milliseconds; nonpositive values add no time.
+/// @return Saturating absolute Windows tick deadline.
 static channel_deadline channel_deadline_from_now(int64_t ms) {
     channel_deadline d;
     ULONGLONG now = GetTickCount64();
@@ -105,6 +120,8 @@ static channel_deadline channel_deadline_from_now(int64_t ms) {
 ///          single == 0 check rather than a delta comparison. Saturates
 ///          at INT64_MAX for very large remaining intervals so the result
 ///          fits a signed return without overflow.
+/// @param d Absolute Windows tick deadline.
+/// @return Whole milliseconds remaining, clamped to 0..INT64_MAX.
 static int64_t channel_remaining_ms(channel_deadline d) {
     ULONGLONG now = GetTickCount64();
     if (now >= d.deadline)
@@ -124,6 +141,8 @@ typedef struct {
 ///          relative timeout into a fixed point that survives spurious
 ///          wakeups during the wait loop. Saturates at the per-platform
 ///          maximum so an absurdly large @p ms can't roll over the clock.
+/// @param ms Relative timeout in milliseconds; nonpositive values add no time.
+/// @return Saturating absolute POSIX deadline and the clock used to create it.
 static channel_deadline channel_deadline_from_now(int64_t ms) {
     channel_deadline d;
     memset(&d, 0, sizeof(d));
@@ -158,6 +177,8 @@ static channel_deadline channel_deadline_from_now(int64_t ms) {
 ///          single == 0 check rather than a delta comparison. Saturates
 ///          at INT64_MAX for very large remaining intervals so the result
 ///          fits a signed return without overflow.
+/// @param d Absolute POSIX deadline and its associated clock.
+/// @return Whole milliseconds remaining, clamped to 0..INT64_MAX.
 static int64_t channel_remaining_ms(channel_deadline d) {
     struct timespec now;
     memset(&now, 0, sizeof(now));
@@ -188,6 +209,7 @@ static int64_t channel_remaining_ms(channel_deadline d) {
 ///          allocation, then releases the monitor object. Safe to call
 ///          on a partially-initialized channel — every step NULL-checks
 ///          its target.
+/// @param obj Channel payload to finalize; null is ignored.
 static void channel_finalizer(void *obj) {
     channel_impl *ch = (channel_impl *)obj;
     if (!ch)
@@ -258,6 +280,7 @@ static void channel_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
 /// @brief Release a retained channel reference; free the impl when refcount hits zero.
 /// @details Used by entry points that took a temporary ref for the duration of
 ///          a blocking wait. NULL @p obj is a no-op.
+/// @param obj Retained channel or other runtime-object reference, or null.
 static void channel_release_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
@@ -266,6 +289,7 @@ static void channel_release_object(void *obj) {
 /// @brief Release a retained item from the channel's ring buffer when it's no longer reachable.
 /// @details Same shape as channel_release_object but named for clarity at
 ///          item-popping sites. NULL @p item is a no-op.
+/// @param item Retained channel-item reference, or null.
 static void channel_release_item(void *item) {
     if (item && rt_obj_release_check0(item))
         rt_obj_free(item);
@@ -275,6 +299,8 @@ static void channel_release_item(void *item) {
 /// @details The caller owns the Channel monitor and has already retained the
 ///          item. The short graph-mutator scope makes the pointer and logical
 ///          count visible atomically to cycle-collector traversal.
+/// @param ch Locked synchronous channel with an empty handoff slot.
+/// @param item Retained item to publish, possibly null.
 static void channel_publish_sync_locked(channel_impl *ch, void *item) {
     rt_gc_mutator_enter();
     ch->buffer[0] = item;
@@ -285,6 +311,8 @@ static void channel_publish_sync_locked(channel_impl *ch, void *item) {
 /// @brief Publish one retained item at the buffered Channel's FIFO tail.
 /// @details Pointer, tail, and count updates share one collector barrier so a
 ///          traversal observes either the old ring or the complete new edge.
+/// @param ch Locked buffered channel with available capacity.
+/// @param item Retained item to enqueue, possibly null.
 static void channel_publish_buffered_locked(channel_impl *ch, void *item) {
     rt_gc_mutator_enter();
     ch->buffer[ch->tail] = item;
@@ -297,6 +325,8 @@ static void channel_publish_buffered_locked(channel_impl *ch, void *item) {
 /// @details No refcount is changed: the Channel's owned reference becomes the
 ///          receiver's reference. The graph barrier protects slot removal from
 ///          concurrent cycle traversal.
+/// @param ch Locked synchronous channel with a published handoff.
+/// @return Transferred item reference, possibly null.
 static void *channel_take_sync_locked(channel_impl *ch) {
     rt_gc_mutator_enter();
     void *item = ch->buffer[0];
@@ -309,6 +339,8 @@ static void *channel_take_sync_locked(channel_impl *ch) {
 /// @brief Remove and transfer the oldest buffered Channel item.
 /// @details Advances the FIFO head and removes the corresponding strong graph
 ///          edge in one short collector-mutator scope.
+/// @param ch Locked nonempty buffered channel.
+/// @return Transferred oldest item reference, possibly null.
 static void *channel_take_buffered_locked(channel_impl *ch) {
     rt_gc_mutator_enter();
     void *item = ch->buffer[ch->head];
@@ -321,6 +353,9 @@ static void *channel_take_buffered_locked(channel_impl *ch) {
 
 /// @brief Snapshot the current trap error message into @p buffer (or
 ///        @p fallback if none) so it survives lock cleanup before re-raise.
+/// @param buffer Destination character array.
+/// @param buffer_size Destination capacity including its terminator.
+/// @param fallback Required message when no trap diagnostic is available.
 static void channel_save_trap_error(char *buffer, size_t buffer_size, const char *fallback) {
     const char *err = rt_trap_get_error();
     snprintf(buffer, buffer_size, "%s", err && err[0] ? err : fallback);
@@ -329,6 +364,11 @@ static void channel_save_trap_error(char *buffer, size_t buffer_size, const char
 /// @brief Increment a waiter counter while holding the channel monitor.
 /// @details Waiter counters drive close/wakeup decisions. Letting them wrap would
 ///          make a live waiter invisible and can deadlock a matching operation.
+/// @param ch Locked channel whose monitor is released on overflow.
+/// @param channel Retained channel reference released on overflow.
+/// @param counter Waiter counter to increment.
+/// @param message Trap diagnostic used on overflow.
+/// @return 1 after incrementing, or 0 after cleaning up and trapping.
 static int8_t channel_increment_waiter_locked(channel_impl *ch,
                                               void *channel,
                                               int64_t *counter,
@@ -347,6 +387,11 @@ static int8_t channel_increment_waiter_locked(channel_impl *ch,
 /// @details The epoch is compared by senders and receivers to acknowledge an
 ///          unbuffered handoff. Wrapping it can make a fresh send look already
 ///          acknowledged, so overflow is a hard runtime error.
+/// @param ch Locked synchronous channel whose monitor is released on overflow.
+/// @param channel Retained channel reference released on overflow.
+/// @param out Receives the new epoch on success.
+/// @param message Trap diagnostic used on overflow.
+/// @return 1 after advancing, or 0 after cleaning up and trapping.
 static int8_t channel_next_sync_epoch_locked(channel_impl *ch,
                                              void *channel,
                                              int64_t *out,
@@ -363,7 +408,12 @@ static int8_t channel_next_sync_epoch_locked(channel_impl *ch,
 
 /// @brief Retain a runtime reference on @p item while the channel lock is held,
 ///        trap-recovering (with @p fallback message) on a retain failure.
-/// @return non-zero on success; 0 if the retain trapped (item not enqueued).
+/// @param ch Locked channel whose monitor is released on failure.
+/// @param channel Retained channel reference released on failure.
+/// @param item Runtime-managed item to retain, or null.
+/// @param waiting_counter Waiter count to decrement during failure cleanup, or null.
+/// @param fallback Diagnostic used if the captured trap has no message.
+/// @return 1 on success; 0 after cleanup and re-raising a retain trap.
 static int8_t channel_retain_item_locked(
     channel_impl *ch, void *channel, void *item, int64_t *waiting_counter, const char *fallback) {
     if (!item)
@@ -393,6 +443,10 @@ static int8_t channel_retain_item_locked(
 ///          NULL @p channel triggers a trap with @p null_msg iff
 ///          @p trap_on_null is set; otherwise returns NULL. Wrong-class
 ///          handles always trap with "Channel: invalid object".
+/// @param channel Candidate opaque Channel handle.
+/// @param null_msg Diagnostic for a trapped null handle, or null for the default.
+/// @param trap_on_null Nonzero to trap rather than quietly reject null.
+/// @return Validated channel payload, or null for an accepted null/trap path.
 static channel_impl *channel_require(void *channel, const char *null_msg, int8_t trap_on_null) {
     if (!channel) {
         if (trap_on_null)
@@ -409,7 +463,10 @@ static channel_impl *channel_require(void *channel, const char *null_msg, int8_t
 /// @brief Create a new channel for thread-safe message passing between threads.
 /// @details Capacity 0 creates a synchronous (unbuffered) channel where send blocks
 ///          until a receiver is ready. Capacity > 0 creates a buffered channel that
-///          holds up to that many items before blocking senders.
+///          holds up to that many items before blocking senders. Negative
+///          capacities become zero and values above 1,000,000 are clamped.
+/// @param capacity Requested item capacity.
+/// @return New runtime-managed Channel, or null on allocation/tracking failure.
 void *rt_channel_new(int64_t capacity) {
     // Minimum capacity of 1 for buffered channels
     // Capacity of 0 means synchronous (unbuffered) channel
@@ -481,6 +538,10 @@ void *rt_channel_new(int64_t capacity) {
 
 /// @brief Send an item into the channel, blocking if the buffer is full (or until a receiver is
 /// ready for sync channels).
+/// @details The channel retains @p item. Synchronous sends do not return until
+///          the handoff is acknowledged. Closing before completion traps.
+/// @param channel Nonnull Channel handle.
+/// @param item Runtime-managed item to send, or null.
 void rt_channel_send(void *channel, void *item) {
     channel_impl *ch = channel_require(channel, "Channel.Send: nil channel", 1);
     if (!ch)
@@ -594,6 +655,9 @@ void rt_channel_send(void *channel, void *item) {
 ///     `IsClosed()` check if it needs to distinguish "closed" from "full".
 /// The retained handoff and the channel object reference are both released cleanly on every
 /// failure path so a tight `TrySend` loop cannot leak.
+/// @param channel Channel handle; null returns 0.
+/// @param item Runtime-managed item to send, or null.
+/// @return 1 after publishing the item, otherwise 0.
 int8_t rt_channel_try_send(void *channel, void *item) {
     channel_impl *ch = channel_require(channel, NULL, 0);
     if (!ch)
@@ -642,7 +706,15 @@ int8_t rt_channel_try_send(void *channel, void *item) {
     return 1;
 }
 
-/// @brief Send with a timeout. Returns 1 if sent, 0 if the timeout elapsed or channel closed.
+/// @brief Send within a total timeout budget.
+/// @details The deadline covers monitor acquisition, capacity/rendezvous
+///          waiting, and synchronous acknowledgement. Nonpositive timeouts use
+///          @ref rt_channel_try_send. Closed channels return failure without a
+///          closed-send trap.
+/// @param channel Channel handle; null returns 0.
+/// @param item Runtime-managed item to send, or null.
+/// @param ms Timeout in milliseconds.
+/// @return 1 after buffered publication or acknowledged handoff, otherwise 0.
 int8_t rt_channel_send_for(void *channel, void *item, int64_t ms) {
     channel_impl *ch = channel_require(channel, NULL, 0);
     if (!ch)
@@ -779,7 +851,13 @@ int8_t rt_channel_send_for(void *channel, void *item, int64_t ms) {
 // Public API - Receive Operations
 //=============================================================================
 
-/// @brief Receive an item from the channel, blocking until one is available or the channel closes.
+/// @brief Receive the oldest item, blocking until availability or close.
+/// @details Removal transfers the Channel's retained item reference to the
+///          caller. A synchronous receive acknowledges its sender. Null is
+///          returned both for a transmitted null item and for closed-and-empty.
+/// @param channel Nonnull Channel handle.
+/// @return Transferred oldest item reference, or null for a null message or
+///         closed-and-empty channel.
 void *rt_channel_recv(void *channel) {
     channel_impl *ch = channel_require(channel, "Channel.Recv: nil channel", 1);
     if (!ch)
@@ -854,7 +932,13 @@ void *rt_channel_recv(void *channel) {
     return item; // Already retained by sender
 }
 
-/// @brief Try to receive an item without blocking. Returns 1 and sets *out if available.
+/// @brief Try to receive an item without blocking.
+/// @details With a nonnull output slot, success consumes the oldest item and
+///          transfers its retained reference. A null output slot only probes
+///          availability and never consumes or advertises a synchronous receiver.
+/// @param channel Channel handle; null returns 0.
+/// @param out Receives the transferred item, or null for a non-consuming probe.
+/// @return 1 when an item is available and, if requested, consumed; otherwise 0.
 int8_t rt_channel_try_recv(void *channel, void **out) {
     if (out)
         *out = NULL;
@@ -910,7 +994,11 @@ int8_t rt_channel_try_recv(void *channel, void **out) {
     return 1;
 }
 
-/// @brief Managed ABI wrapper for TryRecv. Returns the item, or NULL if none is available.
+/// @brief Return an immediately available item through the managed-value ABI.
+/// @param channel Channel handle.
+/// @return Transferred item reference, or null when none is available.
+/// @note A transmitted null item is indistinguishable from no item; use
+///       @ref rt_channel_try_recv_option when that distinction matters.
 void *rt_channel_try_recv_val(void *channel) {
     void *out = NULL;
     if (!rt_channel_try_recv(channel, &out))
@@ -948,7 +1036,15 @@ void *rt_channel_try_recv_option(void *channel) {
     return option;
 }
 
-/// @brief Receive with a timeout. Returns 1 and sets *out if received, 0 on timeout/close.
+/// @brief Receive or probe within a total timeout budget.
+/// @details The deadline covers monitor acquisition and condition waiting.
+///          Nonpositive timeouts delegate to @ref rt_channel_try_recv. A null
+///          output slot performs a non-consuming availability wait; synchronous
+///          probes deliberately do not advertise a rendezvous receiver.
+/// @param channel Channel handle; null returns 0.
+/// @param out Receives a transferred item, or null for a non-consuming probe.
+/// @param ms Timeout in milliseconds.
+/// @return 1 when an item becomes available, otherwise 0 on timeout or close.
 int8_t rt_channel_recv_for(void *channel, void **out, int64_t ms) {
     if (out)
         *out = NULL;
@@ -1089,7 +1185,10 @@ int8_t rt_channel_recv_for_discard(void *channel, int64_t ms) {
     return 1;
 }
 
-/// @brief Managed ABI wrapper for RecvFor. Returns the item, or NULL if timed out/closed.
+/// @brief Return an item received within a timeout through the managed-value ABI.
+/// @param channel Channel handle.
+/// @param ms Timeout in milliseconds.
+/// @return Transferred item reference, or null for timeout, close, or a null item.
 void *rt_channel_recv_for_val(void *channel, int64_t ms) {
     void *out = NULL;
     if (!rt_channel_recv_for(channel, &out, ms))
@@ -1101,7 +1200,10 @@ void *rt_channel_recv_for_val(void *channel, int64_t ms) {
 // Public API - Close
 //=============================================================================
 
-/// @brief Close the channel. Blocked senders/receivers are woken and return failure.
+/// @brief Close the channel and wake every blocked sender and receiver.
+/// @details Closing is idempotent. Buffered items remain available for draining;
+///          future sends fail and blocking sends trap when they observe close.
+/// @param channel Channel handle; null is ignored.
 void rt_channel_close(void *channel) {
     channel_impl *ch = channel_require(channel, NULL, 0);
     if (!ch)
@@ -1129,7 +1231,9 @@ void rt_channel_close(void *channel) {
 // Public API - Properties
 //=============================================================================
 
-/// @brief Get the number of items currently buffered in the channel.
+/// @brief Read the number of currently published items.
+/// @param channel Channel handle; null reports zero.
+/// @return Buffered item count or synchronous handoff occupancy.
 int64_t rt_channel_get_len(void *channel) {
     channel_impl *ch = channel_require(channel, NULL, 0);
     if (!ch)
@@ -1144,7 +1248,9 @@ int64_t rt_channel_get_len(void *channel) {
     return len;
 }
 
-/// @brief Get the channel's buffer capacity (0 = synchronous/unbuffered).
+/// @brief Read the channel's configured public capacity.
+/// @param channel Channel handle; null reports zero.
+/// @return Capacity, where zero identifies a synchronous channel.
 int64_t rt_channel_get_cap(void *channel) {
     channel_impl *ch = channel_require(channel, NULL, 0);
     if (!ch)
@@ -1157,7 +1263,9 @@ int64_t rt_channel_get_cap(void *channel) {
     return cap;
 }
 
-/// @brief Check whether the channel has been closed.
+/// @brief Check whether a channel has been closed.
+/// @param channel Channel handle.
+/// @return Closed flag; null is treated as closed.
 int8_t rt_channel_get_is_closed(void *channel) {
     channel_impl *ch = channel_require(channel, NULL, 0);
     if (!ch)
@@ -1170,7 +1278,9 @@ int8_t rt_channel_get_is_closed(void *channel) {
     return closed;
 }
 
-/// @brief Check whether the channel buffer is empty (no items waiting to be received).
+/// @brief Check whether no item is currently published.
+/// @param channel Channel handle.
+/// @return 1 when empty; null is treated as empty.
 int8_t rt_channel_get_is_empty(void *channel) {
     channel_impl *ch = channel_require(channel, NULL, 0);
     if (!ch)
@@ -1185,7 +1295,11 @@ int8_t rt_channel_get_is_empty(void *channel) {
     return empty;
 }
 
-/// @brief Check whether the channel buffer is full (send would block).
+/// @brief Check whether an immediate send would lack capacity or a receiver.
+/// @details A synchronous channel is full unless its handoff slot is empty and
+///          at least one receiver is already waiting.
+/// @param channel Channel handle.
+/// @return 1 when a send would block, otherwise 0; null reports 0.
 int8_t rt_channel_get_is_full(void *channel) {
     channel_impl *ch = channel_require(channel, NULL, 0);
     if (!ch)

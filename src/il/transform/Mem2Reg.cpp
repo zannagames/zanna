@@ -20,6 +20,18 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements bounded SROA and sealed-SSA memory-to-register promotion.
+ *
+ * @details Small aggregate allocas are first partitioned into non-overlapping,
+ *          consistently typed scalar fields. Promotable scalar allocas then use
+ *          a seal-and-rename algorithm that creates block parameters, wires
+ *          edge arguments, substitutes loads, removes stores/allocas, and
+ *          repairs remaining argument gaps. Each function is snapshotted so an
+ *          unrecoverable CFG edge rolls the transformation back atomically.
+ */
+
 #include "il/transform/Mem2Reg.hpp"
 #include "il/analysis/CFG.hpp"
 #include "il/analysis/Dominators.hpp"
@@ -51,11 +63,11 @@ constexpr unsigned kMaxSROAAllocaSize = 128;
 
 /// @brief One typed byte range discovered within an SROA candidate.
 struct SROAField {
-    /// Scalar type used consistently by every access to the range.
+    /// @brief Scalar type used consistently by every access to the range.
     Type type{};
-    /// Width of the range in bytes.
+    /// @brief Width of the range in bytes.
     unsigned size = 0;
-    /// Fresh allocation id assigned when scalar replacement commits.
+    /// @brief Fresh allocation id assigned when scalar replacement commits.
     unsigned allocaId = 0;
 };
 
@@ -63,19 +75,19 @@ struct SROAField {
 /// @details A candidate remains valid only while every observed use is a typed,
 ///          in-bounds scalar load/store or a constant-offset GEP.
 struct SROACandidate {
-    /// Block containing the original allocation.
+    /// @brief Block containing the original allocation.
     BasicBlock *block = nullptr;
-    /// Original instruction index, used only as an initial location hint.
+    /// @brief Original instruction index, used only as an initial location hint.
     std::size_t allocaIndex = 0;
-    /// Result id of the aggregate allocation.
+    /// @brief Result id of the aggregate allocation.
     unsigned baseId = 0;
-    /// Constant aggregate size in bytes.
+    /// @brief Constant aggregate size in bytes.
     unsigned allocSize = 0;
-    /// Whether all uses seen so far remain replaceable.
+    /// @brief Whether all uses seen so far remain replaceable.
     bool ok = false;
-    /// Byte offset for the base and each derived pointer temporary.
+    /// @brief Byte offset for the base and each derived pointer temporary.
     std::unordered_map<unsigned, unsigned> offsets; // temp id -> byte offset (includes base)
-    /// Scalar field information indexed by byte offset.
+    /// @brief Scalar field information indexed by byte offset.
     std::unordered_map<unsigned, SROAField> fields; // offset -> field info
 };
 
@@ -139,13 +151,21 @@ static void ensureValueName(Function &F, unsigned id, const std::string &name) {
 
 /// @brief Use and type facts collected for one allocation.
 struct AllocaInfo {
+    /// @brief Block containing the allocation instruction.
     BasicBlock *block{nullptr};
+    /// @brief Result identifier of the allocation pointer.
     unsigned id{0};
+    /// @brief Consistent scalar type observed across loads and stores.
     Type type{};
+    /// @brief Whether any use exposes the pointer beyond direct loads/stores.
     bool addressTaken{false};
+    /// @brief Whether at least one store initializes the allocation.
     bool hasStore{false};
+    /// @brief Whether all observed uses remain in the defining block.
     bool singleBlock{true};
+    /// @brief Whether all direct memory accesses agree on one scalar type.
     bool typeConsistent{true};           ///< False if loads/stores use different types.
+    /// @brief Non-defining blocks that contain uses of the allocation.
     std::vector<BasicBlock *> useBlocks; ///< Blocks (other than defining) containing uses.
 };
 
@@ -966,7 +986,10 @@ static bool runSROA(Function &F) {
                 }
             }
 
-            /// Classify one value use and invalidate its SROA owner on escape or mismatch.
+            /// @brief Classify one use and invalidate its SROA owner on escape or mismatch.
+            /// @param v Operand or branch argument being classified.
+            /// @param Inst Instruction containing the use.
+            /// @param operandIdx Operand position within @p Inst.
             auto classifyUse = [&](const Value &v, Instr &Inst, std::size_t operandIdx) {
                 if (v.kind != Value::Kind::Temp)
                     return;
@@ -1033,7 +1056,10 @@ static bool runSROA(Function &F) {
         ordered.reserve(cand.fields.size());
         for (auto &[off, field] : cand.fields)
             ordered.emplace_back(off, &field);
-        /// Order fields by byte offset so overlap and bounds checks are deterministic.
+        /// @brief Compare field records by ascending byte offset.
+        /// @param a First offset/field pair.
+        /// @param b Second offset/field pair.
+        /// @return True when @p a precedes @p b.
         std::sort(ordered.begin(), ordered.end(), [](const auto &a, const auto &b) {
             return a.first < b.first;
         });
@@ -1056,7 +1082,8 @@ static bool runSROA(Function &F) {
             continue;
 
         BasicBlock &B = *cand.block;
-        /// Relocate the aggregate alloca after earlier candidate rewrites shifted indices.
+        /// @brief Relocate the aggregate alloca after earlier rewrites shifted indices.
+        /// @return Current instruction index, or the block size when absent.
         auto findAllocaIndex = [&]() -> std::size_t {
             for (std::size_t i = 0; i < B.instructions.size(); ++i) {
                 Instr &I = B.instructions[i];
@@ -1077,7 +1104,10 @@ static bool runSROA(Function &F) {
         ordered.reserve(cand.fields.size());
         for (auto &[off, field] : cand.fields)
             ordered.emplace_back(off, &field);
-        /// Emit replacement field allocas in increasing byte-offset order.
+        /// @brief Compare replacement fields by ascending byte offset.
+        /// @param a First offset/field pair.
+        /// @param b Second offset/field pair.
+        /// @return True when @p a precedes @p b.
         std::sort(ordered.begin(), ordered.end(), [](const auto &a, const auto &b) {
             return a.first < b.first;
         });
@@ -1171,7 +1201,9 @@ void mem2reg(Module &M, Mem2RegStats *stats, bool enableParallel) {
     }
 
     analysis::CFGContext cfg(M);
-    /// Promote one EH-free function, rolling back if SSA edge repair fails.
+    /// @brief Promote one EH-free function, rolling back if SSA edge repair fails.
+    /// @param F Function to transform in place.
+    /// @param localStats Optional per-worker statistics accumulator.
     auto processFunction = [&](Function &F, Mem2RegStats *localStats) {
         if (hasExceptionHandling(F))
             return;
@@ -1247,7 +1279,7 @@ void mem2reg(Module &M, Mem2RegStats *stats, bool enableParallel) {
     std::vector<std::thread> workers;
     workers.reserve(workerCount);
     for (std::size_t workerIndex = 0; workerIndex < workerCount; ++workerIndex) {
-        /// Claim function indices atomically and accumulate statistics per worker.
+        /// @brief Claim function indices atomically and accumulate per-worker statistics.
         workers.emplace_back([&, workerIndex]() {
             for (;;) {
                 const std::size_t index = nextIndex.fetch_add(1, std::memory_order_relaxed);

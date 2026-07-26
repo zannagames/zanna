@@ -25,6 +25,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Defines the compile-time schema and lookup helper for every IL opcode.
+/// @details Entries mirror Opcode.def order and describe result/operand shapes,
+///          effects, successors, termination, and VM handler availability.
+
 #pragma once
 
 #include "il/core/OpcodeInfo.hpp"
@@ -49,6 +54,7 @@ struct OpSchemaEntry {
     bool hasHandler; ///< @brief True when a VM handler is implemented for this opcode.
 };
 
+/// @brief Opcode metadata table indexed by the underlying opcode value.
 inline constexpr std::array<OpSchemaEntry, il::core::kNumOpcodes> kOpSchema = {
     {
         {

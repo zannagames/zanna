@@ -27,6 +27,14 @@
 //        src/runtime/io/rt_path.h (path join for constructing temp file names)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements entropy-backed temporary paths and exclusive creation.
+ * @details Validates filename fragments, obtains 128 bits of platform entropy,
+ * resolves safe usable temp roots, builds portable candidate names, retries
+ * collisions, and creates non-inheritable files or owner-only directories
+ * without replacing existing filesystem entries.
+ */
 
 #include "rt_tempfile.h"
 
@@ -122,6 +130,7 @@ static int generate_unique_id(char *buffer, size_t size) {
 }
 
 #if defined(_WIN32)
+/** Signature shared by Windows temporary/current-directory query functions. */
 typedef DWORD(WINAPI *tempfile_path_query_fn)(DWORD, LPWSTR);
 
 /// @brief Return nonzero when a separator-terminated path is a Windows volume root.

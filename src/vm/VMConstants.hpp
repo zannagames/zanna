@@ -13,6 +13,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Defines compile-time limits, pool capacities, polling defaults, and
+///        debugger sentinels shared by the VM implementation.
+/// @details Keeping these values in one header ensures dispatch, frame
+///          allocation, interruption, and debugging code use identical
+///          thresholds without introducing runtime storage.
+
 #pragma once
 
 #include <cstddef>

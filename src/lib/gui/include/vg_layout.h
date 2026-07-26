@@ -531,6 +531,8 @@ void vg_layout_dock(vg_widget_t *container, float width, float height);
 /// @details Layout containers that keep side tables keyed by child pointer
 ///          must clear those entries when the generic widget hierarchy removes
 ///          the child. Application code should not call this directly.
+/// @param parent Former layout-container parent whose private metadata may reference the child.
+/// @param child Detached child whose Grid or Dock metadata must be removed.
 void vg_layout_on_child_detached(vg_widget_t *parent, vg_widget_t *child);
 
 #ifdef __cplusplus

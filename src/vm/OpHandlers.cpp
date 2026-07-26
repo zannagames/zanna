@@ -15,6 +15,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Materializes the generated VM opcode-handler table and the small
+///        execution-state-aware handler trampolines it references.
+/// @details Table ordering follows the canonical opcode registry, while load,
+///          store, and core integer trampolines attach the active execution
+///          state before delegating to shared implementations.
+
 #include "vm/OpHandlers.hpp"
 
 #include "il/core/Opcode.hpp"

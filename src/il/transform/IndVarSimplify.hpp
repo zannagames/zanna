@@ -18,6 +18,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares induction-variable canonicalization and strength reduction.
+ *
+ * @details The function pass recognizes well-structured single-latch counted
+ *          loops, normalizes supported comparisons and positive steps, and
+ *          replaces loop-local linear induction expressions with initialized,
+ *          incrementally updated loop-carried values. It relies on pipeline
+ *          loop and dominance analysis and rewrites functions in place.
+ */
+
 #pragma once
 
 #include "il/transform/PassRegistry.hpp"

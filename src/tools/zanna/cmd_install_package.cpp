@@ -5,22 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 
-//
-// File: src/tools/zanna/cmd_install_package.cpp
-// Purpose: Build, verify, sign, and inventory native Zanna toolchain
-//          installation artifacts from a validated staged tree.
-//
-// Key invariants:
-//   - Exactly one stage, build, or verification input mode is active.
-//   - Trusted Windows artifacts sign nested Zanna-owned PEs before hashing and
-//     sign the recursively verified outer setup executable last.
-//   - Release mode requires reproducible metadata and refuses weakened checks.
-//
-// Ownership/Lifetime:
-//   - Temporary staging and signing workspaces are RAII-owned and retained only
-//     when explicitly requested for diagnostics.
-//
-// Links: ToolchainInstallManifest.hpp, WindowsPackageBuilder.hpp, PkgVerify.hpp
+/// @file cmd_install_package.cpp
+/// @brief Builds, verifies, signs, and inventories native Zanna installation artifacts.
+///
+/// Exactly one staged-tree, build-tree, or verification-only input mode is active. Trusted Windows
+/// output signs nested Zanna-owned PE files before hashing and signs the recursively verified outer
+/// setup executable last. Release mode requires reproducible metadata and refuses weakened checks.
+///
+/// Temporary staging and signing workspaces are RAII-owned and retained only when explicitly
+/// requested for diagnostics.
 //
 //===----------------------------------------------------------------------===//
 
@@ -142,7 +135,13 @@ struct WindowsToolchainIdentity {
     std::string displayName{"Zanna Toolchain"};
 };
 
+/// @brief Validate the stable lowercase syntax used in Windows product identities.
+/// @param channel Candidate release-channel identifier.
+/// @throws std::runtime_error If length, boundary, casing, or characters are invalid.
 void validateWindowsReleaseChannel(std::string_view channel) {
+    /// @brief Test one release-channel byte for allowed lowercase syntax.
+    /// @param ch Byte to inspect.
+    /// @return `true` for lowercase ASCII letters, digits, or hyphen.
     if (channel.empty() || channel.size() > 24U ||
         !std::isalnum(static_cast<unsigned char>(channel.front())) ||
         !std::isalnum(static_cast<unsigned char>(channel.back())) ||
@@ -154,6 +153,9 @@ void validateWindowsReleaseChannel(std::string_view channel) {
     }
 }
 
+/// @brief Derive collision-safe Windows install identity from channel and explicit overrides.
+/// @param args Parsed release, channel, directory, and identifier options.
+/// @return Effective channel, install directory, product identifier, and display name.
 WindowsToolchainIdentity windowsToolchainIdentity(const InstallPackageArgs &args) {
     WindowsToolchainIdentity identity;
     identity.channel = args.windowsChannel.empty() ? (args.releaseMode ? "stable" : "development")
@@ -247,6 +249,7 @@ void installPackageUsage() {
 }
 
 /// @brief Return the host platform name ("macos"/"windows"/"linux").
+/// @return Stable lowercase host-platform token.
 std::string hostPlatformName() {
 #if ZANNA_HOST_MACOS
     return "macos";
@@ -258,18 +261,25 @@ std::string hostPlatformName() {
 }
 
 /// @brief Map a Zanna arch ("x64"/"arm64") to its Debian architecture name.
+/// @param arch Validated or candidate Zanna architecture.
+/// @return @c arm64 or @c amd64 package architecture.
+/// @throws std::runtime_error If the Zanna architecture is unsupported.
 std::string debArchFor(const std::string &arch) {
     zanna::pkg::validateToolchainArchitecture(arch);
     return arch == "arm64" ? "arm64" : "amd64";
 }
 
 /// @brief Map a Zanna arch ("x64"/"arm64") to its RPM architecture name.
+/// @param arch Validated or candidate Zanna architecture.
+/// @return @c aarch64 or @c x86_64 package architecture.
+/// @throws std::runtime_error If the Zanna architecture is unsupported.
 std::string rpmArchFor(const std::string &arch) {
     zanna::pkg::validateToolchainArchitecture(arch);
     return arch == "arm64" ? "aarch64" : "x86_64";
 }
 
 /// @brief Return true if the `rpmbuild` tool is available on PATH.
+/// @return Cached availability result for the current process.
 bool rpmbuildAvailable() {
     static std::optional<bool> cached;
     if (cached)
@@ -312,6 +322,8 @@ std::optional<bool> readCMakeCacheBool(const fs::path &cachePath, std::string_vi
 }
 
 /// @brief Read an environment variable, returning "" when it is unset.
+/// @param name Variable name, or null.
+/// @return UTF-8 value or an empty string when unavailable.
 std::string getenvOrEmpty(const char *name) {
     const auto value =
         zanna::environment::getUtf8(name ? std::string_view(name) : std::string_view{});
@@ -319,6 +331,8 @@ std::string getenvOrEmpty(const char *name) {
 }
 
 /// @brief Return true if the args request Windows Authenticode signing.
+/// @param args Parsed signing flags and explicit credentials.
+/// @return @c true when flags or supported environment variables request signing.
 bool windowsSigningRequested(const InstallPackageArgs &args) {
     return args.windowsSign || !args.windowsSignPfx.empty() ||
            !args.windowsSignThumbprint.empty() ||
@@ -327,6 +341,8 @@ bool windowsSigningRequested(const InstallPackageArgs &args) {
 }
 
 /// @brief Return true if the args request macOS package signing/notarization.
+/// @param args Parsed signing, notarization, and stapling options.
+/// @return @c true when flags or supported environment variables request a trust operation.
 bool macOSPackageSigningRequested(const InstallPackageArgs &args) {
     return !args.macosSignIdentity.empty() || !args.macosApplicationSignIdentity.empty() ||
            !args.macosNotaryProfile.empty() || args.macosStaple ||
@@ -371,6 +387,9 @@ fs::path defaultWindowsSigningScriptPath(const InstallPackageArgs &args) {
 /// @brief Authenticode-sign a Windows installer artifact when signing is requested.
 /// @details Resolves the PFX/thumbprint (falling back to ZANNA_WINDOWS_SIGN_*
 ///          env vars), invokes signtool, and optionally verifies the signature.
+/// @param args Parsed signing configuration.
+/// @param artifactPath Installer executable to sign in place.
+/// @param err Destination diagnostic stream.
 /// @return true on success or when no signing was requested; false on failure.
 bool signWindowsInstallerArtifact(const InstallPackageArgs &args,
                                   const fs::path &artifactPath,
@@ -477,6 +496,11 @@ bool signWindowsInstallerArtifact(const InstallPackageArgs &args,
 ///          helper writes one PE into a private temporary directory, signs and verifies
 ///          it using the same policy as the outer installer, then returns the signed
 ///          bytes. All signing sidecars and partial files are removed on every exit.
+/// @param args Parsed Windows signing policy.
+/// @param logicalName Payload name used for diagnostics and temporary-file naming.
+/// @param unsignedPe Original PE bytes.
+/// @return Signed and verified PE bytes.
+/// @throws std::runtime_error If staging, signing, verification, or reading fails.
 std::vector<uint8_t> signWindowsPeBytes(const InstallPackageArgs &args,
                                         std::string_view logicalName,
                                         const std::vector<uint8_t> &unsignedPe) {
@@ -510,6 +534,9 @@ std::vector<uint8_t> signWindowsPeBytes(const InstallPackageArgs &args,
 ///          (falling back to ZANNA_MACOS_* env vars), runs productsign, verifies
 ///          with pkgutil, and — when a notary profile is set — submits via
 ///          notarytool and optionally staples. Only available on macOS hosts.
+/// @param args Parsed signing, notarization, timeout, and stapling policy.
+/// @param artifactPath Package artifact to replace with signed output.
+/// @param err Destination diagnostic stream.
 /// @return true on success or when no signing was requested; false on failure.
 bool signMacOSPackageArtifact(const InstallPackageArgs &args,
                               const fs::path &artifactPath,
@@ -642,6 +669,9 @@ bool signMacOSPackageArtifact(const InstallPackageArgs &args,
 /// @details The contained `.pkg` carries installer signing; this function treats
 ///          the disk image as a release artifact by submitting it separately to
 ///          notarytool and stapling the ticket when requested.
+/// @param args Parsed notarization, timeout, and stapling policy.
+/// @param dmgPath Disk image to submit and assess.
+/// @param err Destination diagnostic stream.
 /// @return true on success or when no DMG notarization was requested.
 bool notarizeMacOSDmgArtifact(const InstallPackageArgs &args,
                               const fs::path &dmgPath,
@@ -727,16 +757,25 @@ bool notarizeMacOSDmgArtifact(const InstallPackageArgs &args,
 }
 
 /// @brief Read a big-endian uint16 at @p off (caller must bounds-check).
+/// @param data Input byte buffer.
+/// @param off Offset of the first byte.
+/// @return Decoded unsigned value.
 uint16_t readBE16(const std::vector<uint8_t> &data, size_t off) {
     return static_cast<uint16_t>((data[off] << 8) | data[off + 1]);
 }
 
 /// @brief Read a little-endian uint16 at @p off (caller must bounds-check).
+/// @param data Input byte buffer.
+/// @param off Offset of the first byte.
+/// @return Decoded unsigned value.
 uint16_t readLE16(const std::vector<uint8_t> &data, size_t off) {
     return static_cast<uint16_t>(data[off] | (data[off + 1] << 8));
 }
 
 /// @brief Read a little-endian uint32 at @p off (caller must bounds-check).
+/// @param data Input byte buffer.
+/// @param off Offset of the first byte.
+/// @return Decoded unsigned value.
 uint32_t readLE32(const std::vector<uint8_t> &data, size_t off) {
     return static_cast<uint32_t>(data[off]) | (static_cast<uint32_t>(data[off + 1]) << 8) |
            (static_cast<uint32_t>(data[off + 2]) << 16) |
@@ -744,12 +783,17 @@ uint32_t readLE32(const std::vector<uint8_t> &data, size_t off) {
 }
 
 /// @brief Read a big-endian uint32 at @p off (caller must bounds-check).
+/// @param data Input byte buffer.
+/// @param off Offset of the first byte.
+/// @return Decoded unsigned value.
 uint32_t readBE32(const std::vector<uint8_t> &data, size_t off) {
     return (static_cast<uint32_t>(data[off]) << 24) | (static_cast<uint32_t>(data[off + 1]) << 16) |
            (static_cast<uint32_t>(data[off + 2]) << 8) | static_cast<uint32_t>(data[off + 3]);
 }
 
 /// @brief Return an ASCII-lowercased copy of @p text.
+/// @param text Text to transform.
+/// @return Lowercased copy.
 std::string lowerAscii(std::string text) {
     for (char &c : text)
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -757,6 +801,8 @@ std::string lowerAscii(std::string text) {
 }
 
 /// @brief Return the lowercased filename with any trailing ".exe" stripped.
+/// @param filename Filename to normalize.
+/// @return Lowercase executable base name.
 std::string binaryBaseName(std::string filename) {
     filename = lowerAscii(std::move(filename));
     if (filename.size() > 4 && filename.substr(filename.size() - 4) == ".exe")
@@ -767,6 +813,8 @@ std::string binaryBaseName(std::string filename) {
 /// @brief Sanitize a version string into a portable filename component.
 /// @details Keeps alphanumerics and `.+~-`, replaces anything else with `_`, and
 ///          falls back to "0.0.0" when the result would be empty.
+/// @param version Package version text.
+/// @return Portable nonempty filename component.
 std::string portableArchiveVersionComponent(const std::string &version) {
     std::string out;
     out.reserve(version.size());
@@ -783,6 +831,7 @@ std::string portableArchiveVersionComponent(const std::string &version) {
 /// @brief Detect the platform/arch of a native executable from its header magic.
 /// @details Recognises ELF, PE (MZ/PE), and Mach-O (thin and fat/universal),
 ///          decoding the machine/cputype field into platform+arch.
+/// @param path Native executable to read.
 /// @return The detected info, or std::nullopt if the format is unrecognized.
 std::optional<NativeExecutableInfo> detectNativeExecutableInfo(const fs::path &path) {
     const auto data = zanna::pkg::readFile(path);
@@ -850,6 +899,7 @@ std::optional<NativeExecutableInfo> detectNativeExecutableInfo(const fs::path &p
 }
 
 /// @brief Detect the platform/arch from the manifest's staged `zanna` binary.
+/// @param manifest Validated staged-toolchain manifest.
 /// @return The detected info, or std::nullopt when no usable binary is found.
 std::optional<NativeExecutableInfo> detectManifestToolchainExecutableInfo(
     const zanna::pkg::ToolchainInstallManifest &manifest) {
@@ -867,6 +917,7 @@ std::optional<NativeExecutableInfo> detectManifestToolchainExecutableInfo(
 /// @brief Find the first staged PE that imports an MSVC debug CRT, if any.
 /// @details Scans each staged .exe/.dll's import table for the known debug-runtime
 ///          DLLs; used to reject (or warn about) non-redistributable debug builds.
+/// @param manifest Validated staged-toolchain manifest.
 /// @return A "<path> imports <dll>" description, or std::nullopt when none found.
 std::optional<std::string> firstWindowsDebugRuntimeReference(
     const zanna::pkg::ToolchainInstallManifest &manifest) {
@@ -890,6 +941,8 @@ std::optional<std::string> firstWindowsDebugRuntimeReference(
 }
 
 /// @brief Parse a --target value into an InstallPackageTarget.
+/// @param text Target format token.
+/// @param out Receives the parsed target on success.
 /// @return true on a recognized target name; false otherwise.
 bool parseTarget(const std::string &text, InstallPackageTarget &out) {
     if (text == "windows")
@@ -916,6 +969,8 @@ bool parseTarget(const std::string &text, InstallPackageTarget &out) {
 }
 
 /// @brief Parse an on/off-style boolean option value.
+/// @param text Boolean token.
+/// @param out Receives the parsed Boolean on success.
 /// @return true on a recognized on/off/true/false/1/0/yes/no token; false otherwise.
 bool parseOnOff(const std::string &text, bool &out) {
     if (text == "on" || text == "true" || text == "1" || text == "yes") {
@@ -950,6 +1005,8 @@ bool parsePositiveIntOption(std::string_view text, int &out) {
 
 /// @brief Return true if @p arg is an install-package option that takes a value.
 /// @details Used during argument parsing to know when to consume the next token.
+/// @param arg Option spelling to classify.
+/// @return @c true when the parser must consume a following value.
 bool installPackageOptionRequiresValue(const std::string &arg) {
     return arg == "--target" || arg == "--arch" || arg == "--stage-dir" || arg == "--build-dir" ||
            arg == "--config" || arg == "--verify-only" || arg == "--macos-pkg-version" ||
@@ -974,6 +1031,9 @@ bool installPackageOptionRequiresValue(const std::string &arg) {
 /// @details Handles the target/source options and the macOS/Windows signing and
 ///          installer options; prints usage and returns false on a malformed or
 ///          missing-value argument.
+/// @param argc Number of install-package arguments.
+/// @param argv Argument vector.
+/// @param args Output configuration.
 /// @return true on a successful parse.
 bool parseInstallPackageArgs(int argc, char **argv, InstallPackageArgs &args) {
     std::vector<std::string> expandedArgs;
@@ -1204,6 +1264,9 @@ bool parseInstallPackageArgs(int argc, char **argv, InstallPackageArgs &args) {
     }
     if (args.releaseMode) {
         const std::string epoch = getenvOrEmpty("SOURCE_DATE_EPOCH");
+        /// @brief Test one source-date epoch byte for decimal syntax.
+        /// @param c Byte to inspect.
+        /// @return `true` for `0` through `9`.
         if (epoch.empty() ||
             !std::all_of(epoch.begin(), epoch.end(), [](char c) { return c >= '0' && c <= '9'; })) {
             std::cerr << "error: --release requires numeric SOURCE_DATE_EPOCH for reproducible "
@@ -1256,6 +1319,9 @@ bool parseInstallPackageArgs(int argc, char **argv, InstallPackageArgs &args) {
 /// @brief Build the conventional output filename for a target from the manifest.
 /// @details Encodes the version/arch/platform per platform naming convention
 ///          (e.g. `zanna_<v>_<arch>.deb`); returns "" for the All meta-target.
+/// @param target Concrete artifact format.
+/// @param manifest Toolchain metadata supplying version, architecture, and platform.
+/// @return Conventional filename, or empty for meta-targets.
 std::string targetFileName(InstallPackageTarget target,
                            const zanna::pkg::ToolchainInstallManifest &manifest) {
     const std::string version = manifest.version.empty() ? "0.0.0" : manifest.version;
@@ -1284,6 +1350,8 @@ std::string targetFileName(InstallPackageTarget target,
 }
 
 /// @brief Stable machine-readable format name for an installer artifact target.
+/// @param target Concrete or meta artifact target.
+/// @return Stable format token, or @c unknown for meta-targets.
 std::string artifactFormatName(InstallPackageTarget target) {
     switch (target) {
         case InstallPackageTarget::Windows:
@@ -1319,6 +1387,8 @@ struct ArtifactRecord {
 };
 
 /// @brief Escape UTF-8 bytes for JSON strings without adding a dependency.
+/// @param text Unquoted bytes to encode.
+/// @return Escaped bytes without surrounding quotation marks.
 std::string artifactJsonEscape(std::string_view text) {
     std::ostringstream out;
     static constexpr char hex[] = "0123456789abcdef";
@@ -1358,6 +1428,12 @@ std::string artifactJsonEscape(std::string_view text) {
 }
 
 /// @brief Hash an artifact and return its immutable inventory record.
+/// @param path Artifact file to read.
+/// @param target Concrete artifact format.
+/// @param manifest Manifest supplying platform, architecture, and version.
+/// @param verified Whether post-build verification succeeded.
+/// @param trust Stable trust-policy description to own.
+/// @return Complete inventory record including SHA-256 and byte size.
 ArtifactRecord inventoryArtifact(const fs::path &path,
                                  InstallPackageTarget target,
                                  const zanna::pkg::ToolchainInstallManifest &manifest,
@@ -1378,6 +1454,10 @@ ArtifactRecord inventoryArtifact(const fs::path &path,
 }
 
 /// @brief Validate an adjacent SHA-256 sidecar when present or required.
+/// @param artifact Artifact whose @c .sha256 sidecar is checked.
+/// @param required Whether absence is an error.
+/// @param err Destination diagnostic stream.
+/// @return @c true when absent-but-optional or fully valid.
 bool verifyArtifactChecksum(const fs::path &artifact, bool required, std::ostream &err) {
     fs::path sidecar = artifact;
     sidecar += ".sha256";
@@ -1390,6 +1470,9 @@ bool verifyArtifactChecksum(const fs::path &artifact, bool required, std::ostrea
     }
     const std::vector<uint8_t> sidecarBytes = zanna::pkg::readFile(sidecar);
     const std::string text(sidecarBytes.begin(), sidecarBytes.end());
+    /// @brief Test one checksum byte for lowercase hexadecimal syntax.
+    /// @param c Byte to inspect.
+    /// @return `true` for `0` through `9` or `a` through `f`.
     if (text.size() < 66u || text[64] != ' ' || text[65] != ' ' ||
         !std::all_of(text.begin(), text.begin() + 64, [](char c) {
             return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
@@ -1418,10 +1501,20 @@ bool verifyArtifactChecksum(const fs::path &artifact, bool required, std::ostrea
 }
 
 /// @brief Write consolidated checksums and the release artifact JSON inventory.
+/// @param records Artifact records to sort and publish.
+/// @param directoryOutput Whether @p outputBase denotes the output directory.
+/// @param outputBase Selected output file or directory.
+/// @param manifestOverride Optional explicit inventory path.
+/// @return Written inventory path.
+/// @throws std::runtime_error On empty records, path collision, or atomic-write failure.
 fs::path writeArtifactInventory(std::vector<ArtifactRecord> records,
                                 bool directoryOutput,
                                 const fs::path &outputBase,
                                 const fs::path &manifestOverride) {
+    /// @brief Order artifact records by their output leaf names.
+    /// @param lhs Left-hand artifact.
+    /// @param rhs Right-hand artifact.
+    /// @return `true` when the UTF-8 filename of `lhs` precedes that of `rhs`.
     std::sort(records.begin(), records.end(), [](const auto &lhs, const auto &rhs) {
         return zanna::filesystem::pathToUtf8(lhs.path.filename()) <
                zanna::filesystem::pathToUtf8(rhs.path.filename());
@@ -1496,11 +1589,16 @@ fs::path writeArtifactInventory(std::vector<ArtifactRecord> records,
 /// @details Derives the expected install-relative paths from the manifest files,
 ///          adding the platform-specific layout prefixes and any file-association
 ///          metadata (.desktop/MIME entries). Used by post-build verification.
+/// @param target Concrete package format.
+/// @param manifest Validated staged-toolchain manifest.
 /// @return The list of required payload paths for @p target.
 std::vector<std::string> requiredPayloadPaths(
     InstallPackageTarget target, const zanna::pkg::ToolchainInstallManifest &manifest) {
     std::vector<std::string> paths;
     paths.reserve(manifest.files.size() + 1);
+    /// @brief Append Linux desktop and MIME metadata required by file associations.
+    /// @param prefix Package-layout prefix prepended to emitted paths.
+    /// @param portable Whether paths use the portable `share/` layout.
     auto appendLinuxAssociationMetadata = [&](const std::string &prefix, bool portable) {
         if (manifest.fileAssociations.empty())
             return;
@@ -1652,6 +1750,9 @@ bool requireListedPayloadPaths(const std::set<std::string> &actual,
 /// @brief Return the gzip tar payload appended to a Zanna Linux bundle.
 /// @details Generated bundles are shell stubs followed by
 ///          kLinuxRuntimePayloadMarker and a gzip-compressed tar tree.
+/// @param data Complete Linux bundle bytes.
+/// @param err Stream that receives a diagnostic when the marker or payload is missing.
+/// @return The bytes following the payload marker, or an empty vector on failure.
 std::vector<uint8_t> linuxBundlePayloadBytes(const std::vector<uint8_t> &data, std::ostream &err) {
     const std::string marker = std::string(zanna::pkg::kLinuxRuntimePayloadMarker) + "\n";
     const auto markerIt =
@@ -1746,8 +1847,13 @@ bool parseRpmHeaderAt(const std::vector<uint8_t> &data,
 }
 
 /// @brief Find the header index entry with the given RPM @p tag.
+/// @param header Parsed RPM header whose index is searched.
+/// @param tag Numeric RPM tag identifier to locate.
 /// @return Pointer to the entry, or nullptr if the tag is absent.
 const RpmHeaderEntry *findRpmHeaderEntry(const RpmHeaderView &header, uint32_t tag) {
+    /// @brief Match one RPM header entry by numeric tag.
+    /// @param entry Candidate header entry.
+    /// @return `true` when its tag equals the requested tag.
     auto it = std::find_if(header.entries.begin(), header.entries.end(), [&](const auto &entry) {
         return entry.tag == tag;
     });
@@ -1757,6 +1863,11 @@ const RpmHeaderEntry *findRpmHeaderEntry(const RpmHeaderView &header, uint32_t t
 /// @brief Read a STRING/STRING_ARRAY/I18NSTRING RPM tag value into @p values.
 /// @details Validates the entry type and reads NUL-terminated strings from the
 ///          header data store, bounds-checking against truncation.
+/// @param data Complete RPM file bytes containing the header store.
+/// @param header Parsed header that owns @p entry.
+/// @param entry String-valued header entry to decode.
+/// @param values Output vector replaced with the decoded strings.
+/// @param err Stream that receives type and bounds diagnostics.
 /// @return true on success; false (with @p err set) on a type/bounds error.
 bool readRpmStringArray(const std::vector<uint8_t> &data,
                         const RpmHeaderView &header,
@@ -1794,6 +1905,11 @@ bool readRpmStringArray(const std::vector<uint8_t> &data,
 }
 
 /// @brief Read an INT32 RPM tag value array into @p values (big-endian).
+/// @param data Complete RPM file bytes containing the header store.
+/// @param header Parsed header that owns @p entry.
+/// @param entry INT32-valued header entry to decode.
+/// @param values Output vector replaced with the decoded integers.
+/// @param err Stream that receives type and bounds diagnostics.
 /// @return true on success; false (with @p err set) on a type/bounds error.
 bool readRpmInt32Array(const std::vector<uint8_t> &data,
                        const RpmHeaderView &header,
@@ -1819,7 +1935,9 @@ bool readRpmInt32Array(const std::vector<uint8_t> &data,
     return true;
 }
 
-/// @brief Normalize an RPM-listed path (strip leading slashes and a leading "./").
+/// @brief Normalize an RPM-listed path by stripping leading slashes and a leading "./".
+/// @param path Path spelling read from an RPM filename tag.
+/// @return The normalized package-relative path.
 std::string normalizeRpmListedPath(std::string path) {
     while (!path.empty() && path.front() == '/')
         path.erase(path.begin());
@@ -1831,6 +1949,10 @@ std::string normalizeRpmListedPath(std::string path) {
 /// @brief Reconstruct the installed file paths recorded in an .rpm header.
 /// @details Combines the BASENAMES, DIRINDEXES, and DIRNAMES tags into full
 ///          normalized paths for post-build payload verification.
+/// @param data Complete RPM file bytes.
+/// @param payloadPaths Optional output set replaced with the reconstructed paths;
+///        when null, only structural header and payload validation is performed.
+/// @param err Stream that receives RPM validation diagnostics.
 /// @return true when the path tags were read and assembled successfully.
 bool readRpmPayloadPaths(const std::vector<uint8_t> &data,
                          std::set<std::string> *payloadPaths,
@@ -1935,6 +2057,10 @@ bool readRpmPayloadPaths(const std::vector<uint8_t> &data,
 /// @details Dispatches to the format-specific PkgVerify routine; when @p manifest
 ///          is provided, additionally asserts the required payload paths are
 ///          present (using the RPM header reader for .rpm).
+/// @param artifact Package artifact to read and validate.
+/// @param target Concrete package format expected for @p artifact.
+/// @param err Stream that receives format-specific validation diagnostics.
+/// @param manifest Optional staged-toolchain manifest used to verify payload completeness.
 /// @return true when the artifact is valid (and complete, if a manifest is given).
 bool verifyArtifact(const fs::path &artifact,
                     InstallPackageTarget target,
@@ -2042,7 +2168,10 @@ bool verifyArtifact(const fs::path &artifact,
 
 /// @brief Infer the package target from an artifact's filename extension.
 /// @details Maps .exe/.pkg/.dmg/.deb/.rpm/.run/.tar.gz/.tgz to their targets for
-///          `--verify-only`. @return true on a recognized extension.
+///          `--verify-only`.
+/// @param path Artifact path whose filename extension is inspected.
+/// @param target Output target set when the extension is recognized.
+/// @return true on a recognized extension; false when no supported suffix matches.
 bool inferVerifyTargetFromPath(const fs::path &path, InstallPackageTarget &target) {
     const std::string name = lowerAscii(zanna::filesystem::pathToUtf8(path.filename()));
     if (name.size() >= 4 && name.substr(name.size() - 4) == ".exe")
@@ -2070,7 +2199,9 @@ bool inferVerifyTargetFromPath(const fs::path &path, InstallPackageTarget &targe
 ///          the destructor recursively deletes it (used for auto-generated stages).
 class AutoStageCleanup {
   public:
-    /// @brief Construct a guard for @p path; cleanup runs only when @p enabled.
+    /// @brief Construct a guard for a potentially temporary staging directory.
+    /// @param path Directory to remove if the guard remains enabled.
+    /// @param enabled Whether scope-exit cleanup is active initially.
     AutoStageCleanup(fs::path path, bool enabled) : path_(std::move(path)), enabled_(enabled) {}
 
     /// @brief Remove the staging directory unless the guard was dismissed.
@@ -2094,8 +2225,11 @@ class AutoStageCleanup {
 /// @brief Remove a partially generated release artifact set unless explicitly committed.
 class ReleaseArtifactCleanup {
   public:
+    /// @brief Construct a release-output cleanup guard.
+    /// @param enabled Whether tracked outputs should be removed on scope exit.
     explicit ReleaseArtifactCleanup(bool enabled) : enabled_(enabled) {}
 
+    /// @brief Remove tracked artifacts, sidecars, and auxiliary files when enabled.
     ~ReleaseArtifactCleanup() {
         if (!enabled_)
             return;
@@ -2122,16 +2256,21 @@ class ReleaseArtifactCleanup {
         }
     }
 
+    /// @brief Register an artifact and its conventional sidecars for possible cleanup.
+    /// @param path Primary artifact path to track.
     void trackArtifact(const fs::path &path) {
         if (enabled_)
             paths_.push_back(path);
     }
 
+    /// @brief Register a standalone output such as an aggregate manifest for cleanup.
+    /// @param path Auxiliary output path to track.
     void trackAuxiliary(const fs::path &path) {
         if (enabled_)
             auxiliaryPaths_.push_back(path);
     }
 
+    /// @brief Commit the tracked output set by disabling scope-exit cleanup.
     void dismiss() {
         enabled_ = false;
     }
@@ -2145,6 +2284,10 @@ class ReleaseArtifactCleanup {
 /// @brief Serialize release writers targeting the same output directory.
 class ReleaseOutputLock {
   public:
+    /// @brief Acquire a directory-scoped release-output lock when requested.
+    /// @param directory Output directory in which the lock directory is created.
+    /// @param enabled Whether locking is required for this operation.
+    /// @throws std::runtime_error if the lock directory cannot be acquired.
     ReleaseOutputLock(const fs::path &directory, bool enabled) {
         if (!enabled)
             return;
@@ -2159,6 +2302,7 @@ class ReleaseOutputLock {
         }
     }
 
+    /// @brief Release an acquired output lock.
     ~ReleaseOutputLock() {
         if (!path_.empty()) {
             std::error_code ec;
@@ -2175,6 +2319,8 @@ class ReleaseOutputLock {
 ///          unique directory under --build-dir, optionally runs `cmake --build`,
 ///          then `cmake --install --prefix <stage>`; the directory is removed on
 ///          failure (and on success unless --keep-stage-dir was set).
+/// @param args Parsed command options controlling the input build and staging directory.
+/// @return Path to the caller-supplied or newly populated staging directory.
 /// @throws std::runtime_error on directory creation or cmake failure.
 fs::path ensureStageDir(const InstallPackageArgs &args) {
     if (!args.stageDir.empty())
@@ -2227,6 +2373,9 @@ fs::path ensureStageDir(const InstallPackageArgs &args) {
 /// @brief Return true if @p target is buildable for the staged @p platform.
 /// @details Tarball matches any platform; native formats require the matching
 ///          platform string.
+/// @param target Concrete package format to compare.
+/// @param platform Normalized platform name recorded in the staged manifest.
+/// @return true when the target can package that staged platform.
 bool targetMatchesStagedPlatform(InstallPackageTarget target, const std::string &platform) {
     switch (target) {
         case InstallPackageTarget::Windows:
@@ -2250,6 +2399,9 @@ bool targetMatchesStagedPlatform(InstallPackageTarget target, const std::string 
 /// @brief Expand the requested target into the concrete formats to build.
 /// @details A specific target maps to itself; the All meta-target expands to the
 ///          native format(s) for @p platform (deb+rpm on Linux) plus a tarball.
+/// @param target Requested concrete target or aggregate target.
+/// @param platform Normalized platform name recorded in the staged manifest.
+/// @return Ordered concrete package targets to generate.
 std::vector<InstallPackageTarget> selectedTargets(InstallPackageTarget target,
                                                   const std::string &platform) {
     if (target != InstallPackageTarget::All && target != InstallPackageTarget::AllAvailable)
@@ -2272,6 +2424,15 @@ std::vector<InstallPackageTarget> selectedTargets(InstallPackageTarget target,
 
 } // namespace
 
+/// @brief Build or verify distributable toolchain installation packages.
+/// @details Parses install-package options, prepares or consumes a staged toolchain,
+///          validates platform and release policy, builds each selected package,
+///          performs requested signing and verification, and writes artifact
+///          inventory/checksum metadata.
+/// @param argc Number of command arguments in @p argv.
+/// @param argv Command arguments excluding the top-level executable and subcommand.
+/// @return Zero on success; one for invalid options, policy failures, build/signing
+///         failures, or artifact-verification errors.
 int cmdInstallPackage(int argc, char **argv) {
     for (int i = 0; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -2553,6 +2714,9 @@ int cmdInstallPackage(int argc, char **argv) {
                             relative.begin(),
                             relative.end(),
                             relative.begin(),
+                            /// @brief Fold one staged path byte to lowercase.
+                            /// @param ch Byte to normalize.
+                            /// @return Lowercase representation converted back to `char`.
                             [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
                         if (relative == "bin/zanna-installer-host.exe") {
                             params.installerHostPath =
@@ -2573,6 +2737,11 @@ int cmdInstallPackage(int argc, char **argv) {
                             "bin/zanna-installer-cleanup.exe; reinstall the staged build");
                     }
                     if (windowsSigningRequested(args)) {
+                        /// @brief Sign one generated Windows toolchain PE payload.
+                        /// @param logicalName Logical payload name used in signing diagnostics.
+                        /// @param unsignedPe Unsigned PE bytes.
+                        /// @return Signed PE bytes.
+                        /// @throws std::runtime_error If the configured signing command fails.
                         params.peSigner = [&](std::string_view logicalName,
                                               const std::vector<uint8_t> &unsignedPe) {
                             return signWindowsPeBytes(args, logicalName, unsignedPe);

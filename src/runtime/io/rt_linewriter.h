@@ -28,6 +28,13 @@
 // Links: src/runtime/io/rt_linewriter.c (implementation), src/runtime/core/rt_string.h
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares the managed buffered text LineWriter API.
+ * @details Provides create/truncate and append construction, exact text and
+ * byte writes, configured newline emission and replacement, stdio flushing,
+ * and explicit close while retaining newline ownership transactionally.
+ */
 #pragma once
 
 #include "rt_string.h"

@@ -19,6 +19,14 @@
 //        src/runtime/graphics/2d/rt_pixels_internal.h (Pixels allocation)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements bounded GIF87a/GIF89a parsing, LZW decoding, and compositing.
+ * @details Validates logical-screen and image extents, reconstructs palette
+ * indices from GIF data sub-blocks, applies interlacing, transparency, and
+ * disposal semantics, and produces either managed Pixels frames or a
+ * malloc-owned first-frame RGBA buffer.
+ */
 
 #include "rt_gif.h"
 
@@ -38,17 +46,26 @@
 // GIF file reader
 //===----------------------------------------------------------------------===//
 
+/**
+ * @brief Cursor over an immutable, caller- or decoder-owned GIF byte buffer.
+ * @details Every reader helper advances @ref pos only within the half-open
+ * range `[0, len]`, allowing truncated structures to fail without an
+ * out-of-bounds access.
+ */
 typedef struct {
     const uint8_t *data;
     size_t len;
     size_t pos;
 } gif_reader_t;
 
+/** @name Decoder resource limits
+ * @{ */
 #define GIF_MAX_CANVAS_PIXELS ((size_t)64u * 1024u * 1024u)
 #define GIF_MAX_FILE_BYTES (INT64_C(100) * 1024 * 1024)
 #define GIF_MAX_DECODED_FRAME_BYTES ((size_t)512u * 1024u * 1024u)
 #define GIF_MAX_LZW_SUB_BLOCK_BYTES ((size_t)64u * 1024u * 1024u)
 #define GIF_PREVIOUS_CANVAS_RETAIN_PIXELS ((size_t)2u * 1024u * 1024u)
+/** @} */
 
 /// @brief Install a temporary runtime-trap recovery target for decoder file I/O.
 /// @param buf Jump buffer that receives a recovered trap.
@@ -110,8 +127,10 @@ static uint8_t *gif_read_file_bytes(const char *filepath, size_t *out_len) {
     return copy;
 }
 
+/** Largest root code width permitted by the GIF image-data grammar. */
 #define GIF_MAX_LZW_MIN_CODE_SIZE 8
 
+/** Failure category propagated by internal decode paths. */
 typedef enum {
     GIF_DECODE_FAILURE_NONE = 0,
     GIF_DECODE_FAILURE_GENERIC = 1,
@@ -254,15 +273,23 @@ static int gif_skip_sub_blocks(gif_reader_t *r) {
 // LZW Decompressor
 //===----------------------------------------------------------------------===//
 
+/** Maximum number of entries addressable by a twelve-bit GIF LZW code. */
 #define LZW_MAX_TABLE_SIZE 4096
+/** Maximum code width permitted by GIF LZW streams. */
 #define LZW_MAX_BITS 12
 
+/** One dictionary entry in the prefix-linked LZW string table. */
 typedef struct {
     uint16_t prefix; // index of prefix entry, or 0xFFFF for root entries
     uint8_t suffix;  // last byte of this string
     uint16_t length; // total string length
 } lzw_entry_t;
 
+/**
+ * @brief Mutable dictionary and bit-reader state for one GIF image.
+ * @details The table is reset by the stream's clear code, while the buffered
+ * bit fields consume the already-concatenated image-data sub-block payload.
+ */
 typedef struct {
     lzw_entry_t table[LZW_MAX_TABLE_SIZE];
     int table_size;

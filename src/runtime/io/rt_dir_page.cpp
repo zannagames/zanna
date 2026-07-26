@@ -17,6 +17,14 @@
 //        docs/adr/0148-bounded-directory-paging.md
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements bounded resumable directory pages with a small cursor cache.
+ * @details Normalizes roots, emits structured entry and diagnostic maps,
+ * resumes exact offsets from process-local iterators, bounds each page, and
+ * evicts least-recently-used cursors while retaining all runtime objects
+ * placed in returned maps and sequences.
+ */
 
 #include "rt_dir.h"
 
@@ -37,10 +45,18 @@ namespace fs = std::filesystem;
 
 namespace {
 
+/** Default maximum number of entries emitted when the caller supplies no useful limit. */
 constexpr int64_t kDefaultDirectoryPageSize = 128;
+/** Hard per-call entry limit used to keep enumeration bounded. */
 constexpr int64_t kMaximumDirectoryPageSize = 4096;
+/** Maximum number of resumable native iterators retained process-wide. */
 constexpr size_t kDirectoryPageCursorCacheSize = 8;
 
+/**
+ * @brief Cached native iterator and logical resume position for one directory.
+ * @details Cursor nodes are detached under the cache lock before iteration,
+ * then either destroyed or reinserted with a refreshed LRU timestamp.
+ */
 struct DirectoryPageCursor {
     std::string key;
     fs::directory_iterator iterator;
@@ -52,10 +68,14 @@ struct DirectoryPageCursor {
     DirectoryPageCursor *next{nullptr};
 };
 
+/** Head of the singly linked process-local cursor cache. */
 DirectoryPageCursor *g_directoryPageCursorHead = nullptr;
+/** Spin lock protecting cursor-cache links and lookup/eviction decisions. */
 std::atomic_flag g_directoryPageCursorLock = ATOMIC_FLAG_INIT;
+/** Monotonic counter used to stamp cursor recency. */
 std::atomic<uint64_t> g_directoryPageCursorClock{0};
 
+/** RAII owner of one acquisition of @ref g_directoryPageCursorLock. */
 struct DirectoryPageCursorLockGuard {
     /// @brief Acquire the process-local cursor-cache spin lock.
     /// @details The protected critical sections only link, unlink, find, or

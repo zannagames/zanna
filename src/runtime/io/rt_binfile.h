@@ -27,6 +27,13 @@
 // Links: src/runtime/io/rt_binfile.c (implementation), src/runtime/core/rt_string.h
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares managed seekable binary-file stream operations.
+ * @details Defines portable seek origins and the open, validation, bulk and
+ * byte I/O, positioning, sizing, flushing, EOF, and close contracts for
+ * GC-managed BinFile handles backed by native binary stdio streams.
+ */
 #pragma once
 
 #include <stdint.h>

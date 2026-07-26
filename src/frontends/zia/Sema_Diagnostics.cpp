@@ -98,6 +98,9 @@ void Sema::warn(WarningCode code, SourceLoc loc, const std::string &message) {
     if (suppressions_.isSuppressed(code, loc))
         return;
 
+    /// @brief Classifies warnings promoted by strict safety diagnostics.
+    /// @param warning Warning code to inspect.
+    /// @return `true` for a safety-critical warning.
     auto isSafetyCritical = [](WarningCode warning) {
         switch (warning) {
             case WarningCode::W008_MissingReturn:
@@ -211,6 +214,8 @@ std::optional<std::string> Sema::suggestSymbolName(const std::string &name) cons
     std::optional<std::string> best;
     size_t bestDistance = std::numeric_limits<size_t>::max();
 
+    /// @brief Considers a visible name as an edit-distance suggestion.
+    /// @param candidate Candidate spelling.
     auto consider = [&](const std::string &candidate) {
         if (candidate.empty() || candidate == name)
             return;

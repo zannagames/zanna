@@ -14,6 +14,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Defines shared help-detail selection and frontend option text.
+/// @details Standalone language drivers call the inline printer to keep common
+///          option spelling and explanations synchronized without duplicating
+///          static strings across tool executables.
+
 #pragma once
 
 #include <ostream>
@@ -23,6 +29,8 @@ namespace zanna::tools {
 /// @brief Selects how much of the shared option list to emit.
 /// @details Controls whether @ref printSharedOptions appends the rarely used
 ///          "Advanced diagnostics" section after the common options block.
+///          `All` currently includes the same shared groups as `Advanced` and
+///          leaves room for callers to append tool-specific groups.
 enum class FrontendHelpDetail {
     Common,   ///< Emit only options honored by every standalone frontend tool.
     Advanced, ///< Emit common options plus Zia warning/diagnostic controls.
@@ -32,8 +40,8 @@ enum class FrontendHelpDetail {
 /// @brief Print shared CLI option descriptions to an output stream.
 /// @details Outputs the standard option descriptions used by all frontend tools.
 ///          This ensures consistency across vbasic and zia help text. When
-///          @p detail requests the advanced level the optional "Advanced
-///          diagnostics" block is appended after the common options.
+///          @p detail requests `Advanced` or `All`, the optional advanced
+///          diagnostics block is appended after the common options.
 /// @param os Output stream to write to (typically std::cerr).
 /// @param detail Amount of option detail to emit; defaults to
 ///        @ref FrontendHelpDetail::Common.

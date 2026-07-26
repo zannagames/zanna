@@ -15,6 +15,14 @@
 // Links: src/runtime/io/rt_ide_primitives.h, src/runtime/io/rt_watcher.h
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements editor-facing workspace indexing and transactional file edits.
+ * @details Provides nested gitignore evaluation with bounded caches, resumable
+ * file-index pages and status fingerprints, normalized watcher batches,
+ * multi-source asset resolution, manifest parsing with diagnostics, and
+ * validate-stage-recheck-commit-rollback workspace edit transactions.
+ */
 
 #include "rt_ide_primitives.h"
 
@@ -66,14 +74,20 @@ namespace fs = std::filesystem;
 
 namespace {
 
+/** Maximum number of parsed nested `.gitignore` entries retained in the cache. */
 constexpr size_t kGitignoreCacheMaxEntries = 64;
+/** Maximum number of resumable workspace-index cursors retained process-wide. */
 constexpr size_t kFileIndexPageCursorMaxEntries = 8;
+/** Hard count limit for a complete workspace file-index traversal. */
 constexpr int64_t kWorkspaceFileIndexMaxEntries = 100000;
+/** FNV-1a offset basis used for deterministic workspace fingerprints. */
 constexpr uint64_t kWorkspaceFingerprintOffset = 14695981039346656037ull;
+/** FNV-1a prime used for deterministic workspace fingerprints. */
 constexpr uint64_t kWorkspaceFingerprintPrime = 1099511628211ull;
 
 // Keep the cache root trivially initialized: native-linked tools may call this
 // runtime object before C++ global constructors from archive members have run.
+/** One process-lifetime cached `.gitignore` parse keyed by path and modification state. */
 struct GitignoreCacheEntry {
     std::string key;
     int64_t modified{-2};
@@ -81,10 +95,15 @@ struct GitignoreCacheEntry {
     GitignoreCacheEntry *next{nullptr};
 };
 
+/** Head of the trivially initialized gitignore-cache linked list. */
 GitignoreCacheEntry *g_gitignoreCacheHead = nullptr;
+/** Spin lock protecting gitignore-cache lookup, insertion, and eviction. */
 std::atomic_flag g_gitignoreCacheLock = ATOMIC_FLAG_INIT;
+/** Unique input counter for keyed transactional-edit sidecar nonces. */
 std::atomic<uint64_t> g_workspaceEditTempCounter{0};
+/** Spin lock protecting the workspace file-index cursor cache. */
 std::atomic_flag g_fileIndexPageCursorLock = ATOMIC_FLAG_INIT;
+/** Monotonic recency counter used for file-index cursor LRU eviction. */
 std::atomic<uint64_t> g_fileIndexPageCursorClock{0};
 
 /// @brief Scope guard for the process-wide gitignore cache spin lock.
@@ -381,6 +400,10 @@ bool pathGlobMatch(std::string_view text, std::string_view pattern) {
         return wildcardMatchRec(text, pattern);
 
     // Small recursive matcher for ** over normalized slash paths.
+    /// @brief Match suffixes beginning at one text and pattern offset.
+    /// @param ti Current byte offset in @p text.
+    /// @param pi Current byte offset in @p pattern.
+    /// @return `true` when both remaining suffixes match completely.
     std::function<bool(size_t, size_t)> rec = [&](size_t ti, size_t pi) -> bool {
         if (pi == pattern.size())
             return ti == text.size();
@@ -829,6 +852,12 @@ void pushDiagnostic(void *seq,
                     int64_t line,
                     const std::string &code);
 
+/**
+ * @brief Cached recursive iterator and filter state for one workspace index page.
+ * @details A cursor is detached under the cache lock while scanning, tracks
+ * the logical matched offset and traversal cap, then is destroyed or reinserted
+ * with a refreshed recency timestamp.
+ */
 struct WorkspaceFileIndexPageCursor {
     std::string key;
     fs::path root;
@@ -845,6 +874,7 @@ struct WorkspaceFileIndexPageCursor {
     WorkspaceFileIndexPageCursor *next{nullptr};
 };
 
+/** Head of the process-local resumable workspace file-index cursor cache. */
 WorkspaceFileIndexPageCursor *g_fileIndexPageCursorHead = nullptr;
 
 /// @brief Parse and normalize a file-extension allow-list.
@@ -1270,6 +1300,9 @@ std::pair<std::string, std::string> splitDirectiveLine(const std::string &line) 
 /// @return Lowercase key with hyphens, underscores, and periods removed.
 std::string manifestKey(std::string key) {
     key = lower(key);
+    /// @brief Identify manifest-key punctuation removed during canonicalization.
+    /// @param c Candidate key byte.
+    /// @return `true` for hyphen, underscore, or period.
     key.erase(std::remove_if(
                   key.begin(), key.end(), [](char c) { return c == '-' || c == '_' || c == '.'; }),
               key.end());
@@ -1322,6 +1355,12 @@ std::optional<size_t> offsetForLineColumn(const std::string &text, int64_t line,
     return std::nullopt;
 }
 
+/**
+ * @brief Validated native representation of one requested text replacement.
+ * @details Stores canonical file identity, one-based source coordinates,
+ * optional version expectations, replacement bytes, and resolved byte offsets
+ * used for overlap detection and transactional application.
+ */
 struct EditRecord {
     std::string file;
     int64_t startLine{0};
@@ -1503,6 +1542,10 @@ bool validateEditRecords(std::vector<EditRecord> &records,
     for (auto &record : records)
         byFile[record.file].push_back(&record);
     for (auto &[file, vec] : byFile) {
+        /// @brief Order edit pointers by ascending start offset for overlap validation.
+        /// @param a First edit pointer.
+        /// @param b Second edit pointer.
+        /// @return `true` when @p a begins before @p b.
         std::sort(vec.begin(), vec.end(), [](const EditRecord *a, const EditRecord *b) {
             return a->startOffset < b->startOffset;
         });
@@ -2585,6 +2628,10 @@ static void *workspace_edit_apply_impl(void *edits, const std::vector<fs::path> 
         byFile[record.file].push_back(record);
 
     for (auto &[file, vec] : byFile) {
+        /// @brief Order edits from right to left so earlier offsets remain stable.
+        /// @param a First edit.
+        /// @param b Second edit.
+        /// @return `true` when @p a begins after @p b.
         std::sort(vec.begin(), vec.end(), [](const EditRecord &a, const EditRecord &b) {
             return a.startOffset > b.startOffset;
         });

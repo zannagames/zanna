@@ -37,6 +37,7 @@ bind "../core/document_manager";
 bind "../services/file_utils";
 bind "../ui/app_shell";
 bind "../ui/scene_editor_3d";
+bind "../ui/scene_panels_3d";
 bind "../ui/scene_selection";
 
 bind Convert = Zanna.Core.Convert;
@@ -107,7 +108,7 @@ func main() {
     shell.Build("Zanna Studio Viewport Picking Probe", 1120, 760);
 
     var editor = new scene_editor_3d.SceneEditor3D();
-    editor.Setup(shell.workbench.scene3DHost, shell.app);
+    scene_panels_3d.Build(editor,shell.workbench.scene3DHost, shell.app);
     var documents = new document_manager.DocumentManager();
     var sceneDoc = documents.NewScene3DDocument();
     shell.SelectSurface(file_utils.DOC_KIND_SCENE_3D);
@@ -140,7 +141,9 @@ func main() {
     shell.Poll();
     var emptyIndex = editor.AddEmptyNode("Meshless marker", -1);
     if emptyIndex != 2 {
-        Fail(shell, harness, "meshless marker fixture");
+        Fail(shell, harness, "meshless marker fixture: got=" + emptyIndex
+             + " flat=" + editor.flatNodes.count()
+             + " undo=" + editor.undoStack.count());
         return;
     }
 
@@ -611,6 +614,199 @@ func main() {
     if editor.Undo() == false or sceneDoc.content != canonical {
         Fail(shell, harness,
              "undoing the cylinder did not restore canonical bytes");
+        return;
+    }
+
+    // Snap inversion (2.3): without Ctrl held the effective state follows
+    // the checkbox both ways. (The harness cannot hold modifier keys, so
+    // the inverted branch is code-reviewed rather than gesture-driven.)
+    editor.SetGizmoSnapEnabled(false);
+    if editor.EffectiveSnapEnabled() {
+        Fail(shell, harness, "snap-off did not read as effectively off");
+        return;
+    }
+    editor.SetGizmoSnapEnabled(true);
+    if editor.EffectiveSnapEnabled() == false {
+        Fail(shell, harness, "snap-on did not read as effectively on");
+        return;
+    }
+    editor.SetGizmoSnapEnabled(false);
+
+    // Camera quick views and bookmarks (2.4): pure workspace state.
+    var cameraCanonical = sceneDoc.content;
+    editor.SetQuickView(0);
+    if editor.viewYawDegrees != 0 or editor.viewPitchDegrees != 80 {
+        Fail(shell, harness, "Top quick view did not set its pose");
+        return;
+    }
+    editor.SetQuickView(2);
+    if editor.viewYawDegrees != 90 or editor.viewPitchDegrees != 0 {
+        Fail(shell, harness, "Right quick view did not set its pose");
+        return;
+    }
+    if editor.StoreCameraBookmark(3) == false {
+        Fail(shell, harness, "storing camera bookmark 3 failed");
+        return;
+    }
+    editor.SetQuickView(1);
+    editor.viewScale = 60;
+    if editor.RecallCameraBookmark(3) == false
+       or editor.viewYawDegrees != 90
+       or editor.viewPitchDegrees != 0 {
+        Fail(shell, harness,
+             "recalling camera bookmark 3 did not restore the pose: "
+             + editor.viewYawDegrees + "/" + editor.viewPitchDegrees);
+        return;
+    }
+    if editor.RecallCameraBookmark(5)
+       or sceneDoc.content != cameraCanonical {
+        Fail(shell, harness,
+             "an empty bookmark recalled or camera state touched content");
+        return;
+    }
+
+    // Pick-lock (2.5): a locked node yields viewport picks to whatever
+    // sits behind it, marquee skips it, and unlocking restores it.
+    editor.SetViewProjection(false);
+    editor.viewYawDegrees = 0;
+    editor.viewPitchDegrees = 0;
+    editor.viewTargetX = 0.0;
+    editor.viewTargetY = 0.0;
+    editor.viewTargetZ = 0.0;
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    editor.SelectSceneNodes([1], 1);
+    if editor.ToggleSelectedPickLock() == false
+       or editor.NodePickLocked(1) == false {
+        Fail(shell, harness, "pick lock did not engage on the front box");
+        return;
+    }
+    var lockedPick = editor.ViewportNodeAt(meshX, centerY);
+    if lockedPick != 0 {
+        Fail(shell, harness,
+             "a locked front box did not yield the pick to the back box: "
+             + lockedPick);
+        return;
+    }
+    if editor.ToggleSelectedPickLock()
+       or editor.NodePickLocked(1) {
+        Fail(shell, harness, "pick unlock did not release the node");
+        return;
+    }
+    if editor.ViewportNodeAt(meshX, centerY) != 1 {
+        Fail(shell, harness, "unlocking did not restore normal picking");
+        return;
+    }
+
+    // Shaded+Wire and stats v2 (3.2): the combined mode renders, keeps
+    // picking identical, and stats never touch canonical state.
+    var fidelityBaseline = sceneDoc.content;
+    editor.showStats = true;
+    editor.SetViewportMode(scene_editor_3d.VIEWPORT_MODE_SHADED_WIRE);
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    if editor.ViewportNodeAt(meshX, centerY) != 1
+       or sceneDoc.content != fidelityBaseline {
+        Fail(shell, harness,
+             "Shaded+Wire changed picking or content");
+        return;
+    }
+    editor.showStats = false;
+    editor.SetViewportMode(scene_editor_3d.VIEWPORT_MODE_SHADED);
+    editor.Pump(sceneDoc);
+    shell.Render();
+
+    // Undo history panel (3.3): rows mirror commits oldest-first plus a
+    // Current row; a jump runs the equivalent undo chain and leaves redo.
+    var stateBefore = sceneDoc.content;
+    if editor.AddEmptyNode("History A", -1) < 0
+       or editor.AddEmptyNode("History B", -1) < 0 {
+        Fail(shell, harness, "history fixture commits failed");
+        return;
+    }
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    editor.RefreshHistoryPanel();
+    if editor.historyList.Count != editor.undoStack.count() + 1 {
+        Fail(shell, harness,
+             "history rows did not mirror the undo stack: rows="
+             + editor.historyList.Count
+             + " undo=" + editor.undoStack.count());
+        return;
+    }
+    var redoBefore = editor.redoStack.count();
+    if editor.JumpToHistoryRow(editor.undoStack.count() - 2) == false
+       or sceneDoc.content != stateBefore
+       or editor.redoStack.count() != redoBefore + 2 {
+        Fail(shell, harness,
+             "history jump did not restore the pre-fixture bytes: redo="
+             + editor.redoStack.count());
+        return;
+    }
+    if editor.Redo() == false or editor.Redo() == false {
+        Fail(shell, harness, "redo after a history jump failed");
+        return;
+    }
+    if editor.Undo() == false or editor.Undo() == false
+       or sceneDoc.content != stateBefore {
+        Fail(shell, harness, "unwinding the history fixture failed");
+        return;
+    }
+
+    // Run Scene affordance (4.1): the button raises a one-shot request
+    // the app dispatcher consumes; nothing here touches content.
+    var runBaseline = sceneDoc.content;
+    ClickWidget(shell, harness, editor.runSceneButton);
+    editor.Pump(sceneDoc);
+    if editor.TakeRunSceneRequested() == false
+       or editor.TakeRunSceneRequested()
+       or sceneDoc.content != runBaseline {
+        Fail(shell, harness,
+             "Run Scene button did not raise a one-shot request");
+        return;
+    }
+
+    // Pane float/dock (Phase 5): floating reparents the hierarchy pane
+    // into the dock substrate's floating panel with the split collapsed;
+    // the pane stays fully live; docking restores the fixed layout. All
+    // of it is workspace-only.
+    var dockBaseline = sceneDoc.content;
+    if editor.hierarchyDock.Float() == false
+       or editor.hierarchyDock.floating == false
+       or editor.hierarchySplit.GetCollapsedSide() != 1 {
+        Fail(shell, harness,
+             "floating the hierarchy pane did not detach and collapse");
+        return;
+    }
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    editor.SelectSceneNodes([0], 0);
+    editor.Pump(sceneDoc);
+    if editor.selectedIndex != 0 {
+        Fail(shell, harness,
+             "the floated hierarchy pane lost selection behavior");
+        return;
+    }
+    if editor.hierarchyDock.Dock() == false
+       or editor.hierarchyDock.floating
+       or editor.hierarchySplit.GetCollapsedSide() == 1
+       or sceneDoc.content != dockBaseline {
+        Fail(shell, harness,
+             "docking the hierarchy pane did not restore the layout");
+        return;
+    }
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.inspectorDock.Float() == false
+       or editor.bodySplit.GetCollapsedSide() != 2
+       or editor.inspectorDock.Dock() == false
+       or editor.bodySplit.GetCollapsedSide() == 2
+       or sceneDoc.content != dockBaseline {
+        Fail(shell, harness, "3D inspector pane float/dock cycle failed");
         return;
     }
 

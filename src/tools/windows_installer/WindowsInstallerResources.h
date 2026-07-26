@@ -5,17 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/tools/windows_installer/WindowsInstallerResources.h
-// Purpose: Share native Windows installer resource identifiers with RC and C++.
-//
-// Key invariants: Resource identifiers are stable across host architectures.
-//
-// Ownership/Lifetime: Compile-time constants only.
-//
-// Links: WindowsInstallerHost.rc.in, WindowsInstallerWizard.cpp
+/// @file WindowsInstallerResources.h
+/// @brief Defines native resource identifiers shared by the installer host and resource compiler.
+///
+/// Resource identifiers remain stable across host architectures so the compiled resource script
+/// and C++ consumers address the same assets. The constants have compile-time lifetime and are
+/// consumed by WindowsInstallerHost.rc.in and WindowsInstallerWizard.cpp.
 //
 //===----------------------------------------------------------------------===//
 
 #pragma once
 
+/// @brief Resource identifier for the Zanna installer application icon.
 #define IDI_ZANNA_INSTALLER 101

@@ -18,6 +18,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Defines the Lowerer-internal facade used by modular BASIC lowering helpers.
+/// @details This class-body fragment forwards expression, control-flow, OOP,
+///          declaration, and statement lowering to one borrowed Lowerer while
+///          exposing no independent state or ownership.
+
 /// @brief Narrow public facade providing controlled access to Lowerer internals.
 /// @details Modular lowering helpers receive a DetailAccess handle instead of
 ///          friendship to the entire Lowerer class. This limits the surface area

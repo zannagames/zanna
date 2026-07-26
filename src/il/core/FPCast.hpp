@@ -17,6 +17,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Defines deterministic checked floating-point-to-integer conversions.
+ *
+ * @details The header provides platform-independent round-to-nearest,
+ *          ties-to-even helpers plus explicit invalid-versus-overflow results
+ *          for signed and unsigned target widths. Unsigned results retain
+ *          their complete bit pattern in the result's signed storage field.
+ */
+
 #pragma once
 
 #include <cmath>
@@ -38,10 +48,10 @@ enum class CheckedFPCastFailure {
 
 /// @brief Checked conversion result carrying either a bit-pattern value or failure.
 struct CheckedFPCastResult {
-    /// Conversion status.
+    /// @brief Conversion status.
     CheckedFPCastFailure failure{CheckedFPCastFailure::None};
 
-    /// Signed value or bit-preserving storage for a successful unsigned result.
+    /// @brief Signed value or bit-preserving storage for a successful unsigned result.
     int64_t value{0};
 
     /// @brief Test whether conversion completed without failure.

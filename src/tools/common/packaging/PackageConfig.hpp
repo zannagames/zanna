@@ -20,6 +20,12 @@
 // Links: project_loader.hpp (embedded in ProjectConfig)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares the value types populated from `package-*` project directives.
+/// @details The configuration is platform-neutral; individual package builders
+///          validate and interpret the relevant fields for their target format.
+
 #pragma once
 
 #include <string>
@@ -28,20 +34,27 @@
 namespace zanna::pkg {
 
 /// @brief A single asset entry: source file/dir -> target relative dir.
+/// @details Both paths are untrusted manifest values and must be resolved or
+///          sanitized by a package builder before filesystem access or emission.
 struct AssetEntry {
-    std::string sourcePath; ///< Relative to project root.
-    std::string targetPath; ///< Relative to install dir.
+    std::string sourcePath; ///< File or directory path relative to the project root.
+    std::string targetPath; ///< Destination directory relative to the package's asset root.
 };
 
 /// @brief A file association declaration.
+/// @details Carries the cross-platform description and MIME mapping plus the
+///          Windows-specific Open verb argument fragment.
 struct FileAssoc {
-    std::string extension;            ///< e.g. ".zia"
-    std::string description;          ///< e.g. "Zia Source File"
-    std::string mimeType;             ///< e.g. "text/x-zia"
-    std::string openCommandArguments; ///< Optional Windows Open verb args before "%1".
+    std::string extension;            ///< Filename extension, conventionally including a dot.
+    std::string description;          ///< User-visible file type name.
+    std::string mimeType;             ///< MIME identifier used by Linux and UTI generation.
+    std::string openCommandArguments; ///< Optional Windows Open verb arguments preceding `"%1"`.
 };
 
 /// @brief All package-related configuration from zanna.project.
+/// @details This fully owned, copyable value aggregates common metadata and
+///          opt-in platform features. Empty strings/vectors generally mean that
+///          a builder should use its documented default or omit the feature.
 struct PackageConfig {
     std::string displayName;     ///< package-name (defaults to project name)
     std::string author;          ///< package-author
@@ -63,14 +76,14 @@ struct PackageConfig {
     /// Permit Linux maintainer scripts to copy desktop shortcuts into existing home Desktop dirs.
     bool allowHomeDesktopShortcuts{false};
 
-    std::string minOsWindows; ///< "10.0"
-    std::string minOsMacos;   ///< "11.0"
+    std::string minOsWindows; ///< Minimum supported dotted-numeric Windows version.
+    std::string minOsMacos;   ///< Minimum supported dotted-numeric macOS version.
 
-    std::string macosSignMode;        ///< none, preserve, adhoc, or developer-id
-    std::string macosSignIdentity;    ///< Developer ID Application identity
-    std::string macosEntitlements;    ///< Entitlements plist path, project-relative
+    std::string macosSignMode;        ///< Signing policy: none, preserve, adhoc, or developer-id.
+    std::string macosSignIdentity;    ///< Developer ID Application identity.
+    std::string macosEntitlements;    ///< Project-relative entitlements plist path.
     bool macosHardenedRuntime{false}; ///< Enable the hardened runtime when signing.
-    std::string macosNotaryProfile;   ///< notarytool keychain profile
+    std::string macosNotaryProfile;   ///< `notarytool` keychain profile name.
     bool macosStaple{false};          ///< Staple the notarization ticket to the artifact.
     bool macosDisableHardenedRuntime{
         false};                       ///< Opt out of the otherwise default-on hardened runtime.
@@ -78,7 +91,7 @@ struct PackageConfig {
     std::string macosDmgBackground;   ///< macos-dmg-background (project-relative PNG).
     std::string macosDmgIcon;         ///< macos-dmg-icon (project-relative .icns volume icon).
 
-    std::string windowsInstallScope;  ///< machine (default) or user
+    std::string windowsInstallScope;  ///< Installation scope: machine (default) or user.
     std::string windowsInstallDir;    ///< Optional install directory override.
     std::string windowsPublisher;     ///< Optional Windows Publisher override for ARP/version info.
     std::string windowsWizardSummary; ///< Optional short wizard summary shown before install.
@@ -91,7 +104,7 @@ struct PackageConfig {
     std::string windowsSigntoolPath;   ///< signtool.exe path override.
     bool windowsSignNoVerify{false};   ///< Skip signtool verify after signing.
 
-    std::vector<std::string> targetArchitectures; ///< "x64", "arm64"
+    std::vector<std::string> targetArchitectures; ///< Requested portable targets such as x64/arm64.
 
     std::string category;             ///< package-category (e.g. "Game", "Development", "Utility")
     std::vector<std::string> depends; ///< package-depends (e.g. "libc6", "libx11-6")
@@ -100,12 +113,13 @@ struct PackageConfig {
     std::string linuxKeywords;           ///< linux-keywords for freedesktop Keywords=.
     std::string appstreamId;             ///< linux-appstream-id for AppStream component metadata.
 
-    std::string postInstallScript;  ///< Custom post-install script content
-    std::string preUninstallScript; ///< Custom pre-uninstall script content
+    std::string postInstallScript;  ///< Custom post-install script content.
+    std::string preUninstallScript; ///< Custom pre-uninstall script content.
     /// Permit package lifecycle hooks to be emitted into installer maintainer scripts.
     bool allowInstallHooks{false};
 
     /// @brief Check if any package-* directives were specified.
+    /// @return `true` when any field differs from the no-directives defaults.
     bool hasPackageConfig() const {
         return !displayName.empty() || !author.empty() || !description.empty() ||
                !homepage.empty() || !license.empty() || !licenseFilePath.empty() ||

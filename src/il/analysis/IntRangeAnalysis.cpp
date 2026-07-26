@@ -19,6 +19,18 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements forward integer-range dataflow over IL SSA functions.
+ *
+ * @details This implementation evaluates per-instruction transfer functions,
+ *          carries refined facts across CFG edges, widens unstable loop-header
+ *          bounds to reach a fixpoint, and performs bounded narrowing to
+ *          recover stable information. It also recognizes the lowered signed
+ *          modulo-by-power-of-two idiom so later check optimization retains
+ *          the range proved before peephole lowering.
+ */
+
 #include "il/analysis/IntRangeAnalysis.hpp"
 
 #include "il/core/BasicBlock.hpp"
@@ -430,7 +442,9 @@ std::optional<IntRange> matchPow2ModuloRange(const BasicBlock &block, const Inst
     if (subInstr.operands.size() != 2)
         return std::nullopt;
 
-    // Straight-line definition of a temp earlier in this block.
+    /// @brief Find the defining instruction for a temporary before the candidate subtract.
+    /// @param id Temporary identifier to resolve.
+    /// @return Earlier defining instruction in @p block, or nullptr if none exists.
     auto defBefore = [&](unsigned id) -> const Instr * {
         for (const Instr &instr : block.instructions) {
             if (&instr == &subInstr)
@@ -440,6 +454,10 @@ std::optional<IntRange> matchPow2ModuloRange(const BasicBlock &block, const Inst
         }
         return nullptr;
     };
+    /// @brief Test whether two operands reference the same SSA temporary.
+    /// @param a First operand.
+    /// @param b Second operand.
+    /// @return True when both operands are temporaries with the same identifier.
     auto sameTemp = [](const Value &a, const Value &b) {
         return a.kind == Value::Kind::Temp && b.kind == Value::Kind::Temp && a.id == b.id;
     };
@@ -683,11 +701,13 @@ IntRangeInfo computeIntRanges(const Function &fn) {
     // instead would union in stale history and erode branch refinements.
     std::vector<std::optional<RangeMap>> incoming(blockCount);
 
-    // One dataflow sweep. In widening mode, oscillating bounds at loop headers
-    // are stripped (sticky) so the ascent terminates. In narrowing mode the
-    // stripping is disabled: entries are recomputed honestly from the
-    // converged state, which recovers bounds that stabilized after their
-    // widening (monotonicity keeps every narrowing iterate sound).
+    /// @brief Perform one propagation-and-merge sweep over reachable blocks.
+    /// @details In widening mode, oscillating bounds at loop headers are
+    ///          stripped persistently so the ascent terminates. In narrowing
+    ///          mode, stripping is disabled and entries are recomputed from
+    ///          the converged state to recover subsequently stable bounds.
+    /// @param widening Whether to apply and remember loop-header widening.
+    /// @return True when reachability or a block-entry range map changed.
     auto runSweep = [&](bool widening) -> bool {
         bool changed = false;
 

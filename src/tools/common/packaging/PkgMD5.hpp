@@ -19,6 +19,12 @@
 // Links: src/runtime/text/rt_hash.c (original implementation)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares one-shot RFC 1321 MD5 helpers for package metadata.
+/// @details The binary form writes to caller-owned storage; the hexadecimal
+///          form returns an owned string. Inputs are never retained.
+
 #pragma once
 
 #include <cstddef>
@@ -31,12 +37,14 @@ namespace zanna::pkg {
 /// @param data Input bytes.
 /// @param len Length of input.
 /// @param digest Output buffer for 16-byte digest.
+/// @throws std::runtime_error If `data` is null for a non-empty input.
 void md5(const uint8_t *data, size_t len, uint8_t digest[16]);
 
 /// @brief Compute MD5 digest and return as 32-char lowercase hex string.
 /// @param data Input bytes.
 /// @param len Length of input.
 /// @return Hex-encoded MD5 digest string.
+/// @throws std::runtime_error If `data` is null for a non-empty input.
 std::string md5hex(const uint8_t *data, size_t len);
 
 } // namespace zanna::pkg

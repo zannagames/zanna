@@ -9,6 +9,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Provides the standalone ilrun usage callback expected by shared CLI code.
+
 #include <iostream>
 
 /// @brief Usage callback used by cmd_run_il.cpp when linked into ilrun.

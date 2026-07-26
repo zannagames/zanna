@@ -8,32 +8,43 @@
 // File: src/runtime/oop/rt_oop_dispatch.c
 // Purpose: Implements virtual method dispatch (vtable lookup) for the Zanna OOP
 //          runtime. Objects carry a vptr to their class vtable; dispatch reads
-//          the function pointer at the requested slot index and calls it.
+//          and returns the function pointer at a requested slot for the caller
+//          to invoke with the appropriate generated signature.
 //
 // Key invariants:
 //   - Slot 0 is Object.ToString, slot 1 is Object.Equals, slot 2 is GetHashCode;
 //     class-specific overrides start at slot 3.
 //   - NULL object, NULL vptr, or out-of-range slot returns NULL (not a trap).
-//   - Vtable contents are set at class registration time and never modified.
+//   - Registered vtable contents and lengths remain immutable while dispatch is active.
 //   - Vtable lookups are read-only and fully thread-safe after registration.
 //
 // Ownership/Lifetime:
-//   - Vtables are global static data owned by the type registry.
-//   - Callers do not own the returned function pointer; they call it immediately.
+//   - The active per-VM type registry borrows compiler-emitted vtable storage.
+//   - The returned function pointer is borrowed; lookup creates no ownership.
 //
-// Links: src/runtime/oop/rt_oop_dispatch.h (public API, via rt_oop.h),
-//        src/runtime/oop/rt_type_registry.h (class and vtable registration),
+// Links: src/runtime/oop/rt_oop.h (public API and object layout),
+//        src/runtime/oop/rt_type_registry.c (class and vtable registration),
 //        src/runtime/oop/rt_object.h (object allocation and vptr layout)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_oop_dispatch.c
+ * @brief Implements bounds-checked virtual function lookup.
+ * @details Dispatch reads the fixed leading vtable pointer from an object,
+ *          resolves immutable class metadata through the active type registry,
+ *          validates the compiler-assigned slot, and returns a borrowed
+ *          function pointer without invoking it.
+ */
 
 #include "rt_oop.h"
 
 /// @brief Look up a virtual function pointer from an object's vtable.
 ///
-/// Retrieves the function pointer at a specific slot in the object's vtable.
-/// This is the core operation for virtual method dispatch. The slot index
-/// corresponds to the virtual method's position in the class hierarchy.
+/// @details Retrieves the function pointer at a specific slot in the object's
+///          registered vtable. This is the core lookup for virtual method
+///          dispatch; the slot index corresponds to the virtual method's
+///          compiler-assigned position in the class hierarchy.
 ///
 /// **Dispatch sequence:**
 /// ```
@@ -55,7 +66,8 @@
 /// @param obj Object whose vtable is queried. May be NULL.
 /// @param slot Zero-based vtable slot index to fetch.
 ///
-/// @return Function pointer at the slot, or NULL on any error condition.
+/// @return Borrowed function pointer at the slot, or @c NULL for a null object
+///         or vptr, unregistered vtable, out-of-range slot, or null slot value.
 ///
 /// @note Callers must check for NULL before calling the returned pointer.
 /// @note O(1) time complexity (array index lookup).

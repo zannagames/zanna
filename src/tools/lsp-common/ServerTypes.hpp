@@ -5,15 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tools/lsp-common/ServerTypes.hpp
-// Purpose: Shared data types for language server bridges (diagnostics, symbols,
-//          completions, runtime queries).
-// Key invariants:
-//   - All types are simple value structs with no compiler-internal dependencies
-//   - Usable by any language server bridge (Zia, BASIC, etc.)
-// Ownership/Lifetime:
-//   - All data is fully owned (no dangling pointers)
-// Links: tools/lsp-common/ICompilerBridge.hpp
+/// @file
+/// @brief Declares language-neutral value types exchanged between compiler
+///        bridges and protocol handlers.
+///
+/// Diagnostics, source locations, navigation results, completion/signature
+/// data, semantic tokens, and runtime summaries are fully owned and contain no
+/// compiler-internal pointers. Source coordinates use one-based byte columns
+/// unless a type documents a different convention.
+///
+/// @see ICompilerBridge.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -88,7 +89,7 @@ struct LocationInfo {
     SourceRangeInfo range; ///< File and range for the target occurrence.
     std::string name;      ///< Display name for the symbol.
     std::string kind;      ///< Symbol kind string.
-    bool isDefinition{false};
+    bool isDefinition{false}; ///< True when the occurrence declares the symbol.
 };
 
 /// @brief Single text edit produced by a workspace-level refactoring.
@@ -99,7 +100,7 @@ struct TextEditInfo {
 
 /// @brief Result of a semantic rename request.
 struct RenameResult {
-    bool success{false};
+    bool success{false};              ///< Whether semantic rename completed.
     std::string reason;              ///< Empty when success is true.
     std::vector<TextEditInfo> edits; ///< Replacement edits grouped by file at the LSP boundary.
 };
@@ -114,44 +115,44 @@ struct SignatureParameterInfo {
 struct SignatureInfo {
     std::string label;         ///< Full signature label.
     std::string documentation; ///< Optional signature documentation.
-    std::vector<SignatureParameterInfo> parameters;
+    std::vector<SignatureParameterInfo> parameters; ///< Parameters in display order.
 };
 
 /// @brief Signature help payload for the active call expression.
 struct SignatureHelpInfo {
-    bool available{false};
-    int activeSignature{0};
-    int activeParameter{0};
-    std::vector<SignatureInfo> signatures;
+    bool available{false}; ///< Whether the bridge found a containing callable.
+    int activeSignature{0}; ///< Zero-based selected signature index.
+    int activeParameter{0}; ///< Zero-based selected parameter index.
+    std::vector<SignatureInfo> signatures; ///< Candidate signatures in preference order.
 };
 
 /// @brief Semantic token type indices shared by the bridge and LSP legend.
 enum class SemanticTokenType : uint32_t {
-    Namespace = 0,
-    Type = 1,
-    Class = 2,
-    Enum = 3,
-    Interface = 4,
-    Function = 5,
-    Method = 6,
-    Variable = 7,
-    Parameter = 8,
-    Property = 9,
-    Keyword = 10,
-    Number = 11,
-    String = 12,
-    Operator = 13,
+    Namespace = 0, ///< Namespace or module name.
+    Type = 1,      ///< General type name.
+    Class = 2,     ///< Class name.
+    Enum = 3,      ///< Enumeration name.
+    Interface = 4, ///< Interface or protocol name.
+    Function = 5,  ///< Free or module-level function.
+    Method = 6,    ///< Member function.
+    Variable = 7,  ///< Local or global variable.
+    Parameter = 8, ///< Callable parameter.
+    Property = 9,  ///< Object property or field.
+    Keyword = 10,  ///< Language keyword.
+    Number = 11,   ///< Numeric literal.
+    String = 12,   ///< String literal.
+    Operator = 13, ///< Operator token.
 };
 
 /// @brief Semantic token emitted by a compiler bridge.
 /// @details Coordinates are 1-based byte columns; LspHandler converts them to
 ///          zero-based UTF-16 semantic-token deltas.
 struct SemanticTokenInfo {
-    uint32_t line{0};
-    uint32_t column{0};
-    uint32_t length{0};
-    SemanticTokenType type{SemanticTokenType::Variable};
-    uint32_t modifiers{0};
+    uint32_t line{0};   ///< One-based source line.
+    uint32_t column{0}; ///< One-based starting byte column.
+    uint32_t length{0}; ///< Token length in source bytes.
+    SemanticTokenType type{SemanticTokenType::Variable}; ///< Legend token type.
+    uint32_t modifiers{0}; ///< Bitset of semantic-token modifiers; currently zero.
 };
 
 /// @brief Completion item from a completion engine.

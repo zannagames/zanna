@@ -15,6 +15,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements a themed, keyboard-activatable push button widget.
+/// @details Buttons own their label and activation callback, borrow a theme,
+///          paint a bordered control, and participate in keyboard focus
+///          traversal.
+
 #include "tui/widgets/button.hpp"
 
 #include "tui/render/box.hpp"
@@ -26,9 +32,12 @@ namespace zanna::tui::widgets {
 /// @brief Construct a button with label text, callback, and theme reference.
 ///
 /// @details The label is stored by value while the click handler and theme are
-///          kept by reference, allowing the widget to respond to activations
-///          without owning additional resources.  Callbacks can be empty, in
-///          which case activation simply performs no action.
+///          retained as an owned callable and a borrowed reference,
+///          respectively.  Callbacks can be empty, in which case activation
+///          simply performs no action.
+/// @param text Label displayed inside the button border.
+/// @param onClick Callback invoked for Enter or Space activation.
+/// @param theme Borrowed theme that must outlive the button.
 Button::Button(std::string text, OnClick onClick, const style::Theme &theme)
     : text_(std::move(text)), onClick_(std::move(onClick)), theme_(theme) {}
 
@@ -40,6 +49,7 @@ Button::Button(std::string text, OnClick onClick, const style::Theme &theme)
 ///          height allows, the label text is centred vertically and truncated to
 ///          fit horizontally.  All drawing respects the widget's layout
 ///          rectangle, ensuring compatibility with container-managed geometry.
+/// @param sb Screen buffer that receives the button border, fill, and label.
 void Button::paint(render::ScreenBuffer &sb) {
     const auto &border = theme_.style(style::Role::Accent);
     const auto &txt = theme_.style(style::Role::Normal);
@@ -66,6 +76,9 @@ void Button::paint(render::ScreenBuffer &sb) {
 ///          is registered it is invoked immediately, and the event is reported as
 ///          handled.  Other keys fall through so the event system can continue
 ///          propagation to other widgets if needed.
+/// @param ev Input event to inspect for an activation key.
+/// @return @c true for Enter or Space, regardless of whether a callback is
+///         registered; otherwise @c false.
 bool Button::onEvent(const ui::Event &ev) {
     const auto &k = ev.key;
     if (k.code == term::KeyEvent::Code::Enter || k.codepoint == U' ') {
@@ -82,6 +95,7 @@ bool Button::onEvent(const ui::Event &ev) {
 /// @details Buttons need focus to receive keyboard events, so the method
 ///          returns @c true.  Containers consult this when building traversal
 ///          order, ensuring that interactive controls behave as expected.
+/// @return Always @c true.
 bool Button::wantsFocus() const {
     return true;
 }

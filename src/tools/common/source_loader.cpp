@@ -90,8 +90,10 @@ il::support::Expected<std::string> readSourceContents(const std::string &path) {
 ///          is registered with the SourceManager and the assigned id is returned;
 ///          a zero id (overflow) becomes a V-SRC-FILE-ID diagnostic. A failed
 ///          read, an oversized file, or a @c std::bad_alloc each map to a
-///          descriptive error diagnostic. See the header for the parameter and
-///          return contract.
+///          descriptive error diagnostic.
+/// @param path UTF-8 filesystem path to read and register.
+/// @param sm Source manager receiving the path after a successful read.
+/// @return Owned buffer and nonzero file id, or a diagnostic.
 il::support::Expected<LoadedSource> loadSourceBuffer(const std::string &path,
                                                      il::support::SourceManager &sm) {
     auto contents = readSourceContents(path);
@@ -115,8 +117,9 @@ il::support::Expected<LoadedSource> loadSourceBuffer(const std::string &path,
 /// @details Identical I/O behaviour to loadSourceBuffer() — binary open, 256 MB
 ///          size guard, exact pre-sized read, and @c std::bad_alloc handling —
 ///          but returns just the file contents for callers that register (or do
-///          not need) a file id separately. See the header for the parameter and
-///          return contract.
+///          not need) a file id separately.
+/// @param path UTF-8 filesystem path to read.
+/// @return Exact file bytes as an owned string, or a diagnostic.
 il::support::Expected<std::string> loadSourceFile(const std::string &path) {
     return readSourceContents(path);
 }

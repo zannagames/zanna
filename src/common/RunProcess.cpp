@@ -21,6 +21,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements shell-free and explicitly shell-mediated subprocess launch.
+/// @details The platform adapters validate UTF-8 arguments, construct scoped
+///          child environments and working directories, capture stdout/stderr
+///          independently, normalize termination status, and release every
+///          native pipe, descriptor, thread, and process handle before return.
+
 #ifndef _WIN32
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -1061,12 +1068,21 @@ ScopedEnvironmentAssignmentMoveResult scoped_environment_assignment_move_preserv
 }
 } // namespace zanna::test_support
 
-/// @copydoc run_process()
+/// @brief Launch a subprocess directly from an argument vector.
+/// @details Applies child-only environment and working-directory configuration,
+///          captures stdout and stderr independently, and reports both setup
+///          failures and normalized process termination in the returned result.
+/// @param argv Arguments including the executable at index zero.
+/// @param cwd Optional existing directory used only by the child.
+/// @param env Child environment overrides; later duplicate names win.
+/// @return Captured output, native/normalized status, and launch diagnostics.
 RunResult run_process(const std::vector<std::string> &argv,
                       std::optional<std::string> cwd,
                       const std::vector<std::pair<std::string, std::string>> &env) {
     RunResult rr{};
-    /// Mark a pre-launch failure and replace stderr with its diagnostic.
+    /// @brief Mark a pre-launch failure and replace stderr with its diagnostic.
+    /// @param message Launcher diagnostic to retain.
+    /// @return Reference-independent copy of the updated process result.
     auto fail_launch = [&](std::string message) {
         rr.exit_code = -1;
         rr.launch_failed = true;
@@ -1363,7 +1379,13 @@ RunResult run_process(const std::vector<std::string> &argv,
 #endif
 }
 
-/// @copydoc run_shell_command()
+/// @brief Launch command text through the host's explicit command shell.
+/// @details Delegates to @ref run_process using @c cmd /C on Windows or
+///          @c sh -c on POSIX platforms, so shell parsing and expansion apply.
+/// @param command Shell command text.
+/// @param cwd Optional existing directory used only by the child.
+/// @param env Child environment overrides.
+/// @return Captured subprocess result from the shell invocation.
 RunResult run_shell_command(const std::string &command,
                             std::optional<std::string> cwd,
                             const std::vector<std::pair<std::string, std::string>> &env) {

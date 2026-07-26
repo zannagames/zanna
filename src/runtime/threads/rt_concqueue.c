@@ -31,6 +31,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Unbounded mutex-and-condition-variable concurrent FIFO queue.
+/// @details Enqueue retains runtime values, dequeue transfers those references,
+///          and clear/finalization releases them after detaching nodes under a
+///          GC graph barrier. Platform-specific waits share absolute-deadline
+///          logic where supported.
+
 #include "rt_concqueue.h"
 
 #include "rt_gc.h"
@@ -47,8 +54,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Install a trap-recovery jump target for the current thread.
+/// @param buf Recovery buffer to install.
 void rt_trap_set_recovery(jmp_buf *buf);
+/// @brief Clear the current thread's trap-recovery target.
 void rt_trap_clear_recovery(void);
+/// @brief Read the current thread's most recent trap message.
+/// @return Borrowed diagnostic text, or null.
 const char *rt_trap_get_error(void);
 
 #if RT_PLATFORM_WINDOWS
@@ -62,6 +74,11 @@ const char *rt_trap_get_error(void);
 #include <pthread.h>
 #include <time.h>
 #if RT_PLATFORM_MACOS
+/// @brief Wait on a condition variable using a relative macOS timeout.
+/// @param cond Condition variable to wait on.
+/// @param mutex Locked mutex released and reacquired by the wait.
+/// @param rel_time Relative timeout.
+/// @return Zero when signalled, or an errno-style failure code.
 extern int pthread_cond_timedwait_relative_np(pthread_cond_t *cond,
                                               pthread_mutex_t *mutex,
                                               const struct timespec *rel_time);
@@ -70,11 +87,13 @@ extern int pthread_cond_timedwait_relative_np(pthread_cond_t *cond,
 
 // --- Node for linked list queue ---
 
+/// @brief One heap-allocated FIFO node carrying a retained value.
 typedef struct cq_node {
     void *value;
     struct cq_node *next;
 } cq_node;
 
+/// @brief Queue state protected by the platform mutex.
 typedef struct {
     void *vptr;
     cq_node *head;
@@ -126,6 +145,8 @@ typedef struct {
 ///          @p uses_monotonic = 1 there. On any other platform we fall back
 ///          to the realtime default. The output flag tells the wait helper
 ///          which clock the deadline was computed against.
+/// @param cond Condition variable to initialize.
+/// @param uses_monotonic Receives whether timed waits use monotonic time.
 /// @return 0 on success, errno-style error code on failure.
 static int cq_cond_init(pthread_cond_t *cond, int8_t *uses_monotonic) {
     if (uses_monotonic)
@@ -164,6 +185,8 @@ static int cq_cond_init(pthread_cond_t *cond, int8_t *uses_monotonic) {
 ///          without `CLOCK_MONOTONIC` or when the caller explicitly opts into
 ///          realtime (pthread-condvar default). Zero-init on error so
 ///          `clock_gettime` failure returns epoch rather than stack garbage.
+/// @param use_monotonic Nonzero to prefer @c CLOCK_MONOTONIC.
+/// @return Current time from the selected or fallback clock.
 static struct timespec cq_now_clock(int8_t use_monotonic) {
     struct timespec ts;
     memset(&ts, 0, sizeof(ts));
@@ -180,6 +203,9 @@ static struct timespec cq_now_clock(int8_t use_monotonic) {
 ///          if @p timeout_ms is large enough to overflow `time_t`. A non-
 ///          positive @p timeout_ms returns the current time so a caller
 ///          passing 0 immediately observes "deadline elapsed".
+/// @param timeout_ms Relative timeout in milliseconds.
+/// @param use_monotonic Nonzero to use the monotonic clock when available.
+/// @return Saturating absolute deadline.
 static cq_deadline_t cq_deadline_ms_from_now(int64_t timeout_ms, int8_t use_monotonic) {
     cq_deadline_t d;
     d.deadline = cq_now_clock(use_monotonic);
@@ -208,6 +234,9 @@ static cq_deadline_t cq_deadline_ms_from_now(int64_t timeout_ms, int8_t use_mono
 ///          deltas computed against the monotonic clock and pass them to
 ///          `pthread_cond_timedwait_relative_np`. Returns 0 when expired
 ///          and saturates at INT64_MAX for very large remaining intervals.
+/// @param deadline Absolute deadline to compare.
+/// @param use_monotonic Nonzero to read monotonic time.
+/// @return Whole milliseconds remaining, clamped to 0..INT64_MAX.
 static int64_t cq_remaining_ms(cq_deadline_t deadline, int8_t use_monotonic) {
     struct timespec now = cq_now_clock(use_monotonic);
     int64_t sec = (int64_t)deadline.deadline.tv_sec - (int64_t)now.tv_sec;
@@ -230,6 +259,11 @@ static int64_t cq_remaining_ms(cq_deadline_t deadline, int8_t use_monotonic) {
 ///          immediately if the deadline has lapsed. On Linux/POSIX, calls
 ///          the standard `pthread_cond_timedwait` with the absolute
 ///          timespec. The mutex must already be held by the caller.
+/// @param cond Condition variable to wait on.
+/// @param mutex Locked mutex released and reacquired by the wait.
+/// @param deadline Absolute deadline.
+/// @param use_monotonic Nonzero when @p deadline uses monotonic time.
+/// @return Zero when signalled, @c ETIMEDOUT on expiry, or another errno code.
 static int cq_cond_timedwait_deadline(pthread_cond_t *cond,
                                       pthread_mutex_t *mutex,
                                       cq_deadline_t deadline,
@@ -256,6 +290,9 @@ static int cq_cond_timedwait_deadline(pthread_cond_t *cond,
 ///          (otherwise returns NULL); wrong-class id always traps. The
 ///          NULL-trap toggle exists for non-trap convenience helpers
 ///          (Count returning 0 for a NULL handle).
+/// @param obj Candidate ConcurrentQueue handle.
+/// @param trap_on_null Nonzero to trap on a null handle.
+/// @return Validated queue payload, or null for an accepted null/trap path.
 static rt_concqueue_impl *concqueue_require(void *obj, int8_t trap_on_null) {
     if (!obj) {
         if (trap_on_null)
@@ -270,6 +307,7 @@ static rt_concqueue_impl *concqueue_require(void *obj, int8_t trap_on_null) {
 }
 
 /// @brief Drop one GC reference to @p obj and free it if the count hit zero.
+/// @param obj Runtime-managed object reference, or null.
 static void concqueue_release_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
@@ -277,6 +315,9 @@ static void concqueue_release_object(void *obj) {
 
 /// @brief Snapshot the current trap error message into @p buffer (or
 ///        @p fallback if none) so it survives lock cleanup before re-raise.
+/// @param buffer Destination character array.
+/// @param buffer_size Destination capacity including its terminator.
+/// @param fallback Required message when no trap diagnostic is available.
 static void concqueue_save_trap_error(char *buffer, size_t buffer_size, const char *fallback) {
     const char *err = rt_trap_get_error();
     snprintf(buffer, buffer_size, "%s", err && err[0] ? err : fallback);
@@ -287,6 +328,7 @@ static void concqueue_save_trap_error(char *buffer, size_t buffer_size, const ch
 ///          items. Decrements each value's refcount and frees the value
 ///          if it hits zero, then frees the linked-list node itself.
 ///          Robust against NULL @p n (no-op).
+/// @param n Head of the detached node list, or null.
 static void cq_release_nodes(cq_node *n) {
     while (n) {
         cq_node *next = n->next;
@@ -320,6 +362,8 @@ static void cq_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
 /// @details The graph-mutator scope makes the link and logical count one
 ///          atomic publication from the cycle collector's perspective. The
 ///          caller has already retained @p node's value.
+/// @param cq Locked queue receiving the node.
+/// @param node Prepared node whose ownership transfers to @p cq.
 static void cq_publish_locked(rt_concqueue_impl *cq, cq_node *node) {
     rt_gc_mutator_enter();
     if (cq->tail)
@@ -335,6 +379,8 @@ static void cq_publish_locked(rt_concqueue_impl *cq, cq_node *node) {
 /// @details No value reference is released: the queue's retained ownership is
 ///          transferred to the caller. Structural removal is protected from
 ///          concurrent collector traversal by the graph-mutator barrier.
+/// @param cq Locked queue to pop.
+/// @return Detached former head node, or null when empty.
 static cq_node *cq_take_locked(rt_concqueue_impl *cq) {
     rt_gc_mutator_enter();
     cq_node *node = cq->head;
@@ -353,6 +399,8 @@ static cq_node *cq_take_locked(rt_concqueue_impl *cq) {
 /// @details The returned nodes are no longer collector-visible and may be
 ///          released after the mutex is dropped, allowing value finalizers to
 ///          re-enter the queue safely.
+/// @param cq Locked queue to empty.
+/// @return Detached node-chain head, or null.
 static cq_node *cq_detach_all_locked(rt_concqueue_impl *cq) {
     rt_gc_mutator_enter();
     cq_node *nodes = cq->head;
@@ -366,6 +414,7 @@ static cq_node *cq_detach_all_locked(rt_concqueue_impl *cq) {
 /// @brief GC finalizer: drain the queue (releasing each retained value), then destroy the
 /// platform mutex + condvar. Holds the lock during drain to interlock with any in-flight
 /// enqueue (which would otherwise see freed memory).
+/// @param obj ConcurrentQueue payload being finalized.
 static void cq_finalizer(void *obj) {
     rt_concqueue_impl *cq = concqueue_require(obj, 0);
     if (!cq)
@@ -394,7 +443,8 @@ static void cq_finalizer(void *obj) {
 
 // --- Public API ---
 
-/// @brief Create a new thread-safe concurrent queue (unbounded, mutex + condvar protected).
+/// @brief Create an empty unbounded queue with platform synchronization.
+/// @return New runtime-managed ConcurrentQueue, or null after a construction trap.
 void *rt_concqueue_new(void) {
     rt_concqueue_impl *cq =
         (rt_concqueue_impl *)rt_obj_new_i64(RT_CONCQUEUE_CLASS_ID, sizeof(rt_concqueue_impl));
@@ -451,7 +501,9 @@ void *rt_concqueue_new(void) {
     return (void *)cq;
 }
 
-/// @brief Return the number of elements in the concqueue.
+/// @brief Read the exact queued-node count under the mutex.
+/// @param obj ConcurrentQueue handle; null reports zero.
+/// @return Element count at the instant of the locked read.
 int64_t rt_concqueue_len(void *obj) {
     if (!obj)
         return 0;
@@ -466,13 +518,17 @@ int64_t rt_concqueue_len(void *obj) {
     return len;
 }
 
-/// @brief Check whether the concqueue has no entries.
+/// @brief Test whether the locked queue count is zero.
+/// @param obj ConcurrentQueue handle; null is treated as empty.
+/// @return 1 when empty, otherwise 0.
 int8_t rt_concqueue_is_empty(void *obj) {
     return rt_concqueue_len(obj) == 0 ? 1 : 0;
 }
 
 /// @brief Returns 1 if `_close` has been called on the queue (no more enqueues allowed; pending
 /// dequeue waiters wake immediately and return NULL once drained).
+/// @param obj ConcurrentQueue handle.
+/// @return Closed flag; null is treated as closed.
 int8_t rt_concqueue_get_is_closed(void *obj) {
     if (!obj)
         return 1;
@@ -487,7 +543,12 @@ int8_t rt_concqueue_get_is_closed(void *obj) {
     return closed;
 }
 
-/// @brief Enqueue the concqueue.
+/// @brief Append a retained item and signal one waiting dequeuer.
+/// @details Null items are permitted. Node allocation, retain, count-overflow,
+///          and closed-queue failures trap without consuming the caller's
+///          reference.
+/// @param obj ConcurrentQueue handle; null is ignored.
+/// @param item Runtime-managed item to retain, or null.
 void rt_concqueue_enqueue(void *obj, void *item) {
     if (!obj)
         return;
@@ -550,7 +611,11 @@ void rt_concqueue_enqueue(void *obj, void *item) {
 ///        across memory pressure and shutdown races.
 /// @details Unlike the public strict enqueue, node-allocation failure and a queue that closes while
 ///          the node is prepared return zero. The value retain is acquired before publication and
-///          rolled back if the close check loses its race.
+///          rolled back if the close check loses its race. Null items are
+///          rejected by this status-returning variant.
+/// @param obj ConcurrentQueue handle; null returns failure.
+/// @param item Nonnull runtime-managed item to retain on success.
+/// @return 1 when enqueued, otherwise 0 for null, allocation, close, or count overflow.
 int8_t rt_concqueue_try_enqueue(void *obj, void *item) {
     rt_concqueue_impl *cq;
     cq_node *node;
@@ -603,6 +668,8 @@ int8_t rt_concqueue_try_enqueue(void *obj, void *item) {
 /// @brief Non-blocking dequeue: pop the head if available, otherwise return NULL immediately.
 /// **Ownership transfer:** the returned value carries the retain that `_enqueue` added — caller
 /// must release. The wrapping node struct is freed before returning.
+/// @param obj ConcurrentQueue handle; null behaves as empty.
+/// @return Transferred oldest value, or null for empty or a queued null.
 void *rt_concqueue_try_dequeue(void *obj) {
     if (!obj)
         return NULL;
@@ -678,6 +745,8 @@ void *rt_concqueue_try_dequeue_option(void *obj) {
 /// @brief Blocking dequeue: wait indefinitely until an item is enqueued or the queue is closed.
 /// On close-with-empty, returns NULL (graceful end-of-stream signal). Wrapped in a `while` loop
 /// to handle spurious wakeups robustly.
+/// @param obj ConcurrentQueue handle; null behaves as closed and empty.
+/// @return Transferred oldest value, or null for closed-and-empty or a queued null.
 void *rt_concqueue_dequeue(void *obj) {
     if (!obj)
         return NULL;
@@ -723,6 +792,9 @@ void *rt_concqueue_dequeue(void *obj) {
 /// arrives. `timeout_ms <= 0` falls through to non-blocking `_try_dequeue`. Cross-platform via
 /// `SleepConditionVariableCS` (Win32) or `pthread_cond_timedwait` (POSIX) with the same monotonic-
 /// clock preference as the rest of the runtime.
+/// @param obj ConcurrentQueue handle; null behaves as empty.
+/// @param timeout_ms Condition-wait timeout in milliseconds.
+/// @return Transferred oldest value, or null on timeout, close, empty, or a queued null.
 void *rt_concqueue_dequeue_timeout(void *obj, int64_t timeout_ms) {
     if (!obj)
         return NULL;
@@ -795,6 +867,8 @@ void *rt_concqueue_dequeue_timeout(void *obj, int64_t timeout_ms) {
 /// @brief Read the head value without removing it. Returns a freshly-retained reference (caller
 /// releases). NULL on empty queue. Distinct from a `_try_dequeue` peek because the value stays in
 /// the queue — useful for "is this the message I want?" inspection patterns.
+/// @param obj ConcurrentQueue handle; null behaves as empty.
+/// @return Newly retained front value, or null for empty or a null-valued head.
 void *rt_concqueue_peek(void *obj) {
     if (!obj)
         return NULL;
@@ -828,7 +902,8 @@ void *rt_concqueue_peek(void *obj) {
     return value;
 }
 
-/// @brief Remove all entries from the concqueue.
+/// @brief Atomically detach all nodes and release their values after unlocking.
+/// @param obj ConcurrentQueue handle; null is ignored.
 void rt_concqueue_clear(void *obj) {
     if (!obj)
         return;
@@ -847,6 +922,7 @@ void rt_concqueue_clear(void *obj) {
 /// @brief Mark the queue as closed and wake every blocked dequeue waiter. Subsequent enqueues
 /// trap; subsequent dequeues drain remaining items, then return NULL. Idempotent — re-closing
 /// is a no-op. The producer-side "we're done sending" signal for graceful pipeline shutdown.
+/// @param obj ConcurrentQueue handle; null is ignored.
 void rt_concqueue_close(void *obj) {
     if (!obj)
         return;

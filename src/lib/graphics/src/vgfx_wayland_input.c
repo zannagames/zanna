@@ -382,16 +382,37 @@ static void vgfx_wl_pointer_axis(void *data, struct wl_proxy *pointer, uint32_t 
 }
 
 /// @brief Ignore the pointer frame delimiter because events are published immediately.
+/// @param d Borrowed input-listener context; intentionally unused.
+/// @param p Pointer proxy that emitted the frame event; intentionally unused.
 static void vgfx_wl_pointer_frame(void *d, struct wl_proxy *p) { (void)d; (void)p; }
 /// @brief Ignore optional pointer axis-source metadata.
+/// @param d Borrowed input-listener context; intentionally unused.
+/// @param p Pointer proxy that emitted the metadata; intentionally unused.
+/// @param s Compositor-reported axis source; intentionally unused.
 static void vgfx_wl_pointer_axis_source(void *d, struct wl_proxy *p, uint32_t s) { (void)d; (void)p; (void)s; }
 /// @brief Ignore optional pointer axis-stop metadata.
+/// @param d Borrowed input-listener context; intentionally unused.
+/// @param p Pointer proxy that emitted the metadata; intentionally unused.
+/// @param t Event timestamp in compositor milliseconds; intentionally unused.
+/// @param a Axis whose scrolling stopped; intentionally unused.
 static void vgfx_wl_pointer_axis_stop(void *d, struct wl_proxy *p, uint32_t t, uint32_t a) { (void)d; (void)p; (void)t; (void)a; }
 /// @brief Ignore optional discrete-axis metadata in favor of continuous values.
+/// @param d Borrowed input-listener context; intentionally unused.
+/// @param p Pointer proxy that emitted the metadata; intentionally unused.
+/// @param a Axis associated with the discrete step count; intentionally unused.
+/// @param v Discrete scroll-step count; intentionally unused.
 static void vgfx_wl_pointer_axis_discrete(void *d, struct wl_proxy *p, uint32_t a, int32_t v) { (void)d; (void)p; (void)a; (void)v; }
 /// @brief Ignore optional axis-value120 metadata in favor of continuous values.
+/// @param d Borrowed input-listener context; intentionally unused.
+/// @param p Pointer proxy that emitted the metadata; intentionally unused.
+/// @param a Axis associated with the high-resolution delta; intentionally unused.
+/// @param v Scroll delta expressed in 120ths of a logical step; intentionally unused.
 static void vgfx_wl_pointer_axis_value120(void *d, struct wl_proxy *p, uint32_t a, int32_t v) { (void)d; (void)p; (void)a; (void)v; }
 /// @brief Ignore optional natural-scroll direction metadata.
+/// @param d Borrowed input-listener context; intentionally unused.
+/// @param p Pointer proxy that emitted the metadata; intentionally unused.
+/// @param a Axis whose direction is described; intentionally unused.
+/// @param v Compositor-provided direction value; intentionally unused.
 static void vgfx_wl_pointer_axis_direction(void *d, struct wl_proxy *p, uint32_t a, uint32_t v) { (void)d; (void)p; (void)a; (void)v; }
 
 static const vgfx_wl_pointer_listener_t g_pointer_listener = {

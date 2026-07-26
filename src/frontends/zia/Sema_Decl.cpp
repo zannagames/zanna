@@ -235,6 +235,9 @@ bool Sema::hasModuleExports(const std::string &moduleName, SourceLoc useLoc) con
 void Sema::collectExportedSymbolsForFile(uint32_t fileId,
                                          const std::vector<DeclPtr> &decls,
                                          std::unordered_map<std::string, Symbol> &out) const {
+    /// @brief Copies one visible exported symbol into the file export map.
+    /// @param exportName Source-visible exported name.
+    /// @param lookupName Semantic lookup name.
     auto addLookupSymbol = [&](const std::string &exportName, const std::string &lookupName) {
         Symbol *sym = const_cast<Sema *>(this)->currentScope_->lookup(lookupName);
         if (!sym || !sym->isExported || sym->isExtern)
@@ -242,6 +245,10 @@ void Sema::collectExportedSymbolsForFile(uint32_t fileId,
         out[exportName] = *sym;
     };
 
+    /// @brief Recursively collects exports from declarations and namespaces.
+    /// @param items Declarations to inspect.
+    /// @param exportPrefix Prefix exposed through the containing namespace.
+    /// @param self Recursive callback reference.
     auto collectFromDecls = [&](const std::vector<DeclPtr> &items,
                                 const std::string &exportPrefix,
                                 const auto &self) -> void {
@@ -249,6 +256,9 @@ void Sema::collectExportedSymbolsForFile(uint32_t fileId,
             if (!decl || decl->loc.file_id != fileId || !decl->isExported)
                 continue;
 
+            /// @brief Builds the semantic lookup name for one exported declaration.
+            /// @param baseName Declaration's local name.
+            /// @return Qualified semantic name.
             auto lookupNameFor = [&](const std::string &baseName) {
                 if (!exportPrefix.empty())
                     return exportPrefix + baseName;
@@ -345,6 +355,8 @@ std::string Sema::fileBindPathStem(const BindDecl &decl) const {
 ///         binds, the path-stem compatibility qualifier when distinct.
 std::vector<std::string> Sema::fileBindVisibleModuleNames(const BindDecl &decl) const {
     std::vector<std::string> names;
+    /// @brief Appends one nonempty, nonduplicate visible module name.
+    /// @param name Candidate module qualifier.
     auto addName = [&](std::string name) {
         if (name.empty())
             return;
@@ -680,6 +692,7 @@ void Sema::analyzeGlobalVarDecl(GlobalVarDecl &decl) {
 /// @details For each interface method, checks that the implementing type has a method
 ///          with matching name and compatible signature, and that it is publicly visible.
 /// @param typeName The name of the implementing type.
+/// @param loc Source location attributed to conformance diagnostics.
 /// @param interfaces The list of interface names the type claims to implement.
 void Sema::validateInterfaceImplementations(const std::string &typeName,
                                             const SourceLoc &loc,
@@ -1302,6 +1315,10 @@ void Sema::analyzeFieldDecl(FieldDecl &decl, TypeRef ownerType) {
 void Sema::analyzePropertyDecl(PropertyDecl &decl, TypeRef ownerType) {
     TypeRef propType = decl.type ? resolveTypeNode(decl.type.get()) : types::unknown();
 
+    /// @brief Analyzes one property accessor under its owning type context.
+    /// @param body Accessor body.
+    /// @param returnType Expected accessor return type.
+    /// @param defineSetterParam Whether to bind the setter value parameter.
     auto analyzeBody = [&](Stmt *body, TypeRef returnType, bool defineSetterParam) {
         if (!body)
             return;
@@ -1362,6 +1379,9 @@ void Sema::analyzePropertyDecl(PropertyDecl &decl, TypeRef ownerType) {
 const PropertyDecl *Sema::propertyDeclForLowering(const std::string &ownerName,
                                                   const std::string &propertyName,
                                                   std::string *declaringOwner) const {
+    /// @brief Finds the named property among one type declaration's members.
+    /// @param typeDecl Class or struct declaration to scan.
+    /// @return Matching property declaration, or null.
     auto scanMembers = [&](const auto *typeDecl) -> const PropertyDecl * {
         if (!typeDecl)
             return nullptr;

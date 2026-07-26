@@ -21,6 +21,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares table-driven local simplification rules for IL instructions.
+ *
+ * @details Each constexpr rule matches an opcode by a constant operand or
+ *          identical operands, then either forwards an existing value or
+ *          synthesizes a literal. The pass also coordinates related local CFG,
+ *          strength-reduction, and string-literal folds while preserving trap
+ *          and IEEE floating-point behavior.
+ */
+
 #pragma once
 
 #include <array>
@@ -30,31 +41,30 @@
 
 namespace il::transform {
 
-/// \brief Pattern describing when a rule should trigger.
+/// @brief Pattern describing when a rule should trigger.
 struct Match {
-    /// Kinds of patterns the peephole engine supports.
+    /// @brief Kinds of patterns the peephole engine supports.
     enum class Kind {
         ConstOperand,      ///< Match a specific integer constant at operand index.
         ConstFloatOperand, ///< Match a specific float constant at operand index.
         SameOperands       ///< Match when both operands are identical.
     };
 
-    /// Opcode to match.
+    /// @brief Opcode to match.
     core::Opcode op{core::Opcode::Count};
-    /// Which matching strategy to use.
+    /// @brief Matching strategy to apply.
     Kind kind{Kind::ConstOperand};
-    /// Operand index holding the constant (ConstOperand/ConstFloatOperand) or unused
-    /// (SameOperands).
+    /// @brief Constant-bearing operand index, unused by same-operand matches.
     unsigned constIdx = 0;
-    /// Required constant value (ConstOperand) - integer.
+    /// @brief Required integer payload for `ConstOperand`.
     long long value = 0;
-    /// Required constant value (ConstFloatOperand) - float.
+    /// @brief Required floating payload for `ConstFloatOperand`.
     double floatValue = 0.0;
 };
 
-/// \brief Replacement describing how to rewrite a matched instruction.
+/// @brief Replacement describing how to rewrite a matched instruction.
 struct Replace {
-    /// Strategy for producing the replacement value.
+    /// @brief Strategy for producing the replacement value.
     enum class Kind {
         Operand,   ///< Forward an existing operand.
         Const,     ///< Synthesize an integer/boolean literal.
@@ -62,24 +72,24 @@ struct Replace {
     };
 
     Kind kind{Kind::Operand};
-    /// Index of the operand to use when kind == Operand.
+    /// @brief Operand index forwarded when kind is `Operand`.
     unsigned operandIdx = 0;
-    /// Constant payload when kind == Const.
+    /// @brief Integer payload synthesized when kind is `Const`.
     long long constValue = 0;
-    /// Float constant payload when kind == ConstFloat.
+    /// @brief Floating payload synthesized when kind is `ConstFloat`.
     double floatConstValue = 0.0;
-    /// Whether the constant literal is a boolean (i1) rather than i64.
+    /// @brief Whether an integer replacement is an i1 boolean rather than i64.
     bool isBool = false;
 };
 
-/// \brief A peephole rule mapping a match to its replacement.
+/// @brief A peephole rule mapping a match to its replacement.
 struct Rule {
     Match match;      ///< Match pattern.
     Replace repl;     ///< Replacement action.
     const char *name{nullptr}; ///< Debug identifier for tracing.
 };
 
-/// \brief Registry of peephole rules.
+/// @brief Compile-time registry of peephole rules in matching order.
 inline constexpr std::array<Rule, 61> kRules{{
     // Integer arithmetic identities (checked overflow variants)
     {{core::Opcode::IAddOvf, Match::Kind::ConstOperand, 0, 0},

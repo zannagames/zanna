@@ -1,0 +1,546 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_panels_2d.zia
+// Purpose: Construct the complete 2D scene editor widget tree (0.5d split).
+// Key invariants:
+//   - Build is a verbatim relocation of SceneEditor2D.Setup's construction
+//     body: identical widgets, order, properties, and defaults.
+//   - Every widget lands on the editor's own fields; this module retains
+//     no state and is safe to call exactly once per editor instance.
+// Ownership/Lifetime:
+//   - The editor owns every constructed widget; this module owns nothing.
+// Links: zannastudio/src/ui/scene_editor_2d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_panels_2d;
+
+// ============================================================================
+// MODULE: scene_panels_2d
+// PURPOSE: Keep widget construction out of the editor mega-module so the
+//          editor file carries behavior, not layout scaffolding.
+//
+// WHERE-THIS-FITS: SceneEditor2D.Setup delegates here after recording its
+//          app handle; behavior (pumps, commits, rendering) stays with the
+//          editor class, which owns all constructed widgets as fields.
+//
+// TEACHING-NOTE: The dispatcher pattern — Zia modules cannot extend a
+//          class, so the builder takes the editor and assigns its exposed
+//          fields directly.
+// ============================================================================
+
+bind "../services/file_utils";
+bind "inspector_rows";
+bind "property_rows";
+bind "scene_editor_2d";
+bind "scene_pane_docking";
+bind "scene_layout_2d";
+
+bind GUI = Zanna.GUI;
+
+/// @brief Build the full 2D editor widget tree onto @p editor's fields.
+/// @details Verbatim relocation of the historical Setup body; the editor
+///          records its app handle before delegating here.
+expose func Build(editor: scene_editor_2d.SceneEditor2D,
+                  host: GUI.VBox,
+                  app: GUI.App) {
+        editor.guiApp = app;
+        editor.root = GUI.VBox.New();
+        editor.root.SetSpacing(0.0);
+        editor.root.SetPadding(0.0);
+        editor.root.SetFlex(1.0);
+        editor.root.SetName("scene-editor-2d");
+        editor.root.SetAccessibleName("2D scene editor");
+        host.AddChild(editor.root);
+
+        editor.toolbar = GUI.Flex.New();
+        editor.toolbar.SetDirection(GUI.FlexDirection.Row);
+        editor.toolbar.SetWrap(GUI.FlexWrap.Wrap);
+        editor.toolbar.SetAlign(GUI.Align.Center);
+        editor.toolbar.SetGap(4.0);
+        editor.toolbar.SetPadding(4.0);
+        editor.root.AddChild(editor.toolbar);
+
+        editor.newSceneButton = GUI.Button.New(editor.toolbar, "New Scene");
+        editor.newSceneButton.SetTooltip(
+            "Replace this document using the inspector dimensions (undoable)");
+        editor.importButton = GUI.Button.New(editor.toolbar, "Import Tiled...");
+        editor.importButton.SetTooltip("Import a Tiled JSON or TMX map into this document");
+        editor.selectButton = GUI.Button.New(editor.toolbar, "Select");
+        editor.selectButton.SetTooltip(
+            "Select and drag objects; Arrow keys nudge one pixel and "
+            + "Shift+Arrow nudges one tile");
+        editor.paintButton = GUI.Button.New(editor.toolbar, "Paint");
+        editor.paintButton.SetTooltip(
+            "Freehand paint the selected tile; Escape cancels a captured stroke");
+        editor.eraseButton = GUI.Button.New(editor.toolbar, "Erase");
+        editor.eraseButton.SetTooltip(
+            "Freehand clear tiles; Escape cancels a captured stroke");
+        editor.rectangleButton = GUI.Button.New(editor.toolbar, "Rectangle");
+        editor.rectangleButton.SetTooltip(
+            "Drag an inclusive rectangle using the selected tile; tile 0 clears");
+        editor.lineButton = GUI.Button.New(editor.toolbar, "Line");
+        editor.lineButton.SetTooltip(
+            "Drag a straight tile line using the selected tile; tile 0 clears");
+        editor.ellipseButton = GUI.Button.New(editor.toolbar, "Ellipse");
+        editor.ellipseButton.SetTooltip(
+            "Drag an ellipse outline using the selected tile; tile 0 clears");
+        editor.fillButton = GUI.Button.New(editor.toolbar, "Fill");
+        editor.fillButton.SetTooltip(
+            "Replace the clicked four-connected active-layer region");
+        editor.pickerButton = GUI.Button.New(editor.toolbar, "Pick");
+        editor.previewButton = GUI.Button.New(editor.toolbar, "Preview");
+        editor.previewButton.SetTooltip(
+            "Play authored tile animations and framing overlays without "
+            + "changing the scene");
+        editor.runSceneButton = GUI.Button.New(editor.toolbar, "Run Scene");
+        editor.runSceneButton.SetTooltip(
+            "Run the owning project with this saved scene's path appended");
+        editor.pickerButton.SetTooltip(
+            "Sample one active-layer tile and return to Paint");
+        editor.objectButton = GUI.Button.New(editor.toolbar, "Object");
+        editor.toolbarStatus = GUI.Label.New(editor.toolbar, "Open or create a 2D scene");
+        editor.toolbarStatus.SetMinSize(0.0, 0.0);
+        editor.toolbarStatus.SetPreferredSize(96.0, 0.0);
+        editor.toolbarStatus.SetEllipsis(true);
+        editor.toolbarStatus.SetMaxLines(1);
+        editor.toolbarStatus.SetFlex(1.0);
+
+        editor.viewToolbar = GUI.Flex.New();
+        editor.viewToolbar.SetDirection(GUI.FlexDirection.Row);
+        editor.viewToolbar.SetWrap(GUI.FlexWrap.Wrap);
+        editor.viewToolbar.SetAlign(GUI.Align.Center);
+        editor.viewToolbar.SetGap(4.0);
+        editor.viewToolbar.SetPadding(4.0);
+        editor.root.AddChild(editor.viewToolbar);
+        GUI.Label.New(editor.viewToolbar, "Tile");
+        editor.tileSpinner = GUI.Spinner.New(editor.viewToolbar);
+        editor.tileSpinner.SetAccessibleName("Selected tile ID");
+        editor.tileSpinner.SetRange(0.0, 1000000.0);
+        editor.tileSpinner.SetStep(1.0);
+        editor.tileSpinner.SetDecimals(0);
+        editor.tileSpinner.SetValue(1.0);
+        editor.tileSpinner.SetPreferredSize(88.0, 0.0);
+        GUI.Label.New(editor.viewToolbar, "Zoom");
+        editor.zoomOutButton = GUI.Button.New(editor.viewToolbar, "-");
+        editor.zoomOutButton.SetTooltip("Zoom out");
+        editor.zoomInButton = GUI.Button.New(editor.viewToolbar, "+");
+        editor.zoomInButton.SetTooltip("Zoom in");
+        editor.fitButton = GUI.Button.New(editor.viewToolbar, "Fit");
+        editor.fitButton.SetTooltip("Fit the complete scene in the current viewport");
+        editor.actualSizeButton = GUI.Button.New(editor.viewToolbar, "1:1");
+        editor.actualSizeButton.SetTooltip(
+            "Show artwork at its native tile resolution (100% zoom)");
+        editor.gridButton = GUI.Button.New(editor.viewToolbar, "Grid: on");
+        editor.gridButton.SetTooltip("Toggle the tile grid overlay");
+        editor.inspectorButton = GUI.Button.New(editor.viewToolbar, "Hide Inspector");
+        editor.inspectorButton.SetStyle(2);
+        editor.inspectorButton.SetTooltip(
+            "Hide the scene inspector and give the canvas the full width");
+        editor.viewStatusLabel = GUI.Label.New(editor.viewToolbar, "");
+        editor.viewStatusLabel.SetMinSize(0.0, 0.0);
+        editor.viewStatusLabel.SetPreferredSize(96.0, 0.0);
+        editor.viewStatusLabel.SetEllipsis(true);
+        editor.viewStatusLabel.SetMaxLines(1);
+        editor.viewStatusLabel.SetFlex(1.0);
+        editor.UpdateModeButtons();
+
+        // Three-pane workbench: Objects | Canvas+Palette | Inspector. The
+        // outer split owns the object hierarchy pane; the inner split keeps
+        // its historical name so persisted fractions and probes stay stable,
+        // and a vertical split gives the tile palette a real strip under the
+        // canvas instead of an inspector slot.
+        editor.hierarchySplit = GUI.SplitPane.New(editor.root, 1);
+        editor.hierarchySplit.SetFlex(1.0);
+        editor.hierarchySplit.SetPosition(0.20);
+        editor.hierarchySplit.SetMinFirst(220.0);
+        editor.hierarchySplit.SetMinSecond(520.0);
+
+        editor.objectPaneBox = GUI.VBox.New();
+        var objectPane = editor.objectPaneBox;
+        objectPane.SetSpacing(6.0);
+        objectPane.SetPadding(8.0);
+        objectPane.SetFlex(1.0);
+        editor.hierarchySplit.First.AddChild(objectPane);
+
+        editor.bodySplit = GUI.SplitPane.New(editor.hierarchySplit.Second, 1);
+        editor.bodySplit.SetFlex(1.0);
+        editor.bodySplit.SetPosition(0.66);
+        editor.bodySplit.SetMinFirst(280.0);
+        editor.bodySplit.SetMinSecond(300.0);
+
+        editor.canvasSplit = GUI.SplitPane.New(editor.bodySplit.First, 0);
+        editor.canvasSplit.SetFlex(1.0);
+        editor.canvasSplit.SetPosition(0.72);
+        editor.canvasSplit.SetMinFirst(220.0);
+        editor.canvasSplit.SetMinSecond(140.0);
+
+        editor.canvasScroll = GUI.ScrollView.New(editor.canvasSplit.First);
+        editor.canvasScroll.SetFlex(1.0);
+        // The stage carries the full-editor.scene logical extent for the scrollbars
+        // while the image renders only the visible window. Start alignment
+        // lets per-frame image margins pin the window under the viewport.
+        editor.canvasStage = GUI.VBox.New();
+        editor.canvasStage.SetAlign(GUI.Align.Start);
+        editor.canvasStage.SetJustify(GUI.Justify.Start);
+        editor.canvasScroll.AddChild(editor.canvasStage);
+        editor.canvasImage = GUI.Image.New(editor.canvasStage);
+        editor.canvasImage.SetScaleMode(0);
+        editor.canvasImage.SetFilter(0);
+        editor.canvasImage.SetName("scene-2d-canvas");
+        editor.canvasImage.SetAccessibleName("2D scene canvas");
+        // The canvas is a real focusable surface: clicking it takes keyboard
+        // focus, so arrow nudges, Delete, Duplicate, and Escape belong to
+        // the canvas the user is actually working in.
+        editor.canvasImage.SetFocusable(true);
+        // Assets dragged from the project browser drop onto the canvas to
+        // create sprite objects at the drop cell (Phase 1.2).
+        editor.canvasImage.SetDropTarget(true);
+        editor.canvasImage.SetAcceptedDropTypes("zanna/asset");
+        editor.canvasImage.SetTooltip(
+            "Paint or erase freehand, drag Rectangle, click Fill or Pick; "
+            + "Escape cancels captured tile gestures. In Select mode click or "
+            + "drag a box, Shift adds, Control/Command toggles, and object "
+            + "drags move the selection. The wheel zooms around the pointer "
+            + "and middle-drag pans.");
+
+        editor.paletteStripBox = GUI.VBox.New();
+        var paletteStrip = editor.paletteStripBox;
+        paletteStrip.SetSpacing(4.0);
+        paletteStrip.SetPadding(6.0);
+        paletteStrip.SetFlex(1.0);
+        editor.canvasSplit.Second.AddChild(paletteStrip);
+
+        editor.inspectorScroll = GUI.ScrollView.New(editor.bodySplit.Second);
+        editor.inspectorScroll.SetFlex(1.0);
+        var inspector = GUI.VBox.New();
+        inspector.SetSpacing(6.0);
+        inspector.SetPadding(8.0);
+        editor.inspectorScroll.AddChild(inspector);
+
+        // Object | Scene inspector tabs: object fields and component groups
+        // live on the Object tab; editor.scene-wide groups (setup, imports, editor.scene
+        // properties, camera/lighting, layers, tile behavior) on the Scene
+        // tab. Selection changes auto-follow, and a manual choice holds
+        // until the next selection change.
+        var inspectorTabRow = GUI.HBox.New();
+        inspectorTabRow.SetSpacing(4.0);
+        inspector.AddChild(inspectorTabRow);
+        editor.inspectorDock.Setup(
+            app,
+            editor.bodySplit.Second,
+            editor.inspectorScroll,
+            editor.bodySplit,
+            2,
+            0.66,
+            "Inspector",
+            inspectorTabRow);
+        editor.paletteDock.Setup(
+            app,
+            editor.canvasSplit.Second,
+            editor.paletteStripBox,
+            editor.canvasSplit,
+            2,
+            0.72,
+            "Palette",
+            paletteStrip);
+        editor.objectTabButton = GUI.Button.New(inspectorTabRow, "Object");
+        editor.objectTabButton.SetTooltip("Inspect the selected objects");
+        editor.sceneTabButton = GUI.Button.New(inspectorTabRow, "Scene");
+        editor.sceneTabButton.SetTooltip(
+            "Author scene setup, imports, properties, camera/lighting, "
+            + "layers, and tile behavior");
+        editor.objectTabHost = GUI.VBox.New();
+        editor.objectTabHost.SetSpacing(6.0);
+        inspector.AddChild(editor.objectTabHost);
+        editor.sceneTabHost = GUI.VBox.New();
+        editor.sceneTabHost.SetSpacing(6.0);
+        inspector.AddChild(editor.sceneTabHost);
+
+        GUI.Label.New(editor.sceneTabHost, "New scene setup");
+        var sceneSizeRow = GUI.HBox.New();
+        sceneSizeRow.SetSpacing(4.0);
+        editor.sceneTabHost.AddChild(sceneSizeRow);
+        GUI.Label.New(sceneSizeRow, "W");
+        editor.sceneWidthSpinner = GUI.Spinner.New(sceneSizeRow);
+        editor.ConfigureSceneSpinner(editor.sceneWidthSpinner, scene_editor_2d.DEFAULT_SCENE_WIDTH, 256);
+        GUI.Label.New(sceneSizeRow, "H");
+        editor.sceneHeightSpinner = GUI.Spinner.New(sceneSizeRow);
+        editor.ConfigureSceneSpinner(editor.sceneHeightSpinner, scene_editor_2d.DEFAULT_SCENE_HEIGHT, 256);
+        var tileSizeRow = GUI.HBox.New();
+        tileSizeRow.SetSpacing(4.0);
+        editor.sceneTabHost.AddChild(tileSizeRow);
+        GUI.Label.New(tileSizeRow, "Tile size");
+        editor.sceneTileSizeSpinner = GUI.Spinner.New(tileSizeRow);
+        editor.ConfigureSceneSpinner(editor.sceneTileSizeSpinner, scene_editor_2d.DEFAULT_TILE_SIZE, 512);
+        var importGroup = GUI.GroupBox.New(editor.sceneTabHost, "Project map imports");
+        editor.tiledAssetBrowser.Setup(
+            importGroup,
+            "Import Project Tiled Map...",
+            ".tmj,.json,.tmx",
+            "Import Map");
+
+        editor.sceneInfoLabel = GUI.Label.New(editor.sceneTabHost, "No scene loaded");
+        editor.sceneInfoLabel.SetWordWrap(true);
+
+        editor.sceneProperties.Setup(editor.sceneTabHost);
+        editor.cameraLighting.Setup(editor.sceneTabHost);
+
+        GUI.Label.New(editor.sceneTabHost, "Layers");
+        editor.layerList = GUI.ListBox.New(editor.sceneTabHost);
+        editor.layerList.SetAccessibleName("Scene layers");
+        editor.layerList.SetPreferredSize(0.0, 132.0);
+        var layerButtons = GUI.HBox.New();
+        layerButtons.SetSpacing(4.0);
+        editor.sceneTabHost.AddChild(layerButtons);
+        editor.addLayerButton = GUI.Button.New(layerButtons, "Add");
+        editor.removeLayerButton = GUI.Button.New(layerButtons, "Remove");
+        editor.layerUpButton = GUI.Button.New(layerButtons, "Up");
+        editor.layerDownButton = GUI.Button.New(layerButtons, "Down");
+        editor.layerVisibleCheck = GUI.Checkbox.New(editor.sceneTabHost, "Layer visible");
+        var layerStateRow = inspector_rows.NewWrapRow();
+        editor.sceneTabHost.AddChild(layerStateRow);
+        GUI.Label.New(layerStateRow, "Opacity");
+        editor.layerOpacitySpinner = GUI.Spinner.New(layerStateRow);
+        editor.layerOpacitySpinner.SetRange(0.0, 1.0);
+        editor.layerOpacitySpinner.SetStep(0.05);
+        editor.layerOpacitySpinner.SetDecimals(2);
+        editor.layerOpacitySpinner.SetTooltip(
+            "Authored layer opacity (ADR 0195); each change is one "
+            + "undoable edit");
+        editor.layerLockCheck = GUI.Checkbox.New(layerStateRow, "Lock");
+        editor.layerLockCheck.SetTooltip(
+            "Workspace-only: a locked layer refuses tile edits");
+        editor.layerSoloCheck = GUI.Checkbox.New(layerStateRow, "Solo");
+        editor.layerSoloCheck.SetTooltip(
+            "Workspace-only: preview only this layer; never saves");
+        editor.layerNameInput = GUI.TextInput.New(editor.sceneTabHost);
+        editor.layerNameInput.SetPlaceholder("Layer name");
+        editor.layerAssetInput = GUI.TextInput.New(editor.sceneTabHost);
+        editor.layerAssetInput.SetPlaceholder("Layer asset path");
+        editor.chooseLayerAssetButton =
+            GUI.Button.New(editor.sceneTabHost, "Choose Layer Image...");
+        editor.chooseLayerAssetButton.SetTooltip(
+            "Reference a PNG, JPEG, BMP, or GIF tileset for this layer");
+
+        // The tile palette lives in the strip under the canvas where painting
+        // happens; per-tile behavior authoring stays on the Scene tab.
+        editor.tilesetInspector.Setup(paletteStrip, app);
+        editor.tileBehavior.Setup(editor.sceneTabHost);
+
+        GUI.Label.New(objectPane, "Objects");
+        var hierarchySearchRow = GUI.HBox.New();
+        hierarchySearchRow.SetSpacing(4.0);
+        objectPane.AddChild(hierarchySearchRow);
+        editor.hierarchyDock.Setup(
+            app,
+            editor.hierarchySplit.First,
+            editor.objectPaneBox,
+            editor.hierarchySplit,
+            1,
+            0.20,
+            "Objects",
+            hierarchySearchRow);
+        editor.hierarchySearchInput = GUI.TextInput.New(hierarchySearchRow);
+        editor.hierarchySearchInput.SetFlex(1.0);
+        editor.hierarchySearchInput.SetPlaceholder("Find object id or type");
+        editor.hierarchySearchInput.SetAccessibleName(
+            "Find 2D scene object by id or type");
+        editor.hierarchySearchInput.SetTooltip(
+            "Keep the hierarchy intact and jump between matching visible rows");
+        editor.hierarchySearchPreviousButton =
+            GUI.Button.New(hierarchySearchRow, "Prev");
+        editor.hierarchySearchPreviousButton.SetAccessibleName(
+            "Previous matching 2D scene object");
+        editor.hierarchySearchPreviousButton.SetTooltip(
+            "Select and reveal the previous matching object");
+        editor.hierarchySearchNextButton =
+            GUI.Button.New(hierarchySearchRow, "Next");
+        editor.hierarchySearchNextButton.SetAccessibleName(
+            "Next matching 2D scene object");
+        editor.hierarchySearchNextButton.SetTooltip(
+            "Select and reveal the next matching object");
+        editor.hierarchySearchStatus = GUI.Label.New(
+            objectPane, "Find by object id or type");
+        editor.hierarchySearchStatus.SetWordWrap(true);
+        editor.objectTree = GUI.TreeView.New(objectPane);
+        editor.objectTree.SetAccessibleName("Scene object hierarchy");
+        // The dedicated pane gives the tree the full remaining height
+        // instead of a fixed inspector slot.
+        editor.objectTree.SetFlex(1.0);
+        editor.objectTree.SetMultiSelect(true);
+        editor.objectTree.SetDragDropMode(2);
+        editor.objectTree.SetTooltip(
+            "Expand object groups; Ctrl/Command-click or Shift-click selects "
+            + "several rows; drag before, into, or after another row");
+        editor.objectHierarchyStatus = GUI.Label.New(objectPane, "");
+        editor.objectHierarchyStatus.SetWordWrap(true);
+        var objectParentRow = GUI.HBox.New();
+        objectParentRow.SetSpacing(4.0);
+        objectPane.AddChild(objectParentRow);
+        GUI.Label.New(objectParentRow, "Parent");
+        editor.objectParentDropdown = GUI.Dropdown.New(objectParentRow);
+        editor.objectParentDropdown.SetFlex(1.0);
+        editor.objectParentDropdown.SetAccessibleName(
+            "Selected 2D object parent target");
+        editor.objectParentDropdown.SetTooltip(
+            "Choose a cycle-safe parent; absolute object positions stay unchanged");
+        editor.reparentObjectButton =
+            GUI.Button.New(objectParentRow, "Reparent");
+        editor.reparentObjectButton.SetTooltip(
+            "Move selected object subtrees beneath this parent as one undoable edit");
+        // Creation, duplication, removal, and ordering act on the hierarchy
+        // and live in its pane; identity and position editing stay with the
+        // inspector's selected-object fields.
+        var objectButtons = GUI.HBox.New();
+        objectButtons.SetSpacing(4.0);
+        objectPane.AddChild(objectButtons);
+        editor.addObjectButton = GUI.Button.New(objectButtons, "Add Root");
+        editor.addObjectButton.SetTooltip(
+            "Create a new root object at the selected canvas cell");
+        editor.addChildObjectButton =
+            GUI.Button.New(objectButtons, "Add Child");
+        editor.addChildObjectButton.SetTooltip(
+            "Create one child beneath the selected object in a single undo step");
+        // Wrapping row: four ordering buttons exceed the narrow hierarchy
+        // pane, so they wrap instead of bleeding into the canvas pane.
+        var objectOrderButtons = GUI.Flex.New();
+        objectOrderButtons.SetDirection(GUI.FlexDirection.Row);
+        objectOrderButtons.SetWrap(GUI.FlexWrap.Wrap);
+        objectOrderButtons.SetAlign(GUI.Align.Center);
+        objectOrderButtons.SetGap(4.0);
+        objectPane.AddChild(objectOrderButtons);
+        editor.duplicateObjectButton = GUI.Button.New(objectOrderButtons, "Duplicate");
+        editor.duplicateObjectButton.SetTooltip(
+            "Duplicate the selected object and all of its typed properties");
+        editor.removeObjectButton = GUI.Button.New(objectOrderButtons, "Remove");
+        editor.objectUpButton = GUI.Button.New(objectOrderButtons, "Up");
+        editor.objectUpButton.SetTooltip(
+            "Move the selected object subtree before its previous sibling");
+        editor.objectDownButton = GUI.Button.New(objectOrderButtons, "Down");
+        editor.objectDownButton.SetTooltip(
+            "Move the selected object subtree after its next sibling");
+
+        editor.objectFieldsLabel = GUI.Label.New(editor.objectTabHost, "Selected object");
+        editor.objectTypeInput = GUI.TextInput.New(editor.objectTabHost);
+        editor.objectTypeInput.SetPlaceholder("Object type");
+        editor.objectIdInput = GUI.TextInput.New(editor.objectTabHost);
+        editor.objectIdInput.SetPlaceholder("Object id");
+        editor.objectPositionRow = GUI.HBox.New();
+        editor.objectPositionRow.SetSpacing(4.0);
+        editor.objectTabHost.AddChild(editor.objectPositionRow);
+        GUI.Label.New(editor.objectPositionRow, "X");
+        editor.objectXSpinner = GUI.Spinner.New(editor.objectPositionRow);
+        editor.objectXSpinner.SetRange(-1000000.0, 1000000.0);
+        editor.objectXSpinner.SetStep(1.0);
+        editor.objectXSpinner.SetDecimals(0);
+        GUI.Label.New(editor.objectPositionRow, "Y");
+        editor.objectYSpinner = GUI.Spinner.New(editor.objectPositionRow);
+        editor.objectYSpinner.SetRange(-1000000.0, 1000000.0);
+        editor.objectYSpinner.SetStep(1.0);
+        editor.objectYSpinner.SetDecimals(0);
+        editor.applyObjectButton = GUI.Button.New(editor.objectPositionRow, "Apply");
+        editor.objectTransformRow = inspector_rows.NewWrapRow();
+        editor.objectTabHost.AddChild(editor.objectTransformRow);
+        GUI.Label.New(editor.objectTransformRow, "Rot");
+        editor.objectRotationSpinner = GUI.Spinner.New(editor.objectTransformRow);
+        editor.objectRotationSpinner.SetRange(0.0, 359.9);
+        editor.objectRotationSpinner.SetStep(1.0);
+        editor.objectRotationSpinner.SetDecimals(1);
+        editor.objectRotationSpinner.SetTooltip(
+            "Rotation in degrees about the object pivot");
+        GUI.Label.New(editor.objectTransformRow, "SX");
+        editor.objectScaleXSpinner = GUI.Spinner.New(editor.objectTransformRow);
+        editor.objectScaleXSpinner.SetRange(-10000.0, 10000.0);
+        editor.objectScaleXSpinner.SetStep(0.1);
+        editor.objectScaleXSpinner.SetDecimals(2);
+        editor.objectScaleXSpinner.SetTooltip("Horizontal scale factor");
+        GUI.Label.New(editor.objectTransformRow, "SY");
+        editor.objectScaleYSpinner = GUI.Spinner.New(editor.objectTransformRow);
+        editor.objectScaleYSpinner.SetRange(-10000.0, 10000.0);
+        editor.objectScaleYSpinner.SetStep(0.1);
+        editor.objectScaleYSpinner.SetDecimals(2);
+        editor.objectScaleYSpinner.SetTooltip("Vertical scale factor");
+        editor.objectFlipXCheck = GUI.Checkbox.New(editor.objectTransformRow, "Flip X");
+        editor.objectFlipXCheck.SetTooltip(
+            "Mirror horizontally about the pivot (one undoable edit)");
+        editor.objectFlipYCheck = GUI.Checkbox.New(editor.objectTransformRow, "Flip Y");
+        editor.objectFlipYCheck.SetTooltip(
+            "Mirror vertically about the pivot (one undoable edit)");
+        GUI.Label.New(editor.objectTransformRow, "PX");
+        editor.objectPivotXSpinner = GUI.Spinner.New(editor.objectTransformRow);
+        editor.objectPivotXSpinner.SetRange(0.0, 1.0);
+        editor.objectPivotXSpinner.SetStep(0.05);
+        editor.objectPivotXSpinner.SetDecimals(2);
+        editor.objectPivotXSpinner.SetTooltip(
+            "Normalized horizontal pivot within the sprite");
+        GUI.Label.New(editor.objectTransformRow, "PY");
+        editor.objectPivotYSpinner = GUI.Spinner.New(editor.objectTransformRow);
+        editor.objectPivotYSpinner.SetRange(0.0, 1.0);
+        editor.objectPivotYSpinner.SetStep(0.05);
+        editor.objectPivotYSpinner.SetDecimals(2);
+        editor.objectPivotYSpinner.SetTooltip(
+            "Normalized vertical pivot within the sprite");
+        GUI.Label.New(editor.objectTransformRow, "Tint");
+        editor.objectTintInput = GUI.TextInput.New(editor.objectTransformRow);
+        editor.objectTintInput.SetPlaceholder("RRGGBBAA");
+        editor.objectTintInput.SetTooltip(
+            "RGBA multiply tint in hex; FFFFFFFF means no tint. "
+            + "Enter commits one undoable edit.");
+        editor.objectArrangeRow = GUI.HBox.New();
+        editor.objectArrangeRow.SetSpacing(4.0);
+        editor.objectTabHost.AddChild(editor.objectArrangeRow);
+        editor.objectArrangeDropdown = GUI.Dropdown.New(editor.objectArrangeRow);
+        editor.objectArrangeDropdown.AddItem(
+            scene_layout_2d.OperationLabel(scene_editor_2d.ARRANGE_ALIGN_X));
+        editor.objectArrangeDropdown.AddItem(
+            scene_layout_2d.OperationLabel(scene_editor_2d.ARRANGE_ALIGN_Y));
+        editor.objectArrangeDropdown.AddItem(
+            scene_layout_2d.OperationLabel(scene_editor_2d.ARRANGE_DISTRIBUTE_X));
+        editor.objectArrangeDropdown.AddItem(
+            scene_layout_2d.OperationLabel(scene_editor_2d.ARRANGE_DISTRIBUTE_Y));
+        editor.objectArrangeDropdown.SetSelected(scene_editor_2d.ARRANGE_ALIGN_X);
+        editor.objectArrangeDropdown.SetFlex(1.0);
+        editor.objectArrangeDropdown.SetTooltip(
+            "Align to the primary object or distribute authored point positions");
+        editor.arrangeObjectButton = GUI.Button.New(editor.objectArrangeRow, "Arrange");
+        editor.arrangeObjectButton.SetTooltip(
+            "Apply one undoable layout operation to the selected objects");
+
+        editor.objectPropertyLabel =
+            GUI.Label.New(editor.objectTabHost, "Object properties");
+        editor.objectProperties = new property_rows.PropertyRows();
+        editor.objectProperties.Setup(
+            editor.objectTabHost,
+            ["String", "Integer", "Float", "Boolean", "Null"],
+            "New property",
+            "object property");
+        // Batch editor.mode keeps one explicit remove-by-key affordance beside the
+        // shared draft row; single-object rows remove through their own ×.
+        editor.removeObjectPropertyButton =
+            GUI.Button.New(editor.objectTabHost, "Remove");
+        editor.removeObjectPropertyButton.SetTooltip(
+            "Remove this property from the current selection");
+        editor.removeObjectPropertyButton.SetVisible(false);
+
+        editor.componentPalette.Setup(
+            editor.objectTabHost,
+            "Project components",
+            "2D object component template");
+        editor.componentAssetHost =
+            GUI.GroupBox.New(editor.objectTabHost, "Component asset field");
+        editor.componentAssetBrowser.Setup(
+            editor.componentAssetHost,
+            "Browse Asset Field...",
+            file_utils.AssetKindExtensions("any"),
+            "Use In Field Draft");
+
+        editor.detailLabel = GUI.Label.New(inspector, "");
+        editor.detailLabel.SetWordWrap(true);
+        editor.SetEditorControlsEnabled(false);
+    }

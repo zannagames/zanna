@@ -28,6 +28,14 @@
 //        src/runtime/io/rt_path.c and src/runtime/io/rt_path.h (path API)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements discovery of the running executable's directory.
+ * @details Uses strict native Windows conversion, dynamically resolved macOS
+ * executable-path lookup, or the Linux `/proc/self/exe` link with bounded
+ * growing buffers, strips the executable filename, and adapts the malloc-owned
+ * native result to a managed runtime string.
+ */
 
 #include "rt_string.h"
 
@@ -130,6 +138,10 @@ char *rt_path_exe_dir_cstr(void) {
     // issues). It reports the required size when the buffer is too small, so we
     // size dynamically instead of falling back to "." on long paths (VDOC-185).
     {
+        /// @brief Dynamically resolved `_NSGetExecutablePath` callback ABI.
+        /// @param buf Optional destination buffer for the executable path.
+        /// @param size In/out buffer capacity or required byte count.
+        /// @return Zero on success; nonzero when @p buf is absent or too small.
         typedef int (*nsget_fn)(char *, uint32_t *);
         void *handle = dlopen(NULL, RTLD_LAZY);
         if (!handle)

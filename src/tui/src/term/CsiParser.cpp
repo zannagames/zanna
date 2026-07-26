@@ -19,6 +19,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file CsiParser.cpp
+ * @brief Implements terminal CSI decoding for structured input events.
+ * @details The parser interprets VT parameter lists, modifier encodings,
+ *          cursor and function keys, SGR mouse reports, and bracketed-paste
+ *          boundaries, appending decoded events or paste bytes into
+ *          caller-owned buffers retained by reference.
+ */
+
 #include "tui/term/CsiParser.hpp"
 
 namespace zanna::tui::term {

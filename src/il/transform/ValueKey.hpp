@@ -20,6 +20,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares canonical expression keys shared by EarlyCSE and GVN.
+ *
+ * @details This interface defines semantic value hashing and equality,
+ *          canonicalizes commutative instruction operands, identifies opcodes
+ *          eligible for common-subexpression elimination, and constructs
+ *          stable keys for pure result-producing instructions.
+ */
+
 #pragma once
 
 #include "il/core/Instr.hpp"
@@ -53,11 +63,11 @@ struct ValueEq {
 
 /// @brief Normalised key describing a pure instruction.
 struct ValueKey {
-    /// Opcode contributing to expression identity.
+    /// @brief Opcode contributing to expression identity.
     il::core::Opcode op{il::core::Opcode::Count};
-    /// Result type discriminator.
+    /// @brief Result type discriminator.
     il::core::Type::Kind type{il::core::Type::Kind::Void};
-    /// Canonically ordered operand payloads.
+    /// @brief Canonically ordered operand payloads.
     std::vector<il::core::Value> operands;
 
     /// @brief Compare two normalized expression identities.

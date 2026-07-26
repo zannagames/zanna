@@ -432,8 +432,14 @@ void emitOperand(const Operand &operand,
     static_cast<void>(target);
     std::visit(
         Overload{
+            /// @brief Emits a register operand.
+            /// @param reg Register to format.
             [&](const OpReg &reg) { out << asmfmt::fmt_reg(encodeRegister(reg)); },
+            /// @brief Emits an immediate operand.
+            /// @param imm Immediate to format.
             [&](const OpImm &imm) { out << asmfmt::format_imm(imm.val); },
+            /// @brief Emits a base/index/displacement memory operand.
+            /// @param mem Memory address to format.
             [&](const OpMem &mem) {
                 asmfmt::MemAddr addr{};
                 addr.base = encodeRegister(mem.base);
@@ -445,7 +451,11 @@ void emitOperand(const Operand &operand,
                 }
                 out << asmfmt::format_mem(addr);
             },
+            /// @brief Emits a direct symbol operand.
+            /// @param label Symbol label to format.
             [&](const OpLabel &label) { out << formatSymbolReference(label.name, format); },
+            /// @brief Emits a RIP-relative symbol operand.
+            /// @param label RIP-relative label to format.
             [&](const OpRipLabel &label) { out << formatRipSymbolReference(label.name, format); }},
         operand);
 }
@@ -1298,17 +1308,30 @@ std::string AsmEmitter::formatShiftCount(const Operand &operand,
 std::string AsmEmitter::formatLeaSource(const Operand &operand,
                                         const TargetInfo &target,
                                         objfile::ObjFormat format) {
+    /// @brief Formats a direct label as a RIP-relative LEA source.
+    /// @param label Label supplied to the first visitor callback.
+    /// @return RIP-relative symbol reference from the label callback.
     return std::visit(
         Overload{[&](const OpLabel &label) { return formatRipSymbolReference(label.name, format); },
+                 /// @brief Formats a memory LEA source.
+                 /// @param mem Memory operand to format.
+                 /// @return Formatted memory address.
                  [&](const OpMem &mem) { return formatMem(mem, target); },
+                 /// @brief Rejects a register as an invalid LEA source.
+                 /// @return This callback always throws.
                  [&](const OpReg &) -> std::string {
                      throw std::runtime_error(
                          "x86-64 asm emitter: LEA requires a memory or RIP-relative source");
                  },
+                 /// @brief Rejects an immediate as an invalid LEA source.
+                 /// @return This callback always throws.
                  [&](const OpImm &) -> std::string {
                      throw std::runtime_error(
                          "x86-64 asm emitter: LEA requires a memory or RIP-relative source");
                  },
+                 /// @brief Formats an existing RIP-relative LEA source.
+                 /// @param label RIP-relative label to format.
+                 /// @return Formatted RIP-relative operand.
                  [&](const OpRipLabel &label) { return formatRipLabel(label, format); }},
         operand);
 }
@@ -1323,12 +1346,18 @@ std::string AsmEmitter::formatLeaSource(const Operand &operand,
 std::string AsmEmitter::formatCallTarget(const Operand &operand,
                                          const TargetInfo &target,
                                          objfile::ObjFormat format) {
+    /// @brief Formats a direct call target and maps canonical runtime names.
+    /// @param label Direct target supplied to the first visitor callback.
+    /// @return Formatted symbol reference from the label callback.
     return std::visit(
         Overload{[&](const OpLabel &label) {
                      if (auto mapped = il::runtime::mapCanonicalRuntimeName(label.name))
                          return formatSymbolReference(std::string{*mapped}, format);
                      return formatSymbolReference(zanna::common::MangleLink(label.name), format);
                  },
+                 /// @brief Formats an indirect register call target.
+                 /// @param reg Target register.
+                 /// @return AT&T indirect-register operand.
                  [&](const OpReg &reg) {
                      if (reg.cls != RegClass::GPR) {
                          throw std::runtime_error(
@@ -1336,11 +1365,19 @@ std::string AsmEmitter::formatCallTarget(const Operand &operand,
                      }
                      return std::string{"*"} + formatReg(reg, target);
                  },
+                 /// @brief Formats an indirect memory call target.
+                 /// @param mem Target memory operand.
+                 /// @return AT&T indirect-memory operand.
                  [&](const OpMem &mem) { return std::string{"*"} + formatMem(mem, target); },
+                 /// @brief Rejects an immediate as an invalid call target.
+                 /// @return This callback always throws.
                  [&](const OpImm &) -> std::string {
                      throw std::runtime_error(
                          "x86-64 asm emitter: CALL requires a label, register, or memory target");
                  },
+                 /// @brief Formats an indirect RIP-relative call target.
+                 /// @param label RIP-relative target.
+                 /// @return AT&T indirect RIP-relative operand.
                  [&](const OpRipLabel &label) {
                      return std::string{"*"} + formatRipLabel(label, format);
                  }},

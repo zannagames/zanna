@@ -21,6 +21,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_hash_util.c
+ * @brief Initializes the process-wide SipHash key from platform entropy.
+ * @details A native once primitive selects a single initializer, fills both
+ *          64-bit key halves through the operating-system CSPRNG, publishes
+ *          readiness with appropriate ordering, and traps instead of using a
+ *          predictable fallback when entropy acquisition fails.
+ */
+
 #include <errno.h>
 #include <stdint.h>
 #include <string.h>
@@ -47,9 +56,11 @@
 #include <unistd.h>
 #endif
 
-/// Shared SipHash-2-4 key (128 bits).
+/// First 64-bit half of the process-wide SipHash-2-4 key.
 uint64_t rt_siphash_k0_ = 0;
+/// Second 64-bit half of the process-wide SipHash-2-4 key.
 uint64_t rt_siphash_k1_ = 0;
+/// Publication flag set with release ordering after both key halves are ready.
 int rt_siphash_seeded_ = 0;
 
 /// @brief Fill `buf` with `len` random bytes from the OS CSPRNG.
@@ -61,6 +72,9 @@ int rt_siphash_seeded_ = 0;
 ///            practice, but kernel guarantees only "at least one byte").
 ///          Returns 0 on success, -1 on any failure (open, read, or
 ///          BCryptGenRandom error).
+/// @param buf Writable destination; must be non-null when @p len is non-zero.
+/// @param len Number of random bytes requested.
+/// @return Zero on success, or `-1` on invalid input or entropy-source failure.
 static int hash_random_fill(uint8_t *buf, size_t len) {
     if (len == 0)
         return 0;
@@ -134,6 +148,10 @@ static void hash_seed_init(void) {
 static INIT_ONCE g_hash_seed_once_ = INIT_ONCE_STATIC_INIT;
 
 /// @brief Win32 InitOnce callback shim — adapts our void-returning init to BOOL CALLBACK.
+/// @param InitOnce Borrowed once-control object supplied by Windows.
+/// @param Parameter Unused caller parameter supplied by `InitOnceExecuteOnce`.
+/// @param Context Unused context-output slot supplied by Windows.
+/// @return `TRUE` after invoking the seed initializer.
 static BOOL CALLBACK hash_seed_once_cb(PINIT_ONCE InitOnce, PVOID Parameter, PVOID *Context) {
     (void)InitOnce;
     (void)Parameter;

@@ -27,6 +27,14 @@
 //        src/runtime/io/rt_compress.h
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements RFC 1951 compression and RFC 1952 GZIP framing.
+ * @details Provides a growable LSB-first bit writer, hash-chain LZ77 match
+ * search, stored and fixed block emission, bounded optional dynamic-Huffman
+ * optimization, level-sensitive search depth, and GZIP header and trailer
+ * assembly.
+ */
 
 #include "rt_bytes.h"
 #include "rt_compress.h"
@@ -180,10 +188,13 @@ typedef struct {
     int window_pos; ///< Current write position within the 32KB sliding window.
 } lz77_state_t;
 
+/** @name LZ77 three-byte hash-chain configuration
+ * @{ */
 #define HASH_BITS 15
 #define HASH_SIZE (1 << HASH_BITS)
 #define HASH_MASK (HASH_SIZE - 1)
 #define NIL (-1)
+/** @} */
 
 /// @brief Compute the match-finder hash of a three-byte prefix.
 /// @param data Pointer to at least three accessible bytes.

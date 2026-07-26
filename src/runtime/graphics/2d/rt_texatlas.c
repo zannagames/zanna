@@ -30,6 +30,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements fixed-capacity named texture atlases and batch draw adapters.
+ *
+ * @details The graphics implementation retains a Pixels backing image, stores
+ *          bounded atlas rectangles, and resolves case-sensitive names through
+ *          an embedded open-addressing table. It also supplies grid slicing,
+ *          region queries, SpriteBatch delegation, and benign no-graphics
+ *          stubs for the same runtime ABI.
+ */
+
 #include "rt_texatlas.h"
 
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -51,22 +62,26 @@
 // Internal Types
 //=============================================================================
 
+/// @brief Maximum number of named regions stored by one atlas.
 #define TEXATLAS_MAX_REGIONS 512
+/// @brief Embedded region-name capacity including the NUL terminator.
 #define TEXATLAS_NAME_LEN 32
+/// @brief Number of slots in the open-addressed lookup table.
 #define TEXATLAS_HASH_SIZE 1024
 
 /// @brief Fixed-size named atlas rectangle.
 typedef struct {
-    char name[TEXATLAS_NAME_LEN];
+    char name[TEXATLAS_NAME_LEN]; ///< Owned NUL-terminated region name.
+    /// @brief Atlas-space left, top, width, and height coordinates.
     int64_t x, y, w, h;
 } texatlas_region;
 
 /// @brief Private runtime-managed atlas and open-addressing lookup state.
 typedef struct {
-    void *pixels; // Retained backing Pixels
-    texatlas_region regions[TEXATLAS_MAX_REGIONS];
-    int32_t region_count;
-    int32_t region_slots[TEXATLAS_HASH_SIZE]; // index + 1, 0 = empty
+    void *pixels; ///< Retained backing Pixels object.
+    texatlas_region regions[TEXATLAS_MAX_REGIONS]; ///< Embedded region records.
+    int32_t region_count; ///< Number of initialized entries in @ref regions.
+    int32_t region_slots[TEXATLAS_HASH_SIZE]; ///< Region index plus one; zero is empty.
 } texatlas_impl;
 
 //=============================================================================

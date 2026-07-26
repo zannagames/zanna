@@ -413,6 +413,9 @@ bool Sema::tryExtractNullCheck(Expr *cond,
 
     isNotNull = (binary->op == BinaryOp::Ne);
 
+    /// @brief Captures the narrowing key and optional surface type of an operand.
+    /// @param operand Non-null side of the comparison.
+    /// @return `true` when the operand has a stable narrowing key.
     auto captureOperand = [&](Expr *operand) {
         varName = narrowingKeyForExpr(operand);
         if (varName.empty())

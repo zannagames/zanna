@@ -43,6 +43,7 @@ bind "../services/file_utils";
 bind "../services/material_library_3d";
 bind "../ui/app_shell";
 bind "../ui/scene_editor_3d";
+bind "../ui/scene_panels_3d";
 
 bind SceneGraph = Zanna.Graphics3D.SceneGraph;
 bind SceneNode = Zanna.Graphics3D.SceneNode;
@@ -121,7 +122,7 @@ func main() {
         return;
     }
     var editor = new scene_editor_3d.SceneEditor3D();
-    editor.Setup(shell.workbench.scene3DHost, shell.app);
+    scene_panels_3d.Build(editor,shell.workbench.scene3DHost, shell.app);
     editor.SetWorkspaceContext(project);
     var documents = new document_manager.DocumentManager();
     var sceneDoc = documents.NewScene3DDocument();
@@ -212,6 +213,17 @@ func main() {
     }
     if editor.Undo() == false or sceneDoc.content != applyBaseline {
         fail(shell, workDir, "library application did not undo exactly");
+        return;
+    }
+
+    // Rendered swatch (2.6): the selected entry gets a visible sphere
+    // preview; presentation-only, so content and history stay untouched.
+    var swatchBaseline = sceneDoc.content;
+    editor.RefreshMaterialSwatch();
+    if editor.materialSwatchImage.IsVisible() == false
+       or sceneDoc.content != swatchBaseline {
+        fail(shell, workDir,
+             "selected library entry did not render a visible swatch");
         return;
     }
 

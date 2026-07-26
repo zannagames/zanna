@@ -45,7 +45,7 @@ using il::tools::basic::loadBasicSource;
 ///
 /// @param argc Argument count supplied by the C runtime.
 /// @param argv Argument vector supplied by the C runtime.
-/// @return Zero on success, non-zero when the file cannot be loaded.
+/// @return Zero on success; one when command-line conversion or loading fails.
 int main(int argc, char **argv) {
     zanna::tools::Utf8CommandLine commandLine(argc, argv);
     if (!commandLine.applyOrReport(argc, argv))

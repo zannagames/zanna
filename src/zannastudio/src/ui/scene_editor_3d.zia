@@ -129,6 +129,7 @@ bind "scene_light_3d";
 bind "scene_material_inspector_3d";
 bind "scene_material_3d";
 bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
 bind "scene_transform_3d";
 
 bind Zanna.GUI as GUI;
@@ -151,6 +152,7 @@ bind Vec3 = Zanna.Math.Vec3;
 bind Quat = Zanna.Math.Quat;
 bind Mat4 = Zanna.Math.Mat4;
 bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
 bind Math = Zanna.Math;
 bind Convert = Zanna.Core.Convert;
 bind Input = Zanna.Input;
@@ -171,7 +173,7 @@ final INTERACTIVE_RESOLUTION_DIVISOR: Integer = 2;
 final MAX_SCENE_BYTES: Integer = 64000000;
 final MAX_3D_HISTORY_BYTES: Integer = 256000000;
 final MAX_TEXTURE_SOURCE_BYTES: Integer = 16000000;
-final MAX_EDITOR_NODES: Integer = 1024;
+final MAX_EDITOR_NODES: Integer = 4096;
 final MAX_HIERARCHY_DEPTH: Integer = 256;
 final MAX_3D_SCENE_HISTORY: Integer = 100;
 final DEG_TO_RAD: Number = 0.017453292519943295;
@@ -205,6 +207,7 @@ final VIEWPORT_DOUBLE_CLICK_RADIUS_SQUARED: Integer = 64;
 
 final VIEWPORT_MODE_SHADED: Integer = 0;
 final VIEWPORT_MODE_WIREFRAME: Integer = 1;
+final VIEWPORT_MODE_SHADED_WIRE: Integer = 2;
 
 final INSET_WIDTH: Integer = 256;
 final INSET_HEIGHT: Integer = 144;
@@ -580,7 +583,7 @@ class ScreenBounds3D {
 
 /// @brief Persistent visual editor for one active VSCN document.
 class SceneEditor3D {
-    hide GUI.App guiApp;
+    expose GUI.App guiApp;
     expose GUI.VBox root;
     expose GUI.Flex toolbar;
     expose GUI.Flex viewToolbar;
@@ -592,6 +595,10 @@ class SceneEditor3D {
     expose GUI.Button addSphereButton;
     expose GUI.Button addPlaneButton;
     expose GUI.Button addCylinderButton;
+    expose GUI.Button runSceneButton;
+    expose GUI.Button topViewButton;
+    expose GUI.Button frontViewButton;
+    expose GUI.Button rightViewButton;
     expose GUI.Button addLightButton;
     expose GUI.Button addCameraButton;
     expose GUI.Button importInstanceButton;
@@ -606,6 +613,13 @@ class SceneEditor3D {
     expose GUI.GroupBox materialLibraryGroup;
     expose GUI.Label materialLibraryStatus;
     expose GUI.ListBox materialLibraryList;
+    expose GUI.Image materialSwatchImage;
+    expose GUI.GroupBox historyGroup;
+    expose GUI.ListBox historyList;
+    hide List[String] undoLabels;
+    hide List[String] redoLabels;
+    hide Boolean historyListRefreshing;
+    hide String materialSwatchName;
     expose GUI.TextInput materialLibraryNameInput;
     expose GUI.Button materialLibrarySaveButton;
     expose GUI.Button materialLibraryApplyButton;
@@ -668,6 +682,9 @@ class SceneEditor3D {
     expose GUI.Label toolbarStatus;
     expose GUI.Label viewStatusLabel;
     expose GUI.SplitPane hierarchySplit;
+    expose GUI.VBox hierarchyPaneBox;
+    expose scene_pane_docking.PaneDock hierarchyDock;
+    expose scene_pane_docking.PaneDock inspectorDock;
     expose GUI.SplitPane bodySplit;
     expose GUI.GroupBox importGroup;
     expose GUI.Label nameLabel;
@@ -847,7 +864,7 @@ class SceneEditor3D {
     hide List[Mat4] gizmoDragStartWorldMatrices;
     hide List[Vec3] gizmoDragStartWorldPositions;
     hide List[Vec3] gizmoDragStartWorldScales;
-    hide Integer snapTransformRevision;
+    expose Integer snapTransformRevision;
     hide Integer metadataOwnerIndex;
     hide Boolean restoreInspectorScrollPending;
     hide Number pendingInspectorScrollY;
@@ -864,6 +881,9 @@ class SceneEditor3D {
     hide Integer lastViewportClickY;
     hide Integer lastViewportClickMs;
     expose Integer hoveredViewportNode;
+    hide List[String] cameraBookmarks;
+    hide List[String] pickLockedPaths;
+    hide Boolean runSceneRequested;
     hide Boolean marqueeCandidate;
     hide Boolean marqueeActive;
     hide Boolean marqueeCancelled;
@@ -887,6 +907,11 @@ class SceneEditor3D {
         addSphereButton = null;
         addPlaneButton = null;
         addCylinderButton = null;
+        runSceneButton = null;
+        runSceneRequested = false;
+        topViewButton = null;
+        frontViewButton = null;
+        rightViewButton = null;
         addLightButton = null;
         addCameraButton = null;
         importInstanceButton = null;
@@ -901,6 +926,13 @@ class SceneEditor3D {
         materialLibraryGroup = null;
         materialLibraryStatus = null;
         materialLibraryList = null;
+        materialSwatchImage = null;
+        materialSwatchName = "";
+        historyGroup = null;
+        historyList = null;
+        undoLabels = [];
+        redoLabels = [];
+        historyListRefreshing = false;
         materialLibraryNameInput = null;
         materialLibrarySaveButton = null;
         materialLibraryApplyButton = null;
@@ -963,6 +995,9 @@ class SceneEditor3D {
         toolbarStatus = null;
         viewStatusLabel = null;
         hierarchySplit = null;
+        hierarchyPaneBox = null;
+        hierarchyDock = new scene_pane_docking.PaneDock();
+        inspectorDock = new scene_pane_docking.PaneDock();
         bodySplit = null;
         importGroup = null;
         nameLabel = null;
@@ -1167,6 +1202,8 @@ class SceneEditor3D {
         lastViewportClickY = 0;
         lastViewportClickMs = 0;
         hoveredViewportNode = -1;
+        cameraBookmarks = [];
+        pickLockedPaths = [];
         marqueeCandidate = false;
         marqueeActive = false;
         marqueeCancelled = false;
@@ -1179,608 +1216,6 @@ class SceneEditor3D {
     }
 
     /// @brief Build the editor into WorkbenchShell.scene3DHost.
-    expose func Setup(host: GUI.VBox, app: GUI.App) {
-        guiApp = app;
-        root = GUI.VBox.New();
-        root.SetSpacing(0.0);
-        root.SetPadding(0.0);
-        root.SetFlex(1.0);
-        root.SetName("scene-editor-3d");
-        root.SetAccessibleName("3D scene editor");
-        host.AddChild(root);
-
-        toolbar = GUI.Flex.New();
-        toolbar.SetDirection(GUI.FlexDirection.Row);
-        toolbar.SetWrap(GUI.FlexWrap.Wrap);
-        toolbar.SetAlign(GUI.Align.Center);
-        toolbar.SetGap(4.0);
-        toolbar.SetPadding(4.0);
-        root.AddChild(toolbar);
-        newSceneButton = GUI.Button.New(toolbar, "New");
-        newSceneButton.SetTooltip("Replace this document with an empty 3D scene");
-        importAssetButton = GUI.Button.New(toolbar, "Import Asset...");
-        importAssetButton.SetTooltip(
-            "Import Scene3D/VSCN, glTF, GLB, FBX, OBJ, or STL into this scene document");
-        importInstanceButton = GUI.Button.New(toolbar, "Import Instance...");
-        importInstanceButton.SetTooltip(
-            "Place a scene by reference (VSCN v7 prefab): the file stores "
-            + "only the reference plus this node's overrides");
-        addEmptyButton = GUI.Button.New(toolbar, "+ Empty");
-        addChildButton = GUI.Button.New(toolbar, "+ Child");
-        addBoxButton = GUI.Button.New(toolbar, "+ Box");
-        addSphereButton = GUI.Button.New(toolbar, "+ Sphere");
-        addPlaneButton = GUI.Button.New(toolbar, "+ Plane");
-        addCylinderButton = GUI.Button.New(toolbar, "+ Cylinder");
-        addLightButton = GUI.Button.New(toolbar, "+ Light");
-        addLightButton.SetTooltip(
-            "Create a top-level Point light node in one undoable edit");
-        addCameraButton = GUI.Button.New(toolbar, "+ Camera");
-        addCameraButton.SetTooltip(
-            "Create a top-level camera node in one undoable edit");
-        duplicateNodeButton = GUI.Button.New(toolbar, "Duplicate");
-        duplicateNodeButton.SetTooltip(
-            "Duplicate selected hierarchy roots with their complete subtrees");
-        deleteNodeButton = GUI.Button.New(toolbar, "Delete");
-        toolbarStatus = GUI.Label.New(toolbar, "Open or create a 3D scene");
-        toolbarStatus.SetFlex(1.0);
-        toolbarStatus.SetPreferredSize(180.0, 0.0);
-
-        viewToolbar = GUI.Flex.New();
-        viewToolbar.SetDirection(GUI.FlexDirection.Row);
-        viewToolbar.SetWrap(GUI.FlexWrap.Wrap);
-        viewToolbar.SetAlign(GUI.Align.Center);
-        viewToolbar.SetGap(4.0);
-        viewToolbar.SetPadding(4.0);
-        root.AddChild(viewToolbar);
-        GUI.Label.New(viewToolbar, "View");
-        viewportModeButton = GUI.Button.New(viewToolbar, "Shaded");
-        UpdateViewportModeControls();
-        inspectorButton = GUI.Button.New(viewToolbar, "Hide Inspector");
-        inspectorButton.SetStyle(2);
-        inspectorButton.SetTooltip(
-            "Hide the node inspector and give the viewport the full width");
-        GUI.Label.New(viewToolbar, "Transform");
-        moveToolButton = GUI.Button.New(viewToolbar, "Move");
-        moveToolButton.SetTooltip(
-            "Move the selected node along one axis (W in viewport)");
-        rotateToolButton = GUI.Button.New(viewToolbar, "Rotate");
-        rotateToolButton.SetTooltip(
-            "Rotate the selected node around one axis (E in viewport)");
-        scaleToolButton = GUI.Button.New(viewToolbar, "Scale");
-        scaleToolButton.SetTooltip(
-            "Scale the selected node along one axis (R in viewport)");
-        transformSpaceButton = GUI.Button.New(viewToolbar, "Local");
-        transformSpaceButton.SetTooltip(
-            "Use parent-relative local axes; choose World for global axes");
-        snapTransformCheck = GUI.Checkbox.New(viewToolbar, "Snap");
-        snapTransformCheck.SetTooltip(
-            "Quantize the resulting transform using the current tool's step");
-        snapTransformCheck.SetChecked(false);
-        snapTransformRevision = snapTransformCheck.GetRevision();
-        UpdateGizmoModeControls();
-        orbitLeftButton = GUI.Button.New(viewToolbar, "Yaw -");
-        orbitLeftButton.SetTooltip("Orbit the view left");
-        orbitRightButton = GUI.Button.New(viewToolbar, "Yaw +");
-        orbitRightButton.SetTooltip("Orbit the view right");
-        orbitUpButton = GUI.Button.New(viewToolbar, "Pitch +");
-        orbitUpButton.SetTooltip("Orbit the view upward");
-        orbitDownButton = GUI.Button.New(viewToolbar, "Pitch -");
-        orbitDownButton.SetTooltip("Orbit the view downward");
-        GUI.Label.New(viewToolbar, "Zoom");
-        zoomOutButton = GUI.Button.New(viewToolbar, "-");
-        zoomOutButton.SetTooltip("Zoom out");
-        zoomInButton = GUI.Button.New(viewToolbar, "+");
-        zoomInButton.SetTooltip("Zoom in");
-        projectionButton = GUI.Button.New(viewToolbar, "Persp");
-        projectionButton.SetTooltip(
-            "Toggle between perspective and orthographic projection");
-        viewOptionsButton = GUI.Button.New(viewToolbar, "View...");
-        viewOptionsButton.SetTooltip(
-            "Show grid/marker/light/stats toggles and snap increments");
-        frameButton = GUI.Button.New(viewToolbar, "Frame all");
-        frameButton.SetTooltip("Frame every scene node in the viewport");
-        frameSelectedButton = GUI.Button.New(viewToolbar, "Frame selected");
-        frameSelectedButton.SetTooltip(
-            "Center and frame the selected node in the viewport");
-        viewStatusLabel = GUI.Label.New(viewToolbar, "");
-        viewStatusLabel.SetFlex(1.0);
-        viewStatusLabel.SetPreferredSize(220.0, 0.0);
-
-        viewOptionsRow = GUI.Flex.New();
-        viewOptionsRow.SetDirection(GUI.FlexDirection.Row);
-        viewOptionsRow.SetWrap(GUI.FlexWrap.Wrap);
-        viewOptionsRow.SetAlign(GUI.Align.Center);
-        viewOptionsRow.SetGap(4.0);
-        viewOptionsRow.SetPadding(4.0);
-        root.AddChild(viewOptionsRow);
-        gridCheck = GUI.Checkbox.New(viewOptionsRow, "Grid");
-        gridCheck.SetTooltip("Show the ground grid overlay");
-        gridCheck.SetChecked(true);
-        markersCheck = GUI.Checkbox.New(viewOptionsRow, "Markers");
-        markersCheck.SetTooltip(
-            "Show node origin markers and hierarchy links");
-        markersCheck.SetChecked(true);
-        lightsCheck = GUI.Checkbox.New(viewOptionsRow, "Lights");
-        lightsCheck.SetTooltip("Show light glyph overlays");
-        lightsCheck.SetChecked(true);
-        camerasCheck = GUI.Checkbox.New(viewOptionsRow, "Cameras");
-        camerasCheck.SetTooltip(
-            "Show camera markers, frusta, and the preview inset");
-        camerasCheck.SetChecked(true);
-        collidersCheck = GUI.Checkbox.New(viewOptionsRow, "Colliders");
-        collidersCheck.SetTooltip("Show collider convention wireframes");
-        collidersCheck.SetChecked(true);
-        routesCheck = GUI.Checkbox.New(viewOptionsRow, "Routes");
-        routesCheck.SetTooltip("Show route waypoint polylines");
-        routesCheck.SetChecked(true);
-        statsCheck = GUI.Checkbox.New(viewOptionsRow, "Stats");
-        statsCheck.SetTooltip(
-            "Append visible/culled node counts to the view status");
-        statsCheck.SetChecked(false);
-        editorLightCheck = GUI.Checkbox.New(viewOptionsRow, "Editor light");
-        editorLightCheck.SetTooltip(
-            "Boost viewport ambient so authored content stays visible when "
-            + "scene lights are dim or game-driven; never affects VSCN or "
-            + "the camera preview");
-        editorLightCheck.SetChecked(true);
-        GUI.Label.New(viewOptionsRow, "Snap move");
-        snapMoveSpinner = AddSnapSpinner(
-            0.001, 1000.0, 0.1, 0.5, "Move snap increment");
-        GUI.Label.New(viewOptionsRow, "rotate");
-        snapRotateSpinner = AddSnapSpinner(
-            0.001, 180.0, 1.0, 15.0, "Rotate snap increment");
-        GUI.Label.New(viewOptionsRow, "scale");
-        snapScaleSpinner = AddSnapSpinner(
-            0.001, 10.0, 0.05, 0.1, "Scale snap increment");
-        viewOptionsRow.SetVisible(false);
-
-        // Three-pane workbench: Hierarchy | Viewport | Inspector. The outer
-        // split owns the hierarchy pane; the inner split keeps its historical
-        // name so persisted fractions and probes stay stable.
-        hierarchySplit = GUI.SplitPane.New(root, 1);
-        hierarchySplit.SetFlex(1.0);
-        hierarchySplit.SetPosition(0.22);
-        hierarchySplit.SetMinFirst(220.0);
-        hierarchySplit.SetMinSecond(540.0);
-
-        var hierarchyPane = GUI.VBox.New();
-        hierarchyPane.SetSpacing(6.0);
-        hierarchyPane.SetPadding(8.0);
-        hierarchyPane.SetFlex(1.0);
-        hierarchySplit.First.AddChild(hierarchyPane);
-
-        bodySplit = GUI.SplitPane.New(hierarchySplit.Second, 1);
-        bodySplit.SetFlex(1.0);
-        bodySplit.SetPosition(0.62);
-        bodySplit.SetMinFirst(320.0);
-        bodySplit.SetMinSecond(320.0);
-
-        viewportScroll = GUI.ScrollView.New(bodySplit.First);
-        viewportScroll.SetFlex(1.0);
-        viewportImage = GUI.Image.New(viewportScroll);
-        viewportImage.SetScaleMode(0);
-        viewportImage.SetFilter(0);
-        viewportImage.SetName("scene-3d-viewport");
-        viewportImage.SetAccessibleName("3D scene viewport");
-        // The viewport is a real focusable surface: clicking it takes
-        // keyboard focus, so W/E/R/F, Escape, Delete, and Duplicate belong
-        // to the viewport the user is actually working in.
-        viewportImage.SetFocusable(true);
-        // Project assets and library materials drop onto the viewport
-        // (Phase 1.2): 3D assets import, materials apply to the node hit.
-        viewportImage.SetDropTarget(true);
-        viewportImage.SetAcceptedDropTypes("zanna/asset,zanna/material");
-        viewportImage.SetTooltip(
-            "Click visible meshes to select; Shift adds and Ctrl/Cmd toggles. "
-            + "Drag colored transform handles. Middle/right-drag to orbit, "
-            + "or add Shift to pan. Use the wheel to zoom. W/E/R switch "
-            + "tools, F frames, and Escape clears the selection while the "
-            + "viewport owns focus.");
-
-        inspectorScroll = GUI.ScrollView.New(bodySplit.Second);
-        inspectorScroll.SetFlex(1.0);
-        var inspector = GUI.VBox.New();
-        inspector.SetSpacing(6.0);
-        inspector.SetPadding(8.0);
-        inspectorScroll.AddChild(inspector);
-
-        // Object | Scene inspector tabs: node groups live on the Object tab
-        // and scene-wide groups (imports, bake, environment, material
-        // library) on the Scene tab. Selection changes auto-follow, and a
-        // manual choice holds until the next selection change.
-        var inspectorTabRow = GUI.HBox.New();
-        inspectorTabRow.SetSpacing(4.0);
-        inspector.AddChild(inspectorTabRow);
-        objectTabButton = GUI.Button.New(inspectorTabRow, "Object");
-        objectTabButton.SetTooltip(
-            "Inspect the selected nodes' components");
-        sceneTabButton = GUI.Button.New(inspectorTabRow, "Scene");
-        sceneTabButton.SetTooltip(
-            "Author scene-wide imports, bake, environment, and the "
-            + "material library");
-
-        GUI.Label.New(hierarchyPane, "Scene hierarchy");
-        var hierarchySearchRow = GUI.HBox.New();
-        hierarchySearchRow.SetSpacing(4.0);
-        hierarchyPane.AddChild(hierarchySearchRow);
-        hierarchySearchInput = GUI.TextInput.New(hierarchySearchRow);
-        hierarchySearchInput.SetFlex(1.0);
-        hierarchySearchInput.SetPlaceholder("Find node name");
-        hierarchySearchInput.SetAccessibleName(
-            "Find 3D scene node by name");
-        hierarchySearchInput.SetTooltip(
-            "Keep the hierarchy intact and jump between matching visible rows");
-        hierarchySearchPreviousButton =
-            GUI.Button.New(hierarchySearchRow, "Prev");
-        hierarchySearchPreviousButton.SetAccessibleName(
-            "Previous matching 3D scene node");
-        hierarchySearchPreviousButton.SetTooltip(
-            "Select and reveal the previous matching node");
-        hierarchySearchNextButton =
-            GUI.Button.New(hierarchySearchRow, "Next");
-        hierarchySearchNextButton.SetAccessibleName(
-            "Next matching 3D scene node");
-        hierarchySearchNextButton.SetTooltip(
-            "Select and reveal the next matching node");
-        hierarchySearchStatus = GUI.Label.New(
-            hierarchyPane, "Find by node name");
-        hierarchySearchStatus.SetWordWrap(true);
-        hierarchyTree = GUI.TreeView.New(hierarchyPane);
-        hierarchyTree.SetAccessibleName("3D scene hierarchy");
-        // The dedicated pane gives the tree the full remaining height
-        // instead of a fixed inspector slot.
-        hierarchyTree.SetFlex(1.0);
-        hierarchyTree.SetMultiSelect(true);
-        hierarchyTree.SetDragDropMode(2);
-        hierarchyTree.SetTooltip(
-            "Expand real parent/child rows. Ctrl/Command-click toggles, "
-            + "Shift-click selects a range, and drag above/onto/below a row "
-            + "to reorder or reparent one undoable selection.");
-        var parentRow = GUI.HBox.New();
-        parentRow.SetSpacing(4.0);
-        hierarchyPane.AddChild(parentRow);
-        GUI.Label.New(parentRow, "Parent");
-        parentDropdown = GUI.Dropdown.New(parentRow);
-        parentDropdown.SetFlex(1.0);
-        parentDropdown.SetAccessibleName("Selected node parent target");
-        parentDropdown.SetTooltip(
-            "Choose a hierarchy parent and whether to preserve the world transform");
-        reparentButton = GUI.Button.New(parentRow, "Reparent");
-        reparentButton.SetTooltip(
-            "Move selected hierarchy roots beneath this parent as one undoable edit");
-        preserveWorldReparentCheck =
-            GUI.Checkbox.New(hierarchyPane, "Keep world transform");
-        preserveWorldReparentCheck.SetAccessibleName(
-            "Preserve world transform while reparenting");
-        preserveWorldReparentCheck.SetTooltip(
-            "Derive new local transforms so nodes and descendants stay in place; "
-            + "reject conversions that would require shear");
-        preserveWorldReparentCheck.SetChecked(true);
-        var siblingOrderRow = GUI.HBox.New();
-        siblingOrderRow.SetSpacing(4.0);
-        hierarchyPane.AddChild(siblingOrderRow);
-        GUI.Label.New(siblingOrderRow, "Sibling order");
-        moveSiblingEarlierButton =
-            GUI.Button.New(siblingOrderRow, "Earlier");
-        moveSiblingEarlierButton.SetAccessibleName(
-            "Move selected 3D scene nodes earlier");
-        moveSiblingEarlierButton.SetTooltip(
-            "Move one contiguous sibling selection one position earlier");
-        moveSiblingLaterButton =
-            GUI.Button.New(siblingOrderRow, "Later");
-        moveSiblingLaterButton.SetAccessibleName(
-            "Move selected 3D scene nodes later");
-        moveSiblingLaterButton.SetTooltip(
-            "Move one contiguous sibling selection one position later");
-        importGroup = GUI.GroupBox.New(inspector, "Project 3D imports");
-        importAssetBrowser.Setup(
-            importGroup,
-            "Import Project 3D Asset...",
-            ".scene3d,.vscn,.gltf,.glb,.fbx,.obj,.stl",
-            "Import Asset");
-        nameLabel = GUI.Label.New(inspector, "Name");
-        nameInput = GUI.TextInput.New(inspector);
-        nameInput.SetPlaceholder("Node name");
-        visibleCheck = GUI.Checkbox.New(inspector, "Visible");
-        staticCheck = GUI.Checkbox.New(inspector, "Static (baked)");
-        staticCheck.SetTooltip(
-            "Static nodes participate in lightmap and probe bakes");
-        staticCheck.SetChecked(false);
-
-        positionLabel = GUI.Label.New(inspector, "Position");
-        positionRow = GUI.HBox.New();
-        positionRow.SetSpacing(4.0);
-        inspector.AddChild(positionRow);
-        positionX = AddTransformSpinner(positionRow, "X", 0.0);
-        positionY = AddTransformSpinner(positionRow, "Y", 0.0);
-        positionZ = AddTransformSpinner(positionRow, "Z", 0.0);
-
-        rotationLabel = GUI.Label.New(inspector, "Rotation (degrees)");
-        rotationRow = GUI.HBox.New();
-        rotationRow.SetSpacing(4.0);
-        inspector.AddChild(rotationRow);
-        rotationX = AddRotationSpinner(rotationRow, "X");
-        rotationY = AddRotationSpinner(rotationRow, "Y");
-        rotationZ = AddRotationSpinner(rotationRow, "Z");
-
-        scaleLabel = GUI.Label.New(inspector, "Scale");
-        scaleRow = GUI.HBox.New();
-        scaleRow.SetSpacing(4.0);
-        inspector.AddChild(scaleRow);
-        scaleX = AddTransformSpinner(scaleRow, "X", 1.0);
-        scaleY = AddTransformSpinner(scaleRow, "Y", 1.0);
-        scaleZ = AddTransformSpinner(scaleRow, "Z", 1.0);
-        applyTransformButton = GUI.Button.New(inspector, "Apply node properties");
-        applyTransformButton.SetTooltip(
-            "Apply the visible local transform fields to the current selection");
-
-        addComponentRow = GUI.HBox.New();
-        addComponentRow.SetSpacing(4.0);
-        inspector.AddChild(addComponentRow);
-        GUI.Label.New(addComponentRow, "Add component");
-        addComponentDropdown = GUI.Dropdown.New(addComponentRow);
-        addComponentDropdown.SetFlex(1.0);
-        addComponentDropdown.SetAccessibleName(
-            "Component to add to the selection");
-        addComponentButton = GUI.Button.New(addComponentRow, "Add");
-        addComponentButton.SetTooltip(
-            "Create the chosen component with defaults on the selection as "
-            + "one undoable edit");
-
-        metadataInspector.Setup(inspector);
-        componentPalette.Setup(
-            inspector,
-            "Project components",
-            "3D node component template");
-        componentAssetHost =
-            GUI.GroupBox.New(inspector, "Component asset field");
-        componentAssetBrowser.Setup(
-            componentAssetHost,
-            "Browse Asset Field...",
-            file_utils.AssetKindExtensions("any"),
-            "Use In Field Draft");
-        lightInspector.Setup(inspector);
-        cameraInspector.Setup(inspector);
-        colliderInspector.Setup(inspector);
-        instanceGroup = GUI.GroupBox.New(inspector, "Prefab instance");
-        instanceSummary = GUI.Label.New(
-            instanceGroup,
-            "Select a prefab instance node to manage its reference.");
-        instanceSummary.SetWordWrap(true);
-        // Wrapping row: four buttons exceed a narrow inspector pane's width.
-        var instanceRow = GUI.Flex.New();
-        instanceRow.SetDirection(GUI.FlexDirection.Row);
-        instanceRow.SetWrap(GUI.FlexWrap.Wrap);
-        instanceRow.SetAlign(GUI.Align.Center);
-        instanceRow.SetGap(4.0);
-        instanceGroup.AddChild(instanceRow);
-        openPrefabSourceButton =
-            GUI.Button.New(instanceRow, "Open Source");
-        openPrefabSourceButton.SetTooltip(
-            "Open the referenced scene as its own document");
-        reloadInstancesButton = GUI.Button.New(instanceRow, "Reload");
-        reloadInstancesButton.SetTooltip(
-            "Re-graft every instance from its referenced file; "
-            + "overrides are preserved");
-        unpackInstanceButton = GUI.Button.New(instanceRow, "Unpack");
-        unpackInstanceButton.SetTooltip(
-            "Convert this instance into a plain editable copy in one "
-            + "undoable edit, removing the reference");
-        relinkInstanceButton = GUI.Button.New(instanceRow, "Re-link...");
-        relinkInstanceButton.SetTooltip(
-            "Choose a different referenced scene for this instance");
-
-        bakeGroup = GUI.GroupBox.New(inspector, "Lightmap bake");
-        bakeStatus = GUI.Label.New(
-            bakeGroup,
-            "Deterministic CPU bake over the live scene (ADR 0188).");
-        bakeStatus.SetWordWrap(true);
-        // Wrapping row: three labeled spinners exceed narrow inspector panes.
-        var bakeSettingsRow = GUI.Flex.New();
-        bakeSettingsRow.SetDirection(GUI.FlexDirection.Row);
-        bakeSettingsRow.SetWrap(GUI.FlexWrap.Wrap);
-        bakeSettingsRow.SetAlign(GUI.Align.Center);
-        bakeSettingsRow.SetGap(4.0);
-        bakeGroup.AddChild(bakeSettingsRow);
-        // Each labeled spinner lives in its own pair box so wrapping keeps
-        // the label beside its control instead of splitting them across lines.
-        var texelsPair = GUI.HBox.New();
-        texelsPair.SetSpacing(4.0);
-        bakeSettingsRow.AddChild(texelsPair);
-        GUI.Label.New(texelsPair, "Texels/u");
-        bakeTexelsSpinner = GUI.Spinner.New(texelsPair);
-        bakeTexelsSpinner.SetRange(
-            scene_bake_3d.MIN_TEXELS, scene_bake_3d.MAX_TEXELS);
-        bakeTexelsSpinner.SetStep(0.5);
-        bakeTexelsSpinner.SetDecimals(2);
-        bakeTexelsSpinner.SetValue(scene_bake_3d.DEFAULT_TEXELS);
-        bakeTexelsSpinner.SetPreferredSize(72.0, 0.0);
-        bakeTexelsSpinner.SetAccessibleName("Bake texels per unit");
-        var samplesPair = GUI.HBox.New();
-        samplesPair.SetSpacing(4.0);
-        bakeSettingsRow.AddChild(samplesPair);
-        GUI.Label.New(samplesPair, "Samples");
-        bakeSamplesSpinner = GUI.Spinner.New(samplesPair);
-        bakeSamplesSpinner.SetRange(1.0, 1024.0);
-        bakeSamplesSpinner.SetStep(16.0);
-        bakeSamplesSpinner.SetDecimals(0);
-        bakeSamplesSpinner.SetValue(64.0);
-        bakeSamplesSpinner.SetPreferredSize(72.0, 0.0);
-        bakeSamplesSpinner.SetAccessibleName("Bake samples per texel");
-        var bouncesPair = GUI.HBox.New();
-        bouncesPair.SetSpacing(4.0);
-        bakeSettingsRow.AddChild(bouncesPair);
-        GUI.Label.New(bouncesPair, "Bounces");
-        bakeBouncesSpinner = GUI.Spinner.New(bouncesPair);
-        bakeBouncesSpinner.SetRange(0.0, 8.0);
-        bakeBouncesSpinner.SetStep(1.0);
-        bakeBouncesSpinner.SetDecimals(0);
-        bakeBouncesSpinner.SetValue(2.0);
-        bakeBouncesSpinner.SetPreferredSize(60.0, 0.0);
-        bakeBouncesSpinner.SetAccessibleName("Bake light bounces");
-        var bakeSkyRow = GUI.HBox.New();
-        bakeSkyRow.SetSpacing(4.0);
-        bakeGroup.AddChild(bakeSkyRow);
-        GUI.Label.New(bakeSkyRow, "Sky");
-        bakeSkyPicker = GUI.ColorPicker.New(bakeSkyRow);
-        bakeSkyPicker.SetFlex(1.0);
-        bakeSkyPicker.SetAlphaEnabled(false);
-        bakeSkyPicker.SetAccessibleName("Bake sky color");
-        var bakeActionRow = GUI.Flex.New();
-        bakeActionRow.SetDirection(GUI.FlexDirection.Row);
-        bakeActionRow.SetWrap(GUI.FlexWrap.Wrap);
-        bakeActionRow.SetAlign(GUI.Align.Center);
-        bakeActionRow.SetGap(4.0);
-        bakeGroup.AddChild(bakeActionRow);
-        bakeButton = GUI.Button.New(bakeActionRow, "Bake");
-        bakeButton.SetTooltip(
-            "Run the chunked CPU bake and commit charts, atlas "
-            + "materials, and settings as one undoable edit");
-        makeUniqueButton =
-            GUI.Button.New(bakeActionRow, "Make Meshes Unique");
-        makeUniqueButton.SetTooltip(
-            "Deep-copy meshes shared by multiple nodes so charts "
-            + "cannot clobber each other; one undoable edit");
-        bakeProbesButton = GUI.Button.New(bakeActionRow, "Bake Probes");
-        bakeProbesButton.SetTooltip(
-            "Bake the selected probe grid against the last lightmap "
-            + "bake and save the .vlpg sidecar beside the scene");
-
-        probeGroup = GUI.GroupBox.New(inspector, "Light probe grid");
-        probeStatus = GUI.Label.New(
-            probeGroup,
-            "Author probes.* bounds on the selected node; games load "
-            + "the .vlpg sidecar.");
-        probeStatus.SetWordWrap(true);
-        // Wrapping rows: labeled spinner triplets and the action trio exceed
-        // narrow inspector panes.
-        var probeMinRow = GUI.Flex.New();
-        probeMinRow.SetDirection(GUI.FlexDirection.Row);
-        probeMinRow.SetWrap(GUI.FlexWrap.Wrap);
-        probeMinRow.SetAlign(GUI.Align.Center);
-        probeMinRow.SetGap(4.0);
-        probeGroup.AddChild(probeMinRow);
-        GUI.Label.New(probeMinRow, "Min");
-        probeMinXSpinner = AddProbeSpinner(probeMinRow, "min X", -8.0);
-        probeMinYSpinner = AddProbeSpinner(probeMinRow, "min Y", 0.0);
-        probeMinZSpinner = AddProbeSpinner(probeMinRow, "min Z", -8.0);
-        var probeMaxRow = GUI.Flex.New();
-        probeMaxRow.SetDirection(GUI.FlexDirection.Row);
-        probeMaxRow.SetWrap(GUI.FlexWrap.Wrap);
-        probeMaxRow.SetAlign(GUI.Align.Center);
-        probeMaxRow.SetGap(4.0);
-        probeGroup.AddChild(probeMaxRow);
-        GUI.Label.New(probeMaxRow, "Max");
-        probeMaxXSpinner = AddProbeSpinner(probeMaxRow, "max X", 8.0);
-        probeMaxYSpinner = AddProbeSpinner(probeMaxRow, "max Y", 4.0);
-        probeMaxZSpinner = AddProbeSpinner(probeMaxRow, "max Z", 8.0);
-        var probeActionRow = GUI.Flex.New();
-        probeActionRow.SetDirection(GUI.FlexDirection.Row);
-        probeActionRow.SetWrap(GUI.FlexWrap.Wrap);
-        probeActionRow.SetAlign(GUI.Align.Center);
-        probeActionRow.SetGap(4.0);
-        probeGroup.AddChild(probeActionRow);
-        GUI.Label.New(probeActionRow, "Spacing");
-        probeSpacingSpinner =
-            AddProbeSpinner(probeActionRow, "spacing", 2.0);
-        probeApplyButton = GUI.Button.New(probeActionRow, "Apply Grid");
-        probeApplyButton.SetTooltip(
-            "Write the probes.* convention in one undoable edit");
-        probeRemoveButton = GUI.Button.New(probeActionRow, "Remove");
-        probeRemoveButton.SetTooltip(
-            "Remove every probes.* key while keeping the node");
-
-        envGroup = GUI.GroupBox.New(inspector, "Environment");
-        // Wrapping row: the Browse button drops below the input on narrow
-        // panes instead of pushing the row past the inspector width.
-        var envSkyRow = GUI.Flex.New();
-        envSkyRow.SetDirection(GUI.FlexDirection.Row);
-        envSkyRow.SetWrap(GUI.FlexWrap.Wrap);
-        envSkyRow.SetAlign(GUI.Align.Center);
-        envSkyRow.SetGap(4.0);
-        envGroup.AddChild(envSkyRow);
-        GUI.Label.New(envSkyRow, "Skybox");
-        envSkyboxInput = GUI.TextInput.New(envSkyRow);
-        envSkyboxInput.SetFlex(1.0);
-        envSkyboxInput.SetPreferredSize(120.0, 0.0);
-        envSkyboxInput.SetPlaceholder("panorama asset (relative)");
-        envSkyboxInput.SetAccessibleName("Environment skybox asset");
-        envBrowseButton = GUI.Button.New(envSkyRow, "Browse...");
-        envBrowseButton.SetTooltip(
-            "Choose a skybox panorama from the workspace index");
-        // Wrapping row: checkbox plus labeled spinner exceeds narrow panes.
-        var envIblRow = GUI.Flex.New();
-        envIblRow.SetDirection(GUI.FlexDirection.Row);
-        envIblRow.SetWrap(GUI.FlexWrap.Wrap);
-        envIblRow.SetAlign(GUI.Align.Center);
-        envIblRow.SetGap(4.0);
-        envGroup.AddChild(envIblRow);
-        envIblCheck = GUI.Checkbox.New(envIblRow, "Image-based lighting");
-        envIblCheck.SetChecked(false);
-        GUI.Label.New(envIblRow, "Intensity");
-        envIblIntensitySpinner = GUI.Spinner.New(envIblRow);
-        envIblIntensitySpinner.SetRange(
-            0.0, scene_bake_3d.MAX_IBL_INTENSITY);
-        envIblIntensitySpinner.SetStep(0.1);
-        envIblIntensitySpinner.SetDecimals(2);
-        envIblIntensitySpinner.SetValue(1.0);
-        envIblIntensitySpinner.SetPreferredSize(72.0, 0.0);
-        envIblIntensitySpinner.SetAccessibleName(
-            "Image-based lighting intensity");
-        envApplyButton = GUI.Button.New(envGroup, "Apply Environment");
-        envApplyButton.SetTooltip(
-            "Write the env.* convention to the scene root in one "
-            + "undoable edit; the viewport applies it live");
-
-        materialInspector.Setup(inspector);
-
-        materialLibraryGroup =
-            GUI.GroupBox.New(inspector, "Material library");
-        materialLibraryStatus = GUI.Label.New(
-            materialLibraryGroup,
-            "Open a workspace folder to use materials.scene3d.");
-        materialLibraryStatus.SetWordWrap(true);
-        materialLibraryList = GUI.ListBox.New(materialLibraryGroup);
-        materialLibraryList.SetPreferredSize(0.0, 110.0);
-        materialLibraryList.SetAccessibleName("Project library materials");
-        // The selected library material drags onto viewport meshes.
-        materialLibraryList.SetDraggable(true);
-        materialLibraryList.SetDragData("zanna/material", "");
-        var materialLibraryNameRow = GUI.HBox.New();
-        materialLibraryNameRow.SetSpacing(4.0);
-        materialLibraryGroup.AddChild(materialLibraryNameRow);
-        materialLibraryNameInput =
-            GUI.TextInput.New(materialLibraryNameRow);
-        materialLibraryNameInput.SetFlex(1.0);
-        materialLibraryNameInput.SetPlaceholder("Library material name");
-        materialLibraryNameInput.SetAccessibleName(
-            "Library material name");
-        var materialLibraryActions = GUI.Flex.New();
-        materialLibraryActions.SetDirection(GUI.FlexDirection.Row);
-        materialLibraryActions.SetWrap(GUI.FlexWrap.Wrap);
-        materialLibraryActions.SetGap(4.0);
-        materialLibraryGroup.AddChild(materialLibraryActions);
-        materialLibrarySaveButton =
-            GUI.Button.New(materialLibraryActions, "Save to Library");
-        materialLibrarySaveButton.SetTooltip(
-            "Store an independent copy of the selected node's material "
-            + "under this name; atomic, conflict-guarded write");
-        materialLibraryApplyButton =
-            GUI.Button.New(materialLibraryActions, "Apply from Library");
-        materialLibraryApplyButton.SetTooltip(
-            "Clone the chosen library material onto every selected "
-            + "node as one undoable edit; scenes stay self-contained");
-        materialLibraryReloadButton =
-            GUI.Button.New(materialLibraryActions, "Reload");
-        materialLibraryReloadButton.SetTooltip(
-            "Re-read materials.scene3d from disk");
-
-        selectionInfo = GUI.Label.New(inspector, "No node selected");
-        selectionInfo.SetWordWrap(true);
-        detailLabel = GUI.Label.New(inspector, "");
-        detailLabel.SetWordWrap(true);
-        SetEditorControlsEnabled(false);
-    }
 
     /// @brief Borrow Studio's multi-root project index for non-modal assets.
     expose func SetWorkspaceContext(
@@ -1937,6 +1372,8 @@ class SceneEditor3D {
         if viewportModeButton.WasClicked() {
             var nextViewportMode = VIEWPORT_MODE_WIREFRAME;
             if viewportMode == VIEWPORT_MODE_WIREFRAME {
+                nextViewportMode = VIEWPORT_MODE_SHADED_WIRE;
+            } else if viewportMode == VIEWPORT_MODE_SHADED_WIRE {
                 nextViewportMode = VIEWPORT_MODE_SHADED;
             }
             SetViewportMode(nextViewportMode);
@@ -2180,6 +1617,10 @@ class SceneEditor3D {
             }
         }
 
+        if runSceneButton.WasClicked() { runSceneRequested = true; }
+        if topViewButton.WasClicked() { SetQuickView(0); }
+        if frontViewButton.WasClicked() { SetQuickView(1); }
+        if rightViewButton.WasClicked() { SetQuickView(2); }
         if orbitLeftButton.WasClicked() {
             viewYawDegrees = NormalizeYawDegrees(viewYawDegrees - 15);
             renderDirty = true;
@@ -2213,6 +1654,11 @@ class SceneEditor3D {
             renderDirty = true;
         }
 
+        PumpCameraBookmarks();
+        PumpHistoryPanel();
+        if hierarchyDock.Pump() { renderDirty = true; }
+        if inspectorDock.Pump() { renderDirty = true; }
+        if changed { RefreshHistoryPanel(); }
         changed = PumpViewportNavigation() or changed;
         if viewportTargetWidth != 0
            and InteractiveDegradeActive() == false
@@ -2260,6 +1706,10 @@ class SceneEditor3D {
         var target = undoStack.get(index);
         undoStack.removeAt(index);
         PushHistory(redoStack, currentSerialized);
+        if undoLabels.count() > 0 {
+            redoLabels.add(undoLabels.get(undoLabels.count() - 1));
+            undoLabels.removeAt(undoLabels.count() - 1);
+        }
         currentDoc.content = target;
         currentDoc.isModified = target != cleanSerialized;
         revision = revision + 1;
@@ -2275,6 +1725,10 @@ class SceneEditor3D {
         var target = redoStack.get(index);
         redoStack.removeAt(index);
         PushHistory(undoStack, currentSerialized);
+        if redoLabels.count() > 0 {
+            undoLabels.add(redoLabels.get(redoLabels.count() - 1));
+            redoLabels.removeAt(redoLabels.count() - 1);
+        }
         currentDoc.content = target;
         currentDoc.isModified = target != cleanSerialized;
         revision = revision + 1;
@@ -2347,11 +1801,12 @@ class SceneEditor3D {
         state.transformMode = gizmoMode;
         state.transformSpace = gizmoTransformSpace;
         state.transformSnapEnabled = gizmoSnapEnabled;
+        state.cameraBookmarks = cameraBookmarks;
         state.viewYawDegrees = NormalizeYawDegrees(viewYawDegrees);
         state.viewPitchDegrees = ClampInt3D(viewPitchDegrees, -80, 80);
         state.viewScale = ClampInt3D(viewScale, 4, 120);
         state.viewportMode = ClampInt3D(
-            viewportMode, VIEWPORT_MODE_SHADED, VIEWPORT_MODE_WIREFRAME);
+            viewportMode, VIEWPORT_MODE_SHADED, VIEWPORT_MODE_SHADED_WIRE);
         state.viewTargetX = ClampNumber3D(
             viewTargetX, -1000000.0, 1000000.0);
         state.viewTargetY = ClampNumber3D(
@@ -2614,6 +2069,7 @@ class SceneEditor3D {
         if hierarchySplit != null {
             var wantHierarchyPane =
                 compactLayout == false
+                and hierarchyDock.floating == false
                 and lastHostWidth >= HIERARCHY_PANE_MIN_WIDTH;
             var hierarchyCollapsed =
                 hierarchySplit.GetCollapsedSide() == 1;
@@ -2689,7 +2145,8 @@ class SceneEditor3D {
     ///          live SceneGraph, canonical VSCN bytes, or edit history.
     expose func SetViewportMode(nextMode: Integer) {
         if (nextMode != VIEWPORT_MODE_SHADED
-            and nextMode != VIEWPORT_MODE_WIREFRAME)
+            and nextMode != VIEWPORT_MODE_WIREFRAME
+            and nextMode != VIEWPORT_MODE_SHADED_WIRE)
            or nextMode == viewportMode {
             return;
         }
@@ -2702,13 +2159,22 @@ class SceneEditor3D {
     }
 
     /// @brief Return the concise user-facing viewport mode label.
+    /// @brief One render pass's CPU milliseconds at tenth precision.
+    hide func PassMsTenths(pass: Integer) -> String {
+        var tenths = Convert.NumToInt(
+            viewportRenderCanvas.PassCpuMs(pass) * 10.0);
+        if tenths < 0 { tenths = 0; }
+        return (tenths / 10) + "." + (tenths % 10);
+    }
+
     hide func ViewportModeLabel(mode: Integer) -> String {
         if mode == VIEWPORT_MODE_WIREFRAME { return "Wireframe"; }
+        if mode == VIEWPORT_MODE_SHADED_WIRE { return "Shaded+Wire"; }
         return "Shaded";
     }
 
     /// @brief Keep the mode button, tooltip, and accessibility state truthful.
-    hide func UpdateViewportModeControls() {
+    expose func UpdateViewportModeControls() {
         if viewportModeButton == null { return; }
         var label = ViewportModeLabel(viewportMode);
         viewportModeButton.SetText(label);
@@ -2786,7 +2252,7 @@ class SceneEditor3D {
     }
 
     /// @brief Present an unambiguous active transform mode and snap precision.
-    hide func UpdateGizmoModeControls() {
+    expose func UpdateGizmoModeControls() {
         if moveToolButton == null { return; }
         moveToolButton.SetStyle(0);
         rotateToolButton.SetStyle(0);
@@ -4825,7 +4291,7 @@ class SceneEditor3D {
     }
 
     /// @brief Small bounded probe-bounds spinner builder.
-    hide func AddProbeSpinner(parent: GUI.Flex,
+    expose func AddProbeSpinner(parent: GUI.Flex,
                               label: String,
                               value: Number) -> GUI.Spinner {
         var spinner = GUI.Spinner.New(parent);
@@ -5277,6 +4743,7 @@ class SceneEditor3D {
                     materialLibraryList.SelectedIndex).name;
             }
             materialLibraryList.SetDragData("zanna/material", dragName);
+            RefreshMaterialSwatch();
         }
     }
 
@@ -5410,6 +4877,135 @@ class SceneEditor3D {
     /// @details Per-node independent clones through one canonical history
     ///          entry; unselected users of shared materials are untouched
     ///          and the scene never references the library file.
+    /// @brief Reconcile best-effort labels with the snapshot stacks.
+    /// @details Trims and wholesale stack replacements (budget trims,
+    ///          workspace restores) can outpace the label lists; front-pad
+    ///          or front-drop so counts always match before presenting.
+    hide func SyncHistoryLabels() {
+        while undoLabels.count() > undoStack.count() {
+            undoLabels.removeAt(0);
+        }
+        while undoLabels.count() < undoStack.count() {
+            undoLabels.add("Edit");
+            var last = undoLabels.count() - 1;
+            var moved = undoLabels.get(last);
+            undoLabels.removeAt(last);
+            var rebuilt: List[String] = [];
+            rebuilt.add(moved);
+            var index = 0;
+            while index < undoLabels.count() {
+                rebuilt.add(undoLabels.get(index));
+                index = index + 1;
+            }
+            undoLabels = rebuilt;
+        }
+        while redoLabels.count() > redoStack.count() {
+            redoLabels.removeAt(0);
+        }
+        while redoLabels.count() < redoStack.count() {
+            redoLabels.add("Edit");
+        }
+    }
+
+    /// @brief Rebuild the History rows: undone-past oldest first + Current.
+    expose func RefreshHistoryPanel() {
+        if historyList == null { return; }
+        SyncHistoryLabels();
+        historyListRefreshing = true;
+        historyList.Clear();
+        var index = 0;
+        while index < undoLabels.count() {
+            historyList.AddItem((index + 1) + ". " + undoLabels.get(index));
+            index = index + 1;
+        }
+        historyList.AddItem("● Current");
+        historyList.SelectIndex(undoLabels.count());
+        // Programmatic selection raises the same edge a user click would;
+        // drain it so the next pump cannot mistake it for a jump request.
+        historyList.WasSelectionChanged();
+        historyListRefreshing = false;
+    }
+
+    /// @brief Jump to the state before one history row's edit.
+    /// @details Row k (0-based, oldest first) restores the snapshot taken
+    ///          before that edit by running the equivalent chain of Undo
+    ///          calls; the Current row is a no-op. Redo stays available.
+    expose func JumpToHistoryRow(row: Integer) -> Boolean {
+        SyncHistoryLabels();
+        if row < 0 or row >= undoStack.count() { return false; }
+        var undos = undoStack.count() - row;
+        var step = 0;
+        while step < undos {
+            if Undo() == false { return false; }
+            step = step + 1;
+        }
+        toolbarStatus.SetText("Jumped back " + undos + " edit(s)");
+        return true;
+    }
+
+    /// @brief Route history row clicks into jumps.
+    hide func PumpHistoryPanel() {
+        if historyList == null or historyListRefreshing { return; }
+        if historyList.WasSelectionChanged() == false { return; }
+        var row = historyList.SelectedIndex;
+        SyncHistoryLabels();
+        if row >= 0 and row < undoStack.count() {
+            JumpToHistoryRow(row);
+        }
+        RefreshHistoryPanel();
+    }
+
+    /// @brief Render the selected library material as a lit sphere swatch.
+    /// @details Deterministic software offscreen render, cached by entry
+    ///          name so reselecting the same entry re-renders nothing.
+    ///          Workspace-only presentation; never touches canonical bytes.
+    expose func RefreshMaterialSwatch() {
+        if materialSwatchImage == null or materialLibrary == null {
+            return;
+        }
+        var selected = materialLibraryList.SelectedIndex;
+        if selected < 0 or selected >= materialLibrary.entries.count() {
+            materialSwatchImage.SetVisible(false);
+            materialSwatchName = "";
+            return;
+        }
+        var entry = materialLibrary.entries.get(selected);
+        if entry == null or entry.material == null {
+            materialSwatchImage.SetVisible(false);
+            materialSwatchName = "";
+            return;
+        }
+        if entry.name == materialSwatchName
+           and materialSwatchImage.IsVisible() {
+            return;
+        }
+        var target = RenderTarget3D.New(48, 48);
+        if target == null { return; }
+        var canvas = Canvas3D.NewOffscreen(target);
+        if canvas == null { return; }
+        canvas.SetDefaultLighting();
+        canvas.SetAmbient(0.35, 0.35, 0.38);
+        var camera = Camera3D.New(45.0, 1.0, 0.1, 10.0);
+        if camera == null { return; }
+        camera.LookAt(
+            Vec3.New(0.0, 0.0, 2.4),
+            Vec3.New(0.0, 0.0, 0.0),
+            Vec3.New(0.0, 1.0, 0.0));
+        var swatchScene = SceneGraph.New();
+        var sphere = SceneNode.New();
+        sphere.Name = "swatch";
+        sphere.Mesh = Mesh3D.Sphere(0.9, 24);
+        sphere.Material = entry.material;
+        swatchScene.Add(sphere);
+        canvas.Clear(0.14, 0.15, 0.18);
+        swatchScene.Draw(canvas, camera);
+        var rendered = target.AsPixels() as Pixels;
+        if rendered == null { return; }
+        materialSwatchImage.SetPixels(rendered, 48, 48);
+        materialSwatchImage.SetVisible(true);
+        materialSwatchName = entry.name;
+    }
+
     expose func ApplyLibraryMaterialToSelection() -> Boolean {
         if materialLibrary == null or materialLibrary.valid == false
            or scene == null {
@@ -5869,7 +5465,7 @@ class SceneEditor3D {
     }
 
     /// @brief Build one bounded snap-increment spinner in the options row.
-    hide func AddSnapSpinner(minimum: Number,
+    expose func AddSnapSpinner(minimum: Number,
                              maximum: Number,
                              step: Number,
                              value: Number,
@@ -5884,7 +5480,7 @@ class SceneEditor3D {
         return spinner;
     }
 
-    hide func AddTransformSpinner(parent: GUI.HBox,
+    expose func AddTransformSpinner(parent: GUI.HBox,
                                   label: String,
                                   value: Number) -> GUI.Spinner {
         GUI.Label.New(parent, label);
@@ -5900,7 +5496,7 @@ class SceneEditor3D {
         return spinner;
     }
 
-    hide func AddRotationSpinner(parent: GUI.HBox,
+    expose func AddRotationSpinner(parent: GUI.HBox,
                                  label: String) -> GUI.Spinner {
         GUI.Label.New(parent, label);
         var spinner = GUI.Spinner.New(parent);
@@ -5969,7 +5565,9 @@ class SceneEditor3D {
         }
         if text == currentSerialized { return false; }
         PushHistory(undoStack, currentSerialized);
+        undoLabels.add(message);
         redoStack = [];
+        redoLabels = [];
         currentSerialized = text;
         currentDoc.content = text;
         currentDoc.isModified = currentSerialized != cleanSerialized;
@@ -7162,7 +6760,7 @@ class SceneEditor3D {
         return true;
     }
 
-    hide func SetEditorControlsEnabled(enabled: Boolean) {
+    expose func SetEditorControlsEnabled(enabled: Boolean) {
         if addEmptyButton == null { return; }
         selectedIndices = scene_selection.Normalize(
             selectedIndices, flatNodes.count(), selectedIndex);
@@ -8172,6 +7770,7 @@ class SceneEditor3D {
             nodeScope and addComponentKinds.count() > 0);
         importGroup.SetVisible(sceneTab);
         bakeGroup.SetVisible(sceneTab);
+        historyGroup.SetVisible(sceneTab);
         envGroup.SetVisible(sceneTab);
         materialLibraryGroup.SetVisible(sceneTab);
         // Programmatic visibility toggles advance widget revisions; re-baseline
@@ -9419,19 +9018,187 @@ class SceneEditor3D {
             return -1;
         }
         if ConfigureViewportCamera() {
-            var origin = viewportRenderCamera.ScreenToRayOrigin(
+            var castOrigin = viewportRenderCamera.ScreenToRayOrigin(
                 mouseX, mouseY,
                 renderedViewportWidth, renderedViewportHeight) as Vec3;
             var direction = viewportRenderCamera.ScreenToRay(
                 mouseX, mouseY,
                 renderedViewportWidth, renderedViewportHeight) as Vec3;
-            var hit = scene.RaycastNodesPrecise(
-                origin, direction, viewportRenderCamera.FarPlane)
-                as SceneNode;
-            var hitIndex = FindFlatIndex(hit);
-            if hitIndex >= 0 { return hitIndex; }
+            // Walk hits front to back so pick-locked nodes yield to the
+            // geometry behind them instead of blocking the click.
+            var remaining = viewportRenderCamera.FarPlane;
+            var attempts = 0;
+            while attempts < 32 and remaining > 0.0 {
+                var node = scene.RaycastNodesPrecise(
+                    castOrigin, direction, remaining) as SceneNode;
+                if node == null { break; }
+                var hitIndex = FindFlatIndex(node);
+                if hitIndex >= 0
+                   and NodePickLocked(hitIndex) == false {
+                    return hitIndex;
+                }
+                var hit = scene.RaycastPreciseHit(
+                    castOrigin, direction, remaining) as RayHit3D;
+                if hit == null { break; }
+                var step = hit.Distance + 0.001;
+                if step <= 0.0 { break; }
+                castOrigin = Vec3.New(
+                    castOrigin.X + direction.X * step,
+                    castOrigin.Y + direction.Y * step,
+                    castOrigin.Z + direction.Z * step);
+                remaining = remaining - step;
+                attempts = attempts + 1;
+            }
         }
-        return ViewportMarkerAt(mouseX, mouseY);
+        var marker = ViewportMarkerAt(mouseX, mouseY);
+        if marker >= 0 and NodePickLocked(marker) { return -1; }
+        return marker;
+    }
+
+    /// @brief Consume the one-shot Run Scene request from this editor.
+    expose func TakeRunSceneRequested() -> Boolean {
+        if runSceneRequested == false { return false; }
+        runSceneRequested = false;
+        return true;
+    }
+
+    /// @brief Whether one flattened node is workspace pick-locked.
+    /// @details Lock keys by hierarchy path, so it survives refreshes and
+    ///          selection changes but clears naturally when the node moves.
+    expose func NodePickLocked(index: Integer) -> Boolean {
+        if index < 0 or index >= flatPaths.count() { return false; }
+        var path = flatPaths.get(index);
+        var lockIndex = 0;
+        while lockIndex < pickLockedPaths.count() {
+            if pickLockedPaths.get(lockIndex) == path { return true; }
+            lockIndex = lockIndex + 1;
+        }
+        return false;
+    }
+
+    /// @brief Toggle pick-lock on the single selected node (workspace-only).
+    /// @return True when the node is locked after the toggle.
+    expose func ToggleSelectedPickLock() -> Boolean {
+        if selectedIndices.count() != 1 or selectedIndex < 0
+           or selectedIndex >= flatPaths.count() {
+            return false;
+        }
+        var path = flatPaths.get(selectedIndex);
+        if NodePickLocked(selectedIndex) {
+            var kept: List[String] = [];
+            var lockIndex = 0;
+            while lockIndex < pickLockedPaths.count() {
+                if pickLockedPaths.get(lockIndex) != path {
+                    kept.add(pickLockedPaths.get(lockIndex));
+                }
+                lockIndex = lockIndex + 1;
+            }
+            pickLockedPaths = kept;
+            toolbarStatus.SetText("Picking unlocked for the node");
+            return false;
+        }
+        pickLockedPaths.add(path);
+        toolbarStatus.SetText(
+            "Picking locked; the node ignores viewport clicks");
+        return true;
+    }
+
+    /// @brief Snap the camera to one axis-aligned quick view.
+    /// @param kind 0 = Top (looking down), 1 = Front, 2 = Right.
+    expose func SetQuickView(kind: Integer) {
+        if kind == 0 {
+            viewYawDegrees = 0;
+            viewPitchDegrees = 80;
+        } else if kind == 1 {
+            viewYawDegrees = 0;
+            viewPitchDegrees = 0;
+        } else {
+            viewYawDegrees = 90;
+            viewPitchDegrees = 0;
+        }
+        renderDirty = true;
+        CaptureWorkspaceState();
+    }
+
+    /// @brief Encode the live camera pose as one bookmark string.
+    hide func EncodeCameraBookmark() -> String {
+        var projection = 0;
+        if viewPerspective { projection = 1; }
+        return viewYawDegrees + "," + viewPitchDegrees + ","
+            + viewScale + "," + viewTargetX + "," + viewTargetY + ","
+            + viewTargetZ + "," + projection;
+    }
+
+    /// @brief Store or recall camera bookmarks from the digit row.
+    /// @details With the viewport surface focused, Shift+1..9 stores the
+    ///          live pose into that slot and a bare digit recalls it;
+    ///          bookmarks persist in the per-document workspace state and
+    ///          never touch canonical VSCN bytes.
+    hide func PumpCameraBookmarks() {
+        if viewportImage == null or viewportImage.IsFocused() == false {
+            return;
+        }
+        var digit = 0;
+        if Input.Keyboard.WasPressed(Input.Key.Digit1) { digit = 1; }
+        if Input.Keyboard.WasPressed(Input.Key.Digit2) { digit = 2; }
+        if Input.Keyboard.WasPressed(Input.Key.Digit3) { digit = 3; }
+        if Input.Keyboard.WasPressed(Input.Key.Digit4) { digit = 4; }
+        if Input.Keyboard.WasPressed(Input.Key.Digit5) { digit = 5; }
+        if Input.Keyboard.WasPressed(Input.Key.Digit6) { digit = 6; }
+        if Input.Keyboard.WasPressed(Input.Key.Digit7) { digit = 7; }
+        if Input.Keyboard.WasPressed(Input.Key.Digit8) { digit = 8; }
+        if Input.Keyboard.WasPressed(Input.Key.Digit9) { digit = 9; }
+        if digit == 0 { return; }
+        if ViewportShiftDown() {
+            StoreCameraBookmark(digit);
+        } else {
+            RecallCameraBookmark(digit);
+        }
+    }
+
+    /// @brief Store the live camera pose into one 1-based bookmark slot.
+    expose func StoreCameraBookmark(slot: Integer) -> Boolean {
+        if slot < 1 or slot > 9 { return false; }
+        while cameraBookmarks.count() < 9 { cameraBookmarks.add(""); }
+        cameraBookmarks.set(slot - 1, EncodeCameraBookmark());
+        toolbarStatus.SetText("Stored camera bookmark " + slot);
+        CaptureWorkspaceState();
+        return true;
+    }
+
+    /// @brief Recall one 1-based camera bookmark slot when it exists.
+    expose func RecallCameraBookmark(slot: Integer) -> Boolean {
+        if slot < 1 or slot > cameraBookmarks.count() { return false; }
+        var encoded = cameraBookmarks.get(slot - 1);
+        if encoded == "" { return false; }
+        var parts = Str.Split(encoded, ",");
+        if Seq.get_Count(parts) != 7 { return false; }
+        viewYawDegrees = NormalizeYawDegrees(
+            Parse.IntOr(Seq.GetStr(parts, 0), viewYawDegrees));
+        viewPitchDegrees = ClampInt3D(
+            Parse.IntOr(Seq.GetStr(parts, 1), viewPitchDegrees), -80, 80);
+        viewScale = ClampInt3D(
+            Parse.IntOr(Seq.GetStr(parts, 2), viewScale), 4, 120);
+        viewTargetX = Parse.DoubleOr(Seq.GetStr(parts, 3), viewTargetX);
+        viewTargetY = Parse.DoubleOr(Seq.GetStr(parts, 4), viewTargetY);
+        viewTargetZ = Parse.DoubleOr(Seq.GetStr(parts, 5), viewTargetZ);
+        SetViewProjection(
+            Parse.IntOr(Seq.GetStr(parts, 6), 1) != 0);
+        toolbarStatus.SetText("Recalled camera bookmark " + slot);
+        renderDirty = true;
+        CaptureWorkspaceState();
+        return true;
+    }
+
+    /// @brief The snap state one gizmo step should use right now.
+    /// @details Holding Ctrl temporarily inverts the checkbox: snapping
+    ///          drags snap-free and free drags snap, matching Unity's
+    ///          hold-to-invert convention. Workspace state is untouched.
+    expose func EffectiveSnapEnabled() -> Boolean {
+        var inverted = Input.Keyboard.IsDown(Input.Key.LeftControl)
+            or Input.Keyboard.IsDown(Input.Key.RightControl);
+        if inverted { return gizmoSnapEnabled == false; }
+        return gizmoSnapEnabled;
     }
 
     /// @brief Return whether either Alt key is held (overlap cycling).
@@ -9557,6 +9324,7 @@ class SceneEditor3D {
         while i < flatNodes.count() {
             var bounds = NodeScreenBounds(flatNodes.get(i));
             if bounds.visible
+               and NodePickLocked(i) == false
                and bounds.minX <= rectMaxX and bounds.maxX >= rectMinX
                and bounds.minY <= rectMaxY and bounds.maxY >= rectMinY {
                 var resolved = ResolveInstanceOwnerIndex(i);
@@ -10422,7 +10190,7 @@ class SceneEditor3D {
                 GIZMO_MODE_ROTATE,
                 sourceValue,
                 gizmoDragAccumulated,
-                gizmoSnapEnabled);
+                EffectiveSnapEnabled());
             if gizmoTransformSpace
                == scene_transform_3d.TRANSFORM_SPACE_WORLD {
                 var applied =
@@ -10476,10 +10244,10 @@ class SceneEditor3D {
             }
             var targetA = scene_transform_3d.AxisTarget(
                 gizmoMode, sourceA, gizmoDragAccumulated,
-                gizmoSnapEnabled);
+                EffectiveSnapEnabled());
             var targetB = scene_transform_3d.AxisTarget(
                 gizmoMode, sourceB, gizmoDragAccumulatedB,
-                gizmoSnapEnabled);
+                EffectiveSnapEnabled());
             if gizmoTransformSpace
                == scene_transform_3d.TRANSFORM_SPACE_WORLD {
                 var applied = ApplyLiveWorldGizmoPlaneTarget(
@@ -10516,7 +10284,7 @@ class SceneEditor3D {
         }
         var targetValue = scene_transform_3d.AxisTarget(
             gizmoMode, sourceValue, gizmoDragAccumulated,
-            gizmoSnapEnabled);
+            EffectiveSnapEnabled());
         if gizmoTransformSpace
            == scene_transform_3d.TRANSFORM_SPACE_WORLD {
             var applied = ApplyLiveWorldGizmoTarget(targetValue);
@@ -11234,6 +11002,13 @@ class SceneEditor3D {
             VIEWPORT_CLEAR_GREEN,
             VIEWPORT_CLEAR_BLUE);
         scene.Draw(viewportRenderCanvas, viewportRenderCamera);
+        if viewportMode == VIEWPORT_MODE_SHADED_WIRE {
+            // Combined mode: the wire pass draws over the shaded frame
+            // without clearing, giving Unity's Shaded Wireframe look.
+            viewportRenderCanvas.Wireframe = true;
+            scene.Draw(viewportRenderCanvas, viewportRenderCamera);
+            viewportRenderCanvas.Wireframe = false;
+        }
         var rendered = viewportRenderTarget.AsPixels() as Pixels;
         if rendered == null { return false; }
         if viewportTargetWidth != renderedViewportWidth
@@ -11487,6 +11262,16 @@ class SceneEditor3D {
             interaction = "  |  "
                 + Str.ToLower(scene_transform_3d.ModeAction(gizmoMode))
                 + " " + GizmoHandleLabel(gizmoDragAxis);
+            if gizmoMode == GIZMO_MODE_ROTATE {
+                // Live numeric readout: tenth-degree resolution of the
+                // signed angle swept since the drag began.
+                var tenths = Convert.NumToInt(
+                    gizmoDragAccumulated * 10.0);
+                var fraction = tenths % 10;
+                if fraction < 0 { fraction = 0 - fraction; }
+                interaction = interaction + " "
+                    + (tenths / 10) + "." + fraction + " deg";
+            }
         } else if gizmoHoverAxis != GIZMO_AXIS_NONE {
             interaction = "  |  " + GizmoHandleLabel(gizmoHoverAxis);
         }
@@ -11505,6 +11290,13 @@ class SceneEditor3D {
         if showStats and scene != null {
             statsStatus = "  |  visible " + scene.VisibleNodeCount
                 + " culled " + scene.CulledCount;
+            if viewportRenderCanvas != null {
+                statsStatus = statsStatus
+                    + "  |  cpu ms shadow "
+                    + PassMsTenths(0) + " main " + PassMsTenths(1)
+                    + " overlay " + PassMsTenths(2)
+                    + " end " + PassMsTenths(3);
+            }
         }
         var flyStatus = "";
         if flyActive {

@@ -35,6 +35,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements linear, Catmull–Rom, and cubic Bézier splines.
+ *
+ * @details Managed spline objects own parallel copied coordinate arrays,
+ *          sanitize public parameters, evaluate segment-local interpolation
+ *          and derivatives, expose immutable control points, approximate arc
+ *          length by chord summation, and sample results as managed Vec2 values.
+ */
+
 #include "rt_spline.h"
 
 #include "rt_heap.h"
@@ -46,13 +56,15 @@
 #include <math.h>
 #include <stdlib.h>
 
+/// @brief Selects the interpolation algorithm stored by a spline.
 typedef enum { SPLINE_LINEAR = 0, SPLINE_CATMULL_ROM = 1, SPLINE_BEZIER = 2 } SplineKind;
 
+/// @brief Managed immutable spline metadata and owned coordinate arrays.
 typedef struct {
-    SplineKind kind;
-    int64_t count;
-    double *xs;
-    double *ys;
+    SplineKind kind; ///< Interpolation algorithm.
+    int64_t count;   ///< Number of copied control points.
+    double *xs;      ///< Owned X coordinates parallel to @ref ys.
+    double *ys;      ///< Owned Y coordinates parallel to @ref xs.
 } ZannaSpline;
 
 /// @brief GC finalizer for a ZannaSpline — frees the coordinate arrays.

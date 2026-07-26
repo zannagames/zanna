@@ -16,6 +16,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements conservative default IDE features and runtime-catalog queries.
+
 #include "tools/lsp-common/ICompilerBridge.hpp"
 
 #include "il/runtime/classes/RuntimeClasses.hpp"
@@ -26,6 +29,8 @@
 namespace zanna::server {
 
 /// @brief Return an ASCII-lowercased copy of @p s (used for case-insensitive search).
+/// @param s Text to normalize.
+/// @return Lowercase copy.
 static std::string toLowerStr(const std::string &s) {
     std::string lower;
     lower.reserve(s.size());
@@ -34,6 +39,8 @@ static std::string toLowerStr(const std::string &s) {
     return lower;
 }
 
+/// @brief List every registered runtime class.
+/// @return Owned summaries in catalog order.
 std::vector<RuntimeClassSummary> ICompilerBridge::runtimeClasses() {
     const auto &catalog = il::runtime::runtimeClassCatalog();
     std::vector<RuntimeClassSummary> result;
@@ -48,35 +55,58 @@ std::vector<RuntimeClassSummary> ICompilerBridge::runtimeClasses() {
     return result;
 }
 
+/// @brief Default no-op notification for an opened or changed document.
+/// @param path Document path.
+/// @param source Current full source text.
 void ICompilerBridge::updateDocument(const std::string & /*path*/, const std::string & /*source*/) {
 }
 
+/// @brief Default no-op notification for a closed document.
+/// @param path Document path.
 void ICompilerBridge::removeDocument(const std::string & /*path*/) {}
 
+/// @brief Report that definition lookup is unsupported by default.
+/// @return false.
 bool ICompilerBridge::supportsDefinition() const {
     return false;
 }
 
+/// @brief Report that reference lookup is unsupported by default.
+/// @return false.
 bool ICompilerBridge::supportsReferences() const {
     return false;
 }
 
+/// @brief Report that semantic rename is unsupported by default.
+/// @return false.
 bool ICompilerBridge::supportsRename() const {
     return false;
 }
 
+/// @brief Report that signature help is unsupported by default.
+/// @return false.
 bool ICompilerBridge::supportsSignatureHelp() const {
     return false;
 }
 
+/// @brief Report that workspace-symbol search is unsupported by default.
+/// @return false.
 bool ICompilerBridge::supportsWorkspaceSymbols() const {
     return false;
 }
 
+/// @brief Report that semantic-token generation is unsupported by default.
+/// @return false.
 bool ICompilerBridge::supportsSemanticTokens() const {
     return false;
 }
 
+/// @brief Return no definition from the conservative default implementation.
+/// @param source Current source text.
+/// @param line Zero-based query line.
+/// @param col Zero-based query column.
+/// @param path Document path.
+/// @return `std::nullopt`.
 std::optional<LocationInfo> ICompilerBridge::definition(const std::string & /*source*/,
                                                         int /*line*/,
                                                         int /*col*/,
@@ -84,6 +114,12 @@ std::optional<LocationInfo> ICompilerBridge::definition(const std::string & /*so
     return std::nullopt;
 }
 
+/// @brief Return no references from the conservative default implementation.
+/// @param source Current source text.
+/// @param line Zero-based query line.
+/// @param col Zero-based query column.
+/// @param path Document path.
+/// @return Empty location list.
 std::vector<LocationInfo> ICompilerBridge::references(const std::string & /*source*/,
                                                       int /*line*/,
                                                       int /*col*/,
@@ -91,6 +127,13 @@ std::vector<LocationInfo> ICompilerBridge::references(const std::string & /*sour
     return {};
 }
 
+/// @brief Return an empty rename result from the default implementation.
+/// @param source Current source text.
+/// @param line Zero-based query line.
+/// @param col Zero-based query column.
+/// @param path Document path.
+/// @param newName Requested replacement identifier.
+/// @return Empty rename result.
 RenameResult ICompilerBridge::rename(const std::string & /*source*/,
                                      int /*line*/,
                                      int /*col*/,
@@ -99,6 +142,12 @@ RenameResult ICompilerBridge::rename(const std::string & /*source*/,
     return {};
 }
 
+/// @brief Return empty signature help from the default implementation.
+/// @param source Current source text.
+/// @param line Zero-based query line.
+/// @param col Zero-based query column.
+/// @param path Document path.
+/// @return Empty signature-help value.
 SignatureHelpInfo ICompilerBridge::signatureHelp(const std::string & /*source*/,
                                                  int /*line*/,
                                                  int /*col*/,
@@ -106,15 +155,25 @@ SignatureHelpInfo ICompilerBridge::signatureHelp(const std::string & /*source*/,
     return {};
 }
 
+/// @brief Return no workspace symbols from the default implementation.
+/// @param query Search text.
+/// @return Empty symbol list.
 std::vector<SymbolInfo> ICompilerBridge::workspaceSymbols(const std::string & /*query*/) {
     return {};
 }
 
+/// @brief Return no semantic tokens from the default implementation.
+/// @param source Current source text.
+/// @param path Document path.
+/// @return Empty token list.
 std::vector<SemanticTokenInfo> ICompilerBridge::semanticTokens(const std::string & /*source*/,
                                                                const std::string & /*path*/) {
     return {};
 }
 
+/// @brief List properties and methods for one runtime class.
+/// @param className Fully qualified runtime class name.
+/// @return Owned members in property-then-method catalog order, or empty if unknown.
 std::vector<RuntimeMemberInfo> ICompilerBridge::runtimeMembers(const std::string &className) {
     const auto *cls = il::runtime::findRuntimeClassByQName(className);
     if (!cls)
@@ -128,6 +187,9 @@ std::vector<RuntimeMemberInfo> ICompilerBridge::runtimeMembers(const std::string
     return result;
 }
 
+/// @brief Search runtime class and member names case-insensitively.
+/// @param keyword Non-empty substring query.
+/// @return Matching classes, methods, and properties in catalog order.
 std::vector<RuntimeMemberInfo> ICompilerBridge::runtimeSearch(const std::string &keyword) {
     std::string lowerKw = toLowerStr(keyword);
     if (lowerKw.empty())

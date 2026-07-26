@@ -23,6 +23,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares IL function definitions and calling-convention metadata.
+ *
+ * @details A `Function` owns its signature, stable basic-block storage,
+ *          diagnostic SSA names, linkage, and semantic attributes. Its textual
+ *          function identity may be accompanied by an interned module symbol
+ *          for fast lookup, while the owned string remains canonical.
+ */
+
 #pragma once
 
 #include "il/core/BasicBlock.hpp"
@@ -48,37 +58,37 @@ enum class CallingConv {
 /// @brief Definition of an IL function with parameters and basic blocks.
 /// @see docs/il/il-guide.md#reference
 struct Function {
-    /// Human-readable identifier for the function.
+    /// @brief Human-readable identifier for the function.
     /// @ownership Stored by the containing Module; immutable after insertion.
     /// @constraint Unique within its Module.
     std::string name;
 
-    /// Return type declared for the function.
+    /// @brief Return type declared for the function.
     /// @ownership Value copied by Function.
     /// @constraint Must match verifier rules and caller expectations.
     Type retType;
 
-    /// Ordered list of parameters.
+    /// @brief Ordered list of parameters.
     /// @ownership Function owns the container and its Param elements.
     /// @constraint Size and types must match the function type.
     std::vector<Param> params;
 
-    /// True when the function accepts a C-style variadic argument tail.
+    /// @brief True when the function accepts a C-style variadic argument tail.
     bool isVarArg = false;
 
-    /// Calling convention used by calls to this function.
+    /// @brief Calling convention used by calls to this function.
     CallingConv callingConv = CallingConv::Default;
 
-    /// True when the linker must invoke this function before the entry point.
+    /// @brief True when the linker must invoke this function before the entry point.
     /// Serialized as the `[module_init]` function attribute.
     bool moduleInitializer = false;
 
-    /// Basic blocks comprising the function body.
+    /// @brief Basic blocks comprising the function body.
     /// @ownership Function owns all blocks; each block's parent is this function.
     /// @constraint Contains at least one block; labels unique within the function.
     StableList<BasicBlock> blocks;
 
-    /// Mapping from SSA value IDs to their original names for diagnostics.
+    /// @brief Mapping from SSA value IDs to their original names for diagnostics.
     /// @ownership Function owns this vector.
     /// @constraint Index aligns with SSA value numbering; entries may be empty.
     std::vector<std::string> valueNames;

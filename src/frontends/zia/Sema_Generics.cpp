@@ -519,6 +519,9 @@ bool Sema::typeImplementsInterface(TypeRef type, const std::string &interfaceNam
     if (type->kind == TypeKindSem::Interface)
         return type->name == resolvedInterfaceName;
 
+    /// @brief Resolves and compares one declared interface name.
+    /// @param iface Declared interface spelling.
+    /// @return `true` when it denotes the requested interface.
     auto ifaceMatches = [&](const std::string &iface) {
         std::string resolvedIface = iface;
         if (TypeRef ifaceType = resolveNamedType(iface);

@@ -24,6 +24,14 @@
 //        src/runtime/io/rt_asset.h (mounted asset lookup)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares editor-facing workspace, asset, manifest, and edit primitives.
+ * @details Exposes filtered file indexing and paging, ignore evaluation,
+ * watcher batching, asset resolution, manifest parsing, and transactional
+ * multi-file edit validation/application constrained to zero, one, or
+ * multiple workspace roots.
+ */
 
 #pragma once
 

@@ -13,6 +13,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares shared lexical and diagnostic utilities for IL parsing.
+ *
+ * @details These stateless helpers normalize whitespace/comments, extract
+ *          delimited tokens, validate identifiers, parse numeric and trap-kind
+ *          literals, recognize explicit SSA IDs, and construct consistently
+ *          line-prefixed diagnostics from caller-owned text and streams.
+ */
+
 #pragma once
 
 #include "support/diag_expected.hpp"
@@ -47,6 +57,8 @@ std::string stripInlineComment(const std::string &text);
 std::string stripDeclarationComment(const std::string &text);
 
 /// @brief Delimiter consumed after a parser utility token.
+/// @details Distinguishes input exhaustion, a comma separator, and ordinary
+///          whitespace so opcode parsers can enforce grammar-specific layouts.
 enum class TokenDelimiter {
     End,
     Comma,

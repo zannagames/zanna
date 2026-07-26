@@ -5,9 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tui/src/app.cpp
-// Purpose: Implement the minimal headless application driver that powers the
-//          Zanna terminal UI toolkit.
+/// @file
+/// @brief Implements the interactive and headless Zanna TUI application driver.
+/// @details Drains input exactly once per tick, applies focus/keymap routing,
+///          lays out and paints the owned widget tree, and emits a differential
+///          frame through a borrowed terminal backend.
 // Key invariants: Each tick drains queued input events exactly once, applies
 //                 focus changes prior to widget dispatch, and renders a fresh
 //                 frame into the backing screen buffer.

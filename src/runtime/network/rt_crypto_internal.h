@@ -22,6 +22,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares shared internal cryptographic memory hygiene helpers.
+ * @details Exposes the non-elidable caller-buffer wipe used across primitive
+ * translation units to remove secret scalar, key, and intermediate material.
+ */
+
 #pragma once
 
 #include <stddef.h>

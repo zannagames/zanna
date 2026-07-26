@@ -612,13 +612,22 @@ TypeRef Sema::refineRuntimeCallReturnType(const CallExpr *expr,
     const auto &registry = il::runtime::RuntimeRegistry::instance();
     if (auto sig = registry.findFunction(calleeName); sig && sig->isValid()) {
         TypeRef refined = normalizeRuntimeSurfaceType(toZiaReturnType(*sig));
+        /// @brief Tests whether a type is an unnamed runtime pointer.
+        /// @param type Semantic type to inspect.
+        /// @return `true` for an opaque pointer.
         auto isOpaquePtr = [](TypeRef type) {
             return type && type->kind == TypeKindSem::Ptr && type->name.empty();
         };
+        /// @brief Tests whether a type is a parameterized runtime sequence.
+        /// @param type Semantic type to inspect.
+        /// @return `true` for `Zanna.Collections.Seq[T]`.
         auto isTypedSeq = [](TypeRef type) {
             return type && type->kind == TypeKindSem::Ptr &&
                    type->name == "Zanna.Collections.Seq" && !type->typeArgs.empty();
         };
+        /// @brief Tests whether a pointer names a concrete runtime class.
+        /// @param type Semantic type to inspect.
+        /// @return `true` for a named non-sequence runtime pointer.
         auto isConcreteRuntimeClass = [](TypeRef type) {
             return type && type->kind == TypeKindSem::Ptr && !type->name.empty() &&
                    type->name != "Zanna.Collections.Seq";
@@ -632,6 +641,9 @@ TypeRef Sema::refineRuntimeCallReturnType(const CallExpr *expr,
         }
     }
 
+    /// @brief Retrieves and optional-unpacks one analyzed call argument type.
+    /// @param index Argument index.
+    /// @return Semantic argument type, or null when unavailable.
     auto argTypeAt = [&](size_t index) -> TypeRef {
         if (index >= expr->args.size())
             return nullptr;
@@ -660,6 +672,9 @@ TypeRef Sema::refineRuntimeCallReturnType(const CallExpr *expr,
     TypeRef mapReceiver = receiverArg && receiverArg->valueType() ? receiverArg : firstArg;
     TypeRef setReceiver =
         receiverArg && receiverArg->kind == TypeKindSem::Set ? receiverArg : firstArg;
+    /// @brief Wraps an element type as a normalized runtime sequence.
+    /// @param elemType Sequence element type.
+    /// @return Typed sequence, or the current fallback when unknown.
     auto asSeq = [&](TypeRef elemType) -> TypeRef {
         return elemType ? normalizeRuntimeSurfaceType(types::seqOf(elemType)) : fallback;
     };
@@ -767,6 +782,7 @@ std::optional<TypeRef> Sema::analyzeListCombinatorCall(CallExpr *expr,
                                                        TypeRef baseType) {
     TypeRef elemType =
         baseType && baseType->elementType() ? baseType->elementType() : types::unknown();
+    /// @brief Analyzes every list-combinator argument.
     auto analyzeAll = [&]() {
         for (auto &arg : expr->args)
             analyzeExpr(arg.value.get());
@@ -835,6 +851,8 @@ std::optional<TypeRef> Sema::analyzeListCombinatorCall(CallExpr *expr,
 ///          ordinary function/method overloads. Successful paths record lowered callees and
 ///          argument bindings for code generation.
 TypeRef Sema::analyzeCall(CallExpr *expr) {
+    /// @brief Analyzes all call arguments in source order.
+    /// @return Vector of semantic argument types.
     auto analyzeArgTypes = [&]() {
         std::vector<TypeRef> argTypes;
         argTypes.reserve(expr->args.size());
@@ -1546,6 +1564,7 @@ TypeRef Sema::analyzeCall(CallExpr *expr) {
         TypeRef baseType = analyzeExpr(fieldExpr->base.get());
 
         // Helper to analyze all arguments
+        /// @brief Analyzes every argument for the current method call.
         auto analyzeArgs = [&]() {
             for (auto &arg : expr->args) {
                 analyzeExpr(arg.value.get());
@@ -1585,11 +1604,16 @@ TypeRef Sema::analyzeCall(CallExpr *expr) {
             }
         }
 
+        /// @brief Analyzes all method arguments for fallback validation.
         auto analyzeAllArgs = [&]() {
             for (auto &arg : expr->args)
                 analyzeExpr(arg.value.get());
         };
 
+        /// @brief Validates the exact argument count of a built-in method.
+        /// @param expected Required number of arguments.
+        /// @param methodName Method name used in diagnostics.
+        /// @return `true` when the count matches.
         auto checkArgCount = [&](size_t expected, const std::string &methodName) -> bool {
             analyzeAllArgs();
             if (expr->args.size() == expected)
@@ -1600,6 +1624,10 @@ TypeRef Sema::analyzeCall(CallExpr *expr) {
             return false;
         };
 
+        /// @brief Validates one built-in method argument type.
+        /// @param index Argument index.
+        /// @param expected Required semantic type.
+        /// @param label Diagnostic label for the parameter.
         auto checkArgType = [&](size_t index, TypeRef expected, const std::string &label) {
             if (index >= expr->args.size() || !expected)
                 return;

@@ -25,77 +25,77 @@ namespace il::frontends::basic::lower::detail {
 ControlLoweringHelper::ControlLoweringHelper(Lowerer::DetailAccess access) noexcept
     : access_(access) {}
 
-/// @brief Lower If.
+/// @copydoc ControlLoweringHelper::lowerIf()
 void ControlLoweringHelper::lowerIf(const IfStmt &stmt) {
     access_.lowerIf(stmt);
 }
 
-/// @brief Lower While.
+/// @copydoc ControlLoweringHelper::lowerWhile()
 void ControlLoweringHelper::lowerWhile(const WhileStmt &stmt) {
     access_.lowerWhile(stmt);
 }
 
-/// @brief Lower Do.
+/// @copydoc ControlLoweringHelper::lowerDo()
 void ControlLoweringHelper::lowerDo(const DoStmt &stmt) {
     access_.lowerDo(stmt);
 }
 
-/// @brief Lower For.
+/// @copydoc ControlLoweringHelper::lowerFor()
 void ControlLoweringHelper::lowerFor(const ForStmt &stmt) {
     access_.lowerFor(stmt);
 }
 
-/// @brief Lower For Each.
+/// @copydoc ControlLoweringHelper::lowerForEach()
 void ControlLoweringHelper::lowerForEach(const ForEachStmt &stmt) {
     access_.lowerForEach(stmt);
 }
 
-/// @brief Lower Select Case.
+/// @copydoc ControlLoweringHelper::lowerSelectCase()
 void ControlLoweringHelper::lowerSelectCase(const SelectCaseStmt &stmt) {
     access_.lowerSelectCase(stmt);
 }
 
-/// @brief Lower Next.
+/// @copydoc ControlLoweringHelper::lowerNext()
 void ControlLoweringHelper::lowerNext(const NextStmt &stmt) {
     access_.lowerNext(stmt);
 }
 
-/// @brief Lower Exit.
+/// @copydoc ControlLoweringHelper::lowerExit()
 void ControlLoweringHelper::lowerExit(const ExitStmt &stmt) {
     access_.lowerExit(stmt);
 }
 
-/// @brief Lower Goto.
+/// @copydoc ControlLoweringHelper::lowerGoto()
 void ControlLoweringHelper::lowerGoto(const GotoStmt &stmt) {
     access_.lowerGoto(stmt);
 }
 
-/// @brief Lower Gosub.
+/// @copydoc ControlLoweringHelper::lowerGosub()
 void ControlLoweringHelper::lowerGosub(const GosubStmt &stmt) {
     access_.lowerGosub(stmt);
 }
 
-/// @brief Lower Gosub Return.
+/// @copydoc ControlLoweringHelper::lowerGosubReturn()
 void ControlLoweringHelper::lowerGosubReturn(const ReturnStmt &stmt) {
     access_.lowerGosubReturn(stmt);
 }
 
-/// @brief Lower On Error Goto.
+/// @copydoc ControlLoweringHelper::lowerOnErrorGoto()
 void ControlLoweringHelper::lowerOnErrorGoto(const OnErrorGoto &stmt) {
     access_.lowerOnErrorGoto(stmt);
 }
 
-/// @brief Lower Resume.
+/// @copydoc ControlLoweringHelper::lowerResume()
 void ControlLoweringHelper::lowerResume(const Resume &stmt) {
     access_.lowerResume(stmt);
 }
 
-/// @brief Lower End.
+/// @copydoc ControlLoweringHelper::lowerEnd()
 void ControlLoweringHelper::lowerEnd(const EndStmt &stmt) {
     access_.lowerEnd(stmt);
 }
 
-/// @brief Lower Try Catch.
+/// @copydoc ControlLoweringHelper::lowerTryCatch()
 void ControlLoweringHelper::lowerTryCatch(const TryCatchStmt &stmt) {
     access_.lowerTryCatch(stmt);
 }

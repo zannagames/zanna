@@ -28,6 +28,15 @@
 // Links: src/runtime/io/rt_watcher.c (implementation), src/runtime/core/rt_string.h
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares the thread-bound cross-platform filesystem Watcher API.
+ * @details Defines normalized event kinds, lifecycle operations, bounded and
+ * non-blocking polling, last-event accessors, overflow accounting, and the
+ * constants exposed through the runtime property-dispatch ABI.
+ */
+
 #pragma once
 
 #include "rt_string.h"

@@ -367,8 +367,24 @@ struct Layer {
     std::string name;
     std::string asset;
     bool visible{true};
+    // Optional authored translucency (ADR 0195); serialized only when it
+    // differs from fully opaque so legacy documents stay byte-stable.
+    double opacity{1.0};
     std::vector<int64_t> tiles;
 };
+
+/// @brief Clamp an authored layer opacity into [0, 1].
+/// @param value Candidate opacity.
+/// @return Clamped finite opacity; non-finite input becomes opaque 1.
+double sanitizeLayerOpacity(double value) {
+    if (!std::isfinite(value))
+        return 1.0;
+    if (value < 0.0)
+        return 0.0;
+    if (value > 1.0)
+        return 1.0;
+    return value;
+}
 
 /// @brief Editable scene object with absolute position and typed properties.
 /// @brief Default RGBA tint meaning "no tint applied".
@@ -1800,6 +1816,9 @@ void parseLayers(SceneState &s, void *sourceMap, bool legacy, bool nestedDraft) 
         bool visible = true;
         if (jsonBool(layerMap, "visible", visible, legacy))
             layer.visible = visible;
+        double opacity = 1.0;
+        if (jsonDouble(layerMap, "opacity", opacity))
+            layer.opacity = sanitizeLayerOpacity(opacity);
 
         loadTiles(s, layer, layerMap, li, legacy, nestedDraft);
         s.layers.push_back(std::move(layer));
@@ -2172,6 +2191,10 @@ void writeTiles(std::ostringstream &out, const std::vector<int64_t> &tiles) {
 /// @param members Key and already-rendered JSON value pairs.
 void writeMergedObject(std::ostringstream &out,
                        std::vector<std::pair<std::string, std::string>> members) {
+    /// @brief Order pre-rendered JSON members by key for deterministic output.
+    /// @param a First key/value pair.
+    /// @param b Second key/value pair.
+    /// @return `true` when @p a has a lexicographically earlier key than @p b.
     std::sort(members.begin(), members.end(), [](const auto &a, const auto &b) {
         return a.first < b.first;
     });
@@ -2369,6 +2392,8 @@ void writeCanonicalJson(std::ostringstream &out, const SceneState &s) {
         out << "    {\n";
         out << "      \"name\": " << jsonEscape(layer.name) << ",\n";
         out << "      \"visible\": " << (layer.visible ? "true" : "false") << ",\n";
+        if (layer.opacity != 1.0)
+            out << "      \"opacity\": " << jsonNumber(layer.opacity) << ",\n";
         out << "      \"asset\": " << jsonEscape(layer.asset) << ",\n";
         out << "      \"tiles\": ";
         writeTiles(out, layer.tiles);
@@ -2593,6 +2618,9 @@ std::vector<AssetDescriptor> collectAssetDescriptors(const SceneState &s) {
         }
         rt_string_unref(text);
     }
+    /// @brief Collect string-valued asset references from a typed scalar section.
+    /// @param section Section fields to scan.
+    /// @param name Serialized section name recorded on discovered assets.
     auto scanScalarSection = [&](const SectionScalarState &section, const char *name) {
         for (const auto &[key, value] : section.fields) {
             if (value.kind != ScalarKind::String)
@@ -2799,6 +2827,9 @@ void applyCollisionSection(void *tilemap, void *root) {
     int64_t collisionLayer = 0;
     if (jsonInt(root, "layer", collisionLayer))
         rt_tilemap_set_collision_layer(tilemap, collisionLayer);
+    /// @brief Apply every tile ID in one named collision list.
+    /// @param name Collision-list member to read from @p root.
+    /// @param collision Runtime collision kind assigned to each valid tile ID.
     auto applyList = [&](const char *name, int64_t collision) {
         void *list = mapGet(root, name);
         if (!isSeq(list))
@@ -3549,6 +3580,25 @@ void rt_game_scene_set_layer_visible(void *scene, int64_t layer, int8_t visible)
         s.layers[static_cast<size_t>(layer)].visible = visible != 0;
 }
 
+/// @brief Return a layer's authored opacity (ADR 0195).
+/// @param scene SceneDocument handle.
+/// @param layer Zero-based layer index.
+/// @return Stored opacity in [0, 1], or opaque `1` for an invalid layer.
+double rt_game_scene_layer_opacity(void *scene, int64_t layer) {
+    SceneState &s = *requireScene(scene)->state;
+    return validLayer(s, layer) ? s.layers[static_cast<size_t>(layer)].opacity : 1.0;
+}
+
+/// @brief Set a layer's authored opacity, clamped to [0, 1].
+/// @param scene SceneDocument handle.
+/// @param layer Zero-based layer index; invalid indices are ignored.
+/// @param opacity Replacement opacity; non-finite input becomes opaque.
+void rt_game_scene_set_layer_opacity(void *scene, int64_t layer, double opacity) {
+    SceneState &s = *requireScene(scene)->state;
+    if (validLayer(s, layer))
+        s.layers[static_cast<size_t>(layer)].opacity = sanitizeLayerOpacity(opacity);
+}
+
 /// @brief Move a layer to another position in the layer stack.
 /// @details The selected layer is removed and reinserted at @p to, preserving
 ///          its tiles and metadata. Invalid indices and identity moves are
@@ -3665,6 +3715,8 @@ int64_t rt_game_scene_flood_fill_tiles(
         queue[tail++] = start;
         queued[start] = 1;
 
+        /// @brief Add an adjacent matching tile to the bounded flood-fill queue.
+        /// @param index Linear tile index to inspect and enqueue once.
         auto enqueue = [&](size_t index) {
             if (!queued[index] && tiles[index] == sourceTile) {
                 queued[index] = 1;

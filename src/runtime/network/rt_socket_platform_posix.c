@@ -22,6 +22,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_socket_platform_posix.c
+ * @brief Implements the POSIX side of the native socket adapter.
+ * @details The adapter wraps descriptor lifecycle and errno classification,
+ *          applies nonblocking and timeout options, suppresses SIGPIPE where
+ *          required, and implements interruption-safe readiness waits against
+ *          a single monotonic deadline.
+ */
+
 #include "rt_socket_platform.h"
 
 #include <string.h>
@@ -191,6 +200,7 @@ bool rt_socket_pending_error(socket_t sock, int *error_out) {
 /// @param sock Socket descriptor to configure.
 /// @param timeout_ms Timeout in milliseconds; negative values are treated as zero.
 /// @param is_recv true selects SO_RCVTIMEO, false selects SO_SNDTIMEO.
+/// @return True when setsockopt succeeds; otherwise false.
 bool set_socket_timeout(socket_t sock, int timeout_ms, bool is_recv) {
     if (timeout_ms < 0)
         timeout_ms = 0;

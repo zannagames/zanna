@@ -745,6 +745,7 @@ void rt_canvas_fill_hspan(void *canvas_ptr, int64_t x0, int64_t x1, int64_t y, i
         canvas, x0, y, span, 1, rt_canvas_color_to_vgfx_rgb(color), clip_x, clip_y, clip_w, clip_h);
 }
 
+/// @copydetails rt_canvas_disc_clipped_safe
 static void rt_canvas_disc_clipped_safe(rt_canvas *canvas,
                                         int64_t cx,
                                         int64_t cy,
@@ -794,6 +795,7 @@ static void rt_canvas_disc_clipped_safe(rt_canvas *canvas,
     }
 }
 
+/// @copydetails rt_canvas_ring_clipped_safe
 static void rt_canvas_ring_clipped_safe(rt_canvas *canvas,
                                         int64_t cx,
                                         int64_t cy,

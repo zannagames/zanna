@@ -44,6 +44,18 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements MemorySSA graph construction and non-escaping-alloca DSE facts.
+ *
+ * @details The implementation builds a forward, coarse memory-version stream
+ *          over reverse post-order, inserts phis where predecessor versions
+ *          disagree, and associates loads, stores, and relevant calls with
+ *          dense access nodes. A location-sensitive path search then proves
+ *          dead stores to non-escaping allocas while treating calls as
+ *          transparent to that private stack storage.
+ */
+
 #include "il/analysis/MemorySSA.hpp"
 
 #include "il/analysis/AllocaRoots.hpp"
@@ -173,6 +185,8 @@ std::vector<Block *> buildReversePostOrder(
     std::vector<Block *> rpo;
     std::unordered_set<Block *> visited;
     std::vector<Block *> postOrder;
+    /// @brief Traverse one not-yet-covered CFG component in iterative depth-first order.
+    /// @param start First block in the component to traverse.
     auto dfs = [&](Block *start) {
         if (!visited.insert(start).second)
             return;
@@ -224,8 +238,16 @@ MemorySSA computeMemorySSA(Function &F, BasicAA &AA) {
     // LiveOnEntry sentinel at index 0.
     mssa.accesses_.push_back(MemoryAccess{MemAccessKind::LiveOnEntry, 0, nullptr, -1, 0, {}, {}});
 
+    /// @brief Determine the dense identifier assigned to the next access node.
+    /// @return Current node-table size converted to an access identifier.
     auto nextId = [&]() -> uint32_t { return static_cast<uint32_t>(mssa.accesses_.size()); };
 
+    /// @brief Append and index an instruction-backed memory access.
+    /// @param kind Role of the new graph node.
+    /// @param block Block containing the represented instruction.
+    /// @param instrIdx Zero-based instruction index, or -1 for a synthetic access.
+    /// @param definingAccess Reaching memory version consumed by the new access.
+    /// @return Dense identifier assigned to the appended node.
     auto makeAccess =
         [&](MemAccessKind kind, Block *block, int instrIdx, uint32_t definingAccess) -> uint32_t {
         uint32_t id = nextId();
@@ -234,6 +256,13 @@ MemorySSA computeMemorySSA(Function &F, BasicAA &AA) {
         return id;
     };
 
+    /// @brief Find the nearest possibly aliasing store earlier in one block.
+    /// @param block Block containing the memory operation being analyzed.
+    /// @param beforeIdx Exclusive upper instruction index for the backward search.
+    /// @param ptr Address whose reaching definition is requested.
+    /// @param size Known access width, or no value when the width is unknown.
+    /// @return Indexed access ID for the nearest usable store, or no value when
+    ///         no local definition can safely be selected.
     auto findLocalReachingDef = [&](Block *block,
                                     size_t beforeIdx,
                                     const Value &ptr,
@@ -566,6 +595,9 @@ MemorySSA computeMemorySSA(Function &F, BasicAA &AA) {
                 (storeSize ? static_cast<std::uint64_t>(*storeSize) + 1U : 0U);
             PathMemo &livePathMemo = pathMemoByLocation[locationKey];
             std::unordered_set<std::string> visiting;
+            /// @brief Prove that every continuation from a successor kills the store or exits.
+            /// @param label Label of the successor block at which to begin the proof.
+            /// @return True when all paths overwrite the location or terminate before a read.
             std::function<bool(const std::string &)> allLivePathsKillOrExit =
                 [&](const std::string &label) -> bool {
                 if (auto memoIt = livePathMemo.find(label); memoIt != livePathMemo.end())
@@ -574,6 +606,9 @@ MemorySSA computeMemorySSA(Function &F, BasicAA &AA) {
                 if (!visiting.insert(label).second)
                     return false; // A live loop can keep the old store reachable.
 
+                /// @brief Complete and memoize the proof result for the current label.
+                /// @param value Result to cache and return.
+                /// @return The unchanged proof result.
                 auto finish = [&](bool value) {
                     visiting.erase(label);
                     livePathMemo[label] = value;

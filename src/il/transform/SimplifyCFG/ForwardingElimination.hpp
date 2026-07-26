@@ -20,6 +20,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares empty forwarding-block elimination for SimplifyCFG.
+ *
+ * @details The subtransform redirects predecessor edges through side-effect-free
+ *          forwarding blocks, composes their block arguments, and removes only
+ *          blocks whose elimination preserves exception-handling semantics.
+ */
+
 #pragma once
 
 #include "il/transform/SimplifyCFG.hpp"

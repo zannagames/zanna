@@ -18,6 +18,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares the compiled diagnostic-code catalog and family fallback API.
+/// @details Callers may enumerate static entries through a legacy vector or a
+///          zero-allocation span, perform exact code lookup, and infer a broad
+///          subsystem for recognized uncataloged code conventions.
+
 #pragma once
 
 #include <optional>
@@ -37,6 +43,7 @@ struct DiagCatalogEntry {
 };
 
 /// @brief All cataloged diagnostic codes in definition order.
+/// @return Program-lifetime immutable vector containing every catalog entry.
 const std::vector<DiagCatalogEntry> &diagCatalog();
 
 /// @brief All cataloged diagnostic codes as a static contiguous view.
@@ -47,12 +54,14 @@ const std::vector<DiagCatalogEntry> &diagCatalog();
 std::span<const DiagCatalogEntry> diagCatalogEntries();
 
 /// @brief Find the catalog entry for @p code.
+/// @param code Stable diagnostic code to look up exactly.
 /// @return The entry, or nullptr when the code is not cataloged.
 const DiagCatalogEntry *findDiagCode(std::string_view code);
 
 /// @brief Describe the subsystem family for @p code from its prefix.
 /// @details Used as a fallback for codes that are not (yet) cataloged, so
 ///          tooling can always say which component emitted a diagnostic.
+/// @param code Diagnostic code whose prefix convention should be inspected.
 /// @return Subsystem description, or std::nullopt for unrecognized prefixes.
 std::optional<std::string_view> diagCodeFamily(std::string_view code);
 

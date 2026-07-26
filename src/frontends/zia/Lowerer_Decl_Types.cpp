@@ -383,6 +383,8 @@ void Lowerer::emitItableInit() {
     // Phase 1: Register each class before interface bindings reference it.
     std::vector<std::string> classOrder;
     std::unordered_set<std::string> visitedClasses;
+    /// @brief Appends a class after recursively visiting its base class.
+    /// @param className Registered class name.
     std::function<void(const std::string &)> visitClass = [&](const std::string &className) {
         if (visitedClasses.count(className))
             return;

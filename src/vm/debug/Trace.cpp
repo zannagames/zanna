@@ -76,9 +76,9 @@ namespace {
 ///          restores the original state so the rest of the program continues to
 ///          respect user locale preferences.
 class LocaleGuard {
-    std::ostream &os;
-    std::locale oldLoc;
-    std::string oldC;
+    std::ostream &os;    ///< Stream whose locale is temporarily replaced.
+    std::locale oldLoc;  ///< Stream locale restored on scope exit.
+    std::string oldC;    ///< Saved process-wide numeric locale name.
 
   public:
     /// @brief Enter the guard, snapshotting the current locale information.
@@ -86,6 +86,7 @@ class LocaleGuard {
     ///          locale (if available) before forcing both to the classic "C"
     ///          variant.  The constructor performs minimal work so it can wrap
     ///          hot interpreter paths without introducing noticeable overhead.
+    /// @param s Stream that should use locale-stable numeric formatting.
     explicit LocaleGuard(std::ostream &s) : os(s), oldLoc(s.getloc()) {
         if (const char *c = std::setlocale(LC_NUMERIC, nullptr))
             oldC = c;
@@ -176,6 +177,7 @@ TraceSink::TraceSink(TraceConfig cfg) : cfg(cfg) {
     }
 }
 
+/// @brief Restore locale state changed for an enabled trace session.
 TraceSink::~TraceSink() {
     if (localeSet_) {
         if (!savedCLocale_.empty())
@@ -213,14 +215,14 @@ void TraceSink::onFramePrepared(const Frame &fr) {
 /// @brief Retrieve cached file contents, loading from disk if necessary.
 /// @details Uses @ref TraceConfig::sm to resolve source file identifiers into
 ///          absolute paths and then caches the line-by-line contents so repeated
-///          trace entries avoid redundant I/O.  When no source manager is
-///          configured or the file cannot be loaded the function returns null,
-///          signalling that source echoing should be skipped.  The optional path
-///          hint supports tracing standalone scripts that bypass the source
-///          manager yet still provide a useful path at call sites.
+///          trace entries avoid redundant I/O. When no source manager, file
+///          identifier, or resolved path is available the function returns
+///          null. A resolved but unreadable file is cached with an empty line
+///          list so repeated trace entries do not retry I/O. The optional path
+///          hint avoids another source-manager path lookup at call sites.
 /// @param file_id   Source manager identifier for the file.
 /// @param path_hint Optional filesystem path to use when the source manager path is empty.
-/// @return Cached file entry or nullptr when the file cannot be resolved.
+/// @return Cached file entry, or @c nullptr when the file cannot be resolved.
 const TraceSink::FileCacheEntry *TraceSink::getOrLoadFile(uint32_t file_id, std::string path_hint) {
     if (!cfg.sm || file_id == 0)
         return nullptr;

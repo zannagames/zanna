@@ -23,6 +23,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_network_http.c
+ * @brief Implements native HTTP transport, framing, redirects, and response publication.
+ * @details This translation unit owns the HTTP/1.x and negotiated HTTP/2
+ *          exchange core used by the public runtime wrappers. It validates
+ *          request syntax, manages plain or TLS connections and keep-alive
+ *          leases, parses bounded response metadata and bodies, and publishes
+ *          managed responses only after an exchange completes successfully.
+ */
+
 #ifndef _DARWIN_C_SOURCE
 #define _DARWIN_C_SOURCE 1
 #endif

@@ -13,6 +13,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares the thread-safe registry for source paths and line text.
+/// @details `SourceManager` assigns stable nonzero identifiers, normalizes paths
+///          for diagnostic display, and lazily caches immutable line vectors.
+///          Returned string views remain valid until manager destruction, even
+///          when callers replace or invalidate the active source cache.
+
 #pragma once
 
 #include "source_location.hpp"
@@ -39,22 +46,29 @@ inline constexpr std::string_view kSourceManagerFileIdOverflowMessage =
 /// @brief Friend hook exposing SourceManager internals to white-box tests.
 struct SourceManagerTestAccess;
 
-/// Maintains the mapping between numeric file identifiers and their
-/// corresponding filesystem paths. Clients can register files and look up
-/// paths by identifier.
+/// @brief Maintains mappings from numeric file identifiers to paths and source text.
+/// @details Registration deduplicates equivalent paths and assigns identifiers
+///          monotonically from one. Line queries lazily load disk-backed files,
+///          while @ref setSource supports virtual or generated input. Public
+///          operations synchronize internal tables for concurrent callers.
+/// @invariant Identifier zero is never assigned to a registered file.
+/// @ownership Owns display paths, disk paths, active line caches, and retired
+///            caches retained to preserve previously returned views.
 class SourceManager {
   public:
     /// @brief Register file path @p path and return its id.
     /// @param path File system path.
     /// @return New file identifier (>0 on success, 0 on overflow).
     /// @details Returns zero when the identifier space is exhausted and refuses
-    ///          to insert the file. Callers surface the diagnostic in their own
-    ///          reporting context.
+    ///          to insert the file. Equivalent registered paths reuse their
+    ///          existing identifier. Callers surface overflow diagnostics in
+    ///          their own reporting context.
     uint32_t addFile(std::string path);
 
     /// @brief Retrieve path for @p file_id.
     /// @param file_id Identifier returned by addFile().
-    /// @return File path string view.
+    /// @return Manager-backed display path, or an empty view for an invalid id.
+    /// @note The view remains valid until this SourceManager is destroyed.
     std::string_view getPath(uint32_t file_id) const;
 
     /// @brief Retrieve a single source line from the given file.
@@ -62,6 +76,7 @@ class SourceManager {
     /// @param line 1-based line number.
     /// @return The source line text (without newline), or empty if unavailable.
     /// @details Lazily loads and caches file contents on first access.
+    /// @note The returned view remains valid until this SourceManager is destroyed.
     std::string_view getLine(uint32_t file_id, uint32_t line) const;
 
     /// @brief Check whether a source line exists even if its text is empty.
@@ -81,12 +96,15 @@ class SourceManager {
     /// @brief Cache source text for @p file_id without requiring it to exist on disk.
     /// @param file_id Identifier returned by addFile().
     /// @param source Full source text associated with the file id.
+    /// @details Replaces the active immutable line cache and retires the old
+    ///          cache so previously returned views do not dangle.
     void setSource(uint32_t file_id, std::string source);
 
   private:
     /// @brief Return whether @p file_id names a registered file.
     /// @param file_id Candidate 1-based file identifier.
     /// @return True when @p file_id is in range for the path storage.
+    /// @pre Caller must hold @ref mutex_.
     [[nodiscard]] bool isRegisteredFileId(uint32_t file_id) const noexcept;
 
     /// @brief Return a path view without acquiring the mutex.

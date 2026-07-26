@@ -21,6 +21,18 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements conversion of small conditional CFG regions into selects.
+ *
+ * @details Candidate discovery validates predecessor counts, arm purity,
+ *          terminators, join arguments, selectable types, and preservation of
+ *          compare-derived range facts. A committed rewrite hoists safe arm
+ *          instructions, synthesizes selects for differing join arguments,
+ *          replaces the conditional with an unconditional branch, and removes
+ *          now-unreachable arm blocks.
+ */
+
 #include "il/transform/IfConvert.hpp"
 
 #include "il/core/BasicBlock.hpp"
@@ -52,6 +64,8 @@ constexpr std::size_t kMaxSpeculatedPerArm = 3;
 ///          the opcode table's side-effect flag rejects stores, calls, and
 ///          every checked/overflow form, and the explicit list rejects the
 ///          remaining faulting or state-touching operations.
+/// @param instr Candidate instruction.
+/// @return True when executing @p instr outside its original arm is safe.
 [[nodiscard]] bool isSpeculatable(const Instr &instr) {
     if (!instr.result)
         return false;
@@ -83,6 +97,8 @@ constexpr std::size_t kMaxSpeculatedPerArm = 3;
 }
 
 /// @brief Return true when @p kind is safe to route through a `select`.
+/// @param kind Join-parameter type kind to classify.
+/// @return True for currently supported scalar and handle-like select types.
 [[nodiscard]] bool isSelectableParamKind(Type::Kind kind) {
     switch (kind) {
         case Type::Kind::I1:
@@ -103,6 +119,8 @@ struct ArmInfo {
 };
 
 /// @brief Return the block's terminator, or null when the block is malformed.
+/// @param block Block whose final instruction is requested.
+/// @return Mutable final instruction, or nullptr when @p block is empty.
 [[nodiscard]] Instr *terminatorOf(BasicBlock &block) {
     if (block.instructions.empty())
         return nullptr;
@@ -110,6 +128,9 @@ struct ArmInfo {
 }
 
 /// @brief Return the local instruction defining @p id, or null if absent.
+/// @param block Block to search in instruction order.
+/// @param id SSA temporary identifier to resolve.
+/// @return Borrowed defining instruction, or nullptr when no definition exists.
 [[nodiscard]] const Instr *findLocalDef(const BasicBlock &block, unsigned id) {
     for (const auto &instr : block.instructions) {
         if (instr.result && *instr.result == id)
@@ -119,6 +140,8 @@ struct ArmInfo {
 }
 
 /// @brief Return true when a compare can refine integer ranges on cbr edges.
+/// @param instr Candidate comparison instruction.
+/// @return True for a supported signed/equality comparison between a temp and constant.
 [[nodiscard]] bool compareCarriesRangeFact(const Instr &instr) {
     switch (instr.op) {
         case Opcode::SCmpLT:
@@ -141,6 +164,9 @@ struct ArmInfo {
 }
 
 /// @brief Return true when the conditional branch carries edge range facts.
+/// @param head Block containing the condition definition.
+/// @param term Candidate conditional-branch terminator.
+/// @return True when @p term consumes a locally defined range-refining comparison.
 [[nodiscard]] bool cbrCarriesRangeFacts(const BasicBlock &head, const Instr &term) {
     if (term.operands.empty() || term.operands[0].kind != Value::Kind::Temp)
         return false;
@@ -149,6 +175,9 @@ struct ArmInfo {
 }
 
 /// @brief Return true when two branch-argument vectors are not identical.
+/// @param lhs First edge's branch arguments.
+/// @param rhs Second edge's branch arguments.
+/// @return True when sizes or any semantic value payload differ.
 [[nodiscard]] bool argsDiffer(const std::vector<Value> &lhs, const std::vector<Value> &rhs) {
     if (lhs.size() != rhs.size())
         return true;
@@ -160,6 +189,9 @@ struct ArmInfo {
 }
 
 /// @brief Check whether @p block qualifies as a speculatable arm to @p join.
+/// @param block Candidate single-predecessor arm block.
+/// @param join Required sole successor label.
+/// @return True when the arm is parameterless, small, safe, and branches to @p join.
 [[nodiscard]] bool armQualifies(BasicBlock &block, const std::string &join) {
     if (!block.params.empty())
         return false;
@@ -304,7 +336,9 @@ PreservedAnalyses IfConvert::run(Function &function, AnalysisManager & /*analysi
             ArmInfo falseArm{};
             std::string joinLabel;
 
-            /// Return the argument vector for one conditional edge, treating omission as empty.
+            /// @brief Return one conditional edge's arguments, treating omission as empty.
+            /// @param edge Zero-based branch edge index.
+            /// @return Borrowed explicit argument vector or a shared empty vector.
             const auto edgeArgs = [&](std::size_t edge) -> const std::vector<Value> * {
                 static const std::vector<Value> kEmpty;
                 if (edge < term->brArgs.size())
@@ -377,7 +411,8 @@ PreservedAnalyses IfConvert::run(Function &function, AnalysisManager & /*analysi
             unsigned nextId = zanna::il::nextTempId(function);
 
             std::vector<Instr> hoisted;
-            /// Append the non-terminator instructions from a converted arm in execution order.
+            /// @brief Append a converted arm's non-terminator instructions in execution order.
+            /// @param arm Arm block to copy, or nullptr for a triangle's direct edge.
             const auto hoistArm = [&](BasicBlock *arm) {
                 if (arm == nullptr)
                     return;
@@ -437,6 +472,8 @@ PreservedAnalyses IfConvert::run(Function &function, AnalysisManager & /*analysi
 
 /// @copydoc registerIfConvertPass()
 void registerIfConvertPass(PassRegistry &registry) {
+    /// @brief Construct a fresh pass instance for one pipeline registration request.
+    /// @return Newly owned `IfConvert` pass.
     registry.registerFunctionPass("if-conv", []() { return std::make_unique<IfConvert>(); }, true);
 }
 

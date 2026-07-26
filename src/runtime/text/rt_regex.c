@@ -35,6 +35,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_regex.c
+ * @brief Implements the public byte-oriented regex API and pattern cache.
+ * @details Static Pattern operations validate managed inputs, acquire immutable
+ *          compiled ASTs through a synchronized bounded LRU cache, and expose
+ *          searching, captures, enumeration, literal replacement, splitting,
+ *          and escaping with explicit zero-width progress behavior.
+ */
+
 #include "rt_regex.h"
 #include "rt_regex_internal.h"
 
@@ -62,6 +71,10 @@ static INIT_ONCE g_pattern_cache_cs_once = INIT_ONCE_STATIC_INIT;
 
 /// @brief One-shot initializer for the Win32 critical section guarding
 ///        the compiled-pattern cache. Called via `InitOnceExecuteOnce`.
+/// @param o Windows one-time initialization token; unused.
+/// @param p Caller parameter supplied by `InitOnceExecuteOnce`; unused.
+/// @param ctx Optional initialization context output; unused.
+/// @return `TRUE` after initializing the critical section.
 static BOOL WINAPI init_pattern_cache_cs(PINIT_ONCE o, PVOID p, PVOID *ctx) {
     (void)o;
     (void)p;
@@ -102,7 +115,10 @@ static void pattern_cache_unlock(void) {
 
 #include "rt_trap.h"
 
-/// @brief Safely cast strlen() result to int, trapping on overflow.
+/// @brief Measure a C string for the engine's signed-int length domain.
+/// @param s Null-terminated string to measure.
+/// @return String length as `int`; traps and returns zero for null input or a
+///         length greater than `INT_MAX`.
 static int safe_strlen_int(const char *s) {
     if (!s) {
         rt_trap("Pattern: null string");
@@ -116,6 +132,11 @@ static int safe_strlen_int(const char *s) {
     return (int)n;
 }
 
+/// @brief Read a runtime string length for the engine's signed-int domain.
+/// @details A null runtime string is treated as empty.
+/// @param s Borrowed runtime string, or `NULL`.
+/// @return Byte length as `int`; traps and returns zero for an invalid length
+///         or a length greater than `INT_MAX`.
 static int safe_rt_string_len_int(rt_string s) {
     if (!s)
         return 0;
@@ -127,11 +148,21 @@ static int safe_rt_string_len_int(rt_string s) {
     return (int)n;
 }
 
+/// @brief Obtain a borrowed text buffer while treating null input as empty.
+/// @param text Borrowed runtime text string, or `NULL`.
+/// @return Borrowed backing buffer, or a stable empty C string when absent or
+///         unbacked.
 static const char *pattern_text_or_empty(rt_string text) {
     const char *cstr = text ? rt_string_cstr(text) : "";
     return cstr ? cstr : "";
 }
 
+/// @brief Validate a required regex pattern for C-string compilation.
+/// @details Null, unbacked, and embedded-null patterns trap. Pattern source is
+///          length-checked because compilation and cache keys use C strings.
+/// @param pattern Borrowed runtime pattern string.
+/// @return Borrowed null-terminated pattern bytes, or an empty C string if
+///         execution resumes after a validation trap.
 static const char *pattern_required(rt_string pattern) {
     if (!pattern) {
         rt_trap("Pattern: null pattern");
@@ -152,6 +183,15 @@ static const char *pattern_required(rt_string pattern) {
     return cstr;
 }
 
+/// @brief Grow a replacement buffer to accommodate additional bytes.
+/// @details Capacity includes room beyond the requested data length. Growth is
+///          geometric until overflow proximity requires an exact allocation.
+/// @param result In/out pointer to the reallocatable buffer.
+/// @param result_cap In/out allocated capacity in bytes.
+/// @param result_len Number of data bytes already stored.
+/// @param add Number of additional data bytes required.
+/// @param trap_msg Trap message used for arithmetic overflow.
+/// @return `1` when capacity is sufficient, otherwise `0` after trapping.
 static int ensure_result_capacity(
     char **result, size_t *result_cap, size_t result_len, size_t add, const char *trap_msg) {
     if (add > SIZE_MAX - result_len) {
@@ -198,6 +238,8 @@ static int ensure_result_capacity(
 /// Uses `calloc` so the union starts cleared (important for the
 /// `children` variant where `count`/`capacity` must be 0). Traps on
 /// OOM — there's no recovery path during pattern compile.
+/// @param type AST node discriminator to initialize.
+/// @return Newly allocated node, or `NULL` after an allocation trap.
 re_node *node_new(re_node_type type) {
     re_node *n = (re_node *)calloc(1, sizeof(re_node));
     if (!n) {
@@ -214,6 +256,7 @@ re_node *node_new(re_node_type type) {
 /// Walks the tree depth-first: container types (concat/alt/group) free
 /// each child then their `children` array; quantifier nodes free their
 /// single child; leaf types just free themselves. Safe on NULL.
+/// @param n Root of the owned AST subtree to destroy.
 void node_free(re_node *n) {
     if (!n)
         return;
@@ -241,6 +284,8 @@ void node_free(re_node *n) {
 /// Geometric resize (cap doubles, starting at 4) so amortized cost is
 /// O(1) per add. Traps on OOM. Caller transfers ownership of `child`
 /// to `n` — the parent's `node_free` will reclaim it.
+/// @param n Destination container node.
+/// @param child Child node whose ownership transfers on successful append.
 void children_add(re_node *n, re_node *child) {
     if (!n || !child) {
         rt_trap("Pattern: invalid child node");
@@ -273,6 +318,7 @@ void children_add(re_node *n, re_node *child) {
 /// Releases the duplicated pattern string, recursively frees the AST
 /// root, then frees the wrapper. Safe on NULL — used both by the
 /// cache eviction path and by error-recovery paths during compile.
+/// @param p Owned compiled-pattern object to destroy.
 static void pattern_free(compiled_pattern *p) {
     if (!p)
         return;
@@ -285,6 +331,7 @@ static void pattern_free(compiled_pattern *p) {
 ///
 /// Thin wrapper around `pattern_free` so external callers (e.g., the
 /// cached-pattern wrapper) don't need to see the static helper.
+/// @param cp Owned compiled pattern to destroy; may be `NULL`.
 void re_free(re_compiled_pattern *cp) {
     pattern_free(cp);
 }
@@ -298,6 +345,8 @@ void re_free(re_compiled_pattern *cp) {
 /// The bitset is 256 bits (32 bytes), one per ASCII byte value. Bytes
 /// outside [0, 255] are ignored — matching of multibyte/Unicode chars
 /// happens via the negation flag in `class_test`.
+/// @param c Character-class bitmap to modify.
+/// @param ch Byte value to add.
 void class_set(re_class *c, int ch) {
     if (ch >= 0 && ch < 256) {
         c->bits[ch / 8] |= (1 << (ch % 8));
@@ -309,6 +358,9 @@ void class_set(re_class *c, int ch) {
 /// Bytes outside [0, 255] match if and only if the class is negated —
 /// preserves the "negated class accepts everything not explicitly listed"
 /// semantics for arbitrary code units.
+/// @param c Character class to inspect.
+/// @param ch Candidate byte value.
+/// @return Whether @p ch belongs to the effective class.
 bool class_test(const re_class *c, int ch) {
     if (ch < 0 || ch >= 256)
         return c->negated;
@@ -317,6 +369,10 @@ bool class_test(const re_class *c, int ch) {
 }
 
 /// @brief Set every bit in the inclusive range `[from, to]`.
+/// @details Values at or above 256 are ignored; a reversed range adds nothing.
+/// @param c Character-class bitmap to modify.
+/// @param from Inclusive first byte value.
+/// @param to Inclusive final byte value.
 void class_add_range(re_class *c, int from, int to) {
     for (int ch = from; ch <= to && ch < 256; ch++) {
         class_set(c, ch);
@@ -324,6 +380,9 @@ void class_add_range(re_class *c, int from, int to) {
 }
 
 /// @brief Return 1 when `ch` is in the base set of a lowercase shorthand.
+/// @param shorthand Lowercase shorthand discriminator: `d`, `w`, or `s`.
+/// @param ch Candidate byte value.
+/// @return `1` for membership in the ASCII shorthand set, otherwise `0`.
 static int shorthand_member(char shorthand, int ch) {
     switch (shorthand) {
         case 'd':
@@ -347,6 +406,8 @@ static int shorthand_member(char shorthand, int ch) {
 /// `[a\\D]` correct: complementing one member must not complement the whole
 /// class (VDOC-055). Used both inside `[...]` brackets and as standalone
 /// atoms.
+/// @param c Character-class bitmap to extend.
+/// @param shorthand One of `d`, `D`, `w`, `W`, `s`, or `S`.
 void class_add_shorthand(re_class *c, char shorthand) {
     char base = shorthand;
     int complement = 0;
@@ -365,6 +426,8 @@ void class_add_shorthand(re_class *c, char shorthand) {
 /// Used after parse to populate `cp->group_count` so callers can size
 /// match-result arrays correctly. Recurses through every container
 /// kind so nested groups are tallied.
+/// @param n Root of the AST subtree to inspect.
+/// @return Number of explicit capture-group nodes below @p n.
 static int count_groups(re_node *n) {
     if (!n)
         return 0;
@@ -398,6 +461,9 @@ static int count_groups(re_node *n) {
 /// and cache lookups, runs the parser, and counts capture groups. Traps
 /// on syntax error (via `parse_error`) or OOM. Empty patterns are
 /// represented as an empty concat (matches everywhere with zero width).
+/// @param pattern Required null-terminated pattern source.
+/// @return Newly allocated compiled pattern, or `NULL` after a syntax or
+///         allocation trap.
 static compiled_pattern *compile_pattern(const char *pattern) {
     if (!pattern) {
         rt_trap("Pattern: null pattern");
@@ -442,6 +508,8 @@ static compiled_pattern *compile_pattern(const char *pattern) {
 ///
 /// Wraps the static `compile_pattern` so external callers (the cached
 /// pattern wrapper) don't need access to the static helper.
+/// @param pattern Required null-terminated pattern source.
+/// @return Newly allocated compiled pattern, or `NULL` after a trap.
 re_compiled_pattern *re_compile(const char *pattern) {
     return compile_pattern(pattern);
 }
@@ -449,6 +517,8 @@ re_compiled_pattern *re_compile(const char *pattern) {
 /// @brief Return the source pattern string a compiled pattern was built from.
 ///
 /// Returns "" for NULL. Useful for cache lookup and diagnostics.
+/// @param cp Borrowed compiled pattern, or `NULL`.
+/// @return Borrowed original pattern text, or a stable empty string.
 const char *re_get_pattern(re_compiled_pattern *cp) {
     return cp ? cp->pattern_str : "";
 }
@@ -457,6 +527,8 @@ const char *re_get_pattern(re_compiled_pattern *cp) {
 ///
 /// Counts only explicit `(...)` groups; group 0 (the whole match) is
 /// not included. Returns 0 for NULL.
+/// @param cp Borrowed compiled pattern, or `NULL`.
+/// @return Number of explicit capture groups.
 int re_group_count(re_compiled_pattern *cp) {
     return cp ? cp->group_count : 0;
 }
@@ -475,6 +547,14 @@ typedef struct cache_entry {
 static cache_entry pattern_cache[PATTERN_CACHE_SIZE];
 static unsigned long access_counter = 0;
 
+/// @brief Acquire a compiled pattern from the bounded shared cache.
+/// @details Cache hits increment an active-reference count. Cache misses compile
+///          outside the lock, then deduplicate under the lock. If all 16 slots
+///          are actively referenced, the new pattern remains unlinked and is
+///          freed by `release_cached_pattern`.
+/// @param pattern_str Required null-terminated pattern source.
+/// @return Borrowed-for-use compiled pattern with one active cache reference,
+///         or `NULL` after compilation failure.
 static compiled_pattern *get_cached_pattern(const char *pattern_str) {
     pattern_cache_lock();
 
@@ -542,6 +622,10 @@ static compiled_pattern *get_cached_pattern(const char *pattern_str) {
     return cp;
 }
 
+/// @brief Release one active reference obtained from the pattern cache.
+/// @details Linked entries remain resident at zero references; an unlinked
+///          pattern is destroyed when its final active reference is released.
+/// @param cp Compiled pattern previously returned by `get_cached_pattern`.
 static void release_cached_pattern(compiled_pattern *cp) {
     if (!cp)
         return;
@@ -560,6 +644,12 @@ static void release_cached_pattern(compiled_pattern *cp) {
 //=============================================================================
 
 /// @brief Test whether a regex pattern matches anywhere in the text.
+/// @details A null text is treated as empty. The required pattern is compiled
+///          through the shared cache; invalid syntax or embedded null bytes
+///          trap.
+/// @param text Borrowed byte string to search, or `NULL` for empty text.
+/// @param pattern Borrowed required regex pattern.
+/// @return `1` when any match exists, otherwise `0`.
 int8_t rt_pattern_is_match(rt_string text, rt_string pattern) {
     const char *pat_str = pattern_required(pattern);
     const char *txt_str = pattern_text_or_empty(text);
@@ -573,6 +663,13 @@ int8_t rt_pattern_is_match(rt_string text, rt_string pattern) {
 }
 
 /// @brief Find the first match of a regex pattern in the text (empty string if no match).
+/// @details Searches left-to-right from byte offset zero. Because the empty
+///          string is also a valid zero-width match, use
+///          `rt_pattern_find_option` when absence must be distinguishable.
+/// @param text Borrowed byte string to search, or `NULL` for empty text.
+/// @param pattern Borrowed required regex pattern.
+/// @return Newly allocated matching substring, or an empty-string sentinel
+///         when no match exists.
 rt_string rt_pattern_find(rt_string text, rt_string pattern) {
     const char *pat_str = pattern_required(pattern);
     const char *txt_str = pattern_text_or_empty(text);
@@ -619,6 +716,14 @@ void *rt_pattern_find_option(rt_string text, rt_string pattern) {
 }
 
 /// @brief Find the first match starting at or after the given byte offset.
+/// @details Negative offsets clamp to zero. An offset beyond the text length
+///          returns the empty sentinel without compiling the pattern further;
+///          use the Option variant to distinguish absence from an empty match.
+/// @param text Borrowed byte string to search, or `NULL` for empty text.
+/// @param pattern Borrowed required regex pattern.
+/// @param start Starting byte offset.
+/// @return Newly allocated matching substring, or an empty-string sentinel
+///         when no match exists at or after the clamped offset.
 rt_string rt_pattern_find_from(rt_string text, rt_string pattern, int64_t start) {
     const char *pat_str = pattern_required(pattern);
     const char *txt_str = pattern_text_or_empty(text);
@@ -675,6 +780,9 @@ void *rt_pattern_find_from_option(rt_string text, rt_string pattern, int64_t sta
 }
 
 /// @brief Find the byte position of the first match (-1 if no match).
+/// @param text Borrowed byte string to search, or `NULL` for empty text.
+/// @param pattern Borrowed required regex pattern.
+/// @return Zero-based starting byte offset, or `-1` when no match exists.
 int64_t rt_pattern_find_pos(rt_string text, rt_string pattern) {
     const char *pat_str = pattern_required(pattern);
     const char *txt_str = pattern_text_or_empty(text);
@@ -710,6 +818,12 @@ void *rt_pattern_find_pos_option(rt_string text, rt_string pattern) {
 }
 
 /// @brief Find all non-overlapping matches and return them as a sequence of strings.
+/// @details Matches are collected left-to-right. After a zero-width match the
+///          search advances by one byte to guarantee progress, while still
+///          allowing a final empty match at end-of-text.
+/// @param text Borrowed byte string to search, or `NULL` for empty text.
+/// @param pattern Borrowed required regex pattern.
+/// @return Caller-owned Seq that owns newly allocated match strings.
 void *rt_pattern_find_all(rt_string text, rt_string pattern) {
     const char *pat_str = pattern_required(pattern);
     const char *txt_str = pattern_text_or_empty(text);
@@ -738,6 +852,15 @@ void *rt_pattern_find_all(rt_string text, rt_string pattern) {
 }
 
 /// @brief Replace all matches of a regex pattern with the replacement string.
+/// @details Replacement bytes are inserted literally; capture substitutions
+///          are not interpreted. Matches do not overlap. For a zero-width
+///          match before a source byte, the replacement is emitted and that
+///          byte is copied before search advances, so no text is swallowed.
+/// @param text Borrowed byte string to transform, or `NULL` for empty text.
+/// @param pattern Borrowed required regex pattern.
+/// @param replacement Borrowed literal replacement bytes, or `NULL` for empty.
+/// @return Newly allocated transformed string, or an empty string after a
+///         recoverable allocation or size trap.
 rt_string rt_pattern_replace(rt_string text, rt_string pattern, rt_string replacement) {
     const char *pat_str = pattern_required(pattern);
     const char *txt_str = pattern_text_or_empty(text);
@@ -834,6 +957,12 @@ rt_string rt_pattern_replace(rt_string text, rt_string pattern, rt_string replac
 }
 
 /// @brief Replace only the first match of a regex pattern with the replacement string.
+/// @details Replacement bytes are literal. When no match exists, the function
+///          returns a newly allocated copy of the source text.
+/// @param text Borrowed byte string to transform, or `NULL` for empty text.
+/// @param pattern Borrowed required regex pattern.
+/// @param replacement Borrowed literal replacement bytes, or `NULL` for empty.
+/// @return Newly allocated transformed string.
 rt_string rt_pattern_replace_first(rt_string text, rt_string pattern, rt_string replacement) {
     const char *pat_str = pattern_required(pattern);
     const char *txt_str = pattern_text_or_empty(text);
@@ -883,6 +1012,13 @@ rt_string rt_pattern_replace_first(rt_string text, rt_string pattern, rt_string 
 }
 
 /// @brief Split a string by a regex pattern, returning a sequence of substrings.
+/// @details Nonzero-width delimiters produce the segments before, between, and
+///          after matches, including an empty trailing segment. Zero-width
+///          delimiters never split at the current segment start or at
+///          end-of-text; otherwise they split without discarding a source byte.
+/// @param text Borrowed byte string to split, or `NULL` for empty text.
+/// @param pattern Borrowed required delimiter pattern.
+/// @return Caller-owned Seq that owns newly allocated segment strings.
 void *rt_pattern_split(rt_string text, rt_string pattern) {
     const char *pat_str = pattern_required(pattern);
     const char *txt_str = pattern_text_or_empty(text);
@@ -934,6 +1070,11 @@ void *rt_pattern_split(rt_string text, rt_string pattern) {
 }
 
 /// @brief Escape all regex metacharacters in a string so it matches literally.
+/// @details Prefixes backslash, dot, quantifiers, anchors, brackets,
+///          parentheses, alternation, and braces with a backslash. A null text
+///          is treated as empty.
+/// @param text Borrowed byte string to escape, or `NULL`.
+/// @return Newly allocated escaped pattern text.
 rt_string rt_pattern_escape(rt_string text) {
     const char *txt_str = pattern_text_or_empty(text);
 

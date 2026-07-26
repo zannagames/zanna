@@ -5,9 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the zanna_tui_version() function, which returns the
-// compile-time version string for the ZannaTUI library. The version string
-// follows semantic versioning and is embedded during the build process.
+/// @file
+/// @brief Declares the process-lifetime Zanna TUI version query.
+/// @details The semantic version string is embedded at build time and exposed
+///          through a stable, allocation-free public API.
 //
 // Key invariants:
 //   - The returned string has static storage duration and is always non-null.
@@ -20,10 +21,11 @@
 
 #pragma once
 
-/// @brief Returns the ZannaTUI version string.
-/// @invariant The returned pointer is non-null and points to a null-terminated string.
-/// @ownership The returned string has static storage duration and must not be freed.
-/// @notes Part of the public ZannaTUI API.
 namespace zanna::tui {
+
+/// @brief Return the compile-time Zanna TUI version string.
+/// @return Non-null pointer to null-terminated static storage.
+/// @invariant The returned pointer remains valid for the lifetime of the process.
+/// @ownership The caller must not modify or free the returned string.
 const char *zanna_tui_version() noexcept;
 } // namespace zanna::tui

@@ -24,6 +24,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_rsa.c
+ * @brief Implements native RSA parsing and signature operations for TLS.
+ * @details The implementation provides bounded big-integer arithmetic,
+ *          Montgomery modular exponentiation, strict DER key parsing, and
+ *          PKCS#1 v1.5 and PSS encoding verification. Sensitive temporary and
+ *          private-key storage is scrubbed before release, while digest and
+ *          padding comparisons avoid early mismatch exits.
+ */
+
 #include "rt_rsa.h"
 
 #include "rt_crypto.h"
@@ -232,6 +242,12 @@ static void rsa_mul_add_u64(uint64_t a,
 ///          Returns 1 on success with `tag`, `val_len`, and `hdr_len`
 ///          filled. Returns 0 for malformed or truncated input.
 ///          Used by every higher-level DER walker in this file.
+/// @param buf DER bytes beginning at a TLV header.
+/// @param buf_len Available bytes at @p buf.
+/// @param tag Destination for the decoded one-byte tag.
+/// @param val_len Destination for the decoded content length.
+/// @param hdr_len Destination for the tag-plus-length header size.
+/// @return One for a canonical, fully contained DER TLV; otherwise zero.
 static int rsa_der_read_tlv(
     const uint8_t *buf, size_t buf_len, uint8_t *tag, size_t *val_len, size_t *hdr_len) {
     if (!buf || buf_len < 2 || !tag || !val_len || !hdr_len)
@@ -268,6 +284,11 @@ static int rsa_der_read_tlv(
 ///          modulus and exponent values are unsigned, so we strip
 ///          that leading zero before storing them. Caller owns the
 ///          returned buffer (must `free`).
+/// @param data Unsigned big-endian value bytes.
+/// @param len Number of input bytes.
+/// @param out_len Destination receiving the trimmed allocation length.
+/// @return Caller-owned nonempty byte allocation, or NULL for invalid input or
+///         allocation failure.
 static uint8_t *rsa_dup_be_trimmed(const uint8_t *data, size_t len, size_t *out_len) {
     size_t start = 0;
     uint8_t *copy = NULL;
@@ -293,6 +314,12 @@ static uint8_t *rsa_dup_be_trimmed(const uint8_t *data, size_t len, size_t *out_
 ///          DER-mandated leading-zero padding). Advances `*pos` past
 ///          the consumed TLV on success. Returns 0 if the next field
 ///          isn't an INTEGER or if the buffer is truncated.
+/// @param der Complete DER byte buffer.
+/// @param der_len Number of bytes in @p der.
+/// @param pos In/out offset of the next TLV.
+/// @param out Destination receiving a caller-owned trimmed integer buffer.
+/// @param out_len Destination receiving the integer buffer length.
+/// @return One on canonical nonnegative INTEGER success; otherwise zero.
 static int rsa_parse_der_integer(
     const uint8_t *der, size_t der_len, size_t *pos, uint8_t **out, size_t *out_len) {
     uint8_t tag;
@@ -316,8 +343,10 @@ static int rsa_parse_der_integer(
     return 1;
 }
 
-/// @brief Return the digest length in bytes for an RSA hash identifier (32/48/64 for
-/// SHA-256/384/512).
+/// @brief Return the digest length for a supported RSA hash identifier.
+/// @param hash_id SHA-2 algorithm selector.
+/// @return 32, 48, or 64 bytes for SHA-256, SHA-384, or SHA-512;
+///         otherwise zero.
 static size_t rsa_hash_len(rt_rsa_hash_t hash_id) {
     switch (hash_id) {
         case RT_RSA_HASH_SHA256:
@@ -335,6 +364,11 @@ static size_t rsa_hash_len(rt_rsa_hash_t hash_id) {
 /// @details Routes to `rt_sha256` / `rt_sha384` / `rt_sha512` based on
 ///          the algorithm tag. Returns 0 for unknown identifiers
 ///          (caller treats as signature verification failure).
+/// @param hash_id SHA-2 algorithm selector.
+/// @param data Input byte span.
+/// @param len Number of input bytes.
+/// @param out Caller-provided digest buffer sized for @p hash_id.
+/// @return One when a supported hash was computed; otherwise zero.
 static int rsa_hash_buffer(rt_rsa_hash_t hash_id, const void *data, size_t len, uint8_t *out) {
     switch (hash_id) {
         case RT_RSA_HASH_SHA256:
@@ -356,6 +390,8 @@ static int rsa_hash_buffer(rt_rsa_hash_t hash_id, const void *data, size_t len, 
 ///          leading zero bits in the most-significant byte. Used by
 ///          PSS encode/verify to compute `emLen` (the PSS-encoded
 ///          message length, which is `ceil((modBits - 1) / 8)`).
+/// @param key Key containing the unsigned big-endian modulus.
+/// @return Significant modulus width in bits, or zero for missing storage.
 static size_t rsa_modulus_bits(const rt_rsa_key_t *key) {
     size_t bits = 0;
     uint8_t first = 0;
@@ -380,6 +416,12 @@ static size_t rsa_modulus_bits(const rt_rsa_key_t *key) {
 ///          payload mask. The hash function is parameterized so
 ///          PSS/OAEP can pick a different MGF hash than the message
 ///          hash if needed (in practice they almost always match).
+/// @param hash_id SHA-2 function used for mask expansion.
+/// @param seed Seed byte span hashed with successive counters.
+/// @param seed_len Number of seed bytes.
+/// @param out Destination mask buffer.
+/// @param out_len Number of mask bytes to produce.
+/// @return One on success; zero for invalid inputs or an unsupported hash.
 static int rsa_mgf1(
     rt_rsa_hash_t hash_id, const uint8_t *seed, size_t seed_len, uint8_t *out, size_t out_len) {
     uint8_t hash[64];
@@ -411,12 +453,16 @@ static int rsa_mgf1(
     return 1;
 }
 
-/// @brief Round byte length up to the number of 64-bit words needed to hold it.
+/// @brief Round a byte length up to the required 64-bit limb count.
+/// @param len Byte length to represent.
+/// @return Number of 64-bit limbs required.
 static size_t rsa_word_count_from_len(size_t len) {
     return (len + sizeof(uint64_t) - 1) / sizeof(uint64_t);
 }
 
-/// @brief Zero-fill a multi-word integer (`count` × 64-bit limbs).
+/// @brief Zero-fill a multi-word integer.
+/// @param words Writable little-endian limb array.
+/// @param count Number of 64-bit limbs to clear.
 static void rsa_words_zero(uint64_t *words, size_t count) {
     memset(words, 0, count * sizeof(*words));
 }
@@ -428,6 +474,10 @@ static void rsa_words_zero(uint64_t *words, size_t count) {
 ///          The walk reverses byte order while packing 8 bytes per
 ///          limb. Higher limbs are zero-filled if the input is
 ///          shorter than the internal representation needs.
+/// @param data Unsigned big-endian input bytes.
+/// @param len Number of input bytes.
+/// @param out Destination little-endian limb array.
+/// @param out_words Capacity of @p out in limbs.
 static void rsa_words_from_be(const uint8_t *data, size_t len, uint64_t *out, size_t out_words) {
     rsa_words_zero(out, out_words);
     for (size_t i = 0; i < len; i++)
@@ -439,6 +489,10 @@ static void rsa_words_from_be(const uint8_t *data, size_t len, uint64_t *out, si
 ///          PSS/PKCS#1 padding routines need a specific output size).
 ///          Stops early once the limb supply is exhausted, leaving
 ///          the high bytes of `out` zero-padded.
+/// @param words Little-endian source limbs.
+/// @param word_count Number of available source limbs.
+/// @param out Destination big-endian byte buffer.
+/// @param out_len Exact output size in bytes.
 static void rsa_words_to_be(const uint64_t *words,
                             size_t word_count,
                             uint8_t *out,
@@ -458,6 +512,11 @@ static void rsa_words_to_be(const uint64_t *words,
 ///          first inequality. Used by the modular-reduction step in
 ///          `rsa_mod_double_inplace` to decide whether subtraction
 ///          is needed.
+/// @param a First little-endian limb array.
+/// @param b Second little-endian limb array.
+/// @param count Common limb count.
+/// @return -1, zero, or 1 when @p a is less than, equal to, or greater
+///         than @p b.
 static int rsa_words_cmp(const uint64_t *a, const uint64_t *b, size_t count) {
     for (size_t i = count; i-- > 0;) {
         if (a[i] < b[i])
@@ -475,6 +534,9 @@ static int rsa_words_cmp(const uint64_t *a, const uint64_t *b, size_t count) {
 ///          for ensuring `a >= b` (we don't return underflow status —
 ///          this is used only in the modular-reduction step where
 ///          underflow can't happen by construction).
+/// @param a In/out minuend limb array.
+/// @param b Subtrahend limb array.
+/// @param count Common limb count.
 static void rsa_words_sub_inplace(uint64_t *a, const uint64_t *b, size_t count) {
     uint64_t borrow = 0;
     for (size_t i = 0; i < count; i++) {
@@ -494,6 +556,10 @@ static void rsa_words_sub_inplace(uint64_t *a, const uint64_t *b, size_t count) 
 ///          `diff` is zero. Used to make modular-exponentiation
 ///          timing-attack resistant: the same instruction sequence
 ///          runs whether or not the swap happens.
+/// @param a First in/out limb array.
+/// @param b Second in/out limb array.
+/// @param count Common limb count.
+/// @param mask All ones to swap or all zeros to retain the arrays.
 static void rsa_words_cswap(uint64_t *a, uint64_t *b, size_t count, uint64_t mask) {
     for (size_t i = 0; i < count; i++) {
         uint64_t diff = mask & (a[i] ^ b[i]);
@@ -508,6 +574,10 @@ static void rsa_words_cswap(uint64_t *a, uint64_t *b, size_t count, uint64_t mas
 ///          early once the carry chain reaches a limb where it
 ///          doesn't propagate further, which keeps the typical case
 ///          fast even for large modulus sizes.
+/// @param words In/out accumulator limb array.
+/// @param word_count Capacity of @p words in limbs.
+/// @param index Initial limb receiving @p value.
+/// @param value Value to add with carry propagation.
 static void rsa_words_accumulate(uint64_t *words, size_t word_count, size_t index, uint64_t value) {
     while (value != 0 && index < word_count) {
         uint64_t sum = words[index] + value;
@@ -526,6 +596,9 @@ static void rsa_words_accumulate(uint64_t *words, size_t word_count, size_t inde
 ///          repeatedly doubling 1 modulo N produces R² mod N, which
 ///          is the constant the Montgomery multiplication needs to
 ///          convert values into Montgomery form.
+/// @param value In/out reduced little-endian integer.
+/// @param modulus Odd modulus in the same limb representation.
+/// @param word_count Common limb count.
 static void rsa_mod_double_inplace(uint64_t *value, const uint64_t *modulus, size_t word_count) {
     uint64_t carry = 0;
     for (size_t i = 0; i < word_count; i++) {
@@ -549,6 +622,9 @@ static void rsa_mod_double_inplace(uint64_t *value, const uint64_t *modulus, siz
 ///          * 64` times, each time reducing modulo N. That gives
 ///          `2^(2*word_count*64) mod N = R² mod N`. Slow (linear
 ///          in modulus bits) but only done once per modular-exp call.
+/// @param out Destination limb array receiving R-squared modulo N.
+/// @param modulus Odd modulus limb array.
+/// @param word_count Common limb count.
 static void rsa_compute_r_squared(uint64_t *out, const uint64_t *modulus, size_t word_count) {
     rsa_words_zero(out, word_count);
     out[0] = 1;
@@ -567,6 +643,8 @@ static void rsa_compute_r_squared(uint64_t *out, const uint64_t *modulus, size_t
 ///          odd by RSA construction — it's the product of two
 ///          odd primes). Returns the *negated* inverse (`0 - x`)
 ///          because that's the form Montgomery reduction wants.
+/// @param n0 Least-significant odd modulus limb.
+/// @return Negated multiplicative inverse of @p n0 modulo 2^64.
 static uint64_t rsa_montgomery_n0_inv(uint64_t n0) {
     uint64_t x = 1;
     for (int i = 0; i < 6; i++)
@@ -591,6 +669,12 @@ static uint64_t rsa_montgomery_n0_inv(uint64_t n0) {
 ///          (32 limbs), each Mont-mul is ~1024 limb-multiplies,
 ///          which the wide-multiply intrinsic compiles to single
 ///          `mulx` / `umulh` instructions.
+/// @param out Destination limb array; may alias neither scratch input.
+/// @param a First Montgomery-domain operand.
+/// @param b Second Montgomery-domain operand.
+/// @param modulus Odd modulus limb array.
+/// @param word_count Common operand and modulus limb count.
+/// @param n0_inv Negated inverse of the modulus's lowest limb.
 static void rsa_mont_mul(uint64_t *out,
                          const uint64_t *a,
                          const uint64_t *b,
@@ -639,6 +723,9 @@ static void rsa_mont_mul(uint64_t *out,
 ///          first non-zero byte, then counts the bits within it. Used
 ///          by `rsa_modexp_bytes` to know how many iterations of the
 ///          Montgomery ladder are needed (one per exponent bit).
+/// @param data Unsigned big-endian integer bytes.
+/// @param len Number of bytes in @p data.
+/// @return Significant bit length, or zero for absent or all-zero input.
 static size_t rsa_bit_length_be(const uint8_t *data, size_t len) {
     if (!data || len == 0)
         return 0;
@@ -656,7 +743,12 @@ static size_t rsa_bit_length_be(const uint8_t *data, size_t len) {
     return 0;
 }
 
-/// @brief Test whether a specific bit of a big-endian integer is set (bit 0 is least significant).
+/// @brief Test a bit in a big-endian integer, numbered from the least
+///        significant bit.
+/// @param data Big-endian integer bytes.
+/// @param len Number of bytes in @p data.
+/// @param bit_index Zero-based bit index from the least-significant end.
+/// @return One when the selected bit is set; otherwise zero.
 static int rsa_bit_test_be(const uint8_t *data, size_t len, size_t bit_index) {
     size_t byte_index = len - 1 - (bit_index / 8);
     return (data[byte_index] >> (bit_index % 8)) & 1;
@@ -686,6 +778,15 @@ static int rsa_bit_test_be(const uint8_t *data, size_t len, size_t bit_index) {
 ///          definition) and that `modulus` is odd (Montgomery
 ///          arithmetic requires odd modulus). Returns 0 on validation
 ///          failure, 1 on success.
+/// @param base Unsigned big-endian base.
+/// @param base_len Number of base bytes.
+/// @param exp Unsigned big-endian exponent.
+/// @param exp_len Number of exponent bytes.
+/// @param mod Unsigned big-endian odd modulus.
+/// @param mod_len Number of modulus bytes.
+/// @param out Destination for the fixed-width big-endian result.
+/// @param out_len Destination capacity, at least @p mod_len.
+/// @return One on success; zero for invalid sizes, operands, or modulus.
 static int rsa_modexp_bytes(const uint8_t *base,
                             size_t base_len,
                             const uint8_t *exp,
@@ -765,6 +866,14 @@ static int rsa_modexp_bytes(const uint8_t *base,
 ///          Salt length = hash length here (the conventional choice).
 ///          Used only by signing operations, which Zanna doesn't do
 ///          today — kept for symmetry with `rsa_pss_verify_encoded`.
+/// @param key Valid private key supplying the modulus width.
+/// @param hash_id SHA-2 algorithm used for the digest, salt, and MGF1.
+/// @param digest Precomputed message digest.
+/// @param digest_len Digest length, required to match @p hash_id.
+/// @param em Destination encoded-message buffer.
+/// @param em_len Exact encoded-message length derived from the modulus.
+/// @return One on success; zero after validation, entropy, or encoding
+///         failure. Failure scrubs @p em.
 static int rsa_pss_encode(const rt_rsa_key_t *key,
                           rt_rsa_hash_t hash_id,
                           const uint8_t *digest,
@@ -843,6 +952,14 @@ done:
 ///          the checks to fail. This is the function the TLS
 ///          certificate validator and the TLS-server CertificateVerify
 ///          path call into for RSA-PSS-SHA256 signatures.
+/// @param key Valid public key supplying the modulus width.
+/// @param hash_id SHA-2 algorithm used for the digest and MGF1.
+/// @param digest Expected precomputed message digest.
+/// @param digest_len Digest length, required to match @p hash_id.
+/// @param em Recovered PSS encoded-message bytes.
+/// @param em_len Number of encoded-message bytes.
+/// @return One only when the complete PSS structure and digest match;
+///         otherwise zero.
 static int rsa_pss_verify_encoded(const rt_rsa_key_t *key,
                                   rt_rsa_hash_t hash_id,
                                   const uint8_t *digest,
@@ -907,6 +1024,10 @@ static int rsa_pss_verify_encoded(const rt_rsa_key_t *key,
 ///          the precomputed DER for `SEQUENCE { algorithmIdentifier(SHA-N), OCTET STRING(digest) }`
 ///          with the digest portion left to be appended by the caller.
 ///          Returns NULL for unknown hash IDs.
+/// @param hash_id SHA-2 algorithm named by the DigestInfo.
+/// @param len_out Destination receiving the static prefix length.
+/// @return Borrowed immutable prefix bytes, or NULL for invalid arguments or
+///         an unsupported hash.
 static const uint8_t *rsa_pkcs1_digest_info_prefix(rt_rsa_hash_t hash_id, size_t *len_out) {
     static const uint8_t SHA256_PREFIX[] = {0x30,
                                             0x31,
@@ -988,6 +1109,7 @@ static const uint8_t *rsa_pkcs1_digest_info_prefix(rt_rsa_hash_t hash_id, size_t
 /// @details Idempotent. Safe to call on uninitialized memory before
 ///          first use. Pair with `rt_rsa_key_free` for proper
 ///          lifetime management.
+/// @param key Key structure to initialize; NULL is a no-op.
 void rt_rsa_key_init(rt_rsa_key_t *key) {
     if (!key)
         return;
@@ -1001,6 +1123,8 @@ void rt_rsa_key_init(rt_rsa_key_t *key) {
 ///          subsequent accidental read sees zeros, not stale
 ///          pointers — a small defense against use-after-free
 ///          patterns. Safe on null input.
+/// @param key Initialized key whose owned components are consumed; NULL is a
+///        no-op.
 void rt_rsa_key_free(rt_rsa_key_t *key) {
     if (!key)
         return;
@@ -1019,6 +1143,12 @@ void rt_rsa_key_free(rt_rsa_key_t *key) {
 ///          caller has to peel off first). Returns 0 on malformed
 ///          input; on success, fills `out` and the caller owns the
 ///          modulus/exponent buffers via `rt_rsa_key_free`.
+/// @param der Complete PKCS#1 RSAPublicKey DER bytes.
+/// @param der_len Number of bytes in @p der.
+/// @param out Initialized key replaced only after complete parse and
+///        validation success.
+/// @return One on success; zero for malformed input, unsupported key sizes, or
+///         allocation failure.
 int rt_rsa_parse_public_key_pkcs1(const uint8_t *der, size_t der_len, rt_rsa_key_t *out) {
     uint8_t tag;
     size_t value_len, hdr_len, pos = 0;
@@ -1053,6 +1183,12 @@ int rt_rsa_parse_public_key_pkcs1(const uint8_t *der, size_t der_len, rt_rsa_key
 ///          mandatory two-prime structure, retain n/e/d for the runtime's
 ///          direct mod-exp path, and reject multi-prime version 1 keys
 ///          until CRT/multi-prime support exists.
+/// @param der Complete PKCS#1 RSAPrivateKey DER bytes.
+/// @param der_len Number of bytes in @p der.
+/// @param out Initialized key replaced only after complete parse and
+///        validation success.
+/// @return One on success; zero for malformed, unsupported, invalid, or
+///         unallocatable input.
 int rt_rsa_parse_private_key_pkcs1(const uint8_t *der, size_t der_len, rt_rsa_key_t *out) {
     uint8_t tag;
     size_t value_len, hdr_len, pos = 0;
@@ -1113,7 +1249,10 @@ done:
     return ok;
 }
 
-/// @brief Validate optional AlgorithmIdentifier parameters are absent or DER NULL.
+/// @brief Validate that AlgorithmIdentifier parameters are absent or DER NULL.
+/// @param params Remaining parameter bytes after the algorithm OID.
+/// @param params_len Number of bytes in @p params.
+/// @return One for no bytes or one canonical empty NULL TLV; otherwise zero.
 static int rsa_der_params_absent_or_null(const uint8_t *params, size_t params_len) {
     uint8_t tag;
     size_t value_len;
@@ -1132,6 +1271,12 @@ static int rsa_der_params_absent_or_null(const uint8_t *params, size_t params_le
 ///          We require exact DER consumption, version 0, rsaEncryption
 ///          AlgorithmIdentifier with absent/NULL parameters, and an
 ///          OCTET STRING containing a PKCS#1 RSAPrivateKey.
+/// @param der Complete PKCS#8 PrivateKeyInfo DER bytes.
+/// @param der_len Number of bytes in @p der.
+/// @param out Initialized key replaced only after the nested PKCS#1 parse
+///        succeeds.
+/// @return One on success; zero for malformed input, an unrecognized
+///         algorithm, or invalid nested key material.
 int rt_rsa_parse_private_key_pkcs8(const uint8_t *der, size_t der_len, rt_rsa_key_t *out) {
     static const uint8_t OID_RSA_ENCRYPTION[] = {
         0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01};
@@ -1193,6 +1338,10 @@ done:
 ///          configuration mistake; better to detect it at load time
 ///          than during the first failed handshake). Returns 0 if
 ///          either key is missing required fields.
+/// @param lhs First parsed RSA key.
+/// @param rhs Second parsed RSA key.
+/// @return One when modulus and public exponent lengths and bytes match;
+///         otherwise zero.
 int rt_rsa_public_equals(const rt_rsa_key_t *lhs, const rt_rsa_key_t *rhs) {
     if (!lhs || !rhs || !lhs->modulus || !rhs->modulus || !lhs->public_exponent ||
         !rhs->public_exponent) {
@@ -1218,6 +1367,14 @@ int rt_rsa_public_equals(const rt_rsa_key_t *lhs, const rt_rsa_key_t *rhs) {
 ///          `modulus_len`). Returns 0 on any encoding or arithmetic
 ///          failure. Used by the TLS server's CertificateVerify
 ///          path when the server's key is RSA.
+/// @param key Valid RSA private key containing n, e, and d.
+/// @param hash_id SHA-2 algorithm matching @p digest.
+/// @param digest Precomputed message digest.
+/// @param digest_len Digest length, required to match @p hash_id.
+/// @param sig_out Caller buffer receiving a modulus-width signature.
+/// @param sig_len_out In/out capacity and produced signature length.
+/// @return One on success; zero for invalid key/input, insufficient output
+///         capacity, or encoding/arithmetic failure.
 int rt_rsa_pss_sign(const rt_rsa_key_t *key,
                     rt_rsa_hash_t hash_id,
                     const uint8_t *digest,
@@ -1266,6 +1423,14 @@ done:
 ///          handshake call into for RSA-PSS-SHA256 cert / handshake
 ///          signature verification, which is the most common
 ///          modern-TLS signature path.
+/// @param key Valid RSA public key containing n and e.
+/// @param hash_id SHA-2 algorithm matching @p digest.
+/// @param digest Expected precomputed message digest.
+/// @param digest_len Digest length, required to match @p hash_id.
+/// @param sig Modulus-width signature bytes.
+/// @param sig_len Number of bytes in @p sig.
+/// @return One only for a structurally valid signature matching the digest;
+///         otherwise zero.
 int rt_rsa_pss_verify(const rt_rsa_key_t *key,
                       rt_rsa_hash_t hash_id,
                       const uint8_t *digest,
@@ -1314,6 +1479,14 @@ done:
 ///          deterministic encoding closes that). Returns 1 only on
 ///          full structural and digest match. Used by the X.509
 ///          chain validator for cert-chain RSA signatures.
+/// @param key Valid RSA public key containing n and e.
+/// @param hash_id SHA-2 algorithm expected in DigestInfo.
+/// @param digest Expected precomputed message digest.
+/// @param digest_len Digest length, required to match @p hash_id.
+/// @param sig Modulus-width signature bytes.
+/// @param sig_len Number of bytes in @p sig.
+/// @return One only for exact padding, DigestInfo, and digest agreement;
+///         otherwise zero.
 int rt_rsa_pkcs1_v15_verify(const rt_rsa_key_t *key,
                             rt_rsa_hash_t hash_id,
                             const uint8_t *digest,

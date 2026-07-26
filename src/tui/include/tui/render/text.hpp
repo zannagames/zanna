@@ -5,8 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tui/include/tui/render/text.hpp
-// Purpose: Text rendering utilities for painting strings into a screen buffer.
+/// @file
+/// @brief Declares inline aligned-text painters for terminal screen buffers.
+/// @details Provides clipped left-, right-, and center-aligned byte-text
+///          rendering with a uniform cell style and no owned state.
 // Key invariants: Drawing respects buffer bounds; strings are clipped to width.
 // Ownership/Lifetime: Stateless utility functions; no dynamic resources.
 // Links: docs/internals/architecture.md

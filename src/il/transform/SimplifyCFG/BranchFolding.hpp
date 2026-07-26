@@ -13,6 +13,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares trivial conditional-branch and switch folding.
+ *
+ * @details These SimplifyCFG subtransforms replace statically determined or
+ *          equivalent successor choices with direct branches while retaining
+ *          the selected edge's block arguments.
+ */
+
 #pragma once
 
 #include "il/transform/SimplifyCFG.hpp"

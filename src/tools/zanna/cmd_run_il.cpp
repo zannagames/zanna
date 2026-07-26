@@ -58,6 +58,7 @@ namespace {
 class RuntimeArgsScope {
   public:
     /// @brief Replace runtime argv with @p programArgs for this scope.
+    /// @param programArgs Program arguments to publish through the runtime API.
     explicit RuntimeArgsScope(const std::vector<std::string> &programArgs) {
         rt_args_clear();
         for (const auto &arg : programArgs) {
@@ -67,6 +68,7 @@ class RuntimeArgsScope {
         }
     }
 
+    /// @brief Clear the scope-owned runtime argument list.
     ~RuntimeArgsScope() {
         rt_args_clear();
     }
@@ -114,8 +116,14 @@ struct RunILConfig {
 /// @param text Candidate string containing surrounding padding.
 /// @return Copy of @p text with outer whitespace removed.
 std::string trimWhitespace(std::string text) {
+    /// @brief Identify the first non-whitespace byte from the beginning.
+    /// @param ch Byte to inspect.
+    /// @return `true` when `ch` is not whitespace.
     auto begin = std::find_if_not(
         text.begin(), text.end(), [](unsigned char ch) { return std::isspace(ch) != 0; });
+    /// @brief Identify the first non-whitespace byte from the reverse direction.
+    /// @param ch Byte to inspect.
+    /// @return `true` when `ch` is not whitespace.
     auto end = std::find_if_not(text.rbegin(), text.rend(), [](unsigned char ch) {
                    return std::isspace(ch) != 0;
                }).base();
@@ -387,6 +395,7 @@ void configureDebugger(const RunILConfig &config,
 ///          timing summaries are printed, and any trap messages are surfaced on
 ///          stderr.  Returns a non-zero status when any phase fails.
 /// @param config Fully populated configuration for the run.
+/// @param sm Source manager used to register the IL file and render diagnostics.
 /// @return Process-style exit status; zero indicates success.
 int executeRunIL(const RunILConfig &config, il::support::SourceManager &sm) {
     if (config.boundsChecksRequested) {
@@ -455,6 +464,9 @@ int executeRunIL(const RunILConfig &config, il::support::SourceManager &sm) {
     }
 
     if (config.stepFlag) {
+        /// @brief Locate the IL entry function used for the initial step breakpoint.
+        /// @param f Function to inspect.
+        /// @return `true` when the function is named `main`.
         auto it = std::find_if(m.functions.begin(), m.functions.end(), [](const core::Function &f) {
             return f.name == "main";
         });

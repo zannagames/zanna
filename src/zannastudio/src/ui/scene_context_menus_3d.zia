@@ -57,6 +57,7 @@ class SceneContextMenus3D {
     expose GUI.MenuItem hierarchyCreateLight;
     expose GUI.MenuItem hierarchyCreateCamera;
     expose GUI.MenuItem hierarchyRename;
+    expose GUI.MenuItem hierarchyPickLock;
     expose GUI.MenuItem hierarchyDuplicate;
     expose GUI.MenuItem hierarchyDelete;
     expose GUI.MenuItem hierarchyFrame;
@@ -84,6 +85,7 @@ class SceneContextMenus3D {
         hierarchyCreateLight = null;
         hierarchyCreateCamera = null;
         hierarchyRename = null;
+        hierarchyPickLock = null;
         hierarchyDuplicate = null;
         hierarchyDelete = null;
         hierarchyFrame = null;
@@ -113,6 +115,7 @@ class SceneContextMenus3D {
         hierarchyCreateCamera = hierarchyMenu.AddItem("Create Camera");
         hierarchyMenu.AddSeparator();
         hierarchyRename = hierarchyMenu.AddItemWithShortcut("Rename", "F2");
+        hierarchyPickLock = hierarchyMenu.AddItem("Toggle Pick Lock");
         hierarchyDuplicate = hierarchyMenu.AddItem("Duplicate");
         hierarchyDelete = hierarchyMenu.AddItem("Delete");
         hierarchyMenu.AddSeparator();
@@ -181,6 +184,7 @@ class SceneContextMenus3D {
         var count = editor.selectedIndices.count();
         hierarchyCreateChild.SetEnabled(count == 1);
         hierarchyRename.SetEnabled(count == 1);
+        hierarchyPickLock.SetEnabled(count == 1);
         hierarchyDuplicate.SetEnabled(count > 0);
         hierarchyDelete.SetEnabled(count > 0);
         hierarchyFrame.SetEnabled(true);
@@ -255,6 +259,9 @@ class SceneContextMenus3D {
         }
         if hierarchyRename.WasClicked() {
             editor.BeginRenameSelected();
+        }
+        if hierarchyPickLock.WasClicked() {
+            editor.ToggleSelectedPickLock();
         }
         if hierarchyDuplicate.WasClicked() {
             changed = editor.DuplicateSelectedNodes() > 0 or changed;

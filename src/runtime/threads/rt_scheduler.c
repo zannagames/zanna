@@ -29,6 +29,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements a synchronized, poll-driven named-delay scheduler.
+/// @details Scheduling retains a unique task name and records an absolute
+///          monotonic deadline plus an optional generation tag. Polling
+///          atomically detaches all entries due at its timestamp and transfers
+///          their retained names into a caller-owned sequence. No background
+///          scheduler thread or callback execution is involved.
+
 #include "rt_scheduler.h"
 
 #include "rt_option.h"
@@ -58,8 +66,15 @@
 
 #include "rt_trap.h"
 
+/// @brief Install a non-local recovery destination for runtime traps.
+/// @param buf Jump buffer that receives control when a trap is raised.
 void rt_trap_set_recovery(jmp_buf *buf);
+
+/// @brief Remove the active runtime trap recovery destination.
 void rt_trap_clear_recovery(void);
+
+/// @brief Read the diagnostic associated with the current recovered trap.
+/// @return Borrowed NUL-terminated diagnostic text, or NULL when unavailable.
 const char *rt_trap_get_error(void);
 
 //=============================================================================
@@ -74,6 +89,10 @@ static LARGE_INTEGER g_sched_freq;
 /// @details Same pattern used elsewhere in the threads subsystem: cache
 ///          `QueryPerformanceFrequency` once into `g_sched_freq` since it's invariant for the
 ///          lifetime of the system, and serialize the cache fill via `InitOnceExecuteOnce`.
+/// @param once Win32 once-control passed by `InitOnceExecuteOnce`.
+/// @param param Optional caller parameter; unused.
+/// @param ctx Optional context output; unused.
+/// @return `TRUE` after recording a usable frequency or a fallback marker.
 static BOOL CALLBACK sched_freq_init(PINIT_ONCE once, PVOID param, PVOID *ctx) {
     (void)once;
     (void)param;
@@ -90,6 +109,8 @@ static BOOL CALLBACK sched_freq_init(PINIT_ONCE once, PVOID param, PVOID *ctx) {
 ///          exact across long uptimes and falls back to `GetTickCount64` if QPC fails.
 ///          POSIX prefers `CLOCK_MONOTONIC` and falls back to `CLOCK_REALTIME`; it returns
 ///          0 only if every POSIX clock source fails.
+/// @return Non-negative millisecond timestamp from the best available clock,
+///         saturated to `INT64_MAX` where required.
 static int64_t current_time_ms(void) {
 #if defined(_WIN32)
     LARGE_INTEGER counter;
@@ -118,6 +139,8 @@ static int64_t current_time_ms(void) {
 ///          The overflow guard returns `INT64_MAX` instead of wrapping when `now + delay_ms`
 ///          would overflow — the resulting "essentially never due" timestamp is the safest
 ///          behaviour for absurdly large delays.
+/// @param delay_ms Relative delay in milliseconds; negatives are treated as zero.
+/// @return Saturating absolute due timestamp.
 static int64_t due_time_from_now(int64_t delay_ms) {
     if (delay_ms < 0)
         delay_ms = 0;
@@ -132,6 +155,9 @@ static int64_t due_time_from_now(int64_t delay_ms) {
 ///          length first to short-circuit on size mismatch, then `memcmp` on the underlying
 ///          buffers. Returns 1 on equality, 0 otherwise. Two NULLs compare as 0 (defensive —
 ///          callers should not pass NULL names but we don't want to claim equality if they do).
+/// @param a First task-name String.
+/// @param b Second task-name String.
+/// @return One when both non-NULL names contain identical bytes, otherwise zero.
 static int8_t scheduler_name_equals(rt_string a, rt_string b) {
     if (!a || !b)
         return 0;
@@ -182,6 +208,9 @@ typedef struct {
 ///          NULL-handling: 1 raises a trap, 0 silently returns NULL so callers like
 ///          `rt_scheduler_pending(NULL)` can return a no-op zero. A non-null pointer with
 ///          a wrong class id always traps — that's a programmer error worth surfacing.
+/// @param sched Candidate Scheduler runtime object.
+/// @param trap_on_null Whether a NULL handle should raise a runtime trap.
+/// @return Valid scheduler payload, or NULL for tolerated or returning trap paths.
 static rt_scheduler_data *scheduler_require(void *sched, int8_t trap_on_null) {
     if (!sched) {
         if (trap_on_null)
@@ -196,16 +225,23 @@ static rt_scheduler_data *scheduler_require(void *sched, int8_t trap_on_null) {
 }
 
 /// @brief Drop one GC reference to @p sched and free it if the count hit zero.
+/// @param sched Runtime object reference to release, or NULL.
 static void scheduler_release_object(void *sched) {
     if (sched && rt_obj_release_check0(sched))
         rt_obj_free(sched);
 }
 
+/// @brief Preserve an active trap diagnostic in stable caller storage.
+/// @param buffer Destination for the NUL-terminated diagnostic.
+/// @param buffer_size Capacity of @p buffer in bytes.
+/// @param fallback Diagnostic used when the trap supplied no usable text.
 static void scheduler_save_trap_error(char *buffer, size_t buffer_size, const char *fallback) {
     const char *err = rt_trap_get_error();
     snprintf(buffer, buffer_size, "%s", err && err[0] ? err : fallback);
 }
 
+/// @brief Release task-name references and free every node in an entry chain.
+/// @param e Head of the detached entry list, or NULL.
 static void scheduler_free_entry_list(sched_entry *e) {
     while (e) {
         sched_entry *next = e->next;
@@ -216,7 +252,10 @@ static void scheduler_free_entry_list(sched_entry *e) {
     }
 }
 
-/// @brief Finalizer for scheduler objects. Frees all entries.
+/// @brief Finalize a Scheduler and release its native and retained resources.
+/// @details Detaches all entries under the scheduler mutex, releases their
+///          task-name references, then destroys the platform mutex.
+/// @param obj Scheduler object being finalized.
 static void scheduler_finalizer(void *obj) {
     if (!obj)
         return;
@@ -340,12 +379,19 @@ static void scheduler_schedule_impl(void *sched,
     scheduler_release_object(sched);
 }
 
-/// @brief Schedules a named task with a delay in milliseconds (generation 0).
+/// @brief Schedule or replace a named task using generation zero.
+/// @param sched Scheduler object to update.
+/// @param name Borrowed non-NULL task-name String retained by the scheduler.
+/// @param delay_ms Relative delay in milliseconds; negatives become zero.
 void rt_scheduler_schedule(void *sched, rt_string name, int64_t delay_ms) {
     scheduler_schedule_impl(sched, name, delay_ms, 0);
 }
 
-/// @brief Schedules a named task with a delay and a caller-supplied generation tag.
+/// @brief Schedule or replace a named task with a generation tag.
+/// @param sched Scheduler object to update.
+/// @param name Borrowed non-NULL task-name String retained by the scheduler.
+/// @param delay_ms Relative delay in milliseconds; negatives become zero.
+/// @param generation Opaque caller-defined identity stored with the entry.
 void rt_scheduler_schedule_gen(void *sched, rt_string name, int64_t delay_ms, int64_t generation) {
     scheduler_schedule_impl(sched, name, delay_ms, generation);
 }
@@ -485,6 +531,9 @@ int64_t rt_scheduler_generation_of(void *sched, rt_string name) {
 ///        name is scheduled — including a stored generation of -1 — and None
 ///        for a null name/scheduler or an unscheduled name, so -1 stays
 ///        usable as ordinary data.
+/// @param sched Scheduler object to query.
+/// @param name Task-name String to find.
+/// @return Caller-owned `Some(Int64)` for a scheduled name, or the runtime None Option.
 void *rt_scheduler_generation_of_option(void *sched, rt_string name) {
     if (!sched || !name)
         return rt_option_none();

@@ -508,12 +508,17 @@ void vg_editor_buffer_destroy(vg_editor_buffer_t *buf);
 char *vg_editor_buffer_get_text(vg_editor_buffer_t *buf);
 
 /// @brief Modified flag of a detached buffer.
+/// @param buf Detached editor buffer to query.
+/// @return True when the buffer has changed since its modified flag was cleared.
 bool vg_editor_buffer_is_modified(const vg_editor_buffer_t *buf);
 
 /// @brief Clear the modified flag of a detached buffer.
+/// @param buf Detached editor buffer to mark unmodified; NULL is ignored.
 void vg_editor_buffer_clear_modified(vg_editor_buffer_t *buf);
 
 /// @brief Content revision of a detached buffer.
+/// @param buf Detached editor buffer to query.
+/// @return Monotonic content revision, or zero for NULL.
 uint64_t vg_editor_buffer_get_revision(const vg_editor_buffer_t *buf);
 
 /// @brief Swap the editor's current document state for @p incoming.
@@ -566,6 +571,8 @@ bool vg_codeeditor_smooth_tick(vg_codeeditor_t *editor, float delta_ms);
 void vg_codeeditor_set_ligatures_enabled(vg_codeeditor_t *editor, bool enabled);
 
 /// @brief Return whether this editor renders ligatures.
+/// @param editor Code editor widget to query.
+/// @return True when ligature shaping is enabled.
 bool vg_codeeditor_get_ligatures_enabled(const vg_codeeditor_t *editor);
 
 /// @brief Return the monotonic content revision.

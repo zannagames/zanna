@@ -27,54 +27,54 @@ namespace il::frontends::basic::lower::detail {
 /// @param access Borrowed forwarding facade retained by value.
 ExprLoweringHelper::ExprLoweringHelper(Lowerer::DetailAccess access) noexcept : access_(access) {}
 
-/// @brief Lower Var Expr.
+/// @copydoc ExprLoweringHelper::lowerVarExpr()
 RVal ExprLoweringHelper::lowerVarExpr(const VarExpr &expr) {
     return access_.lowerVarExpr(expr);
 }
 
-/// @brief Lower Unary Expr.
+/// @copydoc ExprLoweringHelper::lowerUnaryExpr()
 RVal ExprLoweringHelper::lowerUnaryExpr(const UnaryExpr &expr) {
     return access_.lowerUnaryExpr(expr);
 }
 
-/// @brief Lower Binary Expr.
+/// @copydoc ExprLoweringHelper::lowerBinaryExpr()
 RVal ExprLoweringHelper::lowerBinaryExpr(const BinaryExpr &expr) {
     return access_.lowerBinaryExpr(expr);
 }
 
-/// @brief Lower Builtin Call.
+/// @copydoc ExprLoweringHelper::lowerBuiltinCall()
 RVal ExprLoweringHelper::lowerBuiltinCall(const BuiltinCallExpr &expr) {
     return ::il::frontends::basic::lowerBuiltinCall(access_.lowerer(), expr);
 }
 
-/// @brief Lower U Bound Expr.
+/// @copydoc ExprLoweringHelper::lowerUBoundExpr()
 RVal ExprLoweringHelper::lowerUBoundExpr(const UBoundExpr &expr) {
     return access_.lowerUBoundExpr(expr);
 }
 
-/// @brief Lower Logical Binary.
+/// @copydoc ExprLoweringHelper::lowerLogicalBinary()
 RVal ExprLoweringHelper::lowerLogicalBinary(const BinaryExpr &expr) {
     return ::il::frontends::basic::lowerLogicalBinary(access_.lowerer(), expr);
 }
 
-/// @brief Lower Div Or Mod.
+/// @copydoc ExprLoweringHelper::lowerDivOrMod()
 RVal ExprLoweringHelper::lowerDivOrMod(const BinaryExpr &expr) {
     return ::il::frontends::basic::lowerDivOrMod(access_.lowerer(), expr);
 }
 
-/// @brief Lower String Binary.
+/// @copydoc ExprLoweringHelper::lowerStringBinary()
 RVal ExprLoweringHelper::lowerStringBinary(const BinaryExpr &expr, RVal lhs, RVal rhs) {
     return ::il::frontends::basic::lowerStringBinary(
         access_.lowerer(), expr, std::move(lhs), std::move(rhs));
 }
 
-/// @brief Lower Numeric Binary.
+/// @copydoc ExprLoweringHelper::lowerNumericBinary()
 RVal ExprLoweringHelper::lowerNumericBinary(const BinaryExpr &expr, RVal lhs, RVal rhs) {
     return ::il::frontends::basic::lowerNumericBinary(
         access_.lowerer(), expr, std::move(lhs), std::move(rhs));
 }
 
-/// @brief Lower Pow Binary.
+/// @copydoc ExprLoweringHelper::lowerPowBinary()
 RVal ExprLoweringHelper::lowerPowBinary(const BinaryExpr &expr, RVal lhs, RVal rhs) {
     return ::il::frontends::basic::lowerPowBinary(
         access_.lowerer(), expr, std::move(lhs), std::move(rhs));

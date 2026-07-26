@@ -22,6 +22,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements reentrant object monitors with Windows synchronization.
+/// @details Per-object monitor state is stored in a striped global table.
+///          Contending threads and condition waiters use FIFO queues with
+///          per-waiter condition variables, preserving recursion depth across
+///          Wait/reacquire cycles. Timed operations use monotonic Win32 tick
+///          deadlines and distinguish timeout from native failure.
+
 #include "rt_monitor_internal.h"
 
 #if defined(_WIN32)
@@ -68,6 +76,8 @@ typedef struct RtMonitorEntry {
     RtMonitor monitor;           ///< The monitor state.
 } RtMonitorEntry;
 
+/// @brief Mark every waiter in a detached queue as canceled and wake it.
+/// @param w Head of the detached waiter chain, or NULL.
 static void monitor_cancel_queue(RtMonitorWaiter *w);
 
 #define RT_MONITOR_BUCKETS 4096u
@@ -80,6 +90,8 @@ static RtMonitorEntry *g_monitor_table[RT_MONITOR_BUCKETS];
 /// @details SRW locks require no fallible lazy initialization and independent
 ///          buckets usually map to different stripes, avoiding the former
 ///          process-wide monitor-table critical section.
+/// @param bucket Monitor hash bucket index.
+/// @return Address of the SRW lock protecting that bucket's stripe.
 static SRWLOCK *monitor_table_lock_for(size_t bucket) {
     return &g_monitor_table_locks[bucket & (RT_MONITOR_LOCK_STRIPES - 1u)];
 }
@@ -90,6 +102,8 @@ static SRWLOCK *monitor_table_lock_for(size_t bucket) {
 /// folds the upper half into the lower half, and multiplies by the
 /// fractional golden-ratio prime — a Knuth-style mixing function
 /// that gives a uniform distribution across the table.
+/// @param p Object address used as the monitor key.
+/// @return Bucket index in `[0, RT_MONITOR_BUCKETS)`.
 static size_t hash_ptr(void *p) {
     uintptr_t x = (uintptr_t)p;
     x >>= 4;
@@ -104,6 +118,7 @@ static size_t hash_ptr(void *p) {
 /// new RtMonitor is allocated, initialised, and prepended to the
 /// chain — all under the table critical section so concurrent
 /// callers see at most one node per object.
+/// @param obj Non-NULL object address used as the table key.
 /// @return Pointer to the monitor (never NULL — traps on alloc failure).
 static RtMonitor *get_monitor_for(void *obj) {
     size_t idx = hash_ptr(obj);
@@ -139,7 +154,11 @@ static RtMonitor *get_monitor_for(void *obj) {
     return &node->monitor;
 }
 
-/// @brief Release the monitor associated with an object (removes it from the monitor table).
+/// @brief Retire or remove the monitor associated with a finalized object.
+/// @details An idle entry is unlinked and destroyed immediately. A busy entry
+///          is marked retired, both waiter queues are canceled, and the last
+///          exiting owner later performs destruction.
+/// @param obj Object address whose active monitor entry should be retired or removed.
 void rt_monitor_forget(void *obj) {
     if (!obj)
         return;
@@ -182,16 +201,14 @@ void rt_monitor_forget(void *obj) {
     free(node);
 }
 
-/// @brief Free a retired monitor table entry once no thread is still waiting on it.
+/// @brief Free a retired monitor-table entry once it is idle.
 /// @details Monitor entries enter the "retired" state when the owning
 ///          object is finalized but a thread is still inside Wait/Enter
 ///          (potentially blocked on the underlying primitive). The
-///          retired entry is kept alive until ref/wait counts drain to
-///          zero, at which point this helper unlinks it from the bucket
-///          chain, destroys the OS-level mutex/condvar, and frees the
-///          node memory. Two near-identical implementations exist
-///          (Windows CS-based and POSIX pthread-based) to match the
-///          per-platform synchronization primitive.
+///          retired entry is kept until ownership and both waiter queues are
+///          empty, then unlinked under its table stripe and destroyed.
+/// @param obj Object address used to locate the retired table entry.
+/// @param monitor Expected monitor payload, preventing removal of a replacement entry.
 static void monitor_cleanup_retired_if_idle(void *obj, RtMonitor *monitor) {
     if (!obj || !monitor)
         return;
@@ -227,6 +244,9 @@ static void monitor_cleanup_retired_if_idle(void *obj, RtMonitor *monitor) {
 }
 
 /// @brief True if the calling thread (`self`) currently owns monitor `m`.
+/// @param m Monitor whose owner state is inspected.
+/// @param self Calling thread identifier.
+/// @return Non-zero when @p self is the recorded owner.
 static int monitor_is_owner(const RtMonitor *m, DWORD self) {
     return m->owner_valid && m->owner == self;
 }
@@ -237,6 +257,7 @@ static int monitor_is_owner(const RtMonitor *m, DWORD self) {
 /// zero. Restores the new owner's prior recursion depth (used by
 /// `Wait`, which releases an arbitrarily deep nesting and reclaims
 /// it on wakeup) and signals their per-waiter condvar.
+/// @param m Locked monitor whose next acquisition waiter receives ownership.
 static void monitor_grant_next_waiter(RtMonitor *m) {
     RtMonitorWaiter *w = m->acq_head;
     if (!w)
@@ -261,6 +282,8 @@ static void monitor_grant_next_waiter(RtMonitor *m) {
 // ---------------------------------------------------------------------------
 
 /// @brief Append `w` to the FIFO acquisition queue (lock contention).
+/// @param m Locked monitor receiving the waiter.
+/// @param w Waiter node to append.
 static void monitor_enqueue_acq(RtMonitor *m, RtMonitorWaiter *w) {
     w->next = NULL;
     if (m->acq_tail) {
@@ -273,6 +296,8 @@ static void monitor_enqueue_acq(RtMonitor *m, RtMonitorWaiter *w) {
 }
 
 /// @brief Splice `w` out of the acquisition queue (used on timeout/abort).
+/// @param m Locked monitor whose acquisition queue is searched.
+/// @param w Waiter node to remove if present.
 static void monitor_remove_acq(RtMonitor *m, RtMonitorWaiter *w) {
     RtMonitorWaiter *prev = NULL;
     RtMonitorWaiter *cur = m->acq_head;
@@ -293,6 +318,8 @@ static void monitor_remove_acq(RtMonitor *m, RtMonitorWaiter *w) {
 }
 
 /// @brief Append `w` to the FIFO condition-wait queue (Wait / WaitFor).
+/// @param m Locked monitor receiving the waiter.
+/// @param w Waiter node to append.
 static void monitor_enqueue_wait(RtMonitor *m, RtMonitorWaiter *w) {
     w->next = NULL;
     if (m->wait_tail) {
@@ -305,6 +332,8 @@ static void monitor_enqueue_wait(RtMonitor *m, RtMonitorWaiter *w) {
 }
 
 /// @brief Splice `w` out of the wait queue (timeout, signal-then-cancel).
+/// @param m Locked monitor whose condition-wait queue is searched.
+/// @param w Waiter node to remove if present.
 static void monitor_remove_wait(RtMonitor *m, RtMonitorWaiter *w) {
     RtMonitorWaiter *prev = NULL;
     RtMonitorWaiter *cur = m->wait_head;
@@ -326,9 +355,12 @@ static void monitor_remove_wait(RtMonitor *m, RtMonitorWaiter *w) {
 
 /// @brief Wake and detach every waiter in a monitor's acquire/wait queue with
 ///        a cancellation result (used when the monitor is destroyed or the
-///        queue is torn down) so no thread is left blocked. Walks the whole
-///        chain, freeing each waiter node.
+///        queue is torn down) so no thread is left blocked.
+/// @details Waiter nodes are owned by blocked thread stacks and are not freed
+///          here. The caller holds the monitor critical section while changing
+///          their states and signaling their private condition variables.
 /// @note Defined once per platform backend branch; both copies are identical.
+/// @param w Head of the detached waiter chain, or NULL.
 static void monitor_cancel_queue(RtMonitorWaiter *w) {
     while (w) {
         RtMonitorWaiter *next = w->next;
@@ -349,6 +381,11 @@ static void monitor_cancel_queue(RtMonitorWaiter *w) {
 ///      `monitor_grant_next_waiter` flips its state.
 /// On timeout the waiter is spliced out and we return without owning
 /// the lock. Traps with a "null monitor" message if `m` is NULL.
+/// @param m Locked monitor to acquire recursively or enqueue against.
+/// @param self Calling thread identifier.
+/// @param timeout_ms Maximum wait in milliseconds when @p timed is non-zero.
+/// @param timed Whether acquisition uses @p timeout_ms instead of waiting indefinitely.
+/// @return One after ownership is acquired, or zero after timeout or a reported failure.
 static int monitor_enter_blocking(RtMonitor *m, DWORD self, DWORD timeout_ms, int timed) {
     if (!m) {
         rt_trap("rt_monitor: null monitor");
@@ -417,7 +454,12 @@ static int monitor_enter_blocking(RtMonitor *m, DWORD self, DWORD timeout_ms, in
     return w.state == RT_MON_WAITER_ACQUIRED ? 1 : 0;
 }
 
-/// @brief Acquire the monitor lock on an object (blocks until available, supports reentrancy).
+/// @brief Acquire an object's reentrant monitor, blocking until available.
+/// @details The object is retained before lookup and that reference remains
+///          held for the acquired ownership level until @ref rt_monitor_exit.
+///          Contended callers enter the FIFO acquisition queue. NULL, retired
+///          monitors, recursion overflow, and native wait failures trap.
+/// @param obj Object whose monitor should be acquired.
 void rt_monitor_enter(void *obj) {
     if (!obj)
         rt_trap("Monitor.Enter: null object");
@@ -449,7 +491,12 @@ void rt_monitor_enter(void *obj) {
         monitor_release_enter_ref(obj);
 }
 
-/// @brief Try to acquire the monitor lock without blocking. Returns 1 if acquired, 0 if busy.
+/// @brief Try to acquire an object's reentrant monitor without blocking.
+/// @details Recursive or uncontended acquisition succeeds and retains the
+///          object until the matching exit. Existing ownership or queued
+///          contenders cause an immediate zero result.
+/// @param obj Object whose monitor should be acquired.
+/// @return One after acquisition, otherwise zero when busy or setup cannot complete.
 int8_t rt_monitor_try_enter(void *obj) {
     if (!obj)
         rt_trap("Monitor.Enter: null object");
@@ -497,7 +544,14 @@ int8_t rt_monitor_try_enter(void *obj) {
     return 0;
 }
 
-/// @brief Try to acquire the monitor lock with a timeout. Returns 1 if acquired, 0 on timeout.
+/// @brief Try to acquire an object's reentrant monitor within a timeout.
+/// @details An unowned monitor or recursive entry succeeds immediately.
+///          Otherwise the caller joins the FIFO acquisition queue and waits
+///          against a monotonic tick deadline. Negative durations become zero.
+///          Successful ownership retains @p obj until the matching exit.
+/// @param obj Object whose monitor should be acquired.
+/// @param ms Maximum wait in milliseconds.
+/// @return One after acquisition, or zero on timeout or recoverable setup failure.
 int8_t rt_monitor_try_enter_for(void *obj, int64_t ms) {
     if (!obj)
         rt_trap("Monitor.Enter: null object");
@@ -585,7 +639,12 @@ int8_t rt_monitor_try_enter_for(void *obj, int64_t ms) {
     return 1;
 }
 
-/// @brief Release the monitor lock (must be called once for each enter, respects reentrancy).
+/// @brief Release one recursion level of an owned object monitor.
+/// @details The last level transfers ownership to the oldest acquisition
+///          waiter, cleans up an idle retired entry, and releases the object
+///          reference held by the corresponding successful enter. Non-owners
+///          and NULL objects trap.
+/// @param obj Object whose monitor should be released.
 void rt_monitor_exit(void *obj) {
     if (!obj)
         rt_trap("Monitor.Exit: null object");
@@ -619,7 +678,12 @@ void rt_monitor_exit(void *obj) {
         rt_obj_free(obj);
 }
 
-/// @brief Release the lock and wait until another thread calls Pause/PauseAll on this monitor.
+/// @brief Release an owned monitor and wait until another thread notifies it.
+/// @details The current recursion depth is saved, ownership is fully released,
+///          and the thread joins the condition-wait queue. Notification moves
+///          it to the FIFO acquisition queue; the saved recursion depth is
+///          restored before return. Ownership, retirement, and wait failures trap.
+/// @param obj Object whose monitor must be owned by the calling thread.
 void rt_monitor_wait(void *obj) {
     if (!obj)
         rt_trap("Monitor.Wait: not owner");
@@ -687,7 +751,15 @@ void rt_monitor_wait(void *obj) {
         rt_trap("Monitor.Wait: condition wait failed");
 }
 
-/// @brief Wait with a timeout. Returns 1 if woken by Pause, 0 on timeout.
+/// @brief Release an owned monitor and wait for notification up to a deadline.
+/// @details Timeout and notification both move the thread into the FIFO
+///          acquisition queue, so the original recursion depth is reacquired
+///          before return. Negative durations are treated as zero. Ownership,
+///          retirement, and native wait failures trap.
+/// @param obj Object whose monitor must be owned by the calling thread.
+/// @param ms Maximum notification wait in milliseconds.
+/// @return One when notified and reacquired, or zero after timeout or a native
+///         wait failure handled by a returning trap hook.
 int8_t rt_monitor_wait_for(void *obj, int64_t ms) {
     if (!obj)
         rt_trap("Monitor.Wait: not owner");
@@ -770,7 +842,11 @@ int8_t rt_monitor_wait_for(void *obj, int64_t ms) {
     return (timed_out || wait_failed) ? 0 : 1;
 }
 
-/// @brief Wake one thread waiting on this monitor (signal/notify pattern).
+/// @brief Move the oldest condition waiter toward monitor reacquisition.
+/// @details The waiter is appended to the FIFO acquisition queue and signaled,
+///          but the calling owner retains the monitor until it exits. With no
+///          waiter this is a no-op. NULL and non-owner calls trap.
+/// @param obj Object whose owned monitor should notify one waiter.
 void rt_monitor_pause(void *obj) {
     if (!obj)
         rt_trap("Monitor.Notify: not owner");
@@ -803,7 +879,12 @@ void rt_monitor_pause(void *obj) {
     LeaveCriticalSection(&m->cs);
 }
 
-/// @brief Wake all threads waiting on this monitor (broadcast/notify-all pattern).
+/// @brief Move every condition waiter toward monitor reacquisition.
+/// @details Waiters retain their FIFO order while being appended to the
+///          acquisition queue and individually signaled. The calling owner
+///          keeps the monitor until exit. With no waiters this is a no-op;
+///          NULL and non-owner calls trap.
+/// @param obj Object whose owned monitor should notify all waiters.
 void rt_monitor_pause_all(void *obj) {
     if (!obj)
         rt_trap("Monitor.NotifyAll: not owner");

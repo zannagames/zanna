@@ -21,6 +21,19 @@
 // Links: il/analysis/CFG.hpp, il/core/Function.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares forward and post-dominator tree analyses for IL functions.
+ *
+ * @details The analysis results map each basic block to its immediate
+ *          dominator or post-dominator and expose ancestry queries over those
+ *          trees. Forward dominance is rooted at the function entry, while
+ *          post-dominance models multiple CFG exits through a virtual exit.
+ *          Results borrow block pointers and therefore must be discarded after
+ *          control-flow or block-storage mutations.
+ */
+
 #pragma once
 
 #include <unordered_map>

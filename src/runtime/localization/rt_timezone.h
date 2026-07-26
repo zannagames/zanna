@@ -24,6 +24,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares deterministic embedded time-zone lookup and formatting.
+ * @details Defines borrowed static TimeZone handles, inclusive transition
+ * offset and DST queries, ISO wall-time conversion, and a bounded portable
+ * formatting subset with fresh-string results.
+ */
+
 #pragma once
 
 #include "rt_string.h"

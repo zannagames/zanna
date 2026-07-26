@@ -159,6 +159,9 @@ std::size_t TextView::offsetFromRowCol(std::size_t row, std::size_t col) const {
     auto line = buf_.lineView(row);
     std::size_t byteOffset = 0;
     std::size_t currentCol = 0;
+    /// @brief Accumulate bytes until the requested visual column is reached.
+    /// @param segment Contiguous UTF-8 segment of the selected line.
+    /// @return `true` while subsequent segments may still contribute.
     line.forEachSegment([&](std::string_view segment) -> bool {
         std::size_t idx = 0;
         while (idx < segment.size()) {
@@ -260,6 +263,9 @@ void TextView::moveCursorToOffset(std::size_t off) {
         std::size_t col = 0;
         std::size_t consumed = 0;
         auto line = buf_.lineView(row);
+        /// @brief Accumulate display width up to the requested byte offset.
+        /// @param segment Contiguous UTF-8 segment of the selected line.
+        /// @return `true` while more bytes are needed from later segments.
         line.forEachSegment([&](std::string_view segment) -> bool {
             std::size_t idx = 0;
             while (idx < segment.size() && consumed < inLineOffset) {

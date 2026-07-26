@@ -36,6 +36,8 @@
 
 namespace il::vm {
 
+/// @brief C runtime trap hook implemented by the runtime bridge.
+/// @param msg Null-terminated formatted diagnostic.
 extern "C" void vm_trap(const char *msg);
 
 // NOTE: toString() and trapKindFromValue() are now defined inline in Trap.hpp
@@ -47,10 +49,18 @@ extern "C" void vm_trap(const char *msg);
 #endif
 
 namespace {
+/// @brief Thread-local fallback error used when no VM is active.
 thread_local VmError tlsTrapError{};
+/// @brief Thread-local diagnostic paired with @ref tlsTrapError.
 thread_local std::string tlsTrapMessage;
+/// @brief Whether the thread-local fallback currently contains a live token.
 thread_local bool tlsTrapValid = false;
 
+/// @brief Derive a source location from captured frame metadata.
+/// @details Prefers the full stored location, then reconstructs line and column
+///          fields when only legacy scalar metadata is available.
+/// @param frame Frame metadata associated with a trap.
+/// @return Best available source location.
 il::support::SourceLoc locFromFrame(const FrameInfo &frame) {
     il::support::SourceLoc loc{};
     if (frame.loc.isValid())

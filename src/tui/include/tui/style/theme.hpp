@@ -5,10 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the Theme class and Role enum for Zanna's TUI styling
-// system. The Theme maps semantic roles (Normal, Accent, Disabled, Selection)
-// to concrete render Styles, allowing widgets to query appropriate colors
-// without hard-coding color values.
+/// @file
+/// @brief Declares semantic style roles and the Zanna TUI theme palette.
+/// @details Theme maps Normal, Accent, Disabled, and Selection roles to concrete
+///          render styles so widgets remain independent of color choices.
 //
 // Widgets reference theme roles rather than raw colors, enabling consistent
 // theming and easy palette changes across the entire UI.
@@ -52,10 +52,10 @@ class Theme {
     [[nodiscard]] const render::Style &style(Role r) const;
 
   private:
-    render::Style normal_{};
-    render::Style accent_{};
-    render::Style disabled_{};
-    render::Style selection_{};
+    render::Style normal_{};    ///< Default content style.
+    render::Style accent_{};    ///< Emphasized and active-control style.
+    render::Style disabled_{};  ///< Unavailable-control style.
+    render::Style selection_{}; ///< Selected-content style.
 };
 
 } // namespace zanna::tui::style

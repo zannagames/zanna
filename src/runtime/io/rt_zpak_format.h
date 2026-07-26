@@ -24,6 +24,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Defines the versioned byte-level ZPAK archive format contract.
+ * @details Centralizes header versions, supported flag masks, table-record
+ * sizes, minimum encodings, and allocation ceilings shared by format writers
+ * and runtime readers.
+ */
+
 #pragma once
 
 #include <stdint.h>

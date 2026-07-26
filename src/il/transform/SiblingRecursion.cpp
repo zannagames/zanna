@@ -36,6 +36,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements accumulator-loop conversion for double self-recursion.
+ *
+ * @details Pattern matching validates the single-argument SSA shape, two
+ *          independent self-calls, immediate associative combination/return,
+ *          and a signed comparison-controlled base case. The rewrite restores
+ *          checked arithmetic where necessary, threads an accumulator through
+ *          recursive edges, and creates a dominating completion block.
+ */
+
 #include "il/transform/SiblingRecursion.hpp"
 
 #include "il/core/BasicBlock.hpp"
@@ -108,29 +119,29 @@ Instr makeLoopCarriedVerifierStable(Instr instr) {
     return instr;
 }
 
-/// Matched pattern information for the sibling recursion transformation.
+/// @brief Matched pattern information for the sibling recursion transformation.
 struct SiblingPattern {
-    /// Index of the recursive block in `Function::blocks`.
+    /// @brief Index of the recursive block in `Function::blocks`.
     size_t blockIdx{0}; // Index of the recurse block in fn.blocks
-    /// Instruction index of the first self call.
+    /// @brief Instruction index of the first self call.
     size_t call1Idx{0}; // Instruction index of first self-call
-    /// Instruction index of the second self call.
+    /// @brief Instruction index of the second self call.
     size_t call2Idx{0}; // Instruction index of second self-call
-    /// Instruction index of the add combining both results.
+    /// @brief Instruction index of the add combining both results.
     size_t addIdx{0};   // Instruction index of the combining add
-    /// Original checked or plain addition opcode.
+    /// @brief Original checked or plain addition opcode.
     Opcode addOp{Opcode::Count}; // The add opcode (IAddOvf or Add)
 
     // Entry/predecessor block base case info
-    /// Signed comparison opcode used by the predecessor's base-case branch.
+    /// @brief Signed comparison opcode used by the predecessor's base-case branch.
     Opcode cmpOp{Opcode::Count}; // Base case comparison opcode (e.g., SCmpLE)
-    /// Threshold operand compared with the recursive argument.
+    /// @brief Threshold operand compared with the recursive argument.
     Value cmpThreshold;  // Base case threshold value (e.g., 1)
-    /// Whether the true predecessor edge represents the base case.
+    /// @brief Whether the true predecessor edge represents the base case.
     bool baseCaseIsTrue{false}; // True if base case fires on the TRUE branch of CBr
 };
 
-/// Attempt to match the sibling recursion pattern in a function.
+/// @brief Attempt to match the sibling recursion pattern in a function.
 ///
 /// Detection criteria:
 ///   1. Function has exactly one i64 parameter (single-arg recursion).
@@ -467,7 +478,8 @@ PreservedAnalyses SiblingRecursion::run(Function &fn, AnalysisManager &) {
 /// @brief Register sibling recursion pass.
 /// @param registry Registry that receives the pass factory.
 void registerSiblingRecursionPass(PassRegistry &registry) {
-    /// Construct a stateless sibling-recursion optimizer for one function.
+    /// @brief Construct a stateless sibling-recursion optimizer for one function.
+    /// @return Newly owned `SiblingRecursion` pass.
     registry.registerFunctionPass(
         "sibling-recursion", []() { return std::make_unique<SiblingRecursion>(); }, true);
 }

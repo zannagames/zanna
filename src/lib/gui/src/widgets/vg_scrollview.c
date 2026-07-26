@@ -427,6 +427,7 @@ vg_scrollview_t *vg_scrollview_create(vg_widget_t *parent) {
 }
 
 /// @brief VTable destroy: releases input capture if this widget currently holds it.
+/// @param widget ScrollView base widget being destroyed.
 static void scrollview_destroy(vg_widget_t *widget) {
     if (vg_widget_get_input_capture() == widget)
         vg_widget_release_input_capture();
@@ -434,6 +435,9 @@ static void scrollview_destroy(vg_widget_t *widget) {
 
 /// @brief VTable measure: claims all available space as measured size, then applies layout
 /// constraints.
+/// @param widget ScrollView base widget whose measured dimensions are updated.
+/// @param available_width Parent-provided horizontal space.
+/// @param available_height Parent-provided vertical space.
 static void scrollview_measure(vg_widget_t *widget, float available_width, float available_height) {
     // ScrollView takes all available space by default
     widget->measured_width = available_width > 0 ? available_width : 200;
@@ -444,6 +448,11 @@ static void scrollview_measure(vg_widget_t *widget, float available_width, float
 
 /// @brief VTable arrange: positions the widget, resolves scrollbar visibility via a 3-pass
 /// convergence loop, and stacks children vertically offset by the current scroll position.
+/// @param widget ScrollView base widget and content children to arrange.
+/// @param x Assigned X origin.
+/// @param y Assigned Y origin.
+/// @param width Assigned outer width.
+/// @param height Assigned outer height.
 static void scrollview_arrange(vg_widget_t *widget, float x, float y, float width, float height) {
     vg_scrollview_t *scroll = (vg_scrollview_t *)widget;
 
@@ -517,6 +526,8 @@ static void scrollview_arrange(vg_widget_t *widget, float x, float y, float widt
 
 /// @brief VTable paint: clips children to the content viewport, recurses into normal and overlay
 /// subtrees, then draws vertical and horizontal scrollbar tracks and thumbs.
+/// @param widget Arranged ScrollView base widget to render.
+/// @param canvas Backend canvas used for clipped content and scrollbar drawing.
 static void scrollview_paint(vg_widget_t *widget, void *canvas) {
     vg_scrollview_t *scroll = (vg_scrollview_t *)widget;
     vg_theme_t *theme = vg_theme_get_current();
@@ -709,6 +720,9 @@ static void scrollview_render_overlay_subtree(vg_widget_t *widget,
 
 /// @brief VTable handle_event: handles mouse-wheel scrolling, scrollbar click-to-jump, thumb drag
 /// initiation/tracking, and hover highlighting for both scrollbar axes.
+/// @param widget ScrollView base widget receiving the event.
+/// @param event Mutable GUI event to interpret.
+/// @return True when scrolling or scrollbar interaction consumes the event.
 static bool scrollview_handle_event(vg_widget_t *widget, vg_event_t *event) {
     vg_scrollview_t *scroll = (vg_scrollview_t *)widget;
 

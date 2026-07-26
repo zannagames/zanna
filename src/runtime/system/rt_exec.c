@@ -14,11 +14,12 @@
 // Key invariants:
 //   - Direct execution (Run, RunArgs) bypasses the shell; arguments are passed
 //     as an array, preventing shell injection.
-//   - Shell execution (Shell, ShellCapture, ShellFull) runs via /bin/sh -c or
-//     cmd.exe /c; the caller is responsible for input sanitization.
-//   - Capture functions return stdout as a string; stderr is not captured.
-//   - ShellCapture and ShellFull store the exit code in a thread-local slot for
-//     LastExitCode(); ShellResult delegates through ShellFull.
+//   - Shell execution (Shell, ShellCapture, ShellFull) runs via the platform
+//     command processor; the caller is responsible for input sanitization.
+//   - Capture functions return stdout as a string. Direct capture leaves stderr
+//     inherited; shell capture can merge or redirect it in the command text.
+//   - ShellCapture records the exit code after closing a successfully opened
+//     pipe. ShellFull always publishes a status; ShellResult delegates to it.
 //   - A NULL or empty program path causes a trap.
 //   - The compatibility exit-code side channel is C thread-local state.
 //
@@ -31,6 +32,15 @@
 // Links: src/runtime/system/rt_exec.h (public API)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_exec.c
+ * @brief Implements synchronous direct and shell command execution.
+ * @details Platform adapters launch literal executable argument vectors or
+ *          explicitly requested shell commands, wait for completion, capture
+ *          bounded stdout, preserve exit status, and construct managed command
+ *          results without retaining per-process resources after return.
+ */
 
 #include "rt_exec.h"
 
@@ -66,10 +76,14 @@ extern char **environ;
 /// @brief Maximum buffer size for capturing output (16MB).
 #define CAPTURE_MAX_SIZE (16 * 1024 * 1024)
 
-/// @brief Thread-local exit code from the most recent rt_exec_shell_full() call.
+/// @brief Thread-local status from the latest completed shell capture.
+/// @details ShellCapture updates it after a successful popen reaches pclose;
+///          ShellFull also sets explicit empty-command and launch-failure
+///          values. ShellResult delegates to ShellFull.
 static _Thread_local int64_t tl_last_exit_code = -1;
 
-/// @brief Immutable result object returned by Exec.ShellResult.
+/// @brief Immutable payload stored by an Exec.ShellResult object.
+/// @details The object owns one reference to @c output until its finalizer runs.
 typedef struct {
     void *vptr;
     rt_string output;
@@ -220,7 +234,8 @@ static int64_t exec_decode_system_status(int status) {
 /// @param out_len Receives the number of captured bytes.
 /// @param out_truncated Receives 1 if the capture limit was reached.
 /// @param out_error Receives errno-style failure information for allocation/read errors.
-/// @return Heap buffer containing captured bytes, or NULL on allocation failure.
+/// @return Caller-owned heap buffer containing captured bytes, or NULL on an
+///         allocation or stream-read failure.
 static char *read_pipe_output(FILE *fp, size_t *out_len, int *out_truncated, int *out_error) {
     size_t cap = CAPTURE_INITIAL_SIZE;
     size_t len = 0;
@@ -320,8 +335,20 @@ static int exec_wait_child(pid_t pid, int *status_out) {
     return 0;
 }
 
-/// @brief Build argv array from program and Seq of arguments.
-/// Caller must free the returned array and release owned argument strings.
+/// @brief Build a POSIX argument vector while retaining its runtime strings.
+/// @details The returned vector begins with the borrowed @p program pointer,
+///          followed by C-string views borrowed from retained sequence
+///          elements, and ends with a NULL sentinel. Keeping the retrieved
+///          runtime strings in @p out_owned_args prevents those views from
+///          becoming invalid before the spawn call completes.
+/// @param program Borrowed, NUL-terminated executable path or lookup name.
+/// @param args Optional runtime sequence of validated argument strings.
+/// @param out_owned_args Receives an array of retained argument strings, or
+///        NULL when the argument sequence is empty.
+/// @param out_argc Receives the number of non-NULL entries in the vector,
+///        including the program name.
+/// @return Caller-owned argument vector, or NULL on invalid size or allocation
+///         failure. Release successful results with free_argv().
 static char **build_argv(const char *program,
                          void *args,
                          rt_string **out_owned_args,
@@ -361,6 +388,11 @@ static char **build_argv(const char *program,
     return argv;
 }
 
+/// @brief Release a POSIX argument vector and its retained runtime strings.
+/// @param argv Vector returned by build_argv(); may be NULL.
+/// @param owned_args Retained argument array returned by build_argv(); may be
+///        NULL when no arguments were present.
+/// @param argc Number of non-NULL vector entries, including the program name.
 static void free_argv(char **argv, rt_string *owned_args, int64_t argc) {
     int64_t nargs = argc > 0 ? argc - 1 : 0;
     if (owned_args) {
@@ -371,7 +403,13 @@ static void free_argv(char **argv, rt_string *owned_args, int64_t argc) {
     free(argv);
 }
 
-/// @brief Execute program with arguments using posix_spawn.
+/// @brief Execute a program directly with @c posix_spawnp and wait for it.
+/// @details No shell interprets either the executable name or argument vector.
+///          The child inherits the current environment and standard streams.
+/// @param program Borrowed, validated executable path or PATH lookup name.
+/// @param args Optional runtime sequence of validated argument strings.
+/// @return The child's exit code; the negated signal number if it was
+///         signalled; or -1 if vector construction, spawning, or waiting fails.
 static int64_t exec_spawn(const char *program, void *args) {
     int64_t argc;
     rt_string *owned_args = NULL;
@@ -407,7 +445,15 @@ static int64_t exec_spawn(const char *program, void *args) {
     return -1;
 }
 
-/// @brief Execute program with arguments and capture stdout using fork/exec.
+/// @brief Execute a POSIX program directly and capture its standard output.
+/// @details Uses @c posix_spawnp with a close-on-exec pipe attached only to
+///          stdout; stdin and stderr remain inherited. Captures at most 16 MiB
+///          and traps instead of returning truncated or unreadable output.
+/// @param program Borrowed, validated executable path or PATH lookup name.
+/// @param args Optional runtime sequence of validated argument strings.
+/// @return Newly allocated runtime string containing stdout. Returns a newly
+///         allocated empty string after launch/setup failure or a reported
+///         capture failure.
 static rt_string exec_capture_spawn(const char *program, void *args) {
     int64_t argc;
     rt_string *owned_args = NULL;
@@ -493,10 +539,13 @@ static rt_string exec_capture_spawn(const char *program, void *args) {
 
 #else // _WIN32
 
-/* Windows argument quoting per CommandLineToArgvW rules (S-22 fix).
-   - N backslashes followed by '"': emit 2N backslashes + '\"'
-   - N backslashes at end of arg (before closing '"'): emit 2N backslashes
-   - N backslashes followed by non-'"': emit N backslashes unchanged      */
+/// @brief Compute the encoded size of one quoted Windows command-line argument.
+/// @details Applies the CommandLineToArgvW-compatible backslash and quote rules:
+///          backslashes preceding a quote are doubled and escape that quote,
+///          while trailing backslashes are doubled before the closing quote.
+///          The count includes the two outer quotes but excludes a final NUL.
+/// @param s Borrowed, NUL-terminated UTF-8 argument.
+/// @return Required byte count, or SIZE_MAX if the calculation overflows.
 static size_t cmdline_quoted_len(const char *s) {
     size_t n = 2; /* outer quotes */
     size_t bs = 0;
@@ -523,6 +572,12 @@ static size_t cmdline_quoted_len(const char *s) {
     return n;
 }
 
+/// @brief Append one CommandLineToArgvW-compatible quoted argument.
+/// @details The caller must reserve cmdline_quoted_len(@p s) writable bytes.
+///          This helper writes no trailing NUL.
+/// @param p First writable byte in the destination command-line buffer.
+/// @param s Borrowed, NUL-terminated UTF-8 argument to encode.
+/// @return Pointer immediately following the appended closing quote.
 static char *cmdline_append_quoted(char *p, const char *s) {
     *p++ = '"';
     size_t bs = 0;
@@ -551,7 +606,16 @@ static char *cmdline_append_quoted(char *p, const char *s) {
     return p;
 }
 
-/// @brief Build command line string for Windows CreateProcess.
+/// @brief Build a quoted UTF-8 command line for Windows CreateProcess.
+/// @details Quotes the executable name and each sequence element independently
+///          so the target's conventional Windows argument parser reconstructs
+///          the original direct-execution arguments without shell processing.
+///          Runtime strings fetched from @p args are retained only while their
+///          bytes are measured or copied.
+/// @param program Borrowed, validated executable path or lookup name.
+/// @param args Optional runtime sequence of validated argument strings.
+/// @return Caller-owned, NUL-terminated command-line buffer, or NULL on size
+///         overflow or allocation failure.
 static char *build_cmdline(const char *program, void *args) {
     int64_t nargs = args ? rt_seq_len(args) : 0;
 
@@ -679,7 +743,15 @@ static int exec_build_wide_process_strings(const char *program,
     return 1;
 }
 
-/// @brief Execute program using CreateProcess on Windows.
+/// @brief Execute a program directly with CreateProcessW and wait for it.
+/// @details Converts the separately quoted UTF-8 command line to writable wide
+///          storage. No command processor is involved, and the child inherits
+///          the current environment and default standard handles.
+/// @param program Borrowed, validated executable path or lookup name.
+/// @param args Optional runtime sequence of validated argument strings.
+/// @return The unsigned Win32 process exit code widened to int64_t, or -1 when
+///         construction, conversion, creation, waiting, or status retrieval
+///         fails.
 static int64_t exec_spawn(const char *program, void *args) {
     char *cmdline = build_cmdline(program, args);
     if (!cmdline) {
@@ -720,7 +792,16 @@ static int64_t exec_spawn(const char *program, void *args) {
     return exit_ok ? (int64_t)exit_code : -1;
 }
 
-/// @brief Execute program and capture stdout on Windows.
+/// @brief Execute a Windows program directly and capture its standard output.
+/// @details Connects stdout to an anonymous pipe and restricts inherited
+///          handles to that pipe plus valid current stdin/stderr handles.
+///          Stderr is inherited rather than captured. At most 16 MiB is
+///          retained; reaching the limit raises an output-truncated trap.
+/// @param program Borrowed, validated executable path or lookup name.
+/// @param args Optional runtime sequence of validated argument strings.
+/// @return Newly allocated runtime string containing captured stdout, or a
+///         newly allocated empty string if setup, creation, allocation, or
+///         waiting fails.
 static rt_string exec_capture_spawn(const char *program, void *args) {
     char *cmdline = build_cmdline(program, args);
     if (!cmdline) {
@@ -1253,6 +1334,18 @@ rt_string rt_exec_shell_capture(rt_string command) {
     return result;
 }
 
+/// @brief Capture a shell command's stdout and publish its exit status.
+/// @details Runs @p command through the platform command processor via popen,
+///          captures at most 16 MiB, closes the pipe, and records the decoded
+///          status in thread-local compatibility state. Stderr is inherited
+///          unless the command redirects it. Empty commands produce empty
+///          output and status zero. Invalid strings and capture failures trap.
+/// @param command Runtime shell command; must not be NULL or contain embedded
+///        NUL bytes.
+/// @return Newly allocated runtime string containing stdout, or a newly
+///         allocated empty string for an empty command or failure.
+/// @warning Shell metacharacters are interpreted. Never concatenate
+///          unsanitized input into @p command.
 rt_string rt_exec_shell_full(rt_string command) {
     if (!command) {
         rt_trap("Exec.ShellFull: null command");
@@ -1302,15 +1395,34 @@ rt_string rt_exec_shell_full(rt_string command) {
     return full_result;
 }
 
+/// @brief Execute a shell command and bundle its output with its exit status.
+/// @details Delegates capture to rt_exec_shell_full() and transfers the returned
+///          string into an immutable CommandResult object, avoiding a separate
+///          read of the thread-local status side channel.
+/// @param command Runtime shell command subject to rt_exec_shell_full()
+///        validation and shell interpretation.
+/// @return Caller-owned CommandResult object containing stdout and status, or
+///         NULL after an object-allocation trap.
 void *rt_exec_shell_result(rt_string command) {
     rt_string output = rt_exec_shell_full(command);
     return command_result_new_owned(output, tl_last_exit_code);
 }
 
+/// @brief Read the current thread's latest completed shell-capture status.
+/// @details ShellCapture updates this compatibility slot after pclose;
+///          ShellFull also records empty-command and launch-failure outcomes.
+///          ShellResult updates it indirectly through ShellFull. Direct
+///          execution and Shell do not modify it.
+/// @return The most recently recorded status, or -1 before any recorded call
+///         or after a ShellFull launch failure.
 int64_t rt_exec_last_exit_code(void) {
     return tl_last_exit_code;
 }
 
+/// @brief Acquire the captured stdout stored in a CommandResult.
+/// @param ptr Candidate opaque CommandResult runtime object.
+/// @return A retained runtime string that the caller must release. Invalid
+///         objects trap and yield a newly allocated empty fallback string.
 rt_string rt_exec_command_result_output(void *ptr) {
     rt_exec_command_result_impl *result =
         checked_command_result(ptr, "CommandResult.Output: expected Zanna.System.CommandResult");
@@ -1319,12 +1431,19 @@ rt_string rt_exec_command_result_output(void *ptr) {
     return rt_string_ref(result->output);
 }
 
+/// @brief Read the process status stored in a CommandResult.
+/// @param ptr Candidate opaque CommandResult runtime object.
+/// @return Stored exit code, or -1 after trapping for an invalid object.
 int64_t rt_exec_command_result_exit_code(void *ptr) {
     rt_exec_command_result_impl *result =
         checked_command_result(ptr, "CommandResult.ExitCode: expected Zanna.System.CommandResult");
     return result ? result->exit_code : -1;
 }
 
+/// @brief Test whether a CommandResult represents a zero exit status.
+/// @param ptr Candidate opaque CommandResult runtime object.
+/// @return 1 only when @p ptr is valid and its exit code is zero; otherwise 0.
+///         Invalid objects also raise a trap.
 int8_t rt_exec_command_result_succeeded(void *ptr) {
     rt_exec_command_result_impl *result =
         checked_command_result(ptr, "CommandResult.Succeeded: expected Zanna.System.CommandResult");

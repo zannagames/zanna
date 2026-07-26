@@ -25,6 +25,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements Windows installer and uninstaller bootstrap generation.
+/// @details Package layout metadata is lowered into native x86-64/AArch64 code,
+///          dialog resources, encoded transactional PowerShell backends, IAT
+///          imports, registry operations, extraction loops, and cleanup logic.
+///          Generated code follows the Windows ABI and performs no host-side
+///          installation actions while packaging.
+
 #include "InstallerStub.hpp"
 #include "InstallerStubGen.hpp"
 #include "InstallerStubGenA64.hpp"
@@ -283,6 +291,10 @@ enum UninstallerIAT : uint32_t {
 ///          (callIATSlot), so a count mismatch means an enum entry or an import was
 ///          added without the other — which would silently call the wrong DLL
 ///          function. Caught here at packaging time rather than as a runtime crash.
+/// @param imports Ordered per-DLL import groups to count.
+/// @param expectedSlots Sentinel value from the matching generated-code IAT enum.
+/// @param label Bootstrap label included in a mismatch error.
+/// @throws std::runtime_error When flattened import count and enum slots differ.
 inline void verifyImportSlotCount(const std::vector<PEImport> &imports,
                                   std::size_t expectedSlots,
                                   const char *label) {
@@ -415,20 +427,45 @@ std::vector<PEImport> uninstallerImports() {
 }
 
 /// @brief Round `value` up to the nearest multiple of `alignment` (must be a power of two).
+/// @param value Unsigned value to round upward.
+/// @param alignment Nonzero power-of-two boundary.
+/// @return Smallest aligned value greater than or equal to @p value.
+/// @pre `value + alignment - 1` is representable as `uint32_t`.
 uint32_t alignUp(uint32_t value, uint32_t alignment) {
     return (value + alignment - 1u) & ~(alignment - 1u);
 }
 
+/// @brief Resolve the sanitized leaf directory used as the install root.
+/// @param layout Package metadata supplying the preferred directory name.
+/// @return Normalized install directory leaf.
 std::string installDirNameFor(const WindowsPackageLayout &layout);
+
+/// @brief Build the scope-relative Add/Remove Programs registry key.
+/// @param layout Package metadata supplying its stable registry identity.
+/// @return Registry subkey beneath the uninstall key.
 std::string uninstallKeyPathFor(const WindowsPackageLayout &layout);
+
+/// @brief Build the sanitized identifier used in registry metadata.
+/// @param layout Package metadata supplying identifier and fallback name.
+/// @return Stable registry-safe identifier.
 std::string registryIdFor(const WindowsPackageLayout &layout);
+
+/// @brief Determine whether generated code must resolve a Start Menu path.
+/// @param layout Package files, directories, and shortcut settings to inspect.
+/// @return True when any generated operation targets the Start Menu root.
 bool needsMenuPath(const WindowsPackageLayout &layout);
 
+/// @brief Append a 16-bit little-endian field to dialog-template bytes.
+/// @param out Dialog byte buffer to extend.
+/// @param value Unsigned value to encode.
 void appendDlgLE16(std::vector<uint8_t> &out, uint16_t value) {
     out.push_back(static_cast<uint8_t>(value & 0xFF));
     out.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
 }
 
+/// @brief Append a 32-bit little-endian field to dialog-template bytes.
+/// @param out Dialog byte buffer to extend.
+/// @param value Unsigned value to encode.
 void appendDlgLE32(std::vector<uint8_t> &out, uint32_t value) {
     out.push_back(static_cast<uint8_t>(value & 0xFF));
     out.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
@@ -436,16 +473,24 @@ void appendDlgLE32(std::vector<uint8_t> &out, uint32_t value) {
     out.push_back(static_cast<uint8_t>((value >> 24) & 0xFF));
 }
 
+/// @brief Pad dialog-template bytes to a four-byte boundary.
+/// @param out Dialog buffer extended with zero bytes when necessary.
 void alignDialogDword(std::vector<uint8_t> &out) {
     while ((out.size() & 3u) != 0)
         out.push_back(0);
 }
 
+/// @brief Append a NUL-terminated UTF-16LE string to a dialog template.
+/// @param out Dialog byte buffer to extend.
+/// @param text UTF-8 text to transcode.
 void appendDialogWideString(std::vector<uint8_t> &out, const std::string &text) {
     const auto encoded = utf8ToUtf16LEBytes(text, true);
     out.insert(out.end(), encoded.begin(), encoded.end());
 }
 
+/// @brief Normalize line endings for Win32 multi-line dialog controls.
+/// @param text UTF-8 text whose bare line feeds should become CRLF.
+/// @return Owned text with each LF preceded by exactly one carriage return.
 std::string normalizeDialogText(std::string text) {
     std::string out;
     out.reserve(text.size() + 16);
@@ -461,6 +506,9 @@ std::string normalizeDialogText(std::string text) {
     return out;
 }
 
+/// @brief Encode arbitrary bytes using standard padded Base64.
+/// @param bytes Input byte sequence.
+/// @return RFC 4648-style Base64 text using `=` padding.
 std::string base64Encode(const std::vector<uint8_t> &bytes) {
     static constexpr char kAlphabet[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -479,6 +527,9 @@ std::string base64Encode(const std::vector<uint8_t> &bytes) {
     return out;
 }
 
+/// @brief Quote one literal for insertion into single-quoted PowerShell syntax.
+/// @param text Literal text to protect.
+/// @return Single-quoted expression with embedded apostrophes doubled.
 std::string powershellSingleQuote(const std::string &text) {
     std::string out;
     out.reserve(text.size() + 2u);
@@ -493,10 +544,17 @@ std::string powershellSingleQuote(const std::string &text) {
     return out;
 }
 
+/// @brief Render a C++ boolean as a PowerShell Boolean literal.
+/// @param value Boolean value to translate.
+/// @return Static `$true` or `$false` literal.
 const char *powershellBool(bool value) {
     return value ? "$true" : "$false";
 }
 
+/// @brief Map an installation root to the compact PowerShell manifest code.
+/// @param root Logical destination root.
+/// @return Static one-character code: `I`, `D`, or `M`.
+/// @note Unrecognized values fall back to the install-directory code.
 const char *powershellRootCode(WindowsInstallRoot root) {
     switch (root) {
         case WindowsInstallRoot::DesktopDir:
@@ -509,6 +567,9 @@ const char *powershellRootCode(WindowsInstallRoot root) {
     }
 }
 
+/// @brief Normalize a package-relative path for PowerShell on Windows.
+/// @param path Path copied by value for in-place separator conversion.
+/// @return Path with forward slashes replaced by backslashes.
 std::string powershellRelPath(std::string path) {
     for (char &ch : path) {
         if (ch == '/')
@@ -518,6 +579,8 @@ std::string powershellRelPath(std::string path) {
 }
 
 /// @brief Return the child-process environment variable carrying one component selection.
+/// @param componentId Validated component identifier.
+/// @return Uppercase environment name with hyphens translated to underscores.
 std::string componentEnvironmentName(const std::string &componentId) {
     std::string name = "ZANNA_INSTALLER_COMPONENT_";
     for (char c : componentId) {
@@ -533,6 +596,10 @@ std::string componentEnvironmentName(const std::string &componentId) {
 /// @details Homogeneous directory subtrees become prefix rules instead of one hashtable entry per
 ///          file. This keeps the encoded Windows PowerShell command well below CreateProcessW's
 ///          command-line limit even when a component contains thousands of sample files.
+/// @param ps PowerShell source stream to append to.
+/// @param layout Component definitions and installed-file ownership metadata.
+/// @param selectionsFromEnvironment Whether selection values come from native-host
+///        environment variables instead of component defaults.
 void appendPowerShellComponentMetadata(std::ostringstream &ps,
                                        const WindowsPackageLayout &layout,
                                        bool selectionsFromEnvironment) {
@@ -553,6 +620,9 @@ void appendPowerShellComponentMetadata(std::ostringstream &ps,
         std::string componentId;
     };
 
+    /// @brief Normalize a payload path for case-insensitive Windows comparison.
+    /// @param path Payload path to normalize.
+    /// @return Backslash-separated path with ASCII letters folded to lowercase.
     const auto lowercasePath = [](std::string path) {
         path = powershellRelPath(std::move(path));
         for (char &c : path)
@@ -572,8 +642,11 @@ void appendPowerShellComponentMetadata(std::ostringstream &ps,
             continue;
         std::string homogeneousPrefix;
         for (size_t slash = owned.path.find('\\'); slash != std::string::npos;
-             slash = owned.path.find('\\', slash + 1)) {
+            slash = owned.path.find('\\', slash + 1)) {
             const std::string candidate = owned.path.substr(0, slash + 1);
+            /// @brief Check whether a path prefix belongs exclusively to one component.
+            /// @param file Payload file to compare with the candidate prefix.
+            /// @return `true` when `file` is outside the prefix or has the owning component.
             const bool homogeneous =
                 std::all_of(payloadPaths.begin(), payloadPaths.end(), [&](const PayloadPath &file) {
                     return file.path.rfind(candidate, 0) != 0 ||
@@ -593,6 +666,10 @@ void appendPowerShellComponentMetadata(std::ostringstream &ps,
             prefixRules.push_back(rule);
     }
     std::sort(prefixRules.begin(), prefixRules.end());
+    /// @brief Order exact ownership rules deterministically by path and component identifier.
+    /// @param lhs Left-hand ownership rule.
+    /// @param rhs Right-hand ownership rule.
+    /// @return `true` when `lhs` precedes `rhs`.
     std::sort(
         exactRules.begin(), exactRules.end(), [](const PayloadPath &lhs, const PayloadPath &rhs) {
             return std::tie(lhs.path, lhs.componentId) < std::tie(rhs.path, rhs.componentId);
@@ -619,6 +696,8 @@ void appendPowerShellComponentMetadata(std::ostringstream &ps,
 /// @details Newline separates records and `|` separates the root code from a relative path. Both
 ///          characters are invalid in Windows shortcut filenames after package validation, making
 ///          the registry value unambiguous without an additional escaping format.
+/// @param layout Install-file metadata whose external-root entries should be recorded.
+/// @return Newline-delimited root/path ownership records.
 std::string externalOwnershipManifest(const WindowsPackageLayout &layout) {
     std::ostringstream out;
     for (const auto &file : layout.installFiles) {
@@ -629,6 +708,10 @@ std::string externalOwnershipManifest(const WindowsPackageLayout &layout) {
     return out.str();
 }
 
+/// @brief Build a PowerShell expression joining a base variable and relative path.
+/// @param baseVar Trusted PowerShell expression naming the base directory.
+/// @param relativePath Package-relative path to quote and append.
+/// @return @p baseVar unchanged for an empty path, otherwise a `Join-Path` expression.
 std::string powershellPathJoinLiteral(const std::string &baseVar, const std::string &relativePath) {
     if (relativePath.empty())
         return baseVar;
@@ -642,6 +725,8 @@ std::string powershellPathJoinLiteral(const std::string &baseVar, const std::str
 ///          command-line limit cannot carry a full GPL license. The complete license remains in
 ///          the installed payload; this concise notice prevents package generation from failing
 ///          until ARM64 uses the shared native wizard implementation.
+/// @param layout Package layout containing the complete license text.
+/// @return Original license up to the inline cap, otherwise a concise fallback notice.
 std::string arm64BootstrapLicenseText(const WindowsPackageLayout &layout) {
     constexpr size_t kMaxInlineLicenseBytes = 2048;
     if (layout.licenseText.size() <= kMaxInlineLicenseBytes)
@@ -654,6 +739,7 @@ std::string arm64BootstrapLicenseText(const WindowsPackageLayout &layout) {
 /// @details The installed uninstaller cannot delete its own executable while the native parent
 ///          process is waiting for PowerShell. A detached child retries the self-delete after both
 ///          processes exit, then removes the install root only when it is empty.
+/// @return UTF-16LE PowerShell cleanup source encoded for `-EncodedCommand`.
 std::string arm64CleanupEncodedCommand() {
     const std::string cleanup =
         "$target=$args[0]\n"
@@ -669,6 +755,9 @@ std::string arm64CleanupEncodedCommand() {
 ///          collisions and reparse-point traversal, snapshots PATH/registry state, journals every
 ///          replacement, and retains its backup until the native x64 bootstrap explicitly commits.
 ///          ARM64 runs the same transaction and commits only after its metadata work succeeds.
+/// @param ps PowerShell source stream to extend.
+/// @param durableExtraction Whether staging must wait for explicit native commit
+///        instead of committing during the script.
 void appendWindowsInstallTransaction(std::ostringstream &ps, bool durableExtraction) {
     ps << R"ZANNAPS(
 function RelOk([string]$s){
@@ -780,6 +869,12 @@ function BeginTransaction(){
 )ZANNAPS";
 }
 
+/// @brief Build the full PowerShell backend used by the AArch64 bootstrap.
+/// @param layout Package metadata embedded as script literals and record arrays.
+/// @param uninstallDialog Whether to emit uninstall rather than install control flow.
+/// @return UTF-8 PowerShell source implementing UI, transactions, metadata, and cleanup.
+/// @details The AArch64 native stub delegates most installer behavior to this
+///          script while passing mode and selection state through environment variables.
 std::string buildArm64PowerShellScript(const WindowsPackageLayout &layout, bool uninstallDialog) {
     const std::string installDir = installDirNameFor(layout);
     const std::string version = layout.version.empty() ? "0.0.0" : layout.version;
@@ -1089,6 +1184,8 @@ std::string buildArm64PowerShellScript(const WindowsPackageLayout &layout, bool 
 /// @details Native x64 code owns the wizard and Windows metadata. Keeping ARM64-only UI and
 ///          metadata functions out of this script preserves ample headroom below CreateProcessW's
 ///          32,767-character command-line limit, including layouts with optional shortcuts.
+/// @param layout Package paths, payload ownership, integrity data, and scope.
+/// @return UTF-8 PowerShell source for extraction, rollback, commit, and removal.
 std::string buildNativeTransactionPowerShellScript(const WindowsPackageLayout &layout) {
     const std::string installDir = installDirNameFor(layout);
     const std::string uninstallKey = uninstallKeyPathFor(layout);
@@ -1209,6 +1306,10 @@ std::string buildNativeTransactionPowerShellScript(const WindowsPackageLayout &l
 }
 
 /// @brief Gzip and encode a PowerShell source string for `powershell -EncodedCommand`.
+/// @param source UTF-8 PowerShell program to compress.
+/// @return Base64-encoded UTF-16LE bootstrap that inflates and executes @p source.
+/// @details Compression keeps generated command lines below Windows process limits
+///          while the small outer bootstrap uses only inbox .NET APIs.
 std::string encodedPowerShellCommand(const std::string &source) {
     const auto compressed =
         gzip(reinterpret_cast<const uint8_t *>(source.data()), source.size(), 9);
@@ -1222,20 +1323,41 @@ std::string encodedPowerShellCommand(const std::string &source) {
     return base64Encode(utf8ToUtf16LEBytes(bootstrap, false));
 }
 
+/// @brief Build and encode the complete AArch64 PowerShell backend.
+/// @param layout Package metadata to embed in the generated program.
+/// @param uninstallDialog Whether the script should execute uninstall behavior.
+/// @return `-EncodedCommand` payload containing the compressed backend.
 std::string encodedArm64PowerShellCommand(const WindowsPackageLayout &layout,
                                           bool uninstallDialog) {
     return encodedPowerShellCommand(buildArm64PowerShellScript(layout, uninstallDialog));
 }
 
+/// @brief Build and encode the native x86-64 transaction backend.
+/// @param layout Package metadata to embed in the transaction program.
+/// @return `-EncodedCommand` payload containing the compressed backend.
 std::string encodedNativeTransactionPowerShellCommand(const WindowsPackageLayout &layout) {
     return encodedPowerShellCommand(buildNativeTransactionPowerShellScript(layout));
 }
 
+/// @brief Append a predefined Win32 dialog-control class atom.
+/// @param out Dialog-template buffer to extend.
+/// @param atom System class atom written after the `0xFFFF` marker.
 void appendDialogAtomClass(std::vector<uint8_t> &out, uint16_t atom) {
     appendDlgLE16(out, 0xFFFFu);
     appendDlgLE16(out, atom);
 }
 
+/// @brief Append one standard-atom control to a Win32 dialog template.
+/// @param out Dialog-template buffer to align and extend.
+/// @param style Control style bits.
+/// @param exStyle Extended control style bits.
+/// @param x Left coordinate in dialog units.
+/// @param y Top coordinate in dialog units.
+/// @param cx Width in dialog units.
+/// @param cy Height in dialog units.
+/// @param id Dialog control identifier.
+/// @param classAtom Predefined system control-class atom.
+/// @param title UTF-8 control caption.
 void appendDialogControl(std::vector<uint8_t> &out,
                          uint32_t style,
                          uint32_t exStyle,
@@ -1259,6 +1381,17 @@ void appendDialogControl(std::vector<uint8_t> &out,
     appendDlgLE16(out, 0);
 }
 
+/// @brief Append one named-class control to a Win32 dialog template.
+/// @param out Dialog-template buffer to align and extend.
+/// @param style Control style bits.
+/// @param exStyle Extended control style bits.
+/// @param x Left coordinate in dialog units.
+/// @param y Top coordinate in dialog units.
+/// @param cx Width in dialog units.
+/// @param cy Height in dialog units.
+/// @param id Dialog control identifier.
+/// @param className UTF-8 registered window-class name.
+/// @param title UTF-8 control caption.
 void appendDialogControl(std::vector<uint8_t> &out,
                          uint32_t style,
                          uint32_t exStyle,
@@ -1282,6 +1415,12 @@ void appendDialogControl(std::vector<uint8_t> &out,
     appendDlgLE16(out, 0);
 }
 
+/// @brief Build the modal setup or uninstall wizard dialog resource.
+/// @param layout UI text, component list, scope, and license metadata.
+/// @param uninstallDialog Whether controls should present uninstall confirmation.
+/// @return Serialized standard Win32 dialog template bytes.
+/// @details Installs the Segoe UI font, branded banner, description/license
+///          controls, component checkboxes where applicable, and OK/Cancel actions.
 std::vector<uint8_t> buildWizardDialogTemplate(const WindowsPackageLayout &layout,
                                                bool uninstallDialog) {
     constexpr uint16_t kButtonClass = 0x0080;
@@ -1463,6 +1602,10 @@ std::vector<uint8_t> buildWizardDialogTemplate(const WindowsPackageLayout &layou
 }
 
 /// @brief Build the compact dark-themed completion/error dialog used after interactive setup.
+/// @param title UTF-8 dialog caption and optional unbranded banner text.
+/// @param message UTF-8 multi-line result description.
+/// @param branded Whether the owner-drawn package artwork replaces text branding.
+/// @return Serialized standard Win32 dialog template bytes.
 std::vector<uint8_t> buildResultDialogTemplate(const std::string &title,
                                                const std::string &message,
                                                bool branded) {
@@ -1534,6 +1677,8 @@ std::vector<uint8_t> buildResultDialogTemplate(const std::string &title,
 }
 
 /// @brief Build the modeless branded progress surface kept visible while setup is working.
+/// @param layout Package display name and optional wizard artwork.
+/// @return Serialized dialog template containing banner, status, and progress controls.
 std::vector<uint8_t> buildProgressDialogTemplate(const WindowsPackageLayout &layout) {
     constexpr uint16_t kStaticClass = 0x0082;
     constexpr uint32_t kWsChildVisible = 0x50000000u;
@@ -1609,12 +1754,16 @@ std::vector<uint8_t> buildProgressDialogTemplate(const WindowsPackageLayout &lay
     return out;
 }
 
+/// @brief Win32 DIB header and converted pixel payload for wizard artwork.
 struct WizardDibData {
-    std::vector<uint8_t> infoHeader;
-    std::vector<uint8_t> bgraPixels;
+    std::vector<uint8_t> infoHeader; ///< Serialized 40-byte BITMAPINFOHEADER.
+    std::vector<uint8_t> bgraPixels; ///< Top-down pixels reordered from RGBA to BGRA.
 };
 
 /// @brief Convert the package's canonical top-down RGBA banner to a Win32 32-bit DIB.
+/// @param layout Wizard dimensions and RGBA byte vector.
+/// @return Empty buffers when no artwork is supplied, otherwise header and BGRA pixels.
+/// @pre Nonempty artwork contains exactly width × height × four bytes.
 WizardDibData buildWizardDib(const WindowsPackageLayout &layout) {
     WizardDibData out;
     if (layout.wizardImageRgba.empty())
@@ -1643,7 +1792,9 @@ WizardDibData buildWizardDib(const WindowsPackageLayout &layout) {
 }
 
 /// @brief Resolve the payload architecture to the bootstrap PE machine type.
-/// ARM64 payloads use a native ARM64 PE bootstrap; x64 payloads use the x64 emitter.
+/// @param payloadArch Requested package architecture; empty means x64.
+/// @return Canonical `"x64"` or `"arm64"` bootstrap architecture.
+/// @throws std::runtime_error For any unsupported architecture string.
 std::string resolveBootstrapArch(const std::string &payloadArch) {
     if (payloadArch.empty() || payloadArch == "x64")
         return "x64";
@@ -1656,6 +1807,8 @@ std::string resolveBootstrapArch(const std::string &payloadArch) {
 /// Layout: IDT (20 × (N+1) bytes) + ILTs + hint/name table + DLL name strings, rounded
 /// up to 8-byte alignment. This offset is required to patch RIP-relative IAT call
 /// targets in the already-emitted machine code.
+/// @param imports Ordered PE import descriptors and function-name lists.
+/// @return Eight-byte-aligned offset from `.rdata` start to the IAT array.
 uint32_t computeIATOffset(const std::vector<PEImport> &imports) {
     if (imports.empty())
         return 0;
@@ -1683,6 +1836,8 @@ uint32_t computeIATOffset(const std::vector<PEImport> &imports) {
 /// Must be called exactly once after all emit* functions have run. Places .text at kTextRVA
 /// and .rdata immediately after (aligned to kSectionAlignment); computes the IAT base RVA
 /// and stubData RVA offset, then calls gen.finishText() to apply all fixups.
+/// @param stub Result receiving data offset and finalized x86-64 text bytes.
+/// @param gen Completed x86-64 instruction/data-reference emitter.
 void finalizeStubRVAs(StubResult &stub, InstallerStubGen &gen) {
     const uint32_t textRVA = kTextRVA;
     const uint32_t rdataRVA =
@@ -1701,6 +1856,10 @@ void finalizeStubRVAs(StubResult &stub, InstallerStubGen &gen) {
     stub.textSection = gen.finishText(textRVA, iatBaseRVA, stub.imports, dataBaseRVA);
 }
 
+/// @brief Finalize AArch64 section RVAs, IAT calls, and result text bytes.
+/// @param stub Result receiving data offset and finalized AArch64 text bytes.
+/// @param gen Completed AArch64 instruction/data-reference emitter.
+/// @details Mirrors the x86-64 overload while applying the AArch64 emitter's fixups.
 void finalizeStubRVAs(StubResult &stub, InstallerStubGenA64 &gen) {
     const uint32_t textRVA = kTextRVA;
     const uint32_t rdataRVA =
@@ -1720,12 +1879,18 @@ void finalizeStubRVAs(StubResult &stub, InstallerStubGenA64 &gen) {
 }
 
 /// @brief Emit code to zero an 8-byte local variable at [RBP+off] via XOR-zero + MOV.
+/// @param gen x86-64 instruction emitter.
+/// @param off Signed frame offset of the qword local.
 void zeroLocalQword(InstallerStubGen &gen, int32_t off) {
     gen.xorRegReg(X64Reg::RAX, X64Reg::RAX);
     gen.movMemReg(X64Reg::RBP, off, X64Reg::RAX);
 }
 
 /// @brief Zero a small fixed local range using 8-byte stores.
+/// @param gen x86-64 instruction emitter.
+/// @param off Signed frame offset of the first qword.
+/// @param bytes Byte count to clear in eight-byte increments.
+/// @pre @p bytes is a multiple of eight and the complete range is frame-local.
 void zeroLocalRange(InstallerStubGen &gen, int32_t off, uint32_t bytes) {
     for (uint32_t i = 0; i < bytes; i += 8)
         zeroLocalQword(gen, off + static_cast<int32_t>(i));
@@ -1733,6 +1898,9 @@ void zeroLocalRange(InstallerStubGen &gen, int32_t off, uint32_t bytes) {
 
 /// @brief Emit code to store a 64-bit immediate into [RSP+off].
 /// Used to pass the 5th+ arguments in a Windows x64 call (beyond the four shadow-space registers).
+/// @param gen x86-64 instruction emitter.
+/// @param off Stack-pointer-relative outgoing argument offset.
+/// @param imm Immediate value to store.
 void storeStackImm64(InstallerStubGen &gen, int32_t off, uint64_t imm) {
     gen.movRegImm64(X64Reg::RAX, imm);
     gen.movMemReg(X64Reg::RSP, off, X64Reg::RAX);
@@ -1740,13 +1908,18 @@ void storeStackImm64(InstallerStubGen &gen, int32_t off, uint64_t imm) {
 
 /// @brief Emit code to compute &[RBP+localOff] into RAX and store it at [RSP+stackOff].
 /// Used to pass a pointer to a stack-resident buffer as a 5th+ Win32 argument.
+/// @param gen x86-64 instruction emitter.
+/// @param stackOff Outgoing stack argument offset.
+/// @param localOff Frame offset whose address should be passed.
 void storeStackPtrToLocal(InstallerStubGen &gen, int32_t stackOff, int32_t localOff) {
     gen.leaRegMem(X64Reg::RAX, X64Reg::RBP, localOff);
     gen.movMemReg(X64Reg::RSP, stackOff, X64Reg::RAX);
 }
 
 /// @brief Return the byte size of `text` as a UTF-16LE string including the null terminator.
-/// Throws if the result exceeds UINT32_MAX — RegSetValueExW takes a DWORD cbData.
+/// @param text UTF-8 text whose transcoded storage size is required.
+/// @return UTF-16LE byte count including one terminating code unit.
+/// @throws std::runtime_error If the result exceeds the DWORD accepted by RegSetValueExW.
 uint32_t wideBytesFor(const std::string &text) {
     const size_t bytes = (utf16CodeUnitCountFromUtf8(text) + 1) * 2;
     if (bytes > UINT32_MAX)
@@ -1756,11 +1929,15 @@ uint32_t wideBytesFor(const std::string &text) {
 
 /// @brief Return the install directory name, using `displayName` as fallback when `installDirName`
 /// is empty.
+/// @param layout Package naming metadata.
+/// @return Explicit install directory name, or display name when absent.
 std::string installDirNameFor(const WindowsPackageLayout &layout) {
     return layout.installDirName.empty() ? layout.displayName : layout.installDirName;
 }
 
 /// @brief Return the registry hive used for package-owned metadata.
+/// @param layout Installation scope selector.
+/// @return Predefined HKCU handle for per-user installs, otherwise HKLM.
 uint64_t registryRootFor(const WindowsPackageLayout &layout) {
     return layout.perUserInstall ? kHkeyCurrentUser : kHkeyLocalMachine;
 }
@@ -1781,21 +1958,29 @@ constexpr KnownFolderGuid kFolderIdCommonPrograms = {
     0x4e, 0xd4, 0x39, 0x01, 0xfe, 0x6a, 0xf2, 0x49, 0x86, 0x90, 0x3d, 0xaf, 0xca, 0xe6, 0xff, 0xb8};
 
 /// @brief KNOWNFOLDERID for the install root: LocalAppData (per-user) or ProgramFiles.
+/// @param layout Installation scope selector.
+/// @return Reference to static LocalAppData or ProgramFiles GUID bytes.
 const KnownFolderGuid &installRootFolderIdFor(const WindowsPackageLayout &layout) {
     return layout.perUserInstall ? kFolderIdLocalAppData : kFolderIdProgramFiles;
 }
 
 /// @brief KNOWNFOLDERID for the desktop: the user's Desktop (per-user) or PublicDesktop.
+/// @param layout Installation scope selector.
+/// @return Reference to static user or public Desktop GUID bytes.
 const KnownFolderGuid &desktopFolderIdFor(const WindowsPackageLayout &layout) {
     return layout.perUserInstall ? kFolderIdDesktop : kFolderIdPublicDesktop;
 }
 
 /// @brief KNOWNFOLDERID for Start Menu Programs: per-user Programs or CommonPrograms.
+/// @param layout Installation scope selector.
+/// @return Reference to static user or common Programs GUID bytes.
 const KnownFolderGuid &programsFolderIdFor(const WindowsPackageLayout &layout) {
     return layout.perUserInstall ? kFolderIdPrograms : kFolderIdCommonPrograms;
 }
 
 /// @brief Return the registry key used for PATH changes.
+/// @param layout Installation scope selector.
+/// @return Scope-relative environment registry key path.
 std::string environmentKeyPathFor(const WindowsPackageLayout &layout) {
     return layout.perUserInstall
                ? "Environment"
@@ -1804,6 +1989,8 @@ std::string environmentKeyPathFor(const WindowsPackageLayout &layout) {
 
 /// @brief Return the registry key identifier for this package.
 /// Preference order: explicit `identifier`, normalized `executableName`, normalized `displayName`.
+/// @param layout Package identity and executable/display fallbacks.
+/// @return Registry-safe stable identifier.
 std::string registryIdFor(const WindowsPackageLayout &layout) {
     if (!layout.identifier.empty())
         return layout.identifier;
@@ -1813,6 +2000,8 @@ std::string registryIdFor(const WindowsPackageLayout &layout) {
 }
 
 /// @brief Convert all forward slashes in `text` to backslashes for use as a Windows path component.
+/// @param text Path fragment copied for in-place conversion.
+/// @return Windows-separator path fragment.
 std::string windowsPathFragment(std::string text) {
     for (char &ch : text) {
         if (ch == '/')
@@ -1821,7 +2010,9 @@ std::string windowsPathFragment(std::string text) {
     return text;
 }
 
-/// @brief Build the full HKLM registry key path for the application's Add/Remove Programs entry.
+/// @brief Build the hive-relative Add/Remove Programs key for this package.
+/// @param layout Package identity used as the final subkey.
+/// @return Path beneath the selected HKCU or HKLM hive.
 std::string uninstallKeyPathFor(const WindowsPackageLayout &layout) {
     return "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\" + registryIdFor(layout);
 }
@@ -1829,14 +2020,22 @@ std::string uninstallKeyPathFor(const WindowsPackageLayout &layout) {
 /// @brief Return true if the Desktop path buffer must be resolved at runtime.
 /// True when a desktop shortcut is requested or any install/uninstall file entry
 /// targets WindowsInstallRoot::DesktopDir.
+/// @param layout Package shortcut and file destinations to inspect.
+/// @return True when generated code needs the Desktop known-folder buffer.
 bool needsDesktopPath(const WindowsPackageLayout &layout) {
     if (layout.createDesktopShortcut)
         return true;
+    /// @brief Test whether an installation file targets the Windows Desktop.
+    /// @param entry File entry to inspect.
+    /// @return `true` when the entry is rooted at the Desktop directory.
     return std::any_of(layout.installFiles.begin(),
                        layout.installFiles.end(),
                        [](const WindowsPackageFileEntry &entry) {
                            return entry.root == WindowsInstallRoot::DesktopDir;
                        }) ||
+           /// @brief Test whether an uninstallation file targets the Windows Desktop.
+           /// @param entry File entry to inspect.
+           /// @return `true` when the entry is rooted at the Desktop directory.
            std::any_of(layout.uninstallFiles.begin(),
                        layout.uninstallFiles.end(),
                        [](const WindowsPackageFileEntry &entry) {
@@ -1847,24 +2046,38 @@ bool needsDesktopPath(const WindowsPackageLayout &layout) {
 /// @brief Return true if the Start Menu path buffer must be resolved at runtime.
 /// True when a Start Menu shortcut is requested or any install/uninstall file or
 /// directory entry targets WindowsInstallRoot::StartMenuDir.
+/// @param layout Package shortcut, file, and directory destinations to inspect.
+/// @return True when generated code needs the Programs known-folder buffer.
 bool needsMenuPath(const WindowsPackageLayout &layout) {
     if (layout.createStartMenuShortcut)
         return true;
+    /// @brief Test whether an installation file targets the Windows Start Menu.
+    /// @param entry File entry to inspect.
+    /// @return `true` when the entry is rooted at the Start Menu directory.
     return std::any_of(layout.installFiles.begin(),
                        layout.installFiles.end(),
                        [](const WindowsPackageFileEntry &entry) {
                            return entry.root == WindowsInstallRoot::StartMenuDir;
                        }) ||
+           /// @brief Test whether an uninstallation file targets the Windows Start Menu.
+           /// @param entry File entry to inspect.
+           /// @return `true` when the entry is rooted at the Start Menu directory.
            std::any_of(layout.uninstallFiles.begin(),
                        layout.uninstallFiles.end(),
                        [](const WindowsPackageFileEntry &entry) {
                            return entry.root == WindowsInstallRoot::StartMenuDir;
                        }) ||
+           /// @brief Test whether an installation directory targets the Windows Start Menu.
+           /// @param entry Directory entry to inspect.
+           /// @return `true` when the entry is rooted at the Start Menu directory.
            std::any_of(layout.installDirectories.begin(),
                        layout.installDirectories.end(),
                        [](const WindowsPackageDirEntry &entry) {
                            return entry.root == WindowsInstallRoot::StartMenuDir;
                        }) ||
+           /// @brief Test whether an uninstallation directory targets the Windows Start Menu.
+           /// @param entry Directory entry to inspect.
+           /// @return `true` when the entry is rooted at the Start Menu directory.
            std::any_of(layout.uninstallDirectories.begin(),
                        layout.uninstallDirectories.end(),
                        [](const WindowsPackageDirEntry &entry) {
@@ -1873,6 +2086,8 @@ bool needsMenuPath(const WindowsPackageLayout &layout) {
 }
 
 /// @brief Map a WindowsInstallRoot anchor to its corresponding stack-frame local buffer offset.
+/// @param root Logical install destination.
+/// @return Frame offset of the install, Desktop, or Start Menu path buffer.
 int32_t rootBufferOffset(WindowsInstallRoot root) {
     switch (root) {
         case WindowsInstallRoot::DesktopDir:
@@ -1887,6 +2102,9 @@ int32_t rootBufferOffset(WindowsInstallRoot root) {
 
 /// @brief Emit a null-guarded CloseHandle for the HANDLE at [RBP+handleOff], then zero the slot.
 /// Safe to call when the slot is already zero; the null check skips the call.
+/// @param gen x86-64 instruction emitter.
+/// @param handleOff Frame offset of the local HANDLE.
+/// @param closeSlot Flat IAT slot for `CloseHandle`.
 void emitCloseLocalHandleIfSet(InstallerStubGen &gen, int32_t handleOff, uint32_t closeSlot) {
     const auto lblSkip = gen.newLabel();
     gen.movRegMem(X64Reg::RCX, X64Reg::RBP, handleOff);
@@ -1898,6 +2116,9 @@ void emitCloseLocalHandleIfSet(InstallerStubGen &gen, int32_t handleOff, uint32_
 }
 
 /// @brief Emit a null-guarded LocalFree for the heap pointer at [RBP+ptrOff], then zero the slot.
+/// @param gen x86-64 instruction emitter.
+/// @param ptrOff Frame offset of the local allocation pointer.
+/// @param freeSlot Flat IAT slot for `LocalFree`.
 void emitLocalFreeIfSet(InstallerStubGen &gen, int32_t ptrOff, uint32_t freeSlot) {
     const auto lblSkip = gen.newLabel();
     gen.movRegMem(X64Reg::RCX, X64Reg::RBP, ptrOff);
@@ -1909,6 +2130,9 @@ void emitLocalFreeIfSet(InstallerStubGen &gen, int32_t ptrOff, uint32_t freeSlot
 }
 
 /// @brief Emit a null-guarded RegCloseKey for the HKEY at [RBP+keyOff], then zero the slot.
+/// @param gen x86-64 instruction emitter.
+/// @param keyOff Frame offset of the local HKEY.
+/// @param closeSlot Flat IAT slot for `RegCloseKey`.
 void emitRegCloseIfSet(InstallerStubGen &gen, int32_t keyOff, uint32_t closeSlot) {
     const auto lblSkip = gen.newLabel();
     gen.movRegMem(X64Reg::RCX, X64Reg::RBP, keyOff);
@@ -1922,6 +2146,12 @@ void emitRegCloseIfSet(InstallerStubGen &gen, int32_t keyOff, uint32_t closeSlot
 /// @brief Emit lstrcatW of a RIP-relative embedded wide string onto [RBP+destOff].
 /// Checks combined length against kMaxPathChars before concatenating; jumps to errorLabel on
 /// overflow.
+/// @param gen x86-64 instruction emitter.
+/// @param destOff Frame offset of the mutable destination buffer.
+/// @param srcDataOff Stub-data offset of the NUL-terminated source string.
+/// @param catSlot Flat IAT slot for `lstrcatW`.
+/// @param strlenSlot Flat IAT slot for `lstrlenW`.
+/// @param errorLabel Branch target for a combined-length overflow.
 void emitCheckedCatEmbedded(InstallerStubGen &gen,
                             int32_t destOff,
                             uint32_t srcDataOff,
@@ -1949,6 +2179,12 @@ void emitCheckedCatEmbedded(InstallerStubGen &gen,
 
 /// @brief Emit lstrcatW of the stack buffer at [RBP+srcOff] onto [RBP+destOff].
 /// Length-checks against kMaxPathChars before concatenating; jumps to errorLabel on overflow.
+/// @param gen x86-64 instruction emitter.
+/// @param destOff Frame offset of the mutable destination buffer.
+/// @param srcOff Frame offset of the NUL-terminated source buffer.
+/// @param catSlot Flat IAT slot for `lstrcatW`.
+/// @param strlenSlot Flat IAT slot for `lstrlenW`.
+/// @param errorLabel Branch target for a combined-length overflow.
 void emitCheckedCatStack(InstallerStubGen &gen,
                          int32_t destOff,
                          int32_t srcOff,
@@ -1976,6 +2212,12 @@ void emitCheckedCatStack(InstallerStubGen &gen,
 
 /// @brief Emit lstrcatW of the wide string in `srcReg` onto [RBP+destOff].
 /// Length-checks against kMaxPathChars before concatenating; jumps to errorLabel on overflow.
+/// @param gen Instruction emitter.
+/// @param destOff Destination frame-buffer offset.
+/// @param srcReg Register holding the source string pointer.
+/// @param catSlot `lstrcatW` IAT slot.
+/// @param strlenSlot `lstrlenW` IAT slot.
+/// @param errorLabel Overflow branch target.
 void emitCheckedCatReg(InstallerStubGen &gen,
                        int32_t destOff,
                        X64Reg srcReg,
@@ -2002,6 +2244,10 @@ void emitCheckedCatReg(InstallerStubGen &gen,
 
 /// @brief Emit a CreateDirectoryW call for the path already in RCX.
 /// Treats ERROR_ALREADY_EXISTS as success; jumps to errorLabel on any other failure.
+/// @param gen Instruction emitter with RCX prepared.
+/// @param createDirSlot `CreateDirectoryW` IAT slot.
+/// @param getLastErrorSlot `GetLastError` IAT slot.
+/// @param errorLabel Failure branch target.
 void emitCreateDirectoryChecked(InstallerStubGen &gen,
                                 uint32_t createDirSlot,
                                 uint32_t getLastErrorSlot,
@@ -2019,6 +2265,9 @@ void emitCreateDirectoryChecked(InstallerStubGen &gen,
 /// @brief Emit `cmp reg, value` using R10 as scratch for the immediate.
 /// The direct cmp-reg-imm32 encoding sign-extends the immediate; loading it into R10
 /// first allows correct unsigned comparison for values with bit 31 set.
+/// @param gen Instruction emitter.
+/// @param reg Register to compare.
+/// @param value Unsigned 32-bit comparison value.
 void emitCmpRegU32(InstallerStubGen &gen, X64Reg reg, uint32_t value) {
     gen.movRegImm32(X64Reg::R10, value);
     gen.cmpRegReg(reg, X64Reg::R10);
@@ -2027,6 +2276,15 @@ void emitCmpRegU32(InstallerStubGen &gen, X64Reg reg, uint32_t value) {
 /// @brief Emit code to compose a full path into [RBP+tempOff].
 /// Copies the resolved root path (install/desktop/menu) for `root`, then appends
 /// "\" and the embedded relative path string; jumps to errorLabel on overflow.
+/// @param gen Instruction emitter.
+/// @param root Logical root whose frame buffer supplies the prefix.
+/// @param tempOff Destination frame-buffer offset.
+/// @param slashOff Embedded separator string offset.
+/// @param relPathOff Embedded relative-path string offset.
+/// @param copySlot `lstrcpyW` IAT slot.
+/// @param catSlot `lstrcatW` IAT slot.
+/// @param strlenSlot `lstrlenW` IAT slot.
+/// @param errorLabel Overflow branch target.
 void emitComposePath(InstallerStubGen &gen,
                      WindowsInstallRoot root,
                      int32_t tempOff,
@@ -2046,6 +2304,11 @@ void emitComposePath(InstallerStubGen &gen,
 
 /// @brief Emit a MessageBoxW call with a NULL parent window using embedded title and message
 /// strings. `flags` selects icon/button style (e.g. MB_ICONINFORMATION=0x40, MB_ICONERROR=0x10).
+/// @param gen Instruction emitter.
+/// @param slot `MessageBoxW` IAT slot.
+/// @param titleOff Embedded wide title offset.
+/// @param messageOff Embedded wide message offset.
+/// @param flags Win32 message-box style flags.
 void emitMessageBox(
     InstallerStubGen &gen, uint32_t slot, uint32_t titleOff, uint32_t messageOff, uint32_t flags) {
     gen.xorRegReg(X64Reg::RCX, X64Reg::RCX);
@@ -2056,6 +2319,11 @@ void emitMessageBox(
 }
 
 /// @brief Emit a MessageBoxW call unless `/quiet` or `/silent` was detected.
+/// @param gen Instruction emitter.
+/// @param slot `MessageBoxW` IAT slot.
+/// @param titleOff Embedded wide title offset.
+/// @param messageOff Embedded wide message offset.
+/// @param flags Win32 message-box style flags.
 void emitMessageBoxUnlessQuiet(
     InstallerStubGen &gen, uint32_t slot, uint32_t titleOff, uint32_t messageOff, uint32_t flags) {
     const auto lblSkip = gen.newLabel();
@@ -2075,6 +2343,13 @@ struct FlagModeSpec {
 /// @brief Detect automation flags using case-insensitive token-boundary checks.
 /// The stub stays dependency-free but avoids matching flag text inside the executable
 /// path or inside longer arguments.
+/// @param gen Instruction emitter.
+/// @param getCommandLineSlot `GetCommandLineW` IAT slot.
+/// @param strstrSlot `StrStrIW` IAT slot.
+/// @param flags Embedded flag spellings and byte lengths to search.
+/// @param destModeOff Frame-local result offset.
+/// @param foundValue Value stored for a detected flag.
+/// @param clearDestination Whether to zero the result before searching.
 void emitDetectFlagMode(InstallerStubGen &gen,
                         uint32_t getCommandLineSlot,
                         uint32_t strstrSlot,
@@ -2156,6 +2431,10 @@ void emitDetectFlagMode(InstallerStubGen &gen,
 }
 
 /// @brief Detect quiet automation flags.
+/// @param gen Instruction emitter.
+/// @param getCommandLineSlot `GetCommandLineW` IAT slot.
+/// @param strstrSlot `StrStrIW` IAT slot.
+/// @param flags Quiet/silent spellings to detect.
 void emitDetectQuietMode(InstallerStubGen &gen,
                          uint32_t getCommandLineSlot,
                          uint32_t strstrSlot,
@@ -2164,6 +2443,10 @@ void emitDetectQuietMode(InstallerStubGen &gen,
 }
 
 /// @brief Initialize default component choices and honor quiet/interactive `/no-<id>` flags.
+/// @param gen Instruction emitter.
+/// @param layout Optional component definitions and defaults.
+/// @param getCommandLineSlot `GetCommandLineW` IAT slot.
+/// @param strstrSlot `StrStrIW` IAT slot.
 void emitInitializeComponentSelections(InstallerStubGen &gen,
                                        const WindowsPackageLayout &layout,
                                        uint32_t getCommandLineSlot,
@@ -2189,6 +2472,10 @@ void emitInitializeComponentSelections(InstallerStubGen &gen,
 }
 
 /// @brief Publish final component choices to the transaction backend's inherited environment.
+/// @param gen Instruction emitter.
+/// @param layout Optional component identifiers.
+/// @param setEnvironmentSlot `SetEnvironmentVariableW` IAT slot.
+/// @param errorLabel Environment-update failure target.
 void emitComponentSelectionEnvironment(InstallerStubGen &gen,
                                        const WindowsPackageLayout &layout,
                                        uint32_t setEnvironmentSlot,
@@ -2222,6 +2509,13 @@ void emitComponentSelectionEnvironment(InstallerStubGen &gen,
 }
 
 /// @brief Compose the selected external shortcut ownership records into a stack string.
+/// @param gen Instruction emitter.
+/// @param layout External files and component ownership metadata.
+/// @param destinationOff Destination frame-buffer offset.
+/// @param copySlot `lstrcpyW` IAT slot.
+/// @param catSlot `lstrcatW` IAT slot.
+/// @param strlenSlot `lstrlenW` IAT slot.
+/// @param errorLabel Invalid-component or length failure target.
 void emitComposeSelectedShortcutOwnership(InstallerStubGen &gen,
                                           const WindowsPackageLayout &layout,
                                           int32_t destinationOff,
@@ -2239,6 +2533,9 @@ void emitComposeSelectedShortcutOwnership(InstallerStubGen &gen,
             continue;
         const auto lblSkip = gen.newLabel();
         if (!file.componentId.empty()) {
+            /// @brief Locate the optional-component definition referenced by a shortcut.
+            /// @param component Component definition to inspect.
+            /// @return `true` when its identifier matches the shortcut's component identifier.
             const auto it = std::find_if(layout.optionalComponents.begin(),
                                          layout.optionalComponents.end(),
                                          [&](const WindowsOptionalComponent &component) {
@@ -2263,6 +2560,14 @@ void emitComposeSelectedShortcutOwnership(InstallerStubGen &gen,
     }
 }
 
+/// @brief Emit interactive wizard invocation and result branching.
+/// @param gen Instruction emitter.
+/// @param templateOff Embedded dialog template offset.
+/// @param dialogProcLabel Generated dialog procedure label.
+/// @param initCommonControlsSlot `InitCommonControlsEx` IAT slot.
+/// @param dialogBoxSlot `DialogBoxIndirectParamW` IAT slot.
+/// @param cancelLabel User-cancellation branch target.
+/// @param errorLabel Dialog-creation failure target.
 void emitWizardDialog(InstallerStubGen &gen,
                       uint32_t templateOff,
                       uint32_t dialogProcLabel,
@@ -2295,6 +2600,10 @@ void emitWizardDialog(InstallerStubGen &gen,
 }
 
 /// @brief Show a themed informational dialog in interactive mode and ignore its result.
+/// @param gen Instruction emitter.
+/// @param templateOff Embedded result-dialog template offset.
+/// @param dialogProcLabel Generated dialog procedure label.
+/// @param dialogBoxSlot `DialogBoxIndirectParamW` IAT slot.
 void emitResultDialogUnlessQuiet(InstallerStubGen &gen,
                                  uint32_t templateOff,
                                  uint32_t dialogProcLabel,
@@ -2313,6 +2622,9 @@ void emitResultDialogUnlessQuiet(InstallerStubGen &gen,
 }
 
 /// @brief Update the visible progress dialog with a native setup phase.
+/// @param gen Instruction emitter.
+/// @param percent Progress-bar position.
+/// @param statusOff Embedded wide status string offset.
 void emitSetProgressUi(InstallerStubGen &gen, uint32_t percent, uint32_t statusOff) {
     const auto lblDone = gen.newLabel();
     gen.movRegMem(X64Reg::RAX, X64Reg::RBP, kProgressHwndOff);
@@ -2336,6 +2648,12 @@ void emitSetProgressUi(InstallerStubGen &gen, uint32_t percent, uint32_t statusO
 }
 
 /// @brief Refresh progress controls from the transaction backend's small INI status file.
+/// @param gen Instruction emitter.
+/// @param sectionOff Embedded INI section name.
+/// @param percentKeyOff Embedded percent key.
+/// @param statusKeyOff Embedded status key.
+/// @param defaultStatusOff Embedded fallback status.
+/// @param defaultPercent Fallback numeric position.
 void emitRefreshProgressUi(InstallerStubGen &gen,
                            uint32_t sectionOff,
                            uint32_t percentKeyOff,
@@ -2380,6 +2698,7 @@ void emitRefreshProgressUi(InstallerStubGen &gen,
 }
 
 /// @brief Drain the UI message queue so the modeless progress window remains responsive.
+/// @param gen Instruction emitter.
 void emitPumpProgressMessages(InstallerStubGen &gen) {
     const auto lblLoop = gen.newLabel();
     const auto lblDone = gen.newLabel();
@@ -2401,6 +2720,11 @@ void emitPumpProgressMessages(InstallerStubGen &gen) {
 }
 
 /// @brief Create and show the persistent progress dialog and publish its status-file path.
+/// @param gen Instruction emitter.
+/// @param layout Package identity used for the progress filename.
+/// @param templateOff Embedded progress-dialog template offset.
+/// @param dialogProcLabel Generated dialog procedure label.
+/// @param errorLabel Setup failure branch target.
 void emitCreateProgressDialog(InstallerStubGen &gen,
                               const WindowsPackageLayout &layout,
                               uint32_t templateOff,
@@ -2453,6 +2777,8 @@ void emitCreateProgressDialog(InstallerStubGen &gen,
 }
 
 /// @brief Tear down the progress window and remove its transient status file.
+/// @param gen Instruction emitter.
+/// @param layout Package identity used for the progress filename.
 void emitDestroyProgressDialog(InstallerStubGen &gen, const WindowsPackageLayout &layout) {
     const auto lblNoWindow = gen.newLabel();
     const auto lblDone = gen.newLabel();
@@ -2481,6 +2807,10 @@ void emitDestroyProgressDialog(InstallerStubGen &gen, const WindowsPackageLayout
     gen.bindLabel(lblDone);
 }
 
+/// @brief Emit EndDialog followed by a true dialog-procedure result.
+/// @param gen Instruction emitter.
+/// @param endDialogSlot `EndDialog` IAT slot.
+/// @param result Modal result passed to the caller.
 void emitEndDialogAndReturnTrue(InstallerStubGen &gen, uint32_t endDialogSlot, uint32_t result) {
     gen.movRegMem(X64Reg::RCX, X64Reg::RBP, kDlgProcHwndOff);
     gen.movRegImm32(X64Reg::RDX, result);
@@ -2488,6 +2818,8 @@ void emitEndDialogAndReturnTrue(InstallerStubGen &gen, uint32_t endDialogSlot, u
     gen.movRegImm32(X64Reg::RAX, 1);
 }
 
+/// @brief Emit the shared dialog-procedure stack teardown and return.
+/// @param gen Instruction emitter.
 void emitDialogProcEpilogue(InstallerStubGen &gen) {
     gen.addRegImm32(X64Reg::RSP, kDlgProcFrameSize);
     gen.pop(X64Reg::RBX);
@@ -2496,6 +2828,11 @@ void emitDialogProcEpilogue(InstallerStubGen &gen) {
 }
 
 /// @brief Apply the native dark Explorer theme to one dialog child when it exists.
+/// @param gen Instruction emitter.
+/// @param controlId Child control identifier.
+/// @param darkThemeOff Embedded theme-name offset.
+/// @param getDlgItemSlot `GetDlgItem` IAT slot.
+/// @param setWindowThemeSlot `SetWindowTheme` IAT slot.
 void emitSetDialogControlTheme(InstallerStubGen &gen,
                                uint32_t controlId,
                                uint32_t darkThemeOff,
@@ -2515,6 +2852,14 @@ void emitSetDialogControlTheme(InstallerStubGen &gen,
 }
 
 /// @brief Paint one dialog/control surface with a stock DC brush and return that brush.
+/// @param gen Instruction emitter.
+/// @param background Win32 COLORREF background.
+/// @param foreground Win32 COLORREF text color.
+/// @param getStockObjectSlot `GetStockObject` IAT slot.
+/// @param setDcBrushColorSlot `SetDCBrushColor` IAT slot.
+/// @param setTextColorSlot `SetTextColor` IAT slot.
+/// @param setBkColorSlot `SetBkColor` IAT slot.
+/// @param doneLabel Shared return branch target.
 void emitReturnDarkDialogBrush(InstallerStubGen &gen,
                                uint32_t background,
                                uint32_t foreground,
@@ -2539,6 +2884,29 @@ void emitReturnDarkDialogBrush(InstallerStubGen &gen,
     gen.jmp(doneLabel);
 }
 
+/// @brief Emit the shared modal/modeless wizard window procedure.
+/// @param gen Instruction emitter.
+/// @param layout Component controls and optional banner artwork.
+/// @param label Entry label bound to the generated procedure.
+/// @param endDialogSlot `EndDialog` IAT slot.
+/// @param getDlgItemSlot `GetDlgItem` IAT slot.
+/// @param sendMessageSlot `SendMessageW` IAT slot.
+/// @param enableWindowSlot `EnableWindow` IAT slot.
+/// @param darkThemeOff Embedded dark-theme name.
+/// @param getDlgCtrlIdSlot `GetDlgCtrlID` IAT slot.
+/// @param setWindowThemeSlot `SetWindowTheme` IAT slot.
+/// @param dwmSetWindowAttributeSlot `DwmSetWindowAttribute` IAT slot.
+/// @param getStockObjectSlot `GetStockObject` IAT slot.
+/// @param setDcBrushColorSlot `SetDCBrushColor` IAT slot.
+/// @param setTextColorSlot `SetTextColor` IAT slot.
+/// @param setBkColorSlot `SetBkColor` IAT slot.
+/// @param setWindowLongPtrSlot Optional `SetWindowLongPtrW` slot for enhanced dialogs.
+/// @param getWindowLongPtrSlot Optional `GetWindowLongPtrW` slot for enhanced dialogs.
+/// @param stretchDibitsSlot Optional `StretchDIBits` slot for branded banners.
+/// @param dibInfoOff Embedded BITMAPINFOHEADER offset.
+/// @param dibPixelsOff Embedded BGRA pixel offset.
+/// @details Handles initialization, commands, closure, dark control colors,
+///          optional owner-drawn artwork, and component-selection persistence.
 void emitWizardDialogProc(InstallerStubGen &gen,
                           const WindowsPackageLayout &layout,
                           uint32_t label,
@@ -2901,6 +3269,16 @@ void emitWizardDialogProc(InstallerStubGen &gen,
 /// @brief Emit code to create a directory at root\relPath.
 /// Composes the full path into kTempPathOff via emitComposePath, then calls
 /// CreateDirectoryW (ERROR_ALREADY_EXISTS is silently tolerated).
+/// @param gen Instruction emitter.
+/// @param root Logical destination root.
+/// @param slashOff Embedded separator offset.
+/// @param relPathOff Embedded relative-path offset.
+/// @param copySlot `lstrcpyW` slot.
+/// @param catSlot `lstrcatW` slot.
+/// @param strlenSlot `lstrlenW` slot.
+/// @param createDirSlot `CreateDirectoryW` slot.
+/// @param getLastErrorSlot `GetLastError` slot.
+/// @param errorLabel Composition or creation failure target.
 void emitCreateDirectoryAtRoot(InstallerStubGen &gen,
                                WindowsInstallRoot root,
                                uint32_t slashOff,
@@ -2921,6 +3299,12 @@ void emitCreateDirectoryAtRoot(InstallerStubGen &gen,
 /// @brief Emit RegSetValueExW to write a named REG_SZ value from an embedded wide string.
 /// `valueBytes` is the full UTF-16LE byte count including the null terminator.
 /// Jumps to errorLabel if the API returns non-zero.
+/// @param gen Instruction emitter.
+/// @param regSetSlot `RegSetValueExW` slot.
+/// @param valueNameOff Embedded value-name offset.
+/// @param valueOff Embedded UTF-16 value offset.
+/// @param valueBytes Serialized value size including NUL.
+/// @param errorLabel Registry failure target.
 void emitRegSetConstString(InstallerStubGen &gen,
                            uint32_t regSetSlot,
                            uint32_t valueNameOff,
@@ -2941,6 +3325,11 @@ void emitRegSetConstString(InstallerStubGen &gen,
 }
 
 /// @brief Emit RegSetValueExW to write a named REG_DWORD value.
+/// @param gen Instruction emitter.
+/// @param regSetSlot `RegSetValueExW` slot.
+/// @param valueNameOff Embedded value-name offset.
+/// @param value DWORD payload.
+/// @param errorLabel Registry failure target.
 void emitRegSetConstDword(InstallerStubGen &gen,
                           uint32_t regSetSlot,
                           uint32_t valueNameOff,
@@ -2962,6 +3351,10 @@ void emitRegSetConstDword(InstallerStubGen &gen,
 
 /// @brief Emit RegSetValueExW to write a named REG_NONE value with zero length and NULL data.
 /// Used to stamp a ProgID name into Software\Classes\.<ext>\OpenWithProgids.
+/// @param gen Instruction emitter.
+/// @param regSetSlot `RegSetValueExW` slot.
+/// @param valueNameOff Embedded ProgID value-name offset.
+/// @param errorLabel Registry failure target.
 void emitRegSetConstNoneValue(InstallerStubGen &gen,
                               uint32_t regSetSlot,
                               uint32_t valueNameOff,
@@ -2980,6 +3373,11 @@ void emitRegSetConstNoneValue(InstallerStubGen &gen,
 
 /// @brief Emit RegSetValueExW to write the default (unnamed, empty-string key) value as REG_SZ.
 /// Used to set the human-readable ProgID description shown in the Open With dialog.
+/// @param gen Instruction emitter.
+/// @param regSetSlot `RegSetValueExW` slot.
+/// @param valueOff Embedded UTF-16 value offset.
+/// @param valueBytes Serialized value size including NUL.
+/// @param errorLabel Registry failure target.
 void emitRegSetDefaultConstString(InstallerStubGen &gen,
                                   uint32_t regSetSlot,
                                   uint32_t valueOff,
@@ -3001,6 +3399,13 @@ void emitRegSetDefaultConstString(InstallerStubGen &gen,
 /// @brief Emit RegSetValueExW to write a named value from a stack-resident wide string.
 /// Computes the byte length at runtime via lstrlenW (* 2 + 2 for null terminator).
 /// `valueType` selects REG_SZ or REG_EXPAND_SZ; jumps to errorLabel on failure.
+/// @param gen Instruction emitter.
+/// @param regSetSlot `RegSetValueExW` slot.
+/// @param strlenSlot `lstrlenW` slot.
+/// @param valueNameOff Embedded value-name offset.
+/// @param stackBufOff Frame offset of the UTF-16 value.
+/// @param valueType Registry string type.
+/// @param errorLabel Registry failure target.
 void emitRegSetStackString(InstallerStubGen &gen,
                            uint32_t regSetSlot,
                            uint32_t strlenSlot,
@@ -3031,6 +3436,12 @@ void emitRegSetStackString(InstallerStubGen &gen,
 }
 
 /// @brief Convenience overload of emitRegSetStackString that defaults `valueType` to REG_SZ.
+/// @param gen Instruction emitter.
+/// @param regSetSlot `RegSetValueExW` slot.
+/// @param strlenSlot `lstrlenW` slot.
+/// @param valueNameOff Embedded value-name offset.
+/// @param stackBufOff Frame offset of the UTF-16 value.
+/// @param errorLabel Registry failure target.
 void emitRegSetStackString(InstallerStubGen &gen,
                            uint32_t regSetSlot,
                            uint32_t strlenSlot,
@@ -3043,6 +3454,15 @@ void emitRegSetStackString(InstallerStubGen &gen,
 
 /// @brief Emit InstallDate as the current local date in YYYYMMDD form.
 /// Falls back to the generator-supplied date if GetDateFormatW fails.
+/// @param gen Instruction emitter.
+/// @param getDateFormatSlot `GetDateFormatW` slot.
+/// @param copySlot `lstrcpyW` slot.
+/// @param regSetSlot `RegSetValueExW` slot.
+/// @param strlenSlot `lstrlenW` slot.
+/// @param valueNameOff Embedded `InstallDate` name.
+/// @param formatOff Embedded date-format string.
+/// @param fallbackDateOff Embedded packaging-date fallback.
+/// @param errorLabel Registry failure target.
 void emitRegSetCurrentInstallDate(InstallerStubGen &gen,
                                   uint32_t getDateFormatSlot,
                                   uint32_t copySlot,
@@ -3074,6 +3494,11 @@ void emitRegSetCurrentInstallDate(InstallerStubGen &gen,
 
 /// @brief Emit RegSetValueExW to write the default (unnamed) value from a stack-resident wide
 /// string. Computes the byte length via lstrlenW at runtime. Used for shell Open command strings.
+/// @param gen Instruction emitter.
+/// @param regSetSlot `RegSetValueExW` slot.
+/// @param strlenSlot `lstrlenW` slot.
+/// @param stackBufOff Frame offset of the UTF-16 value.
+/// @param errorLabel Registry failure target.
 void emitRegSetDefaultStackString(InstallerStubGen &gen,
                                   uint32_t regSetSlot,
                                   uint32_t strlenSlot,
@@ -3100,6 +3525,13 @@ void emitRegSetDefaultStackString(InstallerStubGen &gen,
 /// `bufferBytes` is the buffer's capacity in bytes. Only missing-value errors jump
 /// to missingLabel when a distinct errorLabel is supplied; malformed, oversized, or
 /// unreadable values jump to errorLabel so PATH updates cannot overwrite unknown data.
+/// @param gen Instruction emitter.
+/// @param querySlot `RegQueryValueExW` slot.
+/// @param valueNameOff Embedded value-name offset.
+/// @param stackBufOff Destination frame-buffer offset.
+/// @param bufferBytes Writable buffer capacity.
+/// @param missingLabel Missing-key/value target.
+/// @param errorLabel Optional distinct malformed/query failure target.
 void emitRegQueryStackString(InstallerStubGen &gen,
                              uint32_t querySlot,
                              uint32_t valueNameOff,
@@ -3147,6 +3579,12 @@ void emitRegQueryStackString(InstallerStubGen &gen,
 
 /// @brief Emit code to append the separator string to [RBP+destOff] only when the buffer is
 /// non-empty. Used to insert ";" between PATH tokens without creating a spurious leading separator.
+/// @param gen Instruction emitter.
+/// @param destOff Destination frame-buffer offset.
+/// @param separatorOff Embedded separator offset.
+/// @param catSlot `lstrcatW` slot.
+/// @param strlenSlot `lstrlenW` slot.
+/// @param errorLabel Length-overflow target.
 void emitAppendSeparatorIfNonEmpty(InstallerStubGen &gen,
                                    int32_t destOff,
                                    uint32_t separatorOff,
@@ -3165,6 +3603,9 @@ void emitAppendSeparatorIfNonEmpty(InstallerStubGen &gen,
 /// @brief Emit SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment", ...).
 /// Forces running applications (including Explorer) to reload the system environment
 /// block so PATH changes take effect immediately without a reboot.
+/// @param gen Instruction emitter.
+/// @param sendSlot `SendMessageTimeoutW` slot.
+/// @param environmentOff Embedded `"Environment"` string offset.
 void emitBroadcastEnvironmentChange(InstallerStubGen &gen,
                                     uint32_t sendSlot,
                                     uint32_t environmentOff) {
@@ -3178,8 +3619,12 @@ void emitBroadcastEnvironmentChange(InstallerStubGen &gen,
     gen.callIATSlot(sendSlot);
 }
 
-/// @brief Emit RegCreateKeyW under HKLM for the embedded key path, closing any previously open key
-/// first. Jumps to errorLabel if creation fails.
+/// @brief Emit RegCreateKeyW under a selected hive, closing any previously open key first.
+/// @param gen Instruction emitter.
+/// @param createSlot `RegCreateKeyW` slot.
+/// @param keyOff Embedded subkey path offset.
+/// @param errorLabel Creation failure target.
+/// @param rootHkey Predefined registry root handle.
 void emitRegCreateConstKey(InstallerStubGen &gen,
                            uint32_t createSlot,
                            uint32_t keyOff,
@@ -3196,6 +3641,10 @@ void emitRegCreateConstKey(InstallerStubGen &gen,
 
 /// @brief Emit RegDeleteTreeW for the embedded key path. Errors are silently ignored since
 /// the subtree may already be absent during rollback or uninstall.
+/// @param gen Instruction emitter.
+/// @param deleteSlot `RegDeleteTreeW` slot.
+/// @param keyOff Embedded subkey path offset.
+/// @param rootHkey Predefined registry root handle.
 void emitRegDeleteConstKey(InstallerStubGen &gen,
                            uint32_t deleteSlot,
                            uint32_t keyOff,
@@ -3205,8 +3654,10 @@ void emitRegDeleteConstKey(InstallerStubGen &gen,
     gen.callIATSlot(deleteSlot);
 }
 
-/// @brief Build the HKLM Software\Classes\.<ext> registry key path for a file association.
+/// @brief Build the hive-relative Software\Classes\.<ext> key for a file association.
 /// Normalizes the extension to have a leading dot if it is missing.
+/// @param assoc File association supplying the extension.
+/// @return Extension-class subkey path.
 std::string extensionKeyFor(const WindowsFileAssociationEntry &assoc) {
     std::string ext = assoc.extension;
     if (ext.empty() || ext.front() != '.')
@@ -3214,18 +3665,28 @@ std::string extensionKeyFor(const WindowsFileAssociationEntry &assoc) {
     return "Software\\Classes\\" + ext;
 }
 
-/// @brief Build the HKLM Software\Classes\<ProgID> registry key path for a file association.
+/// @brief Build the hive-relative Software\Classes\<ProgID> key for an association.
+/// @param assoc File association supplying its ProgID.
+/// @return ProgID subkey path.
 std::string progIdKeyFor(const WindowsFileAssociationEntry &assoc) {
     return "Software\\Classes\\" + assoc.progId;
 }
 
-/// @brief Build the HKLM Software\Classes\.<ext>\OpenWithProgids registry key path.
+/// @brief Build the extension's hive-relative OpenWithProgids subkey.
+/// @param assoc File association supplying the extension.
+/// @return OpenWithProgids subkey path.
 std::string openWithProgIdsKeyFor(const WindowsFileAssociationEntry &assoc) {
     return extensionKeyFor(assoc) + "\\OpenWithProgids";
 }
 
-/// @brief Emit RegOpenKeyW under HKLM for an embedded key path, closing the current open key first.
+/// @brief Emit RegOpenKeyW under a selected hive, closing the current open key first.
 /// Jumps to missingLabel if the key does not exist (non-zero return).
+/// @param gen Instruction emitter.
+/// @param openSlot `RegOpenKeyW` slot.
+/// @param closeSlot `RegCloseKey` slot.
+/// @param keyOff Embedded subkey path offset.
+/// @param missingLabel Absent/open-failure target.
+/// @param rootHkey Predefined registry root handle.
 void emitRegOpenConstKeyIfExists(InstallerStubGen &gen,
                                  uint32_t openSlot,
                                  uint32_t closeSlot,
@@ -3243,6 +3704,13 @@ void emitRegOpenConstKeyIfExists(InstallerStubGen &gen,
 
 /// @brief Emit conditional RegDeleteValueW: opens the key, deletes the named value, then closes.
 /// Silently skips the entire sequence if the key does not exist.
+/// @param gen Instruction emitter.
+/// @param openSlot `RegOpenKeyW` slot.
+/// @param closeSlot `RegCloseKey` slot.
+/// @param deleteValueSlot `RegDeleteValueW` slot.
+/// @param keyOff Embedded subkey path offset.
+/// @param valueNameOff Embedded value-name offset.
+/// @param rootHkey Predefined registry root handle.
 void emitRegDeleteNamedValueIfPresent(InstallerStubGen &gen,
                                       uint32_t openSlot,
                                       uint32_t closeSlot,
@@ -3262,6 +3730,13 @@ void emitRegDeleteNamedValueIfPresent(InstallerStubGen &gen,
 /// @brief Emit code to query a registry value and compare it to an embedded expected string.
 /// Reads into kTempPathOff via RegQueryValueExW, checks the returned byte count,
 /// then calls lstrcmpW. Jumps to notEqualLabel on query failure, size mismatch, or inequality.
+/// @param gen Instruction emitter.
+/// @param querySlot `RegQueryValueExW` slot.
+/// @param strcmpSlot `lstrcmpW` slot.
+/// @param valueNameOff Embedded value-name offset.
+/// @param expectedValueOff Embedded expected UTF-16 value.
+/// @param expectedBytes Expected serialized byte count.
+/// @param notEqualLabel Query or comparison failure target.
 void emitRegQueryConstStringEquals(InstallerStubGen &gen,
                                    uint32_t querySlot,
                                    uint32_t strcmpSlot,
@@ -3296,6 +3771,10 @@ void emitRegQueryConstStringEquals(InstallerStubGen &gen,
 
 /// @brief Emit code to test whether a named registry value exists under kRegKeyOff.
 /// Jumps to existsLabel if RegQueryValueExW returns success (0) or ERROR_MORE_DATA.
+/// @param gen Instruction emitter.
+/// @param querySlot `RegQueryValueExW` slot.
+/// @param valueNameOff Embedded value-name offset.
+/// @param existsLabel Present-value branch target.
 void emitRegQueryValueExists(InstallerStubGen &gen,
                              uint32_t querySlot,
                              uint32_t valueNameOff,
@@ -3322,6 +3801,21 @@ void emitRegQueryValueExists(InstallerStubGen &gen,
 /// Ownership is determined by comparing the ZAPSOwner registry value against the
 /// embedded identifier string; deletes shell/open/command, shell/open, shell, and
 /// the ProgID key itself. Silently skips if the key is absent or owned by another app.
+/// @param gen Instruction emitter.
+/// @param openSlot `RegOpenKeyW` slot.
+/// @param closeSlot `RegCloseKey` slot.
+/// @param querySlot `RegQueryValueExW` slot.
+/// @param strcmpSlot `lstrcmpW` slot.
+/// @param deleteValueSlot `RegDeleteValueW` slot.
+/// @param deleteSlot `RegDeleteTreeW` slot.
+/// @param progKeyOff Embedded ProgID key.
+/// @param markerNameOff Embedded ownership value name.
+/// @param markerValueOff Embedded expected owner.
+/// @param markerValueBytes Expected owner byte count.
+/// @param commandKeyOff Embedded command subkey.
+/// @param openKeyOff Embedded open subkey.
+/// @param shellKeyOff Embedded shell subkey.
+/// @param rootHkey Registry hive handle.
 void emitDeleteProgIdTreeIfOwned(InstallerStubGen &gen,
                                  uint32_t openSlot,
                                  uint32_t closeSlot,
@@ -3361,6 +3855,18 @@ void emitDeleteProgIdTreeIfOwned(InstallerStubGen &gen,
 /// ZAPSContentTypeOwner, Software\Classes\.<ext>\OpenWithProgids\<ProgID> = REG_NONE,
 /// Software\Classes\<ProgID> with ZAPSOwner marker and description,
 /// and Software\Classes\<ProgID>\shell\open\command = "&lt;exe&gt;" [args] "%1".
+/// @param gen Instruction emitter.
+/// @param layout Association metadata and executable/icon paths.
+/// @param slashOff Embedded path separator.
+/// @param copySlot `lstrcpyW` slot.
+/// @param catSlot `lstrcatW` slot.
+/// @param createSlot `RegCreateKeyW` slot.
+/// @param setValueSlot `RegSetValueExW` slot.
+/// @param querySlot `RegQueryValueExW` slot.
+/// @param strcmpSlot Reserved comparison slot.
+/// @param closeSlot `RegCloseKey` slot.
+/// @param strlenSlot `lstrlenW` slot.
+/// @param errorLabel Registry/path failure target.
 void emitRegisterFileAssociations(InstallerStubGen &gen,
                                   const WindowsPackageLayout &layout,
                                   uint32_t slashOff,
@@ -3485,6 +3991,14 @@ void emitRegisterFileAssociations(InstallerStubGen &gen,
 /// Removes OpenWithProgids entries, Content Type if ZAPSContentTypeOwner matches,
 /// and the full ProgID subtree if the ZAPSOwner marker matches our identifier.
 /// Silently skips any association whose key is missing or owned by another app.
+/// @param gen Instruction emitter.
+/// @param layout Associations and package owner identity.
+/// @param openSlot `RegOpenKeyW` slot.
+/// @param closeSlot `RegCloseKey` slot.
+/// @param querySlot `RegQueryValueExW` slot.
+/// @param strcmpSlot `lstrcmpW` slot.
+/// @param deleteValueSlot `RegDeleteValueW` slot.
+/// @param deleteSlot `RegDeleteTreeW` slot.
 void emitUnregisterFileAssociations(InstallerStubGen &gen,
                                     const WindowsPackageLayout &layout,
                                     uint32_t openSlot,
@@ -3560,6 +4074,13 @@ void emitUnregisterFileAssociations(InstallerStubGen &gen,
 }
 
 /// @brief Emit SHGetKnownFolderPath into a stack WCHAR buffer and free the shell string.
+/// @param gen Instruction emitter.
+/// @param folderId Embedded KNOWNFOLDERID offset.
+/// @param destOff Destination frame-buffer offset.
+/// @param copySlot `lstrcpyW` slot.
+/// @param folderSlot `SHGetKnownFolderPath` slot.
+/// @param freeSlot `CoTaskMemFree` slot.
+/// @param errorLabel Resolution failure target.
 void emitResolveKnownFolderPath(InstallerStubGen &gen,
                                 const KnownFolderGuid &folderId,
                                 int32_t destOff,
@@ -3589,6 +4110,19 @@ void emitResolveKnownFolderPath(InstallerStubGen &gen,
 /// Populates kInstallPathOff (always), kDesktopPathOff (if needsDesktopPath), and
 /// kMenuPathOff (if needsMenuPath); appends the install-dir subdirectory to kInstallPathOff.
 /// If `createRoots` is true, also emits CreateDirectoryW for each resolved root.
+/// @param gen Instruction emitter.
+/// @param layout Scope and required-root metadata.
+/// @param slashOff Embedded separator.
+/// @param installDirOff Embedded install-directory leaf.
+/// @param copySlot `lstrcpyW` slot.
+/// @param catSlot `lstrcatW` slot.
+/// @param strlenSlot `lstrlenW` slot.
+/// @param createDirSlot `CreateDirectoryW` slot.
+/// @param getLastErrorSlot `GetLastError` slot.
+/// @param folderSlot `SHGetKnownFolderPath` slot.
+/// @param freeSlot `CoTaskMemFree` slot.
+/// @param createRoots Whether to create resolved directories.
+/// @param errorLabel Failure target.
 void emitBuildRootPaths(InstallerStubGen &gen,
                         const WindowsPackageLayout &layout,
                         uint32_t slashOff,
@@ -3649,6 +4183,14 @@ void emitBuildRootPaths(InstallerStubGen &gen,
 
 /// @brief Emit code to compose the system PATH entry string into [RBP+destOff].
 /// Copies kInstallPathOff, then appends "\<pathRelativePath>" when configured.
+/// @param gen Instruction emitter.
+/// @param layout Optional PATH-relative subdirectory.
+/// @param destOff Destination frame-buffer offset.
+/// @param slashOff Embedded separator.
+/// @param copySlot `lstrcpyW` slot.
+/// @param catSlot `lstrcatW` slot.
+/// @param strlenSlot `lstrlenW` slot.
+/// @param errorLabel Length failure target.
 void emitComposeInstallPathEntry(InstallerStubGen &gen,
                                  const WindowsPackageLayout &layout,
                                  int32_t destOff,
@@ -3675,6 +4217,15 @@ void emitComposeInstallPathEntry(InstallerStubGen &gen,
 /// Builds an "<installDir>\*" double-null-terminated glob, fills an SHFILEOPSTRUCT
 /// with FO_DELETE | FOF_NOCONFIRMATION | FOF_NOERRORUI, and calls SHFileOperationW.
 /// No-op when layout.cleanInstallRootBeforeInstall is false.
+/// @param gen Instruction emitter.
+/// @param layout Clean-install policy.
+/// @param slashOff Embedded separator.
+/// @param starOff Embedded wildcard.
+/// @param copySlot `lstrcpyW` slot.
+/// @param catSlot `lstrcatW` slot.
+/// @param strlenSlot `lstrlenW` slot.
+/// @param fileOperationSlot `SHFileOperationW` slot.
+/// @param errorLabel Failure target.
 void emitCleanInstallRootContents(InstallerStubGen &gen,
                                   const WindowsPackageLayout &layout,
                                   uint32_t slashOff,
@@ -3715,6 +4266,17 @@ void emitCleanInstallRootContents(InstallerStubGen &gen,
 
 // Forward declaration — implemented after emitRestorePathFromOriginalLocal
 // to allow emitInstallPathUpdate to reference it.
+/// @brief Emit rebuilding of PATH while omitting one case-insensitive token.
+/// @param gen Instruction emitter.
+/// @param currentPathOff Source PATH frame buffer.
+/// @param entryOff Token to remove.
+/// @param outputPathOff Destination PATH frame buffer.
+/// @param semicolonOff Embedded separator.
+/// @param copySlot `lstrcpyW` slot.
+/// @param catSlot `lstrcatW` slot.
+/// @param strcmpSlot `lstrcmpiW` slot.
+/// @param strlenSlot `lstrlenW` slot.
+/// @param errorLabel Failure target.
 void emitRemovePathEntryTokens(InstallerStubGen &gen,
                                int32_t currentPathOff,
                                int32_t entryOff,
@@ -3731,6 +4293,27 @@ void emitRemovePathEntryTokens(InstallerStubGen &gen,
 /// Otherwise reads the current PATH, strips any stale entry via emitRemovePathEntryTokens,
 /// appends the new entry, writes back as REG_EXPAND_SZ, and broadcasts WM_SETTINGCHANGE.
 /// No-op when layout.addToPath is false.
+/// @param gen Instruction emitter.
+/// @param layout PATH policy and installation scope.
+/// @param slashOff Embedded path separator.
+/// @param semicolonOff Embedded PATH separator.
+/// @param uninstallKeyOff Embedded uninstall subkey.
+/// @param envKeyOff Embedded environment subkey.
+/// @param regPathValueOff Embedded `Path` value name.
+/// @param regOriginalPathOff Embedded rollback value name.
+/// @param regPathEntryOff Embedded owned-entry value name.
+/// @param environmentOff Embedded broadcast text.
+/// @param createSlot `RegCreateKeyW` slot.
+/// @param openSlot `RegOpenKeyW` slot.
+/// @param querySlot `RegQueryValueExW` slot.
+/// @param setValueSlot `RegSetValueExW` slot.
+/// @param closeSlot `RegCloseKey` slot.
+/// @param copySlot `lstrcpyW` slot.
+/// @param catSlot `lstrcatW` slot.
+/// @param strcmpSlot `lstrcmpiW` slot.
+/// @param strlenSlot `lstrlenW` slot.
+/// @param sendSlot `SendMessageTimeoutW` slot.
+/// @param errorLabel Failure target.
 void emitInstallPathUpdate(InstallerStubGen &gen,
                            const WindowsPackageLayout &layout,
                            uint32_t slashOff,
@@ -3859,6 +4442,16 @@ void emitInstallPathUpdate(InstallerStubGen &gen,
 /// @brief Emit rollback code to restore the system PATH from kPathOriginalOff.
 /// Only executes if kPathUpdatedOff is non-zero, meaning PATH was actually modified
 /// earlier in the install sequence. No-op when layout.addToPath is false.
+/// @param gen Instruction emitter.
+/// @param layout PATH policy and scope.
+/// @param envKeyOff Embedded environment key.
+/// @param regPathValueOff Embedded `Path` name.
+/// @param environmentOff Embedded broadcast text.
+/// @param createSlot `RegCreateKeyW` slot.
+/// @param setValueSlot `RegSetValueExW` slot.
+/// @param closeSlot `RegCloseKey` slot.
+/// @param strlenSlot `lstrlenW` slot.
+/// @param sendSlot `SendMessageTimeoutW` slot.
 void emitRestorePathFromOriginalLocal(InstallerStubGen &gen,
                                       const WindowsPackageLayout &layout,
                                       uint32_t envKeyOff,
@@ -3891,6 +4484,16 @@ void emitRestorePathFromOriginalLocal(InstallerStubGen &gen,
 /// Iterates the semicolon-delimited tokens in [RBP+currentPathOff], copying each token to
 /// the output except those that match [RBP+entryOff] (case-insensitive via lstrcmpiW).
 /// Used on install (remove stale entry before re-appending) and uninstall (remove our entry).
+/// @param gen Instruction emitter.
+/// @param currentPathOff Source PATH buffer.
+/// @param entryOff Token to remove.
+/// @param outputPathOff Destination buffer.
+/// @param semicolonOff Embedded separator.
+/// @param copySlot `lstrcpyW` slot.
+/// @param catSlot `lstrcatW` slot.
+/// @param strcmpSlot `lstrcmpiW` slot.
+/// @param strlenSlot `lstrlenW` slot.
+/// @param errorLabel Length/parser failure target.
 void emitRemovePathEntryTokens(InstallerStubGen &gen,
                                int32_t currentPathOff,
                                int32_t entryOff,
@@ -3975,6 +4578,26 @@ void emitRemovePathEntryTokens(InstallerStubGen &gen,
 /// emitRemovePathEntryTokens, writes the cleaned PATH back as REG_EXPAND_SZ,
 /// and broadcasts WM_SETTINGCHANGE. No-op when layout.addToPath is false or
 /// the uninstall key does not exist.
+/// @param gen Instruction emitter.
+/// @param layout PATH policy and installation scope.
+/// @param slashOff Embedded path separator.
+/// @param semicolonOff Embedded PATH separator.
+/// @param uninstallKeyOff Embedded uninstall key.
+/// @param envKeyOff Embedded environment key.
+/// @param regPathValueOff Embedded `Path` name.
+/// @param regPathEntryOff Embedded owned-entry name.
+/// @param environmentOff Embedded broadcast text.
+/// @param openSlot `RegOpenKeyW` slot.
+/// @param createSlot `RegCreateKeyW` slot.
+/// @param setValueSlot `RegSetValueExW` slot.
+/// @param querySlot `RegQueryValueExW` slot.
+/// @param closeSlot `RegCloseKey` slot.
+/// @param copySlot `lstrcpyW` slot.
+/// @param catSlot `lstrcatW` slot.
+/// @param strcmpSlot `lstrcmpiW` slot.
+/// @param strlenSlot `lstrlenW` slot.
+/// @param sendSlot `SendMessageTimeoutW` slot.
+/// @param errorLabel Failure target.
 void emitRestorePathFromUninstallKey(InstallerStubGen &gen,
                                      const WindowsPackageLayout &layout,
                                      uint32_t slashOff,
@@ -4059,6 +4682,22 @@ void emitRestorePathFromUninstallKey(InstallerStubGen &gen,
 /// kInstallerCopyChunkBytes chunks with incremental CRC-32 via RtlComputeCrc32, creates
 /// the destination file, writes each chunk, and verifies the final CRC against entry.crc32.
 /// Zero-byte files skip the read/CRC loop and only create the destination file.
+/// @param gen Instruction emitter.
+/// @param entry File destination, stored offset, length, and CRC metadata.
+/// @param overlayFileOffset Absolute PE offset where the ZIP overlay begins.
+/// @param slashOff Embedded separator.
+/// @param copySlot `lstrcpyW` slot.
+/// @param catSlot `lstrcatW` slot.
+/// @param strlenSlot `lstrlenW` slot.
+/// @param createFileSlot `CreateFileW` slot.
+/// @param readSlot `ReadFile` slot.
+/// @param writeSlot `WriteFile` slot.
+/// @param closeSlot `CloseHandle` slot.
+/// @param allocSlot `LocalAlloc` slot.
+/// @param freeSlot `LocalFree` slot.
+/// @param setFilePointerSlot `SetFilePointerEx` slot.
+/// @param crcSlot `RtlComputeCrc32` slot.
+/// @param errorLabel I/O, size, or checksum failure target.
 void emitExtractFile(InstallerStubGen &gen,
                      const WindowsPackageFileEntry &entry,
                      uint64_t overlayFileOffset,
@@ -4232,6 +4871,15 @@ void emitExtractFile(InstallerStubGen &gen,
 /// @brief Emit code to delete a single file at entry.root\entry.relativePath.
 /// Treats ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, and ERROR_DIR_NOT_EMPTY as
 /// non-fatal (file already absent); jumps to errorLabel on any other failure.
+/// @param gen Instruction emitter.
+/// @param entry File destination metadata.
+/// @param slashOff Embedded separator.
+/// @param copySlot `lstrcpyW` slot.
+/// @param catSlot `lstrcatW` slot.
+/// @param strlenSlot `lstrlenW` slot.
+/// @param deleteSlot `DeleteFileW` slot.
+/// @param getLastErrorSlot `GetLastError` slot.
+/// @param errorLabel Unexpected deletion failure target.
 void emitDeleteFile(InstallerStubGen &gen,
                     const WindowsPackageFileEntry &entry,
                     uint32_t slashOff,
@@ -4270,6 +4918,15 @@ void emitDeleteFile(InstallerStubGen &gen,
 /// @brief Emit code to remove a directory at entry.root\entry.relativePath.
 /// Treats missing and non-empty directories as non-fatal so uninstall can leave
 /// unrelated user content in place.
+/// @param gen Instruction emitter.
+/// @param entry Directory destination metadata.
+/// @param slashOff Embedded separator.
+/// @param copySlot `lstrcpyW` slot.
+/// @param catSlot `lstrcatW` slot.
+/// @param strlenSlot `lstrlenW` slot.
+/// @param removeSlot `RemoveDirectoryW` slot.
+/// @param getLastErrorSlot `GetLastError` slot.
+/// @param errorLabel Unexpected removal failure target.
 void emitRemoveDirectory(InstallerStubGen &gen,
                          const WindowsPackageDirEntry &entry,
                          uint32_t slashOff,
@@ -4310,6 +4967,20 @@ void emitRemoveDirectory(InstallerStubGen &gen,
 ///          avoiding Windows PowerShell's ambiguous `-EncodedCommand` argument binding. The shared
 ///          backend reads all overlay inputs from the signed installer and performs the journaled
 ///          file transaction; the native x64 wizard retains responsibility for UI and metadata.
+/// @param gen Instruction emitter.
+/// @param layout Package identity and backend configuration.
+/// @param mode Transaction mode string.
+/// @param copySlot `lstrcpyW` slot.
+/// @param catSlot `lstrcatW` slot.
+/// @param strlenSlot `lstrlenW` slot.
+/// @param closeSlot `CloseHandle` slot.
+/// @param setEnvironmentSlot `SetEnvironmentVariableW` slot.
+/// @param getSystemDirectorySlot `GetSystemDirectoryW` slot.
+/// @param createProcessSlot `CreateProcessW` slot.
+/// @param waitForSingleObjectSlot `WaitForSingleObject` slot.
+/// @param getExitCodeProcessSlot `GetExitCodeProcess` slot.
+/// @param pumpUi Whether to refresh/pump the native progress dialog while waiting.
+/// @param errorLabel Environment, process, timeout, or backend failure target.
 void emitRunPowerShellBackend(InstallerStubGen &gen,
                               const WindowsPackageLayout &layout,
                               const std::string &mode,
@@ -4489,6 +5160,10 @@ constexpr uint32_t kArm64StartupInfoBytes = 0x80;
 constexpr uint32_t kArm64ProcessInfoBytes = 0x20;
 constexpr uint32_t kStartupInfoWSize = 104;
 
+/// @brief Emit an AArch64 address calculation for a large frame offset.
+/// @param gen AArch64 instruction emitter.
+/// @param dst Destination register.
+/// @param off Unsigned byte offset from the saved frame base in X19.
 void emitA64LeaFrame(InstallerStubGenA64 &gen, A64Reg dst, uint32_t off) {
     const uint32_t page = off & ~0xFFFu;
     const uint32_t rem = off & 0xFFFu;
@@ -4501,12 +5176,21 @@ void emitA64LeaFrame(InstallerStubGenA64 &gen, A64Reg dst, uint32_t off) {
     }
 }
 
+/// @brief Emit zero stores across an AArch64 frame-local range.
+/// @param gen AArch64 instruction emitter.
+/// @param off First byte offset from the frame base.
+/// @param bytes Byte count cleared in eight-byte increments.
+/// @pre @p bytes is a multiple of eight.
 void emitA64ZeroFrameRange(InstallerStubGenA64 &gen, uint32_t off, uint32_t bytes) {
     emitA64LeaFrame(gen, A64Reg::X17, off);
     for (uint32_t i = 0; i < bytes; i += 8)
         gen.storeMem64(A64Reg::X17, i, A64Reg::SP);
 }
 
+/// @brief Emit storage of a 32-bit immediate in the AArch64 frame.
+/// @param gen AArch64 instruction emitter.
+/// @param off Destination byte offset from the frame base.
+/// @param value Immediate value.
 void emitA64StoreFrameImm32(InstallerStubGenA64 &gen, uint32_t off, uint32_t value) {
     emitA64LeaFrame(gen, A64Reg::X17, off);
     gen.storeMemImm32(A64Reg::X17, 0, value);
@@ -4515,6 +5199,10 @@ void emitA64StoreFrameImm32(InstallerStubGenA64 &gen, uint32_t off, uint32_t val
 /// @brief Set a child-inherited environment flag when any installer flag is present.
 /// @details X21 holds the original installer command line. Environment variables avoid the
 ///          ambiguous argument binding of Windows PowerShell's `-EncodedCommand` mode.
+/// @param gen AArch64 instruction emitter.
+/// @param searchOffsets Embedded command-line flag strings.
+/// @param environmentNameOff Embedded environment variable name.
+/// @param environmentValueOff Embedded value assigned when found.
 void emitA64EnvironmentFlag(InstallerStubGenA64 &gen,
                             const std::vector<uint32_t> &searchOffsets,
                             uint32_t environmentNameOff,
@@ -4535,6 +5223,14 @@ void emitA64EnvironmentFlag(InstallerStubGenA64 &gen,
     gen.bindLabel(done);
 }
 
+/// @brief Emit construction of the ARM64 System32 PowerShell command line.
+/// @param gen AArch64 instruction emitter.
+/// @param quoteOff Embedded quote string.
+/// @param psSuffixOff Embedded PowerShell executable suffix.
+/// @param afterExeOff Embedded fixed argument suffix containing EncodedCommand.
+/// @param noRestartSearchOffsets Embedded `/norestart` spellings.
+/// @param noRestartEnvironmentNameOff Embedded no-restart environment name.
+/// @param environmentOneOff Embedded `"1"` value.
 void emitA64BuildPowerShellCommand(InstallerStubGenA64 &gen,
                                    uint32_t quoteOff,
                                    uint32_t psSuffixOff,
@@ -4578,6 +5274,10 @@ void emitA64BuildPowerShellCommand(InstallerStubGenA64 &gen,
 
 } // namespace
 
+/// @brief Build the AArch64 installer or uninstaller bootstrap.
+/// @param layout Package UI, path, and encoded-backend metadata.
+/// @param uninstallDialog Whether to generate uninstall behavior.
+/// @return Finalized AArch64 text, data, imports, and PE architecture.
 StubResult buildArm64InstallerStub(const WindowsPackageLayout &layout, bool uninstallDialog) {
     StubResult result;
     result.imports = installerImports();
@@ -4704,6 +5404,10 @@ StubResult buildArm64InstallerStub(const WindowsPackageLayout &layout, bool unin
 /// directory creation, file extraction with CRC verification, registry entries (uninstall key,
 /// file associations, shortcuts), and PATH update. Jumps to an error handler on any failure
 /// that displays a MessageBox and exits with code 1.
+/// @param layout Complete installer metadata and overlay map.
+/// @param arch Requested payload/bootstrap architecture.
+/// @return Finalized architecture-specific installer stub.
+/// @throws std::runtime_error For unsupported architecture or invalid generation metadata.
 StubResult buildInstallerStub(const WindowsPackageLayout &layout, const std::string &arch) {
     if (resolveBootstrapArch(arch) == "arm64")
         return buildArm64InstallerStub(layout, false);
@@ -4780,6 +5484,8 @@ StubResult buildInstallerStub(const WindowsPackageLayout &layout, const std::str
     const uint32_t progressRollbackOff =
         gen.embedStringW("Rolling back incomplete installation changes...");
     const uint32_t progressCompleteOff = gen.embedStringW("Installation complete.");
+    /// @brief Publish the current native installation stage in the process environment.
+    /// @param stageOff Embedded-string offset naming the stage.
     const auto emitNativeStage = [&](uint32_t stageOff) {
         gen.leaRipData(X64Reg::RCX, nativeStageNameOff);
         gen.leaRipData(X64Reg::RDX, stageOff);
@@ -5369,6 +6075,10 @@ StubResult buildInstallerStub(const WindowsPackageLayout &layout, const std::str
 /// Assembles all uninstall steps: root path resolution, file deletion, directory removal,
 /// registry cleanup (uninstall key, file associations, shortcuts), and PATH restoration.
 /// On failure shows a MessageBox and exits with code 1.
+/// @param layout Complete uninstall ownership and metadata map.
+/// @param arch Requested payload/bootstrap architecture.
+/// @return Finalized architecture-specific uninstaller stub.
+/// @throws std::runtime_error For unsupported architecture or invalid generation metadata.
 StubResult buildUninstallerStub(const WindowsPackageLayout &layout, const std::string &arch) {
     if (resolveBootstrapArch(arch) == "arm64")
         return buildArm64InstallerStub(layout, true);

@@ -5,25 +5,19 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/tools/windows_installer/WindowsInstallerLifecycle.cpp
-// Purpose: Implement native Windows install, upgrade, modify, repair, and
-//          removal with preflight checks and recoverable directory swaps.
-//
-// Key invariants:
-//   - A package/scope/destination mutex serializes every lifecycle operation.
-//   - The complete selected payload is verified in a same-volume staging tree
-//     before the existing installation is renamed.
-//   - Upgrades preserve files not listed in Zanna's ownership manifest.
-//   - A journal makes every pre-commit directory state recoverable.
-//   - PATH, file associations, shortcuts, cache, and ARP values are changed only
-//     after the new tree is active and are rolled back on synchronous failure.
-//   - Uninstall retains the ownership manifest until the removal swap commits.
-//
-// Ownership/Lifetime:
-//   - RAII wrappers close handles, registry keys, Restart Manager sessions, and
-//     mutexes on all exits. Transaction directories are owned by one operation.
-//
-// Links: WindowsInstallerHost.hpp, WindowsInstallerMetadata.hpp, ZipReader.hpp
+/// @file
+/// @brief Implements native Windows install, upgrade, modify, repair, recovery,
+///        and removal using verified same-volume directory transactions.
+///
+/// A package/scope/destination mutex serializes lifecycle work. Selected payload
+/// bytes are verified before the current tree moves, journals make each swap
+/// state recoverable, and unowned upgrade files are preserved. Integration
+/// metadata changes only after activation and is rolled back on synchronous
+/// failure. RAII wrappers close every handle, key, mutex, and Restart Manager session.
+///
+/// @see WindowsInstallerHost.hpp
+/// @see WindowsInstallerMetadata.hpp
+/// @see ZipReader.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -69,6 +63,9 @@ constexpr wchar_t kClassesBase[] = L"Software\\Classes\\";
 constexpr wchar_t kManifestHeader[] = L"ZANNA-INSTALL-MANIFEST\t2";
 constexpr wchar_t kStateHeader[] = L"ZANNA-INSTALL-STATE\t2";
 
+/// @brief Enforce cooperative cancellation at a safe lifecycle boundary.
+/// @param logger Session logger holding the cancellation predicate.
+/// @throws InstallerError With kExitUserCancelled when cancellation is requested.
 void cancellationPoint(Logger &logger) {
     if (logger.cancellationRequested())
         throw InstallerError(kExitUserCancelled, "installation was cancelled by the user");
@@ -76,10 +73,14 @@ void cancellationPoint(Logger &logger) {
 
 class UniqueHandle {
   public:
+    /// @brief Construct an empty handle owner.
     UniqueHandle() = default;
 
+    /// @brief Adopt a Win32 handle.
+    /// @param handle Handle closed by this object unless released.
     explicit UniqueHandle(HANDLE handle) : handle_(handle) {}
 
+    /// @brief Close the adopted handle.
     ~UniqueHandle() {
         reset();
     }
@@ -87,28 +88,41 @@ class UniqueHandle {
     UniqueHandle(const UniqueHandle &) = delete;
     UniqueHandle &operator=(const UniqueHandle &) = delete;
 
+    /// @brief Move-construct by releasing another owner.
+    /// @param other Owner left empty.
     UniqueHandle(UniqueHandle &&other) noexcept : handle_(other.release()) {}
 
+    /// @brief Move-assign and close any current handle.
+    /// @param other Owner whose handle is transferred.
+    /// @return Reference to this owner.
     UniqueHandle &operator=(UniqueHandle &&other) noexcept {
         if (this != &other)
             reset(other.release());
         return *this;
     }
 
+    /// @brief Return the borrowed native handle.
+    /// @return Stored handle without transferring ownership.
     HANDLE get() const {
         return handle_;
     }
 
+    /// @brief Test whether the owner contains a closable handle.
+    /// @return @c true for nonnull, non-invalid handles.
     explicit operator bool() const {
         return handle_ != nullptr && handle_ != INVALID_HANDLE_VALUE;
     }
 
+    /// @brief Relinquish ownership without closing.
+    /// @return Former handle; this object becomes empty.
     HANDLE release() {
         const HANDLE result = handle_;
         handle_ = INVALID_HANDLE_VALUE;
         return result;
     }
 
+    /// @brief Close the current handle and optionally adopt a replacement.
+    /// @param replacement New handle, defaulting to the invalid sentinel.
     void reset(HANDLE replacement = INVALID_HANDLE_VALUE) {
         if (*this)
             CloseHandle(handle_);
@@ -121,8 +135,10 @@ class UniqueHandle {
 
 template <typename T> class ComPtr {
   public:
+    /// @brief Construct an empty COM interface owner.
     ComPtr() = default;
 
+    /// @brief Release the owned interface.
     ~ComPtr() {
         if (value_)
             value_->Release();
@@ -131,6 +147,8 @@ template <typename T> class ComPtr {
     ComPtr(const ComPtr &) = delete;
     ComPtr &operator=(const ComPtr &) = delete;
 
+    /// @brief Prepare an out-parameter after releasing any current interface.
+    /// @return Address of the internal interface pointer.
     T **put() {
         if (value_) {
             value_->Release();
@@ -139,10 +157,14 @@ template <typename T> class ComPtr {
         return &value_;
     }
 
+    /// @brief Access the borrowed COM interface.
+    /// @return Stored interface pointer.
     T *operator->() const {
         return value_;
     }
 
+    /// @brief Test whether an interface is owned.
+    /// @return @c true when nonnull.
     explicit operator bool() const {
         return value_ != nullptr;
     }
@@ -153,10 +175,14 @@ template <typename T> class ComPtr {
 
 class RegKey {
   public:
+    /// @brief Construct an empty registry-key owner.
     RegKey() = default;
 
+    /// @brief Adopt an open registry key.
+    /// @param key Key closed unless released.
     explicit RegKey(HKEY key) : key_(key) {}
 
+    /// @brief Close the adopted key.
     ~RegKey() {
         reset();
     }
@@ -164,28 +190,41 @@ class RegKey {
     RegKey(const RegKey &) = delete;
     RegKey &operator=(const RegKey &) = delete;
 
+    /// @brief Move-construct by releasing another key owner.
+    /// @param other Owner left empty.
     RegKey(RegKey &&other) noexcept : key_(other.release()) {}
 
+    /// @brief Move-assign and close any current key.
+    /// @param other Owner whose key is transferred.
+    /// @return Reference to this owner.
     RegKey &operator=(RegKey &&other) noexcept {
         if (this != &other)
             reset(other.release());
         return *this;
     }
 
+    /// @brief Return the borrowed registry handle.
+    /// @return Stored key without ownership transfer.
     HKEY get() const {
         return key_;
     }
 
+    /// @brief Test whether a registry key is owned.
+    /// @return @c true when nonnull.
     explicit operator bool() const {
         return key_ != nullptr;
     }
 
+    /// @brief Relinquish ownership without closing.
+    /// @return Former key; this owner becomes empty.
     HKEY release() {
         const HKEY result = key_;
         key_ = nullptr;
         return result;
     }
 
+    /// @brief Close the current key and optionally adopt another.
+    /// @param replacement New key, defaulting to null.
     void reset(HKEY replacement = nullptr) {
         if (key_)
             RegCloseKey(key_);
@@ -231,6 +270,10 @@ struct InstallationPlan {
     InstalledRecord existing;
 };
 
+/// @brief Compare UTF-16 strings with Windows ordinal case-insensitive semantics.
+/// @param left First string.
+/// @param right Second string.
+/// @return @c true when equal under CompareStringOrdinal.
 bool ordinalEqualsIgnoreCase(std::wstring_view left, std::wstring_view right) {
     if (left.size() != right.size() || left.size() > static_cast<size_t>(INT_MAX))
         return false;
@@ -243,6 +286,10 @@ bool ordinalEqualsIgnoreCase(std::wstring_view left, std::wstring_view right) {
                                 TRUE) == CSTR_EQUAL;
 }
 
+/// @brief Fold UTF-16 text to invariant Windows lowercase.
+/// @param value Text to normalize.
+/// @return Case-folded copy.
+/// @throws std::runtime_error On API limits or mapping failure.
 std::wstring foldWindowsCase(std::wstring_view value) {
     if (value.empty())
         return {};
@@ -275,17 +322,28 @@ std::wstring foldWindowsCase(std::wstring_view value) {
     return result;
 }
 
+/// @brief Lexically normalize a path and use preferred Windows separators.
+/// @param path Input filesystem path.
+/// @return Native normalized path text.
 std::wstring normalizedWindowsPathText(const fs::path &path) {
     fs::path normalized = path.lexically_normal();
     normalized.make_preferred();
     return normalized.wstring();
 }
 
+/// @brief Compare two path spellings using Windows ordinal case rules.
+/// @param left First path.
+/// @param right Second path.
+/// @return @c true when normalized spellings compare equal.
 bool sameWindowsPath(const fs::path &left, const fs::path &right) {
     return ordinalEqualsIgnoreCase(normalizedWindowsPathText(left),
                                    normalizedWindowsPathText(right));
 }
 
+/// @brief Test whether a normalized path equals or lies beneath a root.
+/// @param candidate Candidate path.
+/// @param root Required ancestor root.
+/// @return @c true on component-boundary containment under ordinal case folding.
 bool windowsPathBeginsWith(const fs::path &candidate, const fs::path &root) {
     const std::wstring value = normalizedWindowsPathText(candidate);
     std::wstring prefix = normalizedWindowsPathText(root);
@@ -301,6 +359,10 @@ bool windowsPathBeginsWith(const fs::path &candidate, const fs::path &root) {
     return value[prefix.size()] == L'\\' || value[prefix.size()] == L'/';
 }
 
+/// @brief View a fixed wide buffer only when it contains a terminator.
+/// @tparam Size Compile-time buffer capacity.
+/// @param buffer Fixed buffer to inspect.
+/// @return View before the first NUL, or nullopt when unterminated.
 template <size_t Size>
 std::optional<std::wstring_view> terminatedWideView(const std::array<wchar_t, Size> &buffer) {
     const auto terminator = std::find(buffer.begin(), buffer.end(), L'\0');
@@ -309,37 +371,62 @@ std::optional<std::wstring_view> terminatedWideView(const std::array<wchar_t, Si
     return std::wstring_view(buffer.data(), static_cast<size_t>(terminator - buffer.begin()));
 }
 
+/// @brief Fold ASCII letters in a byte string to lowercase.
+/// @param value Text to transform.
+/// @return Folded copy.
 std::string lowerAscii(std::string value) {
+    /// @brief Fold one ASCII uppercase byte to lowercase.
+    /// @param ch Byte to normalize.
+    /// @return Lowercase ASCII byte or the unchanged input.
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) -> char {
         return static_cast<char>(ch >= 'A' && ch <= 'Z' ? ch + ('a' - 'A') : ch);
     });
     return value;
 }
 
+/// @brief Test whether a byte is an ASCII letter.
+/// @param ch Candidate byte.
+/// @return @c true for A-Z or a-z.
 bool isAsciiAlpha(unsigned char ch) {
     return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
 }
 
+/// @brief Test whether a byte is an ASCII letter or digit.
+/// @param ch Candidate byte.
+/// @return @c true for an ASCII letter or 0-9.
 bool isAsciiAlnum(unsigned char ch) {
     return isAsciiAlpha(ch) || (ch >= '0' && ch <= '9');
 }
 
+/// @brief Normalize path separators to forward slashes.
+/// @param value UTF-8 path text.
+/// @return Normalized copy.
 std::string slashPath(std::string value) {
     std::replace(value.begin(), value.end(), '\\', '/');
     return value;
 }
 
+/// @brief Decode a UTF-8 path and normalize separators to backslashes.
+/// @param value UTF-8 path text.
+/// @return Native Windows path text.
 std::wstring backslashPath(std::string_view value) {
     std::wstring result = utf8ToWide(value);
     std::replace(result.begin(), result.end(), L'/', L'\\');
     return result;
 }
 
+/// @brief Build a case-insensitive manifest path key.
+/// @param value UTF-8 path spelling.
+/// @return Lowercase forward-slash spelling.
 std::string normalizedPathKey(std::string value) {
     value = slashPath(std::move(value));
     return lowerAscii(std::move(value));
 }
 
+/// @brief Validate a stable install-relative package path.
+/// @param path UTF-8 relative path.
+/// @throws std::runtime_error For absolute/traversing paths, empty components,
+///         forbidden characters, trailing ambiguity, or reserved devices.
 void validateRelativePath(std::string_view path) {
     if (path.empty() || path.size() >= 32760 || path.front() == '/' || path.front() == '\\' ||
         (path.size() >= 2 && isAsciiAlpha(static_cast<unsigned char>(path[0])) && path[1] == ':')) {
@@ -375,6 +462,11 @@ void validateRelativePath(std::string_view path) {
     }
 }
 
+/// @brief Append a validated UTF-8 relative path component by component.
+/// @param root Trusted destination root.
+/// @param relative Untrusted package-relative path.
+/// @return Joined native path.
+/// @throws std::runtime_error When validation or UTF conversion fails.
 fs::path safeJoin(const fs::path &root, std::string_view relative) {
     validateRelativePath(relative);
     fs::path result = root;
@@ -391,6 +483,10 @@ fs::path safeJoin(const fs::path &root, std::string_view relative) {
     return result;
 }
 
+/// @brief Resolve a required Windows known folder.
+/// @param id Known-folder identifier.
+/// @return Nonempty filesystem path.
+/// @throws std::runtime_error When shell resolution fails.
 std::wstring knownFolder(REFKNOWNFOLDERID id) {
     PWSTR raw = nullptr;
     const HRESULT result = SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, nullptr, &raw);
@@ -404,14 +500,27 @@ std::wstring knownFolder(REFKNOWNFOLDERID id) {
     return path;
 }
 
+/// @brief Select the registry hive for an installation scope.
+/// @param scope User or machine scope.
+/// @return HKEY_CURRENT_USER or HKEY_LOCAL_MACHINE.
 HKEY rootKey(InstallScope scope) {
     return scope == InstallScope::User ? HKEY_CURRENT_USER : HKEY_LOCAL_MACHINE;
 }
 
+/// @brief Build the ARP uninstall subkey for a package identifier.
+/// @param identifier UTF-8 package identifier.
+/// @return Full relative registry subkey.
 std::wstring uninstallSubkey(std::string_view identifier) {
     return std::wstring(kUninstallBase) + utf8ToWide(identifier);
 }
 
+/// @brief Open or create a registry key with requested access.
+/// @param root Registry hive/root key.
+/// @param subkey Relative key path.
+/// @param access Desired access mask.
+/// @param create Whether to create a missing key.
+/// @return Owned key, or empty when opening a missing key without creation.
+/// @throws std::runtime_error On other registry failures.
 RegKey openKey(HKEY root, std::wstring_view subkey, REGSAM access, bool create) {
     HKEY key = nullptr;
     LONG result = ERROR_SUCCESS;
@@ -441,6 +550,11 @@ RegKey openKey(HKEY root, std::wstring_view subkey, REGSAM access, bool create) 
     return RegKey(key);
 }
 
+/// @brief Read a bounded REG_SZ or REG_EXPAND_SZ value robustly.
+/// @param key Open registry key.
+/// @param name Value name, empty for the default value.
+/// @return Terminated string without its trailing NUL, or nullopt when absent.
+/// @throws std::runtime_error On malformed, changing, oversized, or unreadable data.
 std::optional<std::wstring> queryRegistryString(HKEY key, std::wstring_view name) {
     const std::wstring valueName(name);
     const wchar_t *nativeName = name.empty() ? nullptr : valueName.c_str();
@@ -475,6 +589,12 @@ std::optional<std::wstring> queryRegistryString(HKEY key, std::wstring_view name
     throw std::runtime_error("Windows registry string changed repeatedly while being read");
 }
 
+/// @brief Write a validated terminated registry string.
+/// @param key Open writable key.
+/// @param name Value name, empty for the default value.
+/// @param value NUL-free string payload.
+/// @param type REG_SZ or REG_EXPAND_SZ.
+/// @throws std::runtime_error On invalid input or registry failure.
 void setRegistryString(HKEY key,
                        std::wstring_view name,
                        std::wstring_view value,
@@ -496,6 +616,11 @@ void setRegistryString(HKEY key,
                                  wideToUtf8(formatWindowsError(static_cast<DWORD>(result))));
 }
 
+/// @brief Write one REG_DWORD value.
+/// @param key Open writable key.
+/// @param name Value name.
+/// @param value Numeric payload.
+/// @throws std::runtime_error On registry failure.
 void setRegistryDword(HKEY key, std::wstring_view name, DWORD value) {
     const LONG result = RegSetValueExW(key,
                                        std::wstring(name).c_str(),
@@ -508,6 +633,11 @@ void setRegistryDword(HKEY key, std::wstring_view name, DWORD value) {
                                  wideToUtf8(formatWindowsError(static_cast<DWORD>(result))));
 }
 
+/// @brief Read one exact REG_DWORD value.
+/// @param key Open readable key.
+/// @param name Value name.
+/// @return Stored value, or nullopt when absent.
+/// @throws std::runtime_error On registry failure or wrong type/size.
 std::optional<DWORD> queryRegistryDword(HKEY key, std::wstring_view name) {
     DWORD type = 0;
     DWORD value = 0;
@@ -525,6 +655,9 @@ std::optional<DWORD> queryRegistryDword(HKEY key, std::wstring_view name) {
     return value;
 }
 
+/// @brief Split nonempty CRLF/LF-delimited registry text.
+/// @param value Multiline text.
+/// @return Nonempty lines with trailing carriage returns removed.
 std::vector<std::wstring> splitLines(std::wstring_view value) {
     std::vector<std::wstring> lines;
     size_t start = 0;
@@ -543,6 +676,9 @@ std::vector<std::wstring> splitLines(std::wstring_view value) {
     return lines;
 }
 
+/// @brief Parse a stored comma-separated component list.
+/// @param value Registry component text.
+/// @return Unique lowercase UTF-8 component IDs.
 std::set<std::string> parseComponentList(std::wstring_view value) {
     std::set<std::string> result;
     size_t start = 0;
@@ -559,6 +695,9 @@ std::set<std::string> parseComponentList(std::wstring_view value) {
     return result;
 }
 
+/// @brief Join normalized component IDs for registry or command-line storage.
+/// @param components Ordered unique UTF-8 IDs.
+/// @return Comma-separated UTF-16 text.
 std::wstring joinComponents(const std::set<std::string> &components) {
     std::wstring result;
     for (const std::string &component : components) {
@@ -569,6 +708,10 @@ std::wstring joinComponents(const std::set<std::string> &components) {
     return result;
 }
 
+/// @brief Read and validate the package's installed ARP record.
+/// @param identifier Expected package identifier.
+/// @param scope Registry scope to inspect.
+/// @return Populated record when marker/location/version are valid, otherwise absent.
 InstalledRecord readInstalledRecord(std::string_view identifier, InstallScope scope) {
     InstalledRecord record;
     record.scope = scope;
@@ -606,6 +749,9 @@ InstalledRecord readInstalledRecord(std::string_view identifier, InstallScope sc
     return record;
 }
 
+/// @brief Compute a deterministic case-folded FNV-1a hash.
+/// @param value UTF-16 identity text.
+/// @return 64-bit hash used for cache/mutex names.
 uint64_t fnv1a64(std::wstring_view value) {
     uint64_t hash = 1469598103934665603ULL;
     const std::wstring folded = foldWindowsCase(value);
@@ -616,12 +762,19 @@ uint64_t fnv1a64(std::wstring_view value) {
     return hash;
 }
 
+/// @brief Format a 64-bit value as fixed-width lowercase hexadecimal.
+/// @param value Numeric hash.
+/// @return Sixteen UTF-16 hex digits.
 std::wstring hashHex(uint64_t value) {
     std::wostringstream out;
     out << std::hex << std::setw(16) << std::setfill(L'0') << value;
     return out.str();
 }
 
+/// @brief Derive the per-package maintenance executable cache path.
+/// @param scope User or machine installation scope.
+/// @param identifier Package identifier hashed for path isolation.
+/// @return Path under LocalAppData or ProgramData.
 fs::path cacheExecutablePath(InstallScope scope, std::string_view identifier) {
     const fs::path base = scope == InstallScope::User ? fs::path(knownFolder(FOLDERID_LocalAppData))
                                                       : fs::path(knownFolder(FOLDERID_ProgramData));
@@ -629,6 +782,9 @@ fs::path cacheExecutablePath(InstallScope scope, std::string_view identifier) {
            L"maintenance.exe";
 }
 
+/// @brief Query whether the current process token is elevated.
+/// @return @c true when TokenIsElevated is set.
+/// @throws std::runtime_error On token API failures or malformed output.
 bool isProcessElevated() {
     HANDLE rawToken = nullptr;
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &rawToken))
@@ -646,6 +802,9 @@ bool isProcessElevated() {
     return elevation.TokenIsElevated != 0;
 }
 
+/// @brief Map a lifecycle operation to its elevation-relaunch switch.
+/// @param operation Planned operation.
+/// @return Native command-line switch; auto/default map to install.
 std::wstring operationSwitch(Operation operation) {
     switch (operation) {
         case Operation::Modify:
@@ -661,6 +820,13 @@ std::wstring operationSwitch(Operation operation) {
     }
 }
 
+/// @brief Relaunch a machine-scope plan through UAC and wait for completion.
+/// @param package Verified package whose executable is relaunched.
+/// @param options Original normalized options to forward.
+/// @param plan Resolved scope, destination, components, and operation.
+/// @param logger Session logger whose path is forwarded.
+/// @return Elevated child process exit code.
+/// @throws std::runtime_error On launch, wait, or exit-code failures.
 int relaunchElevated(const HostPackage &package,
                      const HostOptions &options,
                      const InstallationPlan &plan,
@@ -725,6 +891,11 @@ int relaunchElevated(const HostPackage &package,
     return static_cast<int>(exitCode);
 }
 
+/// @brief Parse a bounded dotted semantic-version core and prerelease.
+/// @param version Version text with optional prerelease and build metadata.
+/// @param prerelease Receives the prerelease identifier, or empty.
+/// @return Numeric core components padded to at least three elements.
+/// @throws std::runtime_error On malformed identifiers, numbers, or metadata.
 std::vector<int> parseVersion(std::string_view version, std::string &prerelease) {
     const size_t plus = version.find('+');
     if (plus != std::string_view::npos) {
@@ -732,6 +903,9 @@ std::vector<int> parseVersion(std::string_view version, std::string &prerelease)
         if (build.empty() ||
             std::any_of(build.begin(),
                         build.end(),
+                        /// @brief Identify a byte forbidden in semantic build metadata.
+                        /// @param ch Byte to inspect.
+                        /// @return `true` unless `ch` is alphanumeric, hyphen, or period.
                         [](char ch) {
                             return !(isAsciiAlnum(static_cast<unsigned char>(ch)) || ch == '-' ||
                                      ch == '.');
@@ -747,6 +921,9 @@ std::vector<int> parseVersion(std::string_view version, std::string &prerelease)
         version = version.substr(0, dash);
         if (prerelease.empty() || prerelease.front() == '.' || prerelease.back() == '.' ||
             prerelease.find("..") != std::string::npos ||
+            /// @brief Identify a byte forbidden in semantic prerelease metadata.
+            /// @param ch Byte to inspect.
+            /// @return `true` unless `ch` is alphanumeric, hyphen, or period.
             std::any_of(prerelease.begin(), prerelease.end(), [](char ch) {
                 return !(isAsciiAlnum(static_cast<unsigned char>(ch)) || ch == '-' || ch == '.');
             })) {
@@ -775,6 +952,11 @@ std::vector<int> parseVersion(std::string_view version, std::string &prerelease)
     return parts;
 }
 
+/// @brief Require the host Windows version to satisfy package metadata.
+/// @param package Verified package containing the minimum supported version.
+/// @param logger Session logger receiving the detected version.
+/// @throws InstallerError When Windows is too old.
+/// @throws std::runtime_error On version metadata or OS-query failure.
 void preflightWindowsVersion(const HostPackage &package, Logger &logger) {
     std::array<int, 3> installed{};
     bool testOverride = false;
@@ -822,6 +1004,11 @@ void preflightWindowsVersion(const HostPackage &package, Logger &logger) {
     }
 }
 
+/// @brief Normalize and validate a fixed-volume installation destination.
+/// @param requested User- or metadata-selected path.
+/// @return Absolute lexical path below a fixed local volume.
+/// @throws std::runtime_error For roots, UNC/device paths, unsafe components,
+///         protected folders, Windows ancestry, or resolution failures.
 fs::path canonicalDestination(const fs::path &requested) {
     if (requested.empty())
         throw std::runtime_error("installation destination is empty");
@@ -831,6 +1018,9 @@ fs::path canonicalDestination(const fs::path &requested) {
         throw std::runtime_error(
             "installation destination must be an absolute directory below a fixed volume");
     const std::wstring text = absolute.wstring();
+    /// @brief Identify a control code unit forbidden in an installation path.
+    /// @param ch Wide character to inspect.
+    /// @return `true` for code units below U+0020.
     if (std::any_of(text.begin(), text.end(), [](wchar_t ch) { return ch < 0x20; }))
         throw std::runtime_error("installation destination contains a control character");
     if (text.size() >= 32760 || PathIsUNCW(text.c_str()) || text.rfind(L"\\\\.\\", 0) == 0 ||
@@ -858,6 +1048,9 @@ fs::path canonicalDestination(const fs::path &requested) {
         GetDriveTypeW(volumePath) != DRIVE_FIXED) {
         throw std::runtime_error("installation destination must be on a fixed local volume");
     }
+    /// @brief Resolve and normalize the protected Windows installation directory.
+    /// @return Lexically normalized Windows directory path.
+    /// @throws std::runtime_error If the operating-system directory cannot be queried safely.
     const fs::path windowsDir = [] {
         std::wstring value(32768, L'\0');
         const UINT length = GetWindowsDirectoryW(value.data(), static_cast<UINT>(value.size()));
@@ -897,6 +1090,9 @@ fs::path canonicalDestination(const fs::path &requested) {
     return absolute;
 }
 
+/// @brief Reject any existing reparse point along a destination ancestry.
+/// @param path Candidate destination.
+/// @throws std::runtime_error On a reparse ancestor or unexpected attribute error.
 void rejectReparseAncestors(const fs::path &path) {
     fs::path current = path;
     while (!current.empty() && current != current.root_path()) {
@@ -916,6 +1112,9 @@ void rejectReparseAncestors(const fs::path &path) {
     }
 }
 
+/// @brief Probe write access in the nearest existing parent directory.
+/// @param path Candidate destination.
+/// @throws std::runtime_error When no parent exists or bounded unique probe creation fails.
 void ensureParentWritable(const fs::path &path) {
     fs::path existing = path.parent_path();
     while (!existing.empty() && !fs::exists(existing))
@@ -948,6 +1147,12 @@ void ensureParentWritable(const fs::path &path) {
                              wideToUtf8(formatWindowsError(lastError)));
 }
 
+/// @brief Resolve required, preset, explicit, or retained component selection.
+/// @param package Verified package and component catalog.
+/// @param options Parsed component options.
+/// @param existing Existing installation settings, if present.
+/// @return Normalized selected IDs including every required component.
+/// @throws std::runtime_error When an explicit component is unknown.
 std::set<std::string> selectComponents(const HostPackage &package,
                                        const HostOptions &options,
                                        const InstalledRecord &existing) {
@@ -988,10 +1193,21 @@ std::set<std::string> selectComponents(const HostPackage &package,
     return result;
 }
 
+/// @brief Test whether a payload component is selected.
+/// @param component Component ID; empty means unconditional.
+/// @param selected Normalized selected IDs.
+/// @return @c true for unconditional or selected entries.
 bool componentEnabled(std::string_view component, const std::set<std::string> &selected) {
     return component.empty() || selected.find(lowerAscii(std::string(component))) != selected.end();
 }
 
+/// @brief Resolve installed state and options into one validated lifecycle plan.
+/// @param package Verified incoming package.
+/// @param options Parsed host request.
+/// @param recoveryRecord Optional installed record reconstructed during recovery.
+/// @return Scope, operation, destination, cache, component, file, and integration plan.
+/// @throws std::runtime_error On scope conflicts, missing maintenance state,
+///         destination mismatch, unsafe paths, or invalid component/integration data.
 InstallationPlan makePlan(const HostPackage &package,
                           const HostOptions &options,
                           const InstalledRecord *recoveryRecord = nullptr) {
@@ -1088,6 +1304,9 @@ InstallationPlan makePlan(const HostPackage &package,
     if (plan.registerAssociations && !package.metadata.associationExecutable.empty()) {
         const std::string associationPath =
             normalizedPathKey(package.metadata.associationExecutable);
+        /// @brief Match a payload entry to the configured association executable.
+        /// @param file Payload metadata to inspect.
+        /// @return `true` when its normalized path equals `associationPath`.
         const auto associationPayload =
             std::find_if(package.metadata.payloadFiles.begin(),
                          package.metadata.payloadFiles.end(),
@@ -1129,6 +1348,11 @@ InstallationPlan makePlan(const HostPackage &package,
     return plan;
 }
 
+/// @brief Reject an unintended downgrade before modifying an installed product.
+/// @param package Verified incoming package whose version will be installed.
+/// @param options Parsed request, including the explicit downgrade override.
+/// @param plan Resolved operation and currently installed product state.
+/// @throws InstallerError When the incoming version is older and downgrades were not allowed.
 void preflightVersion(const HostPackage &package,
                       const HostOptions &options,
                       const InstallationPlan &plan) {
@@ -1142,9 +1366,18 @@ void preflightVersion(const HostPackage &package,
             "a newer Zanna version is already installed; use /allowDowngrade to proceed");
 }
 
+/// @brief Load normalized installer-owned paths from an installed manifest.
+/// @param installRoot Root against which the manifest and its entries are resolved.
+/// @param manifestRelative Package-relative manifest path.
+/// @return Normalized relative paths owned by the installer, or an empty set if absent.
 std::set<std::string> loadOwnershipManifest(const fs::path &installRoot,
                                             std::string_view manifestRelative);
 
+/// @brief Sum files that must be preserved from an existing installation tree.
+/// @param root Existing installation root to inspect.
+/// @param ownedPaths Normalized relative paths that may be replaced rather than preserved.
+/// @return Total byte size of regular files not listed as installer-owned.
+/// @throws std::runtime_error On traversal, attribute, relative-path, or size errors.
 uint64_t preservedDirectoryBytes(const fs::path &root, const std::set<std::string> &ownedPaths) {
     if (!fs::exists(root))
         return 0;
@@ -1184,8 +1417,15 @@ uint64_t preservedDirectoryBytes(const fs::path &root, const std::set<std::strin
     return total;
 }
 
+/// @brief Apply the optional test-only free-space ceiling to a measured value.
+/// @param available Actual number of available bytes reported by Windows.
+/// @return Effective byte count used by disk preflight.
 uint64_t testLimitedFreeBytes(uint64_t available);
 
+/// @brief Verify that installation and maintenance-cache volumes have sufficient space.
+/// @param package Verified package providing payload sizes and manifest location.
+/// @param plan Resolved operation, destination, cache path, and selected payload size.
+/// @throws std::runtime_error On arithmetic overflow, volume-query failure, or insufficient space.
 void preflightDisk(const HostPackage &package, const InstallationPlan &plan) {
     const std::set<std::string> owned =
         loadOwnershipManifest(plan.installRoot, package.metadata.installedManifestRelativePath);
@@ -1260,8 +1500,13 @@ void preflightDisk(const HostPackage &package, const InstallationPlan &plan) {
     }
 }
 
+/// @brief Process-wide guard preventing concurrent lifecycle work on one installation.
 class LifecycleMutex {
   public:
+    /// @brief Create and attempt to acquire the scope-and-destination-specific mutex.
+    /// @param plan Resolved installation scope and root used to derive the mutex identity.
+    /// @param identifier Stable package identifier included in the mutex identity.
+    /// @throws std::runtime_error If the mutex cannot be created or queried.
     LifecycleMutex(const InstallationPlan &plan, std::string_view identifier) {
         const std::wstring seed = utf8ToWide(identifier) + L"|" +
                                   (plan.scope == InstallScope::User ? L"user|" : L"machine|") +
@@ -1278,11 +1523,14 @@ class LifecycleMutex {
             throw std::runtime_error("cannot acquire installer lifecycle mutex");
     }
 
+    /// @brief Release the mutex when this instance successfully acquired it.
     ~LifecycleMutex() {
         if (active_)
             ReleaseMutex(handle_.get());
     }
 
+    /// @brief Report whether this process acquired the lifecycle mutex.
+    /// @return @c true when lifecycle work may proceed.
     bool acquired() const {
         return active_;
     }
@@ -1292,13 +1540,19 @@ class LifecycleMutex {
     bool active_{true};
 };
 
+/// @brief RAII wrapper for a Windows Restart Manager session used around owned files.
 class RestartManagerSession {
   public:
+    /// @brief End the Restart Manager session if one was started.
     ~RestartManagerSession() {
         if (started_)
             RmEndSession(session_);
     }
 
+    /// @brief Find applications currently using any supplied installation file.
+    /// @param paths Existing owned files to register as Restart Manager resources.
+    /// @return Process records for applications holding the files, possibly empty.
+    /// @throws std::runtime_error If the session, registration, or process query fails.
     std::vector<RM_PROCESS_INFO> inspect(const std::vector<fs::path> &paths) {
         if (paths.empty())
             return {};
@@ -1341,6 +1595,8 @@ class RestartManagerSession {
         throw std::runtime_error("Restart Manager could not enumerate files in use");
     }
 
+    /// @brief Ask Restart Manager to shut down every blocking application safely.
+    /// @throws std::runtime_error If Restart Manager cannot complete the shutdown.
     void closeApplications() {
         const DWORD result = RmShutdown(session_, 0, nullptr);
         if (result != ERROR_SUCCESS)
@@ -1348,6 +1604,8 @@ class RestartManagerSession {
         applicationsClosed_ = true;
     }
 
+    /// @brief Restart applications previously closed by this session when requested.
+    /// @param enabled Whether application restart was requested by the host options.
     void restartApplications(bool enabled) {
         if (started_ && applicationsClosed_ && enabled)
             RmRestart(session_, 0, nullptr);
@@ -1359,6 +1617,10 @@ class RestartManagerSession {
     bool applicationsClosed_{false};
 };
 
+/// @brief Resolve installer-owned manifest entries that currently exist as regular files.
+/// @param package Verified package providing the installed-manifest location.
+/// @param plan Resolved installation root.
+/// @return Existing owned file paths suitable for Restart Manager registration.
 std::vector<fs::path> ownedExistingPaths(const HostPackage &package, const InstallationPlan &plan) {
     std::vector<fs::path> paths;
     const std::set<std::string> owned =
@@ -1371,6 +1633,13 @@ std::vector<fs::path> ownedExistingPaths(const HostPackage &package, const Insta
     return paths;
 }
 
+/// @brief Detect blocking applications and optionally close them through Restart Manager.
+/// @param restart Active Restart Manager wrapper that owns the eventual restart state.
+/// @param package Verified package providing ownership metadata.
+/// @param plan Resolved installation state.
+/// @param options Parsed UI and application-close policy.
+/// @param logger Installer logger used to report blocking process names.
+/// @throws std::runtime_error If files remain in use or applications cannot be closed.
 void handleFilesInUse(RestartManagerSession &restart,
                       const HostPackage &package,
                       const InstallationPlan &plan,
@@ -1400,6 +1669,10 @@ void handleFilesInUse(RestartManagerSession &restart,
     restart.closeApplications();
 }
 
+/// @brief Read a bounded UTF-8 metadata file and convert it to UTF-16.
+/// @param path Metadata file to read; a missing file is treated as empty.
+/// @return Decoded text, or an empty string when the file does not exist.
+/// @throws std::runtime_error If the path is unsafe, too large, unreadable, or changes while read.
 std::wstring readTextFileWide(const fs::path &path) {
     constexpr uintmax_t kMaximumTextFileBytes = 32ULL * 1024ULL * 1024ULL;
     std::error_code error;
@@ -1429,6 +1702,10 @@ std::wstring readTextFileWide(const fs::path &path) {
     return utf8ToWide(bytes);
 }
 
+/// @brief Durably replace a file with the supplied byte sequence.
+/// @param path Destination file whose parent directories are created as needed.
+/// @param bytes Complete contents to write.
+/// @throws std::runtime_error If staging, flushing, or atomic replacement fails.
 void writeBytesAtomic(const fs::path &path, const std::vector<uint8_t> &bytes) {
     fs::create_directories(path.parent_path());
     const fs::path temporary = path.wstring() + L".tmp-" + std::to_wstring(GetCurrentProcessId()) +
@@ -1476,15 +1753,26 @@ void writeBytesAtomic(const fs::path &path, const std::vector<uint8_t> &bytes) {
     }
 }
 
+/// @brief Encode UTF-16 text as UTF-8 and atomically replace a file.
+/// @param path Destination metadata file.
+/// @param text Text to encode and persist.
+/// @throws std::runtime_error If encoding or the atomic byte write fails.
 void writeTextAtomic(const fs::path &path, std::wstring_view text) {
     const std::string utf8 = wideToUtf8(text);
     writeBytesAtomic(path, std::vector<uint8_t>(utf8.begin(), utf8.end()));
 }
 
+/// @brief Derive the transaction recovery-marker path beside the cached executable.
+/// @param cacheExecutable Maintenance executable stored in the package cache.
+/// @return Path of the versioned recovery marker.
 fs::path recoveryMarkerPath(const fs::path &cacheExecutable) {
     return cacheExecutable.parent_path() / L"recovery-v2.txt";
 }
 
+/// @brief Persist the identity needed to recover an interrupted transaction.
+/// @param plan Resolved scope, installation root, and cache path.
+/// @param identifier Stable package identifier recorded in the marker.
+/// @throws std::runtime_error If the marker cannot be encoded or written atomically.
 void writeRecoveryMarker(const InstallationPlan &plan, std::string_view identifier) {
     std::wostringstream text;
     text << L"ZANNA-RECOVERY\t2\r\n"
@@ -1494,11 +1782,19 @@ void writeRecoveryMarker(const InstallationPlan &plan, std::string_view identifi
     writeTextAtomic(recoveryMarkerPath(plan.cacheExecutable), text.str());
 }
 
+/// @brief Best-effort remove the recovery marker after a completed transaction.
+/// @param plan Resolved cache path identifying the marker.
 void removeRecoveryMarker(const InstallationPlan &plan) {
     std::error_code error;
     fs::remove(recoveryMarkerPath(plan.cacheExecutable), error);
 }
 
+/// @brief Locate and validate an interrupted transaction recovery marker.
+/// @param package Verified package whose identifier and default scope constrain the marker.
+/// @param options Parsed explicit scope, if any.
+/// @param logger Installer logger used when stale markers are discarded.
+/// @return Reconstructed installed record when a live transaction requires recovery.
+/// @throws std::runtime_error If a marker exists but has invalid identity or schema.
 std::optional<InstalledRecord> readRecoveryRecord(const HostPackage &package,
                                                   const HostOptions &options,
                                                   Logger &logger) {
@@ -1563,6 +1859,11 @@ std::optional<InstalledRecord> readRecoveryRecord(const HostPackage &package,
     return std::nullopt;
 }
 
+/// @brief Parse and validate the installed ownership manifest.
+/// @param installRoot Root against which the manifest path is resolved safely.
+/// @param manifestRelative Relative path of either the current tabular or legacy line format.
+/// @return Deduplicated normalized relative paths owned by the installer.
+/// @throws std::runtime_error If the manifest is malformed, duplicated, or contains unsafe paths.
 std::set<std::string> loadOwnershipManifest(const fs::path &installRoot,
                                             std::string_view manifestRelative) {
     const fs::path path = safeJoin(installRoot, manifestRelative);
@@ -1594,8 +1895,15 @@ std::set<std::string> loadOwnershipManifest(const fs::path &installRoot,
     return owned;
 }
 
+/// @brief Read an entire maintenance-cache file into memory.
+/// @param path File to read.
+/// @return Complete contents, or an empty vector if the file cannot be opened.
+/// @throws std::runtime_error If its reported size is unsupported or the read fails.
 std::vector<uint8_t> readFileBytes(const fs::path &path);
 
+/// @brief Build the normalized ownership set implied by package metadata.
+/// @param package Package whose payload, metadata, and maintenance paths are included.
+/// @return Normalized installer-owned relative paths.
 std::set<std::string> packageOwnedPaths(const HostPackage &package) {
     std::set<std::string> owned;
     for (const auto &file : package.metadata.payloadFiles)
@@ -1608,6 +1916,10 @@ std::set<std::string> packageOwnedPaths(const HostPackage &package) {
     return owned;
 }
 
+/// @brief Read one localized string from an executable version resource.
+/// @param path Executable whose version resource is queried.
+/// @param field String-table field name, such as @c OriginalFilename.
+/// @return Field value without its terminator, or @c std::nullopt when unavailable or invalid.
 std::optional<std::wstring> versionResourceString(const fs::path &path, std::wstring_view field) {
     DWORD ignored = 0;
     const DWORD bytes = GetFileVersionInfoSizeW(path.c_str(), &ignored);
@@ -1649,6 +1961,10 @@ std::optional<std::wstring> versionResourceString(const fs::path &path, std::wst
     return std::wstring(value, valueChars - 1U);
 }
 
+/// @brief Search raw bytes for the native UTF-16 representation of text.
+/// @param bytes Binary image to scan.
+/// @param text Nonempty wide string to locate.
+/// @return @c true when the complete wide-string byte sequence occurs.
 bool containsWideBytes(const std::vector<uint8_t> &bytes, std::wstring_view text) {
     if (text.empty() || text.size() > std::numeric_limits<size_t>::max() / sizeof(wchar_t))
         return false;
@@ -1657,6 +1973,10 @@ bool containsWideBytes(const std::vector<uint8_t> &bytes, std::wstring_view text
     return std::search(bytes.begin(), bytes.end(), begin, begin + length) != bytes.end();
 }
 
+/// @brief Recognize a generated legacy uninstaller without trusting it as a package.
+/// @param path Candidate legacy executable.
+/// @param incomingPackage Incoming package supplying identity strings expected in the binary.
+/// @return @c true when attributes, version metadata, size, and embedded identity all match.
 bool isRecognizedLegacyUninstaller(const fs::path &path, const HostPackage &incomingPackage) {
     const DWORD attributes = GetFileAttributesW(path.c_str());
     if (attributes == INVALID_FILE_ATTRIBUTES ||
@@ -1680,6 +2000,11 @@ bool isRecognizedLegacyUninstaller(const fs::path &path, const HostPackage &inco
                              utf8ToWide(incomingPackage.metadata.installedManifestRelativePath));
 }
 
+/// @brief Establish ownership for upgrades, including verified and recognized legacy installs.
+/// @param incomingPackage Verified package defining current manifest and identity metadata.
+/// @param installRoot Existing installation root to inspect.
+/// @param logger Installer logger used to report migration decisions.
+/// @return Normalized paths considered owned by the existing installer.
 std::set<std::string> loadUpgradeOwnership(const HostPackage &incomingPackage,
                                            const fs::path &installRoot,
                                            Logger &logger) {
@@ -1709,6 +2034,12 @@ std::set<std::string> loadUpgradeOwnership(const HostPackage &incomingPackage,
     return packageOwnedPaths(incomingPackage);
 }
 
+/// @brief Preserve user-owned regular files while constructing a replacement tree.
+/// @param oldRoot Existing installation tree.
+/// @param newRoot Staged replacement tree.
+/// @param owned Normalized paths that belong to the installer and must not be copied.
+/// @param logger Installer logger and cancellation source.
+/// @throws std::runtime_error On unsafe entries, traversal errors, conflicts, or copy failure.
 void copyUnownedFiles(const fs::path &oldRoot,
                       const fs::path &newRoot,
                       const std::set<std::string> &owned,
@@ -1756,6 +2087,10 @@ void copyUnownedFiles(const fs::path &oldRoot,
     }
 }
 
+/// @brief Serialize installed package identity, selection, and integration settings.
+/// @param package Verified package providing identifier and version.
+/// @param plan Resolved scope, components, and integration choices.
+/// @return Versioned UTF-16 state-file contents.
 std::wstring stateText(const HostPackage &package, const InstallationPlan &plan) {
     std::wostringstream out;
     out << kStateHeader << L"\r\n"
@@ -1769,12 +2104,22 @@ std::wstring stateText(const HostPackage &package, const InstallationPlan &plan)
     return out.str();
 }
 
+/// @brief Serialize the installed ownership manifest for staged files and state.
+/// @param package Verified package providing metadata file locations.
+/// @param installedFiles Payload and maintenance files written into the staged tree.
+/// @param stateHash SHA-256 digest of the encoded state file.
+/// @param stateSize Encoded state-file size in bytes.
+/// @return Sorted, versioned UTF-16 ownership-manifest contents.
 std::wstring manifestText(const HostPackage &package,
                           const std::vector<SelectedFile> &installedFiles,
                           std::string_view stateHash,
                           uint64_t stateSize) {
     std::vector<SelectedFile> files = installedFiles;
     files.push_back({package.metadata.stateRelativePath, std::string(stateHash), stateSize});
+    /// @brief Order installed files by normalized package path.
+    /// @param left Left-hand file record.
+    /// @param right Right-hand file record.
+    /// @return `true` when `left` precedes `right`.
     std::sort(files.begin(), files.end(), [](const SelectedFile &left, const SelectedFile &right) {
         return normalizedPathKey(left.path) < normalizedPathKey(right.path);
     });
@@ -1788,6 +2133,10 @@ std::wstring manifestText(const HostPackage &package,
     return out.str();
 }
 
+/// @brief Select the maintenance executable embedded by the current package mode.
+/// @param package Verified setup or maintenance package.
+/// @return Executable bytes to install as the product uninstaller.
+/// @throws std::runtime_error If setup metadata references absent outer-file bytes.
 std::vector<uint8_t> maintenanceBytes(const HostPackage &package) {
     if (!package.metadata.outerFiles.empty()) {
         const auto &record = package.metadata.outerFiles.front();
@@ -1799,6 +2148,13 @@ std::vector<uint8_t> maintenanceBytes(const HostPackage &package) {
     return package.executableBytes;
 }
 
+/// @brief Materialize and verify the selected installation tree in a staging root.
+/// @param package Verified package and embedded archive bytes.
+/// @param plan Resolved component selection and installed-state settings.
+/// @param newRoot Empty transaction directory that receives the staged tree.
+/// @param logger Installer logger and cancellation source.
+/// @return Records for installed payload and maintenance files.
+/// @throws std::runtime_error On missing entries, digest mismatch, cancellation, or write failure.
 std::vector<SelectedFile> stageSelectedTree(const HostPackage &package,
                                             const InstallationPlan &plan,
                                             const fs::path &newRoot,
@@ -1841,6 +2197,7 @@ std::vector<SelectedFile> stageSelectedTree(const HostPackage &package,
     return installed;
 }
 
+/// @brief Durable phase recorded for an installation-directory transaction.
 enum class JournalState {
     None,
     Prepared,
@@ -1851,6 +2208,9 @@ enum class JournalState {
     Committed
 };
 
+/// @brief Convert a transaction phase to its stable journal token.
+/// @param state Phase to encode.
+/// @return Lowercase token, or @c none for the absence of a transaction.
 std::wstring journalName(JournalState state) {
     switch (state) {
         case JournalState::Prepared:
@@ -1871,6 +2231,10 @@ std::wstring journalName(JournalState state) {
     }
 }
 
+/// @brief Parse and strictly validate a transaction journal document.
+/// @param value Complete journal text, or empty text when no journal exists.
+/// @return Recorded transaction phase, including @c None for empty input.
+/// @throws std::runtime_error If nonempty input does not match the current schema exactly.
 JournalState parseJournal(std::wstring_view value) {
     if (value.empty())
         return JournalState::None;
@@ -1887,6 +2251,7 @@ JournalState parseJournal(std::wstring_view value) {
     throw std::runtime_error("installer transaction journal is malformed");
 }
 
+/// @brief Fixed paths comprising one installation transaction workspace.
 struct TransactionPaths {
     fs::path directory;
     fs::path newRoot;
@@ -1896,6 +2261,10 @@ struct TransactionPaths {
     fs::path appliedShortcuts;
 };
 
+/// @brief Derive the deterministic transaction workspace beside an installation root.
+/// @param plan Resolved installation root.
+/// @param identifier Stable package identifier used to disambiguate the workspace.
+/// @return Directory, staged roots, journal, and rollback-metadata paths.
 TransactionPaths transactionPaths(const InstallationPlan &plan, std::string_view identifier) {
     const fs::path directory = plan.installRoot.parent_path() /
                                (L"." + plan.installRoot.filename().wstring() +
@@ -1908,10 +2277,17 @@ TransactionPaths transactionPaths(const InstallationPlan &plan, std::string_view
             directory / L"applied-shortcuts.txt"};
 }
 
+/// @brief Atomically record the current transaction phase.
+/// @param paths Transaction workspace containing the journal location.
+/// @param state Durable phase to record.
+/// @throws std::runtime_error If the journal cannot be written atomically.
 void writeJournal(const TransactionPaths &paths, JournalState state) {
     writeTextAtomic(paths.journal, L"schema=2\r\nstate=" + journalName(state) + L"\r\n");
 }
 
+/// @brief Remove a transaction tree only after proving it contains no reparse points.
+/// @param path Tree to validate and recursively remove; a missing path is accepted.
+/// @throws std::runtime_error On unsafe attributes, enumeration failure, or incomplete removal.
 void removeTreeChecked(const fs::path &path) {
     if (!fs::exists(path))
         return;
@@ -1940,6 +2316,10 @@ void removeTreeChecked(const fs::path &path) {
                                  wideToUtf8(path.wstring()));
 }
 
+/// @brief Atomically rename a directory with bounded retries for transient sharing failures.
+/// @param source Existing directory to move.
+/// @param destination Nonconflicting destination path.
+/// @throws std::runtime_error If the move does not succeed within the retry window.
 void moveDirectory(const fs::path &source, const fs::path &destination) {
     constexpr ULONGLONG kRetryWindowMilliseconds = 30000U;
     DWORD delayMilliseconds = 25U;
@@ -1962,11 +2342,21 @@ void moveDirectory(const fs::path &source, const fs::path &destination) {
                              wideToUtf8(formatWindowsError(error)));
 }
 
+/// @brief Recover or complete a transaction according to its durable journal phase.
+/// @param package Verified package supplying identity and installed metadata paths.
+/// @param plan Resolved installation state.
+/// @param paths Transaction workspace paths.
+/// @param logger Installer logger used for recovery diagnostics.
+/// @throws std::runtime_error If the transaction is malformed or cannot be recovered safely.
 void recoverTransaction(const HostPackage &package,
                         const InstallationPlan &plan,
                         const TransactionPaths &paths,
                         Logger &logger);
 
+/// @brief Apply an optional installer test hook at a named transaction boundary.
+/// @param stage Stable stage token compared with enabled hook environment variables.
+/// @throws InstallerError When cancellation injection selects this stage.
+/// @throws std::runtime_error When failure injection selects this stage.
 void maybeInjectFailure(std::string_view stage) {
 #if defined(ZANNA_INSTALLER_ENABLE_TEST_HOOKS)
     const wchar_t *value = _wgetenv(L"ZANNA_INSTALLER_TEST_CANCEL_AT");
@@ -1996,6 +2386,9 @@ void maybeInjectFailure(std::string_view stage) {
 #endif
 }
 
+/// @brief Apply the enabled test-hook ceiling to a measured free-space value.
+/// @param available Actual available bytes reported by Windows.
+/// @return The lesser of the actual value and a valid configured ceiling.
 uint64_t testLimitedFreeBytes(uint64_t available) {
 #if defined(ZANNA_INSTALLER_ENABLE_TEST_HOOKS)
     const wchar_t *value = _wgetenv(L"ZANNA_INSTALLER_TEST_FREE_BYTES");
@@ -2010,6 +2403,9 @@ uint64_t testLimitedFreeBytes(uint64_t available) {
     return available;
 }
 
+/// @brief Split a registry PATH value while preserving empty and untrimmed entries.
+/// @param value Semicolon-delimited PATH text.
+/// @return Entries in their original order and spelling.
 std::vector<std::wstring> splitPathValue(std::wstring_view value) {
     std::vector<std::wstring> entries;
     size_t start = 0;
@@ -2024,6 +2420,9 @@ std::vector<std::wstring> splitPathValue(std::wstring_view value) {
     return entries;
 }
 
+/// @brief Normalize a PATH entry for case-insensitive comparisons.
+/// @param value Entry to trim, unquote, and strip of non-root trailing separators.
+/// @return Comparison form of the entry.
 std::wstring trimPathEntry(std::wstring value) {
     while (!value.empty() && std::iswspace(value.front()))
         value.erase(value.begin());
@@ -2036,12 +2435,17 @@ std::wstring trimPathEntry(std::wstring value) {
     return value;
 }
 
+/// @brief Exact registry PATH state captured for transactional rollback.
 struct PathBackup {
     bool present{false};
     DWORD type{REG_EXPAND_SZ};
     std::wstring value;
 };
 
+/// @brief Snapshot a bounded string-valued PATH registry entry.
+/// @param environment Open environment key with query access.
+/// @return Presence, registry type, and value; an absent entry produces the default snapshot.
+/// @throws std::runtime_error On invalid type, excessive size, or repeated concurrent changes.
 PathBackup readPathValue(HKEY environment) {
     if (!environment)
         throw std::runtime_error("cannot read PATH through a null registry key");
@@ -2078,6 +2482,9 @@ PathBackup readPathValue(HKEY environment) {
     throw std::runtime_error("the environment PATH changed repeatedly while being read");
 }
 
+/// @brief Read the user or machine environment PATH.
+/// @param scope Installation scope selecting the registry hive and environment key.
+/// @return Exact PATH snapshot suitable for rollback.
 PathBackup readCurrentPath(InstallScope scope) {
     RegKey environment =
         openKey(rootKey(scope),
@@ -2087,6 +2494,7 @@ PathBackup readCurrentPath(InstallScope scope) {
     return readPathValue(environment.get());
 }
 
+/// @brief Notify desktop applications that environment variables changed.
 void broadcastEnvironment() {
     DWORD_PTR result = 0;
     SendMessageTimeoutW(HWND_BROADCAST,
@@ -2098,6 +2506,12 @@ void broadcastEnvironment() {
                         &result);
 }
 
+/// @brief Transactionally remove and optionally append an installation PATH entry.
+/// @param scope Registry scope whose environment PATH is updated.
+/// @param removeEntry Entry to remove case-insensitively after comparison normalization.
+/// @param addEntry Entry to append after duplicates are removed; empty means removal only.
+/// @return Original PATH text for diagnostics or compatibility.
+/// @throws std::runtime_error If the registry value cannot be read or written.
 std::wstring updatePath(InstallScope scope,
                         std::wstring_view removeEntry,
                         std::wstring_view addEntry) {
@@ -2110,6 +2524,9 @@ std::wstring updatePath(InstallScope scope,
     std::vector<std::wstring> entries = splitPathValue(original.value);
     const std::wstring removeKey = trimPathEntry(std::wstring(removeEntry));
     const std::wstring addKey = trimPathEntry(std::wstring(addEntry));
+    /// @brief Identify an empty, removed, or duplicate PATH entry.
+    /// @param entry Existing PATH entry to normalize and compare.
+    /// @return `true` when the entry should be erased before the optional append.
     entries.erase(
         std::remove_if(entries.begin(),
                        entries.end(),
@@ -2134,6 +2551,9 @@ std::wstring updatePath(InstallScope scope,
     return original.value;
 }
 
+/// @brief Encode arbitrary bytes as lowercase wide-character hexadecimal.
+/// @param bytes Byte sequence to encode.
+/// @return Two hexadecimal characters per input byte.
 std::wstring bytesToHex(std::string_view bytes) {
     static constexpr wchar_t kHex[] = L"0123456789abcdef";
     std::wstring result;
@@ -2145,6 +2565,10 @@ std::wstring bytesToHex(std::string_view bytes) {
     return result;
 }
 
+/// @brief Decode one supported lowercase hexadecimal digit.
+/// @param ch Digit in the ranges @c 0-9 or @c a-f.
+/// @return Numeric nibble value.
+/// @throws std::runtime_error If @p ch is not valid transaction hexadecimal.
 unsigned hexNibble(wchar_t ch) {
     if (ch >= L'0' && ch <= L'9')
         return static_cast<unsigned>(ch - L'0');
@@ -2153,6 +2577,10 @@ unsigned hexNibble(wchar_t ch) {
     throw std::runtime_error("invalid installer transaction hexadecimal data");
 }
 
+/// @brief Decode even-length lowercase wide-character hexadecimal.
+/// @param text Encoded transaction data.
+/// @return Original byte string.
+/// @throws std::runtime_error On odd length or an unsupported digit.
 std::string hexToBytes(std::wstring_view text) {
     if ((text.size() & 1U) != 0)
         throw std::runtime_error("invalid installer transaction hexadecimal length");
@@ -2164,6 +2592,10 @@ std::string hexToBytes(std::wstring_view text) {
     return result;
 }
 
+/// @brief Persist the exact current PATH state before metadata changes.
+/// @param paths Transaction workspace containing the rollback backup.
+/// @param scope Registry scope whose PATH is captured.
+/// @throws std::runtime_error If the PATH cannot be read or the backup cannot be written.
 void writePathBackup(const TransactionPaths &paths, InstallScope scope) {
     const PathBackup backup = readCurrentPath(scope);
     std::wostringstream text;
@@ -2174,6 +2606,10 @@ void writePathBackup(const TransactionPaths &paths, InstallScope scope) {
     writeTextAtomic(paths.pathBackup, text.str());
 }
 
+/// @brief Parse and validate the PATH rollback backup in a transaction workspace.
+/// @param paths Transaction workspace containing the backup.
+/// @return Exact registry presence, type, and value captured before mutation.
+/// @throws std::runtime_error If the backup is missing, malformed, duplicated, or invalid.
 PathBackup readPathBackup(const TransactionPaths &paths) {
     const std::wstring text = readTextFileWide(paths.pathBackup);
     if (text.rfind(L"ZANNA-PATH-BACKUP\t1\r\n", 0) != 0)
@@ -2212,6 +2648,10 @@ PathBackup readPathBackup(const TransactionPaths &paths) {
     return result;
 }
 
+/// @brief Restore the exact registry PATH state captured before a transaction.
+/// @param paths Transaction workspace containing the PATH backup.
+/// @param scope Registry scope to restore.
+/// @throws std::runtime_error If the backup or registry mutation is invalid.
 void restorePathBackup(const TransactionPaths &paths, InstallScope scope) {
     const PathBackup backup = readPathBackup(paths);
     RegKey environment =
@@ -2229,10 +2669,16 @@ void restorePathBackup(const TransactionPaths &paths, InstallScope scope) {
     broadcastEnvironment();
 }
 
+/// @brief Create an empty durable journal for shortcuts applied by a transaction.
+/// @param paths Transaction workspace containing the shortcut journal.
 void initializeAppliedShortcuts(const TransactionPaths &paths) {
     writeTextAtomic(paths.appliedShortcuts, L"ZANNA-APPLIED-SHORTCUTS\t1\r\n");
 }
 
+/// @brief Append and durably flush one shortcut path to the rollback journal.
+/// @param paths Transaction workspace containing the shortcut journal.
+/// @param path Absolute shortcut path created by the transaction.
+/// @throws std::runtime_error If the entry is too large or cannot be persisted.
 void recordAppliedShortcut(const TransactionPaths &paths, const fs::path &path) {
     UniqueHandle file(CreateFileW(paths.appliedShortcuts.c_str(),
                                   FILE_APPEND_DATA,
@@ -2255,6 +2701,10 @@ void recordAppliedShortcut(const TransactionPaths &paths, const fs::path &path) 
     }
 }
 
+/// @brief Read shortcut paths recorded for transactional rollback.
+/// @param paths Transaction workspace containing the shortcut journal.
+/// @return Decoded shortcut paths in application order.
+/// @throws std::runtime_error If the journal schema or an encoded entry is invalid.
 std::vector<fs::path> readAppliedShortcuts(const TransactionPaths &paths) {
     const std::wstring text = readTextFileWide(paths.appliedShortcuts);
     if (text.rfind(L"ZANNA-APPLIED-SHORTCUTS\t1\r\n", 0) != 0)
@@ -2268,6 +2718,10 @@ std::vector<fs::path> readAppliedShortcuts(const TransactionPaths &paths) {
     return result;
 }
 
+/// @brief Remove only file associations owned by this package identity.
+/// @param package Package providing association metadata and ownership identifier.
+/// @param scope Registry scope from which associations are removed.
+/// @throws std::runtime_error If an owned association cannot be removed safely.
 void unregisterAssociations(const HostPackage &package, InstallScope scope) {
     for (const auto &association : package.metadata.associations) {
         const std::wstring progIdKey = std::wstring(kClassesBase) + utf8ToWide(association.progId);
@@ -2339,6 +2793,11 @@ void unregisterAssociations(const HostPackage &package, InstallScope scope) {
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
 }
 
+/// @brief Replace package-owned file associations with the resolved installation settings.
+/// @param package Verified package providing association definitions and executable metadata.
+/// @param plan Resolved scope, installation root, and association selection.
+/// @param logger Installer logger and cancellation source.
+/// @throws std::runtime_error If owned registry entries cannot be created or updated.
 void registerAssociations(const HostPackage &package,
                           const InstallationPlan &plan,
                           Logger &logger) {
@@ -2390,6 +2849,9 @@ void registerAssociations(const HostPackage &package,
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
 }
 
+/// @brief Resolve the Windows installation directory.
+/// @return Absolute Windows directory path.
+/// @throws std::runtime_error If Windows does not provide a bounded directory value.
 fs::path windowsDirectory() {
     std::wstring value(32768, L'\0');
     const UINT length = GetWindowsDirectoryW(value.data(), static_cast<UINT>(value.size()));
@@ -2399,6 +2861,12 @@ fs::path windowsDirectory() {
     return fs::path(value);
 }
 
+/// @brief Resolve a metadata-defined shortcut path against an approved root.
+/// @param plan Resolved installation root.
+/// @param root Root token: @c install, @c windows, or @c profile.
+/// @param relative Optional safe relative path below the selected root.
+/// @return Absolute resolved path.
+/// @throws std::runtime_error If the root token or relative path is unsafe.
 fs::path resolveShortcutPath(const InstallationPlan &plan,
                              std::string_view root,
                              std::string_view relative) {
@@ -2414,6 +2882,10 @@ fs::path resolveShortcutPath(const InstallationPlan &plan,
     return relative.empty() ? base : safeJoin(base, relative);
 }
 
+/// @brief Construct the command-line arguments for a metadata-defined shortcut.
+/// @param metadata Shortcut definition containing an optional argument path and prefix.
+/// @param plan Resolved installation root used to resolve the argument path.
+/// @return Empty text when no argument path exists, otherwise a safely quoted argument string.
 std::wstring shortcutArguments(const zanna::pkg::WindowsInstallerShortcutMetadata &metadata,
                                const InstallationPlan &plan) {
     if (metadata.argumentPath.empty())
@@ -2423,6 +2895,11 @@ std::wstring shortcutArguments(const zanna::pkg::WindowsInstallerShortcutMetadat
            quoteCommandLineArgument(argument.wstring());
 }
 
+/// @brief Determine whether an existing Shell Link exactly matches package metadata.
+/// @param path Shortcut file to load.
+/// @param metadata Expected shortcut target, working directory, arguments, and icon.
+/// @param plan Resolved installation root used for destination-aware path resolution.
+/// @return @c true when every configured property matches; COM or load failures return @c false.
 bool shellLinkMatches(const fs::path &path,
                       const zanna::pkg::WindowsInstallerShortcutMetadata &metadata,
                       const InstallationPlan &plan) {
@@ -2432,9 +2909,11 @@ bool shellLinkMatches(const fs::path &path,
         return false;
     const bool uninitialize = SUCCEEDED(apartment);
 
+    /// @brief Balance successful COM initialization on every return path.
     struct ApartmentGuard {
         bool active;
 
+        /// @brief Uninitialize the current COM apartment when this guard owns it.
         ~ApartmentGuard() {
             if (active)
                 CoUninitialize();
@@ -2487,6 +2966,11 @@ bool shellLinkMatches(const fs::path &path,
     return true;
 }
 
+/// @brief Create and atomically install a Windows Shell Link from package metadata.
+/// @param metadata Shortcut target, working directory, arguments, description, and icon.
+/// @param plan Resolved installation root used for destination-aware resolution.
+/// @param destination Final shortcut path.
+/// @throws std::runtime_error If COM, property configuration, persistence, or commit fails.
 void createShellLink(const zanna::pkg::WindowsInstallerShortcutMetadata &metadata,
                      const InstallationPlan &plan,
                      const fs::path &destination) {
@@ -2496,9 +2980,11 @@ void createShellLink(const zanna::pkg::WindowsInstallerShortcutMetadata &metadat
         throw std::runtime_error("cannot initialize COM for a Start menu shortcut");
     const bool uninitialize = SUCCEEDED(apartment);
 
+    /// @brief Balance successful COM initialization during shortcut creation.
     struct ApartmentGuard {
         bool active;
 
+        /// @brief Uninitialize the current COM apartment when this guard owns it.
         ~ApartmentGuard() {
             if (active)
                 CoUninitialize();
@@ -2551,8 +3037,19 @@ void createShellLink(const zanna::pkg::WindowsInstallerShortcutMetadata &metadat
     }
 }
 
+/// @brief Remove recorded installer-owned shortcuts and empty product directories.
+/// @param record Installed record containing absolute shortcut paths.
+/// @throws std::runtime_error If a path is unsafe or cannot be removed.
 void removeShortcuts(const InstalledRecord &record);
 
+/// @brief Reconcile and install the selected set of package shortcuts.
+/// @param package Verified package providing shortcut metadata.
+/// @param plan Resolved scope, destination, components, and shortcut setting.
+/// @param existing Existing installed record used to protect unowned collisions.
+/// @param logger Installer logger and cancellation source.
+/// @param transaction Optional workspace whose rollback journal records created shortcuts.
+/// @return Absolute paths of shortcuts installed by this invocation.
+/// @throws std::runtime_error If owned cleanup, path resolution, or shortcut creation fails.
 std::vector<fs::path> installShortcuts(const HostPackage &package,
                                        const InstallationPlan &plan,
                                        const InstalledRecord &existing,
@@ -2570,6 +3067,9 @@ std::vector<fs::path> installShortcuts(const HostPackage &package,
             root /= utf8ToWide(package.metadata.defaultInstallDir);
         }
         const fs::path destination = safeJoin(root, shortcut.relativePath);
+        /// @brief Test whether the destination is already an owned shortcut.
+        /// @param old Previously recorded shortcut path.
+        /// @return `true` when `old` and `destination` denote the same Windows path.
         const bool recorded =
             std::any_of(recognized.shortcuts.begin(),
                         recognized.shortcuts.end(),
@@ -2602,6 +3102,9 @@ std::vector<fs::path> installShortcuts(const HostPackage &package,
             root /= utf8ToWide(package.metadata.defaultInstallDir);
         }
         const fs::path destination = safeJoin(root, shortcut.relativePath);
+        /// @brief Test whether an existing owned shortcut matches the destination path.
+        /// @param old Previously recorded shortcut path.
+        /// @return `true` when `old` and `destination` denote the same Windows path.
         if (fs::exists(destination) && std::find_if(existing.shortcuts.begin(),
                                                     existing.shortcuts.end(),
                                                     [&](const fs::path &old) {
@@ -2618,6 +3121,9 @@ std::vector<fs::path> installShortcuts(const HostPackage &package,
     return installed;
 }
 
+/// @brief Test whether a directory is one of the system-managed shortcut roots.
+/// @param path Directory considered for post-removal cleanup.
+/// @return @c true for a known root or when root resolution fails conservatively.
 bool isProtectedShortcutRoot(const fs::path &path) {
     const std::array<KNOWNFOLDERID, 4> roots = {
         FOLDERID_Desktop, FOLDERID_PublicDesktop, FOLDERID_Programs, FOLDERID_CommonPrograms};
@@ -2637,6 +3143,9 @@ bool isProtectedShortcutRoot(const fs::path &path) {
     return false;
 }
 
+/// @brief Remove recorded installer-owned shortcut files and empty child directories.
+/// @param record Installed record containing absolute owned shortcut paths.
+/// @throws std::runtime_error On unsafe file types, deletion failure, or directory cleanup error.
 void removeShortcuts(const InstalledRecord &record) {
     for (const fs::path &path : record.shortcuts) {
         const DWORD attributes = GetFileAttributesW(path.c_str());
@@ -2665,6 +3174,10 @@ void removeShortcuts(const InstalledRecord &record) {
     }
 }
 
+/// @brief Build a Windows command string with a safely quoted executable.
+/// @param path Executable path to quote.
+/// @param argument Optional preformatted argument text to append.
+/// @return Command string suitable for an Add/Remove Programs registry value.
 std::wstring quotedExecutableCommand(const fs::path &path, std::wstring_view argument) {
     std::wstring result = quoteCommandLineArgument(path.wstring());
     if (!argument.empty())
@@ -2672,6 +3185,13 @@ std::wstring quotedExecutableCommand(const fs::path &path, std::wstring_view arg
     return result;
 }
 
+/// @brief Write the complete Add/Remove Programs registration for an installation.
+/// @param package Verified package supplying display and provenance metadata.
+/// @param plan Resolved scope, paths, selections, settings, and estimated size.
+/// @param shortcuts Installer-owned shortcut paths to persist for later cleanup.
+/// @param pathEntry Effective PATH entry to persist for later removal.
+/// @param logger Installer logger whose path is recorded for diagnostics.
+/// @throws std::runtime_error If the registration key or any value cannot be written.
 void registerArp(const HostPackage &package,
                  const InstallationPlan &plan,
                  const std::vector<fs::path> &shortcuts,
@@ -2748,6 +3268,10 @@ void registerArp(const HostPackage &package,
     setRegistryDword(key.get(), L"ZannaCreateShortcuts", plan.createShortcuts ? 1U : 0U);
 }
 
+/// @brief Remove this package's Add/Remove Programs registration tree.
+/// @param package Package supplying the stable uninstall-key identifier.
+/// @param scope Registry scope containing the registration.
+/// @throws std::runtime_error If a present registration cannot be removed.
 void removeArp(const HostPackage &package, InstallScope scope) {
     const LONG result =
         RegDeleteTreeW(rootKey(scope), uninstallSubkey(package.metadata.identifier).c_str());
@@ -2755,6 +3279,10 @@ void removeArp(const HostPackage &package, InstallScope scope) {
         throw std::runtime_error("cannot remove Add/Remove Programs registration");
 }
 
+/// @brief Read an entire maintenance-cache file into memory.
+/// @param path File to read.
+/// @return Complete contents, or an empty vector if the file cannot be opened.
+/// @throws std::runtime_error If its reported size is unsupported or the read fails.
 std::vector<uint8_t> readFileBytes(const fs::path &path) {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     if (!input)
@@ -2773,6 +3301,10 @@ std::vector<uint8_t> readFileBytes(const fs::path &path) {
     return bytes;
 }
 
+/// @brief Ensure the maintenance cache contains the exact expected executable bytes.
+/// @param path Cache destination.
+/// @param maintenance Expected maintenance executable.
+/// @throws std::runtime_error If an outdated or absent cache cannot be replaced atomically.
 void ensureMaintenanceCache(const fs::path &path, const std::vector<uint8_t> &maintenance) {
     if (fs::is_regular_file(path)) {
         const std::vector<uint8_t> old = readFileBytes(path);
@@ -2784,6 +3316,12 @@ void ensureMaintenanceCache(const fs::path &path, const std::vector<uint8_t> &ma
     writeBytesAtomic(path, maintenance);
 }
 
+/// @brief Apply all transactional Windows integration metadata for an installation.
+/// @param package Verified package supplying maintenance and integration metadata.
+/// @param plan Resolved scope, paths, components, and integration choices.
+/// @param paths Transaction workspace used for rollback journals.
+/// @param logger Installer logger and cancellation source.
+/// @throws std::runtime_error If cache, PATH, association, shortcut, or ARP updates fail.
 void applyMetadata(const HostPackage &package,
                    const InstallationPlan &plan,
                    const TransactionPaths &paths,
@@ -2802,6 +3340,11 @@ void applyMetadata(const HostPackage &package,
     logger.info(L"Windows integration metadata committed");
 }
 
+/// @brief Remove all recorded Windows integration metadata for an installation.
+/// @param package Package supplying association and ARP identity metadata.
+/// @param plan Resolved scope and existing installed record.
+/// @param logger Installer logger used to report completion.
+/// @throws std::runtime_error If any owned integration metadata cannot be removed.
 void removeMetadata(const HostPackage &package, const InstallationPlan &plan, Logger &logger) {
     removeShortcuts(plan.existing);
     unregisterAssociations(package, plan.scope);
@@ -2810,6 +3353,9 @@ void removeMetadata(const HostPackage &package, const InstallationPlan &plan, Lo
     logger.info(L"Windows integration metadata removed");
 }
 
+/// @brief Resolve the current Windows temporary directory with dynamic sizing.
+/// @return Absolute temporary-directory path.
+/// @throws std::runtime_error If Windows cannot provide the path.
 fs::path temporaryDirectory() {
     std::vector<wchar_t> buffer(512);
     for (;;) {
@@ -2822,6 +3368,10 @@ fs::path temporaryDirectory() {
     }
 }
 
+/// @brief Write and durably flush a byte sequence through an existing Windows handle.
+/// @param handle Writable file handle.
+/// @param bytes Complete contents to write.
+/// @throws std::runtime_error If any chunk or the final flush fails.
 void writeHandleBytes(HANDLE handle, const std::vector<uint8_t> &bytes) {
     size_t offset = 0;
     while (offset < bytes.size()) {
@@ -2838,6 +3388,12 @@ void writeHandleBytes(HANDLE handle, const std::vector<uint8_t> &bytes) {
         throw std::runtime_error("cannot flush the detached cleanup helper");
 }
 
+/// @brief Materialize and launch the detached helper that removes maintenance-cache artifacts.
+/// @param package Verified package containing cleanup-helper bytes.
+/// @param plan Resolved maintenance cache location.
+/// @param logger Installer logger used to report launch success or deferred cleanup.
+/// @return @c true when the cleanup helper was successfully launched.
+/// @throws std::runtime_error If the helper cannot be created, populated, or started safely.
 bool launchDetachedCleanup(const HostPackage &package,
                            const InstallationPlan &plan,
                            Logger &logger) {
@@ -2848,6 +3404,9 @@ bool launchDetachedCleanup(const HostPackage &package,
     if (StringFromGUID2(guid, guidText, static_cast<int>(std::size(guidText))) == 0)
         throw std::runtime_error("cannot format the cleanup helper name");
     std::wstring directoryName = L"ZannaCleanup-" + std::wstring(guidText);
+    /// @brief Identify GUID brace characters that are omitted from the helper directory.
+    /// @param ch Wide character to inspect.
+    /// @return `true` for an opening or closing brace.
     directoryName.erase(std::remove_if(directoryName.begin(),
                                        directoryName.end(),
                                        [](wchar_t ch) { return ch == L'{' || ch == L'}'; }),
@@ -2957,6 +3516,11 @@ bool launchDetachedCleanup(const HostPackage &package,
     }
 }
 
+/// @brief Start cache cleanup after uninstall, falling back to deletion at reboot.
+/// @param package Verified package containing the detached cleanup helper.
+/// @param plan Resolved maintenance-cache path.
+/// @param logger Installer logger used for success and fallback diagnostics.
+/// @return @c true when detached cleanup started; @c false when reboot cleanup was scheduled.
 bool cleanupCacheAfterUninstall(const HostPackage &package,
                                 const InstallationPlan &plan,
                                 Logger &logger) {
@@ -2971,10 +3535,21 @@ bool cleanupCacheAfterUninstall(const HostPackage &package,
     }
 }
 
+/// @brief Test whether a candidate path is equal to or nested beneath a Windows root.
+/// @param root Trusted containing path.
+/// @param candidate Path to test.
+/// @return @c true when the normalized Windows path begins with @p root on a component boundary.
 bool pathIsWithin(const fs::path &root, const fs::path &candidate) {
     return windowsPathBeginsWith(candidate, root);
 }
 
+/// @brief Hand a maintenance operation from the installed executable to its verified cache.
+/// @param package Currently running verified maintenance package.
+/// @param options Parsed options to reproduce in the worker process.
+/// @param plan Resolved operation, scope, paths, components, and integration settings.
+/// @param logger Installer logger whose path is passed to the worker.
+/// @return Success after the verified cache process starts.
+/// @throws std::runtime_error If cache verification or process creation fails.
 int launchMaintenanceHandoff(const HostPackage &package,
                              const HostOptions &options,
                              const InstallationPlan &plan,
@@ -3056,6 +3631,9 @@ int launchMaintenanceHandoff(const HostPackage &package,
     return kExitSuccess;
 }
 
+/// @brief Wait for the originating maintenance process to release its executable.
+/// @param processId Parent process identifier, or zero when no handoff synchronization is needed.
+/// @throws std::runtime_error If the process cannot be opened or does not exit within one minute.
 void waitForHandoffParent(DWORD processId) {
     if (processId == 0)
         return;
@@ -3070,6 +3648,11 @@ void waitForHandoffParent(DWORD processId) {
         throw std::runtime_error("the originating maintenance process did not exit");
 }
 
+/// @brief Load a verified maintenance package from a transaction installation tree.
+/// @param root Old or new installation root to inspect.
+/// @param fallbackPackage Package supplying current and legacy uninstaller locations and identity.
+/// @param logger Installer logger used for rejected-candidate diagnostics.
+/// @return First verified package with the expected identifier, or @c std::nullopt.
 std::optional<HostPackage> loadInstalledPackage(const fs::path &root,
                                                 const HostPackage &fallbackPackage,
                                                 Logger &logger) {
@@ -3091,6 +3674,10 @@ std::optional<HostPackage> loadInstalledPackage(const fs::path &root,
     return std::nullopt;
 }
 
+/// @brief Recover selected components from installed state with metadata defaults as fallback.
+/// @param package Package defining the state path and component defaults.
+/// @param root Installation root containing the state file.
+/// @return Normalized selected component IDs.
 std::set<std::string> installedComponents(const HostPackage &package, const fs::path &root) {
     const std::wstring state = readTextFileWide(safeJoin(root, package.metadata.stateRelativePath));
     for (const std::wstring &line : splitLines(state)) {
@@ -3106,6 +3693,10 @@ std::set<std::string> installedComponents(const HostPackage &package, const fs::
     return selected;
 }
 
+/// @brief Reconstruct metadata settings needed to restore a rolled-back package.
+/// @param package Verified prior package now restored on disk.
+/// @param currentPlan Current transaction's scope, root, and cache identity.
+/// @return Repair-style plan derived from prior state and package defaults.
 InstallationPlan restorationPlan(const HostPackage &package, const InstallationPlan &currentPlan) {
     InstallationPlan restored;
     restored.operation = Operation::Repair;
@@ -3146,6 +3737,8 @@ InstallationPlan restorationPlan(const HostPackage &package, const InstallationP
     return restored;
 }
 
+/// @brief Best-effort remove a cached maintenance executable and empty cache ancestors.
+/// @param cacheExecutable Cache file whose package directories are pruned.
 void removeCacheFile(const fs::path &cacheExecutable) {
     std::error_code error;
     fs::remove(cacheExecutable, error);
@@ -3154,6 +3747,13 @@ void removeCacheFile(const fs::path &cacheExecutable) {
     fs::remove(cacheExecutable.parent_path().parent_path().parent_path(), error);
 }
 
+/// @brief Remove partially applied metadata and restore the prior package's integration state.
+/// @param newPackage Package whose partially installed metadata must be removed.
+/// @param oldPackage Verified prior package, or no value for a rolled-back first install.
+/// @param plan Current transaction scope, root, cache, and installed state.
+/// @param paths Transaction workspace containing PATH and shortcut rollback journals.
+/// @param logger Installer logger and cancellation source for restored shortcuts.
+/// @throws std::runtime_error If cleanup or restoration cannot be completed safely.
 void restoreMetadataAfterRollback(const HostPackage &newPackage,
                                   const std::optional<HostPackage> &oldPackage,
                                   const InstallationPlan &plan,
@@ -3190,6 +3790,12 @@ void restoreMetadataAfterRollback(const HostPackage &newPackage,
     logger.warning(L"Restored the previous package's Windows integration metadata");
 }
 
+/// @brief Recover, roll back, or clean a previously interrupted directory transaction.
+/// @param package Verified current package used to validate transaction executables.
+/// @param plan Resolved installation state and recovery-marker path.
+/// @param paths Deterministic transaction workspace.
+/// @param logger Installer logger used to report recovery decisions.
+/// @throws std::runtime_error If journal state or prior package metadata prevents safe recovery.
 void recoverTransaction(const HostPackage &package,
                         const InstallationPlan &plan,
                         const TransactionPaths &paths,
@@ -3259,6 +3865,13 @@ void recoverTransaction(const HostPackage &package,
     removeRecoveryMarker(plan);
 }
 
+/// @brief Execute install, modify, or repair as a recoverable directory transaction.
+/// @param package Verified package and embedded payload.
+/// @param options Parsed application-close, restart, and injected lifecycle settings.
+/// @param plan Resolved destination, selection, metadata, and existing installation state.
+/// @param logger Installer logger and cancellation source.
+/// @return Installer exit code for the committed operation.
+/// @throws std::runtime_error If staging, ownership preservation, commit, or cleanup fails.
 int performInstallLike(const HostPackage &package,
                        const HostOptions &options,
                        const InstallationPlan &plan,
@@ -3322,6 +3935,13 @@ int performInstallLike(const HostPackage &package,
     }
 }
 
+/// @brief Execute uninstall as a recoverable transaction that preserves unowned files.
+/// @param package Verified installed package and cleanup-helper payload.
+/// @param options Parsed application-close and restart settings.
+/// @param plan Resolved installation, metadata, ownership, and cache state.
+/// @param logger Installer logger and cancellation source.
+/// @return Success or reboot-required after the uninstall commit point.
+/// @throws std::runtime_error If ownership, preservation, metadata removal, or rollback fails.
 int performUninstall(const HostPackage &package,
                      const HostOptions &options,
                      const InstallationPlan &plan,
@@ -3388,10 +4008,18 @@ int performUninstall(const HostPackage &package,
     }
 }
 
+/// @brief Open user-requested tools, documentation, or samples after successful installation.
+/// @param package Verified package providing product and executable metadata.
+/// @param options Parsed post-install launch selections.
+/// @param plan Resolved installation root.
+/// @param logger Installer logger used for unavailable-item and launch warnings.
 void launchPostInstallActions(const HostPackage &package,
                               const HostOptions &options,
                               const InstallationPlan &plan,
                               Logger &logger) {
+    /// @brief Open one post-install target through the Windows shell.
+    /// @param path File or directory to open.
+    /// @param parameters Optional argument string supplied to the target.
     auto open = [&](const fs::path &path, const wchar_t *parameters = nullptr) {
         if (path.empty() || !fs::exists(path)) {
             logger.warning(L"Requested post-install item is unavailable: " + path.wstring());
@@ -3425,6 +4053,9 @@ void launchPostInstallActions(const HostPackage &package,
             plan.installRoot / L"share" / L"zanna" / L"README.windows-prerequisites.txt",
             plan.installRoot / L"share" / L"doc" / L"zanna" / L"README.md",
             plan.installRoot / L"README.md"};
+        /// @brief Test whether one quick-start candidate is an existing regular file.
+        /// @param path Candidate documentation path.
+        /// @return `true` when `path` names a regular file.
         const auto found =
             std::find_if(candidates.begin(), candidates.end(), [](const fs::path &path) {
                 return fs::is_regular_file(path);
@@ -3437,6 +4068,13 @@ void launchPostInstallActions(const HostPackage &package,
 
 } // namespace
 
+/// @brief Orchestrate installer recovery, UI, elevation, handoff, preflight, and execution.
+/// @param instance Current module instance used by wizard and progress interfaces.
+/// @param package Verified host package and embedded installer data.
+/// @param requestedOptions Parsed command-line request before UI-derived changes.
+/// @param logger Installer logger and cancellation source.
+/// @return Stable installer exit code for cancellation, concurrency, success, or reboot required.
+/// @throws std::runtime_error If lifecycle validation or an operation fails before translation.
 int runLifecycle(HINSTANCE instance,
                  const HostPackage &package,
                  const HostOptions &requestedOptions,
@@ -3527,6 +4165,8 @@ int runLifecycle(HINSTANCE instance,
     }
     preflightVersion(package, options, plan);
     preflightDisk(package, plan);
+    /// @brief Execute the selected lifecycle operation under the progress interface.
+    /// @return Stable installer exit code returned by install-like or uninstall processing.
     const int result =
         runInstallerProgress(instance, package, plan.operation, options.uiLevel, logger, [&] {
             if (plan.operation == Operation::Uninstall)

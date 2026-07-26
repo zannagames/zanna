@@ -16,6 +16,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the default layout, rendering, input, and focus behavior
+///        of the TUI widget base class.
+/// @details These definitions provide intentionally minimal hooks so derived
+///          widgets can override only the lifecycle operations they need.
+
 #include "tui/ui/widget.hpp"
 
 namespace zanna::tui::ui {
@@ -27,6 +33,7 @@ namespace zanna::tui::ui {
 ///          to reference @ref rect_ when painting or dispatching events.  The
 ///          base implementation keeps the behaviour predictable for widgets
 ///          that do not need custom layout logic.
+/// @param r Rectangle assigned by the parent layout.
 void Widget::layout(const Rect &r) {
     rect_ = r;
 }
@@ -39,6 +46,8 @@ void Widget::layout(const Rect &r) {
 ///          @ref render::ScreenBuffer passed from the compositor.  Keeping the
 ///          default empty avoids accidental double-painting when intermediate
 ///          classes forget to call into their base.
+/// @param sb Screen buffer supplied by the compositor; unused by the base
+///        implementation.
 void Widget::paint(render::ScreenBuffer &) {}
 
 /// @brief Handle an input event directed at this widget.
@@ -48,6 +57,8 @@ void Widget::paint(render::ScreenBuffer &) {}
 ///          that respond to keyboard or mouse input override this method to
 ///          implement the required behaviour while using the return value to
 ///          communicate whether the event stream should stop propagating.
+/// @param ev Routed event; ignored by the base implementation.
+/// @return Always @c false so the event may continue propagating.
 bool Widget::onEvent(const Event &) {
     return false;
 }
@@ -59,6 +70,7 @@ bool Widget::onEvent(const Event &) {
 ///          focus manager can route keyboard events to them.  The separation
 ///          keeps passive display elements lightweight while letting interactive
 ///          widgets opt in explicitly.
+/// @return Always @c false in the base implementation.
 bool Widget::wantsFocus() const {
     return false;
 }
@@ -69,6 +81,8 @@ bool Widget::wantsFocus() const {
 ///          (@c false).  The base implementation is a no-op so passive widgets
 ///          do not incur overhead, but interactive widgets can override this to
 ///          update internal state or trigger repaints when focus changes.
+/// @param focused Whether the widget gained focus; ignored by the base
+///        implementation.
 void Widget::onFocusChanged(bool) {}
 
 /// @brief Retrieve the rectangle assigned during the last layout pass.
@@ -77,6 +91,7 @@ void Widget::onFocusChanged(bool) {}
 ///          stored rectangle is returned verbatim so that derived classes and
 ///          callers can reason about the widget's position when painting or
 ///          handling input.
+/// @return Rectangle stored by the most recent @ref layout call.
 Rect Widget::rect() const {
     return rect_;
 }

@@ -13,6 +13,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares opcode-operand parsing for textual IL instructions.
+ *
+ * @details `OperandParser` resolves scalar value tokens and populates the
+ *          shared instruction representation for calls, indirect calls,
+ *          branches, and switches. Nested delimiter handling, block-argument
+ *          arity checks, and structured diagnostic creation remain private
+ *          implementation details of the bound parser state.
+ */
+
 #pragma once
 
 #include "il/core/fwd.hpp"
@@ -102,7 +113,9 @@ class OperandParser {
     il::support::Expected<void> validateCaseArity(std::string label,
                                                   std::vector<il::core::Value> args);
 
+    /// @brief Borrowed parser state used for SSA and block metadata lookup.
     ParserState &state_;
+    /// @brief Borrowed instruction populated by successful parsing operations.
     il::core::Instr &instr_;
 };
 

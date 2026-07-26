@@ -637,7 +637,7 @@ void RuntimeStatementLowerer::lowerLetToArray(const LetStmt &stmt,
 
 /// @brief Lower `LET base.member = value` to a property setter or static-field store.
 /// @param stmt The LET statement.
-/// @param member The member-access assignment target.
+/// @param memberRef The member-access assignment target.
 /// @param value The already-lowered right-hand value.
 /// @details Tries, in order: a runtime-class property setter (erroring on read-only/missing),
 ///          an instance property setter (`set_member`, overload-resolved and coerced), a static

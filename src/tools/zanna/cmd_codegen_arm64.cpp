@@ -5,8 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/tools/zanna/cmd_codegen_arm64.cpp
-// Purpose: Thin CLI adapter around the reusable AArch64 code-generation pipeline.
+/// @file cmd_codegen_arm64.cpp
+/// @brief Implements the thin CLI adapter for the reusable AArch64 code-generation pipeline.
+///
+/// Parsing validates all paths, optimization levels, stack sizes, assembler/linker modes, target
+/// platforms, debug-line policy, asset blobs, and extra objects before constructing the pipeline.
 //
 //===----------------------------------------------------------------------===//
 
@@ -56,6 +59,10 @@ struct ParseOutcome {
 };
 
 /// @brief Parse @p text as a base-10 int within [minValue, maxValue].
+/// @param text Candidate decimal spelling.
+/// @param minValue Inclusive lower bound.
+/// @param maxValue Inclusive upper bound.
+/// @param out Receives the parsed value only on success.
 /// @return true on a full, in-range parse; false otherwise (out left unset).
 bool parseIntInRange(std::string_view text, int minValue, int maxValue, int &out) {
     int value = 0;
@@ -69,6 +76,8 @@ bool parseIntInRange(std::string_view text, int minValue, int maxValue, int &out
 }
 
 /// @brief Parse @p text as a base-10 size_t value.
+/// @param text Candidate decimal spelling.
+/// @param out Receives the parsed size only on success.
 /// @return true on a full, in-range parse; false otherwise.
 bool parseSize(std::string_view text, std::size_t &out) {
     unsigned long long value = 0;
@@ -262,6 +271,10 @@ ParseOutcome parseArgs(const ArgvView &args) {
 
 } // namespace
 
+/// @brief Parse and execute the AArch64 native-codegen pipeline.
+/// @param argc Number of arguments following the architecture selector.
+/// @param argv Argument vector beginning with the IL path or help flag.
+/// @return Zero on success, one on help/usage parsing failure, or pipeline exit/error code.
 int cmd_codegen_arm64(int argc, char **argv) {
     const ArgvView args{argc, argv};
     if (args.empty()) {

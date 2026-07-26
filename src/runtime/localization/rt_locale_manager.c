@@ -33,6 +33,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements the process-global locale registry and loading lifecycle.
+ * @details Coordinates lazy platform detection, baked and JSON/ZPAK records,
+ * arena-backed schema parsing, current/system Locale ownership, formatter
+ * retention, search paths, and synchronized load, unload, and reset behavior.
+ */
+
 #include "rt_locale_manager.h"
 
 #include "rt_asset.h"
@@ -63,8 +71,10 @@
 #include <string.h>
 
 #if RT_PLATFORM_WINDOWS
+/** Separator used when serializing locale search paths on Windows. */
 #define LOC_PATH_SEP ";"
 #else
+/** Separator used when serializing locale search paths on POSIX systems. */
 #define LOC_PATH_SEP ":"
 #endif
 
@@ -72,12 +82,14 @@
 // Registry state (all access serialized by g_lock)
 //===----------------------------------------------------------------------===//
 
+/** One canonical tag-to-data binding owned by the global registry. */
 typedef struct loc_registry_entry {
     const char *tag;              ///< borrowed when baked; owned copy when loaded
     const rt_locale_data_t *data; ///< borrowed; arena-owned for loaded records
     int is_baked;                 ///< 1 for en-US; 0 for JSON/ZPAK (freed on unload)
 } loc_registry_entry_t;
 
+/** Process-global locale registry protected by @c g_mgr.lock after initialization. */
 static struct {
     void *lock;
     int initialized;
@@ -93,9 +105,12 @@ static struct {
     size_t search_capacity;
 } g_mgr;
 
+/// @copydoc rt_locale_internal_parse_into()
 extern int rt_locale_internal_parse_into(const char *input, size_t input_len, rt_locale_t *out);
+/// @copydoc rt_locale_internal_finalizer()
 extern void rt_locale_internal_finalizer(void *obj);
 
+/// @copydoc loc_register_entry_locked()
 static int loc_register_entry_locked(const rt_locale_data_t *data, int is_baked);
 
 /// @brief Return the current atomic reference count for a locale-data record.

@@ -16,6 +16,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares shared transactional machinery for IL function parsing.
+ *
+ * @details This internal header defines line tokenization, the adapter between
+ *          public and implementation parser state, parsed header/prototype
+ *          records, rollback snapshots, and diagnostic normalization helpers.
+ *          It is an implementation contract for the split function-parser
+ *          translation units rather than a public parsing API.
+ */
+
 #pragma once
 
 #include "il/core/BasicBlock.hpp"
@@ -46,8 +57,9 @@ using il::support::makeError;
 using zanna::parse::Cursor;
 using zanna::parse::SourcePos;
 
-// Alias for the public ParserState to distinguish from parser_impl::ParserState
+/// @brief Public parser-state type, named to distinguish it from the internal adapter.
 using LegacyParserState = ::il::io::detail::ParserState;
+/// @brief Structured diagnostic type returned by internal parsing helpers.
 using Error = Diag;
 
 // ============================================================================
@@ -169,11 +181,17 @@ class TokenStream {
         return false;
     }
 
+    /// @brief Borrowed input stream advanced by readLine().
     std::istream *stream_ = nullptr;
+    /// @brief Borrowed parser state whose physical line counter is updated.
     LegacyParserState *legacy_ = nullptr;
+    /// @brief Normalized text of the current token line.
     std::string line_;
+    /// @brief Resource-budget name recorded when reading stops at a limit.
     std::string resourceLimit_;
+    /// @brief Whether the last unsuccessful read ended because of an I/O error.
     bool ioError_{false};
+    /// @brief Classification of @ref line_, or End after input exhaustion.
     TokenKind token_ = TokenKind::Skip;
 };
 
@@ -185,12 +203,19 @@ namespace parser_impl {
 
 /// @brief Internal state wrapper that bridges TokenStream with LegacyParserState.
 struct ParserState {
+    /// @brief Borrowed destination module.
     il::core::Module *mod = nullptr;
+    /// @brief Borrowed active function, or nullptr outside a function.
     il::core::Function *fn = nullptr;
+    /// @brief Borrowed active basic block, or nullptr before its first label.
     il::core::BasicBlock *cur = nullptr;
+    /// @brief Current source-location directive state.
     il::support::SourceLoc loc{};
+    /// @brief Borrowed diagnostic sink used by parser components.
     il::support::DiagnosticEngine *diags = nullptr;
+    /// @brief Borrowed function-body token stream.
     TokenStream *ts = nullptr;
+    /// @brief Borrowed public state synchronized by refresh() and commit().
     LegacyParserState *legacy = nullptr;
 
     /// @brief Refresh wrapper pointers and location from the legacy parser state.
@@ -242,9 +267,13 @@ struct PrototypeParseResult {
 
 /// @brief Parsed function attributes.
 struct Attrs {
+    /// @brief Whether the parsed function promises not to throw.
     bool nothrow = false;
+    /// @brief Whether the parsed function may read but not write memory.
     bool readonly = false;
+    /// @brief Whether the parsed function is free of observable effects and memory access.
     bool pure = false;
+    /// @brief Whether the linker must invoke the parsed function during module setup.
     bool moduleInitializer = false;
 };
 

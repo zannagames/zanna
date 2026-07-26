@@ -22,6 +22,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares the dependency-free Linux Settings portal query bridge.
+ *
+ * @details The interface exposes bounded synchronous lookup without leaking
+ *          GLib or GIO types into callers. Supported Boolean and unsigned
+ *          values are normalized into signed runtime integers, while missing
+ *          services, malformed replies, and unsupported types remain soft misses.
+ */
+
 #pragma once
 
 #include <stdint.h>

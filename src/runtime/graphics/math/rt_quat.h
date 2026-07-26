@@ -23,10 +23,22 @@
 //        src/runtime/graphics/math/rt_vec3.h (axis and vector operations)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares immutable quaternion operations for three-dimensional rotation.
+ *
+ * @details Quat exposes raw, identity, axis-angle, and Euler construction;
+ *          component access; Hamilton composition; conjugate, inverse, norm,
+ *          length, and dot operations; interpolation; vector rotation; matrix
+ *          conversion; and axis/angle extraction.
+ */
+
 #pragma once
 
 #include <stdint.h>
 
+/// @brief Runtime class identifier assigned to GC-managed Quat objects.
 #define RT_QUAT_CLASS_ID INT64_C(-0x600208)
 
 #ifdef __cplusplus

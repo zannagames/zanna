@@ -43,10 +43,13 @@ bind "../ui/scene_clipboard";
 bind "../ui/scene_context_menus_2d";
 bind "../ui/scene_context_menus_3d";
 bind "../ui/scene_editor_2d";
+bind "../ui/scene_panels_2d";
 bind "../ui/scene_editor_3d";
+bind "../ui/scene_panels_3d";
 
 bind Convert = Zanna.Core.Convert;
 bind GUI = Zanna.GUI;
+bind Str = Zanna.String;
 bind Terminal = Zanna.Terminal;
 
 func HarnessCoordinate(shell: app_shell.AppShell,
@@ -54,6 +57,19 @@ func HarnessCoordinate(shell: app_shell.AppShell,
     var scale = shell.app.GetEffectiveScale();
     if scale <= 0.0 { scale = 1.0; }
     return Convert.NumToInt(logical * scale + 0.999999);
+}
+
+func ClickWidget2D(shell: app_shell.AppShell,
+                   harness: GUI.TestHarness,
+                   widget: GUI.Widget) {
+    var x = HarnessCoordinate(
+        shell, widget.GetScreenX() + widget.GetScreenWidth() / 2.0);
+    var y = HarnessCoordinate(
+        shell, widget.GetScreenY() + widget.GetScreenHeight() / 2.0);
+    harness.SendMouse("move", x, y, 0);
+    harness.SendMouse("down", x, y, 0);
+    harness.SendMouse("up", x, y, 0);
+    harness.DispatchPending();
 }
 
 func Fail(shell: app_shell.AppShell,
@@ -69,7 +85,7 @@ func main() {
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Scene Context Menu Probe", 1240, 800);
     var editor3d = new scene_editor_3d.SceneEditor3D();
-    editor3d.Setup(shell.workbench.scene3DHost, shell.app);
+    scene_panels_3d.Build(editor3d,shell.workbench.scene3DHost, shell.app);
     var menus3d = new scene_context_menus_3d.SceneContextMenus3D();
     menus3d.Setup();
     var documents = new document_manager.DocumentManager();
@@ -206,7 +222,7 @@ func main() {
     shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Scene Context Menu Probe 2D", 1240, 800);
     var editor2d = new scene_editor_2d.SceneEditor2D();
-    editor2d.Setup(shell.workbench.scene2DHost, shell.app);
+    scene_panels_2d.Build(editor2d,shell.workbench.scene2DHost, shell.app);
     var menus2d = new scene_context_menus_2d.SceneContextMenus2D();
     menus2d.Setup();
     var doc2d = documents.NewScene2DDocument();
@@ -523,6 +539,70 @@ func main() {
        or doc2d.content != regionBaseline {
         Fail(shell, harness,
              "undoing shape edits did not restore exact bytes");
+        return;
+    }
+
+    // Layers panel (2.2): opacity commits one first-class edit; lock is
+    // workspace-only and refuses tile edits; solo is preview-only state.
+    editor2d.SelectSceneObjects([], -1);
+    editor2d.Pump(doc2d);
+    shell.Poll();
+    shell.Render();
+    var layerBaseline = doc2d.content;
+    var layerUndo = editor2d.undoStack.count();
+    editor2d.layerOpacitySpinner.SetValue(0.5);
+    editor2d.Pump(doc2d);
+    if editor2d.scene.LayerOpacity(0) != 0.5
+       or editor2d.undoStack.count() != layerUndo + 1
+       or Str.IndexOf(doc2d.content, "\"opacity\"") <= 0 {
+        Fail(shell, harness,
+             "layer opacity did not commit one first-class edit: o="
+             + editor2d.scene.LayerOpacity(0)
+             + " undo=" + editor2d.undoStack.count());
+        return;
+    }
+    if editor2d.Undo() == false or doc2d.content != layerBaseline {
+        Fail(shell, harness, "undoing layer opacity did not restore bytes");
+        return;
+    }
+    editor2d.inspectorScroll.ScrollTo(editor2d.layerLockCheck);
+    editor2d.Pump(doc2d);
+    shell.Poll();
+    shell.Render();
+    ClickWidget2D(shell, harness, editor2d.layerLockCheck);
+    editor2d.Pump(doc2d);
+    if editor2d.LayerLocked(0) == false {
+        Fail(shell, harness, "lock click did not lock the active layer");
+        return;
+    }
+    shell.Poll();
+    shell.Render();
+    GUI.ClipboardText.SetText(block);
+    if editor2d.PasteTileBlockAt(1, 1)
+       or doc2d.content != layerBaseline {
+        Fail(shell, harness, "a locked layer accepted a tile paste");
+        return;
+    }
+    ClickWidget2D(shell, harness, editor2d.layerLockCheck);
+    editor2d.Pump(doc2d);
+    if editor2d.LayerLocked(0) {
+        Fail(shell, harness, "unlock click did not release the layer");
+        return;
+    }
+    shell.Poll();
+    shell.Render();
+    ClickWidget2D(shell, harness, editor2d.layerSoloCheck);
+    editor2d.Pump(doc2d);
+    if editor2d.soloLayer != 0 or doc2d.content != layerBaseline {
+        Fail(shell, harness,
+             "solo did not set preview state or touched content: solo="
+             + editor2d.soloLayer);
+        return;
+    }
+    ClickWidget2D(shell, harness, editor2d.layerSoloCheck);
+    editor2d.Pump(doc2d);
+    if editor2d.soloLayer != -1 {
+        Fail(shell, harness, "unsolo did not clear preview state");
         return;
     }
 

@@ -230,6 +230,7 @@ static void widget_live_table_remove(vg_widget_t *widget) {
 }
 
 /// @brief Inserts @p widget at the head of the global live-widget doubly-linked list.
+/// @param widget Newly initialized widget to register; NULL is ignored.
 static void widget_register_live(vg_widget_t *widget) {
     if (!widget)
         return;
@@ -242,6 +243,7 @@ static void widget_register_live(vg_widget_t *widget) {
 }
 
 /// @brief Removes @p widget from the global live-widget list; called immediately before free().
+/// @param widget Registered widget leaving the live registry; NULL is ignored.
 static void widget_unregister_live(vg_widget_t *widget) {
     if (!widget)
         return;
@@ -270,6 +272,8 @@ static void widget_mark_layout_dirty(vg_widget_t *widget) {
 
 /// @brief Returns true for widget types that paint their own children (ScrollView and custom
 /// widgets with paint_overlay).
+/// @param widget Widget whose paint ownership policy is queried.
+/// @return True when the normal recursive painter must not descend into the widget's children.
 static bool widget_paints_children_internally(const vg_widget_t *widget) {
     if (!widget)
         return false;
@@ -279,6 +283,8 @@ static bool widget_paints_children_internally(const vg_widget_t *widget) {
 }
 
 /// @brief Returns @p value if it is finite and positive, otherwise 0.
+/// @param value Dimension or overflow extent to normalize.
+/// @return @p value when finite and positive; otherwise `0.0f`.
 static float widget_nonnegative_finite(float value) {
     return (isfinite(value) && value > 0.0f) ? value : 0.0f;
 }
@@ -455,6 +461,7 @@ static void widget_theme_visual_overflow(float *left, float *top, float *right, 
 
 /// @brief Clamps constraint fields to be non-negative, finite, and self-consistent (max >= min,
 /// preferred within [min, max]).
+/// @param[in,out] constraints Constraint record to normalize; NULL is ignored.
 static void widget_normalize_constraints(vg_constraints_t *constraints) {
     if (!constraints)
         return;
@@ -482,6 +489,7 @@ static void widget_normalize_constraints(vg_constraints_t *constraints) {
 }
 
 /// @brief Recursively clears the needs_paint flag on @p root and all its descendants.
+/// @param root Root of the widget subtree to mark clean; NULL is ignored.
 static void clear_paint_flag_recursive(vg_widget_t *root) {
     if (!root)
         return;
@@ -517,6 +525,7 @@ static float vg__advance(float cur, float target, float dt_ms, float dur_ms) {
 
 /// @brief Advance hover, press, and focus animation independently of paint traversal.
 /// @details See the public declaration for scheduling and reduced-motion semantics.
+/// @copydetails vg_widget_anim_advance
 bool vg_widget_anim_advance(vg_widget_t *widget, float delta_ms) {
     if (!widget)
         return false;
@@ -559,6 +568,7 @@ bool vg_widget_anim_advance(vg_widget_t *widget, float delta_ms) {
 
 /// @brief Advance animation by a nominal 16 ms compatibility tick.
 /// @details Retains the legacy canvas-taking ABI without coupling state advancement to rendering.
+/// @copydetails vg_widget_anim_tick
 void vg_widget_anim_tick(vg_widget_t *widget, void *canvas) {
     (void)canvas;
     (void)vg_widget_anim_advance(widget, 16.0f);
@@ -573,6 +583,7 @@ static bool g_smooth_scroll_enabled = true;
 /// @brief Enable or disable inertial smooth scrolling process-wide.
 /// @details Wheel input on scroll surfaces eases toward its target when
 ///          enabled; reduced-motion themes disable easing regardless.
+/// @copydetails vg_set_smooth_scroll_enabled
 void vg_set_smooth_scroll_enabled(bool enabled) {
     g_smooth_scroll_enabled = enabled;
 }
@@ -611,6 +622,8 @@ bool vg_smooth_scroll_step(float *position, float target, float delta_ms) {
 
 /// @brief Recursively paints the widget tree in pre-order, converting each widget's position to
 /// screen space before calling its paint vtable.
+/// @param root Root of the visible subtree to paint.
+/// @param canvas Backend canvas forwarded to widget paint callbacks.
 static void paint_widget_normal_tree(vg_widget_t *root, void *canvas) {
     if (!root || !root->visible || !canvas)
         return;
@@ -641,6 +654,8 @@ static void paint_widget_normal_tree(vg_widget_t *root, void *canvas) {
 
 /// @brief Recursively invokes paint_overlay vtable on the entire tree in pre-order, used for
 /// tooltips and over-widget overlays.
+/// @param root Root of the visible subtree whose overlays are painted.
+/// @param canvas Backend canvas forwarded to overlay callbacks.
 static void paint_widget_overlay_tree(vg_widget_t *root, void *canvas) {
     if (!root || !root->visible || !canvas)
         return;
@@ -680,12 +695,16 @@ uint64_t vg_widget_next_id(void) {
 
 /// @brief Default vtable destroy — no-op; the base destroy path frees impl_data itself for plain
 /// containers.
+/// @param self Widget being destroyed; intentionally unused.
 static void default_destroy(vg_widget_t *self) {
     // Default: do nothing. The base destroy path owns impl_data by default.
 }
 
 /// @brief Default vtable measure — derives the container's measured size from its preferred
 /// constraints and the maximum child extents.
+/// @param self Generic widget whose measured dimensions are updated.
+/// @param available_width Parent-provided horizontal space; currently advisory.
+/// @param available_height Parent-provided vertical space; currently advisory.
 static void default_measure(vg_widget_t *self, float available_width, float available_height) {
     (void)available_width;
     (void)available_height;
@@ -727,6 +746,11 @@ static void default_measure(vg_widget_t *self, float available_width, float avai
 
 /// @brief Default vtable arrange — applies constraints, positions this widget, and flows visible
 /// children vertically with content padding.
+/// @param self Generic widget and children to arrange.
+/// @param x Assigned X origin.
+/// @param y Assigned Y origin.
+/// @param width Assigned outer width before constraint clamping.
+/// @param height Assigned outer height before constraint clamping.
 static void default_arrange(vg_widget_t *self, float x, float y, float width, float height) {
     // Apply constraints
     if (self->constraints.min_width > 0 && width < self->constraints.min_width) {
@@ -791,23 +815,32 @@ static void default_arrange(vg_widget_t *self, float x, float y, float width, fl
 
 /// @brief Default vtable paint — no-op; containers rely on the recursive tree walk to paint
 /// children.
+/// @param self Generic widget being visited; intentionally unused.
+/// @param canvas Backend canvas; intentionally unused.
 static void default_paint(vg_widget_t *self, void *canvas) {
     // Default: paint nothing (container just paints children)
 }
 
 /// @brief Default vtable handle_event — returns false (not handled); concrete widgets override
 /// this.
+/// @param self Generic event target; intentionally unused.
+/// @param event Event offered to the target; intentionally unused.
+/// @return Always false so normal propagation continues.
 static bool default_handle_event(vg_widget_t *self, vg_event_t *event) {
     return false; // Not handled
 }
 
 /// @brief Default vtable can_focus — returns false; interactive widgets (button, textinput, etc.)
 /// override to true.
+/// @param self Generic widget being queried; intentionally unused.
+/// @return Always false.
 static bool default_can_focus(vg_widget_t *self) {
     return false; // Most widgets can't focus by default
 }
 
 /// @brief Default vtable on_focus — sets or clears VG_STATE_FOCUSED on the widget.
+/// @param self Widget whose focused state bit is updated.
+/// @param gained True when focus was acquired, or false when it was lost.
 static void default_on_focus(vg_widget_t *self, bool gained) {
     if (gained) {
         self->state |= VG_STATE_FOCUSED;
@@ -831,6 +864,9 @@ static const vg_widget_vtable_t g_default_vtable = {
 };
 
 /// @brief Returns true if @p ancestor is equal to or is a parent/grandparent of @p widget.
+/// @param ancestor Candidate ancestor widget.
+/// @param widget Candidate descendant from which the parent chain is walked.
+/// @return True when @p ancestor occurs on @p widget's inclusive parent chain.
 static bool widget_is_ancestor(const vg_widget_t *ancestor, const vg_widget_t *widget) {
     for (const vg_widget_t *current = widget; current; current = current->parent) {
         if (current == ancestor)
@@ -840,6 +876,8 @@ static bool widget_is_ancestor(const vg_widget_t *ancestor, const vg_widget_t *w
 }
 
 /// @brief Returns true when @p widget and every ancestor are live, visible, and enabled.
+/// @param widget Candidate focus target at the leaf of the checked chain.
+/// @return True when every widget through the root can participate in focus.
 static bool widget_chain_accepts_focus(const vg_widget_t *widget) {
     for (const vg_widget_t *current = widget; current; current = current->parent) {
         if (!vg_widget_is_live(current))
@@ -852,6 +890,7 @@ static bool widget_chain_accepts_focus(const vg_widget_t *widget) {
 
 /// @brief Clears transient visual/interactive state (hover, pressed, focused, drag flags) on @p
 /// widget and all descendants.
+/// @param widget Root of the subtree whose transient state is cleared.
 static void clear_interactive_state_recursive(vg_widget_t *widget) {
     if (!widget)
         return;
@@ -913,6 +952,8 @@ static void clear_interactive_state_recursive(vg_widget_t *widget) {
 
 /// @brief Clears global focus, capture, hover, modal, and click references that point into @p
 /// widget's subtree; optionally notifies the tooltip manager.
+/// @param widget Root of the subtree being hidden, detached, or destroyed.
+/// @param notify_hidden True to notify tooltip management that the subtree is hidden.
 static void clear_runtime_references_for_subtree(vg_widget_t *widget, bool notify_hidden) {
     if (!widget)
         return;
@@ -948,6 +989,13 @@ static void clear_runtime_references_for_subtree(vg_widget_t *widget, bool notif
 }
 
 /// @brief Returns true if (x, y) is inside the axis-aligned rectangle [rx, rx+rw) × [ry, ry+rh).
+/// @param x Point X coordinate.
+/// @param y Point Y coordinate.
+/// @param rx Rectangle left coordinate.
+/// @param ry Rectangle top coordinate.
+/// @param rw Rectangle width.
+/// @param rh Rectangle height.
+/// @return True when the rectangle is nonempty and contains the point.
 static bool point_in_rect(float x, float y, float rx, float ry, float rw, float rh) {
     if (rw <= 0.0f || rh <= 0.0f)
         return false;
@@ -955,6 +1003,11 @@ static bool point_in_rect(float x, float y, float rx, float ry, float rw, float 
 }
 
 /// @brief Returns the screen-space viewport rectangle of @p scroll (excluding scrollbar gutters).
+/// @param scroll ScrollView whose content viewport is calculated.
+/// @param[out] x Optional destination for the viewport's left coordinate.
+/// @param[out] y Optional destination for the viewport's top coordinate.
+/// @param[out] width Optional destination for the non-negative viewport width.
+/// @param[out] height Optional destination for the non-negative viewport height.
 static void scrollview_get_viewport_screen_bounds(
     const vg_scrollview_t *scroll, float *x, float *y, float *width, float *height) {
     if (!scroll) {
@@ -995,6 +1048,10 @@ static void scrollview_get_viewport_screen_bounds(
 
 /// @brief Returns true if (x, y) is within every ancestor's clip rectangle (ScrollView viewport or
 /// full bounds).
+/// @param widget Candidate hit-test widget whose ancestor clips are examined.
+/// @param x Screen-space point X coordinate.
+/// @param y Screen-space point Y coordinate.
+/// @return True when no ancestor clip excludes the point.
 static bool widget_point_within_ancestor_clips(const vg_widget_t *widget, float x, float y) {
     for (const vg_widget_t *ancestor = widget ? widget->parent : NULL; ancestor;
          ancestor = ancestor->parent) {
@@ -1020,6 +1077,7 @@ static bool widget_point_within_ancestor_clips(const vg_widget_t *widget, float 
 
 /// @brief Zero-initializes @p widget in-place, assigns a unique ID, sets type and vtable, and
 /// registers it in the live-widget list.
+/// @copydetails vg_widget_init
 void vg_widget_init(vg_widget_t *widget, vg_widget_type_t type, const vg_widget_vtable_t *vtable) {
     if (!widget)
         return;
@@ -1045,6 +1103,7 @@ void vg_widget_init(vg_widget_t *widget, vg_widget_type_t type, const vg_widget_
 
 /// @brief Returns true if @p widget is in the live-widget list and its magic number is intact
 /// (i.e., not destroyed).
+/// @copydetails vg_widget_is_live
 bool vg_widget_is_live(const vg_widget_t *widget) {
     if (!widget)
         return false;
@@ -1073,6 +1132,7 @@ bool vg_widget_is_live(const vg_widget_t *widget) {
 
 /// @brief Heap-allocates and initializes a bare widget of the given type with the default vtable;
 /// returns NULL on failure.
+/// @copydetails vg_widget_create
 vg_widget_t *vg_widget_create(vg_widget_type_t type) {
     vg_widget_t *widget = calloc(1, sizeof(vg_widget_t));
     if (!widget)
@@ -1085,6 +1145,7 @@ vg_widget_t *vg_widget_create(vg_widget_type_t type) {
 
 /// @brief Recursively destroys @p widget and all its children, clears global runtime references,
 /// calls vtable destroy, frees all owned data.
+/// @copydetails vg_widget_destroy
 void vg_widget_destroy(vg_widget_t *widget) {
     if (!vg_widget_is_live(widget))
         return;
@@ -1173,6 +1234,7 @@ void vg_widget_destroy(vg_widget_t *widget) {
 
 /// @brief Transfers ownership of impl_data out of the widget (sets it to NULL) and returns the
 /// pointer to the caller.
+/// @copydetails vg_widget_take_impl_data
 void *vg_widget_take_impl_data(vg_widget_t *widget) {
     if (!widget)
         return NULL;
@@ -1187,6 +1249,7 @@ void *vg_widget_take_impl_data(vg_widget_t *widget) {
 
 /// @brief Appends @p child to @p parent's child list; re-parents child if it belonged to another
 /// widget.
+/// @copydetails vg_widget_add_child
 void vg_widget_add_child(vg_widget_t *parent, vg_widget_t *child) {
     if (!parent || !child)
         return;
@@ -1220,6 +1283,7 @@ void vg_widget_add_child(vg_widget_t *parent, vg_widget_t *child) {
 
 /// @brief Inserts @p child into @p parent at the given @p index (0 = before first); appends at end
 /// if index >= child_count.
+/// @copydetails vg_widget_insert_child
 void vg_widget_insert_child(vg_widget_t *parent, vg_widget_t *child, int index) {
     if (!parent || !child)
         return;
@@ -1283,6 +1347,7 @@ void vg_widget_insert_child(vg_widget_t *parent, vg_widget_t *child, int index) 
 
 /// @brief Detaches @p child from @p parent's list, clears runtime references for the subtree, and
 /// notifies the layout system.
+/// @copydetails vg_widget_remove_child
 void vg_widget_remove_child(vg_widget_t *parent, vg_widget_t *child) {
     if (!parent || !child || child->parent != parent)
         return;
@@ -1314,6 +1379,7 @@ void vg_widget_remove_child(vg_widget_t *parent, vg_widget_t *child) {
 
 /// @brief Detaches all children from @p parent without destroying them; runtime references for each
 /// child subtree are cleared.
+/// @copydetails vg_widget_clear_children
 void vg_widget_clear_children(vg_widget_t *parent) {
     if (!parent)
         return;
@@ -1338,6 +1404,7 @@ void vg_widget_clear_children(vg_widget_t *parent) {
 }
 
 /// @brief Returns the child widget at the given @p index (0-based), or NULL if out of range.
+/// @copydetails vg_widget_get_child
 vg_widget_t *vg_widget_get_child(vg_widget_t *parent, int index) {
     if (!parent || index < 0 || index >= parent->child_count)
         return NULL;
@@ -1352,6 +1419,7 @@ vg_widget_t *vg_widget_get_child(vg_widget_t *parent, int index) {
 
 /// @brief Recursively searches the subtree rooted at @p root for the first widget whose name
 /// matches @p name.
+/// @copydetails vg_widget_find_by_name
 vg_widget_t *vg_widget_find_by_name(vg_widget_t *root, const char *name) {
     if (!root || !name)
         return NULL;
@@ -1371,6 +1439,7 @@ vg_widget_t *vg_widget_find_by_name(vg_widget_t *root, const char *name) {
 
 /// @brief Recursively searches the subtree rooted at @p root for the widget with the given unique
 /// @p id.
+/// @copydetails vg_widget_find_by_id
 vg_widget_t *vg_widget_find_by_id(vg_widget_t *root, uint64_t id) {
     if (!root)
         return NULL;
@@ -1393,6 +1462,7 @@ vg_widget_t *vg_widget_find_by_id(vg_widget_t *root, uint64_t id) {
 //=============================================================================
 
 /// @brief Sets all sizing constraints on @p widget at once, normalizing them to be self-consistent.
+/// @copydetails vg_widget_set_constraints
 void vg_widget_set_constraints(vg_widget_t *widget, vg_constraints_t constraints) {
     if (!widget)
         return;
@@ -1406,6 +1476,7 @@ void vg_widget_set_constraints(vg_widget_t *widget, vg_constraints_t constraints
 
 /// @brief Sets the minimum allowed size for @p widget, re-normalizing other constraints to stay
 /// consistent.
+/// @copydetails vg_widget_set_min_size
 void vg_widget_set_min_size(vg_widget_t *widget, float width, float height) {
     if (!widget)
         return;
@@ -1422,6 +1493,7 @@ void vg_widget_set_min_size(vg_widget_t *widget, float width, float height) {
 
 /// @brief Sets the maximum allowed size for @p widget, re-normalizing other constraints to stay
 /// consistent.
+/// @copydetails vg_widget_set_max_size
 void vg_widget_set_max_size(vg_widget_t *widget, float width, float height) {
     if (!widget)
         return;
@@ -1438,6 +1510,7 @@ void vg_widget_set_max_size(vg_widget_t *widget, float width, float height) {
 
 /// @brief Sets the preferred (natural) size for @p widget; overrides content-derived sizes during
 /// measure.
+/// @copydetails vg_widget_set_preferred_size
 void vg_widget_set_preferred_size(vg_widget_t *widget, float width, float height) {
     if (!widget)
         return;
@@ -1455,6 +1528,7 @@ void vg_widget_set_preferred_size(vg_widget_t *widget, float width, float height
 
 /// @brief Locks @p widget to an exact pixel size by setting min, max, and preferred to the same
 /// value.
+/// @copydetails vg_widget_set_fixed_size
 void vg_widget_set_fixed_size(vg_widget_t *widget, float width, float height) {
     if (!widget)
         return;
@@ -1478,6 +1552,7 @@ void vg_widget_set_fixed_size(vg_widget_t *widget, float width, float height) {
 
 /// @brief Clamps the widget's measured_width/height to its min/max/preferred constraints after
 /// measure.
+/// @copydetails vg_widget_apply_constraints
 void vg_widget_apply_constraints(vg_widget_t *widget) {
     if (!widget)
         return;
@@ -1505,6 +1580,7 @@ void vg_widget_apply_constraints(vg_widget_t *widget) {
 
 /// @brief Returns the widget's bounds in its parent's coordinate space; corrects for screen-space
 /// paint mode.
+/// @copydetails vg_widget_get_bounds
 void vg_widget_get_bounds(vg_widget_t *widget, float *x, float *y, float *width, float *height) {
     if (!widget)
         return;
@@ -1528,6 +1604,7 @@ void vg_widget_get_bounds(vg_widget_t *widget, float *x, float *y, float *width,
 
 /// @brief Returns the widget's bounds in screen (root-relative) coordinates by summing ancestor
 /// positions.
+/// @copydetails vg_widget_get_screen_bounds
 void vg_widget_get_screen_bounds(
     const vg_widget_t *widget, float *x, float *y, float *width, float *height) {
     if (!widget)
@@ -1562,6 +1639,7 @@ void vg_widget_get_screen_bounds(
 //=============================================================================
 
 /// @brief Sets the flex grow factor for @p widget and marks the parent's layout dirty.
+/// @copydetails vg_widget_set_flex
 void vg_widget_set_flex(vg_widget_t *widget, float flex) {
     if (!widget)
         return;
@@ -1574,6 +1652,7 @@ void vg_widget_set_flex(vg_widget_t *widget, float flex) {
 }
 
 /// @brief Sets all four margins of @p widget to the same value and marks the parent's layout dirty.
+/// @copydetails vg_widget_set_margin
 void vg_widget_set_margin(vg_widget_t *widget, float margin) {
     if (!widget)
         return;
@@ -1591,6 +1670,7 @@ void vg_widget_set_margin(vg_widget_t *widget, float margin) {
 }
 
 /// @brief Sets per-side margins on @p widget and marks the parent's layout dirty.
+/// @copydetails vg_widget_set_margins
 void vg_widget_set_margins(vg_widget_t *widget, float left, float top, float right, float bottom) {
     if (!widget)
         return;
@@ -1611,6 +1691,7 @@ void vg_widget_set_margins(vg_widget_t *widget, float left, float top, float rig
 }
 
 /// @brief Sets all four padding sides of @p widget to the same value and marks the layout dirty.
+/// @copydetails vg_widget_set_padding
 void vg_widget_set_padding(vg_widget_t *widget, float padding) {
     if (!widget)
         return;
@@ -1628,6 +1709,7 @@ void vg_widget_set_padding(vg_widget_t *widget, float padding) {
 }
 
 /// @brief Sets per-side padding on @p widget and marks the layout dirty.
+/// @copydetails vg_widget_set_paddings
 void vg_widget_set_paddings(vg_widget_t *widget, float left, float top, float right, float bottom) {
     if (!widget)
         return;
@@ -1653,6 +1735,7 @@ void vg_widget_set_paddings(vg_widget_t *widget, float left, float top, float ri
 
 /// @brief Enables or disables @p widget; on disable clears focus, capture, hover, modal, and click
 /// references for the subtree.
+/// @copydetails vg_widget_set_enabled
 void vg_widget_set_enabled(vg_widget_t *widget, bool enabled) {
     if (!widget)
         return;
@@ -1696,12 +1779,14 @@ void vg_widget_set_enabled(vg_widget_t *widget, bool enabled) {
 }
 
 /// @brief Returns the widget's enabled flag, or false for NULL.
+/// @copydetails vg_widget_is_enabled
 bool vg_widget_is_enabled(vg_widget_t *widget) {
     return widget && widget->enabled;
 }
 
 /// @brief Shows or hides @p widget; on hide clears all runtime references for the subtree and marks
 /// the parent layout dirty.
+/// @copydetails vg_widget_set_visible
 void vg_widget_set_visible(vg_widget_t *widget, bool visible) {
     if (!widget)
         return;
@@ -1747,16 +1832,19 @@ void vg_widget_set_visible(vg_widget_t *widget, bool visible) {
 }
 
 /// @brief Returns the widget's visible flag, or false for NULL.
+/// @copydetails vg_widget_is_visible
 bool vg_widget_is_visible(vg_widget_t *widget) {
     return widget && widget->visible;
 }
 
 /// @brief Returns true if the widget's state field has all bits in @p state set.
+/// @copydetails vg_widget_has_state
 bool vg_widget_has_state(vg_widget_t *widget, vg_widget_state_t state) {
     return widget && (widget->state & state);
 }
 
 /// @brief Sets @p widget's debug name, strdup'ing the string and freeing any previously set name.
+/// @copydetails vg_widget_set_name
 void vg_widget_set_name(vg_widget_t *widget, const char *name) {
     if (!widget)
         return;
@@ -1781,6 +1869,7 @@ void vg_widget_set_name(vg_widget_t *widget, const char *name) {
 }
 
 /// @brief Returns the widget's debug name, or NULL if none was set.
+/// @copydetails vg_widget_get_name
 const char *vg_widget_get_name(vg_widget_t *widget) {
     return widget ? widget->name : NULL;
 }
@@ -1791,6 +1880,7 @@ const char *vg_widget_get_name(vg_widget_t *widget) {
 
 /// @brief Dispatches the measure pass to @p root's vtable; recurses into children first for
 /// containers using the default measure.
+/// @copydetails vg_widget_measure
 void vg_widget_measure(vg_widget_t *root, float available_width, float available_height) {
     if (!root || !root->visible)
         return;
@@ -1833,6 +1923,7 @@ void vg_widget_measure(vg_widget_t *root, float available_width, float available
 
 /// @brief Dispatches the arrange pass to @p root's vtable (or falls back to direct position
 /// assignment), then clears needs_layout.
+/// @copydetails vg_widget_arrange
 void vg_widget_arrange(vg_widget_t *root, float x, float y, float width, float height) {
     if (!root || !root->visible)
         return;
@@ -1868,6 +1959,7 @@ void vg_widget_arrange(vg_widget_t *root, float x, float y, float width, float h
 
 /// @brief Runs the full two-pass layout (measure then arrange) for @p root at the origin with the
 /// given available size.
+/// @copydetails vg_widget_layout
 void vg_widget_layout(vg_widget_t *root, float available_width, float available_height) {
     vg_widget_measure(root, available_width, available_height);
     vg_widget_arrange(root, 0, 0, available_width, available_height);
@@ -1875,6 +1967,7 @@ void vg_widget_layout(vg_widget_t *root, float available_width, float available_
 
 /// @brief Paints the entire widget tree (normal pass then overlay pass) and clears all needs_paint
 /// flags.
+/// @copydetails vg_widget_paint
 void vg_widget_paint(vg_widget_t *root, void *canvas) {
     if (!root || !root->visible || !canvas)
         return;
@@ -1887,6 +1980,7 @@ void vg_widget_paint(vg_widget_t *root, void *canvas) {
 
 /// @brief Marks @p widget and all its ancestors as needing repaint (for clipping region
 /// invalidation).
+/// @copydetails vg_widget_invalidate
 void vg_widget_invalidate(vg_widget_t *widget) {
     if (!widget)
         return;
@@ -1901,6 +1995,7 @@ void vg_widget_invalidate(vg_widget_t *widget) {
 }
 
 /// @brief Marks @p widget and all its ancestors as needing both layout and repaint.
+/// @copydetails vg_widget_invalidate_layout
 void vg_widget_invalidate_layout(vg_widget_t *widget) {
     if (!widget)
         return;
@@ -1911,6 +2006,7 @@ void vg_widget_invalidate_layout(vg_widget_t *widget) {
 /// @details Invalid distances are normalized to zero. Invalidating on change is
 ///          essential because the preceding visual rectangle must be cleared as
 ///          well as the newly enlarged or reduced rectangle.
+/// @copydetails vg_widget_set_visual_overflow
 void vg_widget_set_visual_overflow(
     vg_widget_t *widget, float left, float top, float right, float bottom) {
     if (!vg_widget_is_live(widget))
@@ -1936,6 +2032,7 @@ void vg_widget_set_visual_overflow(
 ///          widget-specific popup geometry, and conservative theme effects. All
 ///          callback results are validated before they enter the union so a buggy
 ///          custom widget cannot poison the application's damage accumulator.
+/// @copydetails vg_widget_get_visual_bounds
 void vg_widget_get_visual_bounds(
     vg_widget_t *widget, float *x, float *y, float *width, float *height) {
     float out_x = 0.0f;
@@ -2014,6 +2111,7 @@ done:
 //=============================================================================
 
 /// @brief Increment a live widget's non-consuming public revision with saturation.
+/// @copydetails vg_widget_note_revision
 void vg_widget_note_revision(vg_widget_t *widget) {
     if (!vg_widget_is_live(widget))
         return;
@@ -2021,6 +2119,7 @@ void vg_widget_note_revision(vg_widget_t *widget) {
 }
 
 /// @brief Return a live widget's non-consuming public revision.
+/// @copydetails vg_widget_get_revision
 uint64_t vg_widget_get_revision(const vg_widget_t *widget) {
     return vg_widget_is_live(widget) ? widget->revision : 0;
 }
@@ -2091,6 +2190,7 @@ bool vg_widget_was_submitted(vg_widget_t *widget) {
 }
 
 /// @brief Set a widget's semantic role and advance semantic state on change.
+/// @copydetails vg_widget_set_accessible_role
 void vg_widget_set_accessible_role(vg_widget_t *widget, vg_accessible_role_t role) {
     if (!vg_widget_is_live(widget))
         return;
@@ -2103,11 +2203,13 @@ void vg_widget_set_accessible_role(vg_widget_t *widget, vg_accessible_role_t rol
 }
 
 /// @brief Return a widget's semantic role or none for an invalid handle.
+/// @copydetails vg_widget_get_accessible_role
 vg_accessible_role_t vg_widget_get_accessible_role(const vg_widget_t *widget) {
     return vg_widget_is_live(widget) ? widget->accessibility.role : VG_ACCESSIBLE_ROLE_NONE;
 }
 
 /// @brief Atomically set or clear a widget's explicit accessible name.
+/// @copydetails vg_widget_set_accessible_name
 void vg_widget_set_accessible_name(vg_widget_t *widget, const char *name) {
     if (!vg_widget_is_live(widget))
         return;
@@ -2115,12 +2217,14 @@ void vg_widget_set_accessible_name(vg_widget_t *widget, const char *name) {
 }
 
 /// @brief Return the borrowed explicit accessible-name override.
+/// @copydetails vg_widget_get_accessible_name
 const char *vg_widget_get_accessible_name(const vg_widget_t *widget) {
     return vg_widget_is_live(widget) && widget->accessibility.name ? widget->accessibility.name
                                                                    : "";
 }
 
 /// @brief Atomically set or clear a widget's accessible description.
+/// @copydetails vg_widget_set_accessible_description
 void vg_widget_set_accessible_description(vg_widget_t *widget, const char *description) {
     if (!vg_widget_is_live(widget))
         return;
@@ -2128,6 +2232,7 @@ void vg_widget_set_accessible_description(vg_widget_t *widget, const char *descr
 }
 
 /// @brief Return the borrowed accessible-description override.
+/// @copydetails vg_widget_get_accessible_description
 const char *vg_widget_get_accessible_description(const vg_widget_t *widget) {
     return vg_widget_is_live(widget) && widget->accessibility.description
                ? widget->accessibility.description
@@ -2135,6 +2240,7 @@ const char *vg_widget_get_accessible_description(const vg_widget_t *widget) {
 }
 
 /// @brief Atomically set or clear a widget's explicit accessible value.
+/// @copydetails vg_widget_set_accessible_value
 void vg_widget_set_accessible_value(vg_widget_t *widget, const char *value) {
     if (!vg_widget_is_live(widget))
         return;
@@ -2142,6 +2248,7 @@ void vg_widget_set_accessible_value(vg_widget_t *widget, const char *value) {
 }
 
 /// @brief Return the borrowed explicit accessible-value override.
+/// @copydetails vg_widget_get_accessible_value
 const char *vg_widget_get_accessible_value(const vg_widget_t *widget) {
     return vg_widget_is_live(widget) && widget->accessibility.value ? widget->accessibility.value
                                                                     : "";
@@ -2158,6 +2265,7 @@ static const vg_widget_t *widget_accessibility_root(const vg_widget_t *widget) {
 }
 
 /// @brief Install or clear a same-tree label relationship.
+/// @copydetails vg_widget_set_accessible_label_for
 bool vg_widget_set_accessible_label_for(vg_widget_t *widget, vg_widget_t *target) {
     if (!vg_widget_is_live(widget))
         return false;
@@ -2184,6 +2292,7 @@ bool vg_widget_set_accessible_label_for(vg_widget_t *widget, vg_widget_t *target
 }
 
 /// @brief Return a same-tree, address-and-ID-validated label target.
+/// @copydetails vg_widget_get_accessible_label_for
 vg_widget_t *vg_widget_get_accessible_label_for(const vg_widget_t *widget) {
     if (!vg_widget_is_live(widget))
         return NULL;
@@ -2196,6 +2305,7 @@ vg_widget_t *vg_widget_get_accessible_label_for(const vg_widget_t *widget) {
 }
 
 /// @brief Set a widget's default live-region urgency.
+/// @copydetails vg_widget_set_live_region
 void vg_widget_set_live_region(vg_widget_t *widget, vg_live_region_mode_t mode) {
     if (!vg_widget_is_live(widget))
         return;
@@ -2208,11 +2318,13 @@ void vg_widget_set_live_region(vg_widget_t *widget, vg_live_region_mode_t mode) 
 }
 
 /// @brief Return a widget's live-region urgency or off for invalid handles.
+/// @copydetails vg_widget_get_live_region
 vg_live_region_mode_t vg_widget_get_live_region(const vg_widget_t *widget) {
     return vg_widget_is_live(widget) ? widget->accessibility.live_mode : VG_LIVE_REGION_OFF;
 }
 
 /// @brief Record a semantic live-region announcement with an independent edge revision.
+/// @copydetails vg_widget_accessibility_announce
 void vg_widget_accessibility_announce(vg_widget_t *widget,
                                       const char *text,
                                       vg_live_region_mode_t mode) {
@@ -2247,6 +2359,7 @@ void vg_widget_accessibility_announce(vg_widget_t *widget,
 
 /// @brief Returns the deepest visible, enabled widget at screen point (x, y) within @p root,
 /// respecting ScrollView clip bounds.
+/// @copydetails vg_widget_hit_test
 vg_widget_t *vg_widget_hit_test(vg_widget_t *root, float x, float y) {
     if (!root || !root->visible || !root->enabled)
         return NULL;
@@ -2297,6 +2410,7 @@ vg_widget_t *vg_widget_hit_test(vg_widget_t *root, float x, float y) {
 
 /// @brief Returns true if screen point (x, y) is within @p widget's screen bounds and within all
 /// ancestor clip regions.
+/// @copydetails vg_widget_contains_point
 bool vg_widget_contains_point(vg_widget_t *widget, float x, float y) {
     if (!widget)
         return false;
@@ -2317,6 +2431,7 @@ bool vg_widget_contains_point(vg_widget_t *widget, float x, float y) {
 
 /// @brief Routes all subsequent mouse events to @p widget, bypassing hit-testing (used by open
 /// dropdowns/menus).
+/// @copydetails vg_widget_set_input_capture
 void vg_widget_set_input_capture(vg_widget_t *widget) {
     if (!widget) {
         g_input_capture_widget = NULL;
@@ -2365,6 +2480,9 @@ float vg_get_wheel_speed(void) {
 }
 
 /// @brief Returns @p widget if it is live and its stored ID matches @p id; otherwise NULL.
+/// @param widget Candidate pointer restored from a runtime snapshot.
+/// @param id Expected stable widget identifier stored with the pointer.
+/// @return Validated live widget reference, or NULL when either check fails.
 static vg_widget_t *runtime_widget_ref(vg_widget_t *widget, uint64_t id) {
     if (!vg_widget_is_live(widget))
         return NULL;
@@ -2374,6 +2492,7 @@ static vg_widget_t *runtime_widget_ref(vg_widget_t *widget, uint64_t id) {
 }
 
 /// @brief Snapshots the current global focus, capture, modal, hover, and click state into @p state.
+/// @copydetails vg_widget_get_runtime_state
 void vg_widget_get_runtime_state(vg_widget_runtime_state_t *state) {
     if (!state)
         return;
@@ -2399,6 +2518,7 @@ void vg_widget_get_runtime_state(vg_widget_runtime_state_t *state) {
 
 /// @brief Restores global runtime state from @p state, re-validating each widget pointer to guard
 /// against stale references.
+/// @copydetails vg_widget_set_runtime_state
 void vg_widget_set_runtime_state(const vg_widget_runtime_state_t *state) {
     if (!state) {
         g_focused_widget = NULL;
@@ -2435,6 +2555,7 @@ void vg_widget_set_runtime_state(const vg_widget_runtime_state_t *state) {
 
 /// @brief Records @p widget as the last click recipient at @p timestamp_ms for double-click
 /// reporting.
+/// @copydetails vg_widget_note_click
 void vg_widget_note_click(vg_widget_t *widget, uint64_t timestamp_ms) {
     if (!vg_widget_is_live(widget))
         return;
@@ -2454,6 +2575,7 @@ void vg_widget_clear_reported_click(void) {
 
 /// @brief Focuses @p widget (or clears focus if NULL), calling on_focus callbacks for both the old
 /// and new focused widgets.
+/// @copydetails vg_widget_set_focus
 void vg_widget_set_focus(vg_widget_t *widget) {
     if (!widget) {
         if (g_focused_widget) {
@@ -2500,6 +2622,7 @@ void vg_widget_set_focus(vg_widget_t *widget) {
 
 /// @brief Returns the focused widget if it is live and within @p root's subtree; NULL if none or
 /// out of scope.
+/// @copydetails vg_widget_get_focused
 vg_widget_t *vg_widget_get_focused(vg_widget_t *root) {
     if (!vg_widget_is_live(g_focused_widget))
         return NULL;
@@ -2517,6 +2640,9 @@ typedef struct focus_list {
 } focus_list_t;
 
 /// @brief Appends @p widget to the dynamic focus list, growing the backing array as needed.
+/// @param list Focus-list destination that owns the dynamic array.
+/// @param widget Focusable widget to append.
+/// @return True when appended, or false for invalid input, overflow, or allocation failure.
 static bool focus_list_append(focus_list_t *list, vg_widget_t *widget) {
     if (!list || !widget)
         return false;
@@ -2540,6 +2666,9 @@ static bool focus_list_append(focus_list_t *list, vg_widget_t *widget) {
 }
 
 /// @brief Recursively collects all visible, enabled, focusable descendants of @p root into @p list.
+/// @param root Root of the subtree to traverse in depth-first order.
+/// @param list Destination focus list.
+/// @return True when collection completes; false when list growth fails.
 static bool collect_focusable(vg_widget_t *root, focus_list_t *list) {
     if (!root)
         return true;
@@ -2561,6 +2690,11 @@ static bool collect_focusable(vg_widget_t *root, focus_list_t *list) {
 
 /// @brief Stable merge of arr[lo..mid) and arr[mid..hi) into arr[lo..hi) using @p tmp scratch;
 /// natural-order (-1) sorts after explicit indices.
+/// @param[in,out] arr Widget array whose two sorted ranges are merged.
+/// @param tmp Scratch array with storage corresponding to @p arr.
+/// @param lo Inclusive beginning of the first range.
+/// @param mid Exclusive end of the first range and beginning of the second.
+/// @param hi Exclusive end of the second range.
 static void tab_merge(vg_widget_t **arr, vg_widget_t **tmp, int lo, int mid, int hi) {
     int i = lo, j = mid, k = lo;
     while (i < mid && j < hi) {
@@ -2588,6 +2722,10 @@ static void tab_merge(vg_widget_t **arr, vg_widget_t **tmp, int lo, int mid, int
 
 /// @brief Recursive merge sort entry-point for tab-order sorting; O(n log n) with stable DFS order
 /// for equal keys.
+/// @param[in,out] arr Widget array to sort.
+/// @param tmp Scratch array with at least as many entries as @p arr.
+/// @param lo Inclusive beginning of the range.
+/// @param hi Exclusive end of the range.
 static void tab_merge_sort(vg_widget_t **arr, vg_widget_t **tmp, int lo, int hi) {
     if (hi - lo <= 1)
         return;
@@ -2599,6 +2737,9 @@ static void tab_merge_sort(vg_widget_t **arr, vg_widget_t **tmp, int lo, int hi)
 
 /// @brief Builds a sorted array of focusable widgets from @p root's subtree in tab order; caller
 /// must free *out_items.
+/// @param root Root of the subtree whose tab order is collected.
+/// @param[out] out_items Receives an owned sorted array, or NULL when empty or allocation fails.
+/// @return Number of widgets in the returned array.
 static int build_tab_order(vg_widget_t *root, vg_widget_t ***out_items) {
     if (!out_items)
         return 0;
@@ -2625,6 +2766,7 @@ static int build_tab_order(vg_widget_t *root, vg_widget_t ***out_items) {
 }
 
 /// @brief Moves focus to the next widget in tab order within @p root, wrapping around at the end.
+/// @copydetails vg_widget_focus_next
 void vg_widget_focus_next(vg_widget_t *root) {
     if (!root)
         return;
@@ -2651,6 +2793,7 @@ void vg_widget_focus_next(vg_widget_t *root) {
 
 /// @brief Moves focus to the previous widget in tab order within @p root, wrapping around at the
 /// start.
+/// @copydetails vg_widget_focus_prev
 void vg_widget_focus_prev(vg_widget_t *root) {
     if (!root)
         return;
@@ -2681,6 +2824,7 @@ void vg_widget_focus_prev(vg_widget_t *root) {
 
 /// @brief Sets the explicit tab-index for @p widget; -1 means natural DFS order after all
 /// explicitly indexed widgets.
+/// @copydetails vg_widget_set_tab_index
 void vg_widget_set_tab_index(vg_widget_t *widget, int tab_index) {
     if (!widget)
         return;
@@ -2696,6 +2840,7 @@ void vg_widget_set_tab_index(vg_widget_t *widget, int tab_index) {
 
 /// @brief Sets @p widget as the application's modal root; all event routing is restricted to its
 /// subtree until cleared.
+/// @copydetails vg_widget_set_modal_root
 void vg_widget_set_modal_root(vg_widget_t *widget) {
     if (!widget) {
         g_modal_root = NULL;

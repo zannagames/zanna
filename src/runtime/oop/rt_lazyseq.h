@@ -13,15 +13,27 @@
 //     state; see rt_lazyseq_reset in the implementation.
 //   - Collector operations (ToList, Count) may not terminate on infinite sequences.
 //   - Functional operations (Map/Filter) return new lazy sequences; they do not materialize.
-//   - rt_lazyseq_next returns NULL to signal exhaustion.
+//   - `has_more`, not the element pointer, distinguishes exhaustion from a yielded NULL.
 //
 // Ownership/Lifetime:
 //   - Caller owns the rt_lazyseq handle; destroy with rt_lazyseq_destroy.
-//   - Internal generator state is owned by the lazy sequence object.
+//   - Generator state and callback pointers are borrowed.
+//   - Composite nodes retain their source LazySeq handles.
+//   - Repeat retains its repeated managed object for the node lifetime.
 //
 // Links: src/runtime/oop/rt_lazyseq.c (implementation)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_lazyseq.h
+ * @brief Declares lazy sequence generation, transformation, and collection APIs.
+ * @details LazySeq nodes are single-pass streams backed by borrowed callbacks
+ *          and state or retained source nodes. The API supports on-demand
+ *          access, map/filter and slicing pipelines, concatenation and zip,
+ *          iteration, eager collection, and limited reset semantics.
+ */
+
 #pragma once
 
 #include <stdint.h>
@@ -217,36 +229,132 @@ int8_t rt_lazyseq_all(rt_lazyseq seq, int8_t (*pred)(void *));
 // IL ABI wrappers (void* interface for runtime signature handlers)
 //=============================================================================
 
+/// @brief IL ABI wrapper for @ref rt_lazyseq_range.
+/// @param[in] start Inclusive first integer.
+/// @param[in] end Exclusive directional bound.
+/// @param[in] step Nonzero signed increment.
+/// @return Caller-owned range LazySeq as an opaque pointer.
 void *rt_lazyseq_w_range(int64_t start, int64_t end, int64_t step);
+
+/// @brief IL ABI wrapper for @ref rt_lazyseq_repeat.
+/// @param[in] value Managed object retained by the sequence.
+/// @param[in] count Yield count, or -1 for infinity.
+/// @return Caller-owned repeat LazySeq as an opaque pointer.
 void *rt_lazyseq_w_repeat(void *value, int64_t count);
+
+/// @brief Advance an IL-facing LazySeq while discarding the explicit liveness flag.
+/// @param[in,out] seq Managed LazySeq receiver.
+/// @return Borrowed element, or NULL for either exhaustion or a yielded null.
 void *rt_lazyseq_w_next(void *seq);
 
 /// @brief Next preserving null elements: Some(value) while live, None at end.
+/// @param[in,out] seq Managed LazySeq receiver.
+/// @return Caller-owned Option distinguishing a null element from exhaustion.
 void *rt_lazyseq_w_next_option(void *seq);
 
 /// @brief Peek preserving null elements: Some(value) while live, None at end.
+/// @param[in,out] seq Managed LazySeq receiver.
+/// @return Caller-owned Option distinguishing a null element from exhaustion.
 void *rt_lazyseq_w_peek_option(void *seq);
+
+/// @brief Peek through the IL ABI while discarding the explicit liveness flag.
+/// @param[in,out] seq Managed LazySeq receiver.
+/// @return Borrowed element, or NULL for either exhaustion or a yielded null.
 void *rt_lazyseq_w_peek(void *seq);
+
+/// @brief Reset the resettable cursor state of an IL-facing LazySeq.
+/// @param[in,out] seq Managed LazySeq receiver.
 void rt_lazyseq_w_reset(void *seq);
+
+/// @brief Return the consumed-element index through the IL ABI.
+/// @param[in] seq Managed LazySeq receiver.
+/// @return Number of elements consumed.
 int64_t rt_lazyseq_w_index(void *seq);
+
+/// @brief Query exhaustion through the IL ABI.
+/// @param[in] seq Managed LazySeq receiver.
+/// @return 1 when exhausted; otherwise 0.
 int8_t rt_lazyseq_w_is_exhausted(void *seq);
+
+/// @brief Create a retained take wrapper through the IL ABI.
+/// @param[in] seq Managed source LazySeq.
+/// @param[in] n Nonnegative maximum yield count.
+/// @return Caller-owned take LazySeq.
 void *rt_lazyseq_w_take(void *seq, int64_t n);
+
+/// @brief Create a retained drop wrapper through the IL ABI.
+/// @param[in] seq Managed source LazySeq.
+/// @param[in] n Nonnegative leading-element count.
+/// @return Caller-owned drop LazySeq.
 void *rt_lazyseq_w_drop(void *seq, int64_t n);
+
+/// @brief Concatenate two validated IL-facing LazySeq receivers.
+/// @param[in] first First managed source.
+/// @param[in] second Second managed source.
+/// @return Caller-owned concatenated LazySeq.
 void *rt_lazyseq_w_concat(void *first, void *second);
+
+/// @brief Exhaust an IL-facing LazySeq into an eager owning Seq.
+/// @param[in,out] seq Managed LazySeq receiver.
+/// @return Caller-owned collected Seq.
 void *rt_lazyseq_w_to_seq(void *seq);
+
+/// @brief Collect a bounded prefix through the IL ABI.
+/// @param[in,out] seq Managed LazySeq receiver.
+/// @param[in] n Maximum number of elements.
+/// @return Caller-owned collected Seq.
 void *rt_lazyseq_w_to_seq_n(void *seq, int64_t n);
+
+/// @brief Exhaust and count an IL-facing LazySeq.
+/// @param[in,out] seq Managed LazySeq receiver.
+/// @return Number of consumed elements.
 int64_t rt_lazyseq_w_count(void *seq);
+
+/// @brief Create a mapped LazySeq from an opaque IL callback.
+/// @param[in] seq Managed source LazySeq.
+/// @param[in] fn Opaque transform function pointer.
+/// @return Caller-owned mapped LazySeq.
 void *rt_lazyseq_w_map(void *seq, void *fn);
+
+/// @brief Create a filtered LazySeq from an opaque IL predicate.
+/// @param[in] seq Managed source LazySeq.
+/// @param[in] pred Opaque predicate function pointer.
+/// @return Caller-owned filtered LazySeq.
 void *rt_lazyseq_w_filter(void *seq, void *pred);
+
+/// @brief Create a take-while LazySeq from an opaque IL predicate.
+/// @param[in] seq Managed source LazySeq.
+/// @param[in] pred Opaque predicate function pointer.
+/// @return Caller-owned take-while LazySeq.
 void *rt_lazyseq_w_take_while(void *seq, void *pred);
+
+/// @brief Create a drop-while LazySeq from an opaque IL predicate.
+/// @param[in] seq Managed source LazySeq.
+/// @param[in] pred Opaque predicate function pointer.
+/// @return Caller-owned drop-while LazySeq.
 void *rt_lazyseq_w_drop_while(void *seq, void *pred);
+
+/// @brief Find through the legacy IL ABI that conflates null matches with absence.
+/// @param[in,out] seq Managed LazySeq receiver.
+/// @param[in] pred Opaque predicate function pointer.
+/// @return Borrowed matching element, or NULL for no match or a null match.
 void *rt_lazyseq_w_find(void *seq, void *pred);
 /// @brief Find first matching lazy element as an Option wrapper for IL calls.
-/// @param seq LazySeq object.
-/// @param pred Predicate function (int8_t (*)(void *) cast to void*).
+/// @param[in,out] seq Managed LazySeq receiver.
+/// @param[in] pred Predicate function (int8_t (*)(void *) cast to void*).
 /// @return Opaque Zanna.Option containing the first matching element, or None.
 void *rt_lazyseq_w_find_option(void *seq, void *pred);
+
+/// @brief Test whether any element matches an opaque IL predicate.
+/// @param[in,out] seq Managed LazySeq receiver.
+/// @param[in] pred Opaque predicate function pointer.
+/// @return 1 on the first match; otherwise 0.
 int8_t rt_lazyseq_w_any(void *seq, void *pred);
+
+/// @brief Test whether every element matches an opaque IL predicate.
+/// @param[in,out] seq Managed LazySeq receiver.
+/// @param[in] pred Opaque predicate function pointer.
+/// @return 0 on the first failure; otherwise 1.
 int8_t rt_lazyseq_w_all(void *seq, void *pred);
 
 #ifdef __cplusplus

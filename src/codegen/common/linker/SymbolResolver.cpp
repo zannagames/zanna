@@ -658,6 +658,8 @@ static bool addObjSymbols(const ObjFile &obj,
     return true;
 }
 
+/// @brief Tests whether a Windows symbol should be resolved from a runtime archive.
+///
 /// Runtime archives provide Windows compatibility shims for a small set of
 /// formatting functions. Those definitions must participate in archive
 /// resolution instead of being forced down the dynamic-import path.
@@ -713,6 +715,8 @@ static bool isPreferredArchiveDefinitionObject(const ObjFile &obj, LinkPlatform 
     return isZannaRuntimeArchiveBasename(basenameFromPath(archivePathFromObjectName(obj.name)));
 }
 
+/// @brief Tests whether a duplicate strong definition follows an approved pick-any rule.
+///
 /// MSVC emits some CRT inline-function local statics in every object that uses
 /// the inline helper. Link.exe picks one definition; keep normal user duplicate
 /// strong definitions strict while modeling that pick-any behavior.

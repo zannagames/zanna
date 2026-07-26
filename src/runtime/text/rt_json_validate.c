@@ -6,26 +6,36 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/text/rt_json_validate.c
-// Purpose: Non-allocating JSON syntax validation for the Zanna.Text.Json class
+// Purpose: JSON syntax validation for the Zanna.Data.Json class
 //          per ECMA-404 / RFC 8259. Mirrors the structure of the recursive
-//          descent parser but never allocates and never traps — it returns a
-//          boolean verdict, so callers can cheaply test parseability before
-//          committing to a full parse.
+//          descent parser without constructing a runtime value tree, returning
+//          a Boolean verdict before callers commit to a full parse.
 //
 // Key invariants:
 //   - Shares the json_parser cursor with rt_json_parse.c (rt_json_internal.h)
-//     but allocates no Zanna objects.
+//     but allocates no Zanna objects; finite-number checks use a temporary C
+//     string allocation.
 //   - Returns 0 on any malformed input; 1 only when a complete JSON value is
 //     consumed with no trailing content.
 //
 // Ownership/Lifetime:
-//   - Allocates no heap state; the json_parser borrows the input buffer.
+//   - The json_parser borrows the input buffer.
+//   - Temporary number buffers are freed before the validator returns.
 //
 // Links: src/runtime/text/rt_json.h (public API),
 //        src/runtime/text/rt_json_internal.h (shared parser cursor),
 //        src/runtime/text/rt_json_parse.c (allocating parser)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_json_validate.c
+ * @brief Implements non-tree-building JSON syntax validation.
+ * @details The validator mirrors the allocating parser over the shared cursor,
+ *          checking UTF-8, String escapes, finite numeric lexemes, containers,
+ *          depth, and complete input consumption without creating managed JSON
+ *          values. Only bounded native numeric scratch allocation is used.
+ */
 
 #include "rt_json.h"
 
@@ -42,7 +52,12 @@
 
 /// @brief True if the span [start, start+len) is a finite double under strtod.
 /// @details Used by the number validator to reject values that overflow to
-///          infinity or otherwise fail to round-trip through strtod.
+///          infinity, leave unconsumed bytes, or set `ERANGE`. Copies the span
+///          to a temporary NUL-terminated buffer because `strtod` is not
+///          length-bounded; allocation failure traps and reports false.
+/// @param start Borrowed start of the number lexeme.
+/// @param len Number of bytes in the lexeme.
+/// @return `1` when the entire span converts to a finite double, otherwise `0`.
 static int json_number_is_finite_span(const char *start, size_t len) {
     if (!start || len == 0)
         return 0;
@@ -64,6 +79,10 @@ static int json_number_is_finite_span(const char *start, size_t len) {
 }
 
 /// @brief Consume exactly four hex digits, accumulating their value into `*out`.
+/// @details Invalid input may leave the parser cursor partway through the
+///          four-byte sequence; callers abandon validation immediately.
+/// @param p Mutable parser cursor.
+/// @param out Non-null output receiving the decoded 16-bit value on success.
 /// @return 1 if four hex digits were consumed, 0 otherwise.
 static int validate_hex4(json_parser *p, unsigned int *out) {
     if (p->pos + 4 > p->len)
@@ -81,10 +100,11 @@ static int validate_hex4(json_parser *p, unsigned int *out) {
 
 /// @brief Non-trapping JSON validator: advance the cursor past one JSON value.
 /// @details Mirrors the structure of `parse_value` but never allocates
-///          and never calls `rt_trap` — instead it returns 0 on any
-///          malformed input. Mutually recursive on objects and arrays.
-///          Used by `rt_json_is_valid` for cheap pre-validation
-///          when callers want to test parseability before committing.
+///          runtime values and returns 0 on malformed syntax. It is mutually
+///          recursive for objects and arrays, validates raw UTF-8 and surrogate
+///          pairs, rejects non-finite numbers, and enforces `JSON_MAX_DEPTH`.
+///          Number validation may allocate a temporary C buffer.
+/// @param p Mutable parser cursor positioned before one value.
 /// @return 1 if a complete JSON value was consumed, 0 otherwise.
 static int validate_value(json_parser *p) {
     parser_skip_whitespace(p);
@@ -290,10 +310,13 @@ static int validate_value(json_parser *p) {
 
 /// @brief Quick syntactic check: is `text` parseable as JSON?
 ///
-/// Runs a non-allocating validator that mirrors the real parser,
+/// Runs a tree-free validator that mirrors the real parser,
 /// returning a boolean instead of either the value or a trap.
-/// Useful for input validation before committing to a parse.
-/// @return 1 if valid, 0 if any parse error occurs.
+/// Useful for input validation before committing to a parse. No runtime value
+/// tree is allocated, although numeric lexemes use a temporary C buffer.
+/// @param text Borrowed JSON text; null and empty strings are invalid.
+/// @return `1` only when one complete value plus optional surrounding
+///         whitespace consumes the input, otherwise `0`.
 int8_t rt_json_is_valid(rt_string text) {
     if (!text || rt_str_len(text) == 0)
         return 0;

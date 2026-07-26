@@ -5,16 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implements helpers that parse `--break` specifications for the ilc command
-// line. These helpers accept either label names or `file:line` breakpoints and
-// perform the minimal validation used by the debugger entry point.
-//
-//===----------------------------------------------------------------------===//
-
-/// @file
+/// @file break_spec.cpp
 /// @brief Parses breakpoint specifications accepted by the ilc debugger mode.
-/// @details Only a single helper lives here today, but centralising it keeps the
-///          parsing rules consistent between command-line entry points.
+///
+/// The helper distinguishes label names from @c file:line breakpoints using the minimal
+/// whitespace and decimal validation required by the debugger entry point.
 
 #include "break_spec.hpp"
 

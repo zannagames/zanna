@@ -25,6 +25,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements zero-dependency cryptographic primitives used by TLS.
+ * @details Provides SHA-2, HMAC, HKDF, ChaCha20-Poly1305, AES-GCM, constant-
+ * time authentication checks, secure wiping, and policy-aware entropy with
+ * bounded per-key and derivation limits over caller-owned buffers.
+ */
+
 #include "rt_crypto.h"
 #include "rt_crypto_module.h"
 #include "rt_entropy_platform.h"
@@ -34,8 +42,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+/** RFC 5869 maximum SHA-256 output-keying-material length. */
 #define RT_HKDF_MAX_OKM_LEN (255u * 32u)
+/** RFC 8439 maximum bytes encrypted under one ChaCha20 key and nonce. */
 #define RT_CHACHA20_MAX_BYTES (((UINT64_C(1) << 32) - 1u) * 64u)
+/** GCM payload bound derived from the 32-bit counter space. */
 #define RT_AES_GCM_MAX_BYTES (((UINT64_C(1) << 32) - 2u) * 16u)
 
 /// @brief Secure memory zeroing that the compiler cannot optimize away.

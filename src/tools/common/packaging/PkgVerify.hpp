@@ -22,6 +22,12 @@
 //===----------------------------------------------------------------------===//
 #pragma once
 
+/// @file
+/// @brief Declares read-only structural verifiers for Zanna package artifacts.
+/// @details Each verifier consumes an in-memory byte vector, returns false on
+///          malformed or unsafe content, and writes a human-readable diagnostic
+///          to the supplied stream without modifying the artifact.
+
 #include <cstdint>
 #include <ostream>
 #include <string>
@@ -211,6 +217,9 @@ bool verifyPEZipOverlayNestedPayload(const std::vector<uint8_t> &data,
 /// @details Checks metadata, every payload/shortcut/outer-file SHA-256, the cleanup
 ///          PE, the non-recursive maintenance executable, and setup/maintenance
 ///          identity and payload parity.
+/// @param data Complete native setup executable bytes.
+/// @param err Stream for PE, metadata, inventory, hash, or recursion diagnostics.
+/// @return true when the setup and its embedded maintenance package fully verify.
 bool verifyWindowsNativeInstaller(const std::vector<uint8_t> &data, std::ostream &err);
 
 } // namespace zanna::pkg

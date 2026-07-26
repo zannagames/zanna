@@ -16,6 +16,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Provides dependency-light forward declarations for core IL entities.
+ *
+ * @details Include this header when an interface needs only pointers or
+ *          references to modules, functions, blocks, instructions, or values.
+ *          Consumers requiring object layout or member access must include the
+ *          corresponding defining header.
+ */
+
 #pragma once
 
 namespace il::core {

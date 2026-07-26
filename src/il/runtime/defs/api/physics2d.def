@@ -508,6 +508,8 @@ RT_FUNC(GameSceneLayerCount,       rt_game_scene_layer_count,      "Zanna.Game2D
 RT_FUNC(GameSceneLayerName,        rt_game_scene_layer_name,       "Zanna.Game2D.SceneDocument.LayerName", "str(obj,i64)")
 RT_FUNC(GameSceneSetLayerName,     rt_game_scene_set_layer_name,   "Zanna.Game2D.SceneDocument.SetLayerName", "void(obj,i64,str)")
 RT_FUNC(GameSceneLayerVisible,     rt_game_scene_layer_visible,    "Zanna.Game2D.SceneDocument.LayerVisible", "i1(obj,i64)")
+RT_FUNC(GameSceneLayerOpacity,     rt_game_scene_layer_opacity,    "Zanna.Game2D.SceneDocument.LayerOpacity", "f64(obj,i64)")
+RT_FUNC(GameSceneSetLayerOpacity,  rt_game_scene_set_layer_opacity, "Zanna.Game2D.SceneDocument.SetLayerOpacity", "void(obj,i64,f64)")
 RT_FUNC(GameSceneSetLayerVisible,  rt_game_scene_set_layer_visible,"Zanna.Game2D.SceneDocument.SetLayerVisible", "void(obj,i64,i1)")
 RT_FUNC(GameSceneMoveLayer,        rt_game_scene_move_layer,       "Zanna.Game2D.SceneDocument.MoveLayer", "void(obj,i64,i64)")
 RT_FUNC(GameSceneRemoveLayer,      rt_game_scene_remove_layer,     "Zanna.Game2D.SceneDocument.RemoveLayer", "void(obj,i64)")

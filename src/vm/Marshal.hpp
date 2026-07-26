@@ -13,6 +13,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares value, string, argument, and return marshalling between the
+///        VM and runtime bridge.
+/// @details The API preserves VM slot encodings, exposes bounded borrowed string
+///          views, manages hidden checked-power status arguments, and validates
+///          external-call arity before producing the runtime @c void** ABI.
+
 #pragma once
 
 #include "il/core/Value.hpp"
@@ -31,13 +38,15 @@
 
 namespace il::vm {
 
+/// @brief Non-owning character view used by VM string values.
 using StringRef = std::string_view;
+/// @brief Opaque string handle managed by the C runtime.
 using ZannaString = ::rt_string;
 
 /// @brief Indicates whether a string view is guaranteed to be null-terminated.
 enum class AssumeNullTerminated : bool {
-    No = false,
-    Yes = true,
+    No = false, ///< Do not assume storage has a trailing null byte.
+    Yes = true, ///< Caller guarantees safe null-terminated backing storage.
 };
 
 union Slot;
@@ -46,7 +55,7 @@ namespace detail {
 /// @brief Check whether a runtime-provided string length fits within @p limit.
 /// @param length Length reported by the runtime as a signed 64-bit value.
 /// @param limit Maximum representable size for the destination view type.
-/// @return True when @p length is non-negative and does not exceed @p limit.
+/// @return @c true when @p length is non-negative and does not exceed @p limit.
 /// @note Constexpr for compile-time validation when possible.
 [[nodiscard]] constexpr bool lengthWithinLimit(int64_t length, uint64_t limit) noexcept {
     return length >= 0 && static_cast<uint64_t>(length) <= limit;
@@ -59,23 +68,28 @@ namespace detail {
 inline constexpr uint64_t kMaxBridgeStringBytes =
     static_cast<uint64_t>(std::numeric_limits<int32_t>::max());
 
+/// @brief Stable storage for every runtime return representation.
+/// @details A bridge call selects one member according to its declared return
+///          kind and later copies that member into a VM slot.
 struct ResultBuffers {
-    int64_t i64 = 0;
-    double f64 = 0.0;
-    ZannaString str = nullptr;
-    void *ptr = nullptr;
+    int64_t i64 = 0; ///< Integer and boolean result storage.
+    double f64 = 0.0; ///< Floating-point result storage.
+    ZannaString str = nullptr; ///< Runtime string-handle result storage.
+    void *ptr = nullptr; ///< Opaque pointer result storage.
 };
 
+/// @brief State for the hidden status argument used by checked power helpers.
 struct PowStatus {
-    bool active{false};
-    bool ok{true};
-    bool *ptr{nullptr};
+    bool active{false}; ///< Whether the runtime signature requested status.
+    bool ok{true}; ///< Inline success flag initialized before the call.
+    bool *ptr{nullptr}; ///< Active flag location, which the runtime may replace.
 };
 
+/// @brief Classification produced after inspecting a checked power call.
 struct PowTrapOutcome {
-    bool triggered{false};
-    TrapKind kind{TrapKind::RuntimeError};
-    std::string message;
+    bool triggered{false}; ///< Whether the completed call must trap.
+    TrapKind kind{TrapKind::RuntimeError}; ///< Trap category when triggered.
+    std::string message; ///< Owning diagnostic text when triggered.
 };
 
 /// @brief Convert a host string view into a runtime string handle.
@@ -194,21 +208,25 @@ struct MarshalledArgs {
     bool usingHeap{false};
 
     /// @brief Get pointer to the argument array.
+    /// @return Mutable pointer to the active inline or heap storage.
     [[nodiscard]] void **data() noexcept {
         return usingHeap ? heapBuffer.data() : inlineBuffer.data();
     }
 
     /// @brief Get const pointer to the argument array.
+    /// @return Read-only pointer to the active inline or heap storage.
     [[nodiscard]] void *const *data() const noexcept {
         return usingHeap ? heapBuffer.data() : inlineBuffer.data();
     }
 
     /// @brief Check if empty.
+    /// @return @c true when no argument pointers are stored.
     [[nodiscard]] bool empty() const noexcept {
         return count == 0;
     }
 
     /// @brief Get number of arguments.
+    /// @return Number of visible and hidden arguments marshalled.
     [[nodiscard]] std::size_t size() const noexcept {
         return count;
     }
@@ -219,8 +237,8 @@ struct MarshalledArgs {
 ///          arguments. This covers the vast majority of runtime calls.
 /// @param sig Runtime signature describing parameter types.
 /// @param args Argument slots to marshal.
-/// @param powStatus [out] Power function status tracker.
-/// @param result [out] Marshalled arguments (uses inline or heap storage).
+/// @param [in,out] powStatus Power function status tracker.
+/// @param [out] result Marshalled arguments using inline or heap storage.
 void marshalArgumentsInline(const il::runtime::RuntimeSignature &sig,
                             std::span<Slot> args,
                             PowStatus &powStatus,
@@ -228,6 +246,10 @@ void marshalArgumentsInline(const il::runtime::RuntimeSignature &sig,
 
 /// @brief Legacy interface returning vector (for compatibility).
 /// @deprecated Prefer marshalArgumentsInline for new code.
+/// @param sig Runtime signature describing parameter types.
+/// @param args Argument slots to marshal.
+/// @param [in,out] powStatus Power function status tracker.
+/// @return Owning vector of pointers to visible and hidden argument storage.
 std::vector<void *> marshalArguments(const il::runtime::RuntimeSignature &sig,
                                      std::span<Slot> args,
                                      PowStatus &powStatus);
@@ -295,8 +317,8 @@ struct MarshalValidation {
 ///          access, and can optionally validate pointer arguments.
 /// @param desc Runtime descriptor for the callee.
 /// @param args Argument slots supplied by the caller.
-/// @param powStatus [out] Power function trap status tracker.
-/// @param validation [out] Validation result; check before using returned vector.
+/// @param [in,out] powStatus Power function trap status tracker.
+/// @param [out] validation Validation result; check before using returned vector.
 /// @param checkNullPointers When true, validates pointer args are non-null.
 /// @return Vector of marshalled argument pointers; empty on validation failure.
 [[nodiscard]] std::vector<void *> marshalArgumentsValidated(

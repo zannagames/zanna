@@ -689,6 +689,9 @@ EvalResult BasicReplAdapter::eval(const std::string &input) {
                 existing->dimStmt = cleanDecl;
                 existing->lastAssign.clear();
                 existing->type = varType;
+                /// @brief Identify replay statements invalidated by a redeclared BASIC variable.
+                /// @param stmt Persisted statement to inspect.
+                /// @return True when @p stmt reads or writes the redeclared variable.
                 replayStatements_.erase(
                     std::remove_if(replayStatements_.begin(),
                                    replayStatements_.end(),

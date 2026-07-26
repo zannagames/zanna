@@ -19,6 +19,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares the bounded late-pipeline CFG and dead-code cleanup pass.
+ *
+ * @details `LateCleanup` alternates CFG simplification and dead-code
+ *          elimination until no further reduction is observed or its iteration
+ *          cap is reached. An optional borrowed statistics sink records module
+ *          instruction/block sizes before, after, and between iterations.
+ */
+
 #pragma once
 
 #include <cstddef>
@@ -68,6 +78,7 @@ class LateCleanup : public ModulePass {
     PreservedAnalyses run(core::Module &module, AnalysisManager &analysis) override;
 
   private:
+    /// @brief Optional borrowed destination for per-run cleanup statistics.
     LateCleanupStats *stats_ = nullptr;
 };
 

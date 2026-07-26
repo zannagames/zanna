@@ -23,6 +23,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements pure-C ECDSA and ECDH over NIST P-256.
+ * @details Provides portable multi-precision field and scalar arithmetic,
+ * Jacobian point operations, public verification, fixed-schedule private
+ * scalar multiplication, signing, public-key derivation, and shared-secret
+ * computation without heap allocation.
+ */
+
 #include "rt_ecdsa_p256.h"
 #include "rt_crypto.h"
 #include <string.h>
@@ -32,8 +41,10 @@
 #endif
 
 #if defined(__GNUC__) || defined(__clang__)
+/** Marks portability helpers that selected compiler paths may not reference. */
 #define ECDSA_P256_MAYBE_UNUSED __attribute__((unused))
 #else
+/** Empty unused-helper annotation for compilers without GNU attributes. */
 #define ECDSA_P256_MAYBE_UNUSED
 #endif
 
@@ -88,9 +99,11 @@ static int ecdsa_clz64(uint64_t value) {
 // 256-bit unsigned integer type (big-endian limb order: [0]=MSW, [3]=LSW)
 //=============================================================================
 
+/** Unsigned 256-bit integer in four most-significant-first 64-bit limbs. */
 typedef uint64_t u256[4];
 
 // 512-bit for multiplication intermediate
+/** Unsigned 512-bit multiplication intermediate in eight big-endian limbs. */
 typedef uint64_t u512[8];
 
 /// @brief Add two 64-bit values with an incoming carry and write the result to *out.
@@ -136,26 +149,32 @@ static void u256_sub_small_inplace(u256 value, uint64_t small) {
 //=============================================================================
 
 // Field prime p = 2^256 - 2^224 + 2^192 + 2^96 - 1
+/** P-256 prime field modulus. */
 static const u256 P256_P = {
     0xFFFFFFFF00000001ULL, 0x0000000000000000ULL, 0x00000000FFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL};
 
 // Curve order n
+/** Prime order of the P-256 generator subgroup. */
 static const u256 P256_N = {
     0xFFFFFFFF00000000ULL, 0xFFFFFFFFFFFFFFFFULL, 0xBCE6FAADA7179E84ULL, 0xF3B9CAC2FC632551ULL};
 
 // Curve parameter a = -3 mod p = p - 3
+/** P-256 curve coefficient a reduced modulo @ref P256_P. */
 static const u256 P256_A = {
     0xFFFFFFFF00000001ULL, 0x0000000000000000ULL, 0x00000000FFFFFFFFULL, 0xFFFFFFFFFFFFFFFCULL};
 
 // Curve parameter b
+/** P-256 curve coefficient b. */
 static const u256 P256_B = {
     0x5AC635D8AA3A93E7ULL, 0xB3EBBD55769886BCULL, 0x651D06B0CC53B0F6ULL, 0x3BCE3C3E27D2604BULL};
 
 // Generator point G (affine x coordinate)
+/** Affine x coordinate of the standard P-256 generator. */
 static const u256 P256_GX = {
     0x6B17D1F2E12C4247ULL, 0xF8BCE6E563A440F2ULL, 0x77037D812DEB33A0ULL, 0xF4A13945D898C296ULL};
 
 // Generator point G (affine y coordinate)
+/** Affine y coordinate of the standard P-256 generator. */
 static const u256 P256_GY = {
     0x4FE342E2FE1A7F9BULL, 0x8EE7EB4A7C0F9E16ULL, 0x2BCE33576B315ECEULL, 0xCBB6406837BF51F5ULL};
 

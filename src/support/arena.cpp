@@ -115,6 +115,13 @@ void Arena::reset() {
 // GrowingArena implementation
 // =============================================================================
 
+/// @brief Attempt an aligned bump allocation within one existing chunk.
+/// @details Invalid alignment, missing storage, arithmetic overflow, or
+///          insufficient remaining capacity returns nullptr without advancing
+///          the chunk cursor.
+/// @param sz Number of bytes requested.
+/// @param align Required non-zero power-of-two alignment.
+/// @return Pointer into this chunk, or nullptr when the request cannot fit.
 void *GrowingArena::Chunk::tryAllocate(size_t sz, size_t align) {
     // Validate alignment (power of two, non-zero)
     if (!isPowerOfTwo(align))
@@ -148,20 +155,31 @@ void *GrowingArena::Chunk::tryAllocate(size_t sz, size_t align) {
     return data.get() + alignedOffset;
 }
 
+/// @brief Construct a growing arena and allocate its initial chunk.
+/// @param initialChunkSize Requested capacity of the first chunk.
+/// @param growthChunkSize Minimum capacity of later growth chunks.
 GrowingArena::GrowingArena(size_t initialChunkSize, size_t growthChunkSize)
     : growthChunkSize_(growthChunkSize) {
     chunks_.reserve(4); // Reserve space for a few chunks
     allocateChunk(initialChunkSize);
 }
 
+/// @brief Destroy tracked objects in LIFO order before owned chunks are released.
 GrowingArena::~GrowingArena() {
     destroyObjects();
 }
 
+/// @brief Move all chunks, destructor records, and growth policy from another arena.
+/// @param other Arena whose owned storage is transferred.
 GrowingArena::GrowingArena(GrowingArena &&other) noexcept
     : chunks_(std::move(other.chunks_)), destructors_(std::move(other.destructors_)),
       growthChunkSize_(other.growthChunkSize_) {}
 
+/// @brief Replace this arena with another arena's owned state.
+/// @details Existing tracked objects are destroyed before the move. Self-move
+///          assignment is a no-op.
+/// @param other Arena whose owned storage is transferred.
+/// @return Reference to this arena.
 GrowingArena &GrowingArena::operator=(GrowingArena &&other) noexcept {
     if (this != &other) {
         destroyObjects();
@@ -172,6 +190,14 @@ GrowingArena &GrowingArena::operator=(GrowingArena &&other) noexcept {
     return *this;
 }
 
+/// @brief Allocate aligned raw storage, growing by a chunk when necessary.
+/// @details The current last chunk is tried first. A new chunk is sized to at
+///          least the larger of the growth policy and the request plus alignment
+///          slack. Invalid alignment, overflow, and allocation failure throw.
+/// @param size Number of bytes requested.
+/// @param align Required non-zero power-of-two alignment.
+/// @return Non-null aligned storage owned by the arena.
+/// @throws std::bad_alloc When the request cannot be represented or satisfied.
 void *GrowingArena::allocate(size_t size, size_t align) {
     if (!isPowerOfTwo(align))
         throw std::bad_alloc();
@@ -195,6 +221,9 @@ void *GrowingArena::allocate(size_t size, size_t align) {
     return ptr;
 }
 
+/// @brief Destroy tracked objects and reclaim all allocation cursors.
+/// @details The first chunk is retained for reuse and every later chunk is
+///          released. All pointers previously returned by the arena become invalid.
 void GrowingArena::reset() {
     destroyObjects();
     // Keep the first chunk, clear the rest
@@ -204,6 +233,8 @@ void GrowingArena::reset() {
     }
 }
 
+/// @brief Sum bytes consumed across all current chunks.
+/// @return Exact consumed-byte count, or `SIZE_MAX` if the sum would overflow.
 size_t GrowingArena::totalAllocated() const noexcept {
     size_t total = 0;
     for (const auto &chunk : chunks_) {
@@ -242,10 +273,15 @@ void GrowingArena::rewindTo(AllocationMark mark) noexcept {
         chunks_.back().offset = mark.lastOffset;
 }
 
+/// @brief Append a fresh chunk with at least one byte of capacity.
+/// @param minSize Requested minimum capacity; zero is promoted to one.
 void GrowingArena::allocateChunk(size_t minSize) {
     chunks_.emplace_back(std::max<size_t>(1, minSize));
 }
 
+/// @brief Invoke every registered object destructor in reverse construction order.
+/// @details Destructor records are cleared after invocation. Arena object types
+///          are constrained to nothrow destruction.
 void GrowingArena::destroyObjects() {
     // Destroy in reverse order (LIFO)
     for (auto it = destructors_.rbegin(); it != destructors_.rend(); ++it) {

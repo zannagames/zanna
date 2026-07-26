@@ -17,6 +17,16 @@
 //        docs/zannalib/network.md (runtime contract)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_sse.h
+ * @brief Declares the managed HTTP EventSource client API.
+ * @details SSE clients own their transport, incremental parser, reconnect
+ *          metadata, and last-event fields. The API provides blocking and
+ *          deadline-aware event receive operations, explicit Result reporting,
+ *          synchronized state queries, and cancellation-safe close.
+ */
+
 #pragma once
 
 #include "rt_string.h"

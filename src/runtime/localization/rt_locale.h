@@ -33,6 +33,15 @@
 //        src/runtime/localization/rt_locale.c (implementation).
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares the immutable BCP-47 Locale handle and query API.
+ * @details Defines fixed-capacity canonical subtag storage, parsing and
+ * construction entry points, value accessors and equality, fallback-chain
+ * ownership, and the internal LocaleManager data-binding contract.
+ */
+
 #pragma once
 
 #include "rt.hpp"
@@ -52,8 +61,11 @@ extern "C" {
 ///          RFC limit (extensions/private-use can extend them), so the tag
 ///          buffer is generous rather than minimal (VDOC-065).
 #define RT_LOCALE_LANG_CAP 10
+/** Capacity of a canonical script subtag including its NUL terminator. */
 #define RT_LOCALE_SCRIPT_CAP 6
+/** Capacity of a canonical region subtag including its NUL terminator. */
 #define RT_LOCALE_REGION_CAP 6
+/** Capacity of the complete canonical tag including its NUL terminator. */
 #define RT_LOCALE_TAG_CAP 128
 
 /// @brief Locale handle payload. One handle per parsed/loaded tag.

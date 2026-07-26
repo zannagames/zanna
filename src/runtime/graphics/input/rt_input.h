@@ -22,6 +22,17 @@
 //        docs/adr/0169-super-modifier-keys-and-studio-viewport-picking.md
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares keyboard, mouse, and gamepad runtime input surfaces.
+ *
+ * @details The API exposes stable GLFW-compatible key and button constants,
+ *          frame-coherent level and edge queries, typed-text capture, logical
+ *          mouse coordinates and cursor control, and normalized connected-pad
+ *          state with runtime-friendly value accessors.
+ */
+
 #pragma once
 
 #include "rt_string.h"

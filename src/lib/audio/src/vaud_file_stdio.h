@@ -16,6 +16,12 @@
 // Links: src/lib/audio/src/vaud_wav.c
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Provides a portable UTF-8 binary-read opener for audio assets.
+/// @details Windows paths are converted strictly to UTF-16 and opened with a
+///          non-inheritable descriptor; other platforms delegate to `fopen`.
+
 #pragma once
 
 #include "vaud_config.h"

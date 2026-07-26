@@ -5,9 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/tools/zanna/cmd_repl.cpp
-// Purpose: Entry point for the `zanna repl` subcommand. Creates a REPL
-//          session with the appropriate language adapter and runs it.
+/// @file
+/// @brief Implements the interactive `zanna repl` command.
+/// @details Parses the optional source-language selection, constructs the
+///          corresponding Zia or BASIC adapter, and runs one REPL session.
 // Key invariants:
 //   - Default language is Zia.
 //   - Supports both Zia and BASIC adapters.
@@ -28,10 +29,13 @@
 #include <memory>
 #include <string>
 
-/// @brief Entry point for `zanna repl [zia|basic]`.
-/// @param argc Argument count (after "repl" is stripped).
-/// @param argv Argument vector.
-/// @return Exit code from the REPL session.
+/// @brief Launch an interactive Zia or BASIC read-evaluate-print loop.
+/// @details Zia is selected by default. The command accepts at most one language
+///          name, handles help locally, and transfers adapter ownership to the
+///          session for the duration of the interactive run.
+/// @param argc Number of command arguments in @p argv.
+/// @param argv Command arguments excluding the executable and `repl` subcommand.
+/// @return Zero after help, one for invalid arguments, or the session's exit code.
 int cmdRepl(int argc, char **argv) {
     std::string lang = "zia"; // Default language
     bool languageSpecified = false;

@@ -12,6 +12,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements pass preservation summaries, factories, and built-in registration.
+ *
+ * @details The registry adapts concrete factories, analysis-aware callbacks,
+ *          and legacy void transforms to one polymorphic pipeline interface.
+ *          Legacy module callbacks use semantic fingerprints to distinguish
+ *          true no-ops, while built-in registrations record structural
+ *          preservation and parallel-safety policy for each optimizer.
+ */
+
 #include "il/transform/PassRegistry.hpp"
 
 #include "il/core/BasicBlock.hpp"
@@ -357,6 +368,7 @@ bool PreservedAnalyses::isChangedFunction(const std::string &name) const {
 }
 
 namespace {
+/// @brief Polymorphic module pass backed by a registered callback.
 class LambdaModulePass : public ModulePass {
   public:
     /// @brief Wrap a module-pass callback with the @ref ModulePass interface.
@@ -388,10 +400,13 @@ class LambdaModulePass : public ModulePass {
     }
 
   private:
+    /// @brief Stable identifier reported to the pipeline executor.
     std::string id_;
+    /// @brief Owned transformation callback invoked by run().
     PassRegistry::ModulePassCallback callback_;
 };
 
+/// @brief Polymorphic function pass backed by a registered callback.
 class LambdaFunctionPass : public FunctionPass {
   public:
     /// @brief Wrap a function-pass callback with the @ref FunctionPass interface.
@@ -420,7 +435,9 @@ class LambdaFunctionPass : public FunctionPass {
     }
 
   private:
+    /// @brief Stable identifier reported to the pipeline executor.
     std::string id_;
+    /// @brief Owned transformation callback invoked by run().
     PassRegistry::FunctionPassCallback callback_;
 };
 } // namespace
@@ -451,7 +468,8 @@ void PassRegistry::registerModulePass(const std::string &id,
                                       ModulePassCallback callback,
                                       bool parallelSafe) {
     auto cb = ModulePassCallback(callback);
-    /// Construct a fresh polymorphic wrapper while retaining the registered id.
+    /// @brief Construct a fresh polymorphic wrapper while retaining the registered id.
+    /// @return Newly owned module-pass wrapper.
     registry_[id] = detail::PassFactory{
         detail::PassKind::Module,
         [passId = std::string(id), cb]() { return std::make_unique<LambdaModulePass>(passId, cb); },
@@ -471,7 +489,9 @@ void PassRegistry::registerModulePass(const std::string &id,
                                       bool parallelSafe) {
     registerModulePass(
         id,
-        /// Adapt a void callback to the preservation-reporting interface.
+        /// @brief Adapt a void callback to the preservation-reporting interface.
+        /// @param module Module forwarded to the registered callback.
+        /// @return Summary invalidating all analyses after callback execution.
         [fn](core::Module &module, AnalysisManager &) {
             fn(module);
             return PreservedAnalyses::none();
@@ -504,7 +524,8 @@ void PassRegistry::registerFunctionPass(const std::string &id,
                                         FunctionPassCallback callback,
                                         bool parallelSafe) {
     auto cb = FunctionPassCallback(callback);
-    /// Construct a fresh polymorphic wrapper while retaining the registered id.
+    /// @brief Construct a fresh polymorphic wrapper while retaining the registered id.
+    /// @return Newly owned function-pass wrapper.
     registry_[id] = detail::PassFactory{detail::PassKind::Function,
                                         {},
                                         [passId = std::string(id), cb]() {
@@ -525,7 +546,9 @@ void PassRegistry::registerFunctionPass(const std::string &id,
                                         bool parallelSafe) {
     registerFunctionPass(
         id,
-        /// Adapt a void callback to the preservation-reporting interface.
+        /// @brief Adapt a void callback to the preservation-reporting interface.
+        /// @param function Function forwarded to the registered callback.
+        /// @return Summary invalidating all analyses after callback execution.
         [fn](core::Function &function, AnalysisManager &) {
             fn(function);
             return PreservedAnalyses::none();
@@ -550,7 +573,8 @@ const detail::PassFactory *PassRegistry::lookup(std::string_view id) const {
 /// @copydoc registerLoopSimplifyPass()
 void registerLoopSimplifyPass(PassRegistry &registry) {
     // Sequential: recomputes whole-module CFG/loop info while mutating block edges.
-    /// Construct a stateless loop simplifier for sequential execution.
+    /// @brief Construct a stateless loop simplifier for sequential execution.
+    /// @return Newly owned `LoopSimplify` pass.
     registry.registerFunctionPass(
         "loop-simplify", []() { return std::make_unique<LoopSimplify>(); }, false);
 }
@@ -558,21 +582,25 @@ void registerLoopSimplifyPass(PassRegistry &registry) {
 /// @copydoc registerLICMPass()
 void registerLICMPass(PassRegistry &registry) {
     // Sequential: analysis dependencies scan the whole module while this pass moves instructions.
-    /// Construct LICM with memory hoisting enabled.
+    /// @brief Construct LICM with memory hoisting enabled.
+    /// @return Newly owned default `LICM` pass.
     registry.registerFunctionPass("licm", []() { return std::make_unique<LICM>(); }, false);
 }
 
 /// @copydoc registerLICMSafePass()
 void registerLICMSafePass(PassRegistry &registry) {
     // Sequential for the same whole-module analysis reason as the default LICM pass.
-    /// Construct LICM with all memory hoisting disabled.
+    /// @brief Construct LICM with all memory hoisting disabled.
+    /// @return Newly owned computation-only `LICM` pass.
     registry.registerFunctionPass(
         "licm-safe", []() { return std::make_unique<LICM>(false); }, false);
 }
 
 /// @copydoc registerSCCPPass()
 void registerSCCPPass(PassRegistry &registry) {
-    /// Run SCCP per function and report exactly which function caches became stale.
+    /// @brief Run SCCP per function and report exactly which caches became stale.
+    /// @param module Module whose functions are optimized.
+    /// @return Selective preservation summary for changed functions.
     registry.registerModulePass("sccp", [](core::Module &module, AnalysisManager &) {
         PreservedAnalyses preserved;
         const std::size_t functionCount = module.functions.size();
@@ -596,36 +624,48 @@ void registerSCCPPass(PassRegistry &registry) {
 
 /// @copydoc registerConstFoldPass()
 void registerConstFoldPass(PassRegistry &registry) {
-    /// Adapt legacy module constant folding through semantic change detection.
+    /// @brief Adapt legacy module constant folding through semantic change detection.
+    /// @param module Module to optimize.
+    /// @return Preservation inferred from the before/after semantic fingerprint.
     registry.registerModulePass("constfold", [](core::Module &module, AnalysisManager &) {
-        /// Invoke the legacy void-returning constant folder.
+        /// @brief Invoke the legacy void-returning constant folder.
+        /// @param m Module forwarded by the semantic-change adapter.
         return runVoidModulePass(module, [](core::Module &m) { constFold(m); });
     });
 }
 
 /// @copydoc registerPeepholePass()
 void registerPeepholePass(PassRegistry &registry) {
-    /// Adapt legacy module peephole optimization through semantic change detection.
+    /// @brief Adapt legacy peephole optimization through semantic change detection.
+    /// @param module Module to optimize.
+    /// @return Preservation inferred from the before/after semantic fingerprint.
     registry.registerModulePass("peephole", [](core::Module &module, AnalysisManager &) {
-        /// Invoke the legacy void-returning peephole pass.
+        /// @brief Invoke the legacy void-returning peephole pass.
+        /// @param m Module forwarded by the semantic-change adapter.
         return runVoidModulePass(module, [](core::Module &m) { peephole(m); });
     });
 }
 
 /// @copydoc registerDCEPass()
 void registerDCEPass(PassRegistry &registry) {
-    /// Adapt legacy module DCE through semantic change detection.
+    /// @brief Adapt legacy module DCE through semantic change detection.
+    /// @param module Module to optimize.
+    /// @return Preservation inferred from the before/after semantic fingerprint.
     registry.registerModulePass("dce", [](core::Module &module, AnalysisManager &) {
-        /// Invoke the legacy void-returning DCE pass.
+        /// @brief Invoke the legacy void-returning DCE pass.
+        /// @param m Module forwarded by the semantic-change adapter.
         return runVoidModulePass(module, [](core::Module &m) { dce(m); });
     });
 }
 
 /// @copydoc registerMem2RegPass()
 void registerMem2RegPass(PassRegistry &registry) {
-    /// Adapt deterministic module mem2reg through semantic change detection.
+    /// @brief Adapt deterministic module mem2reg through semantic change detection.
+    /// @param module Module to optimize.
+    /// @return Preservation inferred from the before/after semantic fingerprint.
     registry.registerModulePass("mem2reg", [](core::Module &module, AnalysisManager &) {
-        /// Invoke mem2reg without statistics or internal parallelism.
+        /// @brief Invoke mem2reg without statistics or internal parallelism.
+        /// @param m Module forwarded by the semantic-change adapter.
         return runVoidModulePass(module,
                                  [](core::Module &m) { zanna::passes::mem2reg(m, nullptr); });
     });
@@ -633,7 +673,10 @@ void registerMem2RegPass(PassRegistry &registry) {
 
 /// @copydoc registerDSEPass()
 void registerDSEPass(PassRegistry &registry) {
-    /// Combine local and MemorySSA DSE while preserving unaffected structural analyses.
+    /// @brief Combine local and MemorySSA DSE while preserving structural analyses.
+    /// @param fn Function to optimize.
+    /// @param am Analysis manager providing and invalidating MemorySSA.
+    /// @return Preservation summary reflecting whether instructions were erased.
     registry.registerFunctionPass(
         "dse",
         [](core::Function &fn, AnalysisManager &am) {
@@ -660,7 +703,10 @@ void registerDSEPass(PassRegistry &registry) {
 void registerEarlyCSEPass(PassRegistry &registry) {
     // Each invocation indexes and mutates only its assigned function. Identifier
     // sidecars are synchronized by PipelineExecutor before parallel dispatch.
-    /// Run EarlyCSE on one assigned function and report structural preservation.
+    /// @brief Run EarlyCSE on one assigned function and report structural preservation.
+    /// @param fn Function to optimize.
+    /// @param am Analysis manager owning the containing module.
+    /// @return Preservation summary reflecting whether instructions were changed.
     registry.registerFunctionPass(
         "earlycse",
         [](core::Function &fn, AnalysisManager &am) {
@@ -679,18 +725,24 @@ void registerEarlyCSEPass(PassRegistry &registry) {
 
 /// @copydoc registerReassociatePass()
 void registerReassociatePass(PassRegistry &registry) {
-    /// Adapt legacy reassociation through semantic change detection.
+    /// @brief Adapt legacy reassociation through semantic change detection.
+    /// @param module Module to optimize.
+    /// @return Preservation inferred from the before/after semantic fingerprint.
     registry.registerModulePass("reassociate", [](core::Module &module, AnalysisManager &) {
-        /// Invoke the legacy void-returning reassociation pass.
+        /// @brief Invoke the legacy void-returning reassociation pass.
+        /// @param m Module forwarded by the semantic-change adapter.
         return runVoidModulePass(module, [](core::Module &m) { reassociate(m); });
     });
 }
 
 /// @copydoc registerEHOptPass()
 void registerEHOptPass(PassRegistry &registry) {
-    /// Adapt legacy exception cleanup through semantic change detection.
+    /// @brief Adapt legacy exception cleanup through semantic change detection.
+    /// @param module Module to optimize.
+    /// @return Preservation inferred from the before/after semantic fingerprint.
     registry.registerModulePass("eh-opt", [](core::Module &module, AnalysisManager &) {
-        /// Invoke the legacy void-returning exception optimization pass.
+        /// @brief Invoke the legacy void-returning exception optimization pass.
+        /// @param m Module forwarded by the semantic-change adapter.
         return runVoidModulePass(module, [](core::Module &m) { ehOpt(m); });
     });
 }
@@ -698,7 +750,8 @@ void registerEHOptPass(PassRegistry &registry) {
 /// @copydoc registerLoopRotatePass()
 void registerLoopRotatePass(PassRegistry &registry) {
     // Sequential: rewrites loop edges and recomputes whole-module loop info.
-    /// Construct a stateless loop-rotation pass for sequential execution.
+    /// @brief Construct a stateless loop-rotation pass for sequential execution.
+    /// @return Newly owned `LoopRotate` pass.
     registry.registerFunctionPass(
         "loop-rotate", []() { return std::make_unique<LoopRotate>(); }, false);
 }

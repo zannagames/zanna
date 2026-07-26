@@ -28,6 +28,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements Windows user-locale detection with environment fallback.
+ * @details Reads the Win32 BCP-47 locale name first, validates its bounded
+ * ASCII representation, then snapshots and cleans LC_ALL, LC_MESSAGES, or
+ * LANG as strict UTF-8 for MSYS- and MinGW-style environments.
+ */
+
 #include "rt_locale_platform.h"
 #include "rt_locale_posix_tag.h"
 #include "rt_platform.h"
@@ -40,6 +48,7 @@
 
 #if RT_PLATFORM_WINDOWS
 
+/** Restrict the Windows SDK surface to the lean core declarations. */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 

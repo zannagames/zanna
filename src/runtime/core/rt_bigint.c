@@ -80,6 +80,8 @@ typedef struct {
 ///          instance. For any other object it traps and returns 0, so the
 ///          operation stops before casting the payload to `bigint_t` and
 ///          dereferencing unrelated memory as digits/len/cap/sign (VDOC-204).
+/// @param obj Optional runtime object to validate.
+/// @return `1` for null or a valid BigInt instance; `0` after trapping on a class mismatch.
 static int bigint_check(void *obj) {
     if (!obj)
         return 1;

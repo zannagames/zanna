@@ -21,6 +21,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_websocket.c
+ * @brief Implements the managed RFC 6455 WebSocket client.
+ * @details The client parses ws and wss URLs, performs strict HTTP upgrades,
+ *          negotiates optional subprotocols, masks outbound frames, validates
+ *          and reassembles inbound frames, handles control traffic, and owns
+ *          exactly one plain socket or TLS session until close.
+ */
+
 #include "rt_websocket.h"
 
 #include "rt_bytes.h"
@@ -114,15 +123,30 @@ static rt_ws_impl *ws_require(void *obj, const char *operation) {
 
 static void ws_close_transport(rt_ws_impl *ws);
 
-/// @brief True if `host` is an IPv6 literal that must be wrapped in `[…]` for URL/Host.
+/// @brief Determine whether a host must be bracketed in an HTTP Host field.
+/// @param[in] host Null-terminated hostname or address literal.
+/// @return 1 when @p host contains a colon and is not already bracketed; otherwise 0.
 static int host_needs_brackets(const char *host) {
     return host && strchr(host, ':') != NULL && host[0] != '[';
 }
 
+/// @brief Detect a null byte inside a length-delimited string payload.
+/// @param[in] data Byte sequence to inspect.
+/// @param[in] len Number of bytes available at @p data.
+/// @return 1 when @p data is non-null and contains a null byte; otherwise 0.
 static int ws_has_embedded_nul(const char *data, size_t len) {
     return data && memchr(data, '\0', len) != NULL;
 }
 
+/// @brief Validate a managed string and expose its borrowed byte view.
+/// @details Output fields are cleared before validation. Invalid strings trap
+///          with @p null_msg; lengths not representable as size_t trap with a
+///          fixed WebSocket diagnostic.
+/// @param[in] str Managed string handle to inspect.
+/// @param[out] out Receives a borrowed pointer valid while @p str remains alive.
+/// @param[out] len Receives the logical byte length, excluding the terminator.
+/// @param[in] null_msg Diagnostic used when @p str is null or invalid.
+/// @return 1 on success, or 0 after trapping or for null output arguments.
 static int ws_string_bytes(rt_string str, const char **out, size_t *len, const char *null_msg) {
     if (!out || !len)
         return 0;
@@ -147,10 +171,23 @@ static int ws_string_bytes(rt_string str, const char **out, size_t *len, const c
     return 1;
 }
 
+/// @brief Return the default TCP port for a WebSocket URL scheme.
+/// @param[in] is_secure Nonzero for `wss`; zero for `ws`.
+/// @return 443 for secure WebSockets, or 80 for plaintext WebSockets.
 static int ws_default_port(int is_secure) {
     return is_secure ? 443 : 80;
 }
 
+/// @brief Format the authority value for an HTTP Host header.
+/// @details IPv6 literals are bracketed and a port is appended only when it is
+///          not the default for the selected WebSocket scheme.
+/// @param[out] buf Destination character buffer.
+/// @param[in] buf_len Capacity of @p buf including its terminator.
+/// @param[in] host Null-terminated hostname or unbracketed address literal.
+/// @param[in] port Positive TCP port.
+/// @param[in] is_secure Nonzero for `wss`; zero for `ws`.
+/// @return snprintf-style character count, or a negative value for invalid arguments
+///         or formatting failure. A value at least @p buf_len indicates truncation.
 static int ws_format_host_header(
     char *buf, size_t buf_len, const char *host, int port, int is_secure) {
     int include_port = 0;
@@ -177,6 +214,9 @@ static int ws_format_host_header(
                     host_needs_brackets(host) ? "]" : "");
 }
 
+/// @brief Validate one RFC 2616 token used as a WebSocket subprotocol.
+/// @param[in] value Null-terminated token candidate.
+/// @return 1 for a nonempty token containing no controls or separators; otherwise 0.
 static int ws_token_is_valid(const char *value) {
     static const char *kSeparators = "()<>@,;:\\\"/[]?={} \t";
     if (!value || !*value)
@@ -188,6 +228,10 @@ static int ws_token_is_valid(const char *value) {
     return 1;
 }
 
+/// @brief Compare a null-terminated ASCII prefix without case sensitivity.
+/// @param[in] text Text whose beginning is tested.
+/// @param[in] prefix Prefix to match.
+/// @return 1 when every byte of @p prefix matches the start of @p text; otherwise 0.
 static int ws_ascii_ieq_prefix(const char *text, const char *prefix) {
     size_t i = 0;
     if (!text || !prefix)
@@ -205,6 +249,10 @@ static int ws_ascii_ieq_prefix(const char *text, const char *prefix) {
     return 1;
 }
 
+/// @brief Validate a parsed WebSocket host against HTTP authority delimiters.
+/// @param[in] host Null-terminated host with IPv6 brackets already removed.
+/// @return 1 for a nonempty host without controls, whitespace, or URL delimiters;
+///         otherwise 0.
 static int ws_host_is_valid(const char *host) {
     if (!host || !*host)
         return 0;
@@ -215,6 +263,10 @@ static int ws_host_is_valid(const char *host) {
     return 1;
 }
 
+/// @brief Validate an HTTP request target derived from a WebSocket URL.
+/// @param[in] target Null-terminated origin-form request target.
+/// @return 1 when @p target begins with `/` and contains no controls,
+///         whitespace, or fragment marker; otherwise 0.
 static int ws_request_target_is_valid(const char *target) {
     if (!target || target[0] != '/')
         return 0;
@@ -225,6 +277,10 @@ static int ws_request_target_is_valid(const char *target) {
     return 1;
 }
 
+/// @brief Convert a public millisecond timeout to the native integer range.
+/// @param[in] timeout_ms Nonnegative timeout value.
+/// @param[out] out_timeout_ms Optional destination for the converted timeout.
+/// @return 1 when @p timeout_ms fits in int; otherwise 0.
 static int ws_timeout_ms_to_int(int64_t timeout_ms, int *out_timeout_ms) {
     if (timeout_ms < 0 || timeout_ms > INT_MAX)
         return 0;
@@ -233,6 +289,12 @@ static int ws_timeout_ms_to_int(int64_t timeout_ms, int *out_timeout_ms) {
     return 1;
 }
 
+/// @brief Format a Host header value through the production helper for focused tests.
+/// @param[in] host Null-terminated hostname or address literal.
+/// @param[in] port Positive TCP port.
+/// @param[in] is_secure Nonzero to apply the `wss` default port.
+/// @return Newly allocated null-terminated authority string, or NULL on invalid
+///         input, truncation, formatting failure, or allocation failure.
 char *rt_ws_format_host_header_for_test(const char *host, int port, int is_secure) {
     char header[512];
     int len = ws_format_host_header(header, sizeof(header), host, port, is_secure);
@@ -253,6 +315,7 @@ char *rt_ws_format_host_header_for_test(const char *host, int port, int is_secur
 /// Only the six defined opcodes (continuation, text, binary, close,
 /// ping, pong) are legal — reserved opcodes 0x3-0x7 and 0xB-0xF
 /// must trigger a protocol-error close.
+/// @param[in] opcode Four-bit frame opcode to classify.
 /// @return 1 if `opcode` is a defined WS opcode, 0 otherwise.
 static int ws_is_valid_opcode(uint8_t opcode) {
     switch (opcode) {
@@ -272,6 +335,8 @@ static int ws_is_valid_opcode(uint8_t opcode) {
 ///
 /// Used for WebSocket frames whose payload is >= 65536 bytes
 /// (RFC 6455 §5.2 — the 7+64 length encoding).
+/// @param[out] out Eight-byte destination field.
+/// @param[in] len Host payload length to encode.
 static void ws_encode_u64_len(uint8_t out[8], size_t len) {
     uint64_t value = (uint64_t)len;
     for (int i = 7; i >= 0; i--) {
@@ -284,6 +349,8 @@ static void ws_encode_u64_len(uint8_t out[8], size_t len) {
 ///
 /// Rejects values that exceed `SIZE_MAX` so we never silently
 /// truncate on 32-bit platforms.
+/// @param[in] in Eight-byte network-order payload-length field.
+/// @param[out] len_out Receives the host-representable payload length.
 /// @return 1 on success, 0 if the value would overflow `size_t`.
 static int ws_decode_u64_len(const uint8_t in[8], size_t *len_out) {
     uint64_t value = 0;
@@ -295,6 +362,10 @@ static int ws_decode_u64_len(const uint8_t in[8], size_t *len_out) {
     return 1;
 }
 
+/// @brief Check whether a close code may appear on the WebSocket wire.
+/// @param[in] code Unsigned close status code.
+/// @return 1 for defined protocol codes or application/private codes 3000-4999;
+///         otherwise 0, including reserved codes 1004-1006.
 static int ws_close_code_is_valid(uint16_t code) {
     if (code >= 3000 && code <= 4999)
         return 1;
@@ -303,24 +374,25 @@ static int ws_close_code_is_valid(uint16_t code) {
     return code != 1004 && code != 1005 && code != 1006;
 }
 
+/// @brief Expose close-code validation without narrowing invalid test inputs.
+/// @param[in] code Integer close-code candidate.
+/// @return 1 when @p code fits uint16_t and is valid on the wire; otherwise 0.
 int rt_ws_close_code_valid_for_test(int code) {
     if (code < 0 || code > 65535)
         return 0;
     return ws_close_code_is_valid((uint16_t)code);
 }
 
-/// @brief Validate a byte buffer as well-formed UTF-8 per RFC 3629.
-///
-/// Required by RFC 6455 §8.1 — text frames whose payload is not
-/// valid UTF-8 must trigger a 1007 close. Walks each codepoint and
-/// rejects:
-///   - over-long encodings (e.g. C0/C1, E0 with a < 0xA0 byte)
-///   - surrogate halves (ED A0..BF)
-///   - codepoints above U+10FFFF (F4 above 0x8F, F5..FF entirely)
-///   - truncated multi-byte sequences
-/// @return 1 if all `len` bytes form valid UTF-8, 0 otherwise.
-
 /// @brief Parse URL into components.
+/// @details Accepts only `ws` and `wss`, supports bracketed IPv6 literals,
+///          validates explicit ports and request-target bytes, ignores URL
+///          fragments, and synthesizes `/` when no path is present. On
+///          success, @p host and @p path are independently heap allocated.
+/// @param[in] url Null-terminated WebSocket URL.
+/// @param[out] is_secure Receives 1 for `wss` or 0 for `ws`.
+/// @param[out] host Receives an allocated, unbracketed host string.
+/// @param[out] port Receives the explicit or scheme-default TCP port.
+/// @param[out] path Receives an allocated origin-form request target.
 /// @return 1 on success, 0 on failure.
 static int parse_ws_url(const char *url, int *is_secure, char **host, int *port, char **path) {
     *is_secure = 0;
@@ -448,14 +520,24 @@ static int parse_ws_url(const char *url, int *is_secure, char **host, int *port,
 }
 
 /// @brief Test hook exposing the otherwise-static `parse_ws_url`.
-/// Lets unit tests probe URL-parsing edge cases without going
-/// through `rt_ws_connect`. Output strings are heap-allocated and
-/// must be freed by the caller.
+/// @details Output strings are heap-allocated on success and must be freed by
+///          the caller.
+/// @param[in] url Null-terminated WebSocket URL.
+/// @param[out] is_secure Receives whether the URL uses `wss`.
+/// @param[out] host Receives an allocated host string.
+/// @param[out] port Receives the parsed or default port.
+/// @param[out] path Receives an allocated request target.
+/// @return 1 on success, or 0 for invalid input or allocation failure.
 int rt_ws_parse_url_for_test(const char *url, int *is_secure, char **host, int *port, char **path) {
     return parse_ws_url(url, is_secure, host, port, path);
 }
 
 /// @brief Send data over connection (handles TLS vs plain TCP).
+/// @param[in,out] ws Open WebSocket transport.
+/// @param[in] data Bytes to send.
+/// @param[in] len Number of bytes requested.
+/// @return Positive byte count, zero for a closed transport, or a negative
+///         transport-specific error result.
 static long ws_send_partial(rt_ws_impl *ws, const void *data, size_t len) {
     if (ws->tls) {
         return rt_tls_send(ws->tls, data, len);
@@ -481,6 +563,9 @@ static int ws_send_should_retry(void) {
 /// Wraps `ws_send_partial` with a retry loop so callers don't have
 /// to handle short writes from TCP/TLS. Transient nonblocking socket
 /// failures wait for writability and retry.
+/// @param[in,out] ws Open WebSocket transport.
+/// @param[in] data Byte sequence to transmit.
+/// @param[in] len Exact number of bytes to transmit.
 /// @return 1 if all bytes sent, 0 on failure.
 static int ws_send_all(rt_ws_impl *ws, const void *data, size_t len) {
     const uint8_t *ptr = (const uint8_t *)data;
@@ -501,6 +586,11 @@ static int ws_send_all(rt_ws_impl *ws, const void *data, size_t len) {
 }
 
 /// @brief Receive data from connection (handles TLS vs plain TCP).
+/// @param[in,out] ws Open WebSocket transport.
+/// @param[out] buffer Destination for received bytes.
+/// @param[in] len Maximum number of bytes to receive.
+/// @return Positive byte count, zero on orderly shutdown, or a negative
+///         transport-specific error result.
 static long ws_recv(rt_ws_impl *ws, void *buffer, size_t len) {
     if (ws->tls) {
         return rt_tls_recv(ws->tls, buffer, len);
@@ -511,6 +601,9 @@ static long ws_recv(rt_ws_impl *ws, void *buffer, size_t len) {
 }
 
 /// @brief Wait for socket to become readable or writable with timeout.
+/// @param[in] fd Valid native socket handle.
+/// @param[in] timeout_ms Nonnegative maximum wait in milliseconds.
+/// @param[in] for_write Nonzero to wait for writability; zero for readability.
 /// @return 1 if ready, 0 if timeout, -1 on error.
 static int ws_wait_socket(socket_t fd, int timeout_ms, int for_write) {
     if (fd == INVALID_SOCK || timeout_ms < 0)
@@ -537,6 +630,9 @@ static int ws_set_recv_timeout(rt_ws_impl *ws, int timeout_ms) {
 /// Used for HTTP header name/value matching during the WebSocket
 /// handshake. ASCII-only — does not lowercase non-ASCII bytes (a
 /// deliberate narrow contract since headers are 7-bit ASCII per HTTP).
+/// @param[in] a First byte region.
+/// @param[in] b Second byte region.
+/// @param[in] len Number of bytes to compare.
 /// @return 1 if the regions match case-insensitively, 0 otherwise.
 static int ws_ascii_ieq_n(const char *a, const char *b, size_t len) {
     for (size_t i = 0; i < len; i++) {
@@ -558,6 +654,11 @@ static int ws_ascii_ieq_n(const char *a, const char *b, size_t len) {
 /// and case-insensitively compares against `token`. Used to confirm
 /// `Connection: Upgrade` (which may appear as `Connection:
 /// keep-alive, Upgrade`).
+/// @param[in] value Length-delimited HTTP field value.
+/// @param[in] len Number of bytes in @p value.
+/// @param[in] token Null-terminated token to locate.
+/// @param[in] case_sensitive Nonzero for byte-exact matching; zero for ASCII
+///                           case-insensitive matching.
 /// @return 1 if token is present, 0 otherwise.
 static int ws_header_has_token(const char *value,
                                size_t len,
@@ -655,6 +756,11 @@ static int ws_http_field_value_is_valid(const char *value, size_t len) {
 ///     `base64(SHA1(key_copy + WS_MAGIC))` where `WS_MAGIC` is
 ///     `258EAFA5-E914-47DA-95CA-C5AB0DC85B11`.
 /// Made non-static to allow direct unit testing of the parser.
+/// @param[in] response Null-terminated HTTP response through the empty header line.
+/// @param[in] key_copy Null-terminated client Sec-WebSocket-Key value.
+/// @param[in] expected_protocol Optional exact subprotocol token requested by the client.
+/// @param[out] selected_protocol_out Optional destination for an allocated
+///                                   negotiated protocol string; cleared first.
 /// @return 1 on a valid response, 0 on any mismatch / malformed header.
 static int ws_validate_handshake_response(const char *response,
                                           const char *key_copy,
@@ -765,6 +871,10 @@ static int ws_validate_handshake_response(const char *response,
     return accept_ok;
 }
 
+/// @brief Validate a handshake response without subprotocol negotiation for focused tests.
+/// @param[in] response Null-terminated HTTP upgrade response.
+/// @param[in] key_copy Client Sec-WebSocket-Key used to compute the expected accept value.
+/// @return 1 when the response satisfies the production validator; otherwise 0.
 int rt_ws_validate_handshake_response_for_test(const char *response, const char *key_copy) {
     return ws_validate_handshake_response(response, key_copy, NULL, NULL);
 }
@@ -878,6 +988,17 @@ static size_t ws_handshake_header_end_offset(const char *data, size_t len) {
 }
 
 /// @brief Perform WebSocket handshake.
+/// @details Generates a fresh client key, sends a bounded HTTP Upgrade
+///          request, reads through the header terminator, preserves any frame
+///          bytes received in the same transport read, validates the response,
+///          and stores an allocated negotiated subprotocol in @p ws.
+/// @param[in,out] ws Connected TCP or TLS transport and handshake destination.
+/// @param[in] host Validated, unbracketed server hostname or address literal.
+/// @param[in] port Connected TCP port.
+/// @param[in] path Validated origin-form request target.
+/// @param[in] requested_subprotocol Optional exact protocol token to request.
+/// @return 1 when the upgrade succeeds, or 0 for key generation, formatting,
+///         transport, allocation, or response-validation failure.
 static int ws_handshake(rt_ws_impl *ws,
                         const char *host,
                         int port,
@@ -987,6 +1108,14 @@ static int ws_handshake(rt_ws_impl *ws,
 }
 
 /// @brief Send a WebSocket frame.
+/// @details Emits one final client frame with the canonical RFC 6455 payload
+///          length form and a fresh unpredictable masking key. Payload bytes
+///          are masked and transmitted in bounded stack chunks.
+/// @param[in,out] ws Open WebSocket transport.
+/// @param[in] opcode Frame opcode to place in the low four bits.
+/// @param[in] data Payload bytes, or NULL when @p len is zero.
+/// @param[in] len Payload size in bytes.
+/// @return 1 when the complete frame is sent, or 0 on transport failure.
 static int ws_send_frame(rt_ws_impl *ws, uint8_t opcode, const void *data, size_t len) {
     uint8_t header[14];
     size_t header_len = 2;
@@ -1083,6 +1212,12 @@ static int ws_abort_connection(rt_ws_impl *ws, uint16_t close_code) {
 }
 
 /// @brief Read exactly n bytes from connection.
+/// @details Consumes handshake look-ahead bytes from the connection receive
+///          buffer before reading the TCP or TLS transport.
+/// @param[in,out] ws Open WebSocket transport.
+/// @param[out] buffer Destination for exactly @p len bytes.
+/// @param[in] len Number of bytes required.
+/// @return 1 after filling @p buffer, or 0 on EOF or transport error.
 static int ws_recv_exact(rt_ws_impl *ws, void *buffer, size_t len) {
     size_t total = 0;
     while (total < len) {
@@ -1108,10 +1243,15 @@ static int ws_recv_exact(rt_ws_impl *ws, void *buffer, size_t len) {
 }
 
 /// @brief Receive a WebSocket frame.
-/// @param fin_out Receives 1 if this is the final fragment (FIN bit set).
-/// @param opcode_out Receives the frame opcode.
-/// @param data_out Receives the payload (caller frees).
-/// @param len_out Receives the payload length.
+/// @details Rejects reserved bits, invalid opcodes, masked server frames,
+///          non-canonical length encodings, fragmented or oversized control
+///          frames, and payloads above the allocation cap. Protocol violations
+///          abort the connection with the appropriate close status.
+/// @param[in,out] ws Open WebSocket transport.
+/// @param[out] fin_out Receives 1 if this is the final fragment.
+/// @param[out] opcode_out Receives the validated frame opcode.
+/// @param[out] data_out Receives an allocated payload, or NULL for an empty payload.
+/// @param[out] len_out Receives the payload length.
 /// @return 1 on success, 0 on error.
 static int ws_recv_frame(
     rt_ws_impl *ws, uint8_t *fin_out, uint8_t *opcode_out, uint8_t **data_out, size_t *len_out) {
@@ -1207,6 +1347,10 @@ static void ws_handle_control(rt_ws_impl *ws, uint8_t opcode, uint8_t *data, siz
 ///
 /// On success `*data_out` is a heap allocation owned by the caller
 /// (must be `free`d) and `*opcode_out` is `WS_OP_TEXT` or `WS_OP_BINARY`.
+/// @param[in,out] ws Open WebSocket connection.
+/// @param[out] data_out Receives an allocated complete message payload.
+/// @param[out] len_out Receives the complete payload size in bytes.
+/// @param[out] opcode_out Receives WS_OP_TEXT or WS_OP_BINARY.
 /// @return 1 on a complete message, 0 on close/error.
 static int ws_recv_message(rt_ws_impl *ws,
                            uint8_t **data_out,
@@ -1312,7 +1456,14 @@ static int ws_recv_message(rt_ws_impl *ws,
     return 0;
 }
 
-/// @brief Handle control frames (ping, pong, close).
+/// @brief Handle one validated WebSocket control frame.
+/// @details Ping payloads are echoed as Pong, Pong frames are ignored, and
+///          Close frames validate the optional status and UTF-8 reason before
+///          recording peer state, replying, and retiring the transport.
+/// @param[in,out] ws Open WebSocket connection whose state may be closed.
+/// @param[in] opcode WS_OP_PING, WS_OP_PONG, or WS_OP_CLOSE.
+/// @param[in] data Borrowed control-frame payload.
+/// @param[in] len Payload length, already bounded to 125 bytes.
 static void ws_handle_control(rt_ws_impl *ws, uint8_t opcode, uint8_t *data, size_t len) {
     switch (opcode) {
         case WS_OP_PING:
@@ -1379,6 +1530,7 @@ static void ws_handle_control(rt_ws_impl *ws, uint8_t opcode, uint8_t *data, siz
 /// @brief Deterministically close the TCP/TLS transport. Idempotent: leaves
 ///        `tls == NULL` and `socket_fd == INVALID_SOCK` so later calls (including the
 ///        GC finalizer) no-op.
+/// @param[in,out] ws WebSocket payload, or NULL.
 static void ws_close_transport(rt_ws_impl *ws) {
     if (!ws)
         return;
@@ -1393,6 +1545,9 @@ static void ws_close_transport(rt_ws_impl *ws) {
 }
 
 /// @brief Finalizer for WebSocket connections.
+/// @details Idempotently retires the transport and releases every native
+///          allocation owned by a partially or fully initialized payload.
+/// @param[in,out] obj WebSocket payload supplied by the managed object runtime.
 static void rt_ws_finalize(void *obj) {
     if (!obj)
         return;
@@ -1413,11 +1568,17 @@ static void rt_ws_finalize(void *obj) {
 }
 
 /// @brief Connect to a WebSocket URL with a 30-second default timeout.
+/// @param[in] url Managed `ws://` or `wss://` URL.
+/// @return Caller-owned managed WebSocket handle, or NULL after a returning trap hook.
 /// @see rt_ws_connect_for
 void *rt_ws_connect(rt_string url) {
     return rt_ws_connect_for_protocol(url, 30000, NULL); // 30 second default timeout
 }
 
+/// @brief Connect with the default timeout and request one WebSocket subprotocol.
+/// @param[in] url Managed `ws://` or `wss://` URL.
+/// @param[in] subprotocol Managed RFC token to send in Sec-WebSocket-Protocol.
+/// @return Caller-owned managed WebSocket handle, or NULL after a returning trap hook.
 void *rt_ws_connect_protocol(rt_string url, rt_string subprotocol) {
     return rt_ws_connect_for_protocol(url, 30000, subprotocol);
 }
@@ -1430,6 +1591,9 @@ void *rt_ws_connect_protocol(rt_string url, rt_string subprotocol) {
 /// validates the server's `Sec-WebSocket-Accept` against the
 /// expected `base64(SHA1(key + WS_MAGIC))`. On success returns a
 /// GC-managed `rt_ws_impl` with `is_open == 1`.
+/// @param[in] url Managed `ws://` or `wss://` URL.
+/// @param[in] timeout_ms Nonnegative connect and per-I/O timeout in milliseconds.
+/// @return Caller-owned managed WebSocket handle, or NULL after a returning trap hook.
 /// @throws Err_InvalidUrl on bad URL,
 ///         generic trap on connect/handshake failure or NULL URL.
 void *rt_ws_connect_for(rt_string url, int64_t timeout_ms) {
@@ -1600,7 +1764,10 @@ void *rt_ws_connect_for_protocol(rt_string url, int64_t timeout_ms, rt_string su
     return (void *)ws;
 }
 
-/// @brief The URL the connection was opened with. Empty string for NULL/closed-with-no-url.
+/// @brief Return the URL with which the connection was opened.
+/// @param[in] obj Managed WebSocket receiver, or NULL.
+/// @return Caller-owned managed URL string; empty for NULL or a payload without a URL,
+///         and NULL after an invalid-object trap.
 rt_string rt_ws_url(void *obj) {
     if (!obj)
         return rt_str_empty();
@@ -1613,6 +1780,8 @@ rt_string rt_ws_url(void *obj) {
 }
 
 /// @brief True (1) if the connection is still established, false (0) once closed/error.
+/// @param[in] obj Managed WebSocket receiver, or NULL.
+/// @return 1 while open; otherwise 0, including NULL or invalid receivers.
 int8_t rt_ws_is_open(void *obj) {
     if (!obj)
         return 0;
@@ -1623,6 +1792,8 @@ int8_t rt_ws_is_open(void *obj) {
 }
 
 /// @brief WebSocket close code (1000-4999 per RFC 6455 §7.4). 0 if still open.
+/// @param[in] obj Managed WebSocket receiver, or NULL.
+/// @return Recorded close status, or 0 when none is available.
 int64_t rt_ws_close_code(void *obj) {
     if (!obj)
         return 0;
@@ -1633,6 +1804,9 @@ int64_t rt_ws_close_code(void *obj) {
 }
 
 /// @brief Optional close reason text supplied by the peer. Empty string when none.
+/// @param[in] obj Managed WebSocket receiver, or NULL.
+/// @return Caller-owned managed reason string; empty when absent, or NULL after
+///         an invalid-object trap.
 rt_string rt_ws_close_reason(void *obj) {
     if (!obj)
         return rt_str_empty();
@@ -1644,6 +1818,10 @@ rt_string rt_ws_close_reason(void *obj) {
     return rt_string_from_bytes(ws->close_reason, ws->close_reason_len);
 }
 
+/// @brief Return the subprotocol selected during the opening handshake.
+/// @param[in] obj Managed WebSocket receiver, or NULL.
+/// @return Caller-owned managed protocol string; empty when none was selected,
+///         or NULL after an invalid-object trap.
 rt_string rt_ws_subprotocol(void *obj) {
     if (!obj)
         return rt_str_empty();
@@ -1656,6 +1834,8 @@ rt_string rt_ws_subprotocol(void *obj) {
 }
 
 /// @brief Send a text frame. Rejects invalid UTF-8 payloads before they hit the wire.
+/// @param[in] obj Managed WebSocket receiver; NULL is a no-op.
+/// @param[in] text Managed UTF-8 String payload; NULL sends an empty text frame.
 /// @throws Err_ConnectionClosed if `is_open == 0`,
 ///         Err_NetworkError if the underlying send fails.
 void rt_ws_send(void *obj, rt_string text) {
@@ -1698,6 +1878,8 @@ void rt_ws_send(void *obj, rt_string text) {
 }
 
 /// @brief Send a binary frame containing the bytes of `data`.
+/// @param[in] obj Managed WebSocket receiver; NULL is a no-op.
+/// @param[in] data Managed Bytes payload, including an empty Bytes object.
 /// @throws Err_ConnectionClosed if closed, Err_NetworkError on send failure.
 void rt_ws_send_bytes(void *obj, void *data) {
     if (!obj)
@@ -1736,6 +1918,7 @@ void rt_ws_send_bytes(void *obj, void *data) {
 ///
 /// Silently no-ops on a closed connection. The peer's PONG (if any)
 /// is consumed transparently inside `ws_recv_message`.
+/// @param[in] obj Managed WebSocket receiver; NULL is a no-op.
 void rt_ws_ping(void *obj) {
     if (!obj)
         return;
@@ -1804,8 +1987,12 @@ static void *ws_bytes_from_owned_message(uint8_t *message, size_t message_len) {
 }
 
 /// @brief Block until a complete message arrives and return it as a string.
-/// Returns the empty string on close/error. Both text and binary
-/// payloads are decoded as UTF-8 (binary may produce mojibake).
+/// @details Returns the payload bytes as one exact managed String, regardless
+///          of whether the frame opcode was text or binary. Text payloads have
+///          already passed UTF-8 validation; binary bytes are copied verbatim.
+/// @param[in] obj Managed WebSocket receiver, or NULL.
+/// @return Caller-owned managed message String, an empty String on close or
+///         receive error, or NULL after an invalid-object or allocation trap.
 rt_string rt_ws_recv(void *obj) {
     if (!obj)
         return rt_str_empty();
@@ -1825,9 +2012,13 @@ rt_string rt_ws_recv(void *obj) {
 ///
 /// Probes the TLS read buffer first because `select()` only sees
 /// the raw socket — already-decrypted bytes wouldn't show up.
-/// Then waits on `select` for `timeout_ms` and pumps a recv if data arrives.
-/// @return The string message, or NULL if the connection isn't
-///         open, the timeout fires, or the recv fails.
+/// Then waits for socket readiness and temporarily applies the requested
+/// receive timeout before delegating to rt_ws_recv. A zero timeout retains the
+/// transport's current blocking behavior.
+/// @param[in] obj Managed WebSocket receiver.
+/// @param[in] timeout_ms Nonnegative timeout in milliseconds.
+/// @return Caller-owned managed String, or NULL when closed, timed out, invalid,
+///         or after a returning trap hook.
 rt_string rt_ws_recv_for(void *obj, int64_t timeout_ms) {
     if (!obj)
         return NULL;
@@ -1906,7 +2097,9 @@ rt_string rt_ws_recv_for(void *obj, int64_t timeout_ms) {
 }
 
 /// @brief Block for a complete message and return its raw bytes.
-/// Returns an empty Bytes object on close/error.
+/// @param[in] obj Managed WebSocket receiver, or NULL.
+/// @return Caller-owned managed Bytes object, an empty Bytes object on close
+///         or receive error, or NULL after an invalid-object or allocation trap.
 void *rt_ws_recv_bytes(void *obj) {
     if (!obj)
         return rt_bytes_new(0);
@@ -1923,6 +2116,13 @@ void *rt_ws_recv_bytes(void *obj) {
 }
 
 /// @brief Receive a binary message with a timeout (NULL on timeout).
+/// @details The next complete text or binary message is returned as exact raw
+///          bytes. Buffered TLS and handshake look-ahead data bypass the socket
+///          readiness wait. A zero timeout retains current blocking behavior.
+/// @param[in] obj Managed WebSocket receiver.
+/// @param[in] timeout_ms Nonnegative timeout in milliseconds.
+/// @return Caller-owned managed Bytes object, or NULL when closed, timed out,
+///         invalid, or after a returning trap hook.
 /// @see rt_ws_recv_for
 void *rt_ws_recv_bytes_for(void *obj, int64_t timeout_ms) {
     if (!obj)
@@ -2002,6 +2202,7 @@ void *rt_ws_recv_bytes_for(void *obj, int64_t timeout_ms) {
 }
 
 /// @brief Send a normal close (code 1000) and mark the connection closed.
+/// @param[in] obj Managed WebSocket receiver; NULL is a no-op.
 /// @see rt_ws_close_with
 void rt_ws_close(void *obj) {
     rt_ws_close_with(obj, WS_CLOSE_NORMAL, rt_str_empty());
@@ -2016,6 +2217,9 @@ void rt_ws_close(void *obj) {
 /// TCP/TLS transport. Silently no-ops on NULL or already-closed
 /// connections. The GC finalizer (`rt_ws_finalize`) only releases memory
 /// after this and is a no-op on the already-closed transport.
+/// @param[in] obj Managed WebSocket receiver; NULL is a no-op.
+/// @param[in] code Valid RFC 6455 or application close code.
+/// @param[in] reason Optional managed UTF-8 reason of at most 123 bytes.
 void rt_ws_close_with(void *obj, int64_t code, rt_string reason) {
     if (!obj)
         return;

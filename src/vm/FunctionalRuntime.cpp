@@ -150,23 +150,34 @@ static int8_t runVmPredicate(VM &vm, void *callback, void *value, const char *ap
 
 /// @brief Context threaded through the rt_cb_invoke* strategies for VM execution.
 struct VmInvokerCtx {
-    VM *vm;
-    const char *api;
+    VM *vm;         ///< Active virtual machine used to execute the callback.
+    const char *api; ///< Public API name included in trap diagnostics.
 };
 
 /// @brief rt_cb_invoke1 strategy executing the callback on the active VM.
+/// @param ctxRaw Pointer to the associated @ref VmInvokerCtx.
+/// @param fn Raw IL function address to resolve and invoke.
+/// @param arg Object argument forwarded to the callback.
+/// @return Object pointer returned by the callback.
 static void *vmInvoke1(void *ctxRaw, void *fn, void *arg) {
     auto *ctx = static_cast<VmInvokerCtx *>(ctxRaw);
     return runVmCallback1(*ctx->vm, fn, arg, ctx->api);
 }
 
 /// @brief rt_cb_invoke0 strategy executing the callback on the active VM.
+/// @param ctxRaw Pointer to the associated @ref VmInvokerCtx.
+/// @param fn Raw IL supplier function address to resolve and invoke.
+/// @return Object pointer returned by the supplier.
 static void *vmInvoke0(void *ctxRaw, void *fn) {
     auto *ctx = static_cast<VmInvokerCtx *>(ctxRaw);
     return runVmSupplier(*ctx->vm, fn, ctx->api);
 }
 
 /// @brief rt_cb_invoke_pred strategy executing the predicate on the active VM.
+/// @param ctxRaw Pointer to the associated @ref VmInvokerCtx.
+/// @param fn Raw IL predicate function address to resolve and invoke.
+/// @param arg Object argument forwarded to the predicate.
+/// @return One when the predicate succeeds; zero otherwise.
 static int8_t vmInvokePred(void *ctxRaw, void *fn, void *arg) {
     auto *ctx = static_cast<VmInvokerCtx *>(ctxRaw);
     return runVmPredicate(*ctx->vm, fn, arg, ctx->api);
@@ -185,6 +196,13 @@ static void completePendingLazy(void *lazy, const char *api) {
     }
 }
 
+/// @brief Bridge @c Zanna.Functional.Lazy.New into VM-aware lazy construction.
+/// @details Validates an IL supplier against the active module and stores it as
+///          a pending handle.  Without an active VM, delegates to the native
+///          wrapper.
+/// @param args Runtime argument-storage array; element zero contains the
+///        supplier function pointer when present.
+/// @param result Optional storage that receives the new lazy-object pointer.
 static void functional_lazy_new_handler(void **args, void *result) {
     void *supplier = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
     void *lazy = nullptr;
@@ -209,6 +227,11 @@ static void functional_lazy_new_handler(void **args, void *result) {
         *reinterpret_cast<void **>(result) = lazy;
 }
 
+/// @brief Bridge object-valued @c Lazy.Get access.
+/// @details Completes a pending VM supplier before reading the cached object
+///          through the C lazy runtime.
+/// @param args Runtime argument-storage array containing the lazy receiver.
+/// @param result Optional storage that receives the cached object pointer.
 static void functional_lazy_get_handler(void **args, void *result) {
     void *lazy = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
     completePendingLazy(lazy, "Lazy.Get");
@@ -217,6 +240,11 @@ static void functional_lazy_get_handler(void **args, void *result) {
         *reinterpret_cast<void **>(result) = value;
 }
 
+/// @brief Bridge string-valued @c Lazy.GetStr access.
+/// @details Completes a pending VM supplier and retrieves the result using the
+///          string-specific C runtime accessor.
+/// @param args Runtime argument-storage array containing the lazy receiver.
+/// @param result Optional storage that receives the @c rt_string value.
 static void functional_lazy_get_str_handler(void **args, void *result) {
     void *lazy = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
     completePendingLazy(lazy, "Lazy.GetStr");
@@ -225,6 +253,11 @@ static void functional_lazy_get_str_handler(void **args, void *result) {
         *reinterpret_cast<rt_string *>(result) = value;
 }
 
+/// @brief Bridge integer-valued @c Lazy.GetI64 access.
+/// @details Completes a pending VM supplier and retrieves its cached signed
+///          64-bit value through the C runtime.
+/// @param args Runtime argument-storage array containing the lazy receiver.
+/// @param result Optional storage that receives the integer value.
 static void functional_lazy_get_i64_handler(void **args, void *result) {
     void *lazy = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
     completePendingLazy(lazy, "Lazy.GetI64");
@@ -233,6 +266,11 @@ static void functional_lazy_get_i64_handler(void **args, void *result) {
         *reinterpret_cast<int64_t *>(result) = value;
 }
 
+/// @brief Bridge @c Lazy.Force for a possibly pending VM-backed lazy.
+/// @details Completes a pending supplier before forwarding to the C runtime;
+///          the bridge operation has no return value.
+/// @param args Runtime argument-storage array containing the lazy receiver.
+/// @param result Unused result-storage pointer supplied by the generic bridge.
 static void functional_lazy_force_handler(void **args, void *result) {
     (void)result;
     void *lazy = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
@@ -240,6 +278,13 @@ static void functional_lazy_force_handler(void **args, void *result) {
     rt_lazy_force(lazy);
 }
 
+/// @brief Bridge @c Lazy.Map with VM-aware callback execution.
+/// @details Under an active VM, forces the source, invokes the IL callback, and
+///          wraps the transformed object in a completed lazy.  Native calls are
+///          delegated to the C wrapper.
+/// @param args Runtime argument-storage array containing the lazy receiver and
+///        mapping callback.
+/// @param result Optional storage that receives the mapped lazy pointer.
 static void functional_lazy_map_handler(void **args, void *result) {
     void *lazy = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
     void *callback = args && args[1] ? *reinterpret_cast<void **>(args[1]) : nullptr;
@@ -260,6 +305,13 @@ static void functional_lazy_map_handler(void **args, void *result) {
         *reinterpret_cast<void **>(result) = mapped;
 }
 
+/// @brief Bridge @c Lazy.AndThen with VM-aware callback execution.
+/// @details Under an active VM, forces the source and treats the IL callback's
+///          object result as the chained lazy.  Native calls are delegated to
+///          the C flat-map wrapper.
+/// @param args Runtime argument-storage array containing the lazy receiver and
+///        chaining callback.
+/// @param result Optional storage that receives the chained lazy pointer.
 static void functional_lazy_and_then_handler(void **args, void *result) {
     void *lazy = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
     void *callback = args && args[1] ? *reinterpret_cast<void **>(args[1]) : nullptr;
@@ -280,8 +332,17 @@ static void functional_lazy_and_then_handler(void **args, void *result) {
 }
 
 /// @brief Shared body for the eight Option/Result combinator handlers.
-/// @details Runs the combinator core with a VM invoker when a VM is active and
-///          a callback is present; otherwise forwards to the native wrapper.
+/// @details Runs the combinator core with a VM invoker whenever a VM is active;
+///          otherwise forwards the receiver and callback to the native wrapper.
+/// @tparam CoreFn Callable type for the VM-aware C combinator core.
+/// @tparam Strategy Callback-invocation strategy type accepted by @p core.
+/// @tparam NativeFn Callable type for the native combinator wrapper.
+/// @param args Runtime argument-storage array containing receiver and callback.
+/// @param result Optional storage that receives the combined object pointer.
+/// @param api Public API name used in VM callback diagnostics.
+/// @param core VM-aware combinator implementation.
+/// @param strategy Adapter used by @p core to invoke the managed callback.
+/// @param native Native wrapper used when no VM is active.
 template <typename CoreFn, typename Strategy, typename NativeFn>
 static void dispatchCombinator(void **args,
                                void *result,
@@ -302,11 +363,17 @@ static void dispatchCombinator(void **args,
         *reinterpret_cast<void **>(result) = combined;
 }
 
+/// @brief Bridge @c Option.Map through the shared VM-aware combinator adapter.
+/// @param args Runtime argument-storage array containing option and callback.
+/// @param result Optional storage that receives the mapped option.
 static void functional_option_map_handler(void **args, void *result) {
     dispatchCombinator(
         args, result, "Option.Map", &rt_option_map_invoke, &vmInvoke1, &rt_option_map_wrapper);
 }
 
+/// @brief Bridge @c Option.AndThen through the VM-aware callback adapter.
+/// @param args Runtime argument-storage array containing option and callback.
+/// @param result Optional storage that receives the chained option.
 static void functional_option_and_then_handler(void **args, void *result) {
     dispatchCombinator(args,
                        result,
@@ -316,6 +383,10 @@ static void functional_option_and_then_handler(void **args, void *result) {
                        &rt_option_and_then_wrapper);
 }
 
+/// @brief Bridge @c Option.OrElse through the VM-aware supplier adapter.
+/// @param args Runtime argument-storage array containing option and fallback
+///        supplier.
+/// @param result Optional storage that receives the selected option.
 static void functional_option_or_else_handler(void **args, void *result) {
     dispatchCombinator(args,
                        result,
@@ -325,6 +396,9 @@ static void functional_option_or_else_handler(void **args, void *result) {
                        &rt_option_or_else_wrapper);
 }
 
+/// @brief Bridge @c Option.Filter through the VM-aware predicate adapter.
+/// @param args Runtime argument-storage array containing option and predicate.
+/// @param result Optional storage that receives the filtered option.
 static void functional_option_filter_handler(void **args, void *result) {
     dispatchCombinator(args,
                        result,
@@ -334,11 +408,18 @@ static void functional_option_filter_handler(void **args, void *result) {
                        &rt_option_filter_wrapper);
 }
 
+/// @brief Bridge @c Result.Map through the shared VM-aware combinator adapter.
+/// @param args Runtime argument-storage array containing result and callback.
+/// @param result Optional storage that receives the mapped result object.
 static void functional_result_map_handler(void **args, void *result) {
     dispatchCombinator(
         args, result, "Result.Map", &rt_result_map_invoke, &vmInvoke1, &rt_result_map_wrapper);
 }
 
+/// @brief Bridge @c Result.MapErr through the VM-aware callback adapter.
+/// @param args Runtime argument-storage array containing result and error
+///        mapping callback.
+/// @param result Optional storage that receives the mapped result object.
 static void functional_result_map_err_handler(void **args, void *result) {
     dispatchCombinator(args,
                        result,
@@ -348,6 +429,10 @@ static void functional_result_map_err_handler(void **args, void *result) {
                        &rt_result_map_err_wrapper);
 }
 
+/// @brief Bridge @c Result.AndThen through the VM-aware callback adapter.
+/// @param args Runtime argument-storage array containing result and chaining
+///        callback.
+/// @param result Optional storage that receives the chained result object.
 static void functional_result_and_then_handler(void **args, void *result) {
     dispatchCombinator(args,
                        result,
@@ -357,6 +442,10 @@ static void functional_result_and_then_handler(void **args, void *result) {
                        &rt_result_and_then_wrapper);
 }
 
+/// @brief Bridge @c Result.OrElse through the VM-aware callback adapter.
+/// @param args Runtime argument-storage array containing result and recovery
+///        callback.
+/// @param result Optional storage that receives the recovered result object.
 static void functional_result_or_else_handler(void **args, void *result) {
     dispatchCombinator(args,
                        result,
@@ -424,7 +513,10 @@ void registerFunctionalRuntimeExternals() {
     }
 
     struct CombinatorExtern {
-        const char *name;
+        const char *name;                 ///< Public runtime external name.
+        /// @brief Generic bridge handler function.
+        /// @param args Array of pointers to argument storage.
+        /// @param result Pointer to result storage.
         void (*handler)(void **, void *);
     };
     static constexpr CombinatorExtern kCombinators[] = {

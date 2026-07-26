@@ -18,6 +18,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares exception-aware unreachable-block cleanup for SimplifyCFG.
+ *
+ * @details The subtransform computes entry reachability across supported
+ *          terminators and removes dead blocks unless exception-handling
+ *          relationships require their retention.
+ */
+
 #pragma once
 
 #include "il/transform/SimplifyCFG.hpp"

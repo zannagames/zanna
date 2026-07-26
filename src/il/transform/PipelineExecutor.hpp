@@ -20,6 +20,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares ordered execution of registered IL transformation pipelines.
+ *
+ * @details `PipelineExecutor` materializes pass factories by identifier,
+ *          provides one analysis manager for a run, applies preservation-driven
+ *          cache invalidation, and surrounds each pass with optional print,
+ *          verification, and metrics hooks. It borrows immutable registries and
+ *          may parallelize only function passes marked safe by registration.
+ */
+
 #pragma once
 
 #include "il/core/fwd.hpp"
@@ -41,35 +52,35 @@ class PipelineExecutor {
     struct PassMetrics {
         /// @brief Aggregate basic-block and instruction counts for a module.
         struct IRSize {
-            /// Number of basic blocks across all functions.
+            /// @brief Number of basic blocks across all functions.
             std::size_t blocks = 0;
-            /// Number of instructions across all blocks.
+            /// @brief Number of instructions across all blocks.
             std::size_t instructions = 0;
         };
 
-        /// IR size immediately before the pass.
+        /// @brief IR size immediately before the pass.
         IRSize before;
-        /// IR size immediately after the pass and optional verification.
+        /// @brief IR size immediately after the pass and optional verification.
         IRSize after;
-        /// New analysis computations attributable to the pass.
+        /// @brief New analysis computations attributable to the pass.
         AnalysisCounts analysesComputed{};
-        /// Wall-clock duration of pass execution, excluding verification.
+        /// @brief Wall-clock duration of pass execution, excluding verification.
         std::chrono::nanoseconds duration{};
-        /// Wall-clock duration of the optional verification hook.
+        /// @brief Wall-clock duration of the optional verification hook.
         std::chrono::nanoseconds verifyDuration{};
-        /// Whether a verification hook was invoked.
+        /// @brief Whether a verification hook was invoked.
         bool verifyRan = false;
     };
 
     /// @brief Configuration for instrumentation hooks around pass execution.
     struct Instrumentation {
-        /// Optional hook invoked before each materialized pass.
+        /// @brief Optional hook invoked before each materialized pass.
         zanna::pass::PassManager::PrintHook printBefore;
-        /// Optional hook invoked after each successful pass.
+        /// @brief Optional hook invoked after each successful pass.
         zanna::pass::PassManager::PrintHook printAfter;
-        /// Optional hook returning whether post-pass IR verification succeeded.
+        /// @brief Optional hook returning whether post-pass IR verification succeeded.
         zanna::pass::PassManager::VerifyHook verifyEach;
-        /// Optional metrics sink receiving one record per executed pass.
+        /// @brief Optional metrics sink receiving one record per executed pass.
         std::function<void(std::string_view id, const PassMetrics &metrics)> passMetrics;
     };
 
@@ -95,9 +106,13 @@ class PipelineExecutor {
     bool run(core::Module &module, const std::vector<std::string> &pipeline) const;
 
   private:
+    /// @brief Borrowed pass factory registry.
     const PassRegistry &registry_;
+    /// @brief Borrowed analysis computation registry.
     const AnalysisRegistry &analysisRegistry_;
+    /// @brief Owned copy of hooks invoked around pass execution.
     Instrumentation instrumentation_;
+    /// @brief Whether audited function passes may run concurrently.
     bool parallelFunctionPasses_ = false;
 };
 

@@ -22,6 +22,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements deterministic USTAR serialization with POSIX PAX extensions.
+/// @details Entry paths and symlink targets are normalized before storage;
+///          serialization emits bounded octal fields, checksums, block padding,
+///          optional long-path metadata, and the canonical end marker.
+
 #include "TarWriter.hpp"
 #include "PkgUtils.hpp"
 
@@ -40,6 +46,10 @@ namespace {
 /// @details Archive writers pre-reserve their final output buffers. A wrapped estimate would cause
 ///          under-reservation and potentially mask pathological inputs, so overflow is reported as a
 ///          package-construction error before serialization begins.
+/// @param total Running estimate to increase.
+/// @param value Number of bytes to add.
+/// @param archiveKind Writer name included in the exception message.
+/// @throws std::runtime_error If the sum cannot be represented by `size_t`.
 void checkedAddEstimate(size_t &total, size_t value, const char *archiveKind) {
     if (value > std::numeric_limits<size_t>::max() - total)
         throw std::runtime_error(std::string(archiveKind) + ": archive size estimate overflow");
@@ -49,6 +59,11 @@ void checkedAddEstimate(size_t &total, size_t value, const char *archiveKind) {
 /// @brief Normalize a tar entry path: strips the leading "./" prefix (emitted by some
 /// tools), removes trailing slashes, sanitizes via sanitizePackageRelativePath,
 /// then re-appends "/" for directory entries. Returns "" for the root ".".
+/// @param path Caller-supplied archive path.
+/// @param directory Whether the entry is a directory requiring a trailing slash.
+/// @param fieldName Context label used by path-validation diagnostics.
+/// @return Sanitized archive-relative path, or empty text for the directory root.
+/// @throws std::runtime_error If the path is absolute, traversing, or otherwise unsafe.
 std::string normalizeTarEntryPath(const std::string &path, bool directory, const char *fieldName) {
     std::string clean = path;
     if (clean.rfind("./", 0) == 0)
@@ -66,6 +81,10 @@ std::string normalizeTarEntryPath(const std::string &path, bool directory, const
 /// @brief Validate that a tar symlink target is safe to include in the archive.
 /// Rejects empty targets, absolute paths, Windows drive paths, and targets that
 /// resolve outside the archive root when combined with the symlink's directory.
+/// @param linkPath Sanitized archive path of the symlink entry.
+/// @param target Caller-supplied target to normalize and validate.
+/// @return Slash-normalized relative target suitable for the tar link-name field.
+/// @throws std::runtime_error If the target is empty, multi-line, absolute, or escaping.
 std::string normalizeTarSymlinkTarget(const std::string &linkPath, const std::string &target) {
     if (target.empty())
         throw std::runtime_error("tar symlink target must not be empty");
@@ -97,6 +116,12 @@ std::string normalizeTarSymlinkTarget(const std::string &linkPath, const std::st
 
 /// @brief Add a regular file entry (typeflag '0') to the archive.
 /// Normalizes path, checks for duplicates, and stores a copy of the data.
+/// @param path Archive-relative file path.
+/// @param data File bytes; may be null only when @p size is zero.
+/// @param size Number of bytes available at @p data.
+/// @param mode Unix permission bits encoded in the header.
+/// @param mtime Unix modification timestamp encoded in the header.
+/// @throws std::runtime_error If the path is invalid/duplicate or data is null.
 void TarWriter::addFile(
     const std::string &path, const uint8_t *data, size_t size, uint32_t mode, uint32_t mtime) {
     const std::string cleanPath = normalizeTarEntryPath(path, false, "tar file path");
@@ -119,6 +144,11 @@ void TarWriter::addFile(
 }
 
 /// @brief Convenience overload: add a file whose content is given as a std::string.
+/// @param path Archive-relative file path.
+/// @param content Bytes to copy into the pending entry.
+/// @param mode Unix permission bits encoded in the header.
+/// @param mtime Unix modification timestamp encoded in the header.
+/// @throws std::runtime_error If the path is invalid or duplicates another entry.
 void TarWriter::addFileString(const std::string &path,
                               const std::string &content,
                               uint32_t mode,
@@ -127,6 +157,11 @@ void TarWriter::addFileString(const std::string &path,
 }
 
 /// @brief Convenience overload: add a file whose content is given as a byte vector.
+/// @param path Archive-relative file path.
+/// @param data Bytes to copy into the pending entry.
+/// @param mode Unix permission bits encoded in the header.
+/// @param mtime Unix modification timestamp encoded in the header.
+/// @throws std::runtime_error If the path is invalid or duplicates another entry.
 void TarWriter::addFileVec(const std::string &path,
                            const std::vector<uint8_t> &data,
                            uint32_t mode,
@@ -137,6 +172,10 @@ void TarWriter::addFileVec(const std::string &path,
 /// @brief Add a directory entry (typeflag '5') to the archive.
 /// The path is normalized and a trailing "/" is always appended. The root
 /// directory "." maps to "./" and is allowed without duplicate-path rejection.
+/// @param path Archive-relative directory path.
+/// @param mode Unix permission bits encoded in the header.
+/// @param mtime Unix modification timestamp encoded in the header.
+/// @throws std::runtime_error If a non-root path is invalid or duplicates another entry.
 void TarWriter::addDirectory(const std::string &path, uint32_t mode, uint32_t mtime) {
     const std::string cleanPath = normalizeTarEntryPath(path, true, "tar directory path");
     if (!cleanPath.empty()) {
@@ -156,6 +195,10 @@ void TarWriter::addDirectory(const std::string &path, uint32_t mode, uint32_t mt
 /// @brief Add a symbolic link entry (typeflag '2') to the archive.
 /// Normalizes path, validates the target is relative and does not escape the
 /// archive root, and stores mode 0777 (conventional for symlinks).
+/// @param path Archive-relative path of the symlink.
+/// @param target Relative target resolved from the symlink's parent directory.
+/// @param mtime Unix modification timestamp encoded in the header.
+/// @throws std::runtime_error If the path/target is unsafe or the path is duplicate.
 void TarWriter::addSymlink(const std::string &path, const std::string &target, uint32_t mtime) {
     const std::string cleanPath = normalizeTarEntryPath(path, false, "tar symlink path");
     if (cleanPath.empty())
@@ -176,6 +219,10 @@ namespace {
 
 /// @brief Write an octal value as NUL-terminated ASCII into a fixed-width field.
 /// Format: (width-1) octal digits + NUL byte.
+/// @param field Destination buffer of at least @p width bytes.
+/// @param width Fixed field width, including the final NUL.
+/// @param value Unsigned value to encode with leading zeroes.
+/// @throws std::runtime_error If @p value exceeds the field's octal capacity.
 void writeOctal(uint8_t *field, size_t width, uint64_t value) {
     uint64_t maxValue = 0;
     for (size_t i = 0; i + 1 < width; ++i)
@@ -202,7 +249,11 @@ void writeOctal(uint8_t *field, size_t width, uint64_t value) {
     }
 }
 
-/// @brief Write a NUL-terminated string into a fixed-width field.
+/// @brief Copy a string into a zero-initialized fixed-width header field.
+/// @param field Destination field, expected to have been zero-filled by the caller.
+/// @param width Maximum number of bytes that may be copied.
+/// @param s Bytes to write without adding an explicit terminator.
+/// @throws std::runtime_error If @p s is wider than the destination field.
 void writeString(uint8_t *field, size_t width, const std::string &s) {
     if (s.size() > width)
         throw std::runtime_error("tar string field too long: " + s);
@@ -244,13 +295,22 @@ std::string paxHeaderPath(size_t index) {
 /// @details The real archive path is supplied by a preceding PAX `path` record.
 ///          This fallback is only for legacy readers that ignore PAX and must fit
 ///          in the basic USTAR name field.
+/// @param index Monotonic index shared with the associated PAX header.
+/// @return Archive path for the placeholder payload entry.
 std::string paxPayloadFallbackPath(size_t index) {
     return "PaxPayloads.X/zanna-" + std::to_string(index);
 }
 
+/// @brief Split a normalized archive path between USTAR prefix and name fields.
+/// @param path Normalized path to represent.
+/// @param prefix Receives the optional directory prefix.
+/// @param name Receives the final name component or short complete path.
+/// @throws std::runtime_error If no valid 155-byte/100-byte split exists.
 void splitUstarPath(const std::string &path, std::string &prefix, std::string &name);
 
 /// @brief Test whether @p path can be represented in USTAR name/prefix fields.
+/// @param path Normalized archive path to test.
+/// @return true when the path requires a POSIX PAX `path` record.
 bool pathNeedsPaxRecord(const std::string &path) {
     std::string prefix;
     std::string name;
@@ -264,6 +324,8 @@ bool pathNeedsPaxRecord(const std::string &path) {
 
 /// @brief Compute the USTAR checksum for a 512-byte header.
 /// The checksum field (offset 148, 8 bytes) is treated as spaces.
+/// @param header Complete USTAR header bytes.
+/// @return Sum of all header bytes under the POSIX checksum convention.
 uint32_t computeChecksum(const uint8_t header[512]) {
     uint32_t sum = 0;
     for (int i = 0; i < 512; i++) {
@@ -278,6 +340,10 @@ uint32_t computeChecksum(const uint8_t header[512]) {
 
 /// @brief Split a normalized path into USTAR prefix/name fields.
 /// The name field must be non-empty even for directory entries that end in '/'.
+/// @param path Normalized path to represent.
+/// @param prefix Receives at most 155 bytes preceding a slash.
+/// @param name Receives at most 100 bytes following the split.
+/// @throws std::runtime_error If @p path cannot be represented by USTAR fields.
 void splitUstarPath(const std::string &path, std::string &prefix, std::string &name) {
     name = path;
     prefix.clear();
@@ -315,6 +381,9 @@ void splitUstarPath(const std::string &path, std::string &prefix, std::string &n
 /// For each entry: builds a 512-byte header (splitting long paths into
 /// prefix+name fields), computes the POSIX checksum, and pads file data to
 /// 512-byte blocks. Appends two zero-filled 1024-byte end-of-archive blocks.
+/// @return Complete caller-owned archive bytes; pending entries remain unchanged.
+/// @throws std::runtime_error If the output-size estimate or a header field
+///         overflows its representation.
 std::vector<uint8_t> TarWriter::finish() const {
     std::vector<uint8_t> out;
 
@@ -331,6 +400,9 @@ std::vector<uint8_t> TarWriter::finish() const {
     out.reserve(est);
 
     size_t paxIndex = 0;
+    /// @brief Serialize one prepared archive entry in USTAR form.
+    /// @param e Entry whose header and padded payload are appended to `out`.
+    /// @throws std::runtime_error If the entry cannot be represented safely.
     auto appendEntry = [&](const Entry &e) {
         // Build 512-byte USTAR header
         uint8_t hdr[512];

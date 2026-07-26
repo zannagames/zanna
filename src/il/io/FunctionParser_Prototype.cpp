@@ -14,6 +14,18 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements transactional parsing of IL function declarations.
+ *
+ * @details The parser decodes linkage, symbol names, parameters, variadic
+ *          markers, return types, calling conventions, attributes, and optional
+ *          source metadata. It validates declaration collisions and resource
+ *          limits before appending the function and initializing its SSA-name
+ *          state; a snapshot restores all affected parser/module state on any
+ *          failure.
+ */
+
 #include "il/internal/io/FunctionParser.hpp"
 #include "il/internal/io/FunctionParser_Internal.hpp"
 #include "il/internal/io/TypeParser.hpp"
@@ -31,8 +43,8 @@ namespace il::io::detail {
 
 namespace {
 
-/// @brief Parse a single parameter from "type %name" or "%name: type" syntax.
 /// @brief Parse one function parameter and validate its public/internal type policy.
+/// @details Accepts both `type %name` and `%name: type` spellings.
 /// @param rawParam Raw comma-delimited parameter text.
 /// @param lineNo Source line used for diagnostics.
 /// @param allowInternalTypes True when `error` and `resumetok` are valid in this prototype.

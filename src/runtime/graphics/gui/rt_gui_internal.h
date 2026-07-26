@@ -26,6 +26,17 @@
 //        src/runtime/oop/rt_object.h
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Shares private GUI state, validation helpers, and cross-unit contracts.
+ *
+ * @details This implementation-only header centralizes authenticated opaque
+ *          handle conversion, application/widget ownership bridges, logical
+ *          geometry and string sanitization, theme/font state, subhandle
+ *          lifetime hooks, and declarations used across the split GUI runtime.
+ */
+
 #pragma once
 
 #include "rt_gui.h"
@@ -223,6 +234,7 @@ typedef struct {
     int32_t overlay_last_valid;    ///< Non-zero when the retained overlay union contains pixels.
 } rt_gui_app_t;
 
+/// @brief Magic value authenticating live private GUI application records.
 #define RT_GUI_APP_MAGIC UINT64_C(0x5254475541505031)
 
 /// @brief Global pointer to the current app for widget constructors to access the default font.
@@ -710,19 +722,24 @@ static inline vg_widget_t *rt_gui_widget_parent_container_from_handle(void *hand
     return rt_gui_widget_type_accepts_runtime_children(parent->type) ? parent : NULL;
 }
 
+/// @brief Largest absolute logical layout coordinate accepted from the public API.
 #define RT_GUI_MAX_LAYOUT_VALUE 1000000.0
+/// @brief Magic value authenticating heap-backed GUI string data.
 #define RT_GUI_STRING_DATA_MAGIC UINT64_C(0x5254475544535452)
 
 #ifdef _MSC_VER
+/// @brief MSVC-compatible placeholder size for a trailing byte array.
 #define RT_GUI_FLEX_ARRAY_SIZE 1
 #else
+/// @brief Empty dimension enabling a compiler-supported flexible trailing array.
 #define RT_GUI_FLEX_ARRAY_SIZE
 #endif
 
+/// @brief Authenticated variable-length UTF-8 storage used by GUI string bridges.
 typedef struct {
-    uint64_t magic;
-    size_t len;
-    char bytes[RT_GUI_FLEX_ARRAY_SIZE];
+    uint64_t magic; ///< Must equal @ref RT_GUI_STRING_DATA_MAGIC while live.
+    size_t len; ///< Number of payload bytes excluding any trailing terminator.
+    char bytes[RT_GUI_FLEX_ARRAY_SIZE]; ///< Inline variable-length byte payload.
 } rt_gui_string_data_t;
 
 /// @brief Test whether a floating-point value is neither NaN nor infinity.

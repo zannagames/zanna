@@ -81,6 +81,9 @@ bool looksLikeFormattedSourcePrefix(std::string_view prefix) {
     if (lastColon == std::string_view::npos || lastColon + 1 >= prefix.size())
         return false;
 
+    /// @brief Test whether a coordinate field contains one or more ASCII digits.
+    /// @param text Candidate coordinate field.
+    /// @return `true` when @p text is nonempty and entirely decimal digits.
     auto allDigits = [](std::string_view text) {
         if (text.empty())
             return false;

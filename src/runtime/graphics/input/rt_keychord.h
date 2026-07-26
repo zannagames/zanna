@@ -21,6 +21,17 @@
 // Links: src/runtime/graphics/input/rt_keychord.c (implementation), src/runtime/core/rt_string.h
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares named simultaneous-chord and sequential-combo detection.
+ *
+ * @details Detectors own bounded key patterns, replace definitions by name,
+ *          evaluate chord activation and one-frame trigger edges, track
+ *          sequence progress within configurable frame windows, and expose
+ *          removal and enumeration through an opaque GC-managed handle.
+ */
+
 #pragma once
 
 #include "rt_string.h"

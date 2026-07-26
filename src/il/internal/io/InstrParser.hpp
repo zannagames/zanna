@@ -13,6 +13,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares the internal parser for one textual IL instruction.
+ *
+ * @details The parser resolves SSA names and opcode-specific operands through
+ *          `ParserState`, appends a successfully formed instruction to the
+ *          active block, and reports legacy textual diagnostics to the supplied
+ *          stream when parsing fails.
+ */
+
 #pragma once
 
 #include "il/internal/io/ParserState.hpp"

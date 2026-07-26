@@ -19,6 +19,17 @@
 //        docs/adr/0126-http-client-stable-identity-and-transactional-ownership.md
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_network_http_internal.h
+ * @brief Declares shared native HTTP request, response, and pool interfaces.
+ * @details This private boundary defines the stable managed class identities
+ *          and native payload layouts shared by the HTTP transport core and
+ *          its public API wrappers. It also declares request construction,
+ *          header mutation, URL parsing, execution, and connection-pool
+ *          helpers whose ownership contracts cross translation units.
+ */
+
 #pragma once
 
 #include "rt_string.h"

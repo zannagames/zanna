@@ -27,6 +27,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements managed GUI palettes and application theme-mode control.
+ *
+ * @details ThemePalette wrappers own unscaled toolkit clones, expose validated
+ *          named color, metric, and font-role mutation, and apply independent
+ *          clones to GUI applications. Theme mode, system appearance,
+ *          accessibility adjustment, DPI scaling, font retirement, revisions,
+ *          and one-shot change observation remain coordinated per application.
+ */
+
 #include "rt_gui_accessibility_platform.h"
 #include "rt_gui_internal.h"
 #include "rt_result.h"
@@ -39,6 +50,7 @@
 
 #ifdef ZANNA_ENABLE_GRAPHICS
 
+/// @brief Magic value authenticating live managed ThemePalette objects.
 #define RT_GUI_THEME_PALETTE_MAGIC UINT64_C(0x5254475554484D31)
 
 /// @brief Managed logical theme palette stored behind the Zanna-facing opaque object.
@@ -62,10 +74,10 @@ typedef struct rt_gui_color_token {
 
 /// @brief Storage representation used by a public numeric theme token.
 typedef enum rt_gui_metric_storage {
-    RT_GUI_METRIC_FLOAT,
-    RT_GUI_METRIC_INT,
-    RT_GUI_METRIC_U8,
-    RT_GUI_METRIC_BOOL,
+    RT_GUI_METRIC_FLOAT, ///< Single-precision floating-point field.
+    RT_GUI_METRIC_INT,   ///< Signed integer field.
+    RT_GUI_METRIC_U8,    ///< Unsigned eight-bit field.
+    RT_GUI_METRIC_BOOL,  ///< Boolean field normalized from numeric input.
 } rt_gui_metric_storage_t;
 
 /// @brief Description and validation range for one public numeric theme token.
@@ -84,30 +96,54 @@ typedef struct rt_gui_metric_alias {
     const char *canonical; ///< Name present in the primary metric table.
 } rt_gui_metric_alias_t;
 
+/// @brief Compute the byte offset of a color-scheme member in @c vg_theme_t.
+/// @param member Member of @c vg_color_scheme_t.
 #define THEME_COLOR_OFFSET(member)                                                                 \
     (offsetof(vg_theme_t, colors) + offsetof(vg_color_scheme_t, member))
+/// @brief Compute the byte offset of a typography member.
+/// @param member Member of @c vg_typography_t.
 #define THEME_TYPOGRAPHY_OFFSET(member)                                                            \
     (offsetof(vg_theme_t, typography) + offsetof(vg_typography_t, member))
+/// @brief Compute the byte offset of a spacing-scale member.
+/// @param member Member of @c vg_spacing_t.
 #define THEME_SPACING_OFFSET(member)                                                               \
     (offsetof(vg_theme_t, spacing) + offsetof(vg_spacing_t, member))
+/// @brief Compute the byte offset of a button-theme member.
+/// @param member Member of @c vg_button_theme_t.
 #define THEME_BUTTON_OFFSET(member)                                                                \
     (offsetof(vg_theme_t, button) + offsetof(vg_button_theme_t, member))
+/// @brief Compute the byte offset of an input-theme member.
+/// @param member Member of @c vg_input_theme_t.
 #define THEME_INPUT_OFFSET(member)                                                                 \
     (offsetof(vg_theme_t, input) + offsetof(vg_input_theme_t, member))
+/// @brief Compute the byte offset of a scrollbar-theme member.
+/// @param member Member of @c vg_scrollbar_theme_t.
 #define THEME_SCROLLBAR_OFFSET(member)                                                             \
     (offsetof(vg_theme_t, scrollbar) + offsetof(vg_scrollbar_theme_t, member))
+/// @brief Compute the byte offset of a radius-scale member.
+/// @param member Member of @c vg_radius_scale_t.
 #define THEME_RADIUS_OFFSET(member)                                                                \
     (offsetof(vg_theme_t, radius) + offsetof(vg_radius_scale_t, member))
+/// @brief Compute the byte offset of one elevation-level member.
+/// @param level Member of @c vg_elevation_scale_t selecting the level.
+/// @param member Member of the selected @c vg_elevation_t.
 #define THEME_ELEVATION_OFFSET(level, member)                                                      \
     (offsetof(vg_theme_t, elevation) + offsetof(vg_elevation_scale_t, level) +                     \
      offsetof(vg_elevation_t, member))
+/// @brief Compute the byte offset of a gradient-theme member.
+/// @param member Member of @c vg_gradient_theme_t.
 #define THEME_GRADIENT_OFFSET(member)                                                              \
     (offsetof(vg_theme_t, gradient) + offsetof(vg_gradient_theme_t, member))
+/// @brief Compute the byte offset of a focus-theme member.
+/// @param member Member of @c vg_focus_theme_t.
 #define THEME_FOCUS_OFFSET(member)                                                                 \
     (offsetof(vg_theme_t, focus) + offsetof(vg_focus_theme_t, member))
+/// @brief Compute the byte offset of a motion-theme member.
+/// @param member Member of @c vg_motion_theme_t.
 #define THEME_MOTION_OFFSET(member)                                                                \
     (offsetof(vg_theme_t, motion) + offsetof(vg_motion_theme_t, member))
 
+/// @brief Stable public color-token descriptors.
 static const rt_gui_color_token_t k_color_tokens[] = {
     {"bgPrimary", THEME_COLOR_OFFSET(bg_primary)},
     {"bgSecondary", THEME_COLOR_OFFSET(bg_secondary)},
@@ -145,6 +181,7 @@ static const rt_gui_color_token_t k_color_tokens[] = {
     {"focusGlowColor", THEME_FOCUS_OFFSET(glow_color)},
 };
 
+/// @brief Stable public numeric-token descriptors and accepted ranges.
 static const rt_gui_metric_token_t k_metric_tokens[] = {
     {"fontSizeSmall", THEME_TYPOGRAPHY_OFFSET(size_small), RT_GUI_METRIC_FLOAT, 0.0, 1024.0, true},
     {"fontSizeNormal",
@@ -324,6 +361,7 @@ static const rt_gui_metric_token_t k_metric_tokens[] = {
     {"motionFocusMs", THEME_MOTION_OFFSET(focus_ms), RT_GUI_METRIC_FLOAT, 0.0, 60000.0, false},
 };
 
+/// @brief Alternate numeric-token spellings mapped to canonical descriptors.
 static const rt_gui_metric_alias_t k_metric_aliases[] = {
     {"typographySizeSmall", "fontSizeSmall"},
     {"typographySizeNormal", "fontSizeNormal"},
@@ -359,9 +397,13 @@ _Static_assert(sizeof(k_color_tokens) / sizeof(k_color_tokens[0]) <= 64,
 _Static_assert(sizeof(k_metric_tokens) / sizeof(k_metric_tokens[0]) <= 64,
                "theme metric invalid mask must fit in uint64_t");
 
+/// @brief Theme mode used when no GUI application context exists.
 static int64_t s_fallback_theme_mode = RT_GUI_THEME_DARK;
+/// @brief Last fallback system-appearance preference.
 static int32_t s_fallback_theme_prefers_dark = 1;
+/// @brief Fallback monotonic theme revision.
 static uint64_t s_fallback_theme_revision = 0;
+/// @brief Fallback revision consumed by Theme.WasChanged.
 static uint64_t s_fallback_theme_reported_revision = 0;
 
 /// @brief Return a checked palette wrapper without accepting arbitrary GUI handles.

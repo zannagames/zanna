@@ -5,14 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implements the `zanna front zia` subcommand.
-//
-//===----------------------------------------------------------------------===//
-
-/// @file
+/// @file cmd_front_zia.cpp
 /// @brief CLI implementation for the `zanna front zia` subcommand.
-/// @details Handles argument parsing, compilation to IL, verification, and
-///          optional execution using the VM for the Zia frontend.
+///
+/// The implementation stages shared-option parsing, source loading, warning policy, compilation,
+/// verifier diagnostics, IL emission, stdin redirection, and standard or bytecode VM execution.
 
 #include "cli.hpp"
 #include "frontends/zia/Compiler.hpp"
@@ -42,6 +39,11 @@ namespace {
 /// @brief Run the IL verifier on @p module and print any diagnostics.
 /// @details Collects up to 50 diagnostics; prints them (errors always, warnings
 ///          only when @p showWarnings) using the requested format.
+/// @param module Module to verify.
+/// @param err Destination diagnostic stream.
+/// @param sm Source manager used to resolve locations.
+/// @param format Text or JSON output encoding.
+/// @param showWarnings Whether verifier warnings are printed alongside errors.
 /// @return true when the module has no verifier errors.
 bool reportVerifierDiagnostics(il::core::Module &module,
                                std::ostream &err,

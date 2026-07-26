@@ -5,16 +5,17 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tools/lsp-common/LspHandler.cpp
-// Purpose: Implementation of the LSP protocol handler.
-// Key invariants:
-//   - textDocumentSync is Full (1) — always receives complete document text
-//   - Diagnostics published on didOpen and didChange
-//   - shutdown sets flag; exit returns appropriate code
-//   - Language-specific strings come from ServerConfig
-// Ownership/Lifetime:
-//   - All returned JSON is fully owned
-// Links: tools/lsp-common/LspHandler.hpp, tools/lsp-common/ICompilerBridge.hpp
+/// @file
+/// @brief Implements lifecycle dispatch, document synchronization, editor
+///        features, and diagnostics for the shared LSP server.
+///
+/// The handler advertises full-document synchronization, converts between LSP
+/// UTF-16 positions and compiler byte columns, and delegates language-specific
+/// operations through ICompilerBridge. Returned JSON strings own their data;
+/// diagnostics are published after document opens and accepted changes.
+///
+/// @see LspHandler.hpp
+/// @see ICompilerBridge.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -39,6 +40,10 @@ namespace zanna::server {
 namespace {
 
 /// @brief Return @p obj's member @p name only if it is itself an Object, else null.
+/// @param obj Candidate containing JSON value.
+/// @param name Null-terminated member name to locate.
+/// @return Pointer to the object-valued member, or @c nullptr on absence or a
+///         type mismatch.
 const JsonValue *objectMember(const JsonValue &obj, const char *name) {
     if (obj.type() != JsonType::Object)
         return nullptr;
@@ -47,6 +52,10 @@ const JsonValue *objectMember(const JsonValue &obj, const char *name) {
 }
 
 /// @brief Return @p obj's member @p name only if it is a String, else null.
+/// @param obj Candidate containing JSON value.
+/// @param name Null-terminated member name to locate.
+/// @return Pointer to the string-valued member, or @c nullptr on absence or a
+///         type mismatch.
 const JsonValue *stringMember(const JsonValue &obj, const char *name) {
     if (obj.type() != JsonType::Object)
         return nullptr;
@@ -55,6 +64,10 @@ const JsonValue *stringMember(const JsonValue &obj, const char *name) {
 }
 
 /// @brief Return @p obj's member @p name only if it is a Bool, else null.
+/// @param obj Candidate containing JSON value.
+/// @param name Null-terminated member name to locate.
+/// @return Pointer to the Boolean-valued member, or @c nullptr on absence or a
+///         type mismatch.
 const JsonValue *boolMember(const JsonValue &obj, const char *name) {
     if (obj.type() != JsonType::Object)
         return nullptr;
@@ -63,6 +76,10 @@ const JsonValue *boolMember(const JsonValue &obj, const char *name) {
 }
 
 /// @brief Return @p obj's member @p name only if it is an Int, else null.
+/// @param obj Candidate containing JSON value.
+/// @param name Null-terminated member name to locate.
+/// @return Pointer to the integer-valued member, or @c nullptr on absence or a
+///         type mismatch.
 const JsonValue *intMember(const JsonValue &obj, const char *name) {
     if (obj.type() != JsonType::Object)
         return nullptr;
@@ -90,6 +107,8 @@ bool checkedJsonIntToInt(const JsonValue *value, int minValue, int maxValue, int
 }
 
 /// @brief Extract `params.textDocument.uri` into @p uri.
+/// @param params Request parameters expected to contain @c textDocument.uri.
+/// @param uri Receives the nonempty URI on success.
 /// @return true when a non-empty URI string is present.
 bool extractTextDocumentUri(const JsonValue &params, std::string &uri) {
     const JsonValue *textDocument = objectMember(params, "textDocument");
@@ -106,6 +125,8 @@ bool extractTextDocumentUri(const JsonValue &params, std::string &uri) {
 /// @details Some LSP clients send null or omit versions for virtual or
 ///          best-effort documents. This helper treats that as an absent version
 ///          while still rejecting non-integer, non-null values.
+/// @param params Request parameters that may contain @c textDocument.version.
+/// @param version Receives the narrowed version, or is reset when it is absent.
 /// @return true when the version is valid or absent; false when malformed.
 bool extractOptionalTextDocumentVersion(const JsonValue &params, std::optional<int> &version) {
     version.reset();
@@ -124,6 +145,9 @@ bool extractOptionalTextDocumentVersion(const JsonValue &params, std::optional<i
 /// @brief Extract `params.position` into 1-based @p line / @p col.
 /// @details LSP positions are 0-based; this adds 1 to each so the values match
 ///          the frontend's 1-based line/column convention.
+/// @param params Request parameters expected to contain an LSP position object.
+/// @param line Receives the one-based line value on success.
+/// @param col Receives the one-based UTF-16 character value on success.
 /// @return true when both line and character are present and positive.
 bool extractPosition(const JsonValue &params, int &line, int &col) {
     const JsonValue *position = objectMember(params, "position");
@@ -141,6 +165,11 @@ bool extractPosition(const JsonValue &params, int &line, int &col) {
 }
 
 /// @brief Build an LSP `Range` JSON object from 0-based start/end line/character.
+/// @param startLine Zero-based first line.
+/// @param startCharacter Zero-based UTF-16 offset on the first line.
+/// @param endLine Zero-based exclusive last line.
+/// @param endCharacter Zero-based exclusive UTF-16 offset on the last line.
+/// @return JSON object containing LSP @c start and @c end positions.
 JsonValue makeRange(int startLine, int startCharacter, int endLine, int endCharacter) {
     return JsonValue::object({
         {"start",
@@ -151,10 +180,16 @@ JsonValue makeRange(int startLine, int startCharacter, int endLine, int endChara
     });
 }
 
+/// @brief Test whether a byte may be emitted literally in a file-URI path.
+/// @param c Candidate path byte.
+/// @return @c true for unreserved URI characters, slash, or colon.
 static bool isUriPathChar(unsigned char c) {
     return std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~' || c == '/' || c == ':';
 }
 
+/// @brief Percent-encode path bytes that are not safe in a file URI.
+/// @param path Path text using URI-style separators.
+/// @return Encoded path retaining unreserved characters, slashes, and colons.
 static std::string encodeUriPath(std::string_view path) {
     static constexpr char kHex[] = "0123456789ABCDEF";
     std::string out;
@@ -171,6 +206,10 @@ static std::string encodeUriPath(std::string_view path) {
     return out;
 }
 
+/// @brief Normalize a source path for filesystem identity comparisons.
+/// @param path Native or generic filesystem path.
+/// @return Absolute, lexically normalized generic path when possible; Windows
+///         results are additionally folded to lowercase.
 std::string comparableSourcePath(const std::string &path) {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -180,6 +219,9 @@ std::string comparableSourcePath(const std::string &path) {
         p = absolute;
     std::string normalized = p.lexically_normal().generic_string();
 #if ZANNA_HOST_WINDOWS
+    /// @brief Fold one path byte to lowercase for Windows identity comparison.
+    /// @param c Byte to normalize.
+    /// @return Lowercase representation converted back to `char`.
     std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](char c) {
         return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     });
@@ -187,12 +229,19 @@ std::string comparableSourcePath(const std::string &path) {
     return normalized;
 }
 
+/// @brief Compare two source paths using direct and normalized spellings.
+/// @param lhs First path.
+/// @param rhs Second path.
+/// @return @c true when the strings match or both normalize to the same path.
 bool sameSourceFile(const std::string &lhs, const std::string &rhs) {
     return lhs == rhs ||
            (!lhs.empty() && !rhs.empty() && comparableSourcePath(lhs) == comparableSourcePath(rhs));
 }
 
 /// @brief Best-effort conversion from a filesystem path to a file URI.
+/// @param path Existing file URI or native filesystem path to encode.
+/// @return @p path unchanged when already a file URI; otherwise a percent-encoded
+///         URI with UNC, drive-letter, absolute, or relative prefix handling.
 std::string pathToFileUri(const std::string &path) {
     if (path.rfind("file://", 0) == 0)
         return path;
@@ -228,6 +277,9 @@ int utf16UnitsForUtf8Lead(std::string_view bytes, size_t &consumed) {
     if (b0 < 0x80)
         return 1;
 
+    /// @brief Test whether one byte is a UTF-8 continuation byte.
+    /// @param c Byte to inspect.
+    /// @return `true` when its two high bits are `10`.
     auto isContinuation = [](unsigned char c) { return (c & 0xC0u) == 0x80u; };
 
     uint32_t codePoint = 0;
@@ -343,6 +395,10 @@ bool isValidRenameIdentifier(std::string_view name) {
 /// @details This treats the source as a byte string because compiler columns are
 ///          currently byte-based. Non-ASCII bytes therefore act as boundaries, which
 ///          is consistent with the current ASCII identifier scanner.
+/// @param content Full source text.
+/// @param pos Candidate byte offset.
+/// @return @c true at buffer edges or when the preceding byte is not an
+///         identifier byte.
 bool isIdentifierBoundary(const std::string &content, size_t pos) {
     return pos == 0 || pos >= content.size() || !isIdentifierByte(content[pos - 1]);
 }
@@ -351,6 +407,11 @@ bool isIdentifierBoundary(const std::string &content, size_t pos) {
 /// @details Plain substring search can select occurrences inside comments, strings, or longer
 ///          identifiers. This helper at least enforces ASCII identifier boundaries so fallback
 ///          document-symbol ranges do not point into unrelated words.
+/// @param content Full source text to search.
+/// @param name Identifier spelling to locate.
+/// @param begin Inclusive first byte offset.
+/// @param end Exclusive search boundary.
+/// @return Byte offset of the first whole-token match, or @c std::nullopt.
 std::optional<size_t> findIdentifierInRange(const std::string &content,
                                             const std::string &name,
                                             size_t begin,
@@ -371,6 +432,10 @@ std::optional<size_t> findIdentifierInRange(const std::string &content,
 
 /// @brief Build an LSP `Range` from byte offsets in @p content.
 /// @details Converts byte positions into zero-based LSP UTF-16 line/character positions.
+/// @param content Full UTF-8 source buffer.
+/// @param start Inclusive starting byte offset, clamped to the buffer.
+/// @param end Exclusive ending byte offset, clamped after @p start.
+/// @return LSP range spanning at least one byte when the buffer is nonempty.
 JsonValue rangeForByteSpan(const std::string &content, size_t start, size_t end) {
     if (content.empty())
         return makeRange(0, 0, 0, 1);
@@ -390,6 +455,10 @@ JsonValue rangeForByteSpan(const std::string &content, size_t start, size_t end)
 ///          whole-token matches and otherwise falls back to a small range at the
 ///          top of the document so the result is deterministic instead of selecting
 ///          an arbitrary substring.
+/// @param content Full source text to search.
+/// @param name Expected declaration identifier.
+/// @return Range for the first whole-token match, or a deterministic one-unit
+///         range at the document start.
 JsonValue rangeForFallbackName(const std::string &content, const std::string &name) {
     const auto pos = findIdentifierInRange(content, name, 0, content.size());
     if (!pos)
@@ -401,6 +470,11 @@ JsonValue rangeForFallbackName(const std::string &content, const std::string &na
 /// @details The compiler location points at the declaration token. The helper clamps malformed
 /// coordinates to the source line, verifies the expected symbol spelling when possible, and falls
 /// back to a same-line whole-token search before using rangeForFallbackName().
+/// @param content Full source text.
+/// @param name Expected symbol spelling.
+/// @param line One-based compiler line.
+/// @param column One-based compiler byte column.
+/// @return UTF-16-based LSP range covering the most likely symbol occurrence.
 JsonValue rangeForSourceLocation(const std::string &content,
                                  const std::string &name,
                                  uint32_t line,
@@ -551,6 +625,12 @@ JsonValue diagnosticRangeForLocation(const std::string &content,
 ///          endpoints are interpreted as byte columns and converted to UTF-16
 ///          code units. Falls back to diagnosticRangeForLocation when the end
 ///          position is missing, malformed, or precedes the start.
+/// @param content Full UTF-8 document text.
+/// @param beginLine One-based starting compiler line.
+/// @param beginColumn One-based starting compiler byte column.
+/// @param endLine One-based exclusive ending compiler line.
+/// @param endColumn One-based exclusive ending compiler byte column.
+/// @return Converted LSP range, or a location-derived fallback range.
 JsonValue diagnosticRangeForSpan(const std::string &content,
                                  uint32_t beginLine,
                                  uint32_t beginColumn,
@@ -560,6 +640,11 @@ JsonValue diagnosticRangeForSpan(const std::string &content,
         (endLine == beginLine && endColumn <= beginColumn))
         return diagnosticRangeForLocation(content, beginLine, beginColumn);
 
+    /// @brief Convert one compiler line/column pair to a bounded document byte offset.
+    /// @param oneBasedLine One-based source line.
+    /// @param oneBasedColumn One-based byte column.
+    /// @param[out] offset Receives the clamped byte offset.
+    /// @return `true` when the selected line exists.
     auto byteOffsetFor =
         [&content](uint32_t oneBasedLine, uint32_t oneBasedColumn, size_t &offset) -> bool {
         const int line = oneBasedLine > 0 && oneBasedLine <= static_cast<uint32_t>(
@@ -591,6 +676,17 @@ JsonValue diagnosticRangeForSpan(const std::string &content,
     return makeRange(startLspLine, startLspCol, endLspLine, endLspCol);
 }
 
+/// @brief Convert a validated compiler source span to LSP UTF-16 coordinates.
+/// @param content Full UTF-8 document text.
+/// @param beginLine One-based starting compiler line.
+/// @param beginColumn One-based starting compiler byte column.
+/// @param endLine One-based exclusive ending compiler line.
+/// @param endColumn One-based exclusive ending compiler byte column.
+/// @param startLspLine Receives the zero-based starting line.
+/// @param startLspCol Receives the zero-based starting UTF-16 offset.
+/// @param endLspLine Receives the zero-based ending line.
+/// @param endLspCol Receives the zero-based ending UTF-16 offset.
+/// @return @c true when both endpoints are ordered and refer to existing lines.
 bool sourceRangeToLspSpan(const std::string &content,
                           uint32_t beginLine,
                           uint32_t beginColumn,
@@ -605,6 +701,11 @@ bool sourceRangeToLspSpan(const std::string &content,
         return false;
     }
 
+    /// @brief Convert one validated compiler line/column pair to a document byte offset.
+    /// @param oneBasedLine One-based source line.
+    /// @param oneBasedColumn One-based byte column.
+    /// @param[out] offset Receives the clamped byte offset.
+    /// @return `true` when the line number is representable and exists.
     auto byteOffsetFor =
         [&content](uint32_t oneBasedLine, uint32_t oneBasedColumn, size_t &offset) -> bool {
         if (oneBasedLine == 0 ||
@@ -633,6 +734,12 @@ bool sourceRangeToLspSpan(const std::string &content,
     return true;
 }
 
+/// @brief Convert bridge source-range metadata to an LSP range object.
+/// @param range One-based compiler range and source-file identity.
+/// @param content Optional current-document contents for exact UTF-16 conversion.
+/// @param contentPath Filesystem path associated with @p content.
+/// @return Exact current-document range when possible, otherwise a coordinate-only
+///         range produced from the supplied one-based values.
 JsonValue rangeForSourceRange(const SourceRangeInfo &range,
                               const std::string *content,
                               const std::string &contentPath) {
@@ -660,6 +767,11 @@ JsonValue rangeForSourceRange(const SourceRangeInfo &range,
     return makeRange(startLine, startCol, endLine, std::max(endCol, startCol + 1));
 }
 
+/// @brief Select the client URI corresponding to a bridge-reported source file.
+/// @param file Source path reported by the compiler bridge.
+/// @param contentPath Path of the currently open document.
+/// @param contentUri Original client URI for the current document.
+/// @return @p contentUri for the same source file, otherwise a generated file URI.
 std::string uriForSourceFile(const std::string &file,
                              const std::string &contentPath,
                              const std::string &contentUri) {
@@ -668,6 +780,12 @@ std::string uriForSourceFile(const std::string &file,
     return pathToFileUri(file);
 }
 
+/// @brief Convert a compiler-bridge location to an LSP Location object.
+/// @param location Source file and range to encode.
+/// @param content Optional current-document contents used for exact conversion.
+/// @param contentPath Filesystem path associated with @p content.
+/// @param contentUri Original URI associated with @p content.
+/// @return JSON object containing the selected @c uri and converted @c range.
 JsonValue locationToJson(const LocationInfo &location,
                          const std::string *content,
                          const std::string &contentPath,
@@ -678,6 +796,9 @@ JsonValue locationToJson(const LocationInfo &location,
     });
 }
 
+/// @brief Wrap signature documentation as LSP Markdown markup.
+/// @param documentation Markdown text supplied by the compiler bridge.
+/// @return MarkupContent object, or JSON null when the text is empty.
 JsonValue signatureDocumentationJson(const std::string &documentation) {
     if (documentation.empty())
         return JsonValue();
@@ -687,6 +808,9 @@ JsonValue signatureDocumentationJson(const std::string &documentation) {
     });
 }
 
+/// @brief Convert bridge signature-help data to the LSP wire representation.
+/// @param help Available signatures, parameter descriptions, and active indexes.
+/// @return JSON SignatureHelp object preserving signature and parameter order.
 JsonValue signatureHelpToJson(const SignatureHelpInfo &help) {
     JsonValue::ArrayType signatures;
     signatures.reserve(help.signatures.size());
@@ -719,6 +843,8 @@ JsonValue signatureHelpToJson(const SignatureHelpInfo &help) {
     });
 }
 
+/// @brief Construct the semantic-token type legend advertised during initialize.
+/// @return Ordered token-type strings whose indices match SemanticTokenType.
 JsonValue semanticTokenTypesLegend() {
     return JsonValue::array({
         JsonValue("namespace"),
@@ -742,6 +868,8 @@ JsonValue semanticTokenTypesLegend() {
 /// @details Notifications must not receive responses. Dispatch uses this helper
 ///          to suppress accidental responses for missing-id calls to request
 ///          methods such as initialize, shutdown, completion, hover, and symbols.
+/// @param method Incoming LSP method name.
+/// @return @c true when the method has request/response semantics.
 bool isRequestMethod(const std::string &method) {
     return method == "initialize" || method == "shutdown" || method == "textDocument/completion" ||
            method == "textDocument/hover" || method == "textDocument/documentSymbol" ||
@@ -752,11 +880,21 @@ bool isRequestMethod(const std::string &method) {
 
 } // namespace
 
+/// @brief Construct a shared LSP protocol handler.
+/// @param bridge Language-specific compiler adapter borrowed for the handler lifetime.
+/// @param transport Message transport borrowed for the handler lifetime.
+/// @param config Language-specific server strings copied into owned storage.
 LspHandler::LspHandler(ICompilerBridge &bridge, Transport &transport, const ServerConfig &config)
     : bridge_(bridge), transport_(transport), config_(config) {}
 
 // --- Request dispatch ---
 
+/// @brief Dispatch one validated JSON-RPC message through the LSP state machine.
+/// @param req Parsed request or notification.
+/// @return Serialized response for requests, or an empty string for notifications
+///         and the process-level @c exit message.
+/// @details Enforces initialize/shutdown ordering, ignores request-shaped methods
+///          sent without IDs, and reports unknown requests as method-not-found.
 std::string LspHandler::handleRequest(const JsonRpcRequest &req) {
     if (req.method == "exit")
         return {}; // Main loop handles process exit.
@@ -844,6 +982,10 @@ std::string LspHandler::handleRequest(const JsonRpcRequest &req) {
 
 // --- Lifecycle ---
 
+/// @brief Handle the LSP @c initialize request and advertise bridge capabilities.
+/// @param req Initialize request whose identifier is echoed in the response.
+/// @return Success response containing server information and capability flags,
+///         or invalid-request when initialization already occurred.
 std::string LspHandler::handleInitialize(const JsonRpcRequest &req) {
     if (initializeResponded_)
         return buildError(req.id, kInvalidRequest, "Server has already been initialized");
@@ -899,6 +1041,9 @@ std::string LspHandler::handleInitialize(const JsonRpcRequest &req) {
     return buildResponse(req.id, result);
 }
 
+/// @brief Handle the LSP @c shutdown request.
+/// @param req Shutdown request whose identifier is echoed.
+/// @return Null success response after recording the shutdown state.
 std::string LspHandler::handleShutdown(const JsonRpcRequest &req) {
     shutdownRequested_ = true;
     return buildResponse(req.id, JsonValue());
@@ -908,6 +1053,8 @@ std::string LspHandler::handleShutdown(const JsonRpcRequest &req) {
 /// @details Notification handlers cannot return JSON-RPC errors, so malformed client notifications
 ///          are surfaced through the editor log. Transport write failures are handled by the
 ///          transport layer in the same way as diagnostic notifications.
+/// @param type LSP MessageType integer: error, warning, info, or log.
+/// @param message Human-readable client log text.
 void LspHandler::logMessage(int type, const std::string &message) {
     auto params = JsonValue::object({
         {"type", JsonValue(static_cast<int64_t>(type))},
@@ -922,6 +1069,10 @@ void LspHandler::logMessage(int type, const std::string &message) {
 
 // --- Document sync ---
 
+/// @brief Accept a full-text @c textDocument/didOpen notification.
+/// @param req Notification containing URI, text, and optional integer version.
+/// @details Valid documents are registered with both the bridge and store before
+///          diagnostics are published; malformed notifications are logged.
 void LspHandler::handleDidOpen(const JsonRpcRequest &req) {
     const auto *textDoc = objectMember(req.params, "textDocument");
     const auto *uriValue = textDoc ? stringMember(*textDoc, "uri") : nullptr;
@@ -948,6 +1099,10 @@ void LspHandler::handleDidOpen(const JsonRpcRequest &req) {
     publishDiagnostics(uri);
 }
 
+/// @brief Apply a full-text @c textDocument/didChange notification.
+/// @param req Notification containing one complete content change and optional version.
+/// @details Rejects unopened documents, stale versions, incremental ranges, and
+///          multiple change entries, then republishes diagnostics after an update.
 void LspHandler::handleDidChange(const JsonRpcRequest &req) {
     std::string uri;
     std::optional<int> clientVersion;
@@ -1005,6 +1160,10 @@ void LspHandler::handleDidChange(const JsonRpcRequest &req) {
     publishDiagnostics(uri);
 }
 
+/// @brief Remove a document after @c textDocument/didClose.
+/// @param req Notification containing the document URI.
+/// @details Removes bridge/store state and sends an empty diagnostic set so the
+///          client clears previously published problems.
 void LspHandler::handleDidClose(const JsonRpcRequest &req) {
     std::string uri;
     if (!extractTextDocumentUri(req.params, uri))
@@ -1032,6 +1191,10 @@ void LspHandler::handleDidClose(const JsonRpcRequest &req) {
 
 // --- Completion ---
 
+/// @brief Produce completion items for @c textDocument/completion.
+/// @param req Request containing an open document URI and LSP position.
+/// @return Completion-array response, an empty array for an unknown document,
+///         or an invalid-parameters response for malformed coordinates or URIs.
 std::string LspHandler::handleCompletion(const JsonRpcRequest &req) {
     std::string uri;
     int line = 0;
@@ -1079,6 +1242,10 @@ std::string LspHandler::handleCompletion(const JsonRpcRequest &req) {
 
 // --- Hover ---
 
+/// @brief Produce Markdown hover information for @c textDocument/hover.
+/// @param req Request containing an open document URI and LSP position.
+/// @return Hover response, null result when no information is available, or an
+///         invalid-parameters response for malformed input.
 std::string LspHandler::handleHover(const JsonRpcRequest &req) {
     std::string uri;
     int line = 0;
@@ -1115,6 +1282,10 @@ std::string LspHandler::handleHover(const JsonRpcRequest &req) {
 
 // --- Document Symbols ---
 
+/// @brief List symbols for @c textDocument/documentSymbol.
+/// @param req Request containing the target document URI.
+/// @return Symbol-information array with LSP kinds and UTF-16 declaration ranges,
+///         or an error response for malformed parameters.
 std::string LspHandler::handleDocumentSymbol(const JsonRpcRequest &req) {
     std::string uri;
     if (!extractTextDocumentUri(req.params, uri))
@@ -1149,6 +1320,10 @@ std::string LspHandler::handleDocumentSymbol(const JsonRpcRequest &req) {
 
 // --- Definition ---
 
+/// @brief Resolve @c textDocument/definition through the compiler bridge.
+/// @param req Request containing an open document URI and LSP position.
+/// @return Location response, null when unsupported or unresolved, or an
+///         invalid-parameters response for malformed input.
 std::string LspHandler::handleDefinition(const JsonRpcRequest &req) {
     std::string uri;
     int line = 0;
@@ -1178,6 +1353,9 @@ std::string LspHandler::handleDefinition(const JsonRpcRequest &req) {
 
 // --- References ---
 
+/// @brief Resolve @c textDocument/references through the compiler bridge.
+/// @param req Request containing a document position and optional declaration filter.
+/// @return Array of converted locations, or an error response for malformed input.
 std::string LspHandler::handleReferences(const JsonRpcRequest &req) {
     std::string uri;
     int line = 0;
@@ -1218,6 +1396,10 @@ std::string LspHandler::handleReferences(const JsonRpcRequest &req) {
 
 // --- Rename ---
 
+/// @brief Build a workspace edit for @c textDocument/rename.
+/// @param req Request containing a document position and valid replacement identifier.
+/// @return WorkspaceEdit response grouped by source URI, null when unsupported,
+///         or a protocol error describing invalid input or bridge failure.
 std::string LspHandler::handleRename(const JsonRpcRequest &req) {
     std::string uri;
     int line = 0;
@@ -1266,6 +1448,10 @@ std::string LspHandler::handleRename(const JsonRpcRequest &req) {
 
 // --- Signature Help ---
 
+/// @brief Produce call information for @c textDocument/signatureHelp.
+/// @param req Request containing an open document URI and LSP position.
+/// @return SignatureHelp response, null when unavailable, or an invalid-parameters
+///         response for malformed input.
 std::string LspHandler::handleSignatureHelp(const JsonRpcRequest &req) {
     std::string uri;
     int line = 0;
@@ -1295,6 +1481,10 @@ std::string LspHandler::handleSignatureHelp(const JsonRpcRequest &req) {
 
 // --- Workspace Symbols ---
 
+/// @brief Search bridge-indexed symbols for @c workspace/symbol.
+/// @param req Request containing the string search query.
+/// @return Array of symbol locations, an empty array when unsupported, or an
+///         invalid-parameters response when the query is missing.
 std::string LspHandler::handleWorkspaceSymbol(const JsonRpcRequest &req) {
     const auto *queryValue = stringMember(req.params, "query");
     if (!queryValue)
@@ -1327,6 +1517,12 @@ std::string LspHandler::handleWorkspaceSymbol(const JsonRpcRequest &req) {
 
 // --- Semantic Tokens ---
 
+/// @brief Encode a full document's semantic tokens in LSP delta form.
+/// @param req Request containing the target document URI.
+/// @return SemanticTokens response containing five integers per retained token,
+///         an empty token set when unsupported, or an invalid-parameters response.
+/// @details Bridge byte ranges are converted to UTF-16, sorted by location, and
+///          filtered to valid single-line, nonoverlapping legend entries.
 std::string LspHandler::handleSemanticTokensFull(const JsonRpcRequest &req) {
     std::string uri;
     if (!extractTextDocumentUri(req.params, uri))
@@ -1379,6 +1575,10 @@ std::string LspHandler::handleSemanticTokensFull(const JsonRpcRequest &req) {
         encoded.push_back(
             {startLine, startCol, endCol - startCol, tokenType, static_cast<int>(token.modifiers)});
     }
+    /// @brief Order semantic tokens by source line and start position.
+    /// @param lhs Left-hand encoded token.
+    /// @param rhs Right-hand encoded token.
+    /// @return `true` when `lhs` precedes `rhs`.
     std::sort(encoded.begin(), encoded.end(), [](const EncodedToken &lhs, const EncodedToken &rhs) {
         if (lhs.line != rhs.line)
             return lhs.line < rhs.line;
@@ -1414,6 +1614,11 @@ std::string LspHandler::handleSemanticTokensFull(const JsonRpcRequest &req) {
 
 // --- Diagnostic Publishing ---
 
+/// @brief Compile an open document and publish its current LSP diagnostics.
+/// @param uri Client document URI used to find content and address the notification.
+/// @details Converts source spans, severity, related notes, help links, and fix-its
+///          into Diagnostic objects. Missing documents, invalid URIs, and transport
+///          loss are handled as best-effort no-ops.
 void LspHandler::publishDiagnostics(const std::string &uri) {
     const std::string *content = store_.getContent(uri);
     if (!content)
@@ -1541,6 +1746,9 @@ void LspHandler::publishDiagnostics(const std::string &uri) {
 
 // --- Kind mapping ---
 
+/// @brief Map a bridge completion-kind ordinal to LSP CompletionItemKind.
+/// @param kind Compiler-bridge kind value defined by CompletionInfo.
+/// @return Corresponding LSP enumeration value, or Text for unknown ordinals.
 int LspHandler::completionKindToLsp(int kind) {
     switch (kind) {
         case 0:
@@ -1574,6 +1782,9 @@ int LspHandler::completionKindToLsp(int kind) {
     }
 }
 
+/// @brief Map a bridge symbol-kind name to LSP SymbolKind.
+/// @param kind Lowercase language-neutral bridge kind name.
+/// @return Corresponding LSP enumeration value, defaulting to Variable.
 int LspHandler::symbolKindToLsp(const std::string &kind) {
     if (kind == "function")
         return 12;

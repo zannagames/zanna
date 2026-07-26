@@ -80,8 +80,8 @@ inline VM::ExecResult trapMalformedMemoryInstruction(const il::core::Instr &in,
 /// @param ptr Pointer requested by the load/store.
 /// @param bytes Number of bytes to access.
 /// @param operation Operation name for diagnostics.
-/// @param[out] info Receives the classification on success.
-/// @return True when the range is VM-owned and in bounds.
+/// @param [out] info Receives the classification on success.
+/// @return @c true when the range is VM-owned and in bounds.
 inline bool validateMemoryAccess(VM &vm,
                                  const Frame &fr,
                                  const il::core::Instr &in,

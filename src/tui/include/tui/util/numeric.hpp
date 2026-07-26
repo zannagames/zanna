@@ -5,8 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tui/include/tui/util/numeric.hpp
-// Purpose: Provides saturating arithmetic helpers for safe index computation.
+/// @file
+/// @brief Declares saturating arithmetic for safe TUI index calculations.
+/// @details Provides stateless inline operations whose results clamp at type
+///          limits rather than wrapping.
 // Key invariants: Arithmetic never overflows; results saturate at type limits.
 // Ownership/Lifetime: Stateless inline utilities with no dynamic resources.
 // Links: docs/internals/architecture.md

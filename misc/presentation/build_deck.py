@@ -802,7 +802,7 @@ def slide_execution_native():
     para(ltf, "Native path", size=24, color=GREEN, bold=True, first=True,
          after=12)
     for feat, emph in [
-        ("AArch64 and x86-64 targets for macOS, Windows, and Linux", False),
+        ("AArch64 on macOS; AArch64 and x86-64 on Windows and Linux", False),
         ("Register coalescing · post-RA scheduling", False),
         ("Built-in assembler + linker", True),
         ("ELF · Mach-O · PE output with debug info", False),

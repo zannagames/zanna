@@ -17,6 +17,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Defines portable signed-overflow detection with deterministic results.
+ *
+ * @details Each helper reports whether the mathematical operation exceeds the
+ *          `long long` domain while still storing the corresponding wrapped
+ *          two's-complement bit pattern. Compiler intrinsics implement the fast
+ *          path where available; the fallback performs explicit range checks
+ *          and unsigned-domain arithmetic without signed undefined behavior.
+ */
+
 #pragma once
 
 #include <limits>

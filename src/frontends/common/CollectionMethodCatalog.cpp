@@ -118,6 +118,8 @@ std::span<const CollectionMethodDescriptor> descriptorsFor(CollectionKind kind) 
  * @return Lowercase method-name to dispatch-ID map.
  */
 const std::unordered_map<std::string, CollectionMethodId> &dispatchTable() {
+    /// @brief Builds the kind-agnostic collection-method dispatch table.
+    /// @return Lowercase method-name map.
     static const auto table = [] {
         std::unordered_map<std::string, CollectionMethodId> out;
         out.reserve(std::size(kListMethods) + std::size(kMapMethods) + std::size(kSetMethods) +
@@ -144,6 +146,8 @@ const std::unordered_map<std::string, CollectionMethodId> &dispatchTable() {
  * @return Immutable array of descriptor maps indexed by CollectionKind.
  */
 const std::array<std::unordered_map<std::string, CollectionMethodDescriptor>, 4> &descriptorTables() {
+    /// @brief Builds one descriptor lookup table per collection kind.
+    /// @return Array indexed by `CollectionKind`.
     static const auto tables = [] {
         std::array<std::unordered_map<std::string, CollectionMethodDescriptor>, 4> out;
         for (CollectionKind kind : {CollectionKind::List,

@@ -81,6 +81,8 @@ const char *httpServerBindHandlerTarget(const std::string &target) {
 }
 
 /// @brief Map a Lowerer::ExprType to the corresponding runtime BasicType.
+/// @param ty Scanned expression category to translate.
+/// @return Matching runtime overload category, or `BasicType::Unknown`.
 BasicType basicTypeFromExprType(Lowerer::ExprType ty) {
     switch (ty) {
         case Lowerer::ExprType::F64:
@@ -591,6 +593,8 @@ Lowerer::RVal Lowerer::lowerMethodCallExpr(const MethodCallExpr &expr) {
 
     // If virtual and not BASE-qualified, emit call.indirect; otherwise direct call or interface
     // dispatch. Interface dispatch via (expr AS IFACE).Method: detect AS with interface target.
+    /// @brief Attempts interface-slot dispatch for an `AS`-qualified receiver.
+    /// @return Lowered result when interface dispatch applies; otherwise `std::nullopt`.
     auto tryInterfaceDispatch = [&]() -> std::optional<RVal> {
         const AsExpr *asBase = as<const AsExpr>(*expr.base);
         if (!asBase)
@@ -744,6 +748,9 @@ Lowerer::RVal Lowerer::lowerMethodCallExpr(const MethodCallExpr &expr) {
 /// @brief Context-aware overload of lowerMethodCallExpr() that pre-warms the class-info cache.
 /// @details Pre-caches the receiver's class info in @p ctx (accelerating access-control and
 ///          overload resolution), then delegates to the single-argument overload.
+/// @param expr Method call whose receiver metadata is cached and lowered.
+/// @param ctx OOP metadata cache to pre-warm.
+/// @return Lowered call result and IL type.
 Lowerer::RVal Lowerer::lowerMethodCallExpr(const MethodCallExpr &expr, OopLoweringContext &ctx) {
     // Pre-cache class info for method dispatch target.
     // This accelerates access control and overload resolution.

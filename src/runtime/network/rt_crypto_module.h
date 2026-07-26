@@ -25,6 +25,15 @@
 //        src/runtime/network/rt_crypto.c (primitive and entropy dispatch).
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares the global cryptographic policy, self-test, and DRBG boundary.
+ * @details Defines compatibility and approved modes, lifecycle and service
+ * identifiers, synchronized state queries and transitions, policy checks,
+ * diagnostic status, and approved-mode random generation.
+ */
+
 #pragma once
 
 #include "rt_string.h"

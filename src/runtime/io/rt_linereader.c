@@ -28,6 +28,14 @@
 //        src/runtime/io/rt_linewriter.h (complementary text file writer)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements managed buffered line and character input.
+ * @details Opens UTF-8 paths as binary stdio streams, recognizes LF, CR, and
+ * CRLF explicitly, maintains one-byte lookahead and sticky EOF state, bounds
+ * staging allocations, recovers allocation traps without leaks, and closes
+ * native streams explicitly or during finalization.
+ */
 
 #include "rt_linereader.h"
 
@@ -46,6 +54,8 @@
 
 // Use 64-bit seek/tell to support files larger than 2 GB on Windows
 // where `long` (and thus ftell/fseek) is only 32 bits even on 64-bit builds.
+/** @name Platform-selected 64-bit reader positioning operations
+ * @{ */
 #if defined(_WIN32)
 #define lr_fseek(fp, off, whence) _fseeki64((fp), (off), (whence))
 #define lr_ftell(fp) _ftelli64((fp))
@@ -53,6 +63,7 @@
 #define lr_fseek(fp, off, whence) fseeko((fp), (off_t)(off), (whence))
 #define lr_ftell(fp) ftello((fp))
 #endif
+/** @} */
 
 /// @brief LineReader implementation structure.
 typedef struct rt_linereader_impl {
@@ -63,8 +74,11 @@ typedef struct rt_linereader_impl {
     int has_peeked; ///< Whether we have a peeked character.
 } rt_linereader_impl;
 
+/// @copydoc rt_trap_set_recovery()
 void rt_trap_set_recovery(jmp_buf *buf);
+/// @copydoc rt_trap_clear_recovery()
 void rt_trap_clear_recovery(void);
+/// @copydoc rt_trap_get_error()
 const char *rt_trap_get_error(void);
 
 /// @brief Validate and unwrap an opaque LineReader receiver.
@@ -411,6 +425,7 @@ rt_string rt_linereader_read(void *obj) {
             // Regular character - add to buffer
             if (len >= cap - 1) {
                 // Guard against unbounded growth from files with no newlines.
+/** Maximum number of bytes retained for one line before reporting overflow. */
 #define RT_LINEREADER_MAX_LINE (256 * 1024 * 1024)
                 if (cap >= RT_LINEREADER_MAX_LINE) {
                     free(buf);

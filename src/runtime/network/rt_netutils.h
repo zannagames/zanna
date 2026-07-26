@@ -16,6 +16,15 @@
 // Links: rt_network.h (socket primitives)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares stateless port, CIDR, and IPv4 network utilities.
+ * @details Exposes bounded port probing, ephemeral port discovery, exact IPv4
+ * CIDR matching, private/loopback classification, and caller-owned local route
+ * address discovery.
+ */
+
 #pragma once
 
 #include "rt_string.h"

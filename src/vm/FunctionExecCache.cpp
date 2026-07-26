@@ -22,6 +22,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements lazy per-function caches of pre-resolved VM operands.
+/// @details Cache construction converts common IL operands into compact
+///          register or immediate representations while retaining a cold-path
+///          marker for values that still require general evaluation.
+
 #include "vm/VM.hpp"
 
 #include "il/core/BasicBlock.hpp"
@@ -74,6 +80,8 @@ ResolvedOp resolveValue(const il::core::Value &v) noexcept {
 ///          operands in @c instrOpOffset.
 /// @param block Source basic block (IL, immutable after construction).
 /// @return Populated @c BlockExecCache.
+/// @throws std::overflow_error If accumulated operand offsets exceed the
+///         representable @c size_t range.
 BlockExecCache buildBlockExecCacheFor(const il::core::BasicBlock &block) {
     BlockExecCache bc;
     bc.instrOpOffset.reserve(block.instructions.size());
@@ -100,6 +108,8 @@ BlockExecCache buildBlockExecCacheFor(const il::core::BasicBlock &block) {
 /// @param bb  Basic block whose @c BlockExecCache is requested.
 /// @return Pointer to the immutable @c BlockExecCache, or @c nullptr when
 ///         either argument is null.
+/// @throws std::overflow_error If a block's operand offsets overflow while the
+///         containing function cache is built.
 const BlockExecCache *VM::getOrBuildBlockCache(const il::core::Function *fn,
                                                const il::core::BasicBlock *bb) {
     if (!fn || !bb)

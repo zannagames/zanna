@@ -35,6 +35,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the shared-state Promise and Future runtime objects.
+/// @details A Promise publishes exactly one successful value or error while
+///          its associated Future exposes blocking, timed, polling, and
+///          callback-based observation. Native synchronization protects the
+///          shared state; callbacks are detached under the lock and invoked
+///          after unlocking. Managed values, errors, wrapper objects, and
+///          listener-held references are balanced through runtime ownership
+///          and GC traversal hooks.
+
 #include "rt_future.h"
 #include "rt_gc.h"
 #include "rt_heap.h"
@@ -59,20 +69,34 @@
 #include <pthread.h>
 #include <time.h>
 #if RT_PLATFORM_MACOS
+/// @brief Wait on a condition variable for a relative interval on macOS.
+/// @param cond Condition variable to wait on.
+/// @param mutex Locked mutex atomically released for the duration of the wait.
+/// @param rel_time Relative timeout measured from the start of the wait.
+/// @return Zero after a signal, `ETIMEDOUT` on expiry, or another pthread
+///         error code.
 extern int pthread_cond_timedwait_relative_np(pthread_cond_t *cond,
                                               pthread_mutex_t *mutex,
                                               const struct timespec *rel_time);
 #endif
 #endif
 
+/// @brief Install a non-local recovery destination for runtime traps.
+/// @param buf Jump buffer that receives control when a trap is raised.
 void rt_trap_set_recovery(jmp_buf *buf);
+
+/// @brief Remove the active runtime trap recovery destination.
 void rt_trap_clear_recovery(void);
+
+/// @brief Read the diagnostic associated with the current recovered trap.
+/// @return Borrowed NUL-terminated diagnostic text, or NULL when unavailable.
 const char *rt_trap_get_error(void);
 
 //=============================================================================
 // Internal Structure
 //=============================================================================
 
+/// @brief Shared synchronized state owned by a Promise and observed by Futures.
 typedef struct {
 #if RT_PLATFORM_WINDOWS
     CRITICAL_SECTION mutex;
@@ -93,18 +117,27 @@ typedef struct {
     struct future_listener *listeners_tail;
 } promise_impl;
 
+/// @brief Lightweight Future payload retaining its shared Promise state.
 typedef struct {
     promise_impl *promise;
 } future_impl;
 
+/// @brief Pending completion callback and its cancellation cleanup state.
 typedef struct future_listener {
+    /// @brief Notify a listener that its retained Future completed.
+    /// @param future Borrowed completed Future object.
+    /// @param ctx Opaque listener context.
     void (*callback)(void *future, void *ctx);
+    /// @brief Release or cancel listener-specific context when detached.
+    /// @param ctx Opaque listener context.
     void (*cancel)(void *ctx);
     void *ctx;
     void *future_obj;
     struct future_listener *next;
 } future_listener;
 
+/// @brief Acquire a Promise's native mutex.
+/// @param p Promise state whose mutex must be acquired.
 static void promise_lock(promise_impl *p) {
 #if RT_PLATFORM_WINDOWS
     EnterCriticalSection(&p->mutex);
@@ -113,6 +146,8 @@ static void promise_lock(promise_impl *p) {
 #endif
 }
 
+/// @brief Release a Promise's native mutex.
+/// @param p Promise state whose mutex is currently held.
 static void promise_unlock(promise_impl *p) {
 #if RT_PLATFORM_WINDOWS
     LeaveCriticalSection(&p->mutex);
@@ -124,6 +159,8 @@ static void promise_unlock(promise_impl *p) {
 /// @brief Validate-and-cast a handle to promise_impl.
 /// @details Wrong-type handles always trap; a NULL handle traps only when
 ///          @p trap_on_null is set (callers that tolerate NULL pass 0).
+/// @param obj Candidate runtime Promise object.
+/// @param trap_on_null Whether a NULL handle should raise a runtime trap.
 /// @return The promise, or NULL.
 static promise_impl *promise_require(void *obj, int8_t trap_on_null) {
     if (!obj) {
@@ -156,6 +193,8 @@ static promise_impl *promise_try(void *obj) {
 
 /// @brief Validate-and-cast a handle to future_impl (mirror of
 ///        promise_require). NULL traps only when @p trap_on_null is set.
+/// @param obj Candidate runtime Future object.
+/// @param trap_on_null Whether a NULL handle should raise a runtime trap.
 /// @return The future, or NULL.
 static future_impl *future_require(void *obj, int8_t trap_on_null) {
     if (!obj) {
@@ -174,11 +213,19 @@ static future_impl *future_require(void *obj, int8_t trap_on_null) {
 /// @details Common ownership-discipline helper used by paths that take a
 ///          temporary ref for the duration of an async wait. NULL @p obj
 ///          is a no-op.
+/// @param obj Runtime object reference to release, or NULL.
 static void future_release_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
+/// @brief Preserve the active trap diagnostic before clearing its recovery frame.
+/// @details The text is copied into the caller's buffer so it remains valid
+///          while cleanup runs. Empty or unavailable diagnostics are replaced
+///          with @p fallback.
+/// @param buffer Destination for the NUL-terminated diagnostic.
+/// @param buffer_size Capacity of @p buffer in bytes.
+/// @param fallback Diagnostic used when the trap supplied no usable text.
 static void future_save_trap_error(char *buffer, size_t buffer_size, const char *fallback) {
     const char *err = rt_trap_get_error();
     snprintf(buffer, buffer_size, "%s", err && err[0] ? err : fallback);
@@ -204,6 +251,13 @@ static void future_report_wait_error(void *obj, const char *operation, unsigned 
     rt_trap(message);
 }
 
+/// @brief Retain a managed result while guaranteeing cleanup after a retain trap.
+/// @details A NULL value is ignored. If retaining traps, the diagnostic is
+///          preserved, @p cleanup_obj is released, and the original diagnostic
+///          is raised again.
+/// @param value Runtime value to retain, or NULL.
+/// @param cleanup_obj Temporary owning reference released if retaining fails.
+/// @param fallback Diagnostic used when the retain trap has no message.
 static void future_retain_object_or_cleanup(void *value, void *cleanup_obj, const char *fallback) {
     if (!value)
         return;
@@ -223,6 +277,14 @@ static void future_retain_object_or_cleanup(void *value, void *cleanup_obj, cons
     rt_trap_clear_recovery();
 }
 
+/// @brief Acquire a String reference while guaranteeing cleanup after a trap.
+/// @details A NULL string is returned unchanged. If the reference operation
+///          traps, @p cleanup_obj is released before the diagnostic is raised
+///          again.
+/// @param value String handle to reference, or NULL.
+/// @param cleanup_obj Temporary owning reference released if referencing fails.
+/// @param fallback Diagnostic used when the reference trap has no message.
+/// @return A retained String handle, or NULL when @p value is NULL.
 static rt_string future_ref_string_or_cleanup(rt_string value,
                                               void *cleanup_obj,
                                               const char *fallback) {
@@ -269,6 +331,9 @@ typedef struct {
 /// which clock the caller must consult for deadline math. macOS lacks per-cond clock selection
 /// (uses `pthread_cond_timedwait_relative_np` instead), so it always sets `uses_monotonic=1` and
 /// relies on the relative-deadline timer path.
+/// @param cond Uninitialized condition variable to initialize.
+/// @param uses_monotonic Optional output set when timed waits use a monotonic clock.
+/// @return Zero on success or a pthread initialization error code.
 static int future_cond_init(pthread_cond_t *cond, int8_t *uses_monotonic) {
     if (uses_monotonic)
         *uses_monotonic = 0;
@@ -300,6 +365,8 @@ static int future_cond_init(pthread_cond_t *cond, int8_t *uses_monotonic) {
 
 /// @brief Read "now" from whichever clock the cond uses (monotonic or realtime). Falls back to
 /// REALTIME on macOS when the monotonic path is unavailable.
+/// @param use_monotonic Whether to prefer `CLOCK_MONOTONIC`.
+/// @return Current timestamp from the selected available clock.
 static struct timespec future_now_clock(int8_t use_monotonic) {
     struct timespec ts;
     memset(&ts, 0, sizeof(ts));
@@ -313,6 +380,9 @@ static struct timespec future_now_clock(int8_t use_monotonic) {
 
 /// @brief Compute the absolute deadline for `pthread_cond_timedwait`. Adds `ms` milliseconds to
 /// the appropriate clock reading, normalizing nanosecond carry into the seconds field.
+/// @param ms Non-negative wait duration in milliseconds.
+/// @param use_monotonic Whether the associated condition variable uses a monotonic clock.
+/// @return Saturating absolute deadline on the selected clock.
 static future_deadline_t future_deadline_abs_from_now(int64_t ms, int8_t use_monotonic) {
     future_deadline_t d;
     d.deadline = future_now_clock(use_monotonic);
@@ -341,6 +411,10 @@ static future_deadline_t future_deadline_abs_from_now(int64_t ms, int8_t use_mon
 #if RT_PLATFORM_MACOS
 /// @brief macOS-only: compute remaining ms until `deadline` for the relative-wait API. Returns 0
 /// once the deadline has passed (signalling immediate timeout to the caller).
+/// @param deadline Absolute deadline previously computed on the selected clock.
+/// @param use_monotonic Whether to read the current monotonic rather than realtime clock.
+/// @return Remaining whole milliseconds, zero after expiry, or `INT64_MAX`
+///         when the interval cannot be represented.
 static int64_t future_remaining_ms(future_deadline_t deadline, int8_t use_monotonic) {
     struct timespec now = future_now_clock(use_monotonic);
     int64_t sec = (int64_t)deadline.deadline.tv_sec - (int64_t)now.tv_sec;
@@ -360,6 +434,11 @@ static int64_t future_remaining_ms(future_deadline_t deadline, int8_t use_monoto
 /// @brief Cross-platform pthread `cond_timedwait` wrapper: macOS uses the relative-time API
 /// (because per-cond CLOCK_MONOTONIC isn't available there), other platforms use the standard
 /// absolute-deadline API. Returns ETIMEDOUT on expiry, 0 on signal.
+/// @param cond Condition variable to wait on.
+/// @param mutex Locked mutex released atomically during the wait.
+/// @param deadline Absolute deadline on the condition variable's selected clock.
+/// @param use_monotonic Whether the deadline is based on a monotonic clock.
+/// @return Zero after a signal, `ETIMEDOUT` on expiry, or another pthread error code.
 static int future_cond_timedwait_deadline(pthread_cond_t *cond,
                                           pthread_mutex_t *mutex,
                                           future_deadline_t deadline,
@@ -378,10 +457,12 @@ static int future_cond_timedwait_deadline(pthread_cond_t *cond,
 }
 #endif
 
-/// @brief Run every listener's callback, release its retained future-object reference, and free
-/// the listener node. Walks the linked list iteratively. **Lock-free:** caller must have already
-/// detached the list from `promise_impl.listeners` and released the promise mutex (notification
-/// happens outside the critical section to avoid blocking other threads on long callbacks).
+/// @brief Invoke one completion listener behind a trap boundary.
+/// @details If the callback traps, its optional cancellation hook is invoked
+///          behind a fresh recovery boundary. Both traps are swallowed. This
+///          helper neither releases the listener's Future nor frees the node;
+///          its caller retains ownership of both.
+/// @param listener Listener to invoke, or NULL.
 static void future_invoke_listener(future_listener *listener) {
     if (!listener || !listener->callback)
         return;
@@ -407,6 +488,10 @@ static void future_invoke_listener(future_listener *listener) {
 
 /// @brief Invoke every queued continuation in a future's listener chain (in
 ///        order) when the future settles, freeing each node as it runs.
+/// @details The chain must already be detached and the Promise mutex released.
+///          Each callback is isolated from traps before its retained Future
+///          reference and listener node are released.
+/// @param listeners Detached FIFO listener chain, or NULL.
 static void future_notify_listeners(future_listener *listeners) {
     while (listeners) {
         future_listener *next = listeners->next;
@@ -460,6 +545,8 @@ static future_listener *promise_detach_listeners_locked(promise_impl *p) {
 // Promise Implementation
 //=============================================================================
 
+/// @brief Finalize a Future wrapper and release its shared Promise reference.
+/// @param obj Future object being finalized.
 static void future_finalizer(void *obj);
 
 /// @brief Enumerate strong managed edges owned by a Promise.
@@ -468,6 +555,9 @@ static void future_finalizer(void *obj);
 ///          listener-retained Future; the cached Future pointer is deliberately
 ///          weak and is not visited. A finalized Promise has destroyed its
 ///          native synchronization state and therefore reports no edges.
+/// @param obj Promise object whose outgoing managed references are enumerated.
+/// @param visitor GC callback invoked for each strong managed edge.
+/// @param ctx Opaque traversal context forwarded to @p visitor.
 static void promise_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     promise_impl *p = (promise_impl *)obj;
     if (!p || !visitor || !__atomic_load_n(&p->sync_alive, __ATOMIC_ACQUIRE))
@@ -485,16 +575,21 @@ static void promise_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
 /// @details The edge is immutable until finalization. It is cleared before the
 ///          Future drops its Promise reference, so post-finalizer reclaim
 ///          traversal observes no outgoing edge.
+/// @param obj Future object whose Promise edge is enumerated.
+/// @param visitor GC callback invoked for the strong Promise edge.
+/// @param ctx Opaque traversal context forwarded to @p visitor.
 static void future_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     future_impl *f = (future_impl *)obj;
     if (f && visitor && f->promise)
         visitor(f->promise, ctx);
 }
 
-/// @brief GC finalizer: release the resolved value (if owned), error string (if any), notify any
-/// remaining listeners (so callers waiting on `_on_complete` get a "promise abandoned" callback),
-/// then destroy the platform mutex + condvar. Symmetric across Win32 (DeleteCriticalSection)
-/// and POSIX (pthread_mutex_destroy + pthread_cond_destroy).
+/// @brief Finalize a Promise and release every resource owned by its shared state.
+/// @details The finalizer marks the Promise abandoned, wakes native waiters,
+///          releases any owned value and error, cancels rather than completes
+///          pending listeners, and destroys the platform synchronization
+///          objects. Listener callbacks are not success-invoked for abandonment.
+/// @param obj Promise object being finalized.
 static void promise_finalizer(void *obj) {
     promise_impl *p = (promise_impl *)obj;
     if (!p)
@@ -542,7 +637,12 @@ static void promise_finalizer(void *obj) {
 #endif
 }
 
-/// @brief Create a new Promise that can be resolved with a value or error from any thread.
+/// @brief Create a Promise that can be resolved once from any thread.
+/// @details Initializes native synchronization, installs the resource finalizer,
+///          and registers strong-edge traversal with the cycle collector.
+///          Initialization and GC-registration failures raise a runtime trap
+///          after releasing all partially initialized state.
+/// @return Newly allocated runtime Promise object.
 void *rt_promise_new(void) {
     promise_impl *p =
         (promise_impl *)rt_obj_new_i64(RT_PROMISE_CLASS_ID, (int64_t)sizeof(promise_impl));
@@ -601,7 +701,14 @@ void *rt_promise_new(void) {
     return p;
 }
 
-/// @brief Get the Future associated with this Promise (the read-side of the async result).
+/// @brief Get a retained Future view of a Promise's shared result.
+/// @details A live cached wrapper is promoted and returned. If the weak cache
+///          points at a finalized wrapper, a new Future is created, attached to
+///          the Promise, and registered with the cycle collector. Concurrent
+///          callers converge on one live wrapper; allocation and refcount
+///          failures raise a runtime trap.
+/// @param obj Promise object whose read side is requested.
+/// @return Associated Future object with one caller-owned reference.
 void *rt_promise_get_future(void *obj) {
     promise_impl *p = promise_require(obj, 1);
     if (!p)
@@ -674,6 +781,7 @@ void *rt_promise_get_future(void *obj) {
 /// @brief Future-side GC finalizer: clear the back-pointer in the promise (so `get_future()`
 /// returns a fresh handle next time) and release one promise reference. The promise itself
 /// is freed by `promise_finalizer` once the last holder (Promise + any cached Futures) drops.
+/// @param obj Future object being finalized.
 static void future_finalizer(void *obj) {
     future_impl *f = (future_impl *)obj;
     if (!f || !f->promise)
@@ -691,7 +799,13 @@ static void future_finalizer(void *obj) {
     future_release_object(p);
 }
 
-/// @brief Set a value in the promise, retaining runtime-managed values until consumed/finalized.
+/// @brief Resolve a Promise successfully and retain its runtime-managed value.
+/// @details The value is retained before publication and held by the Promise
+///          until finalization. Completion wakes all waiters and invokes
+///          detached listeners in registration order. Duplicate completion
+///          releases the temporary retained value and raises a runtime trap.
+/// @param obj Promise object to complete.
+/// @param value Runtime-managed result to retain, or NULL for a successful null value.
 void rt_promise_set(void *obj, void *value) {
     promise_impl *p = promise_require(obj, 1);
     if (!p)
@@ -730,6 +844,11 @@ void rt_promise_set(void *obj, void *value) {
 
 /// @brief Resolve the promise with a value the runtime should retain. Kept as an explicit alias for
 /// callers that want to document ownership; `rt_promise_set` now has the same retain semantics.
+/// @details Completion wakes all waiters and invokes detached listeners after
+///          unlocking. Duplicate completion balances the attempted retain and
+///          raises a runtime trap.
+/// @param obj Promise object to complete.
+/// @param value Runtime-managed result to retain, or NULL for a successful null value.
 void rt_promise_set_owned(void *obj, void *value) {
     promise_impl *p = promise_require(obj, 1);
     if (!p)
@@ -769,7 +888,10 @@ void rt_promise_set_owned(void *obj, void *value) {
 /// @brief Resolve the promise by transferring an existing producer reference.
 /// @details This marks the value as promise-owned without retaining it first.
 ///          It is intended for async callback results where the callback's
-///          returned reference is handed directly to the Future.
+///          returned reference is handed directly to the Future. The reference
+///          is consumed even when duplicate completion raises a trap.
+/// @param obj Promise object to complete.
+/// @param value Producer-owned runtime reference to transfer, or NULL.
 void rt_promise_set_transferred(void *obj, void *value) {
     promise_impl *p = promise_require(obj, 1);
     if (!p)
@@ -845,7 +967,13 @@ int8_t rt_promise_try_set_transferred(void *obj, void *value) {
     return 1;
 }
 
-/// @brief Complete the promise with an error; wakes all waiting futures.
+/// @brief Reject a Promise with a copied error message.
+/// @details The diagnostic is copied before publication so the caller retains
+///          ownership of @p error. NULL or unreadable input becomes
+///          `"Unknown error"`. Completion wakes waiters and invokes listeners;
+///          duplicate completion releases the copy and raises a runtime trap.
+/// @param obj Promise object to reject.
+/// @param error Runtime String containing the diagnostic, or NULL.
 void rt_promise_set_error(void *obj, rt_string error) {
     promise_impl *p = promise_require(obj, 1);
     if (!p)
@@ -967,7 +1095,11 @@ int8_t rt_promise_try_set_error_cstr(void *obj, const char *error) {
     return 1;
 }
 
-/// @brief Check whether the promise has been completed (either Ok or Error).
+/// @brief Read whether a Promise has completed successfully or with an error.
+/// @details The returned state is a mutex-protected point-in-time snapshot.
+///          NULL or invalid tolerant handles return zero.
+/// @param obj Promise object to inspect.
+/// @return One when completed, otherwise zero.
 int8_t rt_promise_is_done(void *obj) {
     promise_impl *p = promise_require(obj, 0);
     if (!p)
@@ -992,7 +1124,13 @@ int8_t rt_promise_is_done(void *obj) {
 // Future Implementation
 //=============================================================================
 
-/// @brief Block until the Future has a value and return it (traps if the Future resolved to error).
+/// @brief Block until a Future settles and return its successful result.
+/// @details Error completion raises the stored diagnostic, truncated to the
+///          runtime trap buffer when necessary. Native wait failures also trap.
+///          Promise-owned results receive a caller-owned retain; a successful
+///          NULL value returns NULL and borrowed raw values remain borrowed.
+/// @param obj Future object to await.
+/// @return Successful result value, possibly NULL.
 void *rt_future_get(void *obj) {
     future_impl *f = future_require(obj, 1);
     if (!f)
@@ -1081,7 +1219,13 @@ void *rt_future_get(void *obj) {
 
 /// @brief Wait up to @p ms milliseconds for the future to complete, returning success.
 /// @details If the future completes within the timeout and is not an error, stores
-///          the result in *out and returns 1. Returns 0 on timeout or error.
+///          the result in `*out` and returns one. Promise-owned results receive
+///          a caller-owned retain. A NULL @p out performs only a status check.
+///          Non-positive timeouts poll immediately; native wait failures trap.
+/// @param obj Future object to await.
+/// @param ms Maximum wait in milliseconds.
+/// @param out Optional destination for the successful result.
+/// @return One for successful completion, or zero for timeout or error completion.
 int8_t rt_future_get_for(void *obj, int64_t ms, void **out) {
     if (out)
         *out = NULL;
@@ -1160,7 +1304,11 @@ int8_t rt_future_get_for(void *obj, int64_t ms, void **out) {
     return success;
 }
 
-/// @brief Check whether the future's underlying promise has been completed.
+/// @brief Check whether a Future has completed with either a value or an error.
+/// @details The result is a mutex-protected point-in-time snapshot. NULL or
+///          invalid tolerant handles return zero.
+/// @param obj Future object to inspect.
+/// @return One when settled, otherwise zero.
 int8_t rt_future_is_done(void *obj) {
     future_impl *f = future_require(obj, 0);
     if (!f)
@@ -1183,7 +1331,11 @@ int8_t rt_future_is_done(void *obj) {
     return result;
 }
 
-/// @brief Check whether the future completed with an error.
+/// @brief Check whether a Future has completed with an error.
+/// @details Pending and successfully completed Futures return zero, as do NULL
+///          or invalid tolerant handles.
+/// @param obj Future object to inspect.
+/// @return One only for completed error state, otherwise zero.
 int8_t rt_future_is_error(void *obj) {
     future_impl *f = future_require(obj, 0);
     if (!f)
@@ -1206,7 +1358,12 @@ int8_t rt_future_is_error(void *obj) {
     return result;
 }
 
-/// @brief Return the error message if the future failed, or empty string otherwise.
+/// @brief Obtain the diagnostic stored by an errored Future.
+/// @details An actual diagnostic is returned with a caller-owned String
+///          reference. Pending, successful, invalid, and message-less error
+///          states return the runtime's constant empty String.
+/// @param obj Future object to inspect.
+/// @return Referenced error String, or a constant empty String.
 rt_string rt_future_get_error(void *obj) {
     future_impl *f = future_require(obj, 0);
     if (!f)
@@ -1240,7 +1397,14 @@ rt_string rt_future_get_error(void *obj) {
     return result ? result : rt_const_cstr("");
 }
 
-/// @brief Get a value from the future.
+/// @brief Poll a Future for successful completion without blocking.
+/// @details On success, a Promise-owned value receives a caller-owned retain
+///          before being written to @p out. Passing NULL for @p out checks only
+///          successful completion and therefore still distinguishes a
+///          successful NULL result from pending or error state.
+/// @param obj Future object to poll.
+/// @param out Optional destination for the successful result.
+/// @return One for successful completion, otherwise zero.
 int8_t rt_future_try_get(void *obj, void **out) {
     if (out)
         *out = NULL;
@@ -1283,6 +1447,11 @@ int8_t rt_future_try_get(void *obj, void **out) {
 /// @brief Non-blocking value-or-NULL fetch. Returns the resolved value if the future has settled
 /// successfully; NULL if pending or errored. Convenient form of `try_get` for callers that don't
 /// need to distinguish "not yet" from "errored" (use `is_error` separately if you do).
+/// @details Promise-owned results receive a caller-owned retain. Because NULL
+///          represents pending, error, and a successful NULL payload, use
+///          @ref rt_future_try_get_option when that distinction matters.
+/// @param obj Future object to poll.
+/// @return Successful result value, or NULL when unavailable or itself NULL.
 void *rt_future_try_get_val(void *obj) {
     future_impl *f = future_require(obj, 0);
     if (!f)
@@ -1370,6 +1539,12 @@ void *rt_future_try_get_option(void *obj) {
 /// @brief Bounded-wait variant of `try_get_val`. Waits up to `ms` for the future to resolve;
 /// returns the value on success, NULL on timeout or error. Same Win32/POSIX deadline math as
 /// `_get_for`, but returns the value directly rather than via an out-parameter.
+/// @details Promise-owned results receive a caller-owned retain. Non-positive
+///          timeouts poll immediately. Native condition-wait failures trap.
+///          NULL is ambiguous with a successful NULL payload.
+/// @param obj Future object to await.
+/// @param ms Maximum wait in milliseconds.
+/// @return Successful result, or NULL on timeout, error, invalid input, or a null result.
 void *rt_future_get_for_val(void *obj, int64_t ms) {
     if (!obj)
         return NULL;
@@ -1440,7 +1615,11 @@ void *rt_future_get_for_val(void *obj, int64_t ms) {
     return result;
 }
 
-/// @brief Wait the future.
+/// @brief Block until a Future reaches either completion state.
+/// @details Error completion is not propagated; this operation waits only for
+///          settlement. NULL or invalid tolerant handles return immediately,
+///          while native condition-wait failures raise a runtime trap.
+/// @param obj Future object to await.
 void rt_future_wait(void *obj) {
     future_impl *f = future_require(obj, 0);
     if (!f)
@@ -1484,7 +1663,11 @@ void rt_future_wait(void *obj) {
 }
 
 /// @brief Block until the future completes or the timeout expires.
-/// @details Returns 1 if the future is done (regardless of ok/error), 0 on timeout.
+/// @details Successful and error completion both count as done. Non-positive
+///          timeouts perform an immediate state check. Native wait failures trap.
+/// @param obj Future object to await.
+/// @param ms Maximum wait in milliseconds.
+/// @return One when settled before the deadline, otherwise zero.
 int8_t rt_future_wait_for(void *obj, int64_t ms) {
     if (!obj)
         return 0;
@@ -1547,11 +1730,19 @@ int8_t rt_future_wait_for(void *obj, int64_t ms) {
 }
 
 /// @brief Register a callback to fire when the future resolves (extended form with cancel hook).
-/// **Race-free fast path:** if the promise is already done, invokes the callback synchronously
-/// (no listener allocation). Otherwise allocates a listener node, retains the future-object
-/// reference, and appends to the promise's listener list. The optional `cancel` callback is
-/// invoked if the listener is later removed via `_cancel_listener` — useful for resource
-/// cleanup when a continuation is abandoned. Returns 1 on success, 0 on alloc failure.
+/// @details A listener node and strong Future reference are installed in FIFO
+///          order. If the Promise is already settled after allocation, the
+///          callback runs synchronously before return. Callback traps are
+///          swallowed and cause the optional cancellation hook to run behind
+///          a separate recovery boundary. The cancellation hook also runs if
+///          the listener is explicitly removed or its Promise is abandoned.
+/// @param obj Future on which to register.
+/// @param callback Completion callback.
+/// @param future Callback parameter that receives the completed Future.
+/// @param ctx Opaque context forwarded to @p callback and associated with removal.
+/// @param cancel Optional cleanup callback receiving @p ctx.
+/// @return One when registered or synchronously invoked, zero for invalid input
+///         or listener allocation failure.
 int8_t rt_future_on_complete_ex(void *obj,
                                 void (*callback)(void *future, void *ctx),
                                 void *ctx,
@@ -1612,6 +1803,12 @@ int8_t rt_future_on_complete_ex(void *obj,
 
 /// @brief Convenience: register a completion callback without a cancel hook. Equivalent to
 /// `_on_complete_ex(obj, callback, ctx, NULL)`. Most callers prefer this form.
+/// @param obj Future on which to register.
+/// @param callback Completion callback.
+/// @param future Callback parameter that receives the completed Future.
+/// @param ctx Opaque context forwarded to @p callback and associated with removal.
+/// @return One when registered or synchronously invoked, zero for invalid input
+///         or listener allocation failure.
 int8_t rt_future_on_complete(void *obj, void (*callback)(void *future, void *ctx), void *ctx) {
     return rt_future_on_complete_ex(obj, callback, ctx, NULL);
 }
@@ -1619,6 +1816,13 @@ int8_t rt_future_on_complete(void *obj, void (*callback)(void *future, void *ctx
 /// @brief Remove a previously-registered listener matching `(callback, ctx)`. Linear scan; the
 /// first match wins. If found, fires the listener's `cancel` hook (if any) for cleanup, then
 /// releases the retained future-object reference. Returns 1 if a listener was removed, 0 otherwise.
+/// @details Cancellation-hook traps are swallowed. A listener already detached
+///          for completion cannot be removed by this operation.
+/// @param obj Future whose pending listener chain is searched.
+/// @param callback Completion callback used as part of the listener key.
+/// @param future Callback parameter that would receive the completed Future.
+/// @param ctx Context pointer used as the other part of the listener key.
+/// @return One when the first matching listener was removed, otherwise zero.
 int8_t rt_future_cancel_listener(void *obj, void (*callback)(void *future, void *ctx), void *ctx) {
     if (!obj || !callback)
         return 0;
@@ -1680,6 +1884,8 @@ int8_t rt_future_cancel_listener(void *obj, void (*callback)(void *future, void 
 /// @brief Return the resolved value with a fresh retain when the promise owns it.
 /// Returns NULL if pending or errored. Callers that receive a runtime object must
 /// release it when done or transfer it to another owner.
+/// @param obj Future object to inspect.
+/// @return Successful stored value, or NULL when unavailable or itself NULL.
 void *rt_future_peek_value(void *obj) {
     future_impl *f = future_require(obj, 0);
     if (!f)
@@ -1712,9 +1918,13 @@ void *rt_future_peek_value(void *obj) {
     return result;
 }
 
-/// @brief Returns 1 if the resolved value was set via `rt_promise_set_owned` (so the future
-/// holds a refcounted reference). Used by combinators like `rt_async` to decide whether to
-/// re-retain when forwarding a value to a chained future.
+/// @brief Check whether a successful Future result is owned by its Promise.
+/// @details Values published by the retaining setters or by transferred
+///          ownership are Promise-owned. Pending, errored, null-valued, and
+///          invalid Futures report zero. Runtime combinators use this flag to
+///          decide whether forwarding requires another retain.
+/// @param obj Future object to inspect.
+/// @return One when a non-null successful result is Promise-owned, otherwise zero.
 int8_t rt_future_value_is_owned(void *obj) {
     future_impl *f = future_require(obj, 0);
     if (!f)

@@ -35,6 +35,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements cross-platform gamepad state, polling, and vibration.
+ *
+ * @details Up to four logical controller slots expose frame-latched button
+ *          edges, held state, normalized sticks and triggers, deadzone
+ *          processing, names, and rumble. Platform adapters translate IOKit
+ *          HID, Linux evdev, or XInput devices into the same stable public
+ *          button and axis vocabulary.
+ */
+
 #include "rt_box.h"
 #include "rt_input.h"
 #include "rt_platform.h"
@@ -53,40 +64,40 @@
 
 #include <math.h>
 
-/// @brief State for a single gamepad
+/// @brief Frame-coherent public state for one logical gamepad slot.
 typedef struct {
-    bool connected;
-    char name[64];
+    bool connected; ///< Whether a platform device currently occupies the slot.
+    char name[64];  ///< NUL-terminated display name for the connected device.
 
     // Current button state
-    bool buttons[ZANNA_PAD_BUTTON_MAX];
+    bool buttons[ZANNA_PAD_BUTTON_MAX]; ///< Current held state by public button code.
 
     // Button events this frame
-    bool pressed[ZANNA_PAD_BUTTON_MAX];
-    bool released[ZANNA_PAD_BUTTON_MAX];
+    bool pressed[ZANNA_PAD_BUTTON_MAX];  ///< Button-down edges latched this frame.
+    bool released[ZANNA_PAD_BUTTON_MAX]; ///< Button-up edges latched this frame.
 
     // Analog stick values (-1.0 to 1.0)
-    double left_x;
-    double left_y;
-    double right_x;
-    double right_y;
+    double left_x;  ///< Normalized left-stick horizontal axis.
+    double left_y;  ///< Normalized left-stick vertical axis.
+    double right_x; ///< Normalized right-stick horizontal axis.
+    double right_y; ///< Normalized right-stick vertical axis.
 
     // Trigger values (0.0 to 1.0)
-    double left_trigger;
-    double right_trigger;
+    double left_trigger;  ///< Normalized left-trigger value.
+    double right_trigger; ///< Normalized right-trigger value.
 
     // Vibration state
-    double vibration_left;
-    double vibration_right;
+    double vibration_left;  ///< Last requested low-frequency motor strength.
+    double vibration_right; ///< Last requested high-frequency motor strength.
 } rt_pad_state;
 
-// Gamepad state for up to 4 controllers
+/// @brief Logical state for every public controller index.
 static rt_pad_state g_pads[ZANNA_PAD_MAX];
 
-// Deadzone radius for analog sticks (default 0.1)
+/// @brief Shared radial/axis deadzone threshold applied to stick queries.
 static double g_pad_deadzone = 0.1;
 
-// Initialization flag
+/// @brief Whether platform gamepad resources have been initialized.
 static bool g_pad_initialized = false;
 
 /// @brief Clear one public gamepad slot to its disconnected zero state.
@@ -133,6 +144,9 @@ static double pad_clamp_unit_finite(double value) {
 static void platform_pad_poll(void);
 
 /// @brief Platform-specific rumble — set left/right motor strengths in [0,1].
+/// @param index Logical controller slot.
+/// @param left Normalized low-frequency motor strength.
+/// @param right Normalized high-frequency motor strength.
 static void platform_pad_vibrate(int64_t index, double left, double right);
 
 #if RT_PLATFORM_MACOS

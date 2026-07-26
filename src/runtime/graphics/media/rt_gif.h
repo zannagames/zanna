@@ -20,6 +20,13 @@
 //        src/runtime/graphics/2d/rt_sprite.c (animated sprite integration)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares GIF87a/GIF89a still-frame and animation decoding.
+ * @details Defines the returned animation-frame descriptor and entry points
+ * for decoding either every composited frame from a file or the first
+ * composited frame from caller-owned memory.
+ */
 
 #pragma once
 

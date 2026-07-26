@@ -485,6 +485,12 @@ void Sema::initRuntimeFunctions() {
     // Access the singleton RuntimeRegistry which contains all parsed signatures
     const auto &registry = il::runtime::RuntimeRegistry::instance();
     const auto &catalog = registry.rawCatalog();
+    /// @brief Registers a runtime extern or refines an existing generated declaration.
+    /// @param name Canonical runtime symbol name.
+    /// @param returnType Refined semantic return type.
+    /// @param fallbackParamTypes Parameter types used when no extern exists.
+    /// @param pointerSafety Optional raw-pointer safety metadata.
+    /// @param paramNames Source-visible parameter names.
     auto registerOrRefineExtern = [&](const std::string &name,
                                       TypeRef returnType,
                                       const std::vector<TypeRef> &fallbackParamTypes,

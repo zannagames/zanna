@@ -70,7 +70,12 @@ struct ParsedNumber {
 inline ParsedNumber parseNumericLiteral(std::string_view sv) noexcept {
     ParsedNumber result{};
 
+    /// @brief Removes surrounding locale whitespace from a string view.
+    /// @param[in,out] view View adjusted to the trimmed subrange.
     auto trim = [](std::string_view &view) noexcept {
+        /// @brief Tests whether a byte is classified as whitespace.
+        /// @param ch Unsigned byte to inspect.
+        /// @return `true` when the active C locale classifies it as whitespace.
         auto is_space = [](unsigned char ch) { return std::isspace(ch) != 0; };
         while (!view.empty() && is_space(static_cast<unsigned char>(view.front())))
             view.remove_prefix(1);
@@ -118,6 +123,9 @@ inline ParsedNumber parseNumericLiteral(std::string_view sv) noexcept {
 
     const bool tryFloatFirst = forceFloat || (!forceInt && hasFloatMarkers);
 
+    /// @brief Parses a complete finite floating-point token.
+    /// @param view Normalized numeric token.
+    /// @return `true` when the entire token parses without range errors.
     auto parseFloat = [&](std::string_view view) -> bool {
         // Use strtod instead of from_chars since Apple Clang doesn't support
         // from_chars for floating-point in C++20

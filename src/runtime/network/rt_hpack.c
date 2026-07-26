@@ -24,6 +24,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements HPACK header compression for the HTTP/2 runtime.
+ * @details Provides RFC static and bounded dynamic tables, prefix integer and
+ * string coding, one-time Huffman tree construction and validation, and
+ * ownership-safe header block encoding and decoding with protocol checks.
+ */
+
 #include "rt_http2.h"
 
 #include <ctype.h>
@@ -34,9 +42,12 @@
 #include <string.h>
 
 #ifdef _WIN32
+/** Restrict the Windows SDK surface to core declarations. */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+/** Windows compatibility alias for case-insensitive string comparison. */
 #define strcasecmp _stricmp
+/** Windows compatibility alias for bounded case-insensitive comparison. */
 #define strncasecmp _strnicmp
 #else
 #include <pthread.h>
@@ -44,6 +55,7 @@
 #endif
 #include "rt_http2_internal.h"
 
+/** RFC 7541 Appendix A static header table in one-based wire-index order. */
 static const struct {
     const char *name;
     const char *value;
@@ -111,6 +123,7 @@ static const struct {
     {"www-authenticate", ""},
 };
 
+/** RFC 7541 Appendix B canonical Huffman code and width for each byte plus EOS. */
 static const struct {
     uint32_t nbits;
     uint32_t code;
@@ -182,14 +195,18 @@ static const struct {
     {30u, 0xfffffffcu},
 };
 
+/** One node in the process-global HPACK Huffman decoding trie. */
 typedef struct {
-    int child[2];
-    int symbol;
-    int pad_ok;
+    int child[2]; ///< Child node indices selected by zero or one.
+    int symbol;   ///< Decoded byte/EOS symbol, or a negative interior marker.
+    int pad_ok;   ///< Whether termination at this node is valid one-bit padding.
 } huff_node_t;
 
+/** Fixed storage for the once-built HPACK Huffman decoding trie. */
 static huff_node_t g_huff_nodes[H2_MAX_HUFF_NODES];
+/** Number of initialized nodes in @ref g_huff_nodes. */
 static int g_huff_node_count = 0;
+/** Sticky result of process-global Huffman table construction. */
 static int g_huff_init_ok = 0;
 #ifdef _WIN32
 static INIT_ONCE g_huff_once = INIT_ONCE_STATIC_INIT;

@@ -46,6 +46,7 @@ bind "../services/file_utils";
 bind "../services/safe_io";
 bind "../ui/app_shell";
 bind "../ui/scene_editor_3d";
+bind "../ui/scene_panels_3d";
 
 bind SceneGraph = Zanna.Graphics3D.SceneGraph;
 bind SceneNode = Zanna.Graphics3D.SceneNode;
@@ -98,7 +99,7 @@ func main() {
     }
 
     var editor = new scene_editor_3d.SceneEditor3D();
-    editor.Setup(shell.workbench.scene3DHost, shell.app);
+    scene_panels_3d.Build(editor,shell.workbench.scene3DHost, shell.app);
     var documents = new document_manager.DocumentManager();
     var sceneDoc = documents.NewScene3DDocument();
     sceneDoc.filePath = worldPath;

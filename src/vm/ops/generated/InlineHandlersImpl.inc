@@ -22,6 +22,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the generated inline-dispatch wrapper for every IL opcode.
+/// @details Each wrapper validates the current instruction, invokes its
+///          canonical handler with the active frame/control state, and applies
+///          the returned jump, return, or continuation effects uniformly.
+///
+/// @name Inline opcode dispatch wrapper implementations
+/// @{
+/// @copydoc VM::inline_handle_Add
 void VM::inline_handle_Add(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -29,6 +38,7 @@ void VM::inline_handle_Add(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_Sub
 void VM::inline_handle_Sub(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -36,6 +46,7 @@ void VM::inline_handle_Sub(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_Mul
 void VM::inline_handle_Mul(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -43,6 +54,7 @@ void VM::inline_handle_Mul(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_IAddOvf
 void VM::inline_handle_IAddOvf(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -50,6 +62,7 @@ void VM::inline_handle_IAddOvf(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_ISubOvf
 void VM::inline_handle_ISubOvf(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -57,6 +70,7 @@ void VM::inline_handle_ISubOvf(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_IMulOvf
 void VM::inline_handle_IMulOvf(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -64,6 +78,7 @@ void VM::inline_handle_IMulOvf(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_SDiv
 void VM::inline_handle_SDiv(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -71,6 +86,7 @@ void VM::inline_handle_SDiv(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_UDiv
 void VM::inline_handle_UDiv(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -78,6 +94,7 @@ void VM::inline_handle_UDiv(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_SRem
 void VM::inline_handle_SRem(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -85,6 +102,7 @@ void VM::inline_handle_SRem(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_URem
 void VM::inline_handle_URem(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -92,6 +110,7 @@ void VM::inline_handle_URem(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_SDivChk0
 void VM::inline_handle_SDivChk0(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -99,6 +118,7 @@ void VM::inline_handle_SDivChk0(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_UDivChk0
 void VM::inline_handle_UDivChk0(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -106,6 +126,7 @@ void VM::inline_handle_UDivChk0(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_SRemChk0
 void VM::inline_handle_SRemChk0(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -113,6 +134,7 @@ void VM::inline_handle_SRemChk0(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_URemChk0
 void VM::inline_handle_URemChk0(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -120,6 +142,7 @@ void VM::inline_handle_URemChk0(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_IdxChk
 void VM::inline_handle_IdxChk(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -127,6 +150,7 @@ void VM::inline_handle_IdxChk(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_And
 void VM::inline_handle_And(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -134,6 +158,7 @@ void VM::inline_handle_And(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_Or
 void VM::inline_handle_Or(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -141,6 +166,7 @@ void VM::inline_handle_Or(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_Xor
 void VM::inline_handle_Xor(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -148,6 +174,7 @@ void VM::inline_handle_Xor(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_Shl
 void VM::inline_handle_Shl(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -155,6 +182,7 @@ void VM::inline_handle_Shl(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_LShr
 void VM::inline_handle_LShr(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -162,6 +190,7 @@ void VM::inline_handle_LShr(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_AShr
 void VM::inline_handle_AShr(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -169,6 +198,7 @@ void VM::inline_handle_AShr(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_FAdd
 void VM::inline_handle_FAdd(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -176,6 +206,7 @@ void VM::inline_handle_FAdd(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_FSub
 void VM::inline_handle_FSub(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -183,6 +214,7 @@ void VM::inline_handle_FSub(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_FMul
 void VM::inline_handle_FMul(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -190,6 +222,7 @@ void VM::inline_handle_FMul(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_FDiv
 void VM::inline_handle_FDiv(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -197,6 +230,7 @@ void VM::inline_handle_FDiv(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_ICmpEq
 void VM::inline_handle_ICmpEq(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -204,6 +238,7 @@ void VM::inline_handle_ICmpEq(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_ICmpNe
 void VM::inline_handle_ICmpNe(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -211,6 +246,7 @@ void VM::inline_handle_ICmpNe(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_SCmpLT
 void VM::inline_handle_SCmpLT(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -218,6 +254,7 @@ void VM::inline_handle_SCmpLT(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_SCmpLE
 void VM::inline_handle_SCmpLE(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -225,6 +262,7 @@ void VM::inline_handle_SCmpLE(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_SCmpGT
 void VM::inline_handle_SCmpGT(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -232,6 +270,7 @@ void VM::inline_handle_SCmpGT(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_SCmpGE
 void VM::inline_handle_SCmpGE(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -239,6 +278,7 @@ void VM::inline_handle_SCmpGE(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_UCmpLT
 void VM::inline_handle_UCmpLT(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -246,6 +286,7 @@ void VM::inline_handle_UCmpLT(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_UCmpLE
 void VM::inline_handle_UCmpLE(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -253,6 +294,7 @@ void VM::inline_handle_UCmpLE(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_UCmpGT
 void VM::inline_handle_UCmpGT(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -260,6 +302,7 @@ void VM::inline_handle_UCmpGT(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_UCmpGE
 void VM::inline_handle_UCmpGE(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -267,6 +310,7 @@ void VM::inline_handle_UCmpGE(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_FCmpEQ
 void VM::inline_handle_FCmpEQ(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -274,6 +318,7 @@ void VM::inline_handle_FCmpEQ(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_FCmpNE
 void VM::inline_handle_FCmpNE(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -281,6 +326,7 @@ void VM::inline_handle_FCmpNE(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_FCmpLT
 void VM::inline_handle_FCmpLT(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -288,6 +334,7 @@ void VM::inline_handle_FCmpLT(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_FCmpLE
 void VM::inline_handle_FCmpLE(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -295,6 +342,7 @@ void VM::inline_handle_FCmpLE(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_FCmpGT
 void VM::inline_handle_FCmpGT(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -302,6 +350,7 @@ void VM::inline_handle_FCmpGT(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_FCmpGE
 void VM::inline_handle_FCmpGE(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -309,6 +358,7 @@ void VM::inline_handle_FCmpGE(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_FCmpOrd
 void VM::inline_handle_FCmpOrd(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -316,6 +366,7 @@ void VM::inline_handle_FCmpOrd(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_FCmpUno
 void VM::inline_handle_FCmpUno(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -323,6 +374,7 @@ void VM::inline_handle_FCmpUno(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_Sitofp
 void VM::inline_handle_Sitofp(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -330,6 +382,7 @@ void VM::inline_handle_Sitofp(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_Fptosi
 void VM::inline_handle_Fptosi(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -337,6 +390,7 @@ void VM::inline_handle_Fptosi(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_CastFpToSiRteChk
 void VM::inline_handle_CastFpToSiRteChk(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -345,6 +399,7 @@ void VM::inline_handle_CastFpToSiRteChk(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_CastFpToUiRteChk
 void VM::inline_handle_CastFpToUiRteChk(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -353,6 +408,7 @@ void VM::inline_handle_CastFpToUiRteChk(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_CastSiNarrowChk
 void VM::inline_handle_CastSiNarrowChk(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -361,6 +417,7 @@ void VM::inline_handle_CastSiNarrowChk(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_CastUiNarrowChk
 void VM::inline_handle_CastUiNarrowChk(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -369,6 +426,7 @@ void VM::inline_handle_CastUiNarrowChk(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_CastSiToFp
 void VM::inline_handle_CastSiToFp(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -377,6 +435,7 @@ void VM::inline_handle_CastSiToFp(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_CastUiToFp
 void VM::inline_handle_CastUiToFp(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -385,6 +444,7 @@ void VM::inline_handle_CastUiToFp(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_Zext1
 void VM::inline_handle_Zext1(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -393,6 +453,7 @@ void VM::inline_handle_Zext1(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_Trunc1
 void VM::inline_handle_Trunc1(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -401,6 +462,7 @@ void VM::inline_handle_Trunc1(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_Alloca
 void VM::inline_handle_Alloca(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -408,6 +470,7 @@ void VM::inline_handle_Alloca(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_GEP
 void VM::inline_handle_GEP(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -415,6 +478,7 @@ void VM::inline_handle_GEP(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_Load
 void VM::inline_handle_Load(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -422,6 +486,7 @@ void VM::inline_handle_Load(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_Store
 void VM::inline_handle_Store(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -429,6 +494,7 @@ void VM::inline_handle_Store(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_AddrOf
 void VM::inline_handle_AddrOf(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -436,6 +502,7 @@ void VM::inline_handle_AddrOf(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_ConstStr
 void VM::inline_handle_ConstStr(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -443,6 +510,7 @@ void VM::inline_handle_ConstStr(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_GAddr
 void VM::inline_handle_GAddr(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -450,6 +518,7 @@ void VM::inline_handle_GAddr(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_ConstNull
 void VM::inline_handle_ConstNull(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -458,6 +527,7 @@ void VM::inline_handle_ConstNull(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_ConstF64
 void VM::inline_handle_ConstF64(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -465,6 +535,7 @@ void VM::inline_handle_ConstF64(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_Select
 void VM::inline_handle_Select(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -472,6 +543,7 @@ void VM::inline_handle_Select(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_Call
 void VM::inline_handle_Call(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -479,6 +551,7 @@ void VM::inline_handle_Call(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_CallIndirect
 void VM::inline_handle_CallIndirect(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -487,6 +560,7 @@ void VM::inline_handle_CallIndirect(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_SwitchI32
 void VM::inline_handle_SwitchI32(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -495,6 +569,7 @@ void VM::inline_handle_SwitchI32(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_Br
 void VM::inline_handle_Br(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -502,6 +577,7 @@ void VM::inline_handle_Br(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_CBr
 void VM::inline_handle_CBr(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -509,6 +585,7 @@ void VM::inline_handle_CBr(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_Ret
 void VM::inline_handle_Ret(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -516,6 +593,7 @@ void VM::inline_handle_Ret(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_TrapKind
 void VM::inline_handle_TrapKind(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -523,6 +601,7 @@ void VM::inline_handle_TrapKind(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_TrapFromErr
 void VM::inline_handle_TrapFromErr(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -530,6 +609,7 @@ void VM::inline_handle_TrapFromErr(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_TrapErr
 void VM::inline_handle_TrapErr(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -537,6 +617,7 @@ void VM::inline_handle_TrapErr(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_ErrGetKind
 void VM::inline_handle_ErrGetKind(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -544,6 +625,7 @@ void VM::inline_handle_ErrGetKind(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_ErrGetCode
 void VM::inline_handle_ErrGetCode(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -551,6 +633,7 @@ void VM::inline_handle_ErrGetCode(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_ErrGetIp
 void VM::inline_handle_ErrGetIp(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -558,6 +641,7 @@ void VM::inline_handle_ErrGetIp(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_ErrGetLine
 void VM::inline_handle_ErrGetLine(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -565,6 +649,7 @@ void VM::inline_handle_ErrGetLine(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_ErrGetMsg
 void VM::inline_handle_ErrGetMsg(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -572,6 +657,7 @@ void VM::inline_handle_ErrGetMsg(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_EhPush
 void VM::inline_handle_EhPush(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -579,6 +665,7 @@ void VM::inline_handle_EhPush(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_EhPop
 void VM::inline_handle_EhPop(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -586,6 +673,7 @@ void VM::inline_handle_EhPop(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_ResumeSame
 void VM::inline_handle_ResumeSame(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -594,6 +682,7 @@ void VM::inline_handle_ResumeSame(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_ResumeNext
 void VM::inline_handle_ResumeNext(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -602,6 +691,7 @@ void VM::inline_handle_ResumeNext(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_ResumeLabel
 void VM::inline_handle_ResumeLabel(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -610,6 +700,7 @@ void VM::inline_handle_ResumeLabel(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_EhEntry
 void VM::inline_handle_EhEntry(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
@@ -617,9 +708,11 @@ void VM::inline_handle_EhEntry(ExecState &st) {
     handleInlineResult(st, exec);
 }
 
+/// @copydoc VM::inline_handle_Trap
 void VM::inline_handle_Trap(ExecState &st) {
     assert(st.currentInstr && "currentInstr set by dispatch loop");
     const Instr &instr = *st.currentInstr;
     ExecResult exec = il::vm::detail::handleTrap(*this, st.fr, instr, *st.blocks, st.bb, st.ip);
     handleInlineResult(st, exec);
 }
+/// @}

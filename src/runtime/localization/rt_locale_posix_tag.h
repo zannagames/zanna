@@ -23,6 +23,15 @@
 //        src/runtime/localization/rt_locale_platform_windows.c
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Defines inline POSIX locale-value validation and normalization helpers.
+ * @details Provides locale-independent ASCII classification, invariant C/POSIX
+ * recognition, suffix removal, separator normalization, bounded subtag
+ * validation, and failure-cleared output for every platform adapter.
+ */
+
 #pragma once
 
 #include <stddef.h>

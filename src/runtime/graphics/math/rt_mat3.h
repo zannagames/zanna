@@ -21,10 +21,22 @@
 //        src/runtime/graphics/math/rt_vec2.h and rt_vec3.h (vector results)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares immutable row-major 3×3 matrix operations for 2D transforms.
+ *
+ * @details Mat3 factories construct arbitrary, identity, zero, translation,
+ *          scale, rotation, and shear matrices. Access, arithmetic,
+ *          point/vector transformation, transpose, determinant, inversion,
+ *          negation, and approximate comparison return GC-managed values.
+ */
+
 #pragma once
 
 #include <stdint.h>
 
+/// @brief Runtime class identifier assigned to GC-managed Mat3 objects.
 #define RT_MAT3_CLASS_ID INT64_C(-0x600207)
 
 #ifdef __cplusplus

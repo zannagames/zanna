@@ -22,6 +22,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements canonical schema-3 Windows installer metadata encoding.
+/// @details Serialization is deterministic; parsing is bounded and strict, and
+///          shared validation rejects unsafe paths, malformed UTF-8, duplicate
+///          identities, inconsistent inventories, and invalid update metadata.
+
 #include "WindowsInstallerMetadata.hpp"
 
 #include <algorithm>
@@ -45,25 +51,43 @@ constexpr size_t kMaximumOuterFiles = 16U;
 constexpr size_t kMaximumShortcuts = 256U;
 constexpr size_t kMaximumAssociations = 256U;
 
+/// @brief Lowercase ASCII letters without locale-dependent transformations.
+/// @param value Text to normalize in place.
+/// @return Lowercase copy with non-uppercase bytes unchanged.
 std::string lowerAscii(std::string value) {
+    /// @brief Fold one ASCII uppercase byte without locale dependence.
+    /// @param ch Unsigned source byte.
+    /// @return Lowercase ASCII byte or the unchanged input.
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
         return static_cast<char>(ch >= 'A' && ch <= 'Z' ? ch + ('a' - 'A') : ch);
     });
     return value;
 }
 
+/// @brief Test whether a byte is an ASCII letter.
+/// @param ch Byte to classify.
+/// @return true for `A-Z` or `a-z`.
 bool isAsciiAlpha(unsigned char ch) {
     return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
 }
 
+/// @brief Test whether a byte is an ASCII decimal digit.
+/// @param ch Byte to classify.
+/// @return true for `0-9`.
 bool isAsciiDigit(unsigned char ch) {
     return ch >= '0' && ch <= '9';
 }
 
+/// @brief Test whether a byte is an ASCII letter or decimal digit.
+/// @param ch Byte to classify.
+/// @return true when either isAsciiAlpha() or isAsciiDigit() accepts the byte.
 bool isAsciiAlnum(unsigned char ch) {
     return isAsciiAlpha(ch) || isAsciiDigit(ch);
 }
 
+/// @brief Validate a complete string as canonical Unicode UTF-8.
+/// @param value Bytes to inspect.
+/// @return true when all sequences are bounded, minimally encoded Unicode scalars.
 bool isValidUtf8(std::string_view value) {
     size_t index = 0;
     while (index < value.size()) {
@@ -104,6 +128,12 @@ bool isValidUtf8(std::string_view value) {
     return true;
 }
 
+/// @brief Enforce generic UTF-8 text length and emptiness constraints.
+/// @param value Text field value.
+/// @param fieldName Human-readable name used in failure diagnostics.
+/// @param maximumBytes Inclusive encoded-byte limit.
+/// @param allowEmpty Whether an empty value is permitted.
+/// @throws std::runtime_error If any constraint is violated.
 void validateText(std::string_view value,
                   std::string_view fieldName,
                   size_t maximumBytes,
@@ -112,10 +142,18 @@ void validateText(std::string_view value,
         throw std::runtime_error("invalid installer metadata " + std::string(fieldName));
 }
 
+/// @brief Validate an optional HTTPS URL used by installer metadata.
+/// @details Rejects credentials, fragments, controls, non-ASCII syntax, invalid
+///          DNS/IPv6 authorities, malformed ports, and non-HTTPS schemes.
+/// @param value Optional URL; an empty value is accepted.
+/// @param fieldName Human-readable name used in diagnostics.
+/// @throws std::runtime_error If a non-empty URL violates the constrained grammar.
 void validateHttpsUrl(std::string_view value, std::string_view fieldName) {
     if (value.empty())
         return;
     validateText(value, fieldName, 2048U, false);
+    /// @brief Throw the uniform invalid-URL diagnostic for this metadata field.
+    /// @throws std::runtime_error Always.
     const auto invalid = [&]() {
         throw std::runtime_error("invalid Windows installer " + std::string(fieldName));
     };
@@ -129,6 +167,9 @@ void validateHttpsUrl(std::string_view value, std::string_view fieldName) {
                                                             : authorityEnd - authorityStart);
     if (authority.empty() || authority.find('@') != std::string_view::npos ||
         value.find('#') != std::string_view::npos ||
+        /// @brief Reject controls, non-ASCII bytes, and unsafe URL punctuation.
+        /// @param ch Candidate URL byte.
+        /// @return `true` when @p ch is forbidden.
         std::any_of(value.begin(), value.end(), [](unsigned char ch) {
             return ch <= 0x20U || ch >= 0x7FU || ch == '\\' || ch == '"' || ch == '<' || ch == '>';
         })) {
@@ -149,6 +190,9 @@ void validateHttpsUrl(std::string_view value, std::string_view fieldName) {
             port = suffix.substr(1U);
         }
         if (host.find(':') == std::string_view::npos ||
+            /// @brief Reject bytes outside the constrained IPv6 literal grammar.
+            /// @param ch Candidate host byte.
+            /// @return `true` when @p ch is not hexadecimal, colon, or period.
             std::any_of(host.begin(), host.end(), [](unsigned char ch) {
                 return !(isAsciiDigit(ch) || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F') ||
                          ch == ':' || ch == '.');
@@ -165,6 +209,9 @@ void validateHttpsUrl(std::string_view value, std::string_view fieldName) {
         }
         if (host.empty() || host.size() > 253U || host.front() == '.' || host.back() == '.' ||
             host.front() == '-' || host.back() == '-' ||
+            /// @brief Reject bytes outside the constrained DNS hostname grammar.
+            /// @param ch Candidate host byte.
+            /// @return `true` when @p ch is not alphanumeric, period, or hyphen.
             std::any_of(host.begin(), host.end(), [](unsigned char ch) {
                 return !(isAsciiAlnum(ch) || ch == '.' || ch == '-');
             })) {
@@ -195,19 +242,31 @@ void validateHttpsUrl(std::string_view value, std::string_view fieldName) {
     }
 }
 
+/// @brief Produce a case-insensitive comparison key for a Windows path.
+/// @param value Path text to normalize.
+/// @return Lowercase copy with backslashes replaced by forward slashes.
 std::string normalizedPathKey(std::string value) {
     std::replace(value.begin(), value.end(), '\\', '/');
     return lowerAscii(std::move(value));
 }
 
+/// @brief Test for an uppercase hexadecimal digit.
+/// @param ch Character to classify.
+/// @return true for `0-9` or `A-F`.
 bool isHexUpper(char ch) {
     return (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'F');
 }
 
+/// @brief Decode one previously validated uppercase hexadecimal digit.
+/// @param ch Character in `0-9` or `A-F`.
+/// @return Numeric nibble value in `[0, 15]`.
 uint8_t hexValue(char ch) {
     return static_cast<uint8_t>(ch <= '9' ? ch - '0' : 10 + ch - 'A');
 }
 
+/// @brief Percent-encode one tab-delimited metadata field canonically.
+/// @param value Raw field bytes.
+/// @return Encoded field using uppercase hexadecimal escapes for unsafe bytes.
 std::string encodeField(std::string_view value) {
     static constexpr char kHex[] = "0123456789ABCDEF";
     std::string out;
@@ -228,6 +287,10 @@ std::string encodeField(std::string_view value) {
     return out;
 }
 
+/// @brief Decode one canonical percent-escaped metadata field.
+/// @param value Encoded field without tab or newline delimiters.
+/// @return Decoded bytes.
+/// @throws std::runtime_error On controls, NUL, truncated escapes, or lowercase hex.
 std::string decodeField(std::string_view value) {
     std::string out;
     out.reserve(value.size());
@@ -251,6 +314,9 @@ std::string decodeField(std::string_view value) {
     return out;
 }
 
+/// @brief Split a metadata record into non-owning tab-delimited fields.
+/// @param line Complete record without its line terminator.
+/// @return Views covering every field, including empty fields.
 std::vector<std::string_view> splitTabs(std::string_view line) {
     std::vector<std::string_view> fields;
     size_t start = 0;
@@ -264,6 +330,11 @@ std::vector<std::string_view> splitTabs(std::string_view line) {
     return fields;
 }
 
+/// @brief Parse a canonical base-10 unsigned 64-bit field.
+/// @param value Complete numeric text.
+/// @param fieldName Record name used in diagnostics.
+/// @return Parsed unsigned value.
+/// @throws std::runtime_error On empty, partial, invalid, or overflowing input.
 uint64_t parseUint64(std::string_view value, std::string_view fieldName) {
     uint64_t result = 0;
     const auto parsed = std::from_chars(value.data(), value.data() + value.size(), result);
@@ -273,6 +344,11 @@ uint64_t parseUint64(std::string_view value, std::string_view fieldName) {
     return result;
 }
 
+/// @brief Parse a canonical base-10 signed 32-bit field.
+/// @param value Complete numeric text.
+/// @param fieldName Record name used in diagnostics.
+/// @return Parsed signed value.
+/// @throws std::runtime_error On empty, partial, invalid, or overflowing input.
 int32_t parseInt32(std::string_view value, std::string_view fieldName) {
     int32_t result = 0;
     const auto parsed = std::from_chars(value.data(), value.data() + value.size(), result);
@@ -282,6 +358,11 @@ int32_t parseInt32(std::string_view value, std::string_view fieldName) {
     return result;
 }
 
+/// @brief Parse the schema's single-character Boolean representation.
+/// @param value Text expected to be `0` or `1`.
+/// @param fieldName Record name used in diagnostics.
+/// @return true for `1` and false for `0`.
+/// @throws std::runtime_error For any other representation.
 bool parseBool(std::string_view value, std::string_view fieldName) {
     if (value == "1")
         return true;
@@ -291,6 +372,10 @@ bool parseBool(std::string_view value, std::string_view fieldName) {
                              std::string(fieldName) + "'");
 }
 
+/// @brief Validate a bounded ASCII installer identifier.
+/// @param value Candidate identifier.
+/// @param fieldName Human-readable name used in diagnostics.
+/// @throws std::runtime_error If empty, oversized, or outside `[A-Za-z0-9._-]`.
 void validateIdentifier(std::string_view value, std::string_view fieldName) {
     if (value.empty() || value.size() > 128)
         throw std::runtime_error("invalid installer metadata " + std::string(fieldName));
@@ -300,6 +385,9 @@ void validateIdentifier(std::string_view value, std::string_view fieldName) {
     }
 }
 
+/// @brief Validate a canonical lowercase release-channel name.
+/// @param value Candidate channel.
+/// @throws std::runtime_error If length or lowercase alphanumeric/hyphen syntax fails.
 void validateChannel(std::string_view value) {
     if (value.empty() || value.size() > 24U || !isAsciiAlnum(value.front()) ||
         !isAsciiAlnum(value.back())) {
@@ -311,10 +399,18 @@ void validateChannel(std::string_view value) {
     }
 }
 
+/// @brief Validate one Windows path component.
+/// @param value Candidate UTF-8 leaf name.
+/// @param fieldName Human-readable name used in diagnostics.
+/// @throws std::runtime_error For controls, reserved characters/names, dot
+///         components, trailing dot/space, emptiness, or excessive length.
 void validateWindowsLeafName(std::string_view value, std::string_view fieldName) {
     if (value.empty() || value.size() > 255U || !isValidUtf8(value) || value == "." ||
         value == ".." || value.back() == '.' || value.back() == ' ' ||
         value.find_first_of("<>:\"/\\|?*") != std::string_view::npos ||
+        /// @brief Identify control bytes forbidden in Windows path components.
+        /// @param ch Candidate leaf-name byte.
+        /// @return `true` for C0 controls or DEL.
         std::any_of(value.begin(), value.end(), [](unsigned char ch) {
             return ch < 0x20U || ch == 0x7FU;
         })) {
@@ -330,6 +426,9 @@ void validateWindowsLeafName(std::string_view value, std::string_view fieldName)
     }
 }
 
+/// @brief Validate the minimum-Windows dotted numeric version.
+/// @param value One to three decimal components.
+/// @throws std::runtime_error If empty, oversized, non-numeric, overflowing, or too deep.
 void validateDottedVersion(std::string_view value) {
     if (value.empty() || value.size() > 64U)
         throw std::runtime_error("invalid minimum Windows version in installer metadata");
@@ -351,6 +450,11 @@ void validateDottedVersion(std::string_view value) {
     }
 }
 
+/// @brief Validate an install-root-relative Windows path.
+/// @param value Candidate path using slash or backslash separators.
+/// @param fieldName Human-readable name used in diagnostics.
+/// @throws std::runtime_error If absolute, drive-qualified, invalid UTF-8, too
+///         long, or containing any invalid Windows leaf.
 void validateRelativePath(std::string_view value, std::string_view fieldName) {
     if (value.empty() || value.size() > 32760 || !isValidUtf8(value) || value.front() == '/' ||
         value.front() == '\\' ||
@@ -370,6 +474,9 @@ void validateRelativePath(std::string_view value, std::string_view fieldName) {
     }
 }
 
+/// @brief Validate a canonical lowercase SHA-256 digest.
+/// @param value Candidate digest text.
+/// @throws std::runtime_error Unless exactly 64 lowercase hexadecimal digits.
 void validateSha256(std::string_view value) {
     if (value.size() != 64)
         throw std::runtime_error("invalid payload SHA-256 in installer metadata");
@@ -379,17 +486,32 @@ void validateSha256(std::string_view value) {
     }
 }
 
+/// @brief Test whether every character is a lowercase hexadecimal digit.
+/// @param value Candidate hexadecimal text; emptiness is accepted.
+/// @return true when all characters belong to `0-9a-f`.
 bool isLowerHex(std::string_view value) {
+    /// @brief Test one byte for lowercase hexadecimal membership.
+    /// @param ch Candidate byte.
+    /// @return `true` for `0-9` or `a-f`.
     return std::all_of(value.begin(), value.end(), [](unsigned char ch) {
         return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
     });
 }
 
+/// @brief Test whether a lowercase hexadecimal digit represents an odd nibble.
+/// @param ch Candidate hexadecimal digit.
+/// @return true for `1,3,5,7,9,b,d,f`.
 bool isOddLowerHexDigit(char ch) {
     return ch == '1' || ch == '3' || ch == '5' || ch == '7' || ch == '9' || ch == 'b' ||
            ch == 'd' || ch == 'f';
 }
 
+/// @brief Validate the complete semantic contract of installer metadata.
+/// @details Checks schema and scalar syntax, HTTPS/update-key consistency,
+///          Windows paths, component ownership, inventory uniqueness and sizes,
+///          shortcut roots/arguments, associations, and integration prerequisites.
+/// @param m Metadata value to validate without modification.
+/// @throws std::runtime_error On the first structural or semantic violation.
 void validateMetadata(const WindowsInstallerMetadata &m) {
     if (m.schemaVersion != kWindowsInstallerMetadataSchema)
         throw std::runtime_error("unsupported Windows installer metadata schema");
@@ -408,6 +530,9 @@ void validateMetadata(const WindowsInstallerMetadata &m) {
     validateChannel(m.channel);
     if (!m.commit.empty()) {
         if (m.commit.size() < 7U || m.commit.size() > 64U ||
+            /// @brief Test one source-commit byte for lowercase hexadecimal syntax.
+            /// @param ch Candidate byte.
+            /// @return `true` for `0-9` or `a-f`.
             !std::all_of(m.commit.begin(), m.commit.end(), [](unsigned char ch) {
                 return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
             })) {
@@ -568,6 +693,10 @@ void validateMetadata(const WindowsInstallerMetadata &m) {
         if (component.sizeBytes != componentSizes[lowerAscii(component.id)])
             throw std::runtime_error("Windows installer component size does not match its payload");
     }
+    /// @brief Require a nonempty relative path to exist in the payload inventory.
+    /// @param relative Relative payload path, optionally empty.
+    /// @param field Human-readable metadata field name.
+    /// @throws std::runtime_error When a nonempty path is absent.
     const auto requirePayload = [&](std::string_view relative, std::string_view field) {
         if (!relative.empty() &&
             paths.find(normalizedPathKey(std::string(relative))) == paths.end()) {
@@ -643,6 +772,9 @@ void validateMetadata(const WindowsInstallerMetadata &m) {
     for (const auto &assoc : m.associations) {
         if (assoc.extension.size() < 2U || assoc.extension.size() > 64U ||
             assoc.extension.front() != '.' || assoc.extension.back() == '.' ||
+            /// @brief Validate one file-association extension byte.
+            /// @param ch Candidate byte after the leading period.
+            /// @return `true` for an allowed alphanumeric or punctuation byte.
             !std::all_of(assoc.extension.begin() + 1, assoc.extension.end(), [](unsigned char ch) {
                 return isAsciiAlnum(ch) || ch == '.' || ch == '+' || ch == '-' || ch == '_';
             })) {
@@ -655,6 +787,9 @@ void validateMetadata(const WindowsInstallerMetadata &m) {
             const size_t slash = assoc.mimeType.find('/');
             if (slash == std::string::npos || slash == 0U || slash + 1U == assoc.mimeType.size() ||
                 assoc.mimeType.find('/', slash + 1U) != std::string::npos ||
+                /// @brief Identify bytes outside the supported MIME-token grammar.
+                /// @param ch Candidate MIME type byte.
+                /// @return `true` when @p ch is forbidden.
                 std::any_of(assoc.mimeType.begin(), assoc.mimeType.end(), [](unsigned char ch) {
                     return !(isAsciiAlnum(ch) || ch == '/' || ch == '-' || ch == '+' || ch == '.' ||
                              ch == '_' || ch == '!' || ch == '#' || ch == '$' || ch == '&' ||
@@ -664,6 +799,9 @@ void validateMetadata(const WindowsInstallerMetadata &m) {
             }
         }
         if (assoc.arguments.size() > 512U ||
+            /// @brief Identify unsafe file-association command argument bytes.
+            /// @param ch Candidate argument byte.
+            /// @return `true` for controls, non-ASCII bytes, quotes, or shell metacharacters.
             std::any_of(assoc.arguments.begin(), assoc.arguments.end(), [](unsigned char ch) {
                 return ch < 0x20U || ch >= 0x7FU || ch == '"' || ch == '&' || ch == '|' ||
                        ch == '<' || ch == '>' || ch == '^' || ch == '%';
@@ -680,12 +818,22 @@ void validateMetadata(const WindowsInstallerMetadata &m) {
     }
 }
 
+/// @brief Append one encoded scalar record to the canonical output stream.
+/// @param out Metadata stream receiving the record and newline.
+/// @param name Unescaped schema key.
+/// @param value Raw field value to percent-encode.
 void appendScalar(std::ostringstream &out, std::string_view name, std::string_view value) {
     out << name << '\t' << encodeField(value) << '\n';
 }
 
 } // namespace
 
+/// @brief Validate and serialize a canonical schema-3 metadata document.
+/// @details Scalars are emitted in fixed order followed by component, payload,
+///          outer-file, shortcut, and association records in caller-provided order.
+/// @param metadata Complete installer contract to encode.
+/// @return Deterministic UTF-8, tab-delimited document with trailing newlines.
+/// @throws std::runtime_error If validateMetadata() rejects any value or relationship.
 std::string serializeWindowsInstallerMetadata(const WindowsInstallerMetadata &metadata) {
     validateMetadata(metadata);
     std::ostringstream out;
@@ -758,6 +906,14 @@ std::string serializeWindowsInstallerMetadata(const WindowsInstallerMetadata &me
     return out.str();
 }
 
+/// @brief Parse and strictly validate canonical schema-3 installer metadata.
+/// @details Enforces document/record limits, exact header and record arities,
+///          unique known scalar keys, uppercase percent escapes, required scalar
+///          completeness, then the same semantic contract used by serialization.
+/// @param text Complete UTF-8 metadata document.
+/// @return Fully owning parsed metadata value.
+/// @throws std::runtime_error On malformed, unsupported, duplicate, missing,
+///         oversized, unsafe, or semantically inconsistent input.
 WindowsInstallerMetadata parseWindowsInstallerMetadata(std::string_view text) {
     if (text.empty() || text.size() > kMaximumMetadataBytes)
         throw std::runtime_error("Windows installer metadata is empty or too large");

@@ -21,6 +21,15 @@
 // Links: src/runtime/network/rt_network.c (implementation), src/runtime/core/rt_string.h
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares the managed Zanna.Network C ABI.
+ * @details Defines stable TCP, listener, and UDP identities plus synchronous
+ * connection, I/O, timeout, datagram, DNS, HTTP request/response, and URL
+ * services with explicit managed result ownership.
+ */
+
 #pragma once
 
 #include "rt_string.h"

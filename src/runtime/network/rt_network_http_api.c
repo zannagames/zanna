@@ -25,6 +25,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_network_http_api.c
+ * @brief Exposes the managed Http, HttpReq, and HttpRes runtime APIs.
+ * @details The wrappers in this file validate managed receivers and strings,
+ *          assemble native request state, translate traps into Result values,
+ *          and manage transactional download files. Network transport and
+ *          response parsing remain in the shared HTTP client core.
+ */
+
 // rt_network_internal.h requires these feature-test macros before inclusion.
 #define _DARWIN_C_SOURCE 1
 #define _GNU_SOURCE 1

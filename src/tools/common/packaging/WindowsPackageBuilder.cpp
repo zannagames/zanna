@@ -22,6 +22,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements native Windows application and toolchain installer assembly.
+/// @details The builder validates staged PE payloads and destination layouts,
+///          constructs signed nested artifacts and deterministic metadata, then
+///          appends a ZIP overlay to an architecture-matched native host.
+
 #include "WindowsPackageBuilder.hpp"
 #include "../../../common/Filesystem.hpp"
 #include "IconGenerator.hpp"
@@ -64,6 +70,8 @@ constexpr std::string_view kComponentVSCode = "vscode";
 std::string lowerAscii(std::string text);
 
 /// @brief Return true for staged bootstrap executables consumed by the packager itself.
+/// @param relativePath Staged install-relative path.
+/// @return true for the installer host or detached cleanup helper paths.
 bool isToolchainInstallerBootstrapPath(std::string_view relativePath) {
     std::string normalized(relativePath);
     std::replace(normalized.begin(), normalized.end(), '\\', '/');
@@ -73,6 +81,9 @@ bool isToolchainInstallerBootstrapPath(std::string_view relativePath) {
 }
 
 /// @brief Return the optional Windows toolchain component owning an install path.
+/// @param relativePath Staged install-relative path.
+/// @param packagedVSIX Whether a packaged VS Code extension is available.
+/// @return Optional component id, or empty for the required core component.
 std::string toolchainComponentForPath(const std::string &relativePath, bool packagedVSIX) {
     const std::string lower = lowerAscii(relativePath);
     if (lower.rfind("bin/zannastudio", 0) == 0 || lower.rfind("share/zanna/zannastudio/", 0) == 0 ||
@@ -94,6 +105,10 @@ std::string toolchainComponentForPath(const std::string &relativePath, bool pack
 }
 
 /// @brief Find and decode one staged PNG by its normalized install-relative path.
+/// @param manifest Staged toolchain inventory to search.
+/// @param relativePath Case-insensitive path of the desired image.
+/// @return Decoded image, or `std::nullopt` when the path is absent.
+/// @throws std::runtime_error If the matching file cannot be decoded as PNG.
 std::optional<PkgImage> stagedToolchainPng(const ToolchainInstallManifest &manifest,
                                            std::string_view relativePath) {
     const std::string wanted = lowerAscii(std::string(relativePath));
@@ -105,6 +120,11 @@ std::optional<PkgImage> stagedToolchainPng(const ToolchainInstallManifest &manif
 }
 
 /// @brief Crop an image around its centre to @p targetWidth:@p targetHeight, then resize it.
+/// @param source Non-empty source RGBA image.
+/// @param targetWidth Required output width in pixels.
+/// @param targetHeight Required output height in pixels.
+/// @return Center-cropped and resized RGBA image.
+/// @throws std::runtime_error If either image dimension or source payload is empty.
 PkgImage imageCover(const PkgImage &source, uint32_t targetWidth, uint32_t targetHeight) {
     if (source.width == 0 || source.height == 0 || source.pixels.empty() || targetWidth == 0 ||
         targetHeight == 0) {
@@ -139,6 +159,10 @@ PkgImage imageCover(const PkgImage &source, uint32_t targetWidth, uint32_t targe
 }
 
 /// @brief Alpha-compose @p foreground into @p background at the requested pixel origin.
+/// @param background Destination RGBA image, modified in place.
+/// @param foreground Source RGBA image.
+/// @param originX Horizontal destination offset in pixels.
+/// @param originY Vertical destination offset in pixels.
 void alphaComposite(PkgImage &background,
                     const PkgImage &foreground,
                     uint32_t originX,
@@ -161,6 +185,9 @@ void alphaComposite(PkgImage &background,
 }
 
 /// @brief Compose the wide setup banner from the canonical wallpaper and logo artwork.
+/// @param wallpaper Background image center-cropped to the banner aspect ratio.
+/// @param logo Logo image resized and composited at the left margin.
+/// @return Opaque 960-by-200 RGBA wizard banner.
 PkgImage buildZannaWizardBanner(const PkgImage &wallpaper, const PkgImage &logo) {
     constexpr uint32_t kWidth = 960;
     constexpr uint32_t kHeight = 200;
@@ -184,6 +211,7 @@ struct WindowsDllDependency {
 /// @brief Apply a larger-than-default stack to all installer/uninstaller PEs.
 /// The installer recursively creates directory trees and copies large files;
 /// the default 1 MB reserve is too small for deeply nested install paths.
+/// @param pe PE build parameters to update in place.
 void configureInstallerStack(PEBuildParams &pe) {
     pe.stackReserve = kInstallerStackReserve;
     pe.stackCommit = kInstallerStackCommit;
@@ -192,6 +220,11 @@ void configureInstallerStack(PEBuildParams &pe) {
 /// @brief Append a directory entry to out only if it has not already been seen.
 /// The seen set keys on root+path so the same relative path under different
 /// roots (e.g. InstallDir vs StartMenuDir) is treated as two distinct entries.
+/// @param out Destination directory list.
+/// @param seen Root-qualified sanitized paths already appended.
+/// @param root Runtime destination root.
+/// @param relativePath Root-relative directory path.
+/// @throws std::runtime_error If @p relativePath is unsafe.
 void addUniqueDir(std::vector<WindowsPackageDirEntry> &out,
                   std::set<std::string> &seen,
                   WindowsInstallRoot root,
@@ -208,6 +241,9 @@ void addUniqueDir(std::vector<WindowsPackageDirEntry> &out,
 /// @brief Validate every path segment in a slash-separated relative Windows path.
 /// Each segment must pass validateWindowsFileName to reject reserved device names
 /// (CON, NUL, COM1…), illegal characters (<, >, :, |, ?, *), and empty components.
+/// @param relativePath Candidate install-relative path.
+/// @param fieldName Human-readable metadata field used in diagnostics.
+/// @throws std::runtime_error If sanitization or any Windows leaf check fails.
 void validateWindowsRelativePath(const std::string &relativePath, const char *fieldName) {
     const std::string clean = sanitizePackageRelativePath(relativePath, fieldName);
     size_t pos = 0;
@@ -274,6 +310,9 @@ void addWindowsCaseFoldedPath(std::set<std::string> &seen,
 /// @brief Ensure that an absolute-expanded Windows path (e.g. %ProgramFiles%\App\bin\zanna.exe)
 /// fits within the installer stub's fixed-size WCHAR path buffer (32768 code units).
 /// The check uses UTF-16 unit count so multi-byte UTF-8 characters are counted correctly.
+/// @param path Representative expanded UTF-8 path.
+/// @param fieldName Human-readable context used in diagnostics.
+/// @throws std::runtime_error If the path plus terminator exceeds the stub buffer.
 void validateStubPathFits(const std::string &path, const char *fieldName) {
     if (utf16CodeUnitCountFromUtf8(path) + 1 > kInstallerStubPathCharLimit)
         throw std::runtime_error(std::string(fieldName) +
@@ -284,6 +323,9 @@ void validateStubPathFits(const std::string &path, const char *fieldName) {
 /// ensure none exceed the stub's WCHAR buffer limit. Checks: install root,
 /// all directories, all files, the optional PATH entry, the file association
 /// executable path, and all file association ProgID command arguments.
+/// @param layout Complete installer layout to validate before code generation.
+/// @throws std::runtime_error On unsafe paths, collisions, unknown components,
+///         invalid branding, or any stub-capacity violation.
 void validateWindowsLayoutFitsStub(const WindowsPackageLayout &layout) {
     const std::string installDir =
         layout.installDirName.empty() ? layout.displayName : layout.installDirName;
@@ -315,6 +357,9 @@ void validateWindowsLayoutFitsStub(const WindowsPackageLayout &layout) {
         wizardPixels > 4u * 1024u * 1024u || wizardPixels * 4u != layout.wizardImageRgba.size()) {
         throw std::runtime_error("Windows wizard branding image has invalid RGBA dimensions");
     }
+    /// @brief Verify that a file references a declared optional component.
+    /// @param file Package file entry whose component identifier is validated.
+    /// @throws std::runtime_error If the entry names an unknown component.
     auto validateComponent = [&](const WindowsPackageFileEntry &file) {
         if (!file.componentId.empty() &&
             componentIds.find(file.componentId) == componentIds.end()) {
@@ -383,6 +428,8 @@ void validateWindowsLayoutFitsStub(const WindowsPackageLayout &layout) {
 
 /// @brief Return text lowercased for case-insensitive filename comparisons (LICENSE, README.MD).
 /// Only transforms ASCII letters so it is safe for arbitrary UTF-8 filenames.
+/// @param text Text to transform in place.
+/// @return Lowercased copy.
 std::string lowerAscii(std::string text) {
     for (char &c : text)
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -390,11 +437,17 @@ std::string lowerAscii(std::string text) {
 }
 
 /// @brief Read a little-endian uint16 at @p off (caller must bounds-check).
+/// @param data Buffer containing the field.
+/// @param off Zero-based field offset.
+/// @return Decoded host-order 16-bit value.
 uint16_t rd16(const std::vector<uint8_t> &data, size_t off) {
     return static_cast<uint16_t>(data[off] | (data[off + 1] << 8));
 }
 
 /// @brief Read a little-endian uint32 at @p off (caller must bounds-check).
+/// @param data Buffer containing the field.
+/// @param off Zero-based field offset.
+/// @return Decoded host-order 32-bit value.
 uint32_t rd32(const std::vector<uint8_t> &data, size_t off) {
     return static_cast<uint32_t>(data[off]) | (static_cast<uint32_t>(data[off + 1]) << 8) |
            (static_cast<uint32_t>(data[off + 2]) << 16) |
@@ -402,11 +455,18 @@ uint32_t rd32(const std::vector<uint8_t> &data, size_t off) {
 }
 
 /// @brief Return true if [off, off+len) lies entirely within @p data.
+/// @param data Containing byte vector.
+/// @param off Candidate range start.
+/// @param len Candidate range length.
+/// @return true when the range is bounded without overflow.
 bool hasBytes(const std::vector<uint8_t> &data, size_t off, size_t len) {
     return off <= data.size() && len <= data.size() - off;
 }
 
 /// @brief Rotate a 32-bit value right by @p bits (SHA-256 round operation).
+/// @param value Word to rotate.
+/// @param bits Rotation distance in `[1, 31]`.
+/// @return Circular right rotation of @p value.
 uint32_t rotr32(uint32_t value, unsigned bits) {
     return (value >> bits) | (value << (32u - bits));
 }
@@ -414,6 +474,9 @@ uint32_t rotr32(uint32_t value, unsigned bits) {
 /// @brief Compute the SHA-256 of a buffer as a lowercase hex string.
 /// @details Self-contained SHA-256 used to fingerprint payload files in the
 ///          installer's integrity manifest; kept local to avoid a runtime dep.
+/// @param data Input buffer; may be null only when @p len is zero.
+/// @param len Number of bytes to hash.
+/// @return Digest encoded as 64 lowercase hexadecimal characters.
 std::string sha256Hex(const uint8_t *data, size_t len) {
     static constexpr std::array<uint32_t, 64> k = {
         0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u, 0x923f82a4u,
@@ -508,6 +571,7 @@ struct PeExecutableInfo {
 };
 
 /// @brief Parse just enough of a PE image to extract its machine type and bitness.
+/// @param data Complete candidate image bytes.
 /// @return PeExecutableInfo, or std::nullopt if the bytes are not a valid PE image.
 std::optional<PeExecutableInfo> inspectPeExecutable(const std::vector<uint8_t> &data) {
     if (!hasBytes(data, 0, 64) || data[0] != 'M' || data[1] != 'Z')
@@ -525,6 +589,8 @@ std::optional<PeExecutableInfo> inspectPeExecutable(const std::vector<uint8_t> &
 }
 
 /// @brief Map an architecture string to its PE COFF Machine value.
+/// @param arch Empty/default, `x64`, or `arm64`.
+/// @return COFF machine identifier for the selected architecture.
 /// @throws std::runtime_error for anything other than "" / "x64" / "arm64".
 uint16_t windowsMachineForArch(const std::string &arch) {
     if (arch.empty() || arch == "x64")
@@ -535,6 +601,8 @@ uint16_t windowsMachineForArch(const std::string &arch) {
 }
 
 /// @brief Validate that the payload binary at @p path is a PE32+ for @p arch.
+/// @param path Existing executable to read and inspect.
+/// @param arch Requested package architecture.
 /// @throws std::runtime_error if the file is not PE32+ or its machine type does
 ///         not match the requested architecture.
 void validateWindowsPayloadExecutable(const fs::path &path, const std::string &arch) {
@@ -553,6 +621,8 @@ void validateWindowsPayloadExecutable(const fs::path &path, const std::string &a
 }
 
 /// @brief Parse an unsigned decimal metadata field without locale or sign ambiguity.
+/// @param text Candidate decimal text.
+/// @return Parsed value, or `std::nullopt` for empty, invalid, or overflowing input.
 std::optional<uint64_t> parseUnsignedDecimal(std::string_view text) {
     if (text.empty())
         return std::nullopt;
@@ -573,7 +643,10 @@ std::optional<uint64_t> parseUnsignedDecimal(std::string_view text) {
 ///          packageable only when its canonical executable and schema-1 build metadata are
 ///          present as ordinary files. The metadata must bind the exact PE bytes, size, and
 ///          selected target architecture.
+/// @param manifest Staged toolchain inventory and provenance.
+/// @param architecture Expected executable architecture.
 /// @return True when the manifest contains a complete, validated Studio component.
+/// @throws std::runtime_error If a partial or inconsistent Studio component is present.
 bool validateZannaStudioArtifacts(const ToolchainInstallManifest &manifest,
                                   const std::string &architecture) {
     const ToolchainFileEntry *studioExecutable = nullptr;
@@ -676,6 +749,9 @@ bool validateZannaStudioArtifacts(const ToolchainInstallManifest &manifest,
         !std::all_of(
             recordedHash.begin(),
             recordedHash.end(),
+            /// @brief Test whether one metadata hash character is lowercase hexadecimal.
+            /// @param ch Character to inspect.
+            /// @return `true` for an ASCII decimal digit or a lowercase `a` through `f`.
             [](char ch) { return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'); }) ||
         recordedHash != sha256Hex(executableBytes.data(), executableBytes.size())) {
         throw std::runtime_error("Zanna Studio build metadata SHA-256 does not match executable");
@@ -687,6 +763,10 @@ bool validateZannaStudioArtifacts(const ToolchainInstallManifest &manifest,
 /// @details Nested Authenticode signing can change the executable after the staging buildinfo was
 ///          produced. Updating only the already-validated Size and SHA256 fields preserves the
 ///          provenance fields while keeping the installed pair internally consistent.
+/// @param original Validated schema-1 build-info bytes.
+/// @param packagedExecutable Final executable bytes after optional signing.
+/// @return Rewritten build-info bytes with updated size and SHA-256 fields.
+/// @throws std::runtime_error If either required field is absent or duplicated.
 std::vector<uint8_t> bindZannaStudioBuildInfo(const std::vector<uint8_t> &original,
                                               const std::vector<uint8_t> &packagedExecutable) {
     std::istringstream input(std::string(original.begin(), original.end()));
@@ -722,6 +802,10 @@ std::vector<uint8_t> bindZannaStudioBuildInfo(const std::vector<uint8_t> &origin
 /// @details Searches @p sections for the one containing @p rva and maps it into
 ///          that section's raw data. Returns nullopt when no section covers the
 ///          RVA or the resulting offset would exceed @p fileSize.
+/// @param sections Parsed section address/file ranges.
+/// @param rva Relative virtual address to translate.
+/// @param fileSize Total PE file size used for the final bounds check.
+/// @return Corresponding raw-file offset, or `std::nullopt` when unmappable.
 std::optional<size_t> peRvaToFileOffset(const std::vector<PeSectionInfo> &sections,
                                         uint32_t rva,
                                         size_t fileSize) {
@@ -742,6 +826,8 @@ std::optional<size_t> peRvaToFileOffset(const std::vector<PeSectionInfo> &sectio
 }
 
 /// @brief Read a NUL-terminated printable-ASCII string from @p data at @p off.
+/// @param data Buffer containing the candidate string.
+/// @param off Zero-based start offset.
 /// @return The string, or "" if a non-printable byte or an unterminated run is
 ///         encountered (used to read DLL name strings from the import table).
 std::string readPeAsciiZ(const std::vector<uint8_t> &data, size_t off) {
@@ -759,6 +845,8 @@ std::string readPeAsciiZ(const std::vector<uint8_t> &data, size_t off) {
 /// @details Walks the import data directory's IMAGE_IMPORT_DESCRIPTOR array,
 ///          mapping each Name RVA to a file offset and reading the DLL string.
 ///          Returns an empty vector if the image is not a parseable PE32+.
+/// @param data Complete candidate PE image bytes.
+/// @return Lowercase imported DLL names, or an empty vector on invalid/absent imports.
 std::vector<std::string> importedDllNamesFromPeImpl(const std::vector<uint8_t> &data) {
     if (!hasBytes(data, 0, 64) || data[0] != 'M' || data[1] != 'Z')
         return {};
@@ -827,6 +915,8 @@ std::vector<std::string> importedDllNamesFromPeImpl(const std::vector<uint8_t> &
 ///          excluded: an installer must carry those files app-locally instead of assuming
 ///          that an unrelated product installed a compatible redistributable globally.
 ///          API-set forwarders and Windows inbox graphics/input libraries remain system DLLs.
+/// @param dll Lowercase DLL filename.
+/// @return true when the dependency may be satisfied by supported Windows itself.
 bool isKnownWindowsSystemDll(const std::string &dll) {
     static const std::set<std::string> exact = {
         "advapi32.dll",  "bcrypt.dll",      "cfgmgr32.dll",      "combase.dll",  "comctl32.dll",
@@ -846,6 +936,8 @@ bool isKnownWindowsSystemDll(const std::string &dll) {
 /// @details Runtime families begin with a stable prefix followed by a toolset number.
 ///          Requiring the first suffix character to be numeric avoids misclassifying
 ///          application DLLs such as `msvcp_plugin.dll`.
+/// @param dll Lowercase DLL filename.
+/// @return true for recognized numbered MSVC runtime families.
 bool isAppLocalMsvcRuntimeDll(const std::string &dll) {
     if (dll.size() <= 4 || dll.substr(dll.size() - 4) != ".dll")
         return false;
@@ -866,6 +958,9 @@ bool isAppLocalMsvcRuntimeDll(const std::string &dll) {
 /// @details Microsoft compiler runtime DLLs retain their original Microsoft signatures.
 ///          Non-PE fixture files and ordinary data with an executable-looking suffix are
 ///          not passed to the signer.
+/// @param logicalName Install-relative payload name.
+/// @param data Candidate file bytes.
+/// @return true for a Zanna-owned `.exe`/`.dll` containing a parseable PE image.
 bool shouldSignWindowsPayloadPe(std::string_view logicalName, const std::vector<uint8_t> &data) {
     const std::string lowerName = lowerAscii(std::string(logicalName));
     const size_t slash = lowerName.find_last_of("/\\");
@@ -883,6 +978,11 @@ bool shouldSignWindowsPayloadPe(std::string_view logicalName, const std::vector<
 }
 
 /// @brief Apply @p signer and prove that it preserved a valid PE32+ architecture.
+/// @param signer Optional signing callback.
+/// @param logicalName Install-relative name passed to the signer and diagnostics.
+/// @param unsignedData Original file bytes.
+/// @param arch Required output architecture.
+/// @return Signed bytes, or the unchanged input when signing is disabled/inapplicable.
 /// @throws std::runtime_error when signing fails, returns no bytes, or changes the image type.
 std::vector<uint8_t> signWindowsPayloadPe(const WindowsPeSigner &signer,
                                           std::string_view logicalName,
@@ -915,6 +1015,8 @@ std::vector<uint8_t> signWindowsPayloadPe(const WindowsPeSigner &signer,
 ///          manifest is case-normalized for comparison, while diagnostics retain the
 ///          original importer and expected path. Unparseable non-PE fixtures are ignored;
 ///          staged object-format validation remains responsible for required executables.
+/// @param manifest Staged Windows toolchain inventory to inspect.
+/// @throws std::runtime_error If an imported MSVC runtime is absent beside its importer.
 void validateToolchainMsvcRuntimeClosure(const ToolchainInstallManifest &manifest) {
     std::set<std::string> stagedPaths;
     for (const ToolchainFileEntry &file : manifest.files)
@@ -949,6 +1051,8 @@ void validateToolchainMsvcRuntimeClosure(const ToolchainInstallManifest &manifes
 /// @details Windows applications often stage plugin or delay-load DLLs in subdirectories.
 ///          The recursive pass is capped so an accidental large project tree does not make
 ///          packaging unbounded.
+/// @param dir Executable directory and bounded search root.
+/// @param filename Lowercase DLL leaf name to locate case-insensitively.
 /// @return The matching path, or std::nullopt when no file matches.
 std::optional<fs::path> findLocalDllCaseInsensitive(const fs::path &dir,
                                                     const std::string &filename) {
@@ -1098,6 +1202,10 @@ std::string defaultWindowsProgIdBase(const std::string &exec) {
 /// @brief Build the Windows ProgID string for a file association in app packages.
 /// Format: "<pkg.identifier>.<ext>" — e.g. "com.example.myapp.zia".
 /// ProgIDs are registered in HKEY_CLASSES_ROOT and link the extension to the app.
+/// @param pkg Package metadata supplying an optional identifier override.
+/// @param exec Normalized executable stem used for a generated default base.
+/// @param assoc Validated file association.
+/// @return Validated full ProgID for the association.
 std::string windowsProgIdFor(const PackageConfig &pkg,
                              const std::string &exec,
                              const FileAssoc &assoc) {
@@ -1123,6 +1231,8 @@ std::string windowsInstallEnvPath(const std::string &installDir,
 }
 
 /// @brief Wrap @p path in double quotes for embedding in a command line.
+/// @param path Literal path that must not contain quotes.
+/// @return Double-quoted path.
 /// @throws std::runtime_error if @p path itself contains a double quote.
 std::string windowsQuotedPath(const std::string &path) {
     if (path.find('"') != std::string::npos)
@@ -1175,6 +1285,8 @@ std::string toolchainVSCodeInstallScript() {
 }
 
 /// @brief Generate the prerequisites README text bundled with the installer.
+/// @param installDirName Validated default installation-directory leaf.
+/// @return CRLF-terminated guidance with the selected user/machine root examples.
 std::string toolchainWindowsPrerequisitesReadme(std::string_view installDirName) {
     std::string readme =
         "Zanna Windows developer installation\r\n"
@@ -1207,6 +1319,8 @@ std::string toolchainWindowsPrerequisitesReadme(std::string_view installDirName)
 }
 
 /// @brief Estimate Add/Remove Programs installed size from files installed on disk.
+/// @param layout Final package layout and file sizes.
+/// @return Rounded-up KiB total, saturated at `UINT32_MAX`.
 uint32_t estimatedInstalledSizeKb(const WindowsPackageLayout &layout) {
     uint64_t total = 0;
     const auto &files = layout.installedFiles.empty() ? layout.installFiles : layout.installedFiles;
@@ -1220,6 +1334,9 @@ uint32_t estimatedInstalledSizeKb(const WindowsPackageLayout &layout) {
 
 /// @brief Pick the embedded UAC manifest: asInvoker for per-user installs,
 ///        admin-elevation otherwise.
+/// @param layout Package scope determining the requested execution level.
+/// @param minOsWindows Minimum supported Windows version encoded in the manifest.
+/// @return Complete generated application-manifest XML.
 std::string windowsManifestForLayout(const WindowsPackageLayout &layout,
                                      const std::string &minOsWindows) {
     return layout.perUserInstall ? generateAsInvokerManifest(minOsWindows)
@@ -1233,6 +1350,9 @@ std::string windowsManifestForLayout(const WindowsPackageLayout &layout,
 ///          components followed either by end-of-string or by `-`/`+` suffix
 ///          metadata. Other malformed versions are rejected instead of being
 ///          silently truncated.
+/// @param version Package version text.
+/// @return Four 16-bit numeric components, zero-filling omitted trailing parts.
+/// @throws std::runtime_error If the numeric core is malformed or out of range.
 std::array<uint16_t, 4> windowsVersionPartsForResource(const std::string &version) {
     std::array<uint16_t, 4> parts{0, 0, 0, 0};
     if (version.empty())
@@ -1372,6 +1492,9 @@ std::string windowsPublisherFor(const PackageConfig &pkg, const std::string &dis
 /// @brief Build the Windows ProgID for a toolchain file association.
 /// Equivalent to windowsProgIdFor but takes an explicit identifier string instead
 /// of a full PackageConfig; used for toolchain installer builds.
+/// @param identifier Validated product identifier used as the ProgID base.
+/// @param assoc File association to validate and append.
+/// @return Full validated ProgID.
 std::string toolchainProgIdFor(const std::string &identifier, const FileAssoc &assoc) {
     validateWindowsProgIdBase(identifier, "Windows file association ProgID base");
     if (identifier.empty())
@@ -1384,6 +1507,8 @@ std::string toolchainProgIdFor(const std::string &identifier, const FileAssoc &a
 
 /// @brief Return Zanna Studio arguments used before the quoted source path.
 /// @details Opening a source association must never execute the file implicitly.
+/// @param assoc Association being converted; currently does not alter the safe default.
+/// @return Empty fixed-argument prefix.
 std::string toolchainOpenCommandArgsFor(const FileAssoc &assoc) {
     (void)assoc;
     return {};
@@ -1393,6 +1518,10 @@ std::string toolchainOpenCommandArgsFor(const FileAssoc &assoc) {
 /// is present in out. Directories are added shallowest-first so the installer
 /// creates parent directories before their children. Duplicate entries are
 /// suppressed via the seen set.
+/// @param out Destination directory inventory.
+/// @param seen Root-qualified paths already emitted.
+/// @param root Runtime destination root for new directories.
+/// @param relativeFilePath File path whose parents should be registered.
 void addParentDirs(std::vector<WindowsPackageDirEntry> &out,
                    std::set<std::string> &seen,
                    WindowsInstallRoot root,
@@ -1417,6 +1546,10 @@ void addParentDirs(std::vector<WindowsPackageDirEntry> &out,
 /// entries in layout. The layout entry captures the local-data offset and CRC-32
 /// from the freshly-written ZIP entry so the installer stub can locate and verify
 /// each file without parsing the central directory at runtime.
+/// @param payloadManifest Optional SHA-256 manifest stream; null disables emission.
+/// @param overlayName ZIP entry path to sanitize and record.
+/// @param data Entry bytes; may be null only when @p len is zero.
+/// @param len Number of bytes to hash.
 void appendPayloadManifestEntry(std::ostringstream *payloadManifest,
                                 const std::string &overlayName,
                                 const uint8_t *data,
@@ -1518,11 +1651,19 @@ std::string buildWindowsInstalledManifest(std::vector<std::string> paths,
                                           const std::string &manifestRelativePath) {
     paths.push_back(
         sanitizePackageRelativePath(manifestRelativePath, "Windows installed manifest path"));
+    /// @brief Order manifest paths by their case-insensitive spelling.
+    /// @param a Left-hand path.
+    /// @param b Right-hand path.
+    /// @return `true` when the normalized form of `a` precedes that of `b`.
     std::sort(paths.begin(), paths.end(), [](const std::string &a, const std::string &b) {
         return lowerAscii(a) < lowerAscii(b);
     });
     paths.erase(std::unique(paths.begin(),
                             paths.end(),
+                            /// @brief Identify paths that differ only by ASCII letter case.
+                            /// @param a Left-hand path.
+                            /// @param b Right-hand path.
+                            /// @return `true` when the normalized paths are equal.
                             [](const std::string &a, const std::string &b) {
                                 return lowerAscii(a) == lowerAscii(b);
                             }),
@@ -1536,11 +1677,19 @@ std::string buildWindowsInstalledManifest(std::vector<std::string> paths,
 /// @brief Populate uninstallDirectories from installDirectories, then sort deepest-first
 /// so the uninstaller removes leaf directories before their parents. Sorting by
 /// depth first, then path length, ensures correct order when depths are equal.
+/// @param layout Package layout whose uninstall directory order is rebuilt.
 void finalizeUninstallDirs(WindowsPackageLayout &layout) {
     layout.uninstallDirectories = layout.installDirectories;
     std::stable_sort(layout.uninstallDirectories.begin(),
                      layout.uninstallDirectories.end(),
+                     /// @brief Order directories from deepest to shallowest for safe removal.
+                     /// @param a Left-hand directory entry.
+                     /// @param b Right-hand directory entry.
+                     /// @return `true` when `a` should be removed before `b`.
                      [](const WindowsPackageDirEntry &a, const WindowsPackageDirEntry &b) {
+                         /// @brief Count the directory separators in a package-relative path.
+                         /// @param path Path whose nesting depth is measured.
+                         /// @return Number of forward-slash separators in `path`.
                          auto depth = [](const std::string &path) {
                              return static_cast<int>(std::count(path.begin(), path.end(), '/'));
                          };
@@ -1553,12 +1702,20 @@ void finalizeUninstallDirs(WindowsPackageLayout &layout) {
 }
 
 /// @brief Normalize a validated Windows package path for the ZIP/metadata protocol.
+/// @param value Validated path to normalize in place.
+/// @return Path with backslashes replaced by forward slashes.
 std::string metadataPath(std::string value) {
     std::replace(value.begin(), value.end(), '\\', '/');
     return value;
 }
 
 /// @brief Convert the package layout into the deterministic native-host contract.
+/// @param layout Validated package destinations, payloads, components, and integrations.
+/// @param productKind Metadata product kind (`application` or `toolchain`).
+/// @param packageMode Initial contract mode.
+/// @param arch Target architecture; empty selects x64.
+/// @return Complete metadata derived from the layout.
+/// @throws std::runtime_error On installed-size overflow.
 WindowsInstallerMetadata nativeMetadataForLayout(const WindowsPackageLayout &layout,
                                                  const std::string &productKind,
                                                  const std::string &packageMode,
@@ -1649,6 +1806,11 @@ WindowsInstallerMetadata nativeMetadataForLayout(const WindowsPackageLayout &lay
 }
 
 /// @brief Prove that @p path is an unsigned, static-runtime native host for @p arch.
+/// @param path Existing native host template.
+/// @param arch Required PE architecture.
+/// @return Complete unsigned host bytes.
+/// @throws std::runtime_error If missing, malformed, wrong-architecture, signed,
+///         or dependent on a non-system DLL.
 std::vector<uint8_t> loadNativeInstallerHost(const fs::path &path, const std::string &arch) {
     if (!fs::is_regular_file(path))
         throw std::runtime_error("Windows native installer host is missing: " +
@@ -1685,6 +1847,10 @@ std::vector<uint8_t> loadNativeInstallerHost(const fs::path &path, const std::st
 }
 
 /// @brief Append a completed ZIP overlay to an unsigned native host template.
+/// @param host Complete native host PE bytes.
+/// @param overlay Final ZIP bytes.
+/// @return Concatenated self-extracting executable.
+/// @throws std::runtime_error If the combined size overflows `size_t`.
 std::vector<uint8_t> appendNativeHostOverlay(const std::vector<uint8_t> &host,
                                              const std::vector<uint8_t> &overlay) {
     if (overlay.size() > std::numeric_limits<size_t>::max() - host.size())
@@ -1699,6 +1865,17 @@ std::vector<uint8_t> appendNativeHostOverlay(const std::vector<uint8_t> &host,
 /// @brief Finish a native setup + maintenance pair from the prepared payload and outer entries.
 /// @details The maintenance executable carries the repair payload but not itself. The signed
 ///          maintenance image is then added as a non-recursive outer-file record to setup.
+/// @param outer Prepared stored-entry writer for maintenance overlay controls.
+/// @param payload Finished compressed inner payload ZIP.
+/// @param metadata Base validated native-host contract.
+/// @param host Unsigned architecture-matched native host bytes.
+/// @param unsignedCleanup Unsigned detached cleanup-helper PE bytes.
+/// @param signer Optional Authenticode signing callback.
+/// @param arch Required architecture for signed images.
+/// @param licenseText Optional installer license content.
+/// @param readmeText Optional installer readme content.
+/// @return Final unsigned setup executable carrying a signed maintenance executable.
+/// @throws std::runtime_error On signing, size, metadata, ZIP, or host assembly failure.
 std::vector<uint8_t> buildNativeInstallerPair(ZipWriter &outer,
                                               const std::vector<uint8_t> &payload,
                                               WindowsInstallerMetadata metadata,
@@ -1749,6 +1926,9 @@ std::vector<uint8_t> buildNativeInstallerPair(ZipWriter &outer,
     metadata.installedSizeBytes += maintenanceExe.size();
     const auto core = std::find_if(metadata.components.begin(),
                                    metadata.components.end(),
+                                   /// @brief Determine whether metadata describes the core component.
+                                   /// @param component Component metadata to inspect.
+                                   /// @return `true` when the normalized component identifier is `core`.
                                    [](const WindowsInstallerComponentMetadata &component) {
                                        return lowerAscii(component.id) == "core";
                                    });
@@ -1782,6 +1962,8 @@ std::vector<uint8_t> buildNativeInstallerPair(ZipWriter &outer,
 }
 
 /// @brief Locate a staged host template for a toolchain package.
+/// @param params Toolchain build parameters and staged inventory.
+/// @return Explicit or discovered host path; empty when unavailable.
 fs::path toolchainNativeHostPath(const WindowsToolchainBuildParams &params) {
     if (!params.installerHostPath.empty())
         return zanna::filesystem::pathFromUtf8(params.installerHostPath);
@@ -1794,6 +1976,8 @@ fs::path toolchainNativeHostPath(const WindowsToolchainBuildParams &params) {
 }
 
 /// @brief Locate the staged detached-cleanup helper for a toolchain package.
+/// @param params Toolchain build parameters and staged inventory.
+/// @return Explicit or discovered cleanup path; empty when unavailable.
 fs::path toolchainNativeCleanupPath(const WindowsToolchainBuildParams &params) {
     if (!params.installerCleanupPath.empty())
         return zanna::filesystem::pathFromUtf8(params.installerCleanupPath);
@@ -1808,6 +1992,9 @@ fs::path toolchainNativeCleanupPath(const WindowsToolchainBuildParams &params) {
 
 } // namespace
 
+/// @brief Extract imported DLL names from a safely parseable PE32+ import table.
+/// @param data Complete candidate PE bytes.
+/// @return Lowercase DLL names, or an empty vector for invalid/unsupported images.
 std::vector<std::string> importedDllNamesFromPe(const std::vector<uint8_t> &data) {
     return importedDllNamesFromPeImpl(data);
 }
@@ -1816,6 +2003,9 @@ std::vector<std::string> importedDllNamesFromPe(const std::vector<uint8_t> &data
 /// Assembly is a two-pass process: Pass 1 measures the exact overlay offset with
 /// overlayFileOffset=0; Pass 2 bakes the measured offset into the stub and produces
 /// the final PE. The uninstaller is built first so it can be included in the ZIP.
+/// @param params Application inputs, package metadata, host templates, output, and signer.
+/// @throws std::runtime_error On validation, dependency discovery, signing, I/O,
+///         ZIP construction, PE assembly, or output failure.
 void buildWindowsPackage(const WindowsBuildParams &params) {
     const auto &pkg = params.pkgConfig;
     const fs::path executablePath = zanna::filesystem::pathFromUtf8(params.executablePath);
@@ -1877,6 +2067,10 @@ void buildWindowsPackage(const WindowsBuildParams &params) {
 
     std::set<std::string> installDirSet;
     std::set<std::string> installFileSet;
+    /// @brief Validate and reserve one case-insensitive installation-file path.
+    /// @param relativePath Candidate path relative to the installation root.
+    /// @return Sanitized package-relative path.
+    /// @throws std::runtime_error If the path is invalid or collides with a prior file.
     auto noteInstallFile = [&](const std::string &relativePath) {
         const std::string clean = sanitizePackageRelativePath(relativePath, "Windows install path");
         const std::string key = lowerAscii(clean);
@@ -1987,6 +2181,9 @@ void buildWindowsPackage(const WindowsBuildParams &params) {
                              WindowsInstallRoot::InstallDir,
                              targetDir);
             }
+            /// @brief Add one safely resolved asset-tree entry to the Windows payload layout.
+            /// @param entry Directory entry with verified physical and logical paths.
+            /// @throws std::runtime_error If an entry path or payload operation is invalid.
             safeDirectoryIterateResolved(
                 srcPath, projectRoot, [&](const SafeDirectoryEntry &entry) {
                     const auto relPath = sanitizePackageRelativePath(
@@ -2262,6 +2459,13 @@ void buildWindowsPackage(const WindowsBuildParams &params) {
 /// @brief Build a Windows toolchain installer from a pre-validated staged manifest.
 /// Staged files are installed as-is, while generated developer helper scripts and
 /// Start Menu shortcuts are added by the packager. Symlinks are dereferenced.
+/// @brief Build a native Windows installer for a validated staged Zanna toolchain.
+/// @details Packages all non-bootstrap staged files, binds optional Studio
+///          provenance, enforces runtime-DLL closure, generates integration
+///          metadata and branding, then assembles setup/maintenance native hosts.
+/// @param params Toolchain manifest, identity, integration options, hosts, output, and signer.
+/// @throws std::runtime_error On manifest/layout validation, signing, I/O,
+///         metadata, ZIP, PE, or output failure.
 void buildWindowsToolchainInstaller(const WindowsToolchainBuildParams &params) {
     const fs::path outputPath = zanna::filesystem::pathFromUtf8(params.outputPath);
     validateToolchainInstallManifest(params.manifest);

@@ -36,6 +36,13 @@ namespace {
 using il::core::getOpcodeInfo;
 using il::core::kNumOpcodes;
 
+/// @brief Copy a valid source location into a diagnostic frame.
+/// @details Preserves the structured location, converts line and column to the
+///          diagnostic representation, and resolves a file path when a source
+///          manager is available.
+/// @param [out] frame Frame descriptor receiving location fields.
+/// @param loc Source location to copy; invalid locations leave @p frame unchanged.
+/// @param sm Optional source manager used to resolve the file identifier.
 void fillFrameLocation(FrameInfo &frame,
                        il::support::SourceLoc loc,
                        const il::support::SourceManager *sm) {
@@ -151,6 +158,9 @@ FrameInfo VM::buildFrameInfo(const VmError &error) const {
     }
 
     // Check if any handler is installed
+    /// @brief Test whether one execution state has an active exception handler.
+    /// @param st Execution state pointer, which may be null.
+    /// @return `true` when `st` owns a nonempty exception-handler stack.
     frame.handlerInstalled =
         std::any_of(execStack.begin(), execStack.end(), [](const ExecState *st) {
             return st && !st->fr.ehStack.empty();
@@ -178,6 +188,11 @@ std::string VM::recordTrap(const VmError &error, const FrameInfo &frame) {
     return lastTrap.message;
 }
 
+/// @brief Build a most-recent-first snapshot of active VM frames.
+/// @details Walks the execution stack without mutating it, recording function,
+///          block, instruction, source, and handler information for each valid
+///          execution state.
+/// @return Diagnostic frames ordered from the active callee to the oldest caller.
 std::vector<FrameInfo> VM::buildBacktrace() const {
     std::vector<FrameInfo> frames;
     frames.reserve(execStack.size());
@@ -210,6 +225,9 @@ std::vector<FrameInfo> VM::buildBacktrace() const {
     return frames;
 }
 
+/// @brief Print a human-readable VM backtrace to standard error.
+/// @param frames Most-recent-first frame descriptors to render; an empty vector
+///               produces no output.
 void VM::printBacktrace(const std::vector<FrameInfo> &frames) {
     if (frames.empty())
         return;

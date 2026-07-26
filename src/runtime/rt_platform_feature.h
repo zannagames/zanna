@@ -22,6 +22,16 @@
 // Links: src/runtime/rt_platform.h
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_platform_feature.h
+ * @brief Enables centralized libc feature-test declarations where required.
+ * @details Translation units include this adapter before all system headers to
+ *          expose GNU and Darwin extension declarations on supported POSIX
+ *          platforms. It contains only preprocessor policy and introduces no
+ *          symbols or runtime state.
+ */
+
 #pragma once
 
 /// @brief Enable GNU and Darwin extension declarations on non-Windows C runtimes.

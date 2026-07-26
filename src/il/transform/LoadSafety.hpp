@@ -11,6 +11,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Defines conservative non-trapping proofs for IL memory operations.
+ *
+ * @details The helpers trace temporary pointers through constant-offset GEP
+ *          chains to constant-size allocas and prove that an entire typed byte
+ *          range remains within the allocation. Unknown roots, cycles,
+ *          nonconstant offsets, arithmetic overflow, and unsupported widths
+ *          fail conservatively so optimizations never suppress required traps.
+ */
+
 #pragma once
 
 #include "il/analysis/BasicAA.hpp"
@@ -166,6 +177,7 @@ class LoadSafetyContext {
     }
 
   private:
+    /// @brief Stable temporary-to-definition index borrowed from the analyzed function.
     std::unordered_map<unsigned, const core::Instr *> defs_;
 };
 

@@ -42,6 +42,8 @@ bind "ui/scene_context_menus_2d";
 bind "ui/scene_context_menus_3d";
 bind "ui/scene_editor_2d";
 bind "ui/scene_editor_3d";
+bind "ui/scene_panels_2d";
+bind "ui/scene_panels_3d";
 bind "app/build_info";
 bind "app/command_palette_controller";
 bind "app/context_menus";
@@ -576,13 +578,13 @@ func main() {
     engine.Setup(shell.workbench.editorRow);
     engine.editor.Focus();
     var scene2DEditor = new scene_editor_2d.SceneEditor2D();
-    scene2DEditor.Setup(shell.workbench.scene2DHost, shell.app);
+    scene_panels_2d.Build(scene2DEditor,shell.workbench.scene2DHost, shell.app);
     var scene2DContextMenus =
         new scene_context_menus_2d.SceneContextMenus2D();
     scene2DContextMenus.Setup();
     scene2DEditor.SetWorkspaceContext(projMgr);
     var scene3DEditor = new scene_editor_3d.SceneEditor3D();
-    scene3DEditor.Setup(shell.workbench.scene3DHost, shell.app);
+    scene_panels_3d.Build(scene3DEditor,shell.workbench.scene3DHost, shell.app);
     var scene3DContextMenus =
         new scene_context_menus_3d.SceneContextMenus3D();
     scene3DContextMenus.Setup();

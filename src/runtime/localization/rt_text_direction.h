@@ -32,6 +32,15 @@
 //        docs/zannalib/localization/collation.md (user documentation).
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares stateless locale and text direction utilities.
+ * @details Exposes locale direction, aggregate and first-strong UTF-8
+ * classification, majority predicates, and mixed-text RTL isolation with
+ * explicit result ownership.
+ */
+
 #pragma once
 
 #include "rt.hpp"

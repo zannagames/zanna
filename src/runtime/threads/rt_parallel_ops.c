@@ -27,6 +27,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements ForEach, Map, Invoke, Reduce, and integer For operations.
+/// @details Each public operation partitions work, submits callback records to
+///          a Threadpool, waits for every submitted record to finish, and then
+///          reports the first worker failure on the calling thread. Calls made
+///          from a worker of the selected pool execute serially to avoid
+///          saturated-pool self-deadlock.
+
 #include "rt_parallel.h"
 #include "rt_parallel_internal.h"
 
@@ -41,18 +49,39 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Worker callbacks (defined at the bottom of this file).
+/// @brief Execute one ForEach task slice and publish its completion.
+/// @param arg Pointer to a borrowed `foreach_task` record.
 static void foreach_callback(void *arg);
+
+/// @brief Execute one Map task slice and publish its completion.
+/// @param arg Pointer to a borrowed `map_task` record.
 static void map_callback(void *arg);
+
+/// @brief Execute one Invoke callback and publish its completion.
+/// @param arg Pointer to a borrowed `invoke_task` record.
 static void invoke_callback(void *arg);
+
+/// @brief Fold one Reduce slice and publish its partial result and completion.
+/// @param arg Pointer to a borrowed `reduce_task` record.
 static void reduce_callback(void *arg);
+
+/// @brief Execute one integer For subrange and publish its completion.
+/// @param arg Pointer to a borrowed `for_task` record.
 static void for_callback(void *arg);
 
 //=============================================================================
 // Parallel ForEach
 //=============================================================================
 
-/// @brief Apply a function to each element of a sequence in parallel using the given pool.
+/// @brief Apply a callback to each sequence element using an optional Threadpool.
+/// @details The input is copied into a borrowed pointer array, balanced task
+///          slices are submitted, and the call waits for the entire batch.
+///          Processing order is unspecified. Nested calls from a worker of the
+///          same pool execute serially. The first callback trap is re-raised
+///          after completion; submission or allocation failures also trap.
+/// @param seq Sequence whose elements are passed to the callback.
+/// @param func Borrowed callback with signature `void (*)(void *)`.
+/// @param pool Borrowed Threadpool, or NULL to use the shared default.
 void rt_parallel_foreach_pool(void *seq, void *func, void *pool) {
     if (!seq || !func)
         return;
@@ -218,7 +247,9 @@ void rt_parallel_foreach_pool(void *seq, void *func, void *pool) {
         rt_trap("Parallel.ForEach: failed to submit work");
 }
 
-/// @brief Apply a function to each element of a sequence in parallel (uses default pool).
+/// @brief Apply a callback to every sequence element through the default pool.
+/// @param seq Sequence whose elements are passed to the callback.
+/// @param func Borrowed callback with signature `void (*)(void *)`.
 void rt_parallel_foreach(void *seq, void *func) {
     rt_parallel_foreach_pool(seq, func, NULL);
 }
@@ -227,7 +258,17 @@ void rt_parallel_foreach(void *seq, void *func) {
 // Parallel Map
 //=============================================================================
 
-/// @brief Transform each element in parallel and return a new sequence of results.
+/// @brief Transform each sequence element through an optional Threadpool.
+/// @details Callback execution may be unordered, but results are stored at
+///          their input indices and collected in positional order. Each
+///          runtime-managed result is retained for the caller-owned output
+///          sequence. Partial results are released if a task traps or
+///          submission fails. Nested calls on the same pool run serially.
+/// @param seq Sequence whose elements are transformed.
+/// @param func Borrowed mapper with signature `void *(*)(void *)`.
+/// @param pool Borrowed Threadpool, or NULL to use the shared default.
+/// @return Caller-owned result sequence, an empty sequence for invalid or empty
+///         input where construction succeeds, or NULL after a reported failure.
 void *rt_parallel_map_pool(void *seq, void *func, void *pool) {
     if (!seq || !func)
         return rt_seq_new();
@@ -440,7 +481,10 @@ void *rt_parallel_map_pool(void *seq, void *func, void *pool) {
     return result;
 }
 
-/// @brief Transform each element in parallel (uses default pool).
+/// @brief Transform each sequence element through the default pool.
+/// @param seq Sequence whose elements are transformed.
+/// @param func Borrowed mapper with signature `void *(*)(void *)`.
+/// @return Caller-owned ordered result sequence, or NULL after a reported failure.
 void *rt_parallel_map(void *seq, void *func) {
     return rt_parallel_map_pool(seq, func, NULL);
 }
@@ -449,7 +493,13 @@ void *rt_parallel_map(void *seq, void *func) {
 // Parallel Invoke
 //=============================================================================
 
-/// @brief Execute a list of functions in parallel and wait for all to complete.
+/// @brief Invoke a sequence of nullary callbacks through an optional Threadpool.
+/// @details One task is submitted per callback and the function waits for all
+///          tasks, including those preceding a submission failure. Nested calls
+///          on the same pool run serially. The first callback trap is re-raised
+///          after the batch drains.
+/// @param funcs Sequence of borrowed callbacks with signature `void (*)(void)`.
+/// @param pool Borrowed Threadpool, or NULL to use the shared default.
 void rt_parallel_invoke_pool(void *funcs, void *pool) {
     if (!funcs)
         return;
@@ -592,7 +642,8 @@ void rt_parallel_invoke_pool(void *funcs, void *pool) {
         rt_trap("Parallel.Invoke: failed to submit work");
 }
 
-/// @brief Execute a list of functions in parallel (uses default pool).
+/// @brief Invoke a sequence of nullary callbacks through the default pool.
+/// @param funcs Sequence of borrowed callbacks with signature `void (*)(void)`.
 void rt_parallel_invoke(void *funcs) {
     rt_parallel_invoke_pool(funcs, NULL);
 }
@@ -601,7 +652,19 @@ void rt_parallel_invoke(void *funcs) {
 // Parallel Reduce
 //=============================================================================
 
-/// @brief Reduce a sequence in parallel using an associative binary function and identity value.
+/// @brief Reduce a sequence with an associative combiner through an optional pool.
+/// @details Empty or invalid input returns @p identity. Small inputs and nested
+///          same-pool calls fold serially. Larger inputs are divided into
+///          contiguous chunks that fold from their first item; the caller then
+///          combines ordered partials starting from @p identity, so the
+///          identity is applied exactly once. Accumulator pointers are passed
+///          through without runtime retains or releases. Worker and final
+///          combiner traps are propagated after batch cleanup.
+/// @param seq Sequence of values to reduce.
+/// @param func Borrowed combiner with signature `void *(*)(void *, void *)`.
+/// @param identity Initial accumulator and empty-sequence result.
+/// @param pool Borrowed Threadpool, or NULL to use the shared default.
+/// @return Final accumulator pointer, or @p identity after a reported failure.
 void *rt_parallel_reduce_pool(void *seq, void *func, void *identity, void *pool) {
     if (!seq || !func)
         return identity;
@@ -816,7 +879,11 @@ void *rt_parallel_reduce_pool(void *seq, void *func, void *identity, void *pool)
     return result;
 }
 
-/// @brief Reduce a sequence in parallel (uses default pool).
+/// @brief Reduce a sequence through the default pool.
+/// @param seq Sequence of values to reduce.
+/// @param func Borrowed combiner with signature `void *(*)(void *, void *)`.
+/// @param identity Initial accumulator and empty-sequence result.
+/// @return Final accumulator pointer, or @p identity after a reported failure.
 void *rt_parallel_reduce(void *seq, void *func, void *identity) {
     return rt_parallel_reduce_pool(seq, func, identity, NULL);
 }
@@ -825,7 +892,16 @@ void *rt_parallel_reduce(void *seq, void *func, void *identity) {
 // Parallel For
 //=============================================================================
 
-/// @brief Execute func(i) for each i in [start, end) in parallel, splitting work across threads.
+/// @brief Invoke a callback for each integer in a half-open range.
+/// @details The representable range is balanced across tasks in an optional
+///          Threadpool and the call waits for all tasks. Empty or reversed
+///          ranges and NULL callbacks are no-ops. Nested same-pool calls run
+///          serially. An interval larger than `INT64_MAX` or any worker,
+///          allocation, or submission failure raises a runtime trap.
+/// @param start Inclusive first integer.
+/// @param end Exclusive range bound.
+/// @param func Borrowed callback with signature `void (*)(int64_t)`.
+/// @param pool Borrowed Threadpool, or NULL to use the shared default.
 void rt_parallel_for_pool(int64_t start, int64_t end, void *func, void *pool) {
     if (!func || start >= end)
         return;
@@ -971,7 +1047,10 @@ void rt_parallel_for_pool(int64_t start, int64_t end, void *func, void *pool) {
         rt_trap("Parallel.For: failed to submit work");
 }
 
-/// @brief Execute func(i) for each i in [start, end) in parallel (uses default pool).
+/// @brief Invoke a callback for each integer through the default pool.
+/// @param start Inclusive first integer.
+/// @param end Exclusive range bound.
+/// @param func Borrowed callback with signature `void (*)(int64_t)`.
 void rt_parallel_for(int64_t start, int64_t end, void *func) {
     rt_parallel_for_pool(start, end, func, NULL);
 }
@@ -986,6 +1065,7 @@ void rt_parallel_for(int64_t start, int64_t end, void *func) {
 ///          captures the message into `task->error` (first-trap-wins under the batch lock)
 ///          and sets `*task->failed`. Always decrements `*task->remaining` exactly once and
 ///          signals the wait event/condvar when it hits zero so the submitter can return.
+/// @param arg Pointer to a borrowed `foreach_task` record valid until the batch drains.
 static void foreach_callback(void *arg) {
     foreach_task *task = (foreach_task *)arg;
     int task_failed = 0;
@@ -1041,6 +1121,7 @@ static void foreach_callback(void *arg) {
 ///          Cleanup of partially populated retained results on a trap path is the caller's
 ///          responsibility (see `parallel_release_map_results`). Trap capture and
 ///          batch-completion signaling are identical to ForEach.
+/// @param arg Pointer to a borrowed `map_task` record valid until the batch drains.
 static void map_callback(void *arg) {
     map_task *task = (map_task *)arg;
     int task_failed = 0;
@@ -1096,6 +1177,7 @@ static void map_callback(void *arg) {
 ///          a fixed list of independent callbacks concurrently. Trap capture and the
 ///          remaining/failed/event/condvar accounting match ForEach exactly — only the inner
 ///          work is different.
+/// @param arg Pointer to a borrowed `invoke_task` record valid until the batch drains.
 static void invoke_callback(void *arg) {
     invoke_task *task = (invoke_task *)arg;
     int task_failed = 0;
@@ -1150,6 +1232,7 @@ static void invoke_callback(void *arg) {
 ///          single overall result happens on the submitting thread, not here. Accumulator
 ///          ownership is the reducer's contract: the runtime forwards partial/final pointers
 ///          exactly as produced and does not retain or release intermediate accumulators.
+/// @param arg Pointer to a borrowed `reduce_task` record valid until the batch drains.
 static void reduce_callback(void *arg) {
     reduce_task *task = (reduce_task *)arg;
     int task_failed = 0;
@@ -1209,6 +1292,7 @@ static void reduce_callback(void *arg) {
 ///          ForEach only in that the callback receives an `int64_t` index rather than an
 ///          element pointer — there is no input array to dereference. Trap capture and
 ///          batch-completion bookkeeping are identical to the other callbacks.
+/// @param arg Pointer to a borrowed `for_task` record valid until the batch drains.
 static void for_callback(void *arg) {
     for_task *task = (for_task *)arg;
     int task_failed = 0;

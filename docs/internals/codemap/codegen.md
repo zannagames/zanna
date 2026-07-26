@@ -207,7 +207,8 @@ Targeting AAPCS64 (Apple Silicon, Linux ARM64).
 
 ## x86_64 Backend (`src/codegen/x86_64/`)
 
-Targeting System V AMD64 ABI (Linux/macOS) and Windows x64 ABI.
+Targeting System V AMD64 ABI (Linux) and Windows x64 ABI. macOS x86-64 is not a supported target;
+macOS support is Apple Silicon/ARM64 only.
 
 ### Driver & Pipeline
 

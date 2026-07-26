@@ -21,6 +21,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares the stateless public entry point for parsing textual IL.
+ *
+ * @details `Parser::parse` coordinates module, function, instruction, operand,
+ *          and type parsers under caller-supplied resource limits. A complete
+ *          invocation is transactional: success populates the destination
+ *          module, while syntax, input, or budget failure restores its original
+ *          contents and returns a structured diagnostic.
+ */
+
 #pragma once
 
 #include "il/core/fwd.hpp"

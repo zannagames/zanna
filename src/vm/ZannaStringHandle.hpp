@@ -13,6 +13,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Defines reference-counted RAII wrappers for runtime string handles.
+/// @details ZannaStringHandle owns one retained handle, while
+///          ScopedSlotStringGuard conditionally releases a slot-held reference
+///          unless ownership is explicitly transferred.
+
 #pragma once
 
 #include "zanna/runtime/rt.h"
@@ -121,19 +127,19 @@ class ZannaStringHandle {
     }
 
   private:
-    rt_string handle_;
+    rt_string handle_; ///< Owned runtime handle, or @c nullptr when empty.
 };
 
-/// @brief Scoped guard for conditionally releasing a string in a Slot.
-/// @details Use this when a Slot may contain a string that needs cleanup on scope
-///          exit, but ownership might be transferred before the scope ends.
+/// @brief Scoped guard for conditionally releasing a runtime string reference.
+/// @details Use this when a slot-like value may contain a string that needs
+///          cleanup on scope exit, but ownership might be transferred first.
 ///          Call `dismiss()` to prevent the release when ownership is transferred.
-/// @invariant Only releases if the slot contains a string (kind==Str) and not dismissed.
+/// @invariant Releases only when @c isString_ is true and the guard is not dismissed.
 class ScopedSlotStringGuard {
   public:
-    /// @brief Construct a guard for a slot that may contain a string.
-    /// @param slot Reference to the slot to guard.
-    /// @param isString True if the slot contains a string type.
+    /// @brief Construct a guard for a raw handle that may represent a string value.
+    /// @param str Reference to the handle to release conditionally.
+    /// @param isString Whether @p str contains an owned string reference.
     ScopedSlotStringGuard(rt_string &str, bool isString) noexcept
         : str_(str), isString_(isString), dismissed_(false) {}
 
@@ -144,9 +150,13 @@ class ScopedSlotStringGuard {
     }
 
     // Non-copyable, non-movable
+    /// @brief Conditional string guards cannot be copied.
     ScopedSlotStringGuard(const ScopedSlotStringGuard &) = delete;
+    /// @brief Conditional string guards cannot be copy-assigned.
     ScopedSlotStringGuard &operator=(const ScopedSlotStringGuard &) = delete;
+    /// @brief Conditional string guards cannot be moved.
     ScopedSlotStringGuard(ScopedSlotStringGuard &&) = delete;
+    /// @brief Conditional string guards cannot be move-assigned.
     ScopedSlotStringGuard &operator=(ScopedSlotStringGuard &&) = delete;
 
     /// @brief Prevent the guard from releasing the string.
@@ -156,9 +166,9 @@ class ScopedSlotStringGuard {
     }
 
   private:
-    rt_string &str_;
-    bool isString_;
-    bool dismissed_;
+    rt_string &str_; ///< Reference to the conditionally owned handle.
+    bool isString_;  ///< Whether @c str_ represents a string reference.
+    bool dismissed_; ///< Whether ownership escaped the guard.
 };
 
 } // namespace il::vm

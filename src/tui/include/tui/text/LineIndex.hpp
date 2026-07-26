@@ -5,10 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the LineIndex class, which maintains a sorted vector
-// of line start offsets for efficient line-number lookups in Zanna's TUI
-// text buffer. The line index is incrementally updated when text is
-// inserted or erased, avoiding full rescans of the document.
+/// @file
+/// @brief Declares an incrementally maintained text line-start index.
+/// @details LineIndex stores sorted byte offsets for newline-delimited lines,
+///          supports constant-time start lookup, and adjusts only affected
+///          entries after insertions and erasures.
 //
 // Lines are defined by newline characters ('\n'). The index always contains
 // at least one entry (offset 0) representing the first line, even when the
@@ -71,6 +72,6 @@ class LineIndex {
     [[nodiscard]] std::size_t start(std::size_t line) const;
 
   private:
-    std::vector<std::size_t> line_starts_{0};
+    std::vector<std::size_t> line_starts_{0}; ///< Sorted offsets, always beginning with zero.
 };
 } // namespace zanna::tui::text

@@ -33,6 +33,7 @@
 
 namespace il::vm {
 namespace {
+/// @brief Compile-time switch for verbose source-breakpoint diagnostics.
 [[maybe_unused]] constexpr bool kDebugBreakpoints = false;
 
 /// @brief Add a byte count to an address without wrapping.
@@ -187,6 +188,7 @@ void DebugCtrl::setClassLayouts(DebugClassLayoutTable layouts) {
 }
 
 /// @brief Access the installed class-layout sidecar (empty when none was set).
+/// @return Immutable class layout table owned by the debugger controller.
 const DebugClassLayoutTable &DebugCtrl::classLayouts() const {
     return classLayouts_;
 }
@@ -344,6 +346,9 @@ void DebugCtrl::onStoreById(uint32_t watchId,
     const bool typeChanged = w.hasValue && w.type != ty;
     bool changed = !w.hasValue || typeChanged;
 
+    /// @brief Test whether a type kind uses an integer watch-value representation.
+    /// @param kind IL type kind to inspect.
+    /// @return `true` for I1, I16, I32, or I64.
     auto isIntegerKind = [](il::core::Type::Kind kind) {
         return kind == il::core::Type::Kind::I1 || kind == il::core::Type::Kind::I16 ||
                kind == il::core::Type::Kind::I32 || kind == il::core::Type::Kind::I64;
@@ -396,6 +401,9 @@ void DebugCtrl::resetLastHit() {
 ///          intersection testing.  The internal vector is marked unsorted so
 ///          subsequent onMemWrite() calls will re-sort before binary search.
 ///
+/// @param addr Inclusive start address of the watched range.
+/// @param size Number of watched bytes; zero is rejected.
+/// @param tag Descriptive label copied into any resulting hit event.
 /// @return Internal watch ID for the new entry.
 uint32_t DebugCtrl::addMemWatch(const void *addr, std::size_t size, std::string tag) {
     if (!addr || size == 0)
@@ -412,6 +420,10 @@ uint32_t DebugCtrl::addMemWatch(const void *addr, std::size_t size, std::string 
 ///
 /// @details Searches for the matching entry and removes it, marking the vector
 ///          as potentially unsorted if the removal affects ordering.
+/// @param addr Start address used when the watch was registered.
+/// @param size Byte count used when the watch was registered.
+/// @param tag Tag used when the watch was registered.
+/// @return @c true when a matching watch was removed.
 bool DebugCtrl::removeMemWatch(const void *addr, std::size_t size, std::string_view tag) {
     for (auto it = memWatches_.begin(); it != memWatches_.end(); ++it) {
         if (it->addr == addr && it->size == size && it->tag == tag) {
@@ -425,10 +437,14 @@ bool DebugCtrl::removeMemWatch(const void *addr, std::size_t size, std::string_v
     return false;
 }
 
+/// @brief Query whether any memory ranges are currently watched.
+/// @return @c true when at least one memory watch is installed.
 bool DebugCtrl::hasMemWatches() const noexcept {
     return !memWatches_.empty();
 }
 
+/// @brief Query whether any named variables are currently watched.
+/// @return @c true when at least one variable watch is installed.
 bool DebugCtrl::hasVarWatches() const noexcept {
     return !symbolToWatchId_.empty();
 }
@@ -439,6 +455,8 @@ bool DebugCtrl::hasVarWatches() const noexcept {
 ///          sorts ranges by start address and uses binary search to find the
 ///          first potentially intersecting range, then scans forward.  This
 ///          gives O(log n + k) complexity where k is the number of intersections.
+/// @param addr Inclusive start address of the completed write.
+/// @param size Number of bytes written; zero produces no event.
 void DebugCtrl::onMemWrite(const void *addr, std::size_t size) {
     if (memWatches_.empty() || !addr || size == 0)
         return;
@@ -459,6 +477,10 @@ void DebugCtrl::onMemWrite(const void *addr, std::size_t size) {
 
     // Sort by start address if needed
     if (!memWatchesSorted_) {
+        /// @brief Order watched memory ranges by their starting address.
+        /// @param a Left-hand range.
+        /// @param b Right-hand range.
+        /// @return `true` when `a` begins before `b`.
         std::sort(memWatches_.begin(),
                   memWatches_.end(),
                   [](const MemWatchRange &a, const MemWatchRange &b) { return a.start < b.start; });
@@ -467,6 +489,10 @@ void DebugCtrl::onMemWrite(const void *addr, std::size_t size) {
 
     // Binary search for first range that could intersect: range.end > writeStart
     // A range intersects if: writeEnd > range.start AND range.end > writeStart
+    /// @brief Test whether a watched range ends before a candidate write address.
+    /// @param r Watched range.
+    /// @param val Candidate starting address.
+    /// @return `true` when `r` cannot intersect a write beginning at `val`.
     auto it =
         std::lower_bound(memWatches_.begin(),
                          memWatches_.end(),
@@ -482,6 +508,7 @@ void DebugCtrl::onMemWrite(const void *addr, std::size_t size) {
 }
 
 /// @brief Drain pending memory watch hit events for external consumption.
+/// @return All queued hits in observation order; the controller queue is emptied.
 std::vector<MemWatchHit> DebugCtrl::drainMemWatchEvents() {
     std::vector<MemWatchHit> out;
     out.swap(memEvents_);

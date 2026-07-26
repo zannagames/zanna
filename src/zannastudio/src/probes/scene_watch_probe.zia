@@ -1,0 +1,125 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_watch_probe.zia
+// Purpose: Pin the ADR 0194 --scene-watch hot-reload contract headlessly.
+// Key invariants:
+//   - A conforming watcher reloads exactly once per modification-stamp
+//     change, using the same scene-load path as startup.
+//   - An invalid file mid-save leaves the previous scene running and the
+//     next valid write still reloads.
+// Ownership/Lifetime:
+//   - The probe owns one temp scene file, removed at exit.
+// Links: docs/adr/0194-scene-watch-hot-reload.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_watch_probe;
+
+// ============================================================================
+// MODULE: scene_watch_probe
+// PURPOSE: Act as the smallest conforming --scene-watch game: poll the
+//          scene file's modification stamp and re-run the load path on
+//          change, counting reloads the way a fixture game would.
+//
+// TEACHING-NOTE: File.Modified has one-second resolution, so the probe
+//          sleeps past a stamp boundary between writes.
+// ============================================================================
+
+bind Clock = Zanna.Time.Clock;
+bind Dir = Zanna.IO.Dir;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind TempFile = Zanna.IO.TempFile;
+bind Terminal = Zanna.Terminal;
+
+func SceneJson(width: Integer) -> String {
+    var scene = SceneDocument.New(width, 3, 16, 16);
+    return scene.ToJson();
+}
+
+func main() {
+    var tempDir = TempFile.CreateDirWithPrefix("zanna_scene_watch_");
+    var scenePath = Path.Join(tempDir, "watched.scene2d");
+    File.WriteAllText(scenePath, SceneJson(4));
+
+    // The conforming watcher: remember the stamp, reload on change.
+    var lastStamp = File.Modified(scenePath);
+    var loaded = SceneDocument.Load(scenePath);
+    var reloads = 0;
+    if lastStamp <= 0 or loaded == null {
+        Dir.RemoveAll(tempDir);
+        Terminal.Say("RESULT: fail initial load");
+        return;
+    }
+
+    // One valid rewrite past a stamp boundary triggers exactly one reload.
+    Clock.Sleep(1100);
+    File.WriteAllText(scenePath, SceneJson(6));
+    var polls = 0;
+    while polls < 40 {
+        var stamp = File.Modified(scenePath);
+        if stamp != lastStamp {
+            lastStamp = stamp;
+            var next = SceneDocument.Load(scenePath);
+            if next != null and next.HasErrors() == false {
+                loaded = next;
+                reloads = reloads + 1;
+            }
+            polls = 40;
+        }
+        Clock.Sleep(50);
+        polls = polls + 1;
+    }
+    if reloads != 1 or loaded.Width != 6 {
+        Dir.RemoveAll(tempDir);
+        Terminal.Say("RESULT: fail first reload: reloads=" + reloads
+                     + " width=" + loaded.Width);
+        return;
+    }
+
+    // A torn/invalid write must leave the previous scene running; the
+    // following valid write still reloads.
+    Clock.Sleep(1100);
+    File.WriteAllText(scenePath, "{ this is not a scene");
+    var stamp = File.Modified(scenePath);
+    if stamp != lastStamp {
+        lastStamp = stamp;
+        var broken = SceneDocument.Load(scenePath);
+        if broken == null or broken.HasErrors() {
+            // Conforming behavior: keep the previous scene.
+        } else {
+            loaded = broken;
+            reloads = reloads + 1;
+        }
+    }
+    if loaded.Width != 6 {
+        Dir.RemoveAll(tempDir);
+        Terminal.Say("RESULT: fail invalid write replaced the scene");
+        return;
+    }
+    Clock.Sleep(1100);
+    File.WriteAllText(scenePath, SceneJson(8));
+    stamp = File.Modified(scenePath);
+    if stamp != lastStamp {
+        var next = SceneDocument.Load(scenePath);
+        if next != null and next.HasErrors() == false {
+            loaded = next;
+            reloads = reloads + 1;
+        }
+    }
+    if reloads != 2 or loaded.Width != 8 {
+        Dir.RemoveAll(tempDir);
+        Terminal.Say("RESULT: fail recovery reload: reloads=" + reloads
+                     + " width=" + loaded.Width);
+        return;
+    }
+
+    Dir.RemoveAll(tempDir);
+    Terminal.Say("RESULT: ok");
+}

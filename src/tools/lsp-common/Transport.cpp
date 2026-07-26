@@ -5,15 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tools/lsp-common/Transport.cpp
-// Purpose: MCP and LSP transport implementations over stdio.
-// Key invariants:
-//   - MCP: one JSON line per message, \n terminated
-//   - LSP: Content-Length header + \r\n\r\n + body
-//   - Binary mode on Windows to prevent CR/LF corruption
-// Ownership/Lifetime:
-//   - FILE* handles are not owned (stdin/stdout are global)
-// Links: tools/lsp-common/Transport.hpp
+/// @file
+/// @brief Implements newline-delimited MCP and Content-Length-framed LSP
+///        transports over borrowed C streams.
+///
+/// Reads enforce bounded messages, lines, and header counts. Writes are checked
+/// and flushed synchronously. Windows standard streams are switched to binary
+/// mode so the protocol bytes are not altered by newline translation.
+///
+/// @see Transport.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -43,6 +43,10 @@ constexpr size_t kMaxProtocolHeaders = 64u;
 /// @brief Write @p size bytes to @p out, throwing if the write is short.
 /// @details No-op for zero-length input; otherwise a partial fwrite raises a
 ///          std::runtime_error so callers never silently emit a truncated message.
+/// @param out Borrowed destination stream.
+/// @param data Buffer containing at least @p size bytes.
+/// @param size Exact number of bytes to write.
+/// @throws std::runtime_error When the stream accepts fewer than @p size bytes.
 void checkedWrite(FILE *out, const char *data, size_t size) {
     if (size == 0)
         return;
@@ -54,6 +58,9 @@ void checkedWrite(FILE *out, const char *data, size_t size) {
 
 // --- Platform init ---
 
+/// @brief Configure standard streams for byte-exact protocol I/O.
+/// @details Sets stdin and stdout to binary mode on Windows and is a no-op on
+///          platforms whose C streams do not translate newlines.
 void platformInitStdio() {
 #if ZANNA_HOST_WINDOWS
     _setmode(_fileno(stdin), _O_BINARY);
@@ -63,8 +70,15 @@ void platformInitStdio() {
 
 // --- McpTransport ---
 
+/// @brief Construct a newline-delimited MCP transport.
+/// @param in Borrowed input stream.
+/// @param out Borrowed output stream.
 McpTransport::McpTransport(FILE *in, FILE *out) : in_(in), out_(out) {}
 
+/// @brief Read the next nonempty newline-delimited MCP message.
+/// @param out Receives the line without its LF or optional preceding CR.
+/// @return @c true when a message was read; @c false on clean EOF, stream error,
+///         or a message exceeding the configured size limit.
 bool McpTransport::readMessage(RawMessage &out) {
     lastReadHadError_ = false;
     std::string line;
@@ -100,10 +114,15 @@ bool McpTransport::readMessage(RawMessage &out) {
     return false;
 }
 
+/// @brief Report whether the most recent MCP read failed rather than reached EOF.
+/// @return @c true after a stream error or oversized message.
 bool McpTransport::lastReadFailedDueToError() const {
     return lastReadHadError_;
 }
 
+/// @brief Write and flush one newline-delimited MCP message.
+/// @param json JSON document bytes, without a terminating newline.
+/// @throws std::runtime_error On a short write, newline failure, or flush failure.
 void McpTransport::writeMessage(const std::string &json) {
     checkedWrite(out_, json.data(), json.size());
     if (std::fputc('\n', out_) == EOF)
@@ -114,12 +133,22 @@ void McpTransport::writeMessage(const std::string &json) {
 
 // --- LspTransport ---
 
+/// @brief Construct a Content-Length-framed LSP transport.
+/// @param in Borrowed input stream.
+/// @param out Borrowed output stream.
 LspTransport::LspTransport(FILE *in, FILE *out) : in_(in), out_(out) {}
 
+/// @brief Report whether the most recent LSP read encountered invalid input.
+/// @return @c true after a stream/framing error, oversized line/message, duplicate
+///         Content-Length, excessive headers, or truncated body.
 bool LspTransport::lastReadFailedDueToError() const {
     return lastReadHadError_;
 }
 
+/// @brief Read one bounded protocol header line.
+/// @param line Destination cleared before reading and populated without CR/LF.
+/// @return @c true for a terminated line or final unterminated nonempty line;
+///         @c false for clean EOF, stream error, or an oversized line.
 bool LspTransport::readLine(std::string &line) {
     line.clear();
     int c;
@@ -143,6 +172,12 @@ bool LspTransport::readLine(std::string &line) {
     return !line.empty();
 }
 
+/// @brief Read one Content-Length-framed LSP message.
+/// @param out Receives exactly the declared body bytes on success.
+/// @return @c true for a complete valid frame; @c false on EOF, invalid headers,
+///         bounds violations, stream errors, or a truncated body.
+/// @details Header names are compared case-insensitively. Exactly one positive
+///          Content-Length within the message limit is required.
 bool LspTransport::readMessage(RawMessage &out) {
     lastReadHadError_ = false;
 
@@ -218,6 +253,9 @@ bool LspTransport::readMessage(RawMessage &out) {
     return true;
 }
 
+/// @brief Write and flush one Content-Length-framed LSP message.
+/// @param json JSON document bytes used as the exact body.
+/// @throws std::runtime_error When header formatting, writing, or flushing fails.
 void LspTransport::writeMessage(const std::string &json) {
     char header[64];
     int headerLen =

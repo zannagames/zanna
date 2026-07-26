@@ -582,12 +582,14 @@ void vg_tooltip_manager_on_leave(vg_tooltip_manager_t *mgr);
 /// Clears any references the manager holds to the widget so subsequent
 /// hover/leave callbacks do not dereference freed memory. Safe to call from
 /// vg_widget_destroy. Operates on the global manager singleton.
+/// @param widget Widget leaving the live registry.
 void vg_tooltip_manager_widget_destroyed(vg_widget_t *widget);
 
 /// @brief Notify manager that a widget (or one of its descendants) became hidden/disabled.
 ///
 /// Hides the active tooltip when its hovered widget or anchor lives inside the
 /// subtree being hidden. Safe to call from visibility/enabled-state setters.
+/// @param widget Root of the subtree becoming hidden or disabled.
 void vg_tooltip_manager_widget_hidden(vg_widget_t *widget);
 
 //=============================================================================
@@ -733,16 +735,24 @@ void vg_commandpalette_set_font(vg_commandpalette_t *palette, vg_font_t *font, f
 void vg_commandpalette_set_placeholder(vg_commandpalette_t *palette, const char *text);
 
 /// @brief Return the live query text (never NULL; "" when empty).
+/// @param palette Command palette to query.
+/// @return Borrowed NUL-terminated query text.
 const char *vg_commandpalette_get_query(vg_commandpalette_t *palette);
 
 /// @brief Return the query generation counter (bumped on every query change).
+/// @param palette Command palette to query.
+/// @return Monotonic query-generation counter.
 uint64_t vg_commandpalette_get_query_generation(vg_commandpalette_t *palette);
 
 /// @brief Programmatically set the query text and re-filter.
+/// @param palette Command palette to update.
+/// @param text New query text copied by the widget; NULL is treated as empty.
 void vg_commandpalette_set_query(vg_commandpalette_t *palette, const char *text);
 
 /// @brief Enable client-filtered mode: show commands in insertion order and let
 ///        the application filter/rank them (repopulating per keystroke).
+/// @param palette Command palette whose filtering policy is changed.
+/// @param enabled True to delegate filtering and ranking to the client.
 void vg_commandpalette_set_client_filtered(vg_commandpalette_t *palette, bool enabled);
 
 //=============================================================================
@@ -985,6 +995,8 @@ void vg_floatingpanel_set_visible(vg_floatingpanel_t *panel, int visible);
 /// @param child Widget to reparent under the panel (ownership transfers).
 void vg_floatingpanel_add_child(vg_floatingpanel_t *panel, vg_widget_t *child);
 /// @brief Returns true when @p panel is a live floating-panel widget.
+/// @param panel Candidate floating-panel handle.
+/// @return True when the panel remains in the live-widget registry.
 bool vg_floatingpanel_is_live(const vg_floatingpanel_t *panel);
 
 //==========================================================================
@@ -1008,15 +1020,23 @@ typedef struct vg_groupbox {
 } vg_groupbox_t;
 
 /// @brief Create a titled card container attached to @p parent (may be NULL).
+/// @param parent Optional parent that takes ownership of the new group box.
+/// @param title Initial title copied by the widget; NULL selects an empty title.
+/// @return Newly allocated group box, or NULL on allocation failure.
 vg_groupbox_t *vg_groupbox_create(vg_widget_t *parent, const char *title);
 
 /// @brief Destroy a group box and all its children.
+/// @param gb Group box to destroy; NULL is ignored.
 void vg_groupbox_destroy(vg_groupbox_t *gb);
 
 /// @brief Replace the group box title text (copied internally).
+/// @param gb Group box to update.
+/// @param title Replacement title; NULL selects an empty title.
 void vg_groupbox_set_title(vg_groupbox_t *gb, const char *title);
 
 /// @brief Add a control as a child of the group box.
+/// @param gb Group box that takes ownership of @p child.
+/// @param child Widget to reparent beneath the group box.
 void vg_groupbox_add_child(vg_groupbox_t *gb, vg_widget_t *child);
 
 //=============================================================================
@@ -1056,42 +1076,77 @@ typedef struct vg_popuplist {
 } vg_popuplist_t;
 
 /// @brief Create a popup list attached to @p root (rendered in the overlay pass). Hidden initially.
+/// @param root Widget-tree root that owns and overlays the popup.
+/// @return Newly allocated hidden popup list, or NULL on allocation failure.
 vg_popuplist_t *vg_popuplist_create(vg_widget_t *root);
 /// @brief Destroy the popup list and free its item/filter storage.
+/// @param list Popup list to destroy; NULL is ignored.
 void vg_popuplist_destroy(vg_popuplist_t *list);
 /// @brief Append an item (the host adds items in its preferred rank order).
+/// @param list Popup list receiving the item.
+/// @param text Item text copied into list-owned storage.
 void vg_popuplist_add_item(vg_popuplist_t *list, const char *text);
 /// @brief Remove all items and reset the filter and selection.
+/// @param list Popup list to clear.
 void vg_popuplist_clear(vg_popuplist_t *list);
 /// @brief Set the filter; only items containing it (case-insensitive substring) stay visible.
+/// @param list Popup list whose visible projection is recomputed.
+/// @param filter Filter text copied by the widget; NULL or empty matches every item.
 void vg_popuplist_set_filter(vg_popuplist_t *list, const char *filter);
 /// @brief Number of items currently visible (matching the filter).
+/// @param list Popup list to query.
+/// @return Number of filtered visible items, or zero for NULL.
 int vg_popuplist_visible_count(const vg_popuplist_t *list);
 /// @brief Move the selection up one visible item (clamped to the first).
+/// @param list Popup list whose selection moves.
 void vg_popuplist_navigate_up(vg_popuplist_t *list);
 /// @brief Move the selection down one visible item (clamped to the last).
+/// @param list Popup list whose selection moves.
 void vg_popuplist_navigate_down(vg_popuplist_t *list);
 /// @brief Set the selection index within the visible items (clamped).
+/// @param list Popup list whose selection is updated.
+/// @param index Requested zero-based filtered index.
 void vg_popuplist_set_selected_index(vg_popuplist_t *list, int index);
 /// @brief Selection index within the visible items, or -1 when none are visible.
+/// @param list Popup list to query.
+/// @return Zero-based filtered selection index, or -1 when no selection exists.
 int vg_popuplist_selected_index(const vg_popuplist_t *list);
 /// @brief Text of the selected visible item, or NULL when none. Borrowed; do not free.
+/// @param list Popup list to query.
+/// @return Borrowed selected item text, or NULL.
 const char *vg_popuplist_selected_text(const vg_popuplist_t *list);
 /// @brief Mark the current selection accepted (consumed by vg_popuplist_was_accepted).
+/// @param list Popup list whose selection is latched as accepted.
 void vg_popuplist_accept_selected(vg_popuplist_t *list);
 /// @brief Whether AcceptSelected was called since the last query (consume-on-read).
+/// @param list Popup list whose acceptance latch is consumed.
+/// @return True once for each accepted selection.
 bool vg_popuplist_was_accepted(vg_popuplist_t *list);
 /// @brief Set the popup's anchor (top-left) position in overlay coordinates.
+/// @param list Popup list to reposition.
+/// @param x Overlay-space left coordinate.
+/// @param y Overlay-space top coordinate.
 void vg_popuplist_anchor_at(vg_popuplist_t *list, float x, float y);
 /// @brief Set the popup width in pixels.
+/// @param list Popup list to resize.
+/// @param width Requested width in pixels.
 void vg_popuplist_set_width(vg_popuplist_t *list, float width);
 /// @brief Set the maximum number of visible rows.
+/// @param list Popup list to configure.
+/// @param max_rows Requested positive row limit.
 void vg_popuplist_set_max_rows(vg_popuplist_t *list, int max_rows);
 /// @brief Set the item font.
+/// @param list Popup list to configure.
+/// @param font Borrowed font used to measure and render item text.
+/// @param size Font size in pixels.
 void vg_popuplist_set_font(vg_popuplist_t *list, vg_font_t *font, float size);
 /// @brief Show or hide the popup.
+/// @param list Popup list whose visibility changes.
+/// @param visible True to show the overlay, or false to hide it.
 void vg_popuplist_set_visible(vg_popuplist_t *list, bool visible);
 /// @brief Whether the popup is currently visible.
+/// @param list Popup list to query.
+/// @return True when the popup is visible.
 bool vg_popuplist_is_visible(const vg_popuplist_t *list);
 
 #ifdef __cplusplus

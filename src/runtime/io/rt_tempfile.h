@@ -26,6 +26,14 @@
 // Links: src/runtime/io/rt_tempfile.c (implementation), src/runtime/core/rt_string.h
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares secure temporary path, file, and directory utilities.
+ * @details Provides normalized temporary-directory discovery, unreserved
+ * random candidate paths, and atomic exclusive creation of persistent empty
+ * files or directories using validated portable prefix and extension
+ * fragments.
+ */
 #pragma once
 
 #include "rt_string.h"

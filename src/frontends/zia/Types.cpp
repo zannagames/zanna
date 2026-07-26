@@ -77,6 +77,8 @@ void appendTypeString(std::ostringstream &ss, const ZannaType &type, bool develo
         ~DepthGuard() { --d; }
     } depthGuard{recursionDepth};
 
+    /// @brief Appends a bracketed semantic type-argument list.
+    /// @param args Type arguments to format.
     auto appendArgs = [&](const std::vector<TypeRef> &args) {
         ss << "[";
         for (size_t i = 0; i < args.size(); ++i) {

@@ -42,6 +42,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements composite, editor, and virtualized GUI widget bindings.
+ *
+ * @details The runtime surface covers TabBar, SplitPane, TreeView, ScrollView,
+ *          FloatingPanel, CodeEditor, OutputPane, RadioGroup, Spinner, and the
+ *          interactive sparse-virtualized Grid. Bindings validate stable
+ *          subhandles, preserve widget-tree ownership, normalize indices and
+ *          ranges, and expose viewport-aware data and editing behavior.
+ */
+
 #include "rt_gui_internal.h"
 #include "rt_object.h"
 #include "rt_pixels.h"
@@ -273,18 +284,24 @@ static vg_widget_t *rt_widget_parent_or_null_if_invalid(void *parent) {
     return parent_widget;
 }
 
+/// @brief Magic value authenticating a live managed RadioGroup wrapper.
 #define RT_RADIOGROUP_MAGIC UINT64_C(0x52474452554E544D)           // "RGDRUNTM"
+/// @brief Tombstone value stamped after a RadioGroup is explicitly destroyed.
 #define RT_RADIOGROUP_DESTROYED_MAGIC UINT64_C(0x5247444445414444) // "RGDDEAD"
 
+/// @brief Managed wrapper owning one non-widget lower-toolkit RadioGroup.
 typedef struct rt_radiogroup_data {
-    /// Live/destroyed wrapper discriminator.
+    /// @brief Live/destroyed wrapper discriminator.
     uint64_t magic;
-    /// Owned lower-toolkit group while live.
+    /// @brief Owned lower-toolkit group while live.
     vg_radiogroup_t *group;
 } rt_radiogroup_data_t;
 
+/// @brief Global registry authenticating opaque RadioGroup wrapper handles.
 static rt_radiogroup_data_t **s_radiogroup_handles = NULL;
+/// @brief Number of live registered RadioGroup wrappers.
 static size_t s_radiogroup_handle_count = 0;
+/// @brief Allocated wrapper-registry capacity.
 static size_t s_radiogroup_handle_cap = 0;
 
 /// @brief Track a radio-group handle in the process-wide registry.

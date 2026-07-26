@@ -15,11 +15,17 @@
 //   - ICNS icon is generated from source PNG if package-icon is specified.
 //
 // Ownership/Lifetime:
-//   - Builder is single-use: call build() once.
+//   - Free functions stage temporary trees and write one requested artifact.
 //
 // Links: ZipWriter.hpp, PlistGenerator.hpp, PkgPNG.hpp, PackageConfig.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares macOS application and toolchain package construction entry points.
+/// @details Supports application ZIP/DMG output and native toolchain PKG/DMG
+///          installers with metadata, permissions, signing, and presentation assets.
+
 #pragma once
 
 #include "PackageConfig.hpp"
@@ -31,12 +37,12 @@ namespace zanna::pkg {
 
 /// @brief Parameters for building a macOS .app-in-.zip package.
 struct MacOSBuildParams {
-    std::string projectName;    ///< Project name (used for .app name)
-    std::string version;        ///< Version string
-    std::string executablePath; ///< Path to the compiled native binary
-    std::string projectRoot;    ///< Absolute path to project root directory
-    PackageConfig pkgConfig;    ///< Package configuration from manifest
-    std::string outputPath;     ///< Output .zip file path
+    std::string projectName;    ///< Project name used to derive bundle and executable names.
+    std::string version;        ///< Dotted-numeric bundle version; empty defaults to `0.0.0`.
+    std::string executablePath; ///< Path to the compiled native application binary.
+    std::string projectRoot;    ///< Absolute trusted root used to resolve assets and entitlements.
+    PackageConfig pkgConfig;    ///< Manifest-derived bundle, signing, and DMG configuration.
+    std::string outputPath;     ///< Destination ZIP or DMG artifact path.
 };
 
 /// @brief Build a macOS .app bundle inside a ZIP archive.
@@ -53,15 +59,15 @@ void buildMacOSAppDmg(const MacOSBuildParams &params);
 
 /// @brief Parameters for building a macOS toolchain installer package.
 struct MacOSToolchainBuildParams {
-    ToolchainInstallManifest manifest;             ///< Staged files and metadata to package.
-    std::string outputPath;                        ///< Output `.pkg` file path.
-    std::string identifier{"org.zanna.toolchain"}; ///< CFBundleIdentifier / pkg id.
-    std::string displayName{"Zanna Toolchain"};    ///< Human-readable package name.
-    std::string packageVersion;      ///< Optional dotted numeric package version override.
-    std::string minimumMacOSVersion; ///< Optional minimum OS (default: 10.15/11.0 by arch).
-    std::string licenseFilePath; ///< Optional license file shown in the installer (else generated).
-    std::string backgroundImagePath;     ///< Optional installer background image (PNG).
-    std::string applicationSignIdentity; ///< Developer ID Application identity for nested code.
+    ToolchainInstallManifest manifest; ///< Staged files, architecture, and release metadata.
+    std::string outputPath;            ///< Destination flat product-package path.
+    std::string identifier{"org.zanna.toolchain"}; ///< Component and product receipt identifier.
+    std::string displayName{"Zanna Toolchain"}; ///< User-visible Installer.app product name.
+    std::string packageVersion; ///< Optional dotted-numeric override for installer metadata.
+    std::string minimumMacOSVersion; ///< Optional minimum OS; defaults by payload architecture.
+    std::string licenseFilePath; ///< Optional installer license pane text; otherwise auto-selected.
+    std::string backgroundImagePath; ///< Optional light-appearance installer background PNG.
+    std::string applicationSignIdentity; ///< Developer ID identity used for nested Mach-O content.
 };
 
 /// @brief Build a macOS `.pkg` installer for the staged toolchain.
@@ -71,17 +77,18 @@ void buildMacOSToolchainPackage(const MacOSToolchainBuildParams &params);
 
 /// @brief Parameters for wrapping a built toolchain `.pkg` in a styled `.dmg` disk image.
 struct MacOSToolchainDmgParams {
-    std::string pkgPath;                               ///< Path to the already-built `.pkg`.
-    std::string outputPath;                            ///< Output `.dmg` path.
-    std::string volumeName{"Zanna Toolchain"};         ///< Mounted volume / window title.
-    std::string pkgDisplayName{"Zanna Toolchain.pkg"}; ///< Filename shown inside the image.
-    std::string backgroundPng; ///< Optional window background image (absolute path).
-    std::string volumeIcns;    ///< Optional volume icon `.icns` (absolute path).
+    std::string pkgPath;       ///< Path to the already-built, non-empty installer package.
+    std::string outputPath;    ///< Destination compressed disk-image path.
+    std::string volumeName{"Zanna Toolchain"}; ///< Mounted-volume and Finder-window title.
+    std::string pkgDisplayName{"Zanna Toolchain.pkg"}; ///< Installer leaf name inside the image.
+    std::string backgroundPng; ///< Optional absolute Finder-window background PNG path.
+    std::string volumeIcns;    ///< Optional absolute volume-icon ICNS path.
 };
 
 /// @brief Wrap a built toolchain `.pkg` in a compressed, styled `.dmg` ("double-click to install").
 /// @details macOS-only: shells to `hdiutil`, with best-effort `osascript`/`SetFile` styling so a
 ///          headless run still yields a valid image.
+/// @param params Input/output paths, names, and optional styling assets.
 /// @throws std::runtime_error on failure or when run off macOS.
 void buildMacOSToolchainDmg(const MacOSToolchainDmgParams &params);
 

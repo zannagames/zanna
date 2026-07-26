@@ -20,6 +20,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the self-contained RFC 1321 MD5 digest used by package metadata.
+/// @details Supports internal streaming updates while exposing one-shot binary
+///          and lowercase hexadecimal digest helpers.
+
 #include "PkgMD5.hpp"
 
 #include <cstring>
@@ -69,6 +74,8 @@ struct MD5Context {
 /// @brief Process one 64-byte MD5 block. Decodes the block into 16 little-endian
 /// uint32_t words, runs the four RFC 1321 rounds (F/G/H/I) with the
 /// precomputed sine-based constants, then adds the round outputs into state[].
+/// @param state Four-word running digest state updated in place.
+/// @param block Complete 64-byte message block.
 void md5Transform(uint32_t state[4], const uint8_t block[64]) {
     uint32_t a = state[0], b = state[1], c = state[2], d = state[3];
     uint32_t x[16];
@@ -160,6 +167,7 @@ void md5Transform(uint32_t state[4], const uint8_t block[64]) {
 
 /// @brief Initialize an MD5 context with the RFC 1321 magic initial state values and
 /// zero bit-count accumulators. Must be called before any md5Update call.
+/// @param ctx Context to initialize.
 void md5Init(MD5Context &ctx) {
     ctx.count[0] = ctx.count[1] = 0;
     ctx.state[0] = 0x67452301;
@@ -171,6 +179,10 @@ void md5Init(MD5Context &ctx) {
 /// @brief Feed len bytes into the MD5 context. Accumulates the bit count, copies
 /// data into the 64-byte internal buffer, and flushes complete blocks via
 /// md5Transform. Partial blocks remain in ctx.buffer for the next Update or Final.
+/// @param ctx Initialized context to update.
+/// @param data Borrowed input bytes, optionally null when `len` is zero.
+/// @param len Number of bytes to consume.
+/// @throws std::runtime_error If `data` is null for a non-empty update.
 void md5Update(MD5Context &ctx, const uint8_t *data, size_t len) {
     if (len == 0)
         return;
@@ -203,6 +215,8 @@ void md5Update(MD5Context &ctx, const uint8_t *data, size_t len) {
 /// @brief Finalize the MD5 digest. Appends the 0x80 padding byte, zero-fills to the
 /// 56-byte boundary, appends the 64-bit message length in bits (little-endian),
 /// then serializes state[] as 16 little-endian bytes into digest[].
+/// @param digest Caller-provided 16-byte output buffer.
+/// @param ctx Initialized context containing the complete message state.
 void md5Final(uint8_t digest[16], MD5Context &ctx) {
     static const uint8_t padding[64] = {0x80};
     uint8_t bits[8];
@@ -228,6 +242,10 @@ void md5Final(uint8_t digest[16], MD5Context &ctx) {
 } // namespace
 
 /// @brief Compute the RFC 1321 MD5 digest of data[0..len) and write 16 bytes to digest.
+/// @param data Borrowed input bytes, optionally null when `len` is zero.
+/// @param len Input length.
+/// @param digest Caller-provided 16-byte output buffer.
+/// @throws std::runtime_error If `data` is null for a non-empty input.
 void md5(const uint8_t *data, size_t len, uint8_t digest[16]) {
     MD5Context ctx{};
     md5Init(ctx);
@@ -237,6 +255,10 @@ void md5(const uint8_t *data, size_t len, uint8_t digest[16]) {
 
 /// @brief Compute MD5 and return the digest as a 32-character lowercase hex string.
 /// Used when the hex representation is needed directly (e.g. .deb Packages file).
+/// @param data Borrowed input bytes, optionally null when `len` is zero.
+/// @param len Input length.
+/// @return 32-character lowercase hexadecimal digest.
+/// @throws std::runtime_error If `data` is null for a non-empty input.
 std::string md5hex(const uint8_t *data, size_t len) {
     uint8_t digest[16];
     md5(data, len, digest);

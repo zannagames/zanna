@@ -181,6 +181,7 @@ int8_t rt_animstate_event_fired(void *asm_);
 /// @param state_id Registered state ID.
 /// @param frame Frame within the inclusive clip range.
 /// @param event_id Application-defined signed ID.
+/// @return `1` when the event was added; `0` when the state is missing or full.
 int8_t rt_animstate_add_event(void *asm_, int64_t state_id, int64_t frame, int64_t event_id);
 
 /// @brief Remove all frame-keyed events from a state.

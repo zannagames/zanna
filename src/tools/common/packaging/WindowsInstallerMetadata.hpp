@@ -24,6 +24,11 @@
 //===----------------------------------------------------------------------===//
 #pragma once
 
+/// @file
+/// @brief Declares schema-3 native Windows installer metadata value types.
+/// @details The schema is a deterministic, strictly validated contract shared
+///          by package construction, setup, maintenance, repair, and removal.
+
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -75,70 +80,74 @@ struct WindowsInstallerShortcutMetadata {
 struct WindowsInstallerOuterFileMetadata {
     std::string overlayPath; ///< Entry in the outer ZIP containing the bytes.
     std::string path;        ///< Install-relative destination path.
-    std::string sha256;
-    uint64_t sizeBytes{0};
-    std::string componentId;
+    std::string sha256;      ///< Lowercase SHA-256 of the stored file bytes.
+    uint64_t sizeBytes{0};   ///< Exact stored and installed byte count.
+    std::string componentId; ///< Empty for core, otherwise the owning component id.
 };
 
 /// @brief One safe Open-With registration owned by the package.
 struct WindowsInstallerAssociationMetadata {
     std::string extension; ///< Extension including the leading dot.
-    std::string description;
-    std::string mimeType;
-    std::string progId;
+    std::string description; ///< User-visible file-type description.
+    std::string mimeType;    ///< Optional registered media type.
+    std::string progId;      ///< Stable registry class identifier.
     std::string arguments; ///< Optional arguments placed before the quoted file path.
 };
 
 /// @brief Complete package contract consumed by the native installer host.
 struct WindowsInstallerMetadata {
-    uint32_t schemaVersion{kWindowsInstallerMetadataSchema};
+    uint32_t schemaVersion{kWindowsInstallerMetadataSchema}; ///< Required schema number.
     std::string packageMode{"setup"};       ///< "setup" or "maintenance".
     std::string productKind{"application"}; ///< "application" or "toolchain".
-    std::string identifier;
-    std::string displayName;
-    std::string version;
-    std::string publisher;
-    std::string description;
-    std::string contact;
-    std::string homepage;
-    std::string documentationUrl;
-    std::string updateManifestUrl;
-    std::string updateRsaModulus;
-    std::string updateRsaExponent;
-    std::string architecture;
-    std::string channel{"stable"};
-    std::string commit;
+    std::string identifier;                  ///< Stable package identity.
+    std::string displayName;                 ///< User-visible product name.
+    std::string version;                     ///< Product version shown to users.
+    std::string publisher;                   ///< Publisher display name.
+    std::string description;                 ///< Optional product summary.
+    std::string contact;                     ///< Optional support contact.
+    std::string homepage;                    ///< Optional HTTPS project URL.
+    std::string documentationUrl;            ///< Optional HTTPS documentation URL.
+    std::string updateManifestUrl;           ///< Optional signed-update manifest URL.
+    std::string updateRsaModulus;            ///< Update key modulus as lowercase big-endian hex.
+    std::string updateRsaExponent;           ///< Update key exponent as lowercase big-endian hex.
+    std::string architecture;                ///< Payload architecture: `x64` or `arm64`.
+    std::string channel{"stable"};           ///< Lowercase release channel.
+    std::string commit;                      ///< Optional lowercase source commit hash.
     std::string defaultScope{"user"}; ///< "user" or "machine".
-    std::string defaultInstallDir;
-    std::string executableName;
-    std::string associationExecutable;
-    std::string pathRelativePath;
-    std::string displayIconRelativePath;
-    std::string payloadEntry{"meta/payload.zip"};
-    std::string cleanupEntry{"meta/cleanup.exe"};
+    std::string defaultInstallDir;            ///< Default Windows destination leaf.
+    std::string executableName;               ///< Install-relative primary executable path.
+    std::string associationExecutable;        ///< Executable used for Open-With commands.
+    std::string pathRelativePath;              ///< Directory offered for PATH integration.
+    std::string displayIconRelativePath;       ///< Optional installed icon/executable path.
+    std::string payloadEntry{"meta/payload.zip"}; ///< Nested repair/install payload ZIP.
+    std::string cleanupEntry{"meta/cleanup.exe"}; ///< Detached cleanup helper overlay entry.
     std::string cleanupSha256; ///< SHA-256 of the signed detached cleanup helper.
-    std::string licenseEntry{"meta/license.txt"};
-    std::string readmeEntry{"meta/readme.txt"};
-    std::string installedManifestRelativePath{".zanna-install-manifest.txt"};
-    std::string stateRelativePath{".zanna-install-state.v2"};
-    std::string uninstallerRelativePath{"uninstall.exe"};
-    std::string minimumWindowsVersion{"10.0.17763"};
-    bool addToPath{false};
-    bool registerFileAssociations{false};
-    bool createShortcuts{false};
-    uint64_t installedSizeBytes{0};
-    std::vector<WindowsInstallerComponentMetadata> components;
-    std::vector<WindowsInstallerPayloadMetadata> payloadFiles;
-    std::vector<WindowsInstallerOuterFileMetadata> outerFiles;
-    std::vector<WindowsInstallerShortcutMetadata> shortcuts;
-    std::vector<WindowsInstallerAssociationMetadata> associations;
+    std::string licenseEntry{"meta/license.txt"}; ///< Optional displayed license overlay entry.
+    std::string readmeEntry{"meta/readme.txt"}; ///< Optional displayed readme overlay entry.
+    std::string installedManifestRelativePath{".zanna-install-manifest.txt"}; ///< File inventory output.
+    std::string stateRelativePath{".zanna-install-state.v2"}; ///< Maintenance state output.
+    std::string uninstallerRelativePath{"uninstall.exe"}; ///< Installed maintenance executable.
+    std::string minimumWindowsVersion{"10.0.17763"}; ///< Minimum supported dotted OS version.
+    bool addToPath{false};                    ///< Whether PATH integration is offered.
+    bool registerFileAssociations{false};     ///< Whether association records are actionable.
+    bool createShortcuts{false};              ///< Whether shortcut records are actionable.
+    uint64_t installedSizeBytes{0};           ///< Total declared installed payload size.
+    std::vector<WindowsInstallerComponentMetadata> components; ///< Selectable component catalog.
+    std::vector<WindowsInstallerPayloadMetadata> payloadFiles; ///< Nested ZIP file inventory.
+    std::vector<WindowsInstallerOuterFileMetadata> outerFiles; ///< Stored overlay-file inventory.
+    std::vector<WindowsInstallerShortcutMetadata> shortcuts; ///< Shell links to materialize.
+    std::vector<WindowsInstallerAssociationMetadata> associations; ///< Open-With registrations.
 };
 
 /// @brief Serialize metadata into the canonical schema-3 UTF-8 representation.
+/// @param metadata Complete package contract to validate and encode.
+/// @return Deterministic tab-delimited UTF-8 document.
 /// @throws std::runtime_error when required values or records are invalid.
 std::string serializeWindowsInstallerMetadata(const WindowsInstallerMetadata &metadata);
 
 /// @brief Parse and strictly validate canonical schema-3 metadata.
+/// @param text Complete metadata document.
+/// @return Fully owning parsed and semantically validated package contract.
 /// @throws std::runtime_error on malformed, duplicate, unknown, or unsafe data.
 WindowsInstallerMetadata parseWindowsInstallerMetadata(std::string_view text);
 

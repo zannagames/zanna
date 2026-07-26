@@ -126,6 +126,9 @@ enum class RuntimePointerBridgeRole { None, Callback, Payload };
 /// @return Allowlisted bridge role for the position.
 static RuntimePointerBridgeRole runtimePointerBridgeRole(std::string_view target,
                                                          std::size_t argIndex) {
+    /// @brief Tests the canonical target against one allowlisted API name.
+    /// @param name API name to compare.
+    /// @return `true` when `target` matches exactly.
     auto is = [&](std::string_view name) { return target == name; };
 
     if (is("Zanna.Threads.Thread.Start") || is("Zanna.Threads.Thread.StartSafe") ||
@@ -197,7 +200,9 @@ static bool isAddressOfArg(const ExprPtr &expr) {
 /// @param ty Runtime type token to normalize and classify.
 /// @return Corresponding type, or @c std::nullopt for unsupported text.
 static std::optional<SemanticAnalyzer::Type> semanticTypeFromRuntimeType(std::string_view ty) {
-    /// Removes surrounding ASCII whitespace and one nullable suffix.
+    /// @brief Removes surrounding ASCII whitespace and one nullable suffix.
+    /// @param token Runtime type token to trim.
+    /// @return Trimmed view into the original token.
     auto trimRuntimeToken = [](std::string_view token) {
         while (!token.empty() && (token.front() == ' ' || token.front() == '\t' ||
                                   token.front() == '\n' || token.front() == '\r'))
@@ -382,7 +387,9 @@ static std::optional<std::string> resolveRuntimeFunctionReturnClassQName(
     SemanticAnalyzer &analyzer, std::string_view calleeName) {
     const auto &registry = il::runtime::RuntimeRegistry::instance();
 
-    /// Resolves concrete return metadata for one canonical registry name.
+    /// @brief Resolves concrete return metadata for one canonical registry name.
+    /// @param canonicalName Canonical runtime function name.
+    /// @return Concrete class name when inferable.
     auto resolveConcrete = [&](std::string_view canonicalName) -> std::optional<std::string> {
         auto sig = registry.findFunction(canonicalName);
         if (!sig)
@@ -601,7 +608,9 @@ bool SemanticAnalyzer::checkRuntimePointerSafety(std::string_view target,
     if (targetName.empty())
         targetName = std::string(displayName);
 
-    /// Formats the common safe-BASIC rejection and a typed replacement hint.
+    /// @brief Formats the common safe-BASIC rejection and a typed replacement hint.
+    /// @param detail Description of the unsafe raw-pointer surface.
+    /// @return Complete diagnostic message.
     auto diagnosticMessage = [&](std::string detail) {
         std::string message = "Runtime API '" + targetName + "' exposes " + detail +
                               " and is unavailable in safe BASIC";
@@ -1028,7 +1037,9 @@ class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
     void visit(IsExpr &expr) override {
         // Check left operand type; reject obvious primitives.
         SemanticAnalyzer::Type lhsType = analyzer_.visitExpr(*expr.value);
-        /// Classifies scalar and array categories rejected as object operands.
+        /// @brief Classifies scalar and array categories rejected as object operands.
+        /// @param t Semantic type to inspect.
+        /// @return `true` when `t` is primitive or a built-in array.
         auto isPrimitive = [&](SemanticAnalyzer::Type t) {
             using T = SemanticAnalyzer::Type;
             return t == T::Int || t == T::Float || t == T::Bool || t == T::String ||
@@ -1036,7 +1047,9 @@ class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
         };
 
         // Resolve right-hand dotted type to class or interface.
-        /// Tests an exact qualified name against interface and class indexes.
+        /// @brief Tests an exact qualified name against interface and class indexes.
+        /// @param q Qualified name to look up.
+        /// @return `true` when a matching interface or class exists.
         auto existsQ = [&](const std::string &q) -> bool {
             if (analyzer_.oopIndex_.interfacesByQname().contains(q))
                 return true;
@@ -1121,7 +1134,9 @@ class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
     void visit(AsExpr &expr) override {
         // Preserve operand type; runtime returns NULL on failure.
         SemanticAnalyzer::Type lhsType = analyzer_.visitExpr(*expr.value);
-        /// Classifies scalar and array categories rejected as cast sources.
+        /// @brief Classifies scalar and array categories rejected as cast sources.
+        /// @param t Semantic type to inspect.
+        /// @return `true` when `t` is primitive or a built-in array.
         auto isPrimitive = [&](SemanticAnalyzer::Type t) {
             using T = SemanticAnalyzer::Type;
             return t == T::Int || t == T::Float || t == T::Bool || t == T::String ||
@@ -1136,7 +1151,9 @@ class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
                 for (const auto &seg : analyzer_.nsStack_)
                     prefix.push_back(Canon(seg));
                 std::vector<std::string> hits;
-                /// Tests an exact qualified name against interface/class indexes.
+                /// @brief Tests an exact qualified name against interface/class indexes.
+                /// @param q Qualified name to look up.
+                /// @return `true` when a matching interface or class exists.
                 auto existsQ = [&](const std::string &q) -> bool {
                     if (analyzer_.oopIndex_.interfacesByQname().contains(q))
                         return true;
@@ -1322,11 +1339,15 @@ SemanticAnalyzer::Type SemanticAnalyzer::analyzeBinary(const BinaryExpr &b) {
 /// @note Resolution failures occur before argument visitation.
 SemanticAnalyzer::Type SemanticAnalyzer::analyzeNew(NewExpr &expr) {
     // Helper: map canonical qualified name to declared-case name in OOP index.
-    /// Maps canonical qualified spelling back to the class index's declared case.
+    /// @brief Maps canonical qualified spelling back to the class index's declared case.
+    /// @param qcanon Canonical qualified name.
+    /// @return Declared spelling when found; otherwise `qcanon`.
     auto mapCanonicalToDeclared = [&](const std::string &qcanon) -> std::string {
         if (const ClassInfo *ci = oopIndex_.findClass(qcanon))
             return ci->qualifiedName;
-        /// Canonicalizes every segment of one dotted name.
+        /// @brief Canonicalizes every segment of one dotted name.
+        /// @param q Dotted qualified name.
+        /// @return Canonical dotted spelling.
         auto toCanonQ = [](const std::string &q) -> std::string {
             std::vector<std::string> segs = SplitDots(q);
             return CanonJoin(segs);
@@ -1364,7 +1385,9 @@ SemanticAnalyzer::Type SemanticAnalyzer::analyzeNew(NewExpr &expr) {
     // If unqualified type, resolve using parent-walk then USING imports.
     if (expr.qualifiedType.empty()) {
         std::vector<std::string> attempts;
-        /// Tests a canonical candidate against class and interface indexes.
+        /// @brief Tests a canonical candidate against class and interface indexes.
+        /// @param q Canonical qualified name.
+        /// @return `true` when a matching class or interface exists.
         auto existsQ = [&](const std::string &q) -> bool {
             std::string decl = mapCanonicalToDeclared(q);
             if (oopIndex_.interfacesByQname().contains(decl))
@@ -1395,7 +1418,8 @@ SemanticAnalyzer::Type SemanticAnalyzer::analyzeNew(NewExpr &expr) {
         if (existsQ(ident))
             hits.push_back(ident);
 
-        /// Emits deterministic candidate text for an ambiguous type lookup.
+        /// @brief Emits deterministic candidate text for an ambiguous type lookup.
+        /// @param cands Ambiguous canonical candidates.
         auto reportAmbiguous = [&](const std::vector<std::string> &cands) {
             std::vector<std::string> sorted = cands;
             std::sort(sorted.begin(), sorted.end());

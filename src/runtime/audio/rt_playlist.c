@@ -174,6 +174,7 @@ static int64_t get_track_index(playlist_impl *pl, int64_t position) {
 /// @details Combines @ref rt_music_stop_related (which also clears any
 ///          related crossfade slot) with @ref rt_music_destroy. Used on
 ///          every track transition, clear, finalize, and stop.
+/// @param pl Playlist implementation whose current music reference is cleared.
 static void playlist_release_music(playlist_impl *pl) {
     if (pl->music) {
         rt_music_stop_related(pl->music);
@@ -187,6 +188,8 @@ static void playlist_release_music(playlist_impl *pl) {
 ///          unset; used to compare the active track across add/remove
 ///          operations so position can be preserved when its underlying
 ///          entry shifts.
+/// @param pl Playlist implementation whose playback cursor is resolved.
+/// @return Underlying track-list index, or `-1` when no current track exists.
 static int64_t playlist_current_actual_index(playlist_impl *pl) {
     if (!pl || pl->current < 0)
         return -1;
@@ -198,6 +201,8 @@ static int64_t playlist_current_actual_index(playlist_impl *pl) {
 ///          operation alters the underlying track list (insert/remove)
 ///          so the playback cursor can stay anchored to the same song
 ///          even after shuffle indices shift.
+/// @param pl Playlist implementation whose shuffle order is searched.
+/// @param actual_index Underlying track-list index to locate.
 /// @return Shuffle position on success, -1 when not found.
 static int64_t playlist_find_shuffle_position(playlist_impl *pl, int64_t actual_index) {
     if (!pl || !pl->shuffle_order || actual_index < 0)
@@ -216,6 +221,8 @@ static int64_t playlist_find_shuffle_position(playlist_impl *pl, int64_t actual_
 ///          where @p actual_index lives in the shuffle order (falling
 ///          back to 0 if missing); otherwise the cursor *is* the track
 ///          index. Out-of-range inputs clear the cursor to -1.
+/// @param pl Playlist implementation whose cursor is updated.
+/// @param actual_index Underlying track-list index, or an invalid value to clear the cursor.
 static void playlist_set_current_from_actual(playlist_impl *pl, int64_t actual_index) {
     if (!pl) {
         return;
@@ -236,6 +243,8 @@ static void playlist_set_current_from_actual(playlist_impl *pl, int64_t actual_i
 /// @details Returns NULL when the cursor is out of range, the path slot
 ///          is empty, or `rt_music_load` rejects the file. The caller
 ///          assumes ownership of the new music wrapper.
+/// @param pl Playlist implementation supplying current track and volume state.
+/// @return New owned music wrapper, or NULL when the current track cannot be loaded.
 static void *playlist_load_current_music(playlist_impl *pl) {
     if (!pl)
         return NULL;

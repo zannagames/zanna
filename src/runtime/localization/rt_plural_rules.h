@@ -32,6 +32,15 @@
 //        docs/zannalib/localization/messages.md (end-user doc).
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares locale-bound CLDR plural-category selection services.
+ * @details Exposes managed PluralRules construction, real and exact-integer
+ * cardinal selection, ordinal selection, category enumeration, direct
+ * locale-data evaluators, and canonical category-name mapping.
+ */
+
 #pragma once
 
 #include "rt.hpp"

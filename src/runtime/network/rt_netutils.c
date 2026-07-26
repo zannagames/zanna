@@ -16,6 +16,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements stateless network inspection and address utilities.
+ * @details Provides deadline-bounded TCP reachability probes, ephemeral
+ * loopback port selection, strict IPv4 CIDR membership and private-range
+ * classification, and route-selected local IPv4 discovery.
+ */
+
 #include "rt_netutils.h"
 
 #include "rt_internal.h"

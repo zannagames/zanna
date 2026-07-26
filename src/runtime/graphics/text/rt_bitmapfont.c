@@ -25,6 +25,14 @@
 //        src/runtime/graphics/2d/rt_drawing.c
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements BDF/PSF bitmap-font parsing and Canvas text rendering.
+ * @details Validates text and binary font structures, stores packed one-bit
+ * glyphs in BMP-indexed managed font objects, applies optional PSF Unicode
+ * mappings, decodes UTF-8 with deterministic fallback behavior, computes
+ * overhang-aware bounds, and rasterizes glyphs to Canvas targets.
+ */
 
 #include "rt_bitmapfont.h"
 #include "rt_error.h"
@@ -135,6 +143,7 @@ static int bf_parse_int_fields(const char *text, int *values, int count) {
     return *cursor == '\0';
 }
 
+/// @copydoc bf_next_codepoint()
 static int bf_next_codepoint(const char *str, size_t byte_len, size_t *index, int *codepoint_out);
 
 /// @brief Add two signed coordinates without overflowing.
@@ -712,18 +721,22 @@ void *rt_spritefont_load_bdf(rt_string path) {
 // PSF Parser
 //=============================================================================
 
-/// @brief PSF v1 magic bytes.
+/** @name PSF version 1 signature and mode flags
+ * @{ */
 #define PSF1_MAGIC0 0x36
 #define PSF1_MAGIC1 0x04
 #define PSF1_MODE512 0x01
 #define PSF1_MODEHASTAB 0x02
 #define PSF1_MODEHASSEQ 0x04
+/** @} */
 
-/// @brief PSF v2 magic bytes.
+/** @name PSF version 2 four-byte signature
+ * @{ */
 #define PSF2_MAGIC0 0x72
 #define PSF2_MAGIC1 0xB5
 #define PSF2_MAGIC2 0x4A
 #define PSF2_MAGIC3 0x86
+/** @} */
 
 /// @brief Load a PSF v1 or v2 font with the requested runtime class identity.
 /// @details Auto-detects the version from its magic bytes, imports packed

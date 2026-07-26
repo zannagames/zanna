@@ -34,6 +34,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements locale-aware numeric formatting and parsing.
+ * @details Provides deterministic C-locale conversion, explicit localized
+ * digits and tokens, configurable rounding and grouping, decimal, integer,
+ * percent, currency, scientific, and ordinal rendering, plus strict and
+ * lenient parse paths with exact integer handling.
+ */
+
 #include "rt_numformat.h"
 
 #include "rt_heap.h"
@@ -129,6 +138,7 @@ static rounding_mode_t rounding_mode_parse(const char *s) {
 }
 
 #if defined(_WIN32)
+/** Process-lifetime Windows handle for the immutable C numeric locale. */
 static _locale_t loc_c_locale_cached_;
 
 /// @brief Initialize the process-wide Windows C numeric-locale cache once.
@@ -156,6 +166,7 @@ static _locale_t loc_cached_c_locale(void) {
     return loc_c_locale_cached_;
 }
 #else
+/** Process-lifetime POSIX handle for the immutable C numeric locale. */
 static locale_t loc_c_locale_cached_;
 
 /// @brief Initialize the process-wide POSIX C numeric-locale cache once.
@@ -301,11 +312,11 @@ static double loc_strtod_c(const char *input, char **endptr) {
 typedef struct rt_numformat {
     void *locale;                 ///< strong Locale handle ref
     const rt_locale_data_t *data; ///< non-owning
-    int64_t min_frac;
-    int64_t max_frac;
-    int8_t grouping;
-    int8_t strict;
-    rounding_mode_t rounding;
+    int64_t min_frac;             ///< Minimum emitted fractional digits.
+    int64_t max_frac;             ///< Maximum emitted fractional digits.
+    int8_t grouping;              ///< Whether integer grouping is enabled.
+    int8_t strict;                ///< Whether parsing enforces canonical groups.
+    rounding_mode_t rounding;     ///< Active rounding policy.
 } rt_numformat_t;
 
 /// @brief Unchecked cast of an opaque handle to the NumberFormat instance.

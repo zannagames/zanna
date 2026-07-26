@@ -5,17 +5,12 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implements shared command-line parsing for the zanna driver.  The helpers here
-// decode the global options that apply to multiple subcommands so individual
-// entry points can focus on their feature-specific flags.
-//
-//===----------------------------------------------------------------------===//
-
-/// @file
+/// @file cli.cpp
 /// @brief Parses global command-line options shared by zanna subcommands.
-/// @details Keeping this logic out of the subcommand implementations minimises
-///          duplication and ensures future options behave uniformly across the
-///          driver.
+///
+/// Centralized parsing keeps trace, input, diagnostics, verification, and instrumentation options
+/// consistent across handlers. A thread-local string preserves a detailed error while the public
+/// parser retains its compact enum result.
 
 #include "cli.hpp"
 
@@ -39,6 +34,8 @@ thread_local std::string g_lastSharedOptionError;
 /// @details The parser intentionally returns a compact enum so existing callers
 ///          stay simple; this helper records the detailed user-facing message for
 ///          callers that want to surface it.
+/// @param message User-facing parse diagnostic to retain.
+/// @return Shared-option error sentinel.
 SharedOptionParseResult failSharedOption(std::string message) {
     g_lastSharedOptionError = std::move(message);
     return SharedOptionParseResult::Error;
@@ -248,10 +245,16 @@ SharedOptionParseResult parseSharedOption(int &index,
     return SharedOptionParseResult::NotMatched;
 }
 
+/// @brief Access the detailed message retained by the latest shared-option parse.
+/// @return Thread-local message, empty after a successful or unmatched parse.
 const std::string &lastSharedOptionError() {
     return g_lastSharedOptionError;
 }
 
+/// @brief Pre-scan arguments for the last valid diagnostic-format selection encountered.
+/// @param argc Number of arguments to inspect.
+/// @param argv Argument vector.
+/// @return Requested text or JSON format; malformed values are ignored for authoritative parsing.
 DiagnosticFormat detectDiagnosticFormatFlag(int argc, char **argv) {
     for (int i = 0; i < argc; ++i) {
         const std::string_view arg = argv[i];
@@ -276,6 +279,11 @@ DiagnosticFormat detectDiagnosticFormatFlag(int argc, char **argv) {
     return DiagnosticFormat::Text;
 }
 
+/// @brief Match a GNU-style inline option and expose its value without allocation.
+/// @param arg Full argument token.
+/// @param optionName Expected option spelling including leading dashes.
+/// @param value Receives the substring after the equals sign on a match.
+/// @return @c true when @p arg exactly begins with @p optionName followed by @c =.
 bool splitInlineOptionValue(std::string_view arg,
                             std::string_view optionName,
                             std::string_view &value) {
@@ -289,6 +297,11 @@ bool splitInlineOptionValue(std::string_view arg,
     return true;
 }
 
+/// @brief Render one diagnostic in the selected user-facing encoding.
+/// @param diag Diagnostic to render.
+/// @param os Destination stream.
+/// @param sm Optional source manager used to resolve locations.
+/// @param format Text or JSON output format.
 void printDiagnostic(const il::support::Diagnostic &diag,
                      std::ostream &os,
                      const il::support::SourceManager *sm,
@@ -303,6 +316,11 @@ void printDiagnostic(const il::support::Diagnostic &diag,
     }
 }
 
+/// @brief Render an ordered diagnostic collection in the selected encoding.
+/// @param diagnostics Diagnostics to render.
+/// @param os Destination stream.
+/// @param sm Optional source manager used to resolve locations.
+/// @param format Text or JSON output format.
 void printDiagnostics(const std::vector<il::support::Diagnostic> &diagnostics,
                       std::ostream &os,
                       const il::support::SourceManager *sm,
@@ -318,6 +336,11 @@ void printDiagnostics(const std::vector<il::support::Diagnostic> &diagnostics,
     }
 }
 
+/// @brief Render the current diagnostics owned by an engine.
+/// @param engine Diagnostic engine to snapshot.
+/// @param os Destination stream.
+/// @param sm Optional source manager used to resolve locations.
+/// @param format Text or JSON output format.
 void printDiagnosticEngine(const il::support::DiagnosticEngine &engine,
                            std::ostream &os,
                            const il::support::SourceManager *sm,

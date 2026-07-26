@@ -157,6 +157,7 @@ bool mirrorApplyDeltasJson(std::string &text,
                            uint64_t base_revision,
                            uint64_t end_revision) {
     size_t i = 0;
+    /// @brief Advances the parser cursor across JSON whitespace.
     auto skipWs = [&]() {
         while (i < json.size() &&
                (json[i] == ' ' || json[i] == '\n' || json[i] == '\t' || json[i] == '\r'))
@@ -873,6 +874,9 @@ std::string projectPathLookupKey(std::string path) {
         path = zanna::filesystem::pathToUtf8(fsPath.lexically_normal());
     std::replace(path.begin(), path.end(), '\\', '/');
     if (zanna::platform::kHostWindows) {
+        /// @brief Converts one path byte to lowercase.
+        /// @param ch Unsigned byte to convert.
+        /// @return Lowercase character value.
         std::transform(path.begin(), path.end(), path.begin(), [](unsigned char ch) {
             return static_cast<char>(std::tolower(ch));
         });
@@ -1130,6 +1134,9 @@ std::unique_ptr<AnalysisResult> analyzeIndexedSource(ProjectIndex &index,
                                                      const std::string &source,
                                                      il::support::SourceManager &sm) {
     CompilerInput input{.source = source, .path = path};
+    /// @brief Supplies an indexed source file to the compiler import resolver.
+    /// @param normalizedPath Requested normalized import path.
+    /// @return Indexed source text, or `std::nullopt` when absent.
     input.sourceProvider = [&index](std::string_view normalizedPath) -> std::optional<std::string> {
         std::string indexedPath = canonicalProjectPath(index, std::string(normalizedPath));
         auto it = index.sources.find(indexedPath);
@@ -2445,6 +2452,7 @@ template <typename Worker> void *startSemanticJob(SemanticJobKind kind, Worker w
     }
 
     try {
+        /// @brief Executes a semantic job and publishes completion or failure.
         std::thread([job, worker = std::move(worker)]() mutable {
             try {
                 if (!job->cancelled.load(std::memory_order_acquire))
@@ -2883,6 +2891,8 @@ void *rt_zia_doc_begin_check_for_file(rt_string file_path) {
     std::string pathStr = editorPathOrDefault(file_path);
     return startSemanticJob(
         SemanticJobKind::Diagnostics,
+        /// @brief Computes mirrored-document diagnostics into a semantic job.
+        /// @param job Job result storage.
         [sourceStr = std::move(sourceStr), pathStr = std::move(pathStr)](SemanticJob &job) {
             auto diagnostics = diagnosticRecordsForSource(sourceStr, pathStr);
             std::lock_guard<std::mutex> lock(job.mutex);
@@ -2983,6 +2993,8 @@ void *rt_zia_completion_begin_items_for_file(rt_string source,
     std::string pathStr = editorPathOrDefault(file_path);
     return startSemanticJob(
         SemanticJobKind::CompletionItems,
+        /// @brief Computes completion items into a semantic job.
+        /// @param job Job result storage.
         [sourceStr = std::move(sourceStr), pathStr = std::move(pathStr), line, col](
             SemanticJob &job) {
             CompletionEngine engine;
@@ -3007,6 +3019,8 @@ void *rt_zia_completion_begin_signature_info_for_file(rt_string source,
     std::string pathStr = editorPathOrDefault(file_path);
     return startSemanticJob(
         SemanticJobKind::SignatureInfo,
+        /// @brief Computes signature help into a semantic job.
+        /// @param job Job result storage.
         [sourceStr = std::move(sourceStr), pathStr = std::move(pathStr), line, col](
             SemanticJob &job) {
             CompletionEngine engine;
@@ -3038,6 +3052,8 @@ void *rt_zia_completion_begin_hover_info_for_file(rt_string source,
     std::string pathStr = editorPathOrDefault(file_path);
     return startSemanticJob(
         SemanticJobKind::HoverInfo,
+        /// @brief Computes hover information into a semantic job.
+        /// @param job Job result storage.
         [sourceStr = std::move(sourceStr), pathStr = std::move(pathStr), line, col](
             SemanticJob &job) {
             std::string display = hoverForSource(sourceStr, pathStr, line, col);
@@ -3060,6 +3076,8 @@ void *rt_zia_completion_begin_symbols_for_file(rt_string source, rt_string file_
     std::string pathStr = editorPathOrDefault(file_path);
     return startSemanticJob(
         SemanticJobKind::Symbols,
+        /// @brief Computes document symbols into a semantic job.
+        /// @param job Job result storage.
         [sourceStr = std::move(sourceStr), pathStr = std::move(pathStr)](SemanticJob &job) {
             std::string symbols = symbolsForSource(sourceStr, pathStr);
             std::lock_guard<std::mutex> lock(job.mutex);
@@ -3077,6 +3095,8 @@ void *rt_zia_completion_begin_tokens_for_file(rt_string source, rt_string file_p
     std::string pathStr = editorPathOrDefault(file_path);
     return startSemanticJob(
         SemanticJobKind::Tokens,
+        /// @brief Computes semantic tokens into a semantic job.
+        /// @param job Job result storage.
         [sourceStr = std::move(sourceStr), pathStr = std::move(pathStr)](SemanticJob &job) {
             std::string tokens = tokensForSource(sourceStr, pathStr);
             std::lock_guard<std::mutex> lock(job.mutex);
@@ -3094,6 +3114,8 @@ void *rt_zia_toolchain_begin_check_for_file(rt_string source, rt_string file_pat
     std::string pathStr = editorPathOrDefault(file_path);
     return startSemanticJob(
         SemanticJobKind::Diagnostics,
+        /// @brief Computes structured diagnostics into a semantic job.
+        /// @param job Job result storage.
         [sourceStr = std::move(sourceStr), pathStr = std::move(pathStr)](SemanticJob &job) {
             auto diagnostics = diagnosticRecordsForSource(sourceStr, pathStr);
             std::lock_guard<std::mutex> lock(job.mutex);

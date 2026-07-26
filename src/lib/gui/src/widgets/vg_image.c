@@ -66,6 +66,8 @@ static vg_widget_vtable_t g_image_vtable = {
 
 /// @brief Focus participation is opt-in: only focusable-flagged images (scene
 ///        canvases) join click-to-focus and keyboard traversal.
+/// @param widget Image widget whose focus policy and current state are queried.
+/// @return True when the image opted into focus and is both enabled and visible.
 static bool image_can_focus(vg_widget_t *widget) {
     const vg_image_t *image = (const vg_image_t *)widget;
     return image->focusable && widget->enabled && widget->visible;
@@ -700,6 +702,8 @@ static void image_paint_content(vg_widget_t *widget, void *canvas) {
 ///          images never gain chrome. It uses the shared theme focus colour,
 ///          keeping shortcut ownership visible exactly like other focusable
 ///          widgets.
+/// @param widget Arranged image widget to paint.
+/// @param canvas Backend window handle used for image content and focus-ring drawing.
 static void image_paint(vg_widget_t *widget, void *canvas) {
     image_paint_content(widget, canvas);
 

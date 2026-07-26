@@ -512,7 +512,12 @@ std::string classifyLexError(const std::string &message) {
 
 } // anonymous namespace
 
+/// @copydoc Lexer::lookupKeyword()
 std::optional<TokenKind> Lexer::lookupKeyword(std::string_view name) {
+    /// @brief Orders a keyword-table entry against a lookup key.
+    /// @param entry Keyword table entry.
+    /// @param key Requested keyword spelling.
+    /// @return `true` when `entry.key` precedes `key`.
     auto it = std::lower_bound(
         kKeywordTable.begin(),
         kKeywordTable.end(),
@@ -527,21 +532,25 @@ std::optional<TokenKind> Lexer::lookupKeyword(std::string_view name) {
 // Lexer implementation
 //===----------------------------------------------------------------------===//
 
+/// @copydoc Lexer::Lexer()
 Lexer::Lexer(std::string source, uint32_t fileId, il::support::DiagnosticEngine &diag)
     : source_(std::move(source)), fileId_(fileId), diag_(diag) {}
 
+/// @copydoc Lexer::peekChar() const
 char Lexer::peekChar() const {
     if (pos_ >= source_.size())
         return '\0';
     return source_[pos_];
 }
 
+/// @copydoc Lexer::peekChar(size_t) const
 char Lexer::peekChar(size_t offset) const {
     if (pos_ + offset >= source_.size())
         return '\0';
     return source_[pos_ + offset];
 }
 
+/// @copydoc Lexer::getChar()
 char Lexer::getChar() {
     if (pos_ >= source_.size())
         return '\0';
@@ -562,18 +571,22 @@ char Lexer::getChar() {
     return c;
 }
 
+/// @copydoc Lexer::eof()
 bool Lexer::eof() const {
     return pos_ >= source_.size();
 }
 
+/// @copydoc Lexer::currentLoc()
 il::support::SourceLoc Lexer::currentLoc() const {
     return il::support::SourceLoc{fileId_, line_, column_};
 }
 
+/// @copydoc Lexer::reportError()
 void Lexer::reportError(il::support::SourceLoc loc, const std::string &message) {
     reportErrorRange(loc, il::support::SourceLoc{loc.file_id, loc.line, loc.column + 1}, message);
 }
 
+/// @copydoc Lexer::reportErrorRange()
 void Lexer::reportErrorRange(il::support::SourceLoc start,
                              il::support::SourceLoc end,
                              const std::string &message) {
@@ -594,6 +607,7 @@ void Lexer::reportErrorRange(il::support::SourceLoc start,
     diag_.report(std::move(diag));
 }
 
+/// @copydoc Lexer::skipLineComment()
 void Lexer::skipLineComment() {
     // Skip the //
     getChar();
@@ -604,6 +618,7 @@ void Lexer::skipLineComment() {
     }
 }
 
+/// @copydoc Lexer::skipBlockComment()
 bool Lexer::skipBlockComment() {
     il::support::SourceLoc startLoc = currentLoc();
 
@@ -634,6 +649,7 @@ bool Lexer::skipBlockComment() {
     return true;
 }
 
+/// @copydoc Lexer::skipWhitespaceAndComments()
 bool Lexer::skipWhitespaceAndComments() {
     while (!eof()) {
         char c = peekChar();
@@ -661,6 +677,7 @@ bool Lexer::skipWhitespaceAndComments() {
     return true;
 }
 
+/// @copydoc Lexer::lexIdentifierOrKeyword()
 Token Lexer::lexIdentifierOrKeyword() {
     Token tok;
     tok.loc = currentLoc();
@@ -696,6 +713,7 @@ Token Lexer::lexIdentifierOrKeyword() {
 /// token. Tokens that can end an expression keep `.` available for field access and
 /// tuple indexes; all other contexts allow the leading-dot float extension.
 /// @return True when the current dot should be lexed as part of a NumberLiteral.
+/// @copydoc Lexer::canStartLeadingDotNumber()
 bool Lexer::canStartLeadingDotNumber() const {
     if (peekChar() != '.' || !isDigit(peekChar(1)))
         return false;
@@ -722,12 +740,14 @@ bool Lexer::canStartLeadingDotNumber() const {
     }
 }
 
+/// @copydoc Lexer::consumeMalformedBasedLiteralTail()
 void Lexer::consumeMalformedBasedLiteralTail(Token &tok) {
     while (!eof() && isIdentifierContinue(peekChar())) {
         tok.text.push_back(getChar());
     }
 }
 
+/// @copydoc Lexer::lexNumber()
 Token Lexer::lexNumber() {
     Token tok;
     tok.loc = currentLoc();
@@ -759,6 +779,9 @@ Token Lexer::lexNumber() {
                 return tok;
             }
 
+            /// @brief Tests whether a hexadecimal literal character is a digit.
+            /// @param ch Character to inspect.
+            /// @return `true` for an accepted hexadecimal digit.
             if (!validateBasedIntegerSeparators(
                     tok.text, 2, [](char ch) { return isHexDigit(ch); })) {
                 reportError(tok.loc, "invalid hex literal: '_' must separate digits");
@@ -804,6 +827,9 @@ Token Lexer::lexNumber() {
                 return tok;
             }
 
+            /// @brief Tests whether a binary literal character is a digit.
+            /// @param ch Character to inspect.
+            /// @return `true` for `0` or `1`.
             if (!validateBasedIntegerSeparators(
                     tok.text, 2, [](char ch) { return ch == '0' || ch == '1'; })) {
                 reportError(tok.loc, "invalid binary literal: '_' must separate digits");
@@ -825,6 +851,9 @@ Token Lexer::lexNumber() {
             tok.text.push_back(getChar()); // '0'
             tok.text.push_back(getChar()); // 'o'
 
+            /// @brief Tests whether a character is an octal digit.
+            /// @param ch Character to inspect.
+            /// @return `true` for `0` through `7`.
             auto isOctalDigit = [](char ch) { return ch >= '0' && ch <= '7'; };
             if (!isOctalDigit(peekChar())) {
                 consumeMalformedBasedLiteralTail(tok);
@@ -953,6 +982,7 @@ Token Lexer::lexNumber() {
 // The namespace alias below keeps call sites concise.
 namespace esc = common::escape_sequences;
 
+/// @copydoc Lexer::lexStringEscape()
 bool Lexer::lexStringEscape(Token &tok) {
     tok.text.push_back(getChar()); // consume '\'
     if (eof()) {
@@ -1031,6 +1061,7 @@ bool Lexer::lexStringEscape(Token &tok) {
     return true;
 }
 
+/// @copydoc Lexer::lexString()
 Token Lexer::lexString() {
     Token tok;
     tok.loc = currentLoc();
@@ -1111,6 +1142,7 @@ Token Lexer::lexString() {
     return tok;
 }
 
+/// @copydoc Lexer::lexInterpolatedStringContinuation()
 Token Lexer::lexInterpolatedStringContinuation() {
     Token tok;
     tok.loc = currentLoc();
@@ -1182,6 +1214,7 @@ Token Lexer::lexInterpolatedStringContinuation() {
     return tok;
 }
 
+/// @copydoc Lexer::lexTripleQuotedString()
 Token Lexer::lexTripleQuotedString() {
     Token tok;
     tok.loc = currentLoc();
@@ -1225,6 +1258,7 @@ Token Lexer::lexTripleQuotedString() {
     return tok;
 }
 
+/// @copydoc Lexer::next()
 Token Lexer::next() {
     // Return cached token if available
     if (peeked_.has_value()) {
@@ -1235,6 +1269,9 @@ Token Lexer::next() {
         return tok;
     }
 
+    /// @brief Records the last significant token before returning it.
+    /// @param tok Token to remember and return.
+    /// @return The supplied token.
     auto remember = [this](Token tok) {
         if (tok.kind != TokenKind::Eof && tok.kind != TokenKind::Error)
             lastSignificantTokenKind_ = tok.kind;
@@ -1276,6 +1313,7 @@ Token Lexer::next() {
     return remember(lexOperatorOrPunctuation(c));
 }
 
+/// @copydoc Lexer::lexOperatorOrPunctuation()
 Token Lexer::lexOperatorOrPunctuation(char c) {
     Token tok;
     tok.loc = currentLoc();
@@ -1592,6 +1630,7 @@ Token Lexer::lexOperatorOrPunctuation(char c) {
     return tok;
 }
 
+/// @copydoc Lexer::peek()
 const Token &Lexer::peek() {
     if (!peeked_.has_value()) {
         auto savedLastTokenKind = lastSignificantTokenKind_;

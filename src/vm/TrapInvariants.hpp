@@ -83,6 +83,13 @@
 // ASSERTION MACROS
 // ============================================================================
 
+/// @file
+/// @brief Documents VM trap-state invariants and declares trap-path assertion
+///        helpers.
+/// @details The assertions are intended for cold failure paths: debug builds
+///          use the standard assertion mechanism, while release builds emit a
+///          diagnostic and abort when a core invariant is violated.
+
 #pragma once
 
 #include <cassert>
@@ -93,6 +100,9 @@
 // In release builds, trap invariant violations terminate with a diagnostic
 // instead of silently continuing.  These checks run only on trap paths,
 // not in hot loops, so the performance cost is negligible.
+/// @brief Enforce a trap invariant in release builds.
+/// @param condition Expression that must evaluate to true.
+/// @param message Diagnostic printed before termination on failure.
 #define ZANNA_TRAP_ASSERT(condition, message)                                                      \
     do {                                                                                           \
         if (!(condition)) {                                                                        \
@@ -102,6 +112,8 @@
     } while (0)
 #else
 /// @brief Assert a trap invariant in debug builds.
+/// @param condition Expression that must evaluate to true.
+/// @param message Diagnostic attached to the assertion.
 #define ZANNA_TRAP_ASSERT(condition, message) assert((condition) && (message))
 
 /// @brief Assert that an active VM is installed when expected.
@@ -125,7 +137,7 @@ struct VmError;
 const VmError *vm_current_trap_token();
 
 /// @brief Check if a trap token is currently pending.
-/// @return true if vm_current_trap_token() would return non-null.
+/// @return @c true if @ref vm_current_trap_token would return non-null.
 inline bool hasPendingTrapToken() {
     return vm_current_trap_token() != nullptr;
 }

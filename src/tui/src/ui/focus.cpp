@@ -15,6 +15,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements non-owning keyboard-focus registration and traversal.
+/// @details The focus manager maintains an ordered ring of widget pointers,
+///          sends transition notifications when the current entry changes, and
+///          leaves widget lifetime management to the surrounding UI hierarchy.
+
 #include "tui/ui/focus.hpp"
 #include "tui/ui/widget.hpp"
 
@@ -27,6 +33,7 @@ namespace zanna::tui::ui {
 ///          decline focus.  When the ring transitions from empty to non-empty
 ///          the index is reset to the first entry so that subsequent navigation
 ///          calls have a well-defined starting point.
+/// @param w Non-owning pointer to the widget to register; may be @c nullptr.
 void FocusManager::registerWidget(Widget *w) {
     if (!w || !w->wantsFocus()) {
         return;
@@ -44,6 +51,7 @@ void FocusManager::registerWidget(Widget *w) {
 ///          dispatches @ref Widget::onFocusChanged notifications to both the old
 ///          and new widgets.  Emptying the ring clears the index so future
 ///          registrations start from the beginning.
+/// @param w Non-owning pointer to the widget to remove; may be @c nullptr.
 void FocusManager::unregisterWidget(Widget *w) {
     if (!w)
         return;
@@ -81,6 +89,8 @@ void FocusManager::unregisterWidget(Widget *w) {
 ///          lost focus, and informs the new widget that it gained focus.  The
 ///          newly focused widget pointer is returned to facilitate additional
 ///          caller logic such as repaint requests.
+/// @return Non-owning pointer to the newly focused widget, or @c nullptr when
+///         the focus ring is empty.
 Widget *FocusManager::next() {
     if (ring_.empty())
         return nullptr;
@@ -103,6 +113,8 @@ Widget *FocusManager::next() {
 ///          the old and new widgets whenever the focus target changes.  The
 ///          pointer to the widget now holding focus is returned for callers that
 ///          need to react.
+/// @return Non-owning pointer to the newly focused widget, or @c nullptr when
+///         the focus ring is empty.
 Widget *FocusManager::prev() {
     if (ring_.empty())
         return nullptr;
@@ -124,6 +136,8 @@ Widget *FocusManager::prev() {
 ///          accessor allows higher-level systems to query focus state without
 ///          mutating it, for example when deciding which widget should receive
 ///          an incoming keyboard event.
+/// @return Non-owning pointer to the focused widget, or @c nullptr when the
+///         focus ring is empty.
 Widget *FocusManager::current() const {
     if (ring_.empty()) {
         return nullptr;

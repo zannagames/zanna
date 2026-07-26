@@ -40,6 +40,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_aes.c
+ * @brief Implements AES-CBC and authenticated AES-GCM runtime services.
+ * @details The in-tree implementation supports AES-128 and AES-256 key
+ *          expansion and blocks, PKCS7-padded CBC compatibility operations,
+ *          framed GCM encryption with authenticated headers and optional AAD,
+ *          and password-derived authenticated String helpers.
+ */
+
 #include "rt_aes.h"
 
 #include "rt_bytes.h"
@@ -73,13 +82,23 @@ static void generate_random_bytes(uint8_t *buf, size_t len);
 #define AES_AUTH_MAGIC3 '1'
 #define AES_AUTH_HEADER_LEN 16
 
+/// @brief Decrypt an AES Bytes payload through a wrapper-selected primitive.
+/// @param data Borrowed encrypted Bytes object.
+/// @param key Borrowed key or password-derived key input.
+/// @param context Optional borrowed authentication context.
+/// @return New plaintext Bytes object, or NULL on authentication or decoding failure.
 typedef void *(*aes_bytes_decrypt_fn)(void *data, void *key, void *context);
+/// @brief Decrypt an AES payload into a runtime string using a password.
+/// @param data Borrowed encrypted Bytes object.
+/// @param password Borrowed password string.
+/// @return New plaintext runtime string, or NULL on authentication or decoding failure.
 typedef rt_string (*aes_string_decrypt_fn)(void *data, rt_string password);
 
 /// @brief Release a temporary runtime object created by an AES decryptor.
 /// @details `Result.Ok` and `Option.Some` retain object payloads. Wrappers call
 ///          this helper after storing a freshly allocated plaintext Bytes
 ///          object so only the container owns the retained payload.
+/// @param obj Temporary runtime object reference; NULL is ignored.
 static void aes_release_temp_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
@@ -88,12 +107,15 @@ static void aes_release_temp_object(void *obj) {
 /// @brief Release a temporary runtime string created by an AES decryptor.
 /// @details `Result.OkStr` and `Option.SomeStr` retain string payloads, so the
 ///          wrapper can drop the decryptor's original reference afterwards.
+/// @param value Temporary runtime string reference; NULL is ignored.
 static void aes_release_temp_string(rt_string value) {
     if (value)
         rt_string_unref(value);
 }
 
 /// @brief Return a runtime string for the active trap message or fallback.
+/// @param fallback Message used when no nonempty trap diagnostic is active.
+/// @return Borrowed constant runtime string containing the selected diagnostic.
 static rt_string aes_current_error_message(const char *fallback) {
     const char *err = rt_trap_get_error();
     if (!err || !err[0])
@@ -102,6 +124,11 @@ static rt_string aes_current_error_message(const char *fallback) {
 }
 
 /// @brief Wrap a freshly allocated Bytes object as `Result.Ok`.
+/// @details The Result retains @p plaintext and this helper releases the
+///          decryptor's temporary reference. NULL becomes Result.Err.
+/// @param plaintext Newly allocated Bytes object, or NULL.
+/// @param null_message Diagnostic text used for a NULL plaintext.
+/// @return Caller-owned Result containing Bytes or an error string.
 static void *aes_plaintext_result(void *plaintext, const char *null_message) {
     if (!plaintext)
         return rt_result_err_str(rt_const_cstr(null_message));
@@ -111,6 +138,10 @@ static void *aes_plaintext_result(void *plaintext, const char *null_message) {
 }
 
 /// @brief Wrap a freshly allocated Bytes object as `Option.Some`.
+/// @details The Option retains @p plaintext before the temporary decryptor
+///          reference is released. NULL becomes Option.None.
+/// @param plaintext Newly allocated Bytes object, or NULL.
+/// @return Caller-owned Option containing Bytes or None.
 static void *aes_plaintext_option(void *plaintext) {
     if (!plaintext)
         return rt_option_none();
@@ -120,6 +151,11 @@ static void *aes_plaintext_option(void *plaintext) {
 }
 
 /// @brief Wrap a plaintext string as `Result.OkStr`.
+/// @details The Result retains @p plaintext before its temporary decryptor
+///          reference is released. NULL becomes Result.Err.
+/// @param plaintext Newly allocated plaintext string, or NULL.
+/// @param null_message Diagnostic text used for a NULL plaintext.
+/// @return Caller-owned Result containing a string or error string.
 static void *aes_string_result(rt_string plaintext, const char *null_message) {
     if (!plaintext)
         return rt_result_err_str(rt_const_cstr(null_message));
@@ -129,6 +165,9 @@ static void *aes_string_result(rt_string plaintext, const char *null_message) {
 }
 
 /// @brief Wrap a plaintext string as `Option.SomeStr`.
+/// @param plaintext Newly allocated plaintext string, or NULL.
+/// @return Caller-owned Option containing the string or None; successful
+///         wrapping releases the decryptor's temporary string reference.
 static void *aes_string_option(rt_string plaintext) {
     if (!plaintext)
         return rt_option_none();
@@ -138,6 +177,13 @@ static void *aes_string_option(rt_string plaintext) {
 }
 
 /// @brief Run a bytes decryptor and convert traps/NULL into `Result`.
+/// @param fn Decryptor to invoke inside the temporary trap recovery scope.
+/// @param data Opaque ciphertext argument forwarded to @p fn.
+/// @param key Opaque key argument forwarded to @p fn.
+/// @param context Opaque IV or AAD argument forwarded to @p fn.
+/// @param null_message Error used when the decryptor returns NULL normally.
+/// @param trap_fallback Error used when a trap has no diagnostic text.
+/// @return Caller-owned Result containing plaintext Bytes or an error string.
 static void *aes_bytes_result(aes_bytes_decrypt_fn fn,
                               void *data,
                               void *key,
@@ -157,6 +203,12 @@ static void *aes_bytes_result(aes_bytes_decrypt_fn fn,
 }
 
 /// @brief Run a bytes decryptor and convert traps/NULL into `Option`.
+/// @param fn Decryptor to invoke inside the temporary trap recovery scope.
+/// @param data Opaque ciphertext argument forwarded to @p fn.
+/// @param key Opaque key argument forwarded to @p fn.
+/// @param context Opaque IV or AAD argument forwarded to @p fn.
+/// @return Caller-owned Option containing plaintext Bytes, or None after a
+///         trap or NULL decryptor result.
 static void *aes_bytes_option(aes_bytes_decrypt_fn fn, void *data, void *key, void *context) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
@@ -170,6 +222,11 @@ static void *aes_bytes_option(aes_bytes_decrypt_fn fn, void *data, void *key, vo
 }
 
 /// @brief Run a string decryptor and convert traps into `Result`.
+/// @param fn String decryptor to invoke inside the trap recovery scope.
+/// @param data Opaque ciphertext Bytes object forwarded to @p fn.
+/// @param password Runtime password forwarded to @p fn.
+/// @param trap_fallback Diagnostic used for a trap without text or a NULL result.
+/// @return Caller-owned Result containing plaintext string or diagnostic string.
 static void *aes_string_decrypt_result(aes_string_decrypt_fn fn,
                                        void *data,
                                        rt_string password,
@@ -187,6 +244,11 @@ static void *aes_string_decrypt_result(aes_string_decrypt_fn fn,
 }
 
 /// @brief Run a string decryptor and convert traps into `Option`.
+/// @param fn String decryptor to invoke inside the trap recovery scope.
+/// @param data Opaque ciphertext Bytes object forwarded to @p fn.
+/// @param password Runtime password forwarded to @p fn.
+/// @return Caller-owned Option containing plaintext string, or None after a
+///         trap or NULL result.
 static void *aes_string_decrypt_option(aes_string_decrypt_fn fn,
                                        void *data,
                                        rt_string password) {
@@ -205,6 +267,8 @@ static void *aes_string_decrypt_option(aes_string_decrypt_fn fn,
 ///
 /// `volatile uint8_t*` write defeats dead-store elimination so
 /// transient key material in stack buffers really does get cleared.
+/// @param ptr Start of the writable sensitive-memory span.
+/// @param len Number of bytes to overwrite.
 static void aes_secure_zero(void *ptr, size_t len) {
     volatile uint8_t *p = (volatile uint8_t *)ptr;
     while (len-- > 0)
@@ -213,6 +277,12 @@ static void aes_secure_zero(void *ptr, size_t len) {
 
 /// @brief Extract a raw byte pointer and byte count from a required rt_string.
 ///        Returns an empty C string and sets *len = 0 for real zero-length input.
+/// @param str Runtime string to validate and inspect.
+/// @param len Receives the byte length; must be writable.
+/// @param null_message Trap diagnostic for a NULL string or missing byte data.
+/// @param ok Optional success flag cleared initially and set after a valid view.
+/// @return Borrowed string bytes, or a pointer to an empty static byte string
+///         after validation failure or for a valid empty string.
 static const uint8_t *aes_string_bytes(rt_string str, size_t *len, const char *null_message, int *ok) {
     if (ok)
         *ok = 0;
@@ -379,6 +449,9 @@ static const uint8_t rcon[11] = {0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40,
 /// @brief Return 0xFF when @p a equals @p b, otherwise 0x00, without branching.
 /// @details Used by constant-access S-box lookup so secret state/key bytes do
 ///          not select a cache line directly.
+/// @param a First byte.
+/// @param b Second byte.
+/// @return 0xFF for equality, otherwise 0x00.
 static uint8_t aes_ct_mask_eq_u8(uint8_t a, uint8_t b) {
     uint8_t x = (uint8_t)(a ^ b);
     x |= (uint8_t)(x >> 4);
@@ -391,6 +464,9 @@ static uint8_t aes_ct_mask_eq_u8(uint8_t a, uint8_t b) {
 /// @details Scans every table entry and masks in only the requested byte. This
 ///          avoids a data-dependent table index for key expansion, SubBytes, and
 ///          inverse SubBytes at the cost of extra work per substituted byte.
+/// @param table Complete 256-byte substitution table.
+/// @param index Byte value to select.
+/// @return Table value corresponding to @p index.
 static uint8_t aes_ct_table_lookup(const uint8_t table[256], uint8_t index) {
     const volatile uint8_t *vtable = (const volatile uint8_t *)table;
     uint8_t out = 0;
@@ -406,6 +482,8 @@ static uint8_t aes_ct_table_lookup(const uint8_t table[256], uint8_t index) {
 ///          implement the per-column matrix multiply without
 ///          materializing a full lookup table for the rare case of
 ///          ×2 / ×3 multiplications.
+/// @param x Field element to double.
+/// @return @p x multiplied by two in the AES finite field.
 static inline uint8_t xtime(uint8_t x) {
     return (uint8_t)((x << 1) ^ (((x >> 7) & 1) * 0x1b));
 }
@@ -418,6 +496,9 @@ static inline uint8_t xtime(uint8_t x) {
 ///          inverse matrix multiplies are arbitrary GF(2⁸) constants
 ///          (0x09, 0x0b, 0x0d, 0x0e), too varied to hard-code as
 ///          xtime chains.
+/// @param a First field element.
+/// @param b Second field element.
+/// @return Product of @p a and @p b in GF(2^8).
 static inline uint8_t gf_mul(uint8_t a, uint8_t b) {
     uint8_t result = 0;
     uint8_t hi_bit;
@@ -464,6 +545,8 @@ static const uint32_t sha256_h0[8] = {
 /// @param data Input data
 /// @param len Length of input data
 /// @param hash Output hash (32 bytes)
+/// @return 0 after writing the digest, or -1 when input sizing overflows or the
+///         padded-message allocation fails.
 static int local_sha256(const uint8_t *data, size_t len, uint8_t hash[32]) {
     uint32_t h[8];
     for (int i = 0; i < 8; i++)
@@ -612,6 +695,7 @@ static void aes_key_expansion(const uint8_t *key, uint8_t *w, int nk, int nr) {
 ///          from `x ↦ x⁻¹` in GF(2⁸) followed by an affine transform,
 ///          chosen so it has no fixed points and resists linear /
 ///          differential cryptanalysis.
+/// @param state Mutable 16-byte AES state in column-major order.
 static void sub_bytes(uint8_t *state) {
     for (int i = 0; i < 16; i++)
         state[i] = aes_ct_table_lookup(sbox, state[i]);
@@ -620,6 +704,7 @@ static void sub_bytes(uint8_t *state) {
 /// @brief Inverse of `SubBytes` — replace every byte via the inverse S-box.
 /// @details The inverse table is precomputed (not derived) so decryption
 ///          is the same number of operations as encryption.
+/// @param state Mutable 16-byte AES state in column-major order.
 static void inv_sub_bytes(uint8_t *state) {
     for (int i = 0; i < 16; i++)
         state[i] = aes_ct_table_lookup(inv_sbox, state[i]);
@@ -632,6 +717,7 @@ static void inv_sub_bytes(uint8_t *state) {
 ///          ciphertext would depend on only one byte of plaintext.
 ///          State layout is column-major: `state[row + 4*col]`, so
 ///          row 1 spans indices 1, 5, 9, 13 etc.
+/// @param state Mutable 16-byte AES state in column-major order.
 static void shift_rows(uint8_t *state) {
     uint8_t temp;
 
@@ -662,6 +748,7 @@ static void shift_rows(uint8_t *state) {
 /// @details Mirror of `shift_rows`: row 1 right-rotates by 1, row 2 by
 ///          2 (same as left-rotate by 2 since the row is 4 wide),
 ///          row 3 right-rotates by 3 (= left-rotate by 1).
+/// @param state Mutable 16-byte AES state in column-major order.
 static void inv_shift_rows(uint8_t *state) {
     uint8_t temp;
 
@@ -702,6 +789,7 @@ static void inv_shift_rows(uint8_t *state) {
 ///          `gf_mul` needed. Provides the second half of AES's
 ///          diffusion: now each output byte depends on all four
 ///          input bytes of the same column.
+/// @param state Mutable 16-byte AES state in column-major order.
 static void mix_columns(uint8_t *state) {
     for (int c = 0; c < 4; c++) {
         int i = c * 4;
@@ -722,6 +810,7 @@ static void mix_columns(uint8_t *state) {
 ///          to express via xtime chains, so falls back to general
 ///          `gf_mul`. This is why decryption is slower than encryption
 ///          on architectures without an AES instruction.
+/// @param state Mutable 16-byte AES state in column-major order.
 static void inv_mix_columns(uint8_t *state) {
     for (int c = 0; c < 4; c++) {
         int i = c * 4;
@@ -743,6 +832,8 @@ static void inv_mix_columns(uint8_t *state) {
 ///          first round, once after every round including the last).
 ///          XOR is its own inverse, which is why decryption uses the
 ///          same operation in reverse round order.
+/// @param state Mutable 16-byte AES state.
+/// @param round_key Borrowed 16-byte slice of the expanded key schedule.
 static void add_round_key(uint8_t *state, const uint8_t *round_key) {
     for (int i = 0; i < 16; i++)
         state[i] ^= round_key[i];
@@ -1586,6 +1677,9 @@ void *rt_aes_try_decrypt_auth(void *data, void *key, void *aad) {
 /// changed without breaking decryption of existing legacy ciphertexts; on a
 /// successful legacy decrypt, immediately re-encrypt with the current
 /// authenticated `VAG1`/`Zanna.Crypto.Cipher` format.
+/// @param password Borrowed password bytes.
+/// @param pass_len Password byte count; only the first 256 bytes are used.
+/// @param key Receives the 32-byte legacy AES key and must later be zeroized.
 static void derive_key_legacy(const uint8_t *password, size_t pass_len, uint8_t key[32]) {
     /* Fixed application-level domain separator (S-06) */
     static const uint8_t kSalt[16] = {0x56,
@@ -1634,8 +1728,14 @@ static void derive_key_legacy(const uint8_t *password, size_t pass_len, uint8_t 
 /// @brief Current PBKDF2-HMAC-SHA256 key derivation for authenticated string encryption.
 ///
 /// `AES_STR_PBKDF2_ITERATIONS` iterations of HMAC-SHA256
-/// over `(password, salt)` produce the 32-byte AES key. The high
+/// over `(password, salt)` produce the 16-byte AES-128 key. The high
 /// iteration count makes brute-force attacks cost-prohibitive.
+/// @param password Borrowed password bytes; NULL is treated as an empty span.
+/// @param password_len Number of password bytes.
+/// @param salt Borrowed salt bytes.
+/// @param salt_len Number of salt bytes.
+/// @param iterations PBKDF2 iteration count.
+/// @param key Receives the derived 16-byte AES-128 key.
 static void derive_key_pbkdf2(const uint8_t *password,
                               size_t password_len,
                               const uint8_t *salt,
@@ -1652,6 +1752,8 @@ static void derive_key_pbkdf2(const uint8_t *password,
 }
 
 /// @brief Fill `buf` with cryptographically secure bytes from the active module RNG.
+/// @param buf Writable destination.
+/// @param len Number of random bytes required.
 static void generate_random_bytes(uint8_t *buf, size_t len) {
     rt_crypto_random_bytes(buf, len);
 }
@@ -1668,6 +1770,10 @@ static void generate_random_bytes(uint8_t *buf, size_t len) {
 /// tampered current-format frames (a downgrade). Such a ~2^-32 colliding legacy
 /// frame is therefore intentionally left undecryptable — re-encrypt legacy
 /// AES-CBC string data with the current authenticated format.
+/// @param data Borrowed encrypted payload bytes.
+/// @param len Number of available bytes.
+/// @return 1 when the payload is long enough and begins with the VAG1 magic,
+///         otherwise 0.
 static int aes_is_gcm_string_payload(const uint8_t *data, size_t len) {
     return len >= AES_STR_HEADER_LEN && data[0] == AES_STR_MAGIC0 && data[1] == AES_STR_MAGIC1 &&
            data[2] == AES_STR_MAGIC2 && data[3] == AES_STR_MAGIC3;
@@ -1680,6 +1786,11 @@ static int aes_is_gcm_string_payload(const uint8_t *data, size_t len) {
 ///
 /// Decrypt remains backward-compatible with the legacy
 /// [iv(16)][aes-256-cbc-ciphertext] format.
+/// @param data Runtime plaintext string; must not be NULL.
+/// @param password Nonempty runtime password string.
+/// @return Newly allocated Bytes object containing the authenticated frame, or
+///         NULL after validation, size, allocation, derivation, RNG, or
+///         encryption failure.
 void *rt_aes_encrypt_str(rt_string data, rt_string password) {
     size_t plain_len;
     size_t pass_len;
@@ -1770,6 +1881,12 @@ void *rt_aes_encrypt_str(rt_string data, rt_string password) {
 ///
 /// Accepts both the current authenticated VAG1 format and the legacy
 /// AES-256-CBC string format for backward compatibility.
+/// @param data Bytes object containing a VAG1 frame or legacy IV-prefixed CBC
+///        payload.
+/// @param password Nonempty runtime password string.
+/// @return Newly allocated plaintext runtime string on successful authenticated
+///         or legacy decryption; failures trap and yield an empty fallback if
+///         trap handling returns.
 rt_string rt_aes_decrypt_str(void *data, rt_string password) {
     size_t pass_len;
     if (!data) {

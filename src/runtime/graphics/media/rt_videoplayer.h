@@ -26,11 +26,20 @@
 //        src/runtime/graphics/2d/rt_pixels.h
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares the runtime-managed AVI/MJPEG and Ogg/Theora video player.
+ * @details Exposes player lifecycle controls, time-based frame advancement,
+ * seeking, volume, stream metadata, and borrowed access to the stable display
+ * Pixels object. File, decoder, audio, and frame-buffer ownership remains with
+ * the player.
+ */
 #pragma once
 
 #include "rt_string.h"
 #include <stdint.h>
 
+/** Runtime class identifier stored on managed VideoPlayer payloads. */
 #define RT_VIDEOPLAYER_CLASS_ID INT64_C(-0x520120)
 
 #ifdef __cplusplus

@@ -5,11 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the PieceTable class, which implements the piece table
-// data structure for efficient text editing in Zanna's TUI. The piece table
-// maintains two buffers — an original buffer (immutable after load) and an
-// append-only add buffer — plus a list of "pieces" that describe the document
-// as a sequence of spans referencing one of the two buffers.
+/// @file
+/// @brief Declares append-only piece-table text storage for the TUI editor.
+/// @details The logical document is a list of spans into immutable original and
+///          append-only add buffers. Mutations return owning Change metadata for
+///          undo/redo while preserving existing buffer contents.
 //
 // Insertions append new text to the add buffer and split/insert pieces.
 // Deletions split pieces and remove the deleted range. Neither operation
@@ -58,46 +58,61 @@ class PieceTable {
     ///          and replays them in reverse for undo or forward for redo.
     struct Change {
         /// @brief Callback signature receiving span position and text view.
+        /// @param pos Logical byte offset of the changed span.
+        /// @param text Borrowed inserted or erased bytes.
         using Callback = std::function<void(std::size_t pos, std::string_view text)>;
 
         /// @brief Record inserted span metadata and payload.
+        /// @param pos Logical byte offset of the insertion.
+        /// @param text Owning copy of the inserted bytes.
         void recordInsert(std::size_t pos, std::string text);
 
         /// @brief Record erased span metadata and payload.
+        /// @param pos Logical byte offset of the erasure.
+        /// @param text Owning copy of the erased bytes.
         void recordErase(std::size_t pos, std::string text);
 
         /// @brief Notify listener about inserted span, if any.
+        /// @param cb Callback invoked with the insertion position and borrowed text.
         void notifyInsert(const Callback &cb) const;
 
         /// @brief Notify listener about erased span, if any.
+        /// @param cb Callback invoked with the erasure position and borrowed text.
         void notifyErase(const Callback &cb) const;
 
         /// @brief True if an insert span is present.
+        /// @return true after recordInsert() has stored a span.
         [[nodiscard]] bool hasInsert() const;
 
         /// @brief True if an erase span is present.
+        /// @return true after recordErase() has stored a span.
         [[nodiscard]] bool hasErase() const;
 
         /// @brief Position of inserted span (undefined if !hasInsert()).
+        /// @return Recorded logical insertion byte offset.
         [[nodiscard]] std::size_t insertPos() const;
 
         /// @brief Position of erased span (undefined if !hasErase()).
+        /// @return Recorded logical erasure byte offset.
         [[nodiscard]] std::size_t erasePos() const;
 
         /// @brief Inserted text view (empty if !hasInsert()).
+        /// @return View valid for the lifetime of this Change or until it is modified.
         [[nodiscard]] std::string_view insertedText() const;
 
         /// @brief Erased text view (empty if !hasErase()).
+        /// @return View valid for the lifetime of this Change or until it is modified.
         [[nodiscard]] std::string_view erasedText() const;
 
       private:
+        /// @brief Owned position and text payload for one mutation direction.
         struct Span {
-            std::size_t pos{};
-            std::string text{};
+            std::size_t pos{}; ///< Logical byte offset.
+            std::string text{}; ///< Inserted or erased bytes.
         };
 
-        std::optional<Span> insert_span_{};
-        std::optional<Span> erase_span_{};
+        std::optional<Span> insert_span_{}; ///< Recorded insertion, when present.
+        std::optional<Span> erase_span_{};  ///< Recorded erasure, when present.
     };
 
     /// @brief Replace all content with fresh text, resetting both buffers.
@@ -109,6 +124,7 @@ class PieceTable {
     Change load(std::string text);
 
     /// @brief Current byte size.
+    /// @return Total logical document size in bytes.
     [[nodiscard]] std::size_t size() const;
 
     /// @brief Extract a substring from the logical document.
@@ -149,24 +165,40 @@ class PieceTable {
     Change eraseInternal(std::size_t pos, std::size_t len);
 
   private:
+    /// @brief Physical buffer referenced by a piece.
     enum class BufferKind { Original, Add };
 
+    /// @brief One contiguous logical-document span into a physical buffer.
     struct Piece {
-        BufferKind buf{};
-        std::size_t start{};
-        std::size_t length{};
+        BufferKind buf{};   ///< Source buffer containing the bytes.
+        std::size_t start{}; ///< Byte offset within the source buffer.
+        std::size_t length{}; ///< Number of logical bytes in this piece.
     };
 
+    /// @brief Locate the piece containing or following a logical byte offset.
+    /// @param pos Logical document byte offset.
+    /// @param offset Output offset within the returned piece.
+    /// @return Mutable iterator to the containing/following piece or end().
     std::list<Piece>::iterator findPiece(std::size_t pos, std::size_t &offset);
+
+    /// @brief Locate the piece containing or following a logical byte offset.
+    /// @param pos Logical document byte offset.
+    /// @param offset Output offset within the returned piece.
+    /// @return Const iterator to the containing/following piece or end().
     std::list<Piece>::const_iterator findPiece(std::size_t pos, std::size_t &offset) const;
 
-    std::list<Piece> pieces_{};
-    std::string original_{};
-    std::string add_{};
-    std::size_t size_{};
+    std::list<Piece> pieces_{}; ///< Ordered spans forming the logical document.
+    std::string original_{};    ///< Immutable-after-load original bytes.
+    std::string add_{};         ///< Append-only bytes introduced by insertions.
+    std::size_t size_{};        ///< Cached sum of all piece lengths.
 };
 } // namespace zanna::tui::text
 
+/// @brief Visit physical segments covering a logical document range.
+/// @tparam Fn Callable accepting a string view and returning whether iteration continues.
+/// @param pos Starting logical byte offset.
+/// @param len Maximum number of logical bytes to visit.
+/// @param fn Visitor receiving each contiguous borrowed segment.
 template <typename Fn>
 void zanna::tui::text::PieceTable::forEachSegment(std::size_t pos, std::size_t len, Fn &&fn) const {
     std::size_t idx = 0;

@@ -40,6 +40,7 @@ namespace zanna::tui::widgets {
 /// @brief Construct a tree node with the provided label string.
 /// @details Nodes start collapsed with no children and no parent reference.
 ///          The label is stored by value to guarantee stable data for rendering.
+/// @param lbl Display label moved into the node.
 TreeNode::TreeNode(std::string lbl) : label(std::move(lbl)) {}
 
 /// @brief Append a child node and wire its parent pointer.
@@ -59,6 +60,8 @@ TreeNode *TreeNode::add(std::unique_ptr<TreeNode> child) {
 ///          theme reference, and immediately calls @ref rebuild() to populate
 ///          the visible cache.  This ensures the widget paints valid content on
 ///          the very first frame.
+/// @param roots Root-node collection whose ownership transfers to the view.
+/// @param theme Borrowed theme that must outlive the tree view.
 TreeView::TreeView(std::vector<std::unique_ptr<TreeNode>> roots, const style::Theme &theme)
     : roots_(std::move(roots)), theme_(theme) {
     rebuild();

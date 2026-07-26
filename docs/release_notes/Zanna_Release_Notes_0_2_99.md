@@ -64,7 +64,7 @@ Zanna Studio and the GUI toolkit were both rebuilt underneath, and Studio grew v
 
 | Metric | v0.2.7 | v0.2.99 | Delta |
 |---|---|---|---|
-| Commits | — | 182 | +182 |
+| Commits | — | 183 | +183 |
 | Source files | 3,402 | 3,660 | +258 |
 | Production SLOC | 659K | 833K | +174K |
 | Test SLOC | 254K | 305K | +51K |

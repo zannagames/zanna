@@ -23,6 +23,17 @@
 //        src/runtime/collections/rt_seq.h (sequence inputs and sampling result)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares immutable parameterized two-dimensional spline paths.
+ *
+ * @details Constructors copy Vec2 coordinates for linear, uniform Catmull–Rom,
+ *          or cubic Bézier interpolation. The API evaluates positions and
+ *          tangents, exposes copied control points, approximates arc length,
+ *          and samples equal parameter intervals into runtime sequences.
+ */
+
 #pragma once
 
 #include <stdint.h>

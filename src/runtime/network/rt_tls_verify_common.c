@@ -15,6 +15,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_tls_verify_common.c
+ * @brief Implements platform-neutral X.509 and TLS verification helpers.
+ * @details Shared routines parse bounded TLS certificate lists and DER
+ *          structures, inspect certificate extensions, match DNS names and IP
+ *          subject alternatives, validate critical policy, and construct the
+ *          TLS 1.3 CertificateVerify transcript input used by platform trust
+ *          adapters.
+ */
+
 #include "rt_tls_verify_internal.h"
 
 /// @brief Maximum DER certificate-list bytes retained for verification.
@@ -44,6 +54,11 @@
 ///          push the parser past structural integrity for the entries that
 ///          follow. Updates `*pos` to point past the entry and writes the DER
 ///          pointer + length out-parameters on success.
+/// @param list TLS certificate_list entry bytes.
+/// @param list_len Number of bytes in @p list.
+/// @param pos In/out cursor offset.
+/// @param cert_der Destination for a borrowed certificate pointer.
+/// @param cert_len Destination for certificate byte length.
 /// @return 0 on success; -1 on any structural error (length underflow,
 ///         extensions past end of list, zero-length cert, null arguments).
 int tls_next_certificate_entry(
@@ -84,6 +99,10 @@ int tls_next_certificate_entry(
 ///     N bytes: DER-encoded certificate
 ///     2 bytes: extensions length
 ///     N bytes: certificate extensions (ignored)
+/// @param session Client session receiving owned chain and leaf copies.
+/// @param data Certificate handshake body.
+/// @param len Number of body bytes.
+/// @return @ref RT_TLS_OK on success or a negative handshake/memory status.
 int tls_parse_certificate_msg(rt_tls_session_t *session, const uint8_t *data, size_t len) {
     if (!data || len < 4) {
         session->error = "TLS: Certificate message too short";
@@ -237,6 +256,10 @@ int der_read_tlv(
     return 0;
 }
 
+/// @brief Validate absent or canonical DER NULL algorithm parameters.
+/// @param params Remaining AlgorithmIdentifier parameter bytes.
+/// @param params_len Number of bytes in @p params.
+/// @return One for absent parameters or one empty NULL TLV; otherwise zero.
 RT_TLS_MAYBE_UNUSED int der_params_absent_or_null(const uint8_t *params, size_t params_len) {
     uint8_t tag;
     size_t vl;
@@ -248,7 +271,12 @@ RT_TLS_MAYBE_UNUSED int der_params_absent_or_null(const uint8_t *params, size_t 
     return vl == 0 && hl + vl == params_len;
 }
 
-/// @brief Compare buf[0..oid_len-1] to the encoded OID bytes.
+/// @brief Compare a DER OID payload with expected value bytes.
+/// @param buf Candidate OID value bytes.
+/// @param buf_len Number of candidate bytes.
+/// @param oid_val Expected OID value bytes.
+/// @param oid_val_len Number of expected bytes.
+/// @return One for exact equality; otherwise zero.
 static int oid_matches(const uint8_t *buf,
                        size_t buf_len,
                        const uint8_t *oid_val,
@@ -265,6 +293,9 @@ static const uint8_t OID_X509_EXT_KEY_USAGE[] = {0x55, 0x1d, 0x25};     // 2.5.2
 
 /// @brief Return a pointer into cert_der at the DER-encoded Subject field, and write its total
 ///        TLV length (header + value) into *subject_len.
+/// @param cert_der Complete certificate DER bytes.
+/// @param cert_len Number of certificate bytes.
+/// @param subject_len Destination for the Subject TLV length.
 /// @return Non-null pointer into cert_der on success, NULL if the certificate is malformed.
 RT_TLS_MAYBE_UNUSED const uint8_t *cert_get_subject(const uint8_t *cert_der,
                                                     size_t cert_len,
@@ -307,6 +338,9 @@ RT_TLS_MAYBE_UNUSED const uint8_t *cert_get_subject(const uint8_t *cert_der,
 ///            in the leftmost label, and only when followed by `.` plus a
 ///            non-empty suffix (so `*.example.com` is OK but `*.com` is
 ///            rejected by tls_wildcard_suffix_allowed downstream).
+/// @param name DNS presentation bytes.
+/// @param len Number of bytes in @p name.
+/// @param allow_wildcard Nonzero to permit a complete leftmost wildcard label.
 /// @return 1 if the name is well-formed, 0 otherwise.
 static int tls_dns_name_bytes_valid(const uint8_t *name, size_t len, int allow_wildcard) {
     if (!name || len == 0 || len >= 256)
@@ -340,6 +374,9 @@ static int tls_dns_name_bytes_valid(const uint8_t *name, size_t len, int allow_w
 /// @details Returns 0 for NULL. Otherwise calls strlen and delegates to the
 ///          byte-buffer validator. Used by call sites that already have a
 ///          C-string-shaped hostname.
+/// @param name NUL-terminated DNS name.
+/// @param allow_wildcard Nonzero to permit a complete leftmost wildcard label.
+/// @return One for a valid DNS presentation name; otherwise zero.
 static int tls_dns_name_valid(const char *name, int allow_wildcard) {
     return name && tls_dns_name_bytes_valid((const uint8_t *)name, strlen(name), allow_wildcard);
 }
@@ -352,6 +389,7 @@ static int tls_dns_name_valid(const char *name, int allow_wildcard) {
 ///          deploying with private CAs whose policy permits broader
 ///          wildcards must validate at the application layer rather than
 ///          relying on this check to be lenient.
+/// @param suffix DNS suffix following the wildcard label.
 /// @return 1 if the suffix is acceptably specific, 0 if too broad.
 static int tls_wildcard_suffix_allowed(const char *suffix) {
     static const char *const blocked_suffixes[] = {
@@ -390,6 +428,8 @@ static int tls_wildcard_suffix_allowed(const char *suffix) {
 ///          We currently support: subjectAltName, keyUsage, basicConstraints,
 ///          and extendedKeyUsage. Anything else marked critical causes the
 ///          chain to fail.
+/// @param oid DER OID value bytes.
+/// @param oid_len Number of OID bytes.
 /// @return 1 if the verifier handles this OID, 0 otherwise.
 static int cert_critical_extension_supported(const uint8_t *oid, size_t oid_len) {
     return oid_matches(oid, oid_len, OID_SUBJECT_ALT_NAME, sizeof(OID_SUBJECT_ALT_NAME)) ||
@@ -407,6 +447,8 @@ static int cert_critical_extension_supported(const uint8_t *oid, size_t oid_len)
 ///          chain fails. Returns 1 if any unsupported critical extension
 ///          is found (caller should reject the cert), 0 if all critical
 ///          extensions are recognized.
+/// @param cert_der Complete certificate DER bytes.
+/// @param cert_len Number of certificate bytes.
 /// @return 1 if the cert should be rejected, 0 if safe to continue.
 int cert_has_unsupported_critical_extension(const uint8_t *cert_der, size_t cert_len) {
     uint8_t tag;
@@ -538,6 +580,10 @@ static void extract_san_from_ext_value(
 /// representation in `ip_out` and its length 4 or 16), 0 otherwise.
 /// Used so SAN matching can compare against `iPAddress` entries
 /// instead of (incorrectly) trying DNS-name matching.
+/// @param hostname NUL-terminated candidate host.
+/// @param ip_out Destination 16-byte address buffer.
+/// @param ip_len Destination receiving four or sixteen.
+/// @return One for a parsed IPv4/IPv6 literal; otherwise zero.
 static int tls_hostname_is_ip_literal(const char *hostname, uint8_t ip_out[16], size_t *ip_len) {
     struct in_addr ipv4;
     struct in6_addr ipv6;
@@ -565,6 +611,12 @@ static int tls_hostname_is_ip_literal(const char *hostname, uint8_t ip_out[16], 
 /// SAN entries are tagged: 0x82 = dNSName, 0x87 = iPAddress. This
 /// helper iterates entries, sets `*saw_ip_san=1` if any IP-typed entry
 /// is present, and returns 1 if any entry's bytes equal `expected_ip`.
+/// @param ext_val DER-wrapped SAN extension value.
+/// @param ext_len Number of extension bytes.
+/// @param expected_ip Binary IPv4 or IPv6 address.
+/// @param expected_ip_len Four or sixteen bytes.
+/// @param saw_ip_san Optional destination indicating any IP SAN was present.
+/// @return One for an exact IP SAN match; otherwise zero.
 static int san_ext_has_ip_match(const uint8_t *ext_val,
                                 size_t ext_len,
                                 const uint8_t *expected_ip,
@@ -607,6 +659,12 @@ static int san_ext_has_ip_match(const uint8_t *ext_val,
 /// 3 ([3] EXPLICIT) → individual Extension SEQUENCEs → SAN OID match
 /// → SAN value. Uses iterative DER parsing (no recursion) to bound
 /// stack use on adversarial inputs.
+/// @param der Complete certificate DER bytes.
+/// @param der_len Number of certificate bytes.
+/// @param expected_ip Binary IPv4 or IPv6 address.
+/// @param expected_ip_len Four or sixteen bytes.
+/// @param saw_ip_san Optional destination indicating any IP SAN was present.
+/// @return One for an exact IP SAN match; otherwise zero.
 static int tls_cert_has_matching_ip_san(const uint8_t *der,
                                         size_t der_len,
                                         const uint8_t *expected_ip,
@@ -795,6 +853,8 @@ int tls_extract_san_names(const uint8_t *der, size_t der_len, char san_out[][256
 ///          subjectAltName OID (2.5.29.17). Used by hostname-matching code
 ///          to enforce RFC 6125's "if SAN is present, ignore CN" rule —
 ///          presence of SAN means CN-based matching MUST NOT be used.
+/// @param der Complete certificate DER bytes.
+/// @param der_len Number of certificate bytes.
 /// @return 1 if a SAN extension is present, 0 if not (or on parse failure).
 int tls_cert_has_san_extension(const uint8_t *der, size_t der_len) {
     uint8_t t;
@@ -848,7 +908,11 @@ int tls_cert_has_san_extension(const uint8_t *der, size_t der_len) {
     return 0;
 }
 
-/// @brief Extract the CommonName (CN) attribute from the certificate Subject.
+/// @brief Extract a valid DNS CommonName from one DER Name.
+/// @param name_der Complete Subject Name TLV.
+/// @param name_len Number of Name bytes.
+/// @param cn_out Destination 256-byte NUL-terminated buffer.
+/// @return One when a valid CN is copied; otherwise zero.
 static int tls_extract_cn_from_name(const uint8_t *name_der, size_t name_len, char cn_out[256]) {
     uint8_t t;
     size_t vl, hl;
@@ -982,6 +1046,11 @@ int tls_match_hostname(const char *pattern, const char *hostname) {
 /// @brief Walk one SAN extension and check every dNSName against @p hostname.
 /// @details This is separate from tls_extract_san_names because verification
 ///          must not be capped by the fixed-size public extraction buffer.
+/// @param ext_val DER-wrapped SAN extension value.
+/// @param ext_len Number of extension bytes.
+/// @param hostname Valid DNS hostname to match.
+/// @param saw_dns_san Optional destination indicating any valid DNS SAN.
+/// @return One for a matching dNSName; otherwise zero.
 static int san_ext_has_dns_match(const uint8_t *ext_val,
                                  size_t ext_len,
                                  const char *hostname,
@@ -1019,7 +1088,12 @@ static int san_ext_has_dns_match(const uint8_t *ext_val,
     return 0;
 }
 
-/// @brief Return whether any DNS SubjectAltName matches, scanning all names.
+/// @brief Scan all DNS SubjectAltNames for a hostname match.
+/// @param der Complete certificate DER bytes.
+/// @param der_len Number of certificate bytes.
+/// @param hostname Valid DNS hostname to match.
+/// @param saw_dns_san Optional destination indicating any valid DNS SAN.
+/// @return One for a matching dNSName; otherwise zero.
 static int tls_cert_has_matching_dns_san(const uint8_t *der,
                                          size_t der_len,
                                          const char *hostname,
@@ -1210,6 +1284,7 @@ void build_cert_verify_message(const uint8_t transcript_hash[32], uint8_t out_co
 size_t sig_scheme_hash_len(uint16_t sig_scheme);
 
 /// @brief Determine the hash output size for a signature scheme.
+/// @param sig_scheme TLS signature scheme code.
 /// @return 32 for SHA-256, 48 for SHA-384, 64 for SHA-512, 0 if unknown.
 size_t sig_scheme_hash_len(uint16_t sig_scheme) {
     switch (sig_scheme) {

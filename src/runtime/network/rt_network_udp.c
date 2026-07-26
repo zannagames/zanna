@@ -27,6 +27,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_network_udp.c
+ * @brief Implements managed UDP sockets, datagram I/O, and multicast control.
+ * @details This module validates UDP handles and endpoint text, creates and
+ *          binds IPv4 or IPv6 sockets, performs timeout-aware send and receive
+ *          operations, and exposes broadcast and multicast membership options.
+ *          Receive paths detect oversized datagrams without publishing
+ *          truncated payloads.
+ */
+
 // Platform feature macros must appear before ANY includes.
 #ifndef _DARWIN_C_SOURCE
 #define _DARWIN_C_SOURCE 1

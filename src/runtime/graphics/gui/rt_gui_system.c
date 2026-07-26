@@ -33,6 +33,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements process- and window-level GUI system services.
+ *
+ * @details The bindings cover clipboard text, per-app keyboard shortcuts and
+ *          two-stroke chords, window title/state/opacity/position controls,
+ *          cursor selection, accessibility and platform preferences, and
+ *          related GUI services that are not owned by one widget.
+ */
+
 #include "rt_gui_accessibility_platform.h"
 #include "rt_gui_internal.h"
 #include "rt_platform.h"
@@ -188,6 +198,7 @@ static int rt_shortcuts_record_triggered(rt_gui_app_t *app, const char *id) {
     return 1;
 }
 
+/// @brief Maximum interval between the two strokes of a shortcut chord.
 enum { RT_SHORTCUT_CHORD_TIMEOUT_MS = 1500 };
 
 /// @brief Clear a partially entered shortcut chord for one app.
@@ -202,11 +213,13 @@ static void rt_shortcuts_cancel_chord(rt_gui_app_t *app) {
     app->shortcut_chord_started_ms = 0;
 }
 
+/// @brief Maps a case-insensitive textual key name to a toolkit key code.
 typedef struct {
-    const char *name;
-    int key;
+    const char *name; ///< Borrowed static key spelling.
+    int key;          ///< Corresponding VG key code.
 } rt_shortcut_named_key_t;
 
+/// @brief Null-terminated lookup table for named non-character shortcut keys.
 static const rt_shortcut_named_key_t RT_SHORTCUT_NAMED_KEYS[] = {
     {"Enter", VG_KEY_ENTER},
     {"Return", VG_KEY_ENTER},

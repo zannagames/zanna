@@ -1930,6 +1930,23 @@ int main() {
     assert(rt_map_get_int(hit, rt_const_cstr("tileY")) == 1);
     assert(rt_map_get_int(hit, rt_const_cstr("tile")) == 29);
 
+    // ADR 0195: optional layer opacity. Defaults serialize nothing;
+    // authored values clamp and round-trip byte-stably.
+    {
+        void *opacity_scene = rt_game_scene_new(3, 3, 16, 16);
+        assert(rt_game_scene_layer_opacity(opacity_scene, 0) == 1.0);
+        std::string opaque_json = scene_json(opacity_scene);
+        assert(opaque_json.find("opacity") == std::string::npos);
+        rt_game_scene_set_layer_opacity(opacity_scene, 0, 2.5);
+        assert(rt_game_scene_layer_opacity(opacity_scene, 0) == 1.0);
+        rt_game_scene_set_layer_opacity(opacity_scene, 0, 0.25);
+        std::string faded_json = scene_json(opacity_scene);
+        assert(faded_json.find("\"opacity\": 0.25") != std::string::npos);
+        void *faded_reload = load_text(faded_json);
+        assert(rt_game_scene_layer_opacity(faded_reload, 0) == 0.25);
+        assert(scene_json(faded_reload) == faded_json);
+    }
+
     // ADR 0192: optional object transforms. Defaults serialize nothing, so
     // an untransformed document's bytes are identical before and after the
     // fields existed; authored values round-trip with sanitization.

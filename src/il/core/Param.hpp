@@ -21,6 +21,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares typed IL function and basic-block parameters.
+ *
+ * @details Parameters combine an SSA identifier, diagnostic name, static type,
+ *          and optional alias/lifetime guarantees. Function parameters describe
+ *          call signatures; basic-block parameters receive values from
+ *          predecessor-edge argument lists and serve the role of SSA phis.
+ */
+
 #pragma once
 
 #include "il/core/Type.hpp"

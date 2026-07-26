@@ -5,10 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the Renderer class, which converts ScreenBuffer diffs
-// into ANSI terminal escape sequences for Zanna's TUI. The Renderer is the
-// final stage of the rendering pipeline, translating abstract cell changes
-// into concrete terminal output.
+/// @file
+/// @brief Declares the ANSI terminal renderer for Zanna TUI screen-buffer diffs.
+/// @details Renderer is the final pipeline stage, translating abstract changed
+///          cells into cursor movement, style changes, glyph writes, and flushes
+///          on a borrowed terminal I/O backend.
 //
 // The Renderer maintains minimal state: the current cursor position and
 // active text style. It only emits escape sequences when the style or
@@ -61,11 +62,11 @@ class Renderer {
     void moveCursor(int y, int x);
 
   private:
-    ::zanna::tui::term::TermIO &tio_;
-    Style currentStyle_{};
-    int cursorY_{-1};
-    int cursorX_{-1};
-    bool truecolor_{false};
+    ::zanna::tui::term::TermIO &tio_; ///< Borrowed terminal output backend.
+    Style currentStyle_{};            ///< Style currently active in the terminal.
+    int cursorY_{-1};                 ///< Tracked zero-based cursor row, or -1 if unknown.
+    int cursorX_{-1};                 ///< Tracked zero-based cursor column, or -1 if unknown.
+    bool truecolor_{false};            ///< Whether to emit 24-bit rather than indexed colors.
 };
 
 } // namespace zanna::tui::render

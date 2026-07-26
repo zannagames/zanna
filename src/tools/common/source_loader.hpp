@@ -15,6 +15,9 @@
 
 #pragma once
 
+/// @file
+/// @brief Declares bounded source-file loading helpers for frontend tools.
+
 #include "support/diag_expected.hpp"
 #include "support/source_manager.hpp"
 

@@ -21,6 +21,16 @@
 // Links: src/runtime/network/rt_restclient.c (implementation), src/runtime/core/rt_string.h
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_restclient.h
+ * @brief Declares session-style REST requests and JSON convenience operations.
+ * @details The API manages a synchronized base URL, persistent request
+ *          headers, authentication state, transport options, and a retained
+ *          last response. Request methods return managed Result values and
+ *          preserve ownership of client configuration across calls.
+ */
+
 #pragma once
 
 #include "rt_string.h"

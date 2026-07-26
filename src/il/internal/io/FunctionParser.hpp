@@ -13,6 +13,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares internal parsers for IL functions and basic-block headers.
+ *
+ * @details These helpers consume textual function structure into the module
+ *          owned by `ParserState`, update the active function/block context,
+ *          and return structured diagnostics for syntax or resource failures.
+ *          Whole-function parsing is transactional and rolls back incomplete
+ *          state when the body cannot be completed.
+ */
+
 #pragma once
 
 #include "il/internal/io/ParserState.hpp"

@@ -64,6 +64,8 @@ LowerResult Lowerer::lowerVirtualMethodCall(const ClassTypeInfo &entityInfo,
 
     // Build dispatch table
     std::vector<DispatchEntry> dispatchTable;
+    /// @brief Adds one class implementation for the selected virtual slot.
+    /// @param info Class metadata to inspect.
     auto addEntry = [&](const ClassTypeInfo &info) {
         auto vtIt = info.vtableIndex.find(slotKey);
         if (vtIt != info.vtableIndex.end())

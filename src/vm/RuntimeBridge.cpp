@@ -68,10 +68,18 @@ using il::vm::VmError;
 /// source location.  The pointer is managed via @ref ContextGuard to ensure
 /// balanced updates.
 thread_local RuntimeCallContext *tlsContext = nullptr;
+/// @brief Optional thread-local observer invoked before a runtime trap escalates.
 thread_local RuntimeTrapInterceptor tlsTrapInterceptor = nullptr;
+/// @brief Opaque caller data paired with @ref tlsTrapInterceptor.
 thread_local void *tlsTrapInterceptorUserData = nullptr;
 
+/// @brief VM slot returned by a runtime dispatch thunk.
 using VmResult = Slot;
+/// @brief Uniform function type used by the runtime signature thunk table.
+/// @param vm Active virtual machine.
+/// @param frame Runtime call-frame metadata.
+/// @param context Call-site and diagnostic context.
+/// @return Slot containing the marshalled runtime result.
 using Thunk = VmResult (*)(VM &, FrameInfo &, const RuntimeCallContext &);
 
 /// @brief Verify that a runtime call supplies the expected number of arguments.
@@ -177,6 +185,10 @@ static VmResult executeDescriptor(const RuntimeDescriptor &desc,
 ///
 /// @details The VM and frame parameters are unused for most runtime functions;
 ///          they are present to match the signature expected by the thunk table.
+/// @param vm Active VM required by the uniform thunk signature.
+/// @param frame Runtime frame metadata required by the uniform thunk signature.
+/// @param ctx Call descriptor, arguments, and diagnostic context.
+/// @return Marshalled runtime result slot.
 static VmResult genericThunk(VM &vm, FrameInfo &frame, const RuntimeCallContext &ctx) {
     (void)vm;
     (void)frame;
@@ -204,10 +216,11 @@ const std::array<Thunk, static_cast<std::size_t>(RtSig::Count)> &thunkTable() {
 
 /// @brief RAII helper that installs a runtime call context for the current thread.
 struct ContextGuard {
-    RuntimeCallContext *previous;
-    RuntimeCallContext *current;
+    RuntimeCallContext *previous; ///< Context restored at scope exit.
+    RuntimeCallContext *current; ///< Context installed by this guard.
 
     /// @brief Push the provided context as the thread-local active call.
+    /// @param ctx Mutable call context installed for this scope.
     explicit ContextGuard(RuntimeCallContext &ctx) : previous(tlsContext), current(&ctx) {
         tlsContext = &ctx;
     }
@@ -231,14 +244,14 @@ using Operands = std::span<const Slot>;
 
 /// @brief Aggregates information required to finalise a runtime trap.
 struct TrapCtx {
-    TrapKind kind;
-    const std::string &message;
-    const SourceLoc &loc;
-    const std::string &function;
-    const std::string &block;
-    VM *vm = nullptr;
-    VmError error{};
-    FrameInfo frame{};
+    TrapKind kind; ///< Runtime trap classification.
+    const std::string &message; ///< Borrowed human-readable diagnostic.
+    const SourceLoc &loc; ///< Source location associated with the trap.
+    const std::string &function; ///< Active function name.
+    const std::string &block; ///< Active block label.
+    VM *vm = nullptr; ///< Active VM, or null outside interpreted execution.
+    VmError error{}; ///< Structured error delivered to VM/runtime consumers.
+    FrameInfo frame{}; ///< Standalone frame metadata when no VM is active.
 };
 
 /// @brief Deliver a trap either to the active VM or to the call-site context.
@@ -249,6 +262,7 @@ struct TrapCtx {
 ///
 /// INVARIANT: If ctx.vm is non-null, VM::activeInstance() must also be non-null.
 /// GUARANTEE: This function does not return to its caller when no handler catches.
+/// @param ctx Fully populated trap context to intercept and deliver.
 static void finalizeTrap(TrapCtx &ctx) {
     RuntimeBridge::interceptTrap(
         ctx.kind, ctx.error.code, ctx.message, ctx.loc, ctx.function, ctx.block);
@@ -296,6 +310,7 @@ static void handleDivByZero(TrapCtx &ctx, Opcode opcode, const Operands &operand
 }
 
 /// @brief Finalise traps that do not require operand-specific formatting.
+/// @param ctx Trap context forwarded unchanged to @ref finalizeTrap.
 static void handleGenericTrap(TrapCtx &ctx) {
     finalizeTrap(ctx);
 }
@@ -314,11 +329,13 @@ static void handleGenericTrap(TrapCtx &ctx) {
 // We don't define vm_trap here to avoid duplicate symbol errors with lld-link.
 #elif defined(__GNUC__) || defined(__clang__)
 /// @brief Weak hook allowing embedders to override VM trap behaviour.
+/// @param msg Null-terminated diagnostic, or @c nullptr for the default text.
 extern "C" __attribute__((weak)) void vm_trap(const char *msg) {
     rt_abort(msg ? msg : "trap");
 }
 #else
 /// @brief Default implementation that records traps on the active context.
+/// @param msg Null-terminated diagnostic, or @c nullptr for the default text.
 extern "C" void vm_trap(const char *msg) {
     rt_abort(msg ? msg : "trap");
 }
@@ -415,6 +432,9 @@ static bool signaturesEqual(const Signature &a, const Signature &b) {
     return true;
 }
 
+/// @brief Convert a public external-signature kind to an IL runtime type.
+/// @param k External ABI kind to translate.
+/// @return Corresponding IL type; unknown values conservatively map to void.
 static il::core::Type mapKind(il::runtime::signatures::SigParam::Kind k) {
     using K = il::runtime::signatures::SigParam::Kind;
     using il::core::Type;
@@ -437,6 +457,11 @@ static il::core::Type mapKind(il::runtime::signatures::SigParam::Kind k) {
     return Type(Type::Kind::Void);
 }
 
+/// @brief Convert a public external signature to the runtime descriptor form.
+/// @details Preserves parameter order, the first return kind, and behavioral
+///          attributes while selecting no specialized trap class.
+/// @param sig Public external signature to convert.
+/// @return Runtime signature suitable for descriptor dispatch.
 static il::runtime::RuntimeSignature toRuntimeSig(const Signature &sig) {
     il::runtime::RuntimeSignature rs;
     rs.paramTypes.reserve(sig.params.size());
@@ -454,6 +479,9 @@ static il::runtime::RuntimeSignature toRuntimeSig(const Signature &sig) {
 }
 } // namespace
 
+/// @brief Canonicalize an external name for case-insensitive registry lookup.
+/// @param n External symbol name.
+/// @return Lowercase owning key string.
 std::string canonicalizeExternName(std::string_view n) {
     std::string out(n);
     for (auto &ch : out)
@@ -499,6 +527,13 @@ Slot RuntimeBridge::call(RuntimeCallContext &ctx,
 /// @details Installs trap context, validates arity, and dispatches through the
 ///          active extern or built-in descriptor. Mutations made by the native
 ///          handler to argument slots remain visible to the opcode handler.
+/// @param ctx Mutable call context populated for diagnostics and dispatch.
+/// @param name External or built-in runtime helper name.
+/// @param args Mutable argument slots exposed to the native handler.
+/// @param loc Source location of the call.
+/// @param fn Calling function name.
+/// @param block Calling block label.
+/// @return Runtime result slot, or a zero-initialized slot after failure.
 Slot RuntimeBridge::callMutable(RuntimeCallContext &ctx,
                                 std::string_view name,
                                 std::span<Slot> args,
@@ -534,6 +569,16 @@ Slot RuntimeBridge::callMutable(RuntimeCallContext &ctx,
     return result;
 }
 
+/// @brief Invoke an already resolved runtime descriptor with copied arguments.
+/// @details Copies the read-only argument span so mutable ABI handlers cannot
+///          alter caller-owned slots, then delegates to @ref callMutable.
+/// @param ctx Mutable call context populated for diagnostics and dispatch.
+/// @param desc Built-in runtime descriptor to invoke or override by name.
+/// @param args Read-only VM argument slots.
+/// @param loc Source location of the call.
+/// @param fn Calling function name.
+/// @param block Calling block label.
+/// @return Runtime result slot, or a zero-initialized slot after failure.
 Slot RuntimeBridge::call(RuntimeCallContext &ctx,
                          const il::runtime::RuntimeDescriptor &desc,
                          std::span<const Slot> args,
@@ -549,6 +594,13 @@ Slot RuntimeBridge::call(RuntimeCallContext &ctx,
 /// @details Applies extern overrides for the descriptor name, validates the
 ///          effective signature, and preserves slot mutations for VM copy-back
 ///          processing.
+/// @param ctx Mutable call context populated for diagnostics and dispatch.
+/// @param desc Built-in runtime descriptor to invoke or override by name.
+/// @param args Mutable argument slots exposed to the native handler.
+/// @param loc Source location of the call.
+/// @param fn Calling function name.
+/// @param block Calling block label.
+/// @return Runtime result slot, or a zero-initialized slot after failure.
 Slot RuntimeBridge::callMutable(RuntimeCallContext &ctx,
                                 const il::runtime::RuntimeDescriptor &desc,
                                 std::span<Slot> args,
@@ -581,6 +633,11 @@ Slot RuntimeBridge::callMutable(RuntimeCallContext &ctx,
     return result;
 }
 
+/// @brief Resolve an external override into a temporary runtime descriptor.
+/// @details Checks the active VM registry before the process-global registry.
+/// @param name External name to resolve case-insensitively.
+/// @param [out] localDesc Storage populated when an external is found.
+/// @return Pointer to @p localDesc on success, or @c nullptr when absent.
 static const RuntimeDescriptor *resolveExternDescriptor(std::string_view name,
                                                         RuntimeDescriptor &localDesc) {
     il::runtime::RuntimeSignature sig;
@@ -605,6 +662,10 @@ static const RuntimeDescriptor *resolveExternDescriptor(std::string_view name,
     return &localDesc;
 }
 
+/// @brief Resolve a runtime call through extern overrides then built-ins.
+/// @param name Runtime helper name.
+/// @param [out] localDesc Storage used when an external override is selected.
+/// @return Effective descriptor, or @c nullptr when no helper is registered.
 static const RuntimeDescriptor *resolveRuntimeDescriptor(std::string_view name,
                                                          RuntimeDescriptor &localDesc) {
     if (const RuntimeDescriptor *ext = resolveExternDescriptor(name, localDesc))
@@ -613,6 +674,14 @@ static const RuntimeDescriptor *resolveRuntimeDescriptor(std::string_view name,
     return il::runtime::findRuntimeDescriptor(name);
 }
 
+/// @brief Dispatch a validated runtime call inside or outside an active VM.
+/// @details VM calls select a signature thunk when available; standalone calls
+///          execute the descriptor directly.
+/// @param ctx Prepared call context containing arguments and descriptor.
+/// @param name Runtime name used for thunk lookup.
+/// @param desc Effective descriptor.
+/// @param activeVm Active VM pointer, or @c nullptr for standalone dispatch.
+/// @return Marshalled result slot.
 static Slot dispatchRuntimeCall(RuntimeCallContext &ctx,
                                 std::string_view name,
                                 const RuntimeDescriptor &desc,
@@ -642,6 +711,7 @@ static Slot dispatchRuntimeCall(RuntimeCallContext &ctx,
 /// @param loc Source location associated with the trap.
 /// @param fn Function name active when the trap occurred.
 /// @param block Block label active when the trap occurred.
+/// @param code Runtime-specific numeric error code.
 void RuntimeBridge::trap(TrapKind kind,
                          const std::string &msg,
                          const SourceLoc &loc,
@@ -655,6 +725,11 @@ void RuntimeBridge::trap(TrapKind kind,
     ctx.error.ip = 0;
     ctx.error.line = loc.hasLine() ? static_cast<int32_t>(loc.line) : -1;
     if (ctx.vm) {
+        /// @brief Publish trap source and function context into an active VM.
+        /// @param vm Active VM receiving context updates.
+        /// @param loc Trap source location.
+        /// @param fn Active function name.
+        /// @param block Active block label.
         auto populateVm =
             [](VM &vm, const SourceLoc &loc, const std::string &fn, const std::string &block) {
                 if (loc.hasFile()) {
@@ -680,6 +755,10 @@ void RuntimeBridge::trap(TrapKind kind,
         populateVm(*ctx.vm, loc, fn, block);
         ctx.vm->runtimeContext.message = msg;
     } else {
+        /// @brief Populate fallback trap records when no VM instance is active.
+        /// @param c Trap context receiving error and frame metadata.
+        /// @param loc Trap source location.
+        /// @param fn Active function name, or empty when unavailable.
         auto populateNoVm = [](TrapCtx &c, const SourceLoc &loc, const std::string &fn) {
             c.error.ip = 0;
             c.error.line = loc.hasLine() ? static_cast<int32_t>(loc.line) : -1;
@@ -712,6 +791,15 @@ void RuntimeBridge::trap(TrapKind kind,
     return;
 }
 
+/// @brief Notify the installed trap interceptor and unwind with a signal.
+/// @details Returns immediately when no interceptor is installed; otherwise the
+///          callback observes the complete signal before that signal is thrown.
+/// @param kind Runtime trap classification.
+/// @param code Runtime-specific numeric error code.
+/// @param msg Human-readable diagnostic.
+/// @param loc Source location associated with the trap.
+/// @param fn Active function name.
+/// @param block Active block label.
 void RuntimeBridge::interceptTrap(TrapKind kind,
                                   int32_t code,
                                   const std::string &msg,
@@ -733,16 +821,29 @@ const RuntimeCallContext *RuntimeBridge::activeContext() {
     return tlsContext;
 }
 
+/// @brief Determine whether this thread is executing inside a VM.
+/// @return @c true when @ref VM::activeInstance is non-null.
 bool RuntimeBridge::hasActiveVm() {
     return VM::activeInstance() != nullptr;
 }
 
+/// @brief Retrieve the external registry attached to the active VM.
+/// @return Non-owning registry pointer, or @c nullptr when no VM or per-VM
+///         registry is active.
 ExternRegistry *RuntimeBridge::activeVmRegistry() {
     if (VM *vm = VM::activeInstance())
         return vm->externRegistry();
     return nullptr;
 }
 
+/// @brief Vector convenience overload for named runtime dispatch.
+/// @param ctx Mutable call context populated for diagnostics and dispatch.
+/// @param name Runtime helper name.
+/// @param args Read-only argument vector.
+/// @param loc Source location of the call.
+/// @param fn Calling function name.
+/// @param block Calling block label.
+/// @return Runtime result slot.
 Slot RuntimeBridge::call(RuntimeCallContext &ctx,
                          std::string_view name,
                          const std::vector<Slot> &args,
@@ -753,6 +854,14 @@ Slot RuntimeBridge::call(RuntimeCallContext &ctx,
         ctx, name, std::span<const Slot>{args.data(), args.size()}, loc, fn, block);
 }
 
+/// @brief Initializer-list convenience overload for named runtime dispatch.
+/// @param ctx Mutable call context populated for diagnostics and dispatch.
+/// @param name Runtime helper name.
+/// @param args Temporary argument list.
+/// @param loc Source location of the call.
+/// @param fn Calling function name.
+/// @param block Calling block label.
+/// @return Runtime result slot.
 Slot RuntimeBridge::call(RuntimeCallContext &ctx,
                          std::string_view name,
                          std::initializer_list<Slot> args,
@@ -767,10 +876,14 @@ Slot RuntimeBridge::call(RuntimeCallContext &ctx,
 // ExternRegistry Free Functions
 //===----------------------------------------------------------------------===//
 
+/// @brief Access the process-global external registry.
+/// @return Reference to the lazily initialized registry singleton.
 ExternRegistry &processGlobalExternRegistry() {
     return globalRegistry();
 }
 
+/// @brief Select the active VM registry or the process-global fallback.
+/// @return Registry used for external operations on the current thread.
 ExternRegistry &currentExternRegistry() {
     // Check for active VM with a per-VM registry configured.
     // Falls back to the process-global registry when:
@@ -781,12 +894,16 @@ ExternRegistry &currentExternRegistry() {
     return globalRegistry();
 }
 
+/// @brief Add an intrusive lifetime reference to a registry.
+/// @param registry Registry to retain; @c nullptr is ignored.
 void retainExternRegistry(ExternRegistry *registry) {
     if (!registry)
         return;
     registry->refCount.fetch_add(1, std::memory_order_relaxed);
 }
 
+/// @brief Release an intrusive registry reference and destroy at zero.
+/// @param registry Registry to release; @c nullptr is ignored.
 void releaseExternRegistry(ExternRegistry *registry) noexcept {
     if (!registry)
         return;
@@ -794,6 +911,14 @@ void releaseExternRegistry(ExternRegistry *registry) noexcept {
         delete registry;
 }
 
+/// @brief Add or replace an external within a specific registry.
+/// @details Re-registration with a structurally different signature is rejected
+///          only in strict mode; compatible or non-strict replacements update
+///          the stored descriptor and runtime form.
+/// @param registry Target registry.
+/// @param ext Public external descriptor to store.
+/// @return Success, or @ref ExternRegisterResult::SignatureMismatch in strict
+///         mode for an incompatible replacement.
 ExternRegisterResult registerExternIn(ExternRegistry &registry, const ExternDesc &ext) {
     ExtRecord rec;
     rec.pub = ext;
@@ -826,12 +951,22 @@ ExternRegisterResult registerExternIn(ExternRegistry &registry, const ExternDesc
     return ExternRegisterResult::Success;
 }
 
+/// @brief Remove an external from a specific registry.
+/// @param registry Registry to modify.
+/// @param name Case-insensitive external name.
+/// @return @c true when an entry was erased.
 bool unregisterExternIn(ExternRegistry &registry, std::string_view name) {
     const std::string key = canonicalizeExternName(name);
     std::lock_guard<std::mutex> lock(registry.mutex);
     return registry.entries.erase(key) > 0;
 }
 
+/// @brief Find an external and copy its public descriptor to thread-local storage.
+/// @details The returned pointer remains valid until its rotating thread-local
+///          slot is reused by later lookups on the same thread.
+/// @param registry Registry to search.
+/// @param name Case-insensitive external name.
+/// @return Pointer to a thread-local descriptor copy, or @c nullptr if absent.
 const ExternDesc *findExternIn(ExternRegistry &registry, std::string_view name) {
     const std::string key = canonicalizeExternName(name);
     thread_local std::array<ExternDesc, 8> tlsExternCopies{};
@@ -846,6 +981,13 @@ const ExternDesc *findExternIn(ExternRegistry &registry, std::string_view name) 
     return &slot;
 }
 
+/// @brief Resolve public and runtime forms of an external atomically.
+/// @param registry Registry to search.
+/// @param name Case-insensitive external name.
+/// @param [out] outSig Optional destination for the converted runtime signature.
+/// @param [out] outHandler Optional destination for the native handler.
+/// @return Pointer to a thread-local public descriptor copy, or @c nullptr if
+///         absent.
 const ExternDesc *resolveExternIn(ExternRegistry &registry,
                                   std::string_view name,
                                   il::runtime::RuntimeSignature *outSig,
@@ -871,11 +1013,17 @@ const ExternDesc *resolveExternIn(ExternRegistry &registry,
 // ExternRegistry Strict Mode API
 //===----------------------------------------------------------------------===//
 
+/// @brief Enable or disable incompatible-replacement rejection.
+/// @param registry Registry whose policy is changed.
+/// @param enabled Whether strict signature matching is required.
 void setExternRegistryStrictMode(ExternRegistry &registry, bool enabled) {
     std::lock_guard<std::mutex> lock(registry.mutex);
     registry.strictMode = enabled;
 }
 
+/// @brief Query a registry's signature replacement policy.
+/// @param registry Registry whose policy is queried.
+/// @return @c true when incompatible re-registration is rejected.
 bool isExternRegistryStrictMode(const ExternRegistry &registry) {
     // Note: reading a bool is atomic on all supported platforms, but we lock
     // for consistency with the setter and to be future-proof.
@@ -887,14 +1035,24 @@ bool isExternRegistryStrictMode(const ExternRegistry &registry) {
 // ExternRegistry Factory and Deleter
 //===----------------------------------------------------------------------===//
 
+/// @brief Release the intrusive reference owned by a registry smart pointer.
+/// @param reg Registry pointer to release.
 void ExternRegistryDeleter::operator()(ExternRegistry *reg) const noexcept {
     releaseExternRegistry(reg);
 }
 
+/// @brief Allocate an isolated external registry.
+/// @return Owning smart pointer whose deleter releases the initial intrusive
+///         reference.
 ExternRegistryPtr createExternRegistry() {
     return ExternRegistryPtr(new ExternRegistry());
 }
 
+/// @brief Install a thread-local runtime trap interceptor for this scope.
+/// @details Saves the previously installed callback and user data so nested
+///          interceptors compose correctly.
+/// @param interceptor Callback invoked before trap escalation.
+/// @param userData Opaque pointer forwarded to @p interceptor.
 ScopedRuntimeTrapInterceptor::ScopedRuntimeTrapInterceptor(RuntimeTrapInterceptor interceptor,
                                                            void *userData)
     : previousInterceptor_(tlsTrapInterceptor), previousUserData_(tlsTrapInterceptorUserData) {
@@ -902,6 +1060,7 @@ ScopedRuntimeTrapInterceptor::ScopedRuntimeTrapInterceptor(RuntimeTrapIntercepto
     tlsTrapInterceptorUserData = userData;
 }
 
+/// @brief Restore the interceptor that was active before construction.
 ScopedRuntimeTrapInterceptor::~ScopedRuntimeTrapInterceptor() {
     tlsTrapInterceptor = previousInterceptor_;
     tlsTrapInterceptorUserData = previousUserData_;
@@ -911,14 +1070,22 @@ ScopedRuntimeTrapInterceptor::~ScopedRuntimeTrapInterceptor() {
 // RuntimeBridge Static Methods (Delegate to Process-Global Registry)
 //===----------------------------------------------------------------------===//
 
+/// @brief Register or replace an external in the process-global registry.
+/// @param ext Public descriptor to register.
 void RuntimeBridge::registerExtern(const ExternDesc &ext) {
     registerExternIn(processGlobalExternRegistry(), ext);
 }
 
+/// @brief Remove a process-global external.
+/// @param name Case-insensitive external name.
+/// @return @c true when an entry was removed.
 bool RuntimeBridge::unregisterExtern(std::string_view name) {
     return unregisterExternIn(processGlobalExternRegistry(), name);
 }
 
+/// @brief Find a process-global external.
+/// @param name Case-insensitive external name.
+/// @return Pointer to a thread-local descriptor copy, or @c nullptr if absent.
 const ExternDesc *RuntimeBridge::findExtern(std::string_view name) {
     return findExternIn(processGlobalExternRegistry(), name);
 }

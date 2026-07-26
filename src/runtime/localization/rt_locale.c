@@ -35,6 +35,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements immutable BCP-47 Locale parsing and fallback traversal.
+ * @details Validates and canonicalizes language, extlang, script, region,
+ * variant, extension, and private-use subtags, manages retained registry data,
+ * exposes value queries, and constructs terminating locale fallback chains.
+ */
+
 #include "rt_locale.h"
 
 #include "rt_heap.h"

@@ -523,6 +523,9 @@ LowerResult Lowerer::lowerTry(TryExpr *expr) {
         TypeRef successType =
             !operandType->typeArgs.empty() ? operandType->typeArgs[0] : types::unknown();
 
+        /// @brief Selects the runtime Result unwrap helper for a success type.
+        /// @param type Result success type.
+        /// @return Runtime helper name.
         auto resultUnwrapCallee = [](TypeRef type) -> const char * {
             if (!type)
                 return kResultUnwrap;

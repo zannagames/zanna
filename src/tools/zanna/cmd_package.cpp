@@ -5,9 +5,12 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/tools/zanna/cmd_package.cpp
-// Purpose: Handle `zanna package` subcommand — compiles a project to a native
-//          binary and packages it into a platform-specific installer.
+/// @file
+/// @brief Implements native application packaging for the `zanna package` command.
+/// @details Resolves a project, compiles or accepts its native executable, and
+///          packages the result for a selected platform. The implementation also
+///          validates package metadata and payloads, applies signing policy, and
+///          supports a dependency-free JSON dry-run description.
 //
 // Key invariants:
 //   - Resolves project, compiles to native, then packages.
@@ -66,7 +69,12 @@ using namespace il::tools::common;
 using namespace il::support;
 namespace fs = std::filesystem;
 
+/// @brief Package formats accepted by the package command.
+/// @details Covers native macOS, Debian, Windows, portable tar, self-extracting
+///          Linux bundle, RPM, and DMG outputs; Auto selects the host default.
 enum class PackageTarget { MacOS, Linux, Windows, Tarball, AppImage, Rpm, Dmg, Auto };
+
+/// @brief Native executable container formats recognized during validation.
 enum class ExecutableFormat { Unknown, MachO, ELF, PE };
 
 /// @brief Identifying details of a native executable detected from its header.
@@ -76,6 +84,7 @@ struct ExecutableInfo {
 };
 
 /// @brief Print usage information for `zanna package`.
+/// @param out Stream that receives the formatted help text.
 void packageUsage(std::ostream &out = std::cerr) {
     out << "Usage: zanna package [project] [options]\n"
         << "\n"
@@ -127,49 +136,50 @@ void packageUsage(std::ostream &out = std::cerr) {
 ///          installer/signing option families; *Set companion flags record whether
 ///          an option was explicitly provided so manifest defaults can apply.
 struct PackageArgs {
-    std::string target;
-    PackageTarget platformTarget{PackageTarget::Auto};
-    std::string outputPath;
-    std::string archOverride; // "x64" or "arm64"
-    std::string executablePath;
-    std::string macosSignMode;
-    bool macosSignModeSet{false};
-    std::string macosSignIdentity;
-    bool macosSignIdentitySet{false};
-    std::string macosEntitlements;
-    bool macosEntitlementsSet{false};
-    std::string macosNotaryProfile;
-    bool macosNotaryProfileSet{false};
-    bool macosHardenedRuntime{false};
-    bool macosHardenedRuntimeSet{false};
-    bool macosStaple{false};
-    bool macosStapleSet{false};
-    std::string windowsInstallScope;
-    bool windowsInstallScopeSet{false};
-    std::string windowsInstallDir;
-    bool windowsInstallDirSet{false};
-    bool windowsSign{false};
-    bool windowsSignSet{false};
-    std::string windowsSignPfx;
-    bool windowsSignPfxSet{false};
-    std::string windowsSignThumbprint;
-    bool windowsSignThumbprintSet{false};
-    std::string windowsTimestampUrl;
-    bool windowsTimestampUrlSet{false};
-    std::string windowsSigntoolPath;
-    bool windowsSigntoolPathSet{false};
-    bool windowsSignNoVerify{false};
-    bool windowsSignNoVerifySet{false};
-    std::string linuxSignKey;
-    bool linuxSignKeySet{false};
-    bool dryRun{false};
-    bool jsonOutput{false};
-    bool keepFailedArtifact{false};
-    bool verbose{false};
-    bool help{false};
+    std::string target; ///< Project directory or manifest supplied positionally.
+    PackageTarget platformTarget{PackageTarget::Auto}; ///< Requested output format.
+    std::string outputPath;                            ///< Explicit artifact output path.
+    std::string archOverride;                          ///< Requested `x64` or `arm64` architecture.
+    std::string executablePath; ///< Optional prebuilt native executable to package.
+    std::string macosSignMode;  ///< Command-line macOS signing mode override.
+    bool macosSignModeSet{false}; ///< Whether @c macosSignMode was explicitly supplied.
+    std::string macosSignIdentity; ///< Command-line macOS signing identity override.
+    bool macosSignIdentitySet{false}; ///< Whether the signing identity was supplied.
+    std::string macosEntitlements; ///< Command-line entitlements path override.
+    bool macosEntitlementsSet{false}; ///< Whether the entitlements option was supplied.
+    std::string macosNotaryProfile; ///< Command-line notary profile override.
+    bool macosNotaryProfileSet{false}; ///< Whether the notary profile was supplied.
+    bool macosHardenedRuntime{false}; ///< Whether hardened runtime was requested.
+    bool macosHardenedRuntimeSet{false}; ///< Whether the hardened-runtime flag was supplied.
+    bool macosStaple{false}; ///< Whether notarization tickets should be stapled.
+    bool macosStapleSet{false}; ///< Whether the staple flag was supplied.
+    std::string windowsInstallScope; ///< Machine/user installation scope override.
+    bool windowsInstallScopeSet{false}; ///< Whether the install scope was supplied.
+    std::string windowsInstallDir; ///< Windows installation-directory name override.
+    bool windowsInstallDirSet{false}; ///< Whether the install-directory option was supplied.
+    bool windowsSign{false}; ///< Whether Authenticode signing was requested.
+    bool windowsSignSet{false}; ///< Whether the Windows signing flag was supplied.
+    std::string windowsSignPfx; ///< PFX certificate path override.
+    bool windowsSignPfxSet{false}; ///< Whether a PFX path was supplied.
+    std::string windowsSignThumbprint; ///< Certificate-store SHA-1 thumbprint override.
+    bool windowsSignThumbprintSet{false}; ///< Whether a thumbprint was supplied.
+    std::string windowsTimestampUrl; ///< Authenticode timestamp service URL override.
+    bool windowsTimestampUrlSet{false}; ///< Whether a timestamp URL was supplied.
+    std::string windowsSigntoolPath; ///< Authenticode signing tool path override.
+    bool windowsSigntoolPathSet{false}; ///< Whether a signing tool path was supplied.
+    bool windowsSignNoVerify{false}; ///< Whether post-signature verification is disabled.
+    bool windowsSignNoVerifySet{false}; ///< Whether the no-verify flag was supplied.
+    std::string linuxSignKey; ///< OpenPGP key selector for Linux package signing.
+    bool linuxSignKeySet{false}; ///< Whether a Linux signing key was supplied.
+    bool dryRun{false}; ///< Whether to describe the package without building it.
+    bool jsonOutput{false}; ///< Whether dry-run output uses JSON.
+    bool keepFailedArtifact{false}; ///< Whether partial artifacts survive failure.
+    bool verbose{false}; ///< Whether detailed progress output is enabled.
+    bool help{false}; ///< Whether help was printed and normal execution should stop.
 };
 
 /// @brief Determine the packaging target matching the host build platform.
+/// @return Native package target selected from the compile-time host capabilities.
 PackageTarget detectHostPlatform() {
 #if ZANNA_HOST_MACOS
     return PackageTarget::MacOS;
@@ -207,6 +217,8 @@ bool parsePackageTargetValue(std::string_view value, PackageTarget &out) {
 }
 
 /// @brief Return true when @p value is a supported package architecture name.
+/// @param value Architecture spelling to validate.
+/// @return true for `x64` or `arm64`; false otherwise.
 bool isPackageArchName(std::string_view value) {
     return value == "x64" || value == "arm64";
 }
@@ -226,6 +238,8 @@ void removeFailedArtifactUnlessKept(std::string_view path, bool keep, std::error
 }
 
 /// @brief Return the lowercase platform name for a target (e.g. "macos").
+/// @param t Package target to describe.
+/// @return Normalized platform label used in metadata and filenames.
 std::string platformName(PackageTarget t) {
     switch (t) {
         case PackageTarget::MacOS:
@@ -248,6 +262,8 @@ std::string platformName(PackageTarget t) {
 }
 
 /// @brief Return the output file extension for a target (e.g. ".deb").
+/// @param t Package target whose artifact suffix is requested.
+/// @return Conventional filename extension including the leading period.
 std::string platformExtension(PackageTarget t) {
     switch (t) {
         case PackageTarget::MacOS:
@@ -336,6 +352,9 @@ void writeJsonStringArray(std::ostream &out,
 /// @details Keeps alphanumerics and `._-+~`, replaces other characters with `_`,
 ///          strips leading `.`/`-`, and returns @p fallback if the result is empty
 ///          or "."/"..".
+/// @param text Raw metadata component to sanitize.
+/// @param fallback Value returned if sanitization produces no safe component.
+/// @return A filesystem-safe, non-special filename component.
 std::string sanitizeOutputFileComponent(const std::string &text, const std::string &fallback) {
     std::string out;
     out.reserve(text.size());
@@ -355,6 +374,11 @@ std::string sanitizeOutputFileComponent(const std::string &text, const std::stri
 
 /// @brief Build the default output filename `<name>-<version>-<platform>-<arch><ext>`.
 /// @details Each component is sanitized; used when the user does not pass `-o`.
+/// @param proj Loaded project supplying the package name.
+/// @param version Effective package version.
+/// @param target Selected output package format.
+/// @param archStr Selected native architecture name.
+/// @return Sanitized artifact filename in the current directory.
 std::string defaultPackageOutputPath(const ProjectConfig &proj,
                                      const std::string &version,
                                      PackageTarget target,
@@ -407,11 +431,17 @@ std::string portableArchiveVersionComponent(const std::string &version) {
 }
 
 /// @brief Read a little-endian uint16 at @p off (caller must bounds-check).
+/// @param data Byte buffer containing the integer.
+/// @param off Offset of the first encoded byte.
+/// @return Decoded 16-bit unsigned value.
 uint16_t readLE16(const std::vector<uint8_t> &data, size_t off) {
     return static_cast<uint16_t>(data[off] | (data[off + 1] << 8));
 }
 
 /// @brief Read a little-endian uint32 at @p off (caller must bounds-check).
+/// @param data Byte buffer containing the integer.
+/// @param off Offset of the first encoded byte.
+/// @return Decoded 32-bit unsigned value.
 uint32_t readLE32(const std::vector<uint8_t> &data, size_t off) {
     return static_cast<uint32_t>(data[off]) | (static_cast<uint32_t>(data[off + 1]) << 8) |
            (static_cast<uint32_t>(data[off + 2]) << 16) |
@@ -419,12 +449,17 @@ uint32_t readLE32(const std::vector<uint8_t> &data, size_t off) {
 }
 
 /// @brief Read a big-endian uint32 at @p off (caller must bounds-check).
+/// @param data Byte buffer containing the integer.
+/// @param off Offset of the first encoded byte.
+/// @return Decoded 32-bit unsigned value.
 uint32_t readBE32(const std::vector<uint8_t> &data, size_t off) {
     return (static_cast<uint32_t>(data[off]) << 24) | (static_cast<uint32_t>(data[off + 1]) << 16) |
            (static_cast<uint32_t>(data[off + 2]) << 8) | static_cast<uint32_t>(data[off + 3]);
 }
 
 /// @brief Read up to 64 KiB of an executable's leading bytes for format detection.
+/// @param path UTF-8 path of the executable to inspect.
+/// @return Leading file bytes, capped at 64 KiB.
 /// @throws std::runtime_error on open/size/seek/read failure.
 std::vector<uint8_t> readExecutableHeader(const std::string &path) {
     constexpr std::streamoff kMaxHeaderBytes = 64 * 1024;
@@ -448,6 +483,8 @@ std::vector<uint8_t> readExecutableHeader(const std::string &path) {
 }
 
 /// @brief Return a human-readable name for an executable format (e.g. "Mach-O").
+/// @param format Executable container format.
+/// @return Stable diagnostic label for @p format.
 std::string formatName(ExecutableFormat format) {
     switch (format) {
         case ExecutableFormat::Unknown:
@@ -463,6 +500,8 @@ std::string formatName(ExecutableFormat format) {
 }
 
 /// @brief Format a uint16 as a hexadecimal string (used in error messages).
+/// @param value Integer to format without a prefix.
+/// @return Lowercase hexadecimal representation of @p value.
 std::string hexU16(uint16_t value) {
     std::ostringstream os;
     os << std::hex << value;
@@ -470,6 +509,8 @@ std::string hexU16(uint16_t value) {
 }
 
 /// @brief Return the native executable format expected for a package target.
+/// @param target Package target whose executable payload is being validated.
+/// @return Required native executable container format.
 /// @throws std::runtime_error for the tarball target (no executable format).
 ExecutableFormat expectedExecutableFormat(PackageTarget target) {
     switch (target) {
@@ -497,6 +538,8 @@ ExecutableFormat expectedExecutableFormat(PackageTarget target) {
 /// @brief Detect the format and architecture of a native executable.
 /// @details Inspects the leading header bytes for Mach-O, ELF, or PE magic and
 ///          decodes the machine field into an "x64"/"arm64" arch string.
+/// @param path UTF-8 path of the native executable.
+/// @return Detected container format and normalized architecture.
 /// @throws std::runtime_error when the file is too small or unrecognized.
 ExecutableInfo inspectExecutable(const std::string &path) {
     const auto data = readExecutableHeader(path);
@@ -577,6 +620,9 @@ ExecutableInfo inspectExecutable(const std::string &path) {
 ///          are portable archives, so prebuilt payloads are only required to be
 ///          readable by the tarball builder and are not inspected as native
 ///          Mach-O/ELF/PE executables here.
+/// @param path UTF-8 path of the executable payload.
+/// @param target Package target that determines the required container format.
+/// @param archStr Required `x64` or `arm64` architecture.
 /// @throws std::runtime_error describing the mismatch.
 void validateExecutableForPackageTarget(const std::string &path,
                                         PackageTarget target,
@@ -599,6 +645,8 @@ void validateExecutableForPackageTarget(const std::string &path,
 }
 
 /// @brief Read an environment variable, returning "" when it is unset.
+/// @param name Environment variable name, or null for an empty lookup.
+/// @return UTF-8 value when present; otherwise an empty string.
 std::string getenvOrEmpty(const char *name) {
     const auto value =
         zanna::environment::getUtf8(name ? std::string_view(name) : std::string_view{});
@@ -608,6 +656,11 @@ std::string getenvOrEmpty(const char *name) {
 /// @brief Locate one statically linked native Windows installer support executable.
 /// @details An explicit environment override supports controlled cross-packaging. On Windows,
 ///          normal installed and build-tree layouts place the executable beside zanna.exe.
+/// @param proj Loaded project used to resolve relative override paths.
+/// @param environmentName Name of the environment variable providing an override.
+/// @param fileName Support executable filename to search for.
+/// @return Resolved regular-file path, or an empty path if no candidate exists.
+/// @throws std::runtime_error if an explicit override is not a regular file.
 fs::path findWindowsInstallerSupportExecutable(const ProjectConfig &proj,
                                                const char *environmentName,
                                                std::string_view fileName) {
@@ -651,6 +704,9 @@ fs::path findWindowsInstallerSupportExecutable(const ProjectConfig &proj,
 }
 
 /// @brief Resolve @p pathText relative to @p projectRoot (absolute paths kept as-is).
+/// @param projectRoot UTF-8 project root directory.
+/// @param pathText UTF-8 absolute or project-relative path.
+/// @return Lexically normalized filesystem path.
 fs::path resolveOptionalProjectPath(const std::string &projectRoot, const std::string &pathText) {
     fs::path p = zanna::filesystem::pathFromUtf8(pathText);
     if (p.is_absolute())
@@ -659,6 +715,8 @@ fs::path resolveOptionalProjectPath(const std::string &projectRoot, const std::s
 }
 
 /// @brief Return true if the package config requests Windows Authenticode signing.
+/// @param pkg Effective package configuration.
+/// @return true when signing is enabled or certificate material was specified.
 bool windowsSigningRequested(const zanna::pkg::PackageConfig &pkg) {
     return pkg.windowsSign || !pkg.windowsSignPfx.empty() || !pkg.windowsSignThumbprint.empty();
 }
@@ -667,6 +725,10 @@ bool windowsSigningRequested(const zanna::pkg::PackageConfig &pkg) {
 /// @details Resolves the PFX path / certificate thumbprint (falling back to the
 ///          ZANNA_WINDOWS_SIGN_* environment variables), then invokes signtool;
 ///          a no-op success when no signing was requested.
+/// @param proj Loaded project containing effective signing configuration.
+/// @param artifactPath Installer artifact to sign in place.
+/// @param verbose Whether to report successful signing.
+/// @param err Stream that receives configuration, signing, and verification diagnostics.
 /// @return true on success or when signing was not requested; false on failure.
 bool signWindowsInstallerArtifact(const ProjectConfig &proj,
                                   const fs::path &artifactPath,
@@ -777,6 +839,12 @@ bool signWindowsInstallerArtifact(const ProjectConfig &proj,
 /// @details Nested application binaries and the generated uninstaller are copied to a
 ///          private temporary directory, signed and verified under the same policy as
 ///          the outer setup executable, read back, and removed on every exit path.
+/// @param proj Loaded project containing effective signing configuration.
+/// @param logicalName Payload name used for the temporary file and diagnostics.
+/// @param unsignedPe Unsigned PE image bytes.
+/// @param verbose Whether successful signing should be reported.
+/// @return Signed PE image bytes.
+/// @throws std::runtime_error when temporary I/O or signing fails.
 std::vector<uint8_t> signWindowsPeBytes(const ProjectConfig &proj,
                                         std::string_view logicalName,
                                         const std::vector<uint8_t> &unsignedPe,
@@ -860,6 +928,9 @@ bool consumePackageOptionValue(std::string_view arg,
 /// @details Handles the target/output/arch/executable options plus the macOS and
 ///          Windows signing option families; prints usage and returns false on a
 ///          malformed or missing-value argument.
+/// @param argc Number of command arguments in @p argv.
+/// @param argv Command arguments excluding the executable and package subcommand.
+/// @param args Output structure populated with parsed options and defaults.
 /// @return true on a successful parse.
 bool parsePackageArgs(int argc, char **argv, PackageArgs &args) {
     for (int i = 0; i < argc; i++) {
@@ -1110,6 +1181,10 @@ bool parsePackageArgs(int argc, char **argv, PackageArgs &args) {
 /// @brief Verify a project-relative package source path exists on disk.
 /// @details Resolves @p path against the project root and checks it is a regular
 ///          file (or directory when @p allowDirectory); prints an error otherwise.
+/// @param proj Loaded project supplying the resolution root.
+/// @param path Absolute or project-relative source path.
+/// @param fieldName User-facing field name used in diagnostics.
+/// @param allowDirectory Whether a directory is accepted in addition to a regular file.
 /// @return true when the path exists and is of an acceptable type.
 bool validatePackageSourcePathExists(const ProjectConfig &proj,
                                      const std::string &path,
@@ -1159,6 +1234,10 @@ bool validatePackageSourcePathExists(const ProjectConfig &proj,
 /// @details Checks that referenced source paths exist and that target-specific
 ///          signing/installer settings are well-formed before building, printing
 ///          errors to @p err.
+/// @param proj Loaded project and effective package configuration to validate.
+/// @param target Concrete output format whose policy is applied.
+/// @param archStr Selected native architecture name.
+/// @param err Stream that receives configuration diagnostics.
 /// @param requireSigningCredentials When false, dry-run validation keeps structural
 ///        signing checks but skips credential/material presence checks that are only
 ///        needed for an actual package build.
@@ -1365,6 +1444,8 @@ bool validatePackageConfigForTarget(const ProjectConfig &proj,
 ///        options onto the project's package config (CLI flags win over the
 ///        manifest). Only set options override; unset ones leave the manifest
 ///        value intact.
+/// @param proj Loaded project whose package configuration is updated.
+/// @param args Parsed command-line overrides and explicit-set flags.
 void applyPackageCliOverrides(ProjectConfig &proj, const PackageArgs &args) {
     if (args.macosSignModeSet)
         proj.packageConfig.macosSignMode = args.macosSignMode;
@@ -1402,6 +1483,10 @@ void applyPackageCliOverrides(ProjectConfig &proj, const PackageArgs &args) {
 /// @details Joins @p payloadPrefix, @p targetDir, and @p leaf through the shared
 ///          packaging path sanitizer so verification expects the same normalized
 ///          layout that the builders emit.
+/// @param paths Output list to which the normalized path is appended.
+/// @param payloadPrefix Format-specific prefix inside the package payload.
+/// @param targetDir Configured asset destination directory.
+/// @param leaf Asset filename or directory-relative file path.
 void appendRequiredPayloadPath(std::vector<std::string> &paths,
                                const std::string &payloadPrefix,
                                const std::string &targetDir,
@@ -1418,6 +1503,10 @@ void appendRequiredPayloadPath(std::vector<std::string> &paths,
 ///          and directory assets install each regular file at its relative path
 ///          beneath the configured target directory. Directories themselves are
 ///          not required so empty-directory handling remains platform-specific.
+/// @param proj Loaded project containing asset declarations and the source root.
+/// @param payloadPrefix Format-specific prefix inside the package payload.
+/// @return Normalized package paths that payload verification must find.
+/// @throws std::runtime_error when an asset cannot be inspected or normalized.
 std::vector<std::string> requiredAssetPayloadPaths(const ProjectConfig &proj,
                                                    const std::string &payloadPrefix) {
     std::vector<std::string> paths;
@@ -1436,6 +1525,9 @@ std::vector<std::string> requiredAssetPayloadPaths(const ProjectConfig &proj,
             if (ec)
                 throw std::runtime_error("cannot inspect asset source path '" + asset.sourcePath +
                                          "': " + ec.message());
+            /// @brief Append one safely resolved regular asset file to the required payload list.
+            /// @param entry Directory entry with verified logical and physical paths.
+            /// @throws std::runtime_error If the relative package path is invalid.
             zanna::pkg::safeDirectoryIterateResolved(
                 srcPath, proj.rootDir, [&](const zanna::pkg::SafeDirectoryEntry &entry) {
                     if (!entry.regularFile)
@@ -1470,6 +1562,14 @@ std::vector<std::string> requiredAssetPayloadPaths(const ProjectConfig &proj,
 
 } // namespace
 
+/// @brief Build, inspect, sign, and verify an application package.
+/// @details Loads the requested project, applies command-line overrides, obtains
+///          a native executable, dispatches to the selected platform package
+///          builder, and enforces format-specific payload verification.
+/// @param argc Number of command arguments in @p argv.
+/// @param argv Command arguments excluding the executable and package subcommand.
+/// @return Zero on success or help; nonzero for invalid input, build failures,
+///         signing failures, or package-verification errors.
 int cmdPackage(int argc, char **argv) {
     using namespace il::tools::common;
     namespace fs = std::filesystem;
@@ -1679,6 +1779,8 @@ int cmdPackage(int argc, char **argv) {
             else if (!assetPath.empty() && fs::is_directory(assetPath, assetEc)) {
                 size_t count = 0;
                 try {
+                    /// @brief Count one safely resolved regular asset file for dry-run output.
+                    /// @param e Directory entry with verified logical and physical paths.
                     zanna::pkg::safeDirectoryIterateResolved(
                         assetPath, proj.rootDir, [&](const zanna::pkg::SafeDirectoryEntry &e) {
                             if (e.regularFile)
@@ -1910,10 +2012,15 @@ int cmdPackage(int argc, char **argv) {
                         proj, "ZANNA_WINDOWS_INSTALLER_CLEANUP", "zanna-installer-cleanup.exe"));
                 if (wparams.installerCleanupPath.empty()) {
                     throw std::runtime_error(
-                        "native Windows installer cleanup helper not found; install/build "
-                        "zanna-installer-cleanup or set ZANNA_WINDOWS_INSTALLER_CLEANUP");
+                                         "native Windows installer cleanup helper not found; install/build "
+                                         "zanna-installer-cleanup or set ZANNA_WINDOWS_INSTALLER_CLEANUP");
                 }
                 if (windowsSigningRequested(proj.packageConfig)) {
+                    /// @brief Sign one generated Windows PE payload.
+                    /// @param logicalName Logical payload name used in signing diagnostics.
+                    /// @param unsignedPe Unsigned PE bytes.
+                    /// @return Signed PE bytes.
+                    /// @throws std::runtime_error If the configured signing command fails.
                     wparams.peSigner = [&](std::string_view logicalName,
                                            const std::vector<uint8_t> &unsignedPe) {
                         return signWindowsPeBytes(proj, logicalName, unsignedPe, args.verbose);

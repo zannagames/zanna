@@ -26,6 +26,14 @@
 //        src/runtime/io/rt_archive_fs.c (definitions)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Defines the private cross-unit contract of the ZIP archive runtime.
+ * @details Shares validated ZIP32 constants, owned entry/archive state,
+ * parser error categories, synchronization primitives, bounded parser
+ * helpers, and platform-adapter functions between the archive core, reader,
+ * and filesystem units.
+ */
 #pragma once
 
 #include "rt_archive.h"
@@ -235,26 +243,42 @@ void archive_reject_symlink_components(const char *path, size_t root_len, int in
 //=============================================================================
 // ZIP format constants + entry/archive types (shared read/write)
 //=============================================================================
+/** @name ZIP32 record signatures
+ * @{ */
 #define ZIP_LOCAL_HEADER_SIG 0x04034b50
 #define ZIP_CENTRAL_HEADER_SIG 0x02014b50
 #define ZIP_END_RECORD_SIG 0x06054b50
 #define ZIP_DATA_DESCRIPTOR_SIG 0x08074b50
+/** @} */
 
+/** @name Supported ZIP compression methods
+ * @{ */
 #define ZIP_METHOD_STORED 0
 #define ZIP_METHOD_DEFLATE 8
+/** @} */
 
+/** @name Fixed ZIP32 record-header sizes
+ * @{ */
 #define ZIP_LOCAL_HEADER_SIZE 30
 #define ZIP_CENTRAL_HEADER_SIZE 46
 #define ZIP_END_RECORD_SIZE 22
+/** @} */
 
+/** @name ZIP version fields emitted by the writer
+ * @{ */
 #define ZIP_VERSION_NEEDED 20 // 2.0 for deflate
 #define ZIP_VERSION_MADE 20
+/** @} */
 
+/** @name Rejected general-purpose flags and ZIP64 extra identifier
+ * @{ */
 #define ZIP_GP_FLAG_ENCRYPTED 0x0001u
 #define ZIP_GP_FLAG_DATA_DESCRIPTOR 0x0008u
 #define ZIP_GP_FLAG_STRONG_ENCRYPTION 0x0040u
 #define ZIP_EXTRA_ZIP64 0x0001u
+/** @} */
 
+/** Parsed or pending ZIP32 entry metadata owned by an archive object. */
 typedef struct zip_entry {
     char *name;                 ///< Entry name (heap-allocated, owned).
     uint32_t crc32;             ///< CRC-32 of the uncompressed data.
@@ -269,6 +293,11 @@ typedef struct zip_entry {
     bool is_directory;          ///< True when the entry name ends with '/'.
 } zip_entry_t;
 
+/**
+ * @brief Managed archive payload shared by reader and writer operations.
+ * @details Owns its lock, encoded image when applicable, entry tables and
+ * name indexes, sampled resource ceilings, and transactional writer buffer.
+ */
 typedef struct rt_archive {
     rt_string path;   ///< File path string, or NULL for byte-backed archives.
     uint8_t *data;    ///< Full archive bytes (malloc'd copy or provided blob).
@@ -303,6 +332,7 @@ typedef struct rt_archive {
     size_t write_name_slot_count;     ///< Power-of-two capacity of `write_name_slots`.
 } rt_archive_t;
 
+/** Result category returned while validating and normalizing an entry name. */
 typedef enum { NAME_OK = 0, NAME_INVALID, NAME_OOM } name_result_t;
 
 /// @brief Structured reason returned by the non-trapping ZIP parser.

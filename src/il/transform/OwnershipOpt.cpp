@@ -14,6 +14,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements conservative basic-block-local ownership pair elimination.
+ *
+ * @details Direct runtime calls are classified as retain, release, or
+ *          unrelated. From each eligible retain, a forward scan stops at the
+ *          matching release or the first use/effect that could observe the
+ *          extra reference. Shared call-effect metadata permits traversal only
+ *          across helpers proven neutral to ownership and observable state.
+ */
+
 #include "il/transform/OwnershipOpt.hpp"
 
 #include "il/core/BasicBlock.hpp"
@@ -222,7 +233,8 @@ PreservedAnalyses OwnershipOpt::run(Function &function, AnalysisManager & /*anal
 
 /// @copydoc registerOwnershipOptPass()
 void registerOwnershipOptPass(PassRegistry &registry) {
-    /// Construct a stateless ownership optimizer for each pipeline invocation.
+    /// @brief Construct a stateless ownership optimizer for one pipeline invocation.
+    /// @return Newly owned `OwnershipOpt` pass.
     registry.registerFunctionPass(
         "ownership-opt", []() { return std::make_unique<OwnershipOpt>(); }, true);
 }

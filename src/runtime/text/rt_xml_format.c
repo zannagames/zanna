@@ -13,6 +13,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief XML tree serialization and entity conversion for the runtime XML API.
+/// @details Compact and pretty formatting share a growable byte buffer. Text
+///          and attributes are escaped according to their XML context, while
+///          validated comment and CDATA bodies are reproduced verbatim.
+
 #include "rt_xml.h"
 
 #include "rt_map.h"
@@ -31,12 +37,25 @@
 
 //=============================================================================
 
+/// @brief Serialize one node into a shared growable output buffer.
+/// @param node Valid XML node to emit.
+/// @param indent Spaces per block indentation level, or zero for compact output.
+/// @param level Current tree depth.
+/// @param buf Address of the heap buffer pointer.
+/// @param cap Address of the buffer capacity.
+/// @param len Address of the populated byte count.
 static void format_node(void *node, int indent, int level, char **buf, size_t *cap, size_t *len);
 
 // Format-side scratch helpers — a tiny growable c-string used during
 // `Format` / `FormatPretty`. `*cap` doubles on overflow; OOM traps.
 
-/// @brief Append the c-string `str` to the growing format buffer.
+/// @brief Append a null-terminated string to the formatting buffer.
+/// @details Doubles the allocation from an initial 256 bytes until the content
+///          fits. Allocation and size-overflow failures raise a runtime trap.
+/// @param buf Address of the heap buffer pointer.
+/// @param cap Address of the buffer capacity.
+/// @param len Address of the populated byte count.
+/// @param str Required null-terminated source string.
 static void buf_append(char **buf, size_t *cap, size_t *len, const char *str) {
     size_t slen = strlen(str);
     while (*len + slen + 1 < *len || *len + slen + 1 > *cap) {
@@ -58,7 +77,14 @@ static void buf_append(char **buf, size_t *cap, size_t *len, const char *str) {
     (*buf)[*len] = '\0';
 }
 
-/// @brief Append exactly `slen` bytes from `str` to the growing format buffer.
+/// @brief Append an exact byte span to the formatting buffer.
+/// @details Embedded null bytes are copied as data; a trailing null terminator
+///          is maintained after the span. Allocation and overflow failures trap.
+/// @param buf Address of the heap buffer pointer.
+/// @param cap Address of the buffer capacity.
+/// @param len Address of the populated byte count.
+/// @param str Source byte span.
+/// @param slen Number of source bytes.
 static void buf_append_bytes(char **buf, size_t *cap, size_t *len, const char *str, size_t slen) {
     while (*len + slen + 1 < *len || *len + slen + 1 > *cap) {
         size_t new_cap = (*cap == 0) ? 256 : (*cap * 2);
@@ -79,7 +105,13 @@ static void buf_append_bytes(char **buf, size_t *cap, size_t *len, const char *s
     (*buf)[*len] = '\0';
 }
 
-/// @brief Append a single character to the growing format buffer.
+/// @brief Append one byte to the formatting buffer.
+/// @details Preserves a trailing null terminator and traps on allocation or
+///          output-length overflow.
+/// @param buf Address of the heap buffer pointer.
+/// @param cap Address of the buffer capacity.
+/// @param len Address of the populated byte count.
+/// @param c Byte to append.
 static void buf_append_char(char **buf, size_t *cap, size_t *len, char c) {
     if (*len > SIZE_MAX - 2) {
         rt_trap("XML format: output length overflow");
@@ -104,7 +136,11 @@ static void buf_append_char(char **buf, size_t *cap, size_t *len, char c) {
     (*buf)[*len] = '\0';
 }
 
-/// @brief Append `spaces` blanks to the buffer (used for pretty-printing).
+/// @brief Append indentation spaces to the formatting buffer.
+/// @param buf Address of the heap buffer pointer.
+/// @param cap Address of the buffer capacity.
+/// @param len Address of the populated byte count.
+/// @param spaces Number of ASCII space bytes to append; nonpositive values add none.
 static void buf_append_indent(char **buf, size_t *cap, size_t *len, int spaces) {
     for (int i = 0; i < spaces; i++)
         buf_append_char(buf, cap, len, ' ');
@@ -114,7 +150,13 @@ static void buf_append_indent(char **buf, size_t *cap, size_t *len, int spaces) 
 ///
 /// Always escapes `&`, `<`, `>`. Quotes (`"` and `'`) are escaped only
 /// when `for_attr` is set — text content can carry literal quotes
-/// freely. This matches the recommendations of XML 1.0 §2.4.
+/// freely. Forbidden C0 control bytes are rendered as `&#xFFFD;`.
+/// @param buf Address of the heap buffer pointer.
+/// @param cap Address of the buffer capacity.
+/// @param len Address of the populated byte count.
+/// @param str Source byte span.
+/// @param slen Number of source bytes.
+/// @param for_attr Nonzero to apply quoted-attribute escaping.
 static void buf_append_escaped_bytes(
     char **buf, size_t *cap, size_t *len, const char *str, size_t slen, int for_attr) {
     for (size_t i = 0; i < slen; i++) {
@@ -150,8 +192,14 @@ static void buf_append_escaped_bytes(
     }
 }
 
-/// @brief Append `str` (an `rt_string`) to the buffer with XML escaping, delegating to
-/// `buf_append_escaped_bytes`.
+/// @brief Append a runtime string with context-appropriate XML escaping.
+/// @details Null strings add no bytes; nonnull strings use their runtime byte
+///          length rather than relying on a terminator.
+/// @param buf Address of the heap buffer pointer.
+/// @param cap Address of the buffer capacity.
+/// @param len Address of the populated byte count.
+/// @param str Runtime string to append, or null.
+/// @param for_attr Nonzero to apply quoted-attribute escaping.
 static void buf_append_escaped(char **buf, size_t *cap, size_t *len, rt_string str, int for_attr) {
     if (!str)
         return;
@@ -162,9 +210,15 @@ static void buf_append_escaped(char **buf, size_t *cap, size_t *len, rt_string s
 ///
 /// Self-closes (`<tag/>`) when there are no children. Switches between
 /// inline and indented output: an element with only text/CDATA children
-/// is emitted on one line; mixed/element children get newlines and
-/// indentation when `indent > 0`. `level` is the current depth (used
-/// to compute the leading indent).
+/// or mixed content is emitted inline so formatting cannot change character
+/// data; an element containing only non-text children gets newlines and
+/// indentation when `indent > 0`.
+/// @param elem Valid element node to emit.
+/// @param indent Spaces per block indentation level.
+/// @param level Current element depth.
+/// @param buf Address of the heap buffer pointer.
+/// @param cap Address of the buffer capacity.
+/// @param len Address of the populated byte count.
 static void format_element(
     xml_node *elem, int indent, int level, char **buf, size_t *cap, size_t *len) {
     // Indentation
@@ -245,6 +299,12 @@ static void format_element(
 /// Element nodes go to `format_element`; text is escaped; comments
 /// and CDATA are emitted with their delimiters; documents iterate
 /// their children at level 0.
+/// @param node Valid XML node to emit.
+/// @param indent Spaces per block indentation level, or zero for compact output.
+/// @param level Current tree depth.
+/// @param buf Address of the heap buffer pointer.
+/// @param cap Address of the buffer capacity.
+/// @param len Address of the populated byte count.
 static void format_node(void *node, int indent, int level, char **buf, size_t *cap, size_t *len) {
     xml_node *n = (xml_node *)node;
 
@@ -350,10 +410,13 @@ rt_string rt_xml_format_pretty(void *node, int64_t indent) {
 // Public API - Utility
 //=============================================================================
 
-/// @brief `Xml.Escape(text)` — apply XML text-content escaping.
+/// @brief `Xml.Escape(text)` — apply XML text and attribute escaping.
 ///
 /// Escapes `&`, `<`, `>`, `"`, and `'` so the result is safe in either
-/// element text or a quoted attribute value.
+/// element text or a quoted attribute value. Forbidden C0 control bytes are
+/// replaced by the numeric reference `&#xFFFD;`.
+/// @param text Runtime string to escape; null is treated as empty.
+/// @return Owned escaped string.
 rt_string rt_xml_escape(rt_string text) {
     if (!text)
         return rt_str_empty();
@@ -374,6 +437,8 @@ rt_string rt_xml_escape(rt_string text) {
 /// Inverse of `Escape`. Recognises numeric (`&#NN;` / `&#xHH;`) and the
 /// five named XML entities. Unknown entities are left in place
 /// (consistent with `decode_entity`'s 0-return policy).
+/// @param text Runtime string to decode; null is treated as empty.
+/// @return Owned decoded string; allocation failure produces an empty string.
 rt_string rt_xml_unescape(rt_string text) {
     if (!text)
         return rt_str_empty();

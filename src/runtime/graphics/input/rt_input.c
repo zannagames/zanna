@@ -40,6 +40,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements frame-coherent keyboard and mouse input state.
+ *
+ * @details Raw backend events are normalized into stable public key/button
+ *          codes, persistent level state, per-frame edge buffers, UTF-8 text,
+ *          logical cursor coordinates, wheel deltas, capture/visibility state,
+ *          and platform-backed caps-lock and cursor-warp operations.
+ */
+
 #include "rt_input.h"
 #include "rt_box.h"
 #include "rt_internal.h"
@@ -280,14 +290,23 @@ static bool rt_keyboard_reserve_text_bytes(int needed) {
 
 // Test hooks let runtime unit tests verify the platform bridge deterministically
 // without requiring a real focused window or cursor warp.
+/// @brief Override callback for querying caps-lock state.
+/// @param canvas Borrowed active canvas, optionally NULL.
+/// @return Nonzero when caps lock should be reported as asserted.
 typedef int32_t (*rt_caps_lock_query_hook_fn)(void *canvas);
+/// @brief Override callback for observing a requested mouse warp.
+/// @param canvas Borrowed active mouse canvas.
+/// @param x Target X coordinate in canvas pixels.
+/// @param y Target Y coordinate in canvas pixels.
 typedef void (*rt_mouse_warp_hook_fn)(void *canvas, int64_t x, int64_t y);
 
 static rt_caps_lock_query_hook_fn g_caps_lock_query_hook = NULL;
 static rt_mouse_warp_hook_fn g_mouse_warp_hook = NULL;
 static void *g_mouse_canvas = NULL;
 
+/// @copydoc rt_input_query_caps_lock_platform()
 static int32_t rt_input_query_caps_lock_platform(void);
+/// @copydoc rt_input_warp_mouse_platform()
 static void rt_input_warp_mouse_platform(int64_t x, int64_t y);
 
 /// @brief Install a caps-lock query test hook.
@@ -391,6 +410,10 @@ static int32_t rt_input_query_caps_lock_platform(void) {
 
 #if defined(ZANNA_ENABLE_GRAPHICS)
 #if !(RT_PLATFORM_LINUX && !defined(ZANNA_GRAPHICS_WAYLAND) && !defined(ZANNA_GRAPHICS_HEADLESS))
+/// @brief Move the native cursor within a graphics window.
+/// @param window Borrowed graphics-window handle.
+/// @param x Target backend X coordinate.
+/// @param y Target backend Y coordinate.
 extern void vgfx_warp_cursor(void *window, int32_t x, int32_t y);
 #endif
 #endif
@@ -1997,7 +2020,9 @@ double rt_mouse_wheel_yf(void) {
 // Cursor Control
 //=============================================================================
 
+/// @brief Request platform cursor visibility.
 extern void vgfx_show_cursor(void);
+/// @brief Request platform cursor hiding.
 extern void vgfx_hide_cursor(void);
 
 /// @brief Show the OS cursor (idempotent).

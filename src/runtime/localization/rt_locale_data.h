@@ -33,6 +33,16 @@
 //        src/runtime/localization/rt_locale_manager.c (registry owner).
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Defines the complete immutable data model for one runtime locale.
+ * @details Centralizes plural-rule ASTs, numeric and currency conventions,
+ * calendar names and patterns, relative-time forms, list templates,
+ * collation metadata, and the arena ownership marker shared by baked and
+ * dynamically loaded locale records.
+ */
+
 #pragma once
 
 #include <stddef.h>

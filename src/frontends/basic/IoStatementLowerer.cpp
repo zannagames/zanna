@@ -168,7 +168,8 @@ void IoStatementLowerer::lowerPrint(const PrintStmt &stmt) {
     std::size_t column = 1;
     bool columnKnown = true;
 
-    /// Advance the compile-time column estimate or mark it unknown.
+    /// @brief Advances the compile-time column estimate or marks it unknown.
+    /// @param width Known printed width, or no value when it cannot be predicted.
     auto updateColumn = [&](std::optional<std::size_t> width) {
         if (!columnKnown)
             return;
@@ -178,7 +179,7 @@ void IoStatementLowerer::lowerPrint(const PrintStmt &stmt) {
             columnKnown = false;
     };
 
-    /// Reset local column accounting after an emitted newline.
+    /// @brief Resets local column accounting after an emitted newline.
     auto resetColumn = [&]() {
         column = 1;
         columnKnown = true;
@@ -302,7 +303,8 @@ PrintChArgString lowerPrintChArgToString(IoStatementLowerer &self,
     const char *runtime = nullptr;
     il::runtime::RuntimeFeature feature = il::runtime::RuntimeFeature::StrFromDouble;
 
-    /// Coerce an integer-like value to i64, then emit checked narrowing.
+    /// @brief Coerces an integer-like value to i64, then emits checked narrowing.
+    /// @param target Destination integer kind.
     auto narrowInteger = [&](IlType::Kind target) {
         value = self.lowerer_.ensureI64(std::move(value), expr.loc);
         int bits = 64;
@@ -425,6 +427,8 @@ void IoStatementLowerer::lowerPrintCh(const PrintChStmt &stmt) {
                 IlType(IlType::Kind::I32), "rt_println_ch_err", {channel.value, empty});
             const char *context = isWrite ? "write" : "printch";
             lowerer_.emitRuntimeErrCheck(
+                /// @brief Emits a trap for a failed channel write.
+                /// @param code Runtime error code.
                 err, stmt.loc, context, [&](Value code) { lowerer_.emitTrapFromErr(code); });
         }
         return;
@@ -435,6 +439,8 @@ void IoStatementLowerer::lowerPrintCh(const PrintChStmt &stmt) {
         Value err = lowerer_.emitCallRet(
             IlType(IlType::Kind::I32), "rt_println_ch_err", {channel.value, record});
         lowerer_.emitRuntimeErrCheck(
+            /// @brief Emits a trap for a failed WRITE operation.
+            /// @param code Runtime error code.
             err, stmt.loc, "write", [&](Value code) { lowerer_.emitTrapFromErr(code); });
         return;
     }
@@ -463,11 +469,15 @@ void IoStatementLowerer::lowerPrintCh(const PrintChStmt &stmt) {
         Value err =
             lowerer_.emitCallRet(IlType(IlType::Kind::I32), helper, {channel.value, lowered.text});
         lowerer_.emitRuntimeErrCheck(
+            /// @brief Emits a trap for a failed channel print.
+            /// @param code Runtime error code.
             err, arg->loc, "printch", [&](Value code) { lowerer_.emitTrapFromErr(code); });
     }
 
     if (stmt.trailingNewline) {
-        /// Detect whether any sparse argument slot produced output.
+        /// @brief Tests whether a sparse argument slot produced output.
+        /// @param expr Candidate expression pointer.
+        /// @return `true` when the slot contains an expression.
         auto hasPrintedArg = std::any_of(stmt.args.begin(), stmt.args.end(), [](const auto &expr) {
             return static_cast<bool>(expr);
         });
@@ -477,6 +487,8 @@ void IoStatementLowerer::lowerPrintCh(const PrintChStmt &stmt) {
             Value err = lowerer_.emitCallRet(
                 IlType(IlType::Kind::I32), "rt_println_ch_err", {channel.value, empty});
             lowerer_.emitRuntimeErrCheck(
+                /// @brief Emits a trap for a failed empty channel print.
+                /// @param code Runtime error code.
                 err, stmt.loc, "printch", [&](Value code) { lowerer_.emitTrapFromErr(code); });
         }
     }
@@ -532,7 +544,9 @@ void IoStatementLowerer::lowerInput(const InputStmt &stmt) {
         storeKinds.emplace(vn, k);
     }
 
-    /// Convert or transfer one input field into the named target's storage.
+    /// @brief Converts or transfers one input field into named target storage.
+    /// @param name Target variable name.
+    /// @param field Runtime string field to store or parse.
     auto storeField = [&](const std::string &name, Value field) {
         auto storage = lowerer_.resolveVariableStorage(name, stmt.loc);
         assert(storage && "INPUT target should have storage");
@@ -636,6 +650,8 @@ void IoStatementLowerer::lowerInputCh(const InputChStmt &stmt) {
         IlType(IlType::Kind::I32), "rt_line_input_ch_err", {channel.value, outSlot});
 
     lowerer_.emitRuntimeErrCheck(
+        /// @brief Emits a trap when channel line input fails.
+        /// @param code Runtime error code.
         err, stmt.loc, "lineinputch", [&](Value code) { lowerer_.emitTrapFromErr(code); });
 
     Value line = lowerer_.emitLoad(IlType(IlType::Kind::Str), outSlot);
@@ -651,7 +667,9 @@ void IoStatementLowerer::lowerInputCh(const InputChStmt &stmt) {
     lowerer_.requireStrReleaseMaybe();
     lowerer_.emitCall("rt_str_release_maybe", {line});
 
-    /// Parse or transfer one channel field into a resolved variable slot.
+    /// @brief Parses or transfers one channel field into a resolved variable slot.
+    /// @param name Target variable name.
+    /// @param field Runtime string field to store or parse.
     auto parseAndStore = [&](const std::string &name, Value field) {
         auto storage = lowerer_.resolveVariableStorage(name, stmt.loc);
         if (!storage)
@@ -670,6 +688,8 @@ void IoStatementLowerer::lowerInputCh(const InputChStmt &stmt) {
             Value err = lowerer_.emitCallRet(IlType(IlType::Kind::I32),
                                              il::frontends::basic::runtime::kParseDoubleCStr,
                                              {fieldCstr, parsedSlot});
+            /// @brief Emits a trap when floating-point field parsing fails.
+            /// @param code Runtime error code.
             lowerer_.emitRuntimeErrCheck(err, stmt.loc, "inputch_parse", [&](Value code) {
                 lowerer_.emitTrapFromErr(code);
             });
@@ -679,6 +699,8 @@ void IoStatementLowerer::lowerInputCh(const InputChStmt &stmt) {
             Value err = lowerer_.emitCallRet(IlType(IlType::Kind::I32),
                                              il::frontends::basic::runtime::kParseInt64CStr,
                                              {fieldCstr, parsedSlot});
+            /// @brief Emits a trap when integer field parsing fails.
+            /// @param code Runtime error code.
             lowerer_.emitRuntimeErrCheck(err, stmt.loc, "inputch_parse", [&](Value code) {
                 lowerer_.emitTrapFromErr(code);
             });
@@ -731,6 +753,8 @@ void IoStatementLowerer::lowerLineInputCh(const LineInputChStmt &stmt) {
         IlType(IlType::Kind::I32), "rt_line_input_ch_err", {channel.value, outSlot});
 
     lowerer_.emitRuntimeErrCheck(
+        /// @brief Emits a trap when channel line input fails.
+        /// @param code Runtime error code.
         err, stmt.loc, "lineinputch", [&](Value code) { lowerer_.emitTrapFromErr(code); });
 
     Value line = lowerer_.emitLoad(IlType(IlType::Kind::Str), outSlot);

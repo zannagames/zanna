@@ -1361,6 +1361,10 @@ static HRESULT STDMETHODCALLTYPE rt_uia_range_SetValue(IRangeValueProvider *ifac
 }
 
 /// @brief Generate a COM range-property getter from normalized value and bounds.
+/// @details Each generated getter validates @c out, resolves the provider's widget,
+///          reads its current value and bounds, and stores the selected expression.
+/// @param name Generated COM method name.
+/// @param expression Value, minimum, or maximum expression assigned to the output.
 #define RT_UIA_RANGE_GETTER(name, expression)                                                      \
     static HRESULT STDMETHODCALLTYPE name(IRangeValueProvider *iface, double *out) {               \
         rt_uia_provider_t *provider = RT_UIA_FROM(iface, range_value);                             \
@@ -1374,8 +1378,20 @@ static HRESULT STDMETHODCALLTYPE rt_uia_range_SetValue(IRangeValueProvider *ifac
         return S_OK;                                                                               \
     }
 
+/// @brief Read the current normalized range value.
+/// @param iface Borrowed range-pattern interface.
+/// @param out Receives the current value.
+/// @return `S_OK`, `E_POINTER` for a null output, or `E_FAIL` when unavailable.
 RT_UIA_RANGE_GETTER(rt_uia_range_get_Value, value)
+/// @brief Read the normalized range maximum.
+/// @param iface Borrowed range-pattern interface.
+/// @param out Receives the maximum value.
+/// @return `S_OK`, `E_POINTER` for a null output, or `E_FAIL` when unavailable.
 RT_UIA_RANGE_GETTER(rt_uia_range_get_Maximum, maximum)
+/// @brief Read the normalized range minimum.
+/// @param iface Borrowed range-pattern interface.
+/// @param out Receives the minimum value.
+/// @return `S_OK`, `E_POINTER` for a null output, or `E_FAIL` when unavailable.
 RT_UIA_RANGE_GETTER(rt_uia_range_get_Minimum, minimum)
 
 /// @brief Report that the projected range pattern is read-only.

@@ -62,6 +62,8 @@ void EditHistory::endTxn() {
 ///          text that was originally added, regardless of subsequent buffer
 ///          mutations.  The helper delegates to @ref append to handle transaction
 ///          grouping.
+/// @param pos Logical byte offset where insertion occurred.
+/// @param text Inserted bytes moved into history storage.
 void EditHistory::recordInsert(std::size_t pos, std::string text) {
     append(Op{OpType::Insert, pos, std::move(text)});
 }
@@ -70,6 +72,8 @@ void EditHistory::recordInsert(std::size_t pos, std::string text) {
 /// @details Erase operations capture the deleted text so undo can faithfully
 ///          restore it.  Like insertions, they are funnelled through @ref append
 ///          to honour the active transaction and reset the redo stack.
+/// @param pos Logical byte offset where erasure occurred.
+/// @param text Erased bytes moved into history storage.
 void EditHistory::recordErase(std::size_t pos, std::string text) {
     append(Op{OpType::Erase, pos, std::move(text)});
 }
@@ -79,6 +83,8 @@ void EditHistory::recordErase(std::size_t pos, std::string text) {
 ///          operations in reverse order via the provided callback, and pushes the
 ///          transaction onto the redo stack.  Returns @c false when no undo state
 ///          is available.
+/// @param replay Borrowed callback that applies the inverse of each stored operation.
+/// @return true when a transaction was replayed and moved to the redo stack.
 bool EditHistory::undo(const Replay &replay) {
     if (undo_stack_.empty()) {
         return false;
@@ -98,6 +104,8 @@ bool EditHistory::undo(const Replay &replay) {
 ///          order through @p replay, and appended back to the undo stack so the
 ///          history returns to its pre-undo state.  Returns @c false when redo is
 ///          not possible.
+/// @param replay Borrowed callback that reapplies each stored operation.
+/// @return true when a transaction was replayed and moved to the undo stack.
 bool EditHistory::redo(const Replay &replay) {
     if (redo_stack_.empty()) {
         return false;
@@ -129,6 +137,7 @@ void EditHistory::clear() {
 ///          appended to the scratch buffer; otherwise a single-operation
 ///          transaction is pushed onto the undo stack.  Any new edit invalidates
 ///          the redo stack so redo cannot cross divergent histories.
+/// @param op Owning operation to record; empty payloads are discarded.
 void EditHistory::append(Op op) {
     if (op.text.empty()) {
         return;

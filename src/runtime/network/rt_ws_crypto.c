@@ -21,6 +21,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_ws_crypto.c
+ * @brief Implements WebSocket handshake transforms and text validation.
+ * @details The module provides strict UTF-8 validation, the RFC-mandated
+ *          handshake-only SHA-1 transform, unpredictable client nonce
+ *          generation, Base64 encoding, and Sec-WebSocket-Accept computation
+ *          using bounded native intermediate storage.
+ */
+
 //===----------------------------------------------------------------------===//
 
 #include "rt_websocket.h"
@@ -42,6 +51,13 @@ extern void rt_trap_net(const char *msg, int err_code);
 
 #include "rt_websocket_internal.h"
 
+/// @brief Validate a byte sequence as canonical RFC 3629 UTF-8.
+/// @details Rejects overlong encodings, UTF-16 surrogate halves, truncated or
+///          malformed continuation sequences, and code points above U+10FFFF.
+///          ASCII bytes, including U+0000, are valid.
+/// @param[in] data Input bytes; it may be NULL only when @p len is zero.
+/// @param[in] len Number of bytes to validate.
+/// @return 1 when the entire sequence is valid UTF-8; otherwise 0.
 int ws_is_valid_utf8(const uint8_t *data, size_t len) {
     size_t i = 0;
     while (i < len) {
@@ -114,8 +130,13 @@ int ws_is_valid_utf8(const uint8_t *data, size_t len) {
 }
 
 /// @brief Minimal SHA-1 (RFC 3174) for Sec-WebSocket-Accept validation (RFC 6455 §4.1).
-/// SHA-1 is acceptable here: it is used as a protocol-mandated HMAC-like check,
-/// not for general cryptographic security.
+/// @details SHA-1 is used only for the protocol-mandated opening-handshake
+///          transform, not as a general security primitive. Temporary padded
+///          message storage is allocated internally and released before return.
+/// @param[in] data Input bytes; NULL is permitted only when @p len is zero.
+/// @param[in] len Number of input bytes.
+/// @param[out] digest Buffer that receives exactly 20 digest bytes.
+/// @return 1 on success, or 0 for invalid arguments, length overflow, or allocation failure.
 int ws_sha1(const uint8_t *data, size_t len, uint8_t digest[20]) {
     if (!digest || (len > 0 && !data) || len > SIZE_MAX - 72u || len > UINT64_MAX / 8u)
         return 0;
@@ -257,10 +278,12 @@ rt_string generate_ws_key(void) {
 }
 
 /// @brief Compute the Sec-WebSocket-Accept header value for a given key.
-///
-/// Returns Base64(SHA1(key + WS_MAGIC)) as a malloc'd C string.
-/// The caller is responsible for freeing the returned string.
-/// Returns NULL on allocation failure.
+/// @details Computes Base64(SHA1(key + RFC 6455 GUID)) and returns the
+///          28-character result as native heap storage.
+/// @param[in] key_cstr Null-terminated Sec-WebSocket-Key header value.
+/// @return Newly allocated null-terminated accept value, or NULL for null
+///         input, length overflow, hashing failure, or allocation failure. The
+///         caller must release the result with free().
 char *rt_ws_compute_accept_key(const char *key_cstr) {
     if (!key_cstr)
         return NULL;

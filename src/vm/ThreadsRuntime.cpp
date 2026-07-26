@@ -14,7 +14,10 @@
 /// @file
 /// @brief VM-aware runtime helpers for Zanna.Threads.
 /// @details Implements the Thread.Start bridge so Zanna threads can invoke
-///          IL entry functions directly when running inside the VM.
+///          IL entry functions directly when running inside the VM.  Async,
+///          pool, and parallel callback APIs either create child VMs or provide
+///          deterministic sequential equivalents where native callback pointers
+///          cannot safely represent interpreted functions.
 
 #include "vm/RuntimeBridge.hpp"
 
@@ -51,28 +54,29 @@ using il::runtime::signatures::SigParam;
 /// @details Captures the module, program state, entry function, and user arg
 ///          so a new VM can be created and invoked on the target function.
 struct VmThreadStartPayload {
-    const il::core::Module *module = nullptr;
-    std::shared_ptr<VM::ProgramState> program;
-    ExternRegistry *externRegistry = nullptr;
-    const il::core::Function *entry = nullptr;
-    void *arg = nullptr;
-    bool ownsArg = false;
+    const il::core::Module *module = nullptr; ///< Module owning @ref entry.
+    std::shared_ptr<VM::ProgramState> program; ///< Shared mutable VM state.
+    ExternRegistry *externRegistry = nullptr; ///< Retained external registry.
+    const il::core::Function *entry = nullptr; ///< Resolved worker function.
+    void *arg = nullptr; ///< Optional object argument.
+    bool ownsArg = false; ///< Whether payload retains @ref arg.
 };
 
 /// @brief Payload passed to VM-backed Async.Run worker threads.
 /// @details Extends the basic thread payload with a promise reference owned by
 ///          the worker thread until it resolves the asynchronous result.
 struct VmAsyncRunPayload {
-    const il::core::Module *module = nullptr;
-    std::shared_ptr<VM::ProgramState> program;
-    ExternRegistry *externRegistry = nullptr;
-    const il::core::Function *entry = nullptr;
-    void *arg = nullptr;
-    bool ownsArg = false;
-    void *promise = nullptr;
+    const il::core::Module *module = nullptr; ///< Module owning @ref entry.
+    std::shared_ptr<VM::ProgramState> program; ///< Shared mutable VM state.
+    ExternRegistry *externRegistry = nullptr; ///< Retained external registry.
+    const il::core::Function *entry = nullptr; ///< Resolved async worker.
+    void *arg = nullptr; ///< Worker environment object.
+    bool ownsArg = false; ///< Whether payload retains @ref arg.
+    void *promise = nullptr; ///< Promise resolved by the worker.
 };
 
 /// @brief Release all resources owned by a VM thread-start payload.
+/// @param payload Payload to release; @c nullptr is ignored.
 static void releaseThreadStartPayload(VmThreadStartPayload *payload) {
     if (!payload)
         return;
@@ -87,8 +91,13 @@ static void releaseThreadStartPayload(VmThreadStartPayload *payload) {
     delete payload;
 }
 
+/// @brief No-op interceptor used to convert child-VM traps into catchable signals.
+/// @details Trap escalation is supplied by @ref ScopedRuntimeTrapInterceptor;
+///          the observer itself intentionally records no additional state.
 static void vmThreadTrapPassthrough(const RuntimeTrapSignal &, void *) {}
 
+/// @brief Release an async payload's retained worker argument.
+/// @param payload Payload whose argument ownership is cleared.
 static void releaseAsyncRunArg(VmAsyncRunPayload *payload) {
     if (!payload || !payload->ownsArg || !payload->arg)
         return;
@@ -98,6 +107,12 @@ static void releaseAsyncRunArg(VmAsyncRunPayload *payload) {
     payload->ownsArg = false;
 }
 
+/// @brief Execute and release a thread payload while capturing failure text.
+/// @param payload Owned payload consumed on every return path.
+/// @param errorBuf Optional destination for a null-terminated failure message.
+/// @param errorBufSize Capacity of @p errorBuf in bytes.
+/// @return @c true when the entry completed; @c false for invalid payload,
+///         runtime trap, or exception.
 static bool runVmThreadPayload(VmThreadStartPayload *payload, char *errorBuf, size_t errorBufSize) {
     if (errorBuf && errorBufSize > 0)
         errorBuf[0] = '\0';
@@ -219,6 +234,7 @@ static void validateEntrySignature(const il::core::Function &fn) {
 /// @brief Validate the signature of an Async.Run worker entry function.
 /// @details Async worker trampolines lowered from Zia async functions must
 ///          return an object pointer and accept exactly one environment pointer.
+/// @param fn Resolved worker function to validate.
 static void validateAsyncEntrySignature(const il::core::Function &fn) {
     using Kind = il::core::Type::Kind;
     if (fn.retType.kind != Kind::Ptr)
@@ -280,6 +296,8 @@ static void threads_thread_start_handler(void **args, void *result) {
 
 /// @brief Runtime bridge handler for Zanna.Threads.Thread.StartOwned.
 /// @details VM variant retains the managed argument until the IL entry returns.
+/// @param args Runtime argument-storage array containing entry and argument.
+/// @param result Optional storage that receives the native thread handle.
 static void threads_thread_start_owned_handler(void **args, void *result) {
     void *entry = nullptr;
     void *arg = nullptr;
@@ -339,6 +357,8 @@ extern "C" void vm_thread_safe_entry_trampoline(void *raw) {
 /// @brief Runtime bridge handler for Zanna.Threads.Thread.StartSafe.
 /// @details Like threads_thread_start_handler but uses the safe entry trampoline
 ///          that wraps execution in trap recovery via setjmp/longjmp.
+/// @param args Runtime argument-storage array containing entry and argument.
+/// @param result Optional storage that receives the safe thread handle.
 static void threads_thread_start_safe_handler(void **args, void *result) {
     void *entry = nullptr;
     void *arg = nullptr;
@@ -385,6 +405,8 @@ static void threads_thread_start_safe_handler(void **args, void *result) {
 
 /// @brief Runtime bridge handler for Zanna.Threads.Thread.StartSafeOwned.
 /// @details VM variant combines safe trap capture with retaining the managed argument.
+/// @param args Runtime argument-storage array containing entry and argument.
+/// @param result Optional storage that receives the safe thread handle.
 static void threads_thread_start_safe_owned_handler(void **args, void *result) {
     void *entry = nullptr;
     void *arg = nullptr;
@@ -434,6 +456,7 @@ static void threads_thread_start_safe_owned_handler(void **args, void *result) {
 /// @brief Async worker trampoline for VM-backed Async.Run.
 /// @details Executes the IL worker function in a child VM, then resolves the
 ///          promise with the returned object pointer.
+/// @param raw Owned opaque pointer to a @ref VmAsyncRunPayload.
 extern "C" void vm_async_run_entry_trampoline(void *raw) {
     VmAsyncRunPayload *payload = static_cast<VmAsyncRunPayload *>(raw);
     if (!payload || !payload->module || !payload->entry || !payload->promise) {
@@ -489,6 +512,9 @@ extern "C" void vm_async_run_entry_trampoline(void *raw) {
 /// @details Uses the native runtime helper outside the VM, but when an IL
 ///          function pointer is supplied from VM execution it spawns a child VM
 ///          and resolves a Future with that worker's returned object.
+/// @param args Runtime argument-storage array containing entry and environment.
+/// @param result Optional storage that receives the future.
+/// @param owned Whether the payload retains the environment until completion.
 static void threads_async_run_impl(void **args, void *result, bool owned) {
     void *entry = nullptr;
     void *arg = nullptr;
@@ -563,11 +589,15 @@ static void threads_async_run_impl(void **args, void *result, bool owned) {
 }
 
 /// @brief Runtime bridge handler for Zanna.Threads.Async.Run (borrowed arg).
+/// @param args Runtime argument-storage array containing entry and environment.
+/// @param result Optional storage that receives the future.
 static void threads_async_run_handler(void **args, void *result) {
     threads_async_run_impl(args, result, /*owned=*/false);
 }
 
 /// @brief Runtime bridge handler for Zanna.Threads.Async.RunOwned (owned arg).
+/// @param args Runtime argument-storage array containing entry and environment.
+/// @param result Optional storage that receives the future.
 static void threads_async_run_owned_handler(void **args, void *result) {
     threads_async_run_impl(args, result, /*owned=*/true);
 }
@@ -575,6 +605,9 @@ static void threads_async_run_owned_handler(void **args, void *result) {
 /// @brief Trap for Async callback variants without a managed VM bridge
 ///        (VDOC-127): the native implementations would cast the opaque VM
 ///        function value to a native pointer — undefined behavior.
+/// @param api Public API name included in the diagnostic.
+/// @return @c true after reporting unsupported interpreted execution; @c false
+///         when native callback forwarding is safe.
 static bool vmAsyncCallbackUnsupported(const char *api) {
     if (activeVMInstance()) {
         rt_trap((std::string(api) +
@@ -586,6 +619,10 @@ static bool vmAsyncCallbackUnsupported(const char *api) {
     return false;
 }
 
+/// @brief Forward borrowed-argument cancellable async execution on native backends.
+/// @param args Runtime argument-storage array containing entry, argument, and
+///        cancellation token.
+/// @param result Optional storage that receives the future.
 static void threads_async_run_cancellable_handler(void **args, void *result) {
     if (vmAsyncCallbackUnsupported("Async.RunCancellable"))
         return;
@@ -597,6 +634,10 @@ static void threads_async_run_cancellable_handler(void **args, void *result) {
         *reinterpret_cast<void **>(result) = future;
 }
 
+/// @brief Forward owned-argument cancellable async execution on native backends.
+/// @param args Runtime argument-storage array containing entry, argument, and
+///        cancellation token.
+/// @param result Optional storage that receives the future.
 static void threads_async_run_cancellable_owned_handler(void **args, void *result) {
     if (vmAsyncCallbackUnsupported("Async.RunCancellableOwned"))
         return;
@@ -608,6 +649,10 @@ static void threads_async_run_cancellable_owned_handler(void **args, void *resul
         *reinterpret_cast<void **>(result) = future;
 }
 
+/// @brief Forward borrowed-argument future mapping on native backends.
+/// @param args Runtime argument-storage array containing future, callback, and
+///        callback argument.
+/// @param result Optional storage that receives the mapped future.
 static void threads_async_map_handler(void **args, void *result) {
     if (vmAsyncCallbackUnsupported("Async.Map"))
         return;
@@ -619,6 +664,10 @@ static void threads_async_map_handler(void **args, void *result) {
         *reinterpret_cast<void **>(result) = mapped;
 }
 
+/// @brief Forward owned-argument future mapping on native backends.
+/// @param args Runtime argument-storage array containing future, callback, and
+///        callback argument.
+/// @param result Optional storage that receives the mapped future.
 static void threads_async_map_owned_handler(void **args, void *result) {
     if (vmAsyncCallbackUnsupported("Async.MapOwned"))
         return;
@@ -635,6 +684,11 @@ static void threads_async_map_owned_handler(void **args, void *result) {
 ///          same result as the native parallel path — the VM trades the parallelism for a
 ///          single-threaded, debuggable run rather than trapping. The callback must be
 ///          `(Integer) -> Unit` (one i64 parameter, void return).
+/// @param vm Active VM used for callback execution.
+/// @param start Inclusive first index.
+/// @param end Exclusive final index.
+/// @param func Raw IL callback address.
+/// @param api Public API name used in trap diagnostics.
 static void runVmParallelForRange(VM &vm, int64_t start, int64_t end, void *func, const char *api) {
     const il::core::Function *fn = resolveEntryFunction(vm.module(), func);
     if (!fn) {
@@ -659,6 +713,10 @@ static void runVmParallelForRange(VM &vm, int64_t start, int64_t end, void *func
 /// @brief Run a pool task callback synchronously on the active VM.
 /// @details The VM has no worker pool, so the task runs immediately on the calling thread instead
 ///          of trapping. The callback must be `(Ptr) -> Unit` or take no parameters.
+/// @param vm Active VM used for callback execution.
+/// @param callback Raw IL callback address.
+/// @param arg Optional object argument.
+/// @param api Public API name used in trap diagnostics.
 static void runVmPoolTask(VM &vm, void *callback, void *arg, const char *api) {
     const il::core::Function *fn = resolveEntryFunction(vm.module(), callback);
     if (!fn) {
@@ -685,6 +743,9 @@ static void runVmPoolTask(VM &vm, void *callback, void *arg, const char *api) {
 ///          them across the pool, but on the VM they run in order on the calling thread rather
 ///          than trapping. Each sequence element is a VM function value; a non-resolvable entry or
 ///          one with the wrong arity/return type traps with an explicit message.
+/// @param vm Active VM used for callback execution.
+/// @param funcs Runtime sequence containing raw IL function addresses.
+/// @param api Public API name used in trap diagnostics.
 static void runVmInvokeFunctions(VM &vm, void *funcs, const char *api) {
     if (!funcs)
         return;
@@ -712,6 +773,10 @@ static void runVmInvokeFunctions(VM &vm, void *funcs, const char *api) {
 /// @brief Run a `(Ptr) -> Unit` callback over each Seq element on the VM.
 /// @details Sequential equivalent of the native Parallel.ForEach (VDOC-126):
 ///          same visible effects, single-threaded ordering.
+/// @param vm Active VM used for callback execution.
+/// @param seq Runtime sequence to traverse; null is treated as empty.
+/// @param func Raw IL callback address.
+/// @param api Public API name used in trap diagnostics.
 static void runVmSeqForEach(VM &vm, void *seq, void *func, const char *api) {
     if (!seq)
         return;
@@ -739,6 +804,11 @@ static void runVmSeqForEach(VM &vm, void *seq, void *func, const char *api) {
 /// @brief Map a Seq through a `(Ptr) -> Ptr` callback on the VM.
 /// @details Sequential equivalent of the native Parallel.Map (VDOC-126);
 ///          returns an owning Seq of the mapped values in order.
+/// @param vm Active VM used for callback execution.
+/// @param seq Runtime sequence to map; null is treated as empty.
+/// @param func Raw IL mapping callback address.
+/// @param api Public API name used in trap diagnostics.
+/// @return Owning runtime sequence of mapped objects.
 static void *runVmSeqMap(VM &vm, void *seq, void *func, const char *api) {
     void *out = rt_seq_new();
     rt_seq_set_owns_elements(out, 1);
@@ -770,6 +840,12 @@ static void *runVmSeqMap(VM &vm, void *seq, void *func, const char *api) {
 /// @brief Fold a Seq through a `(Ptr, Ptr) -> Ptr` callback on the VM.
 /// @details Sequential left fold matching the native Parallel.Reduce result
 ///          for associative reducers (VDOC-126).
+/// @param vm Active VM used for callback execution.
+/// @param seq Runtime sequence to reduce; null returns @p identity.
+/// @param func Raw IL reducer callback address.
+/// @param identity Initial accumulator.
+/// @param api Public API name used in trap diagnostics.
+/// @return Final accumulator returned by the sequential fold.
 static void *runVmSeqReduce(VM &vm, void *seq, void *func, void *identity, const char *api) {
     if (!seq)
         return identity;
@@ -800,6 +876,9 @@ static void *runVmSeqReduce(VM &vm, void *seq, void *func, void *identity, const
     return acc;
 }
 
+/// @brief Submit a borrowed-argument pool task or run it synchronously on the VM.
+/// @param args Runtime argument-storage array containing pool, callback, and argument.
+/// @param result Optional storage that receives the submission boolean.
 static void threads_pool_submit_handler(void **args, void *result) {
     void *pool = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
     void *callback = args && args[1] ? *reinterpret_cast<void **>(args[1]) : nullptr;
@@ -828,6 +907,8 @@ static void threads_pool_submit_handler(void **args, void *result) {
 
 /// @brief SubmitOwned bridge: on the VM the task runs synchronously, so the
 ///        pool-side retain/release nets out within the call (VDOC-128).
+/// @param args Runtime argument-storage array containing pool, callback, and argument.
+/// @param result Optional storage that receives the submission boolean.
 static void threads_pool_submit_owned_handler(void **args, void *result) {
     void *pool = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
     void *callback = args && args[1] ? *reinterpret_cast<void **>(args[1]) : nullptr;
@@ -850,6 +931,9 @@ static void threads_pool_submit_owned_handler(void **args, void *result) {
         *reinterpret_cast<int8_t *>(result) = submitted;
 }
 
+/// @brief Execute Parallel.ForEach natively or sequentially on the active VM.
+/// @param args Runtime argument-storage array containing sequence and callback.
+/// @param result Unused result-storage pointer.
 static void threads_parallel_foreach_handler(void **args, void *result) {
     (void)result;
     void *seq = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
@@ -861,6 +945,9 @@ static void threads_parallel_foreach_handler(void **args, void *result) {
     rt_parallel_foreach(seq, func);
 }
 
+/// @brief Execute pool-qualified Parallel.ForEach with a sequential VM fallback.
+/// @param args Runtime argument-storage array containing sequence, callback, and pool.
+/// @param result Unused result-storage pointer.
 static void threads_parallel_foreach_pool_handler(void **args, void *result) {
     (void)result;
     void *seq = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
@@ -875,6 +962,9 @@ static void threads_parallel_foreach_pool_handler(void **args, void *result) {
     rt_parallel_foreach_pool(seq, func, pool);
 }
 
+/// @brief Execute Parallel.Map natively or sequentially on the active VM.
+/// @param args Runtime argument-storage array containing sequence and callback.
+/// @param result Optional storage that receives the mapped sequence.
 static void threads_parallel_map_handler(void **args, void *result) {
     void *seq = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
     void *func = args && args[1] ? *reinterpret_cast<void **>(args[1]) : nullptr;
@@ -889,6 +979,9 @@ static void threads_parallel_map_handler(void **args, void *result) {
         *reinterpret_cast<void **>(result) = mapped;
 }
 
+/// @brief Execute pool-qualified Parallel.Map with a sequential VM fallback.
+/// @param args Runtime argument-storage array containing sequence, callback, and pool.
+/// @param result Optional storage that receives the mapped sequence.
 static void threads_parallel_map_pool_handler(void **args, void *result) {
     void *seq = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
     void *func = args && args[1] ? *reinterpret_cast<void **>(args[1]) : nullptr;
@@ -905,6 +998,9 @@ static void threads_parallel_map_pool_handler(void **args, void *result) {
         *reinterpret_cast<void **>(result) = mapped;
 }
 
+/// @brief Execute Parallel.Invoke natively or sequentially on the active VM.
+/// @param args Runtime argument-storage array containing the callback sequence.
+/// @param result Unused result-storage pointer.
 static void threads_parallel_invoke_handler(void **args, void *result) {
     (void)result;
     void *funcs = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
@@ -915,6 +1011,9 @@ static void threads_parallel_invoke_handler(void **args, void *result) {
     rt_parallel_invoke(funcs);
 }
 
+/// @brief Execute pool-qualified Parallel.Invoke with a sequential VM fallback.
+/// @param args Runtime argument-storage array containing callbacks and pool.
+/// @param result Unused result-storage pointer.
 static void threads_parallel_invoke_pool_handler(void **args, void *result) {
     (void)result;
     void *funcs = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
@@ -928,6 +1027,9 @@ static void threads_parallel_invoke_pool_handler(void **args, void *result) {
     rt_parallel_invoke_pool(funcs, pool);
 }
 
+/// @brief Execute Parallel.For natively or sequentially on the active VM.
+/// @param args Runtime argument-storage array containing range and callback.
+/// @param result Unused result-storage pointer.
 static void threads_parallel_for_handler(void **args, void *result) {
     (void)result;
     int64_t start = args && args[0] ? *reinterpret_cast<int64_t *>(args[0]) : 0;
@@ -940,6 +1042,9 @@ static void threads_parallel_for_handler(void **args, void *result) {
     rt_parallel_for(start, end, func);
 }
 
+/// @brief Execute pool-qualified Parallel.For with a sequential VM fallback.
+/// @param args Runtime argument-storage array containing range, callback, and pool.
+/// @param result Unused result-storage pointer.
 static void threads_parallel_for_pool_handler(void **args, void *result) {
     (void)result;
     int64_t start = args && args[0] ? *reinterpret_cast<int64_t *>(args[0]) : 0;
@@ -955,6 +1060,9 @@ static void threads_parallel_for_pool_handler(void **args, void *result) {
     rt_parallel_for_pool(start, end, func, pool);
 }
 
+/// @brief Execute Parallel.Reduce natively or sequentially on the active VM.
+/// @param args Runtime argument-storage array containing sequence, reducer, and identity.
+/// @param result Optional storage that receives the reduced object.
 static void threads_parallel_reduce_handler(void **args, void *result) {
     void *seq = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
     void *func = args && args[1] ? *reinterpret_cast<void **>(args[1]) : nullptr;
@@ -970,6 +1078,10 @@ static void threads_parallel_reduce_handler(void **args, void *result) {
         *reinterpret_cast<void **>(result) = reduced;
 }
 
+/// @brief Execute pool-qualified Parallel.Reduce with a sequential VM fallback.
+/// @param args Runtime argument-storage array containing sequence, reducer,
+///        identity, and pool.
+/// @param result Optional storage that receives the reduced object.
 static void threads_parallel_reduce_pool_handler(void **args, void *result) {
     void *seq = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
     void *func = args && args[1] ? *reinterpret_cast<void **>(args[1]) : nullptr;

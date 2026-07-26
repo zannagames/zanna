@@ -133,7 +133,8 @@ static std::string mangleName(const Symbol &sym) {
     return "_" + name;
 }
 
-/// Pack a Mach-O relocation info field (little-endian bit-field layout).
+/// @brief Packs a Mach-O relocation information field.
+/// @details Uses the little-endian bit-field layout
 /// Layout: symbolnum[23:0] | pcrel[24] | length[26:25] | extern[27] | type[31:28]
 /// @param symbolnum External symbol index or local section ordinal.
 /// @param pcrel Whether the relocation is PC relative.
@@ -176,6 +177,8 @@ static bool checkedRelocSymbolNum(uint32_t value, const char *what, std::ostream
     return true;
 }
 
+/// @brief Adapts the shared symbol-value validator to Mach-O writer diagnostics.
+///
 /// Adapter to the shared @ref zanna::codegen::objfile::physicalSymbolValue helper
 /// that pins the writerName to "MachOWriter:" so existing call sites compile
 /// unchanged.

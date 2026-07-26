@@ -18,6 +18,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file Utf8Decoder.cpp
+ * @brief Implements incremental UTF-8 decoding for terminal input.
+ * @details The state machine consumes one byte at a time, accumulates valid
+ *          multibyte sequences, rejects invalid leaders, continuations,
+ *          overlong encodings, surrogates, and out-of-range scalar values, and
+ *          requests replay when an error byte may begin the next sequence.
+ */
+
 #include "tui/term/Utf8Decoder.hpp"
 
 namespace zanna::tui::term {

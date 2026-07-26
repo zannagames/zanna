@@ -281,6 +281,9 @@ StatementSequencer::TerminatorInfo StatementSequencer::collectStatements(
         bool allowIdentifierLabel =
             (state.separatorBefore != SeparatorKind::Colon) && !state.hadPendingLine;
         withOptionalLineNumber(
+            /// @brief Captures the current optional line number and source location.
+            /// @param currentLine Parsed user line number.
+            /// @param currentLoc Source location of the line marker.
             [&line, &lineLoc](int currentLine, il::support::SourceLoc currentLoc) {
                 line = currentLine;
                 lineLoc = currentLoc;
@@ -318,10 +321,11 @@ StatementSequencer::TerminatorInfo StatementSequencer::collectStatements(
 /// @return Terminator metadata populated by the underlying collection routine.
 StatementSequencer::TerminatorInfo StatementSequencer::collectStatements(
     TokenKind terminator, std::vector<StmtPtr> &dst) {
-    /// Stops collection when the parser is positioned at the requested token.
+    /// @brief Stops collection when the parser is positioned at the requested token.
+    /// @return `true` when the requested terminator is current.
     auto predicate = [&](int, il::support::SourceLoc) { return parser_.at(terminator); };
 
-    /// Consumes the requested terminator after its metadata has been captured.
+    /// @brief Consumes the requested terminator after its metadata has been captured.
     auto consumer = [&](int, il::support::SourceLoc, TerminatorInfo &) { parser_.consume(); };
     return collectStatements(predicate, consumer, dst);
 }
@@ -341,7 +345,10 @@ StmtPtr StatementSequencer::parseStatementLine() {
     int lineNumber = 0;
     bool haveLine = false;
     il::support::SourceLoc lineLoc{};
-    /// Captures the first line context and stops at the next logical line.
+    /// @brief Captures the first line context and stops at the next logical line.
+    /// @param line Current user line number.
+    /// @param loc Current line source location.
+    /// @return `true` when collection reached a different logical line.
     auto predicate = [&](int line, il::support::SourceLoc loc) {
         if (!haveLine) {
             haveLine = true;
@@ -368,7 +375,9 @@ StmtPtr StatementSequencer::parseStatementLine() {
         }
         return false;
     };
-    /// Preserves a user line label encountered at the stopping boundary.
+    /// @brief Preserves a user line label encountered at the stopping boundary.
+    /// @param line Boundary user line number.
+    /// @param loc Boundary line source location.
     auto consumer = [&](int line, il::support::SourceLoc loc, TerminatorInfo &) {
         if (hasUserLine(line))
             stashPendingLine(line, loc);

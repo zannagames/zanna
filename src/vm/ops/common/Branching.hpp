@@ -15,6 +15,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares shared branch-target, case-selection, and jump helpers.
+/// @details The abstractions carry non-owning VM control-flow references,
+///          validate target completeness, propagate destination parameters,
+///          and provide a uniform scalar switch representation.
+
 #pragma once
 
 #include "vm/VM.hpp"
@@ -41,6 +47,7 @@ struct Target {
     size_t *ip = nullptr; ///< Instruction pointer within current block.
 
     /// @brief Determine whether the target refers to a valid jump destination.
+    /// @return @c true when every required pointer and label index is valid.
     bool valid() const noexcept {
         return vm != nullptr && instr != nullptr && blocks != nullptr && currentBlock != nullptr &&
                ip != nullptr && labelIndex < instr->labels.size();
@@ -55,6 +62,9 @@ struct Case {
     Target target{};      ///< Branch destination associated with the case.
 
     /// @brief Construct an exact-match case entry.
+    /// @param value Scalar matched by the entry.
+    /// @param target Destination selected on equality.
+    /// @return Exact case containing @p value as both inclusive bounds.
     static Case exact(Scalar value, Target target) noexcept {
         Case entry{};
         entry.lower = value;
@@ -65,6 +75,10 @@ struct Case {
     }
 
     /// @brief Construct an inclusive range case entry.
+    /// @param lo Inclusive lower bound.
+    /// @param hi Inclusive upper bound.
+    /// @param target Destination selected for values within the range.
+    /// @return Range case preserving the supplied bounds and target.
     static Case range(Scalar lo, Scalar hi, Target target) noexcept {
         Case entry{};
         entry.lower = lo;
@@ -76,12 +90,21 @@ struct Case {
 };
 
 /// @brief Select the branch target associated with a scrutinee value.
+/// @param scrutinee Scalar value to match.
+/// @param table Ordered exact/range cases; the first match wins.
+/// @param default_tgt Fallback returned when no case matches.
+/// @return Matching case target or @p default_tgt.
 Target select_case(Scalar scrutinee, std::span<const Case> table, Target default_tgt);
 
 /// @brief Transfer control to the provided target, propagating block parameters.
+/// @param frame Active frame supplying operands and receiving staged parameters.
+/// @param target Validated non-owning description of the destination and control state.
 void jump(Frame &frame, Target target);
 
 /// @brief Evaluate the scrutinee operand for a switch instruction.
+/// @param frame Active frame supplying the operand.
+/// @param instr Switch-like instruction containing the scrutinee.
+/// @return Scrutinee narrowed to the shared signed 32-bit representation.
 Scalar eval_scrutinee(Frame &frame, const il::core::Instr &instr);
 
 } // namespace il::vm::ops::common

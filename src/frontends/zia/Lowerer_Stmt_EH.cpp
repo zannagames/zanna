@@ -202,6 +202,9 @@ void Lowerer::lowerTryStmt(TryStmt *stmt) {
     // Create the post-try continuation first so helper lambdas can target it.
     size_t afterIdx = createBlock("after_try");
 
+    /// @brief Creates a canonical error/resume-token handler block.
+    /// @param base Base label used for unique naming.
+    /// @return New block index.
     auto createHandlerBlock = [&](const std::string &base) -> size_t {
         std::vector<il::core::Param> params;
         params.push_back({"err", Type(Type::Kind::Error)});
@@ -212,6 +215,9 @@ void Lowerer::lowerTryStmt(TryStmt *stmt) {
         return currentFunc_->blocks.size() - 1;
     };
 
+    /// @brief Creates a uniquely parameterized catch continuation block.
+    /// @param base Base label used for unique naming.
+    /// @return New block index.
     auto createCatchContinuationBlock = [&](const std::string &base) -> size_t {
         const unsigned blockId = blockMgr_.nextBlockId();
         blockMgr_.setNextBlockId(blockId + 1);
@@ -223,6 +229,7 @@ void Lowerer::lowerTryStmt(TryStmt *stmt) {
         return currentFunc_->blocks.size() - 1;
     };
 
+    /// @brief Appends the canonical exception-handler entry marker.
     auto emitEhEntry = [&]() {
         il::core::Instr ehEntryInstr;
         ehEntryInstr.op = Opcode::EhEntry;
@@ -231,6 +238,9 @@ void Lowerer::lowerTryStmt(TryStmt *stmt) {
         blockMgr_.currentBlock()->instructions.push_back(std::move(ehEntryInstr));
     };
 
+    /// @brief Emits a branch with block arguments.
+    /// @param targetIdx Destination block index.
+    /// @param args Values transferred to destination parameters.
     auto emitBrWithArgs = [&](size_t targetIdx, const std::vector<Value> &args) {
         il::core::Instr brInstr;
         brInstr.op = Opcode::Br;
@@ -241,6 +251,12 @@ void Lowerer::lowerTryStmt(TryStmt *stmt) {
         blockMgr_.currentBlock()->terminated = true;
     };
 
+    /// @brief Emits a conditional branch with arguments on both edges.
+    /// @param cond Boolean branch condition.
+    /// @param trueIdx True-edge destination index.
+    /// @param trueArgs True-edge arguments.
+    /// @param falseIdx False-edge destination index.
+    /// @param falseArgs False-edge arguments.
     auto emitCBrWithArgs = [&](Value cond,
                                size_t trueIdx,
                                const std::vector<Value> &trueArgs,
@@ -257,6 +273,7 @@ void Lowerer::lowerTryStmt(TryStmt *stmt) {
         blockMgr_.currentBlock()->terminated = true;
     };
 
+    /// @brief Emits a structural trap fallback after a runtime raise call.
     auto emitTrapFallback = [&]() {
         il::core::Instr trapInstr;
         trapInstr.op = Opcode::TrapFromErr;
@@ -267,6 +284,10 @@ void Lowerer::lowerTryStmt(TryStmt *stmt) {
         blockMgr_.currentBlock()->terminated = true;
     };
 
+    /// @brief Captures error metadata into uniquely named local slots.
+    /// @param errVal Error value to decompose.
+    /// @param prefix Prefix for generated slot names.
+    /// @return Binding that identifies the captured slots.
     auto captureErrorFields = [&](Value errVal, const std::string &prefix) -> CatchErrorBinding {
         CatchErrorBinding slots;
         const std::string base = "__zia_" + prefix + "_" + std::to_string(nextTempId());
@@ -288,6 +309,8 @@ void Lowerer::lowerTryStmt(TryStmt *stmt) {
         return slots;
     };
 
+    /// @brief Reconstructs and raises an error from captured metadata.
+    /// @param slots Captured error-field slots.
     auto emitRethrowFromCaptured = [&](const CatchErrorBinding &slots) {
         Value errKind = loadFromSlot(slots.kindSlot, Type(Type::Kind::I32));
         Value errCode = loadFromSlot(slots.codeSlot, Type(Type::Kind::I32));
@@ -301,6 +324,10 @@ void Lowerer::lowerTryStmt(TryStmt *stmt) {
         emitTrapFallback();
     };
 
+    /// @brief Routes an error/token pair through a resume-label block.
+    /// @param errVal Error argument.
+    /// @param tokVal Resume-token argument.
+    /// @param base Base label for the generated resume block.
     auto emitResumeToAfter = [&](Value errVal, Value tokVal, const std::string &base) {
         size_t resumeIdx = createHandlerBlock(base);
         emitBrWithArgs(resumeIdx, {errVal, tokVal});
@@ -320,6 +347,11 @@ void Lowerer::lowerTryStmt(TryStmt *stmt) {
         blockMgr_.currentBlock()->terminated = true;
     };
 
+    /// @brief Binds a catch variable to its block error parameter.
+    /// @param catchClause Catch declaration supplying the optional variable name.
+    /// @param paramBlockIdx Catch continuation block index.
+    /// @param captured Captured error metadata associated with the value.
+    /// @return Effective captured binding.
     auto bindCatchPayload = [&](const TryStmt::CatchClause &catchClause,
                                 size_t paramBlockIdx,
                                 const CatchErrorBinding &captured) -> CatchErrorBinding {

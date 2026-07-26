@@ -15,6 +15,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements owning widget containers and equal-share stack layouts.
+/// @details Container children are visited in insertion order for layout and
+///          painting.  The vertical and horizontal stack implementations divide
+///          the assigned rectangle along one axis and give any integer-division
+///          remainder to the final child.
+
 #include "tui/ui/container.hpp"
 #include "tui/render/screen.hpp"
 
@@ -26,6 +33,7 @@ namespace zanna::tui::ui {
 ///          the internal list, preserving insertion order for both layout and
 ///          paint traversals.  Passing @c nullptr is undefined and avoided by
 ///          callers.
+/// @param child Widget whose ownership is transferred to this container.
 void Container::addChild(std::unique_ptr<Widget> child) {
     children_.push_back(std::move(child));
 }
@@ -38,6 +46,7 @@ void Container::addChild(std::unique_ptr<Widget> child) {
 ///          Keeping the hook centralised ensures every container obeys the
 ///          parent-provided rectangle while leaving distribution logic to the
 ///          subclass.
+/// @param r Rectangle assigned by the parent layout.
 void Container::layout(const Rect &r) {
     Widget::layout(r);
     layoutChildren();
@@ -50,6 +59,7 @@ void Container::layout(const Rect &r) {
 ///          shared @ref render::ScreenBuffer.  Iterating by reference avoids
 ///          copies and ensures that children paint using the rectangles computed
 ///          during layout.
+/// @param sb Screen buffer that receives each child's rendered cells.
 void Container::paint(render::ScreenBuffer &sb) {
     for (auto &ch : children_) {
         ch->paint(sb);

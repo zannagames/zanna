@@ -22,6 +22,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares guarded rotation of while-style IL loops into latch-tested form.
+ *
+ * @details Eligible single-latch, single-exit loops receive a pre-loop guard
+ *          and move their repeated condition test to the latch, removing one
+ *          branch from each taken iteration. The pass threads SSA block
+ *          parameters across the new edges and restores checked arithmetic
+ *          where the original CFG supplied range proofs that rotation removes.
+ */
+
 #pragma once
 
 #include "il/transform/PassRegistry.hpp"

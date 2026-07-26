@@ -5,9 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the FocusManager class for Zanna's TUI. The focus
-// manager maintains a circular ring of focusable widgets and tracks which
-// widget currently has keyboard focus.
+/// @file
+/// @brief Declares circular keyboard-focus management for TUI widgets.
+/// @details FocusManager stores non-owning pointers to eligible widgets,
+///          advances or reverses focus for Tab navigation, and adjusts its
+///          active index as widgets unregister.
 //
 // Widgets register with the focus manager via registerWidget(). Only widgets
 // that return true from wantsFocus() are added to the ring. The focus
@@ -66,8 +68,8 @@ class FocusManager {
     [[nodiscard]] Widget *current() const;
 
   private:
-    std::vector<Widget *> ring_{};
-    std::size_t index_{0};
+    std::vector<Widget *> ring_{}; ///< Non-owning focusable widgets in traversal order.
+    std::size_t index_{0};         ///< Current entry within @c ring_ when nonempty.
 };
 
 } // namespace zanna::tui::ui

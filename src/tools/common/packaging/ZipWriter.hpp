@@ -26,6 +26,9 @@
 //===----------------------------------------------------------------------===//
 #pragma once
 
+/// @file
+/// @brief Declares an in-memory ZIP32 writer preserving Unix entry metadata.
+
 #include <cstddef>
 #include <cstdint>
 #include <set>
@@ -56,6 +59,7 @@ class ZipWriter {
 
     /// @brief Construct an empty ZIP writer with compression enabled.
     ZipWriter();
+    /// @brief Release accumulated archive storage without performing I/O.
     ~ZipWriter();
 
     ZipWriter(const ZipWriter &) = delete;
@@ -72,6 +76,10 @@ class ZipWriter {
                  uint32_t unixMode = 0100644);
 
     /// @brief Add a file entry from a string.
+    /// @param name Archive-relative entry name.
+    /// @param content File bytes to copy.
+    /// @param unixMode Unix type and permission bits.
+    /// @throws std::runtime_error On invalid input or ZIP32 overflow.
     void addFileString(const std::string &name,
                        const std::string &content,
                        uint32_t unixMode = 0100644);
@@ -92,20 +100,24 @@ class ZipWriter {
     void finish(const std::string &path);
 
     /// @brief Finalize and return the ZIP as bytes.
+    /// @return Complete caller-owned archive bytes.
+    /// @throws std::runtime_error On repeated finalization or ZIP32 overflow.
     std::vector<uint8_t> finishToVector();
 
     /// @brief Enable or disable per-entry compression.
+    /// @param enabled true to attempt DEFLATE for beneficial entries.
     void setCompressionEnabled(bool enabled) noexcept {
         compressionEnabled_ = enabled;
     }
 
     /// @brief Inspect local-header/data offsets for entries already added.
+    /// @return Immutable metadata in insertion order.
     const std::vector<LayoutEntry> &layoutEntries() const noexcept {
         return layoutEntries_;
     }
 
   private:
-    // Internal per-entry record used to build the central directory on finish().
+    /// @brief Internal per-entry record used to build the central directory.
     struct Entry {
         std::string name;             ///< Normalised entry path.
         uint32_t crc32{0};            ///< CRC-32 of uncompressed data.
@@ -118,42 +130,61 @@ class ZipWriter {
         uint32_t externalAttrs{0}; ///< ZIP external file attributes (Unix mode in upper 16 bits).
     };
 
-    std::vector<uint8_t> buffer_;
-    std::vector<Entry> entries_;
-    std::vector<LayoutEntry> layoutEntries_;
-    std::set<std::string> seenNames_;
-    bool compressionEnabled_{true};
-    bool finalized_{false};
+    std::vector<uint8_t> buffer_; ///< Local records and, after finalization, central records.
+    std::vector<Entry> entries_; ///< Central-directory metadata in insertion order.
+    std::vector<LayoutEntry> layoutEntries_; ///< Caller-visible local record offsets.
+    std::set<std::string> seenNames_; ///< Normalized duplicate-detection keys.
+    bool compressionEnabled_{true}; ///< Whether beneficial DEFLATE is attempted.
+    bool finalized_{false}; ///< Whether central records have been committed.
 
     /// @brief Throw if the archive has already been finalized.
     void ensureOpen() const;
     /// @brief Sanitize an entry path: reject control characters, absolute paths, and ".." segments.
+    /// @param name Caller-supplied ZIP entry name.
+    /// @return Normalized forward-slash name.
+    /// @throws std::runtime_error If the name is unsafe or exceeds ZIP32 limits.
     std::string normalizeEntryName(const std::string &name) const;
     /// @brief Normalize and validate that a symlink target remains relative inside the archive
     /// root.
+    /// @param entryName Normalized path of the symlink entry.
+    /// @param target Caller-supplied target.
+    /// @return Normalized safe relative target.
+    /// @throws std::runtime_error If the target is empty, absolute, escaping, or oversized.
     std::string normalizeSymlinkTarget(const std::string &entryName,
                                        const std::string &target) const;
     /// @brief Throw if value > maxValue; prevents central-directory integer overflow on large
     /// archives.
+    /// @param value Candidate quantity.
+    /// @param maxValue Maximum ZIP32-representable quantity.
+    /// @param what Diagnostic description.
     void validateArchiveLimit(size_t value, size_t maxValue, const char *what) const;
     /// @brief Throw if appending @p additionalBytes would exceed ZIP32 archive-size fields.
     /// @details Local data offsets and central-directory records use 32-bit byte offsets. This
     ///          helper validates projected sizes before a local header or payload is appended so
     ///          casts to uint32_t remain exact.
+    /// @param additionalBytes Pending append size.
+    /// @param what Diagnostic description.
     void validateProjectedArchiveSize(size_t additionalBytes, const char *what) const;
     /// @brief Append len bytes of data to buffer_.
+    /// @param data Source bytes.
+    /// @param len Number of bytes to append.
     void writeBytes(const uint8_t *data, size_t len);
     /// @brief Append a 16-bit little-endian integer to buffer_.
+    /// @param v Host-order value.
     void writeU16(uint16_t v);
     /// @brief Append a 32-bit little-endian integer to buffer_.
+    /// @param v Host-order value.
     void writeU32(uint32_t v);
     /// @brief Write all central directory records and the EOCD to buffer_.
     void writeCentralDirectory();
     /// @brief Append central directory records and EOCD to an arbitrary archive buffer.
     /// @details Used by finish(path) to stage a finalized archive without consuming the writer
     /// before the output file is known to be writable.
+    /// @param archive Buffer receiving central records and EOCD.
     void appendCentralDirectory(std::vector<uint8_t> &archive) const;
     /// @brief Return the current wall-clock time as a DOS time/date pair for entry metadata.
+    /// @param time Receives packed DOS time.
+    /// @param date Receives packed DOS date.
     static void getDosTime(uint16_t &time, uint16_t &date);
 };
 

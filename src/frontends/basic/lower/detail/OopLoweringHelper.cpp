@@ -26,63 +26,65 @@ namespace il::frontends::basic::lower::detail {
 /// @param access Borrowed forwarding facade retained by value.
 OopLoweringHelper::OopLoweringHelper(Lowerer::DetailAccess access) noexcept : access_(access) {}
 
-/// @brief Lower New Expr.
+/// @copydoc OopLoweringHelper::lowerNewExpr(const NewExpr &)
 RVal OopLoweringHelper::lowerNewExpr(const NewExpr &expr) {
     return access_.lowerNewExpr(expr);
 }
 
-/// @brief Lower New Expr.
+/// @copydoc OopLoweringHelper::lowerNewExpr(const NewExpr &, OopLoweringContext &)
 RVal OopLoweringHelper::lowerNewExpr(const NewExpr &expr, OopLoweringContext &ctx) {
     return access_.lowerNewExpr(expr, ctx);
 }
 
-/// @brief Lower Me Expr.
+/// @copydoc OopLoweringHelper::lowerMeExpr(const MeExpr &)
 RVal OopLoweringHelper::lowerMeExpr(const MeExpr &expr) {
     return access_.lowerMeExpr(expr);
 }
 
-/// @brief Lower Me Expr.
+/// @copydoc OopLoweringHelper::lowerMeExpr(const MeExpr &, OopLoweringContext &)
 RVal OopLoweringHelper::lowerMeExpr(const MeExpr &expr, OopLoweringContext &ctx) {
     return access_.lowerMeExpr(expr, ctx);
 }
 
-/// @brief Lower Member Access Expr.
+/// @copydoc OopLoweringHelper::lowerMemberAccessExpr(const MemberAccessExpr &)
 RVal OopLoweringHelper::lowerMemberAccessExpr(const MemberAccessExpr &expr) {
     return access_.lowerMemberAccessExpr(expr);
 }
 
-/// @brief Lower Member Access Expr.
+/// @copydoc OopLoweringHelper::lowerMemberAccessExpr(const MemberAccessExpr &,
+///                                                   OopLoweringContext &)
 RVal OopLoweringHelper::lowerMemberAccessExpr(const MemberAccessExpr &expr,
                                               OopLoweringContext &ctx) {
     return access_.lowerMemberAccessExpr(expr, ctx);
 }
 
-/// @brief Lower Method Call Expr.
+/// @copydoc OopLoweringHelper::lowerMethodCallExpr(const MethodCallExpr &)
 RVal OopLoweringHelper::lowerMethodCallExpr(const MethodCallExpr &expr) {
     return access_.lowerMethodCallExpr(expr);
 }
 
-/// @brief Lower Method Call Expr.
+/// @copydoc OopLoweringHelper::lowerMethodCallExpr(const MethodCallExpr &,
+///                                                 OopLoweringContext &)
 RVal OopLoweringHelper::lowerMethodCallExpr(const MethodCallExpr &expr, OopLoweringContext &ctx) {
     return access_.lowerMethodCallExpr(expr, ctx);
 }
 
-/// @brief Lower Delete.
+/// @copydoc OopLoweringHelper::lowerDelete(const DeleteStmt &)
 void OopLoweringHelper::lowerDelete(const DeleteStmt &stmt) {
     access_.lowerDelete(stmt);
 }
 
-/// @brief Lower Delete.
+/// @copydoc OopLoweringHelper::lowerDelete(const DeleteStmt &, OopLoweringContext &)
 void OopLoweringHelper::lowerDelete(const DeleteStmt &stmt, OopLoweringContext &ctx) {
     access_.lowerDelete(stmt, ctx);
 }
 
-/// @brief Scan OOP.
+/// @copydoc OopLoweringHelper::scanOOP()
 void OopLoweringHelper::scanOOP(const Program &prog) {
     access_.scanOOP(prog);
 }
 
-/// @brief Emit Oop Decls And Bodies.
+/// @copydoc OopLoweringHelper::emitOopDeclsAndBodies()
 void OopLoweringHelper::emitOopDeclsAndBodies(const Program &prog) {
     access_.emitOopDeclsAndBodies(prog);
 }

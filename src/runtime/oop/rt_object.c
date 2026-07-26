@@ -8,28 +8,39 @@
 // File: src/runtime/oop/rt_object.c
 // Purpose: Implements the core object allocation and reference-counted lifetime
 //          management system. All heap objects (class instances, collections,
-//          etc.) are allocated through rt_object_alloc and managed by
-//          rt_object_retain / rt_object_release.
+//          etc.) use the shared heap allocator and are managed through the
+//          rt_obj_* helpers or validated Zanna.Memory retain/release entry points.
 //
 // Key invariants:
 //   - Every allocated object has a rt_heap_hdr_t header directly preceding
 //     the user-visible payload pointer.
-//   - refcnt starts at 1 on allocation; release to 0 invokes the finalizer.
-//   - Finalizers are optional; if provided, they are called before freeing.
-//   - rt_object_retain on NULL is a safe no-op; same for release.
+//   - refcnt starts at 1 on allocation; zero-count objects are finalized and
+//     reclaimed unless their finalizer resurrects them.
+//   - Finalizer slots are optional and cleared before callback invocation.
+//   - Public and permissive retain/release entry points treat NULL as a no-op.
 //   - Class instances store a vtable pointer (vptr) as the first field of
 //     their payload; this layout is fixed and must not change.
 //
 // Ownership/Lifetime:
-//   - Callers receive a fresh reference (refcount=1) from rt_object_alloc.
-//   - Callers must call rt_object_release when done; the GC does not
-//     automatically track objects not reachable via the heap graph.
+//   - Callers receive a fresh reference (refcount=1) from rt_obj_new_i64.
+//   - Callers must balance ownership with a matching release. The public
+//     rt_memory_release path performs finalization and deallocation at zero;
+//     rt_obj_release_check0 callers must invoke rt_obj_free after a true result.
 //
 // Links: src/runtime/oop/rt_object.h (public API),
-//        src/runtime/rt_heap.h (underlying allocator),
-//        src/runtime/oop/rt_type_registry.h (class ID and vtable metadata)
+//        src/runtime/core/rt_heap.h (underlying allocator),
+//        src/runtime/oop/rt_oop.h (class and vtable metadata)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_object.c
+ * @brief Implements core managed object allocation and reference counting.
+ * @details The object layer creates zeroed class-tagged payloads, validates
+ *          identities and sizes, retains or releases managed objects and
+ *          Strings, invokes resurrection-aware finalizers, and implements the
+ *          native System.Object and public Memory ownership surfaces.
+ */
 
 #include "rt_object.h"
 #include "rt_array_obj.h"
@@ -79,8 +90,12 @@ static inline void *alloc_payload(size_t bytes) {
     return rt_heap_alloc(RT_HEAP_OBJECT, RT_ELEM_NONE, 1, len, cap);
 }
 
-/// @brief Build an rt_string from a NUL-terminated C string. Inline strlen avoids pulling in
-/// `<string.h>` for this single use.
+/// @brief Copy a NUL-terminated C string into a managed runtime string.
+/// @details Scans @p text for its terminating NUL and passes the resulting byte
+///          span to @ref rt_string_from_bytes. The terminator is not included in
+///          the runtime string's logical length.
+/// @param text Non-NULL NUL-terminated bytes to copy.
+/// @return A caller-owned runtime string containing the copied bytes.
 static rt_string rt_obj_make_cstr(const char *text) {
     size_t len = 0;
     while (text[len] != '\0')
@@ -94,6 +109,9 @@ static rt_string rt_obj_make_cstr(const char *text) {
 ///          runtime handles) rather
 ///          than a user-defined class registered in the type registry. Returns NULL for any
 ///          id that isn't built-in so the caller can fall back to the registry lookup.
+/// @param class_id Runtime class identifier to translate.
+/// @return Borrowed static qualified-name text for a recognized built-in class,
+///         or @c NULL when @p class_id has no entry in this table.
 static const char *rt_obj_builtin_class_name(int64_t class_id) {
     switch (class_id) {
         case RT_BOX_CLASS_ID:
@@ -146,6 +164,9 @@ static const char *rt_obj_builtin_class_name(int64_t class_id) {
 
 /// @brief Look up an object's qualified type name from its class-info record. Falls back to
 /// "Object" if class info is missing or has no qname (e.g. for raw heap blobs).
+/// @param ci Borrowed class metadata to query; may be @c NULL.
+/// @return A caller-owned runtime string containing the registered qualified
+///         name, or `"Object"` when no name is available.
 static rt_string rt_obj_type_name_from_class_info(const rt_class_info *ci) {
     if (!ci || !ci->qname)
         return rt_obj_make_cstr("Object");
@@ -204,6 +225,14 @@ int64_t rt_obj_class_id(void *p) {
 }
 
 /// @brief Validate a runtime-managed object handle before implementation-specific casts.
+/// @details Rejects null and stale pointers, non-object heap allocations, objects
+///          with a different class identifier, and payloads too small for the
+///          implementation structure the caller intends to access.
+/// @param p Candidate user-visible heap payload.
+/// @param class_id Exact runtime class identifier required by the caller.
+/// @param min_payload_bytes Minimum allocated payload capacity required for a
+///        safe implementation-specific cast.
+/// @return @c 1 when all object, class, and capacity checks pass; otherwise @c 0.
 int8_t rt_obj_is_instance(void *p, int64_t class_id, size_t min_payload_bytes) {
     if (!p)
         return 0;
@@ -323,6 +352,9 @@ void rt_obj_retain_maybe(void *p) {
 ///          the value comes from an object allocation helper. The NULL guard
 ///          preserves the broad retain contract while removing string and raw
 ///          pointer probes from hot exact-object paths.
+/// @param p Compiler-proven heap-object payload to retain; @c NULL is ignored.
+/// @warning Passing a string handle, raw pointer, stale payload, or other
+///          unproven value violates this helper's contract.
 void rt_obj_retain_known(void *p) {
     if (!p)
         return;
@@ -330,6 +362,12 @@ void rt_obj_retain_known(void *p) {
 }
 
 /// @brief Public Zanna.Memory retain entry point with runtime handle validation.
+/// @details Retains a runtime string handle directly, or validates that a
+///          non-string value is a live object or array payload before incrementing
+///          its heap reference count. Invalid, freed, internal string-payload, and
+///          unsupported heap pointers trap instead of being silently ignored.
+/// @param p Managed string handle, object payload, or array payload to retain;
+///        @c NULL is a no-op.
 void rt_memory_retain(void *p) {
     if (!p)
         return;
@@ -357,6 +395,8 @@ void rt_memory_retain(void *p) {
 /// @details Validates that @p s is a runtime string handle before retaining it.
 ///          The typed wrapper exists so Zia and BASIC code can call it without a `void *`
 ///          cast at the IL boundary.
+/// @param s Managed string handle to retain; @c NULL is a no-op. A non-NULL
+///        invalid handle traps.
 void rt_memory_retain_str(rt_string s) {
     if (!s)
         return;
@@ -388,13 +428,25 @@ int32_t rt_obj_release_check0(void *p) {
 /// @brief Release a non-null runtime heap object without dynamic kind checks.
 /// @details The caller must free the object through @ref rt_obj_free when this
 ///          returns non-zero, matching @ref rt_obj_release_check0 semantics.
+/// @param p Compiler-proven heap-object payload to release; @c NULL is ignored.
+/// @return @c 1 when the deferred release reaches zero and the caller must invoke
+///         @ref rt_obj_free; otherwise @c 0.
+/// @warning Passing a string handle, raw pointer, stale payload, or other
+///          unproven value violates this helper's contract.
 int32_t rt_obj_release_known_check0(void *p) {
     if (!p)
         return 0;
     return (int32_t)(rt_heap_release_deferred(p) == 0);
 }
 
-/// @brief Convert a size_t reference count to int64_t, trapping on overflow.
+/// @brief Convert a native reference count to the public signed Integer range.
+/// @details Counts above `INT64_MAX` produce an API-specific trap. The saturated
+///          return value is a defensive fallback for trap hooks that return.
+/// @param refcount Native reference count to convert.
+/// @param api_name API name to include in an overflow diagnostic; @c NULL uses
+///        `"Zanna.Memory.Release"`.
+/// @return @p refcount represented as `int64_t`, or `INT64_MAX` after reporting
+///         an out-of-range value.
 static int64_t rt_memory_refcount_to_i64_named(size_t refcount, const char *api_name) {
     if (refcount > (size_t)INT64_MAX) {
         char buf[128];
@@ -408,6 +460,10 @@ static int64_t rt_memory_refcount_to_i64_named(size_t refcount, const char *api_
     return (int64_t)refcount;
 }
 
+/// @brief Convert a native reference count for `Zanna.Memory.Release`.
+/// @param refcount Native reference count to convert.
+/// @return @p refcount represented as `int64_t`, with overflow handled by
+///         @ref rt_memory_refcount_to_i64_named.
 static int64_t rt_memory_refcount_to_i64(size_t refcount) {
     return rt_memory_refcount_to_i64_named(refcount, "Zanna.Memory.Release");
 }
@@ -418,6 +474,11 @@ static int64_t rt_memory_refcount_to_i64(size_t refcount) {
 ///          traps); decrements the refcount via `rt_string_unref_count`. Saturates the
 ///          immortal sentinel (`SIZE_MAX`) at `INT64_MAX` so callers can publish the
 ///          observed refcount via the typed Zia API without surprising overflow traps.
+/// @param s Managed string handle to release; @c NULL returns zero.
+/// @param api_name API name used in invalid-handle and overflow diagnostics;
+///        @c NULL selects the generic release name.
+/// @return The post-release reference count, `INT64_MAX` for an immortal string,
+///         or zero for a null handle or a string whose final reference was released.
 static int64_t rt_memory_release_string(rt_string s, const char *api_name) {
     if (!s)
         return 0;
@@ -437,6 +498,12 @@ static int64_t rt_memory_release_string(rt_string s, const char *api_name) {
     return rt_memory_refcount_to_i64_named(next, api_name);
 }
 
+/// @brief Validate that a heap array can be released by the generic Memory API.
+/// @details Requires a coherent `len <= cap` layout and an element kind whose
+///          cleanup semantics are implemented below. Malformed lengths and
+///          unsupported element kinds trap.
+/// @param hdr Borrowed heap header for the candidate array; may be @c NULL.
+/// @return @c 1 when generic payload cleanup is supported; otherwise @c 0.
 static int rt_memory_array_payload_is_releasable(rt_heap_hdr_t *hdr) {
     if (!hdr)
         return 0;
@@ -470,6 +537,13 @@ static int rt_memory_array_payload_is_releasable(rt_heap_hdr_t *hdr) {
 ///              no-ops — those payloads carry no managed references.
 ///          Every visited slot is NULLed after release so a re-entry from a finalizer that
 ///          observes the array can't re-release a stale pointer.
+///          If releasing an element traps, cleanup resumes at the following slot,
+///          remembers the first diagnostic, and rethrows it only after all remaining
+///          elements have been processed. The caller remains responsible for freeing
+///          the array allocation.
+/// @param p Mutable array payload whose owned element slots are being cleared;
+///        @c NULL is ignored.
+/// @param hdr Borrowed heap header describing @p p; @c NULL is ignored.
 static void rt_memory_release_array_payload(void *p, rt_heap_hdr_t *hdr) {
     if (!p || !hdr)
         return;
@@ -547,6 +621,13 @@ static void rt_memory_release_array_payload(void *p, rt_heap_hdr_t *hdr) {
         rt_trap(saved_error);
 }
 
+/// @brief Clean up and free an array whose reference count is already zero.
+/// @details Releases all managed elements, clears weak references to the array,
+///          and returns the zero-count allocation to the heap. If element cleanup
+///          traps, the array is still cleared and freed before the saved diagnostic
+///          is rethrown.
+/// @param p Zero-reference array payload to reclaim.
+/// @param hdr Borrowed heap header associated with @p p.
 static void rt_memory_free_zero_ref_array(void *p, rt_heap_hdr_t *hdr) {
     rt_gc_mutator_enter();
     jmp_buf recovery;
@@ -580,6 +661,16 @@ static void rt_memory_free_zero_ref_array(void *p, rt_heap_hdr_t *hdr) {
 ///          lock, frees the object, and writes the observed post-release refcount to
 ///          @p post_refcount when non-NULL. Used by both `rt_memory_release` and the
 ///          internal release-then-free shortcut paths.
+///          The finalizer slot is cleared before invocation. If the callback
+///          resurrects the object, the payload remains live and its new reference
+///          count is reported. A trapping finalizer is rethrown after the same
+///          resurrection check; a non-resurrected object is reclaimed first.
+/// @param p Object payload expected to have a zero reference count; @c NULL
+///        performs no work.
+/// @param post_refcount Optional output initialized to zero and updated to the
+///        nonzero count installed by a resurrecting finalizer.
+/// @return @c 1 when the payload was reclaimed, or @c 0 when it was null,
+///         invalid, or resurrected.
 static int32_t rt_obj_free_zero_ref_object(void *p, int64_t *post_refcount) {
     if (post_refcount)
         *post_refcount = 0;
@@ -658,6 +749,15 @@ static int32_t rt_obj_free_zero_ref_object(void *p, int64_t *post_refcount) {
 }
 
 /// @brief Public Zanna.Memory release entry point with managed object finalization.
+/// @details Validates and releases string handles, object payloads, and supported
+///          arrays. A last object reference runs its finalizer and returns the
+///          resurrected count if the finalizer revives it. A last array reference
+///          releases its managed elements before reclaiming the allocation.
+///          Invalid, freed, internal string-payload, and unsupported heap values trap.
+/// @param p Managed string handle, object payload, or array payload to release;
+///        @c NULL returns zero.
+/// @return The post-release reference count, `INT64_MAX` for an immortal string,
+///         or zero when the value is null or was destroyed.
 int64_t rt_memory_release(void *p) {
     if (!p)
         return 0;
@@ -699,6 +799,10 @@ int64_t rt_memory_release(void *p) {
 ///          runtime string without an `rt_string` ↔ `void *` cast at the IL boundary.
 ///          Returns the post-release refcount (saturated at `INT64_MAX` for immortal
 ///          strings) so callers can publish the observed value through the typed API.
+/// @param s Managed string handle to release; @c NULL returns zero. A non-NULL
+///        invalid handle traps.
+/// @return The post-release reference count, `INT64_MAX` for an immortal string,
+///         or zero for null or final release.
 int64_t rt_memory_release_str(rt_string s) {
     if (!s)
         return 0;
@@ -706,12 +810,13 @@ int64_t rt_memory_release_str(rt_string s) {
 }
 
 /// @brief Compatibility shim matching the string free entry point.
-/// @details Releases storage for objects whose reference count already dropped
-///          to zero.  The runtime heap performs the actual deallocation once
-///          @ref rt_heap_free_zero_ref observes the zero count, mirroring the
-///          BASIC string API while keeping the payload valid for user-defined
-///          destructors until this helper runs.
-/// @param p Object payload pointer; ignored when @c NULL.
+/// @details Reclaims object or array payloads whose reference count has already
+///          dropped to zero, including finalization and owned-array-element
+///          cleanup. String handles follow their normal release path instead.
+///          Live heap payloads trap because this helper must not decrement their
+///          reference count. Invalid or stale non-string pointers are ignored.
+/// @param p Managed object/array payload at zero references, or a string handle
+///        to release; @c NULL is ignored.
 void rt_obj_free(void *p) {
     if (!p)
         return;
@@ -955,6 +1060,9 @@ int64_t rt_obj_is_null(void *self) {
 // Weak Reference Support
 // ============================================================================
 
+/// @brief Determine whether a weak-slot value has runtime-managed lifetime.
+/// @param value Candidate string handle or heap payload.
+/// @return Nonzero for a non-NULL managed string, object, or array; otherwise zero.
 static int rt_weak_value_is_managed(void *value) {
     return value && (rt_string_is_handle(value) || rt_heap_is_payload(value));
 }

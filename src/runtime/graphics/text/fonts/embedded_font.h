@@ -23,6 +23,13 @@
 //        src/runtime/graphics/gui/rt_gui_widgets.c
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares the generated process-lifetime embedded font payload.
+ * @details Exposes the immutable JetBrains Mono Regular TTF bytes and their
+ * exact generated length. Consumers borrow the array for font loading and
+ * neither modify nor release it.
+ */
 #pragma once
 
 /// @brief Raw bytes of the complete embedded JetBrains Mono Regular TTF file.

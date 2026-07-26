@@ -5,16 +5,17 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/tools/rtgen/rtgen.cpp
-// Purpose: Parse the modular runtime definition set and generate registries and
-//          exhaustive API reference documentation.
-// Key invariants:
-//   - Includes are relative, cycle-free, root-confined, and declaration-ordered.
-//   - Runtime class documentation is authored once and propagated unchanged.
-// Ownership/Lifetime:
-//   - ParseState owns source metadata until generation finishes.
-//   - Generated C++ literals and Markdown files own copied string data.
-// Links: src/il/runtime/runtime.def, docs/adr/0101-modular-runtime-definitions-and-documentation.md
+/// @file
+/// @brief Parses modular runtime definitions and generates registries, frontend
+///        name tables, signatures, class metadata, and API documentation.
+///
+/// Definition includes are relative, cycle-free, confined to the definition
+/// root, and processed in declaration order. ParseState owns accumulated
+/// metadata until generation completes; generated C++ and Markdown own copied
+/// strings.
+///
+/// @see src/il/runtime/runtime.def
+/// @see docs/adr/0101-modular-runtime-definitions-and-documentation.md
 //
 // Usage: rtgen <input.def> <output_dir>
 //        rtgen --validate <input.def>
@@ -199,21 +200,27 @@ struct ParseState {
         bool sawDetails{false};        ///< Whether @details appeared.
         bool collectingDetails{false}; ///< Whether subsequent /// lines are details.
 
+        /// @brief Test whether a documentation block is awaiting attachment.
+        /// @return @c true after summary/details content has begun.
         [[nodiscard]] bool active() const noexcept {
             return sawSummary || sawDetails || collectingDetails;
         }
 
+        /// @brief Reset all pending documentation text and state flags.
         void clear() {
             *this = PendingDocumentation{};
         }
     } pendingDocumentation;
 
     /// @brief Print a file:line error to stderr and terminate the process.
+    /// @param msg Error detail appended to the current source location.
+    /// @throws std::runtime_error Always, with filename and line context.
     void error(const std::string &msg) const {
         throw std::runtime_error(filename + ":" + std::to_string(line_num) + ": error: " + msg);
     }
 
     /// @brief Print a non-fatal file:line warning to stderr.
+    /// @param msg Warning detail appended to the current source location.
     void warning(const std::string &msg) const {
         std::cerr << filename << ":" << line_num << ": warning: " << msg << "\n";
     }
@@ -224,7 +231,12 @@ struct ParseState {
 //===----------------------------------------------------------------------===//
 
 /// @brief Return a copy of @p sv with leading/trailing ASCII whitespace removed.
+/// @param sv Text view to trim.
+/// @return Owned trimmed text.
 static std::string trim(std::string_view sv) {
+    /// @brief Test whether one byte is supported ASCII whitespace.
+    /// @param c Byte to inspect.
+    /// @return `true` for space, horizontal tab, line feed, or carriage return.
     auto is_space = [](char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; };
     while (!sv.empty() && is_space(sv.front()))
         sv.remove_prefix(1);
@@ -236,6 +248,10 @@ static std::string trim(std::string_view sv) {
 /// @brief Split @p sv on @p delim, ignoring delimiters inside quotes or parentheses.
 /// @details Each field is trimmed; empty fields are skipped. Used to parse the
 ///          comma-separated argument lists of runtime.def directives.
+/// @param sv Delimited source text.
+/// @param delim Separator recognized outside quotes and parentheses.
+/// @return Owned trimmed nonempty fields in source order.
+/// @throws std::runtime_error On unterminated quotes or unbalanced parentheses.
 static std::vector<std::string> split(std::string_view sv, char delim) {
     std::vector<std::string> result;
     size_t start = 0;
@@ -272,6 +288,9 @@ static std::vector<std::string> split(std::string_view sv, char delim) {
 /// @details Like split(), but also balances angle brackets, braces, and square
 ///          brackets in addition to parentheses and quotes — needed to split
 ///          generic-bearing type signatures (e.g. `List<Map<a,b>>`).
+/// @param sv Delimited source text.
+/// @param delim Separator recognized only at nesting depth zero.
+/// @return Owned trimmed nonempty top-level fields in source order.
 static std::vector<std::string> splitTopLevel(std::string_view sv, char delim) {
     std::vector<std::string> result;
     size_t start = 0;
@@ -319,6 +338,8 @@ static std::vector<std::string> splitTopLevel(std::string_view sv, char delim) {
 /// @details Escapes quotes/backslashes/standard control chars and renders other
 ///          bytes below 0x20 (and 0x7F) as `\\xNN`, so generated .inc files always
 ///          compile regardless of the source text.
+/// @param value Raw bytes to encode.
+/// @return Quoted C++ string literal suitable for generated source.
 static std::string cppStringLiteral(const std::string &value) {
     std::string out;
     out.reserve(value.size() + 2);
@@ -362,11 +383,17 @@ static std::string cppStringLiteral(const std::string &value) {
 }
 
 /// @brief Return true if @p sv begins with @p prefix.
+/// @param sv Candidate complete text.
+/// @param prefix Prefix to compare.
+/// @return @c true when @p prefix matches at offset zero.
 static bool startsWith(std::string_view sv, std::string_view prefix) {
     return sv.size() >= prefix.size() && sv.substr(0, prefix.size()) == prefix;
 }
 
 /// @brief Return @p sv with @p prefix removed, or unchanged if it does not match.
+/// @param sv Source view.
+/// @param prefix Optional prefix to remove.
+/// @return Subview after @p prefix when matched, otherwise @p sv.
 static std::string_view stripPrefix(std::string_view sv, std::string_view prefix) {
     if (startsWith(sv, prefix))
         return sv.substr(prefix.size());
@@ -374,7 +401,12 @@ static std::string_view stripPrefix(std::string_view sv, std::string_view prefix
 }
 
 /// @brief Return @p sv with leading/trailing ASCII whitespace removed (view, no copy).
+/// @param sv Source view.
+/// @return Trimmed subview borrowing the original storage.
 static std::string_view trimView(std::string_view sv) {
+    /// @brief Test whether one byte is supported ASCII whitespace.
+    /// @param c Byte to inspect.
+    /// @return `true` for space, horizontal tab, line feed, or carriage return.
     auto is_space = [](char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; };
     while (!sv.empty() && is_space(sv.front()))
         sv.remove_prefix(1);
@@ -384,6 +416,8 @@ static std::string_view trimView(std::string_view sv) {
 }
 
 /// @brief Trim @p sv and remove one layer of surrounding double quotes, if present.
+/// @param sv Source text.
+/// @return Owned trimmed text with one matching quote pair removed.
 static std::string stripQuotes(std::string_view sv) {
     std::string s = trim(sv);
     if (s.size() >= 2 && s.front() == '"' && s.back() == '"')
@@ -394,6 +428,8 @@ static std::string stripQuotes(std::string_view sv) {
 /// @brief Drop a trailing parameter name from a C parameter declaration.
 /// @details Given e.g. "const char *path", returns "const char *"; returns the
 ///          input unchanged for "void" or when no trailing identifier is found.
+/// @param sv C parameter declaration.
+/// @return Owned declaration type with a trailing parameter identifier removed.
 static std::string stripParamName(std::string_view sv) {
     std::string param = trim(sv);
     if (param.empty() || param == "void")
@@ -417,6 +453,8 @@ static std::string stripParamName(std::string_view sv) {
 /// @details Handles function-pointer parameters (`ret (*name)(...)`) as well as
 ///          ordinary `type name` declarations; returns "" when there is no name
 ///          (or the parameter is "void").
+/// @param sv C parameter declaration.
+/// @return Extracted parameter identifier, or an empty string when absent.
 static std::string extractParamName(std::string_view sv) {
     std::string param = trim(sv);
     if (param.empty() || param == "void")
@@ -453,6 +491,9 @@ static std::string extractParamName(std::string_view sv) {
 ///          "a, b, c", matching the closing paren while respecting nested parens
 ///          and quotes. Returns nullopt when @p line is not a call to @p macro or
 ///          the parentheses are unbalanced.
+/// @param line Candidate macro-invocation text.
+/// @param macro Required macro name prefix.
+/// @return Owned parenthesized argument text, or @c std::nullopt on mismatch.
 static std::optional<std::string> extractParens(std::string_view line, std::string_view macro) {
     if (!startsWith(line, macro))
         return std::nullopt;
@@ -487,6 +528,10 @@ static std::optional<std::string> extractParens(std::string_view line, std::stri
 /// @brief Parse an RT_FUNC-like directive and append a RuntimeFunc to @p state.
 /// @details Validates the 4-5 argument arity, strips quotes, and enforces unique
 ///          ids and canonical names (reporting a fatal error otherwise).
+/// @param state Parser state and uniqueness indices to update.
+/// @param args Directive argument text.
+/// @param publicSurface Whether the function is independently frontend-visible.
+/// @throws std::runtime_error Through ParseState::error on invalid definitions.
 static void parseRtFunc(ParseState &state, const std::string &args, bool publicSurface = true) {
     // RT_FUNC(id, c_symbol, canonical, signature [, lowering])
     auto parts = splitTopLevel(args, ',');
@@ -527,6 +572,9 @@ static void parseRtFunc(ParseState &state, const std::string &args, bool publicS
 ///        parameters.
 /// @details Requires one role per surface parameter and validates each role is
 ///          one of none/callback/payload before recording them on the target.
+/// @param state Parser state containing the referenced function.
+/// @param args Bridge target and quoted role-list arguments.
+/// @throws std::runtime_error Through ParseState::error on invalid roles or target.
 static void parseRtBridge(ParseState &state, const std::string &args) {
     // RT_BRIDGE(target_id, "role0,role1,...")
     auto parts = splitTopLevel(args, ',');
@@ -561,6 +609,9 @@ static void parseRtBridge(ParseState &state, const std::string &args) {
 
 /// @brief Parse RT_CLASS_BEGIN, opening a new class block in @p state.
 /// @details Rejects nested class blocks; the class is finalized by parseRtClassEnd.
+/// @param state Parser state whose current class and pending documentation change.
+/// @param args Class name, type ID, layout, constructor, and optional base.
+/// @throws std::runtime_error Through ParseState::error on malformed or nested blocks.
 static void parseRtClassBegin(ParseState &state, const std::string &args) {
     // RT_CLASS_BEGIN(name, type_id, layout, ctor_id[, base_name])
     if (state.current_class.has_value())
@@ -581,6 +632,8 @@ static void parseRtClassBegin(ParseState &state, const std::string &args) {
         cls.base_name = parts[4];
 
     // Remove quotes from all string fields
+    /// @brief Remove one matching pair of double quotes from a parsed field.
+    /// @param[in,out] s Field text to normalize in place.
     auto stripQuotes = [](std::string &s) {
         if (s.size() >= 2 && s.front() == '"' && s.back() == '"')
             s = s.substr(1, s.size() - 2);
@@ -614,6 +667,9 @@ static void parseRtClassBegin(ParseState &state, const std::string &args) {
 }
 
 /// @brief Parse an RT_PROP directive, adding a property to the open class block.
+/// @param state Parser state containing the open class.
+/// @param args Property name, type, getter, and setter arguments.
+/// @throws std::runtime_error Through ParseState::error outside a class or on bad arity.
 static void parseRtProp(ParseState &state, const std::string &args) {
     // RT_PROP(name, type, getter_id, setter_id_or_none)
     if (!state.current_class.has_value())
@@ -631,6 +687,8 @@ static void parseRtProp(ParseState &state, const std::string &args) {
     prop.setter_id = parts[3];
 
     // Remove quotes from all string fields
+    /// @brief Remove one matching pair of double quotes from a parsed field.
+    /// @param[in,out] s Field text to normalize in place.
     auto stripQuotes = [](std::string &s) {
         if (s.size() >= 2 && s.front() == '"' && s.back() == '"')
             s = s.substr(1, s.size() - 2);
@@ -644,6 +702,9 @@ static void parseRtProp(ParseState &state, const std::string &args) {
 }
 
 /// @brief Parse an RT_METHOD directive, adding a method to the open class block.
+/// @param state Parser state containing the open class.
+/// @param args Method name, signature, and target-function arguments.
+/// @throws std::runtime_error Through ParseState::error outside a class or on bad arity.
 static void parseRtMethod(ParseState &state, const std::string &args) {
     // RT_METHOD(name, signature, target_id)
     if (!state.current_class.has_value())
@@ -660,6 +721,8 @@ static void parseRtMethod(ParseState &state, const std::string &args) {
     method.target_id = parts[2];
 
     // Remove quotes from all string fields
+    /// @brief Remove one matching pair of double quotes from a parsed field.
+    /// @param[in,out] s Field text to normalize in place.
     auto stripQuotes = [](std::string &s) {
         if (s.size() >= 2 && s.front() == '"' && s.back() == '"')
             s = s.substr(1, s.size() - 2);
@@ -672,6 +735,8 @@ static void parseRtMethod(ParseState &state, const std::string &args) {
 }
 
 /// @brief Parse RT_CLASS_END, committing the open class block to @p state.classes.
+/// @param state Parser state containing the class to finalize.
+/// @throws std::runtime_error Through ParseState::error when no class is open.
 static void parseRtClassEnd(ParseState &state) {
     if (!state.current_class.has_value())
         state.error("RT_CLASS_END without matching RT_CLASS_BEGIN");
@@ -684,6 +749,9 @@ static void parseRtClassEnd(ParseState &state) {
 /// @details Documentation blocks support one `@summary` line followed by an
 ///          `@details` marker and zero or more Markdown lines. The block is
 ///          attached by parseRtClassBegin() to the immediately following class.
+/// @param state Parser state holding pending documentation and source context.
+/// @param line Trimmed formal documentation line beginning with @c ///.
+/// @throws std::runtime_error Through ParseState::error for invalid command order.
 static void parseDocumentationLine(ParseState &state, std::string_view line) {
     std::string_view content = stripPrefix(line, "///");
     if (!content.empty() && content.front() == ' ')
@@ -695,6 +763,9 @@ static void parseDocumentationLine(ParseState &state, std::string_view line) {
         doc.line = state.line_num;
     }
 
+    /// @brief Test whether the current documentation line begins with a command.
+    /// @param command Command name to compare against `content`.
+    /// @return `true` for an exact match or a command followed by whitespace.
     const auto isCommand = [content](std::string_view command) {
         return content == command ||
                (startsWith(content, command) && content.size() > command.size() &&
@@ -741,7 +812,9 @@ static void parseDocumentationLine(ParseState &state, std::string_view line) {
 }
 
 /// @brief Return a quoted path from a `#include` directive.
+/// @param line Candidate preprocessor line.
 /// @return The relative include path, nullopt when @p line is not an include.
+/// @throws std::runtime_error For angle-bracket, unterminated, or trailing syntax.
 static std::optional<std::string> parseIncludeDirective(std::string_view line) {
     line = trimView(line);
     if (!startsWith(line, "#include"))
@@ -758,6 +831,9 @@ static std::optional<std::string> parseIncludeDirective(std::string_view line) {
 }
 
 /// @brief Return whether @p candidate is equal to or nested beneath @p root.
+/// @param candidate Canonical candidate path.
+/// @param root Canonical containment root.
+/// @return @c true when every component of @p root prefixes @p candidate.
 static bool pathIsWithin(const fs::path &candidate, const fs::path &root) {
     auto candidateIt = candidate.begin();
     for (auto rootIt = root.begin(); rootIt != root.end(); ++rootIt, ++candidateIt) {
@@ -773,6 +849,9 @@ static const RuntimeFunc *resolveRuntimeFunc(const ParseState &state,
 /// @brief Dispatch one runtime.def line to the matching RT_* directive parser.
 /// @details Parses formal documentation before ordinary comments. Includes are
 ///          handled by parseDefinitionFile(); an unrecognised directive is fatal.
+/// @param state Parser state and current source location.
+/// @param line Raw definition-file line.
+/// @throws std::runtime_error Through ParseState::error for unknown or misplaced directives.
 static void parseLine(ParseState &state, const std::string &line) {
     std::string trimmed = trim(line);
 
@@ -821,6 +900,12 @@ static void parseLine(ParseState &state, const std::string &line) {
 }
 
 /// @brief Recursively parse one runtime definition file and its quoted includes.
+/// @param state Accumulated parse state, temporarily updated with file context.
+/// @param path Definition file to resolve and read.
+/// @param definitionRoot Canonical root that every include must remain beneath.
+/// @param includedFiles Canonical paths used to reject duplicate inclusion.
+/// @param includeStack Active canonical paths used to detect cycles.
+/// @throws std::runtime_error For I/O, containment, include, or directive errors.
 static void parseDefinitionFile(ParseState &state,
                                 const fs::path &path,
                                 const fs::path &definitionRoot,
@@ -909,6 +994,9 @@ static void parseDefinitionFile(ParseState &state,
 }
 
 /// @brief Read and parse a runtime.def manifest and all included fragments.
+/// @param path Root definition manifest.
+/// @return Fully accumulated parser state.
+/// @throws std::runtime_error When root resolution or parsing fails.
 static ParseState parseFile(const fs::path &path) {
     ParseState state;
     std::error_code rootEc;
@@ -929,6 +1017,9 @@ static ParseState parseFile(const fs::path &path) {
 /// @brief Validate cross-row references that require the complete definition set.
 /// @details Includes may place a referenced function after its class, so these
 ///          checks run only after the root manifest and all fragments are parsed.
+/// @param state Complete parsed definition set.
+/// @param inputPath Root manifest path used in aggregate error messages.
+/// @throws std::runtime_error When documentation, inheritance, or targets are invalid.
 static void validateDefinitionReferences(const ParseState &state, const fs::path &inputPath) {
     std::vector<std::string> errors;
     std::unordered_map<std::string, const RuntimeClass *> classesByName;
@@ -996,6 +1087,9 @@ static void validateDefinitionReferences(const ParseState &state, const fs::path
 //===----------------------------------------------------------------------===//
 
 /// @brief Map IL type to C type for DirectHandler template.
+/// @param ilType IL scalar type, optionally carrying generic arguments.
+/// @return Corresponding C/C++ type spelling.
+/// @throws std::runtime_error When the base IL type is unknown.
 static std::string ilTypeToCType(const std::string &ilType) {
     std::string baseType = ilType;
     size_t langle = baseType.find('<');
@@ -1026,6 +1120,8 @@ static std::string ilTypeToCType(const std::string &ilType) {
 }
 
 /// @brief Return the base IL type with any `<...>` generic arguments removed.
+/// @param ilType IL type spelling.
+/// @return Base type before the first opening angle bracket.
 static std::string stripTypeArgs(const std::string &ilType) {
     size_t langle = ilType.find('<');
     if (langle == std::string::npos)
@@ -1034,6 +1130,8 @@ static std::string stripTypeArgs(const std::string &ilType) {
 }
 
 /// @brief Return the text between the outermost `<` and `>` of an IL type, or "".
+/// @param ilType Possibly generic IL type spelling.
+/// @return Outer generic argument text, or an empty string when absent/malformed.
 static std::string extractTypeArg(const std::string &ilType) {
     size_t langle = ilType.find('<');
     size_t rangle = ilType.rfind('>');
@@ -1043,6 +1141,8 @@ static std::string extractTypeArg(const std::string &ilType) {
 }
 
 /// @brief Map IL type to signature string format.
+/// @param ilType IL type spelling, optionally generic or nullable.
+/// @return Runtime signature type spelling with Boolean and string normalization.
 static std::string ilTypeToSigType(const std::string &ilType) {
     // Handle optional return types (trailing '?') — at the IL level, optional
     // reference types keep their inner type (null pointer = none).
@@ -1070,6 +1170,8 @@ struct ParsedSignature {
 
 /// @brief Parse a signature like "str(i64,str)" into return type and arg types.
 /// @details A signature with no '(' is treated as a bare return type with no args.
+/// @param sig Runtime signature text.
+/// @return Parsed return type and top-level argument types.
 static ParsedSignature parseSignature(const std::string &sig) {
     ParsedSignature result;
 
@@ -1104,6 +1206,8 @@ static ParsedSignature parseSignature(const std::string &sig) {
 
 /// @brief Return true if the signature's return or any argument is a raw `ptr`.
 /// @details Used by the Zia bridge to flag functions that expose unsafe pointers.
+/// @param sig Runtime signature to inspect.
+/// @return @c true when a return or parameter base type is @c ptr.
 static bool signatureExposesRawPointer(const std::string &sig) {
     ParsedSignature parsed = parseSignature(sig);
     if (stripTypeArgs(parsed.returnType) == "ptr")
@@ -1121,6 +1225,9 @@ static bool signatureExposesRawPointer(const std::string &sig) {
 
 /// @brief Read the signature names (first field of each SIG(...) row) from a
 ///        RuntimeSigs.def file, in declaration order.
+/// @param path RuntimeSigs.def path.
+/// @return Signature identifiers in declaration order.
+/// @throws std::runtime_error When the file cannot be opened.
 static std::vector<std::string> parseRtSigNames(const fs::path &path) {
     std::ifstream in(path);
     if (!in) {
@@ -1149,6 +1256,9 @@ static std::vector<std::string> parseRtSigNames(const fs::path &path) {
 ///        array in RuntimeSignaturesData.hpp.
 /// @details Locates the `kRtSigSymbolNames { ... }` block and extracts each
 ///          double-quoted string; returns empty if the marker is absent.
+/// @param path RuntimeSignaturesData.hpp path.
+/// @return Symbol strings in array order, or an empty vector when unrecognized.
+/// @throws std::runtime_error When the file cannot be opened.
 static std::vector<std::string> parseRtSigSymbols(const fs::path &path) {
     std::ifstream in(path);
     if (!in) {
@@ -1192,6 +1302,9 @@ static std::vector<std::string> parseRtSigSymbols(const fs::path &path) {
 /// @brief Build a map from runtime symbol name to its RtSig:: enum expression.
 /// @details Pairs the names from RuntimeSigs.def with the symbol strings from
 ///          RuntimeSignaturesData.hpp positionally; a length mismatch is fatal.
+/// @param runtimeDir Directory containing both signature sources.
+/// @return Map from C runtime symbol to generated @c RtSig expression.
+/// @throws std::runtime_error When either source is unreadable or counts differ.
 static std::unordered_map<std::string, std::string> buildRtSigMap(const fs::path &runtimeDir) {
     const fs::path sigsPath = runtimeDir / "RuntimeSigs.def";
     const fs::path dataPath = runtimeDir / "RuntimeSignaturesData.hpp";
@@ -1210,6 +1323,8 @@ static std::unordered_map<std::string, std::string> buildRtSigMap(const fs::path
 }
 
 /// @brief Build the C++ expression that indexes the spec table by signature id.
+/// @param sigId C++ expression naming an @c RtSig enumerator.
+/// @return Generated spec-table lookup expression.
 static std::string buildSigSpecExpr(const std::string &sigId) {
     return "data::kRtSigSpecs[static_cast<std::size_t>(" + sigId + ")]";
 }
@@ -1217,6 +1332,8 @@ static std::string buildSigSpecExpr(const std::string &sigId) {
 /// @brief Remove // line comments and block comments from C source text.
 /// @details Quote handling is intentionally simplistic — adequate for scanning
 ///          runtime headers for declarations, not for full C tokenization.
+/// @param input Source text to filter.
+/// @return Source text with comment bytes removed and line-comment newlines retained.
 static std::string stripComments(const std::string &input) {
     std::string out;
     out.reserve(input.size());
@@ -1260,6 +1377,8 @@ static std::string stripComments(const std::string &input) {
 }
 
 /// @brief Return true if @p line ends with a backslash (continues a directive).
+/// @param line Source line, possibly ending in horizontal whitespace.
+/// @return @c true when the last non-whitespace byte is a backslash.
 static bool lineContinuesPreprocessorDirective(std::string_view line) {
     size_t end = line.find_last_not_of(" \t\r");
     return end != std::string_view::npos && line[end] == '\\';
@@ -1268,6 +1387,8 @@ static bool lineContinuesPreprocessorDirective(std::string_view line) {
 /// @brief Remove preprocessor directive lines (and their `\`-continuations).
 /// @details Drops any line whose first non-space character is `#`, so header
 ///          scanning sees only declaration text.
+/// @param input Source text to filter.
+/// @return Text containing only non-directive lines, each newline-terminated.
 static std::string stripPreprocessor(const std::string &input) {
     std::ostringstream out;
     std::istringstream in(input);
@@ -1293,6 +1414,9 @@ static std::string stripPreprocessor(const std::string &input) {
 /// @details Runtime definition and header scans are expected to be small source
 ///          files. The cap prevents accidental reads of huge generated artifacts
 ///          or device files when an input path is wrong.
+/// @param path File to size-check and read.
+/// @return Complete file contents.
+/// @throws std::runtime_error On stat/read failure or when the size cap is exceeded.
 static std::string readTextFile(const fs::path &path) {
     std::error_code ec;
     const auto size = fs::file_size(path, ec);
@@ -1313,17 +1437,25 @@ static std::string readTextFile(const fs::path &path) {
 /// @details All generator functions build complete text in memory and call this
 ///          helper once. That keeps stale output intact if a later write fails and
 ///          avoids consumers observing partially-generated include files.
+/// @param path Destination generated-file path.
+/// @param contents Complete buffered output.
+/// @throws std::runtime_error When the atomic packaging helper cannot write.
 static void writeGeneratedTextFile(const fs::path &path, const std::ostringstream &contents) {
     zanna::pkg::writeTextFileAtomic(path, contents.str());
 }
 
 /// @brief Normalize @p path and return it with forward slashes.
+/// @param path Filesystem path to normalize lexically.
+/// @return UTF-8 generic path spelling.
 static std::string pathToGenericString(const fs::path &path) {
     return zanna::filesystem::genericPathToUtf8(path.lexically_normal());
 }
 
 /// @brief Return @p path relative to @p base in forward-slash form (absolute if
 ///        no relative path can be formed).
+/// @param path Path to express.
+/// @param base Base directory for lexical relativization.
+/// @return Generic relative spelling, or normalized original path if unavailable.
 static std::string relativePathString(const fs::path &path, const fs::path &base) {
     fs::path rel = path.lexically_relative(base);
     if (rel.empty())
@@ -1332,6 +1464,8 @@ static std::string relativePathString(const fs::path &path, const fs::path &base
 }
 
 /// @brief Return true if @p c is a C identifier character (alphanumeric or '_').
+/// @param c Candidate source byte.
+/// @return @c true for an alphanumeric byte or underscore.
 static bool isIdentifierChar(char c) {
     return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
 }
@@ -1339,6 +1473,9 @@ static bool isIdentifierChar(char c) {
 /// @brief Return true if a whole-token `rt_` symbol begins at @p pos in @p text.
 /// @details Requires `rt_` not to be preceded by an identifier char and to be
 ///          followed by one, so it matches runtime symbol names but not substrings.
+/// @param text Source text to inspect.
+/// @param pos Candidate byte offset of @c rt_.
+/// @return @c true when a complete runtime-symbol token begins at @p pos.
 static bool isRuntimeSymbolAt(const std::string &text, size_t pos) {
     if (pos + 3 > text.size() || text.compare(pos, 3, "rt_") != 0)
         return false;
@@ -1350,6 +1487,8 @@ static bool isRuntimeSymbolAt(const std::string &text, size_t pos) {
 }
 
 /// @brief Find the ')' matching the '(' at @p openPos, honoring nesting and quotes.
+/// @param text Source text containing the opening parenthesis.
+/// @param openPos Byte offset of the opening parenthesis.
 /// @return Index of the matching ')', or std::string::npos if unbalanced.
 static size_t findMatchingParen(const std::string &text, size_t openPos) {
     int depth = 1;
@@ -1371,6 +1510,9 @@ static size_t findMatchingParen(const std::string &text, size_t openPos) {
 /// @brief Scan backwards from a symbol to the start of its declaration.
 /// @details Stops at the previous statement boundary (`;`, `{`, or `}`) so the
 ///          text in between can be parsed as the return-type qualifier list.
+/// @param text Source text.
+/// @param symbolPos Byte offset of the declaration's runtime symbol.
+/// @return Byte offset immediately after the preceding statement boundary.
 static size_t findDeclarationStart(const std::string &text, size_t symbolPos) {
     size_t start = symbolPos;
     while (start > 0) {
@@ -1384,6 +1526,8 @@ static size_t findDeclarationStart(const std::string &text, size_t symbolPos) {
 
 /// @brief Trim a declaration's return type and strip leading storage/qualifier
 ///        keywords (extern, static, inline, _Noreturn).
+/// @param retType Raw declaration prefix.
+/// @return Normalized C return-type spelling.
 static std::string normalizeReturnType(std::string retType) {
     retType = trim(retType);
 
@@ -1513,6 +1657,8 @@ static std::unordered_map<std::string, RuntimePrototype> loadRuntimeHeaderDeclar
 }
 
 /// @brief Convenience over loadRuntimeHeaderDeclarations returning just signatures.
+/// @param runtimeDir Directory tree of runtime headers.
+/// @param repoRoot Repository root used for relative declaration metadata.
 /// @return Map from runtime symbol name to its parsed C signature.
 static std::unordered_map<std::string, CSignature> loadRuntimeCSignatures(
     const fs::path &runtimeDir, const fs::path &repoRoot) {
@@ -1527,6 +1673,8 @@ static std::unordered_map<std::string, CSignature> loadRuntimeCSignatures(
 /// @brief Collect the set of all `rt_*` symbol tokens referenced in runtime .c/.cpp.
 /// @details Used by the audit to detect runtime functions that exist in source but
 ///          are missing from runtime.def (or vice versa).
+/// @param runtimeDir Directory tree containing runtime implementation sources.
+/// @return Unique whole-token runtime symbol names found in supported source files.
 static std::unordered_set<std::string> loadRuntimeSourceTokens(const fs::path &runtimeDir) {
     std::unordered_set<std::string> tokens;
     if (!fs::exists(runtimeDir))
@@ -1592,6 +1740,8 @@ static std::string fileHeader(const std::string &filename, const std::string &pu
 }
 
 /// @brief Resolve a function id or canonical name to its RuntimeFunc.
+/// @param state Parsed function storage and lookup indices.
+/// @param idOrCanonical Definition ID or canonical runtime name.
 /// @return Pointer into @p state, or nullptr when neither lookup matches.
 static const RuntimeFunc *resolveRuntimeFunc(const ParseState &state,
                                              const std::string &idOrCanonical) {
@@ -1603,6 +1753,8 @@ static const RuntimeFunc *resolveRuntimeFunc(const ParseState &state,
 }
 
 /// @brief Resolve an id/canonical reference to its canonical name.
+/// @param state Parsed function lookup state.
+/// @param idOrCanonical Function ID, canonical name, @c none, or empty text.
 /// @return The canonical name; an empty string for "none"/empty; nullopt when the
 ///         reference does not resolve.
 static std::optional<std::string> resolveRuntimeCanonical(const ParseState &state,
@@ -1615,6 +1767,8 @@ static std::optional<std::string> resolveRuntimeCanonical(const ParseState &stat
 }
 
 /// @brief Resolve an id/canonical reference to its underlying C symbol.
+/// @param state Parsed function lookup state.
+/// @param idOrCanonical Function ID, canonical name, @c none, or empty text.
 /// @return The C symbol; an empty string for "none"/empty; nullopt when the
 ///         reference does not resolve.
 static std::optional<std::string> resolveRuntimeSymbol(const ParseState &state,
@@ -1627,6 +1781,8 @@ static std::optional<std::string> resolveRuntimeSymbol(const ParseState &state,
 }
 
 /// @brief Return the final dot-separated segment of @p dotted (e.g. the method name).
+/// @param dotted Qualified dotted name.
+/// @return Owned final segment, or the complete input when no dot exists.
 static std::string lastSegment(std::string_view dotted) {
     size_t pos = dotted.rfind('.');
     if (pos == std::string_view::npos)
@@ -1637,6 +1793,9 @@ static std::string lastSegment(std::string_view dotted) {
 /// @brief Build a method-slot key from a (case-insensitive name, signature) pair.
 /// @details Used to deduplicate methods across declared, constructor, and
 ///          synthesized entries when resolving a class.
+/// @param name Method name to lowercase for slot identity.
+/// @param signature Method signature retained verbatim.
+/// @return Stable lowercase-name and signature composite key.
 static std::string methodSlotKey(std::string_view name, std::string_view signature) {
     std::string key;
     key.reserve(name.size() + signature.size() + 1);
@@ -1653,6 +1812,8 @@ static std::string methodSlotKey(std::string_view name, std::string_view signatu
 ///          functions whose canonical name is prefixed by the class (excluding
 ///          get_/set_ accessors and already-covered slots), deduplicating by
 ///          canonical name and method slot.
+/// @param state Parsed functions and class blocks.
+/// @return Classes with every function reference converted to canonical names.
 static std::vector<ResolvedRuntimeClass> buildResolvedClasses(const ParseState &state) {
     std::vector<ResolvedRuntimeClass> resolved;
     resolved.reserve(state.classes.size());
@@ -1822,6 +1983,9 @@ static void scanMacroCalls(const std::string &text,
 /// @details Scans for the RUNTIME_SURFACE_* macros declaring internal headers,
 ///          internal symbols, and expected functions/methods/properties; a
 ///          missing file yields an empty (permissive) policy. Used by the audit.
+/// @param policyPath Runtime surface-policy header to scan.
+/// @return Parsed exclusions and required surface entries.
+/// @throws std::runtime_error On malformed macro calls or unreadable input.
 static RuntimeSurfacePolicy parseRuntimeSurfacePolicy(const fs::path &policyPath) {
     RuntimeSurfacePolicy policy;
     if (!fs::exists(policyPath))
@@ -1829,6 +1993,9 @@ static RuntimeSurfacePolicy parseRuntimeSurfacePolicy(const fs::path &policyPath
 
     std::string text = stripComments(readTextFile(policyPath));
 
+    /// @brief Parse one internal-header policy macro invocation.
+    /// @param argsView Comma-separated macro argument text.
+    /// @throws std::runtime_error If the invocation does not contain exactly one argument.
     scanMacroCalls(text, "RUNTIME_SURFACE_INTERNAL_HEADER", [&](std::string_view argsView) {
         auto parts = split(argsView, ',');
         if (parts.size() != 1) {
@@ -1837,6 +2004,9 @@ static RuntimeSurfacePolicy parseRuntimeSurfacePolicy(const fs::path &policyPath
         policy.internalHeaders.insert(pathToGenericString(stripQuotes(parts[0])));
     });
 
+    /// @brief Parse one internal-symbol policy macro invocation.
+    /// @param argsView Comma-separated macro argument text.
+    /// @throws std::runtime_error If the invocation does not contain exactly one argument.
     scanMacroCalls(text, "RUNTIME_SURFACE_INTERNAL_SYMBOL", [&](std::string_view argsView) {
         auto parts = split(argsView, ',');
         if (parts.size() != 1) {
@@ -1845,6 +2015,9 @@ static RuntimeSurfacePolicy parseRuntimeSurfacePolicy(const fs::path &policyPath
         policy.internalSymbols.insert(stripQuotes(parts[0]));
     });
 
+    /// @brief Parse one expected-function policy macro invocation.
+    /// @param argsView Comma-separated macro argument text.
+    /// @throws std::runtime_error If the invocation does not contain exactly two arguments.
     scanMacroCalls(text, "RUNTIME_SURFACE_EXPECT_FUNCTION", [&](std::string_view argsView) {
         auto parts = split(argsView, ',');
         if (parts.size() != 2) {
@@ -1853,6 +2026,9 @@ static RuntimeSurfacePolicy parseRuntimeSurfacePolicy(const fs::path &policyPath
         policy.expectedFunctions.emplace(stripQuotes(parts[0]), stripQuotes(parts[1]));
     });
 
+    /// @brief Parse one expected-method policy macro invocation.
+    /// @param argsView Comma-separated macro argument text.
+    /// @throws std::runtime_error If the invocation does not contain exactly three arguments.
     scanMacroCalls(text, "RUNTIME_SURFACE_EXPECT_METHOD", [&](std::string_view argsView) {
         auto parts = split(argsView, ',');
         if (parts.size() != 3) {
@@ -1865,6 +2041,9 @@ static RuntimeSurfacePolicy parseRuntimeSurfacePolicy(const fs::path &policyPath
         policy.expectedMethods.push_back(std::move(method));
     });
 
+    /// @brief Parse one expected-property policy macro invocation.
+    /// @param argsView Comma-separated macro argument text.
+    /// @throws std::runtime_error If the invocation does not contain exactly three arguments.
     scanMacroCalls(text, "RUNTIME_SURFACE_EXPECT_PROPERTY", [&](std::string_view argsView) {
         auto parts = split(argsView, ',');
         if (parts.size() != 3) {
@@ -1883,6 +2062,9 @@ static RuntimeSurfacePolicy parseRuntimeSurfacePolicy(const fs::path &policyPath
 /// @brief Build the `&DirectHandler<...>::invoke` expression for a runtime symbol.
 /// @details Instantiates the VM's DirectHandler template with the C symbol, return
 ///          type, and argument types so the interpreter can call it directly.
+/// @param c_symbol Runtime C function symbol.
+/// @param sig Parsed C return and argument types.
+/// @return Generated direct-handler member-function expression.
 static std::string buildDirectHandlerExpr(const std::string &c_symbol, const CSignature &sig) {
     std::string args = "&" + c_symbol + ", " + sig.returnType;
     for (const auto &arg : sig.argTypes) {
@@ -1894,6 +2076,9 @@ static std::string buildDirectHandlerExpr(const std::string &c_symbol, const CSi
 /// @brief Build the `&ConsumingStringHandler<...>::invoke` expression.
 /// @details Same as buildDirectHandlerExpr but for functions that take ownership
 ///          of (consume) their string arguments, so the VM retains them first.
+/// @param c_symbol Runtime C function symbol.
+/// @param sig Parsed C return and argument types.
+/// @return Generated consuming-string-handler expression.
 static std::string buildConsumingStringHandlerExpr(const std::string &c_symbol,
                                                    const CSignature &sig) {
     std::string args = "&" + c_symbol + ", " + sig.returnType;
@@ -1906,6 +2091,8 @@ static std::string buildConsumingStringHandlerExpr(const std::string &c_symbol,
 /// @brief Check if a runtime function consumes its string arguments.
 /// @details Functions like rt_str_concat release their string arguments after use,
 ///          so the VM must retain them before the call to prevent use-after-free.
+/// @param c_symbol Runtime C function symbol.
+/// @return @c true when the VM must retain string arguments before invocation.
 static bool needsConsumingStringHandler(const std::string &c_symbol) {
     // rt_str_concat releases both of its string arguments after use
     return c_symbol == "rt_str_concat";
@@ -1994,6 +2181,8 @@ static void emitDescriptorRow(std::ostream &out,
 /// @brief Generate RuntimeNameMap.inc: canonical Zanna.* → C rt_* symbol mappings.
 /// @details Emits a RUNTIME_NAME_ALIAS row for every canonical function. Fatal
 ///          error on write failure.
+/// @param state Parsed runtime functions in definition order.
+/// @param outDir Destination directory for generated artifacts.
 static void generateNameMap(const ParseState &state, const fs::path &outDir) {
     fs::path outPath = outDir / "RuntimeNameMap.inc";
     std::ostringstream out;
@@ -2014,6 +2203,8 @@ static void generateNameMap(const ParseState &state, const fs::path &outDir) {
 /// @details Resolves classes via buildResolvedClasses() and emits a RUNTIME_CLASS
 ///          block per class containing RUNTIME_PROPS and RUNTIME_METHODS lists.
 ///          Fatal error on write failure.
+/// @param state Parsed runtime classes and function lookup state.
+/// @param outDir Destination directory for generated artifacts.
 static void generateClasses(const ParseState &state, const fs::path &outDir) {
     fs::path outPath = outDir / "RuntimeClasses.inc";
     std::ostringstream out;
@@ -2131,6 +2322,8 @@ static void generateSignatures(const ParseState &state,
 /// @brief Encode Zia extern parameter names into a compact generated string.
 /// @details Names are newline-separated. Empty or all-empty name lists encode
 ///          as an empty string so callers inherit or omit parameter names.
+/// @param paramNames Surface parameter names in signature order.
+/// @return Newline-separated names, or an empty string when none are meaningful.
 static std::string encodeZiaParamNames(const std::vector<std::string> &paramNames) {
     bool hasName = false;
     for (const auto &name : paramNames)
@@ -2150,6 +2343,9 @@ static std::string encodeZiaParamNames(const std::vector<std::string> &paramName
 /// @brief Encode Zia bridge roles as one character per surface parameter.
 /// @details `n` means no role, `c` callback, and `p` payload. All-none role
 ///          vectors encode as an empty string to keep the generated table small.
+/// @param bridgeRoles Explicit roles from RT_BRIDGE in surface order.
+/// @param paramCount Number of surface parameters to encode.
+/// @return Compact role string, or empty when every role is the default.
 static std::string encodeZiaBridgeRoles(const std::vector<std::string> &bridgeRoles,
                                         size_t paramCount) {
     std::string encoded;
@@ -2175,6 +2371,9 @@ static std::string encodeZiaBridgeRoles(const std::vector<std::string> &bridgeRo
 ///          last N, since leading C params may be hidden receivers), padding with
 ///          empty names if the prototype has fewer. Returns empty when there is no
 ///          prototype or no surface parameters.
+/// @param func Runtime definition supplying the surface signature.
+/// @param proto Optional parsed C prototype.
+/// @return Surface parameter names aligned to the runtime signature.
 static std::vector<std::string> ziaExternParamNamesFor(const RuntimeFunc &func,
                                                        const RuntimePrototype *proto) {
     if (!proto)
@@ -2203,6 +2402,9 @@ static std::vector<std::string> ziaExternParamNamesFor(const RuntimeFunc &func,
 ///          parameter/return types, parameter names recovered from the C
 ///          prototype, and pointer-safety/bridge-role metadata. Fatal error on
 ///          write failure.
+/// @param state Parsed public runtime functions.
+/// @param outDir Destination directory for the generated include.
+/// @param inputPath Root definition path used to locate runtime headers.
 static void generateZiaExterns(const ParseState &state,
                                const fs::path &outDir,
                                const fs::path &inputPath) {
@@ -2266,6 +2468,8 @@ static void generateZiaExterns(const ParseState &state,
 /// @brief Convert a canonical name to a C++ constant identifier.
 /// @details "Zanna.String.Concat" -> "kStringConcat"
 ///          "Zanna.Time.DateTime.Now" -> "kTimeDateTimeNow"
+/// @param canonical Canonical dotted runtime name.
+/// @return C++ identifier formed by removing the namespace prefix and separators.
 static std::string canonicalToIdentifier(const std::string &canonical) {
     // Skip "Zanna." prefix
     std::string name = canonical;
@@ -2310,6 +2514,8 @@ static std::string runtimeClassToIdentifier(const std::string &qname) {
 
 /// @brief Generate RuntimeNames.hpp: C++ constants exposing canonical names to the
 ///        frontends. Fatal error on write failure.
+/// @param state Parsed runtime functions and classes to expose.
+/// @param outDir Destination directory for the generated header.
 static void generateFrontendNames(const ParseState &state, const fs::path &outDir) {
     fs::path outPath = outDir / "RuntimeNames.hpp";
     std::ostringstream out;
@@ -2412,6 +2618,8 @@ static void generateFrontendNames(const ParseState &state, const fs::path &outDi
 }
 
 /// @brief Return the first namespace segment beneath `Zanna` for @p name.
+/// @param name Canonical runtime function or class name.
+/// @return First domain segment after the optional @c Zanna prefix.
 static std::string runtimeDocumentationDomain(std::string_view name) {
     constexpr std::string_view prefix = "Zanna.";
     if (startsWith(name, prefix))
@@ -2421,6 +2629,8 @@ static std::string runtimeDocumentationDomain(std::string_view name) {
 }
 
 /// @brief Build the same lowercase dash-separated anchor used by the API dump.
+/// @param text Heading or qualified name to normalize.
+/// @return Lowercase alphanumeric slug with separator runs collapsed to dashes.
 static std::string runtimeDocumentationSlug(std::string_view text) {
     std::string slug;
     bool previousDash = false;
@@ -2441,6 +2651,8 @@ static std::string runtimeDocumentationSlug(std::string_view text) {
 }
 
 /// @brief Escape text for a Markdown table cell.
+/// @param value Raw cell text.
+/// @return Text with pipes escaped and line breaks replaced by spaces.
 static std::string markdownTableCell(std::string_view value) {
     std::string escaped;
     escaped.reserve(value.size());
@@ -2456,6 +2668,10 @@ static std::string markdownTableCell(std::string_view value) {
 }
 
 /// @brief Compare or write one deterministic generated documentation file.
+/// @param path Documentation file to verify or replace atomically.
+/// @param contents Complete expected contents.
+/// @param checkOnly Whether to compare without writing.
+/// @return @c true when the existing file matches or the generated file was written.
 static bool emitRuntimeDocumentationFile(const fs::path &path,
                                          const std::ostringstream &contents,
                                          bool checkOnly) {
@@ -2482,6 +2698,10 @@ static bool emitRuntimeDocumentationFile(const fs::path &path,
 }
 
 /// @brief Generate or verify exhaustive Markdown runtime reference pages.
+/// @param state Parsed functions and classes to document.
+/// @param outDir Documentation directory containing the index and domain pages.
+/// @param checkOnly Verify exact contents and stale-file absence without mutation.
+/// @return @c true when every expected page is current and no stale page remains.
 static bool generateRuntimeDocumentation(const ParseState &state,
                                          const fs::path &outDir,
                                          bool checkOnly) {
@@ -2677,8 +2897,14 @@ static int runAudit(const ParseState &state,
     std::vector<std::string> errors;
     std::vector<std::string> headerSyncFindings;
     std::vector<std::string> unclassifiedFindings;
+    /// @brief Append one fatal runtime-surface audit diagnostic.
+    /// @param msg Diagnostic text to move into the error list.
     auto addError = [&](std::string msg) { errors.push_back(std::move(msg)); };
+    /// @brief Append one runtime-header synchronization finding.
+    /// @param msg Diagnostic text to move into the header finding list.
     auto addHeaderFinding = [&](std::string msg) { headerSyncFindings.push_back(std::move(msg)); };
+    /// @brief Append one unclassified runtime-surface finding.
+    /// @param msg Diagnostic text to move into the unclassified finding list.
     auto addUnclassifiedFinding = [&](std::string msg) {
         unclassifiedFindings.push_back(std::move(msg));
     };
@@ -2849,6 +3075,7 @@ static int runAudit(const ParseState &state,
 //===----------------------------------------------------------------------===//
 
 /// @brief Print rtgen command-line usage (generate and audit modes) to stderr.
+/// @param prog Executable name displayed in each usage form.
 static void printUsage(const char *prog) {
     std::cerr << "Usage: " << prog << " <input.def> <output_dir>\n";
     std::cerr << "       " << prog << " --validate <input.def>\n";

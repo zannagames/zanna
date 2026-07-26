@@ -32,6 +32,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements locale-aware Collator comparison, keys, and stable sorting.
+ * @details Converts UTF-8 strings into bounded primary, secondary, and
+ * tertiary weight bands, applies construction-time locale tailoring, exposes
+ * configurable strength and ignore flags, and preserves managed ownership
+ * while sorting runtime lists.
+ */
+
 #include "rt_collator.h"
 
 #include "rt_heap.h"
@@ -55,20 +64,22 @@
 #include <stdlib.h>
 #include <string.h>
 
+/** Maximum UTF-8 byte length accepted by one collation input. */
 #define MAX_INPUT_BYTES (1u << 20)
 
 //===----------------------------------------------------------------------===//
 // Instance struct
 //===----------------------------------------------------------------------===//
 
+/** GC payload storing one Collator's immutable locale and mutable options. */
 typedef struct rt_collator {
-    void *locale;
-    const rt_locale_data_t *data;
-    int strength; // 1..3
-    int8_t ignore_case;
-    int8_t ignore_accents;
-    const rt_collator_locale_patch_t *patches;
-    size_t patch_count;
+    void *locale;                              ///< Retained Locale handle, if supplied.
+    const rt_locale_data_t *data;              ///< Retained locale-data snapshot.
+    int strength;                              ///< Active comparison depth from 1 through 3.
+    int8_t ignore_case;                        ///< Whether tertiary case weights are omitted.
+    int8_t ignore_accents;                     ///< Whether secondary accent weights are omitted.
+    const rt_collator_locale_patch_t *patches; ///< Borrowed immutable locale overrides.
+    size_t patch_count;                        ///< Number of records in @ref patches.
 } rt_collator_t;
 
 /// @brief Unchecked cast of an opaque handle to the collator instance.

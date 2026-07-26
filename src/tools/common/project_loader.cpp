@@ -64,21 +64,31 @@ inline constexpr std::uint64_t kMaxManifestHookScriptBytes = 1024u * 1024u;
 inline constexpr std::streamoff kMaxConventionScanBytes = 1024 * 1024;
 
 /// @brief Encode a native path as a Zanna UTF-8 path string.
+/// @param path Native filesystem path.
+/// @return Platform-native path syntax encoded as UTF-8.
 std::string pathText(const fs::path &path) {
     return zanna::filesystem::pathToUtf8(path);
 }
 
 /// @brief Encode a native path with portable separators for manifest matching.
+/// @param path Native filesystem path.
+/// @return UTF-8 path using forward-slash separators.
 std::string genericPathText(const fs::path &path) {
     return zanna::filesystem::genericPathToUtf8(path);
 }
 
 /// @brief Make a diagnostic error with a message.
+/// @param msg Human-readable error text.
+/// @return Error-severity diagnostic without a source range.
 il::support::Diag makeErr(const std::string &msg) {
     return il::support::Diagnostic{il::support::Severity::Error, msg, {}, {}};
 }
 
 /// @brief Make a diagnostic error with file:line context.
+/// @param path Manifest path.
+/// @param line One-based manifest line number.
+/// @param msg Human-readable error text.
+/// @return Error diagnostic whose message begins with `path:line:`.
 il::support::Diag makeManifestErr(const std::string &path, int line, const std::string &msg) {
     std::string full = path + ":" + std::to_string(line) + ": " + msg;
     return il::support::Diagnostic{il::support::Severity::Error, full, {}, {}};
@@ -88,6 +98,9 @@ il::support::Diag makeManifestErr(const std::string &path, int line, const std::
 /// @details An exact match always counts; a pattern ending in '-' (e.g. "build-")
 ///          matches any segment that starts with it, so build directories like
 ///          "build-debug" are excluded.
+/// @param segment One project-relative path component.
+/// @param exclude Exclude pattern to compare.
+/// @return true for an exact match or the documented trailing-hyphen prefix form.
 bool pathSegmentMatchesExclude(std::string_view segment, std::string_view exclude) {
     if (segment == exclude)
         return true;
@@ -98,6 +111,9 @@ bool pathSegmentMatchesExclude(std::string_view segment, std::string_view exclud
 /// @details A slash-bearing exclude matches the path or a directory prefix of it;
 ///          a slash-free exclude matches if any single path segment matches it
 ///          (via pathSegmentMatchesExclude).
+/// @param relativePath Project-relative path.
+/// @param exclude Normalized exclude pattern.
+/// @return true when the full path/prefix or one component matches.
 bool relativePathMatchesExclude(const fs::path &relativePath, const std::string &exclude) {
     const std::string rel = genericPathText(relativePath);
     if (rel == exclude || rel.rfind(exclude + "/", 0) == 0)
@@ -114,7 +130,12 @@ bool relativePathMatchesExclude(const fs::path &relativePath, const std::string 
 }
 
 /// @brief Return an ASCII-lowercased copy of @p value.
+/// @param value Text to normalize in place.
+/// @return Lowercase copy.
 std::string lowerAscii(std::string value) {
+    /// @brief Fold one byte through the locale-aware ctype function safely.
+    /// @param c Unsigned source byte.
+    /// @return Lowercase byte converted back to plain char.
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
     });
@@ -277,6 +298,9 @@ void appendConventionSkipReasons(std::string &message, const std::vector<std::st
 ///          false entry-point candidates. The scan is intentionally shallow: it
 ///          looks for a function declaration token followed by an identifier
 ///          named @c start or @c main.
+/// @param path Candidate Zia source path.
+/// @param skipped Optional collector for bounded-scan I/O/size skip reasons.
+/// @return true when a lexical `func start` or `func main` declaration is found.
 bool hasZiaEntryPoint(const std::string &path, std::vector<std::string> *skipped = nullptr) {
     std::string skipReason;
     auto source = readConventionScanText(path, &skipReason);
@@ -422,6 +446,7 @@ bool isBasicExecutableStatementLeader(const basic::Token &tok) {
 ///          executable statements inside SUB/FUNCTION bodies do not make a
 ///          library module look like a top-level program.
 /// @param path BASIC source file to inspect.
+/// @param skipped Optional collector for bounded-scan I/O/size skip reasons.
 /// @return Convention signals found in @p path.
 BasicConventionSignals scanBasicConventionSignals(const std::string &path,
                                                   std::vector<std::string> *skipped = nullptr) {
@@ -438,6 +463,8 @@ BasicConventionSignals scanBasicConventionSignals(const std::string &path,
     std::vector<basic::Token> line;
     int procedureDepth = 0;
 
+    /// @brief Classify the accumulated BASIC line and reset its token buffer.
+    /// @details Updates procedure nesting and top-level AddFile/executable signals.
     auto flushLine = [&]() {
         if (line.empty())
             return;
@@ -480,6 +507,8 @@ BasicConventionSignals scanBasicConventionSignals(const std::string &path,
 }
 
 /// @brief Find the Zia entry file from a list of source files.
+/// @param files Absolute Zia source paths in deterministic order.
+/// @return `main.zia`, a unique lexical entry declaration, or a diagnostic.
 il::support::Expected<std::string> findZiaEntry(const std::vector<std::string> &files) {
     // Priority 1: file named main.zia
     for (const auto &f : files) {
@@ -512,6 +541,8 @@ il::support::Expected<std::string> findZiaEntry(const std::vector<std::string> &
 }
 
 /// @brief Find the BASIC entry file from a list of source files.
+/// @param files Absolute BASIC source paths in deterministic order.
+/// @return Convention-selected root file, or a diagnostic when ambiguous/absent.
 il::support::Expected<std::string> findBasicEntry(const std::vector<std::string> &files) {
     // Priority 1: file named main.bas
     for (const auto &f : files) {
@@ -569,6 +600,9 @@ il::support::Expected<std::string> findBasicEntry(const std::vector<std::string>
 }
 
 /// @brief Discover project configuration by convention (no manifest).
+/// @param dir Existing project directory.
+/// @param excludes Additional normalized discovery exclusions.
+/// @return Resolved single-language configuration, or a discovery diagnostic.
 il::support::Expected<ProjectConfig> discoverConvention(const fs::path &dir,
                                                         const std::vector<std::string> &excludes) {
     std::string collectErr;
@@ -655,6 +689,11 @@ std::string stripInlineManifestComment(std::string line) {
 }
 
 /// @brief Parse an on/off boolean value.
+/// @param val Candidate Boolean spelling.
+/// @param manifestPath Manifest path used in diagnostics.
+/// @param line One-based line number.
+/// @param directive Directive name used in diagnostics.
+/// @return Parsed Boolean or a contextual diagnostic.
 il::support::Expected<bool> parseBool(const std::string &val,
                                       const std::string &manifestPath,
                                       int line,
@@ -762,6 +801,11 @@ il::support::Expected<std::vector<std::string>> tokenizeManifestValue(
 }
 
 /// @brief Tokenize a directive value and require exactly @p count tokens.
+/// @param value Raw directive value.
+/// @param manifestPath Manifest path used in diagnostics.
+/// @param line One-based line number.
+/// @param directive Directive name used in diagnostics.
+/// @param count Exact required token count.
 /// @return The tokens on success, or a manifest diagnostic on a tokenize failure
 ///         or arity mismatch.
 il::support::Expected<std::vector<std::string>> requireManifestTokenCount(
@@ -804,6 +848,12 @@ il::support::Expected<std::string> parseCoreScalar(const std::string &value,
 /// @details Sanitizes @p raw, resolves it against @p manifestDir, and rejects any
 ///          result that escapes the project root. An empty path maps to the
 ///          project root when @p allowProjectRoot, otherwise is an error.
+/// @param manifestDir Canonical project root and resolution base.
+/// @param raw Caller-supplied project-relative path.
+/// @param manifestPath Manifest path used in diagnostics.
+/// @param line One-based line number.
+/// @param directive Directive name used in diagnostics.
+/// @param allowProjectRoot Whether an empty/`.` path may resolve to the root.
 /// @return The resolved path, or a manifest diagnostic on rejection.
 il::support::Expected<fs::path> resolveManifestRelativePath(const fs::path &manifestDir,
                                                             const std::string &raw,
@@ -839,6 +889,12 @@ il::support::Expected<fs::path> resolveManifestRelativePath(const fs::path &mani
 /// @brief Parse a directive value as a single project-relative path string.
 /// @details Requires exactly one token (requireManifestTokenCount) and resolves it
 ///          via resolveManifestRelativePath; returns the resolved path as a string.
+/// @param manifestDir Canonical project root and resolution base.
+/// @param value Raw directive value.
+/// @param manifestPath Manifest path used in diagnostics.
+/// @param line One-based line number.
+/// @param directive Directive name used in diagnostics.
+/// @param allowProjectRoot Whether the project root is an acceptable value.
 /// @return The resolved path string, or a manifest diagnostic on failure.
 il::support::Expected<std::string> parseManifestRelativeToken(const fs::path &manifestDir,
                                                               const std::string &value,
@@ -1020,6 +1076,9 @@ il::support::Expected<bool> appendCommaSeparatedPackageDependencies(
     const std::function<void(const std::string &)> &validator) {
     std::string depToken;
     std::set<std::string> seenDeps(out.begin(), out.end());
+    /// @brief Validate and append one trimmed dependency token.
+    /// @param raw Raw comma-delimited token.
+    /// @return Success with `true`, or a manifest diagnostic on invalid or duplicate input.
     auto appendDependency = [&](const std::string &raw) -> il::support::Expected<bool> {
         size_t ds = raw.find_first_not_of(" \t");
         size_t de = raw.find_last_not_of(" \t");
@@ -1334,6 +1393,9 @@ il::support::Expected<bool> parsePackageDirective(ProjectConfig &config,
         auto it =
             std::find_if(config.packGroups.begin(),
                          config.packGroups.end(),
+                         /// @brief Match an existing pack group by manifest name.
+                         /// @param g Candidate pack group.
+                         /// @return `true` when @p g has @c packName.
                          [&](const ProjectConfig::PackGroup &g) { return g.name == packName; });
         if (it == config.packGroups.end()) {
             config.packGroups.push_back({packName, {packSrc}, compressed});
@@ -1432,6 +1494,8 @@ il::support::Expected<bool> parsePackageDirective(ProjectConfig &config,
             manifestPath,
             lineNum,
             directive,
+            /// @brief Validate one RPM dependency expression.
+            /// @param dep Trimmed dependency expression.
             [](const std::string &dep) { zanna::pkg::validateRpmDependency(dep); });
         if (!added)
             return il::support::Expected<bool>(added.error());
@@ -1494,8 +1558,9 @@ il::support::Expected<bool> parsePackageDirective(ProjectConfig &config,
 ///          After directives are consumed, source files are collected from the
 ///          declared (or default) directories, the language is auto-detected
 ///          when not declared, the file list is sorted and de-duplicated, and
-///          the entry point is resolved or validated. See the header for the
-///          parameter and return contract.
+///          the entry point is resolved or validated.
+/// @param manifestPath Absolute or caller-resolved manifest file path.
+/// @return Fully owning project configuration, or a contextual diagnostic.
 il::support::Expected<ProjectConfig> parseManifest(const std::string &manifestPath) {
     std::ifstream file(zanna::filesystem::pathFromUtf8(manifestPath));
     if (!file.is_open())
@@ -1832,7 +1897,8 @@ il::support::Expected<ProjectConfig> parseManifest(const std::string &manifestPa
 ///          *.project) file is parsed via parseManifest(); a directory either
 ///          parses a contained zanna.project or falls back to convention-based
 ///          discovery (discoverConvention()). Anything else yields a diagnostic.
-///          See the header for the full parameter and return contract.
+/// @param target CLI file, manifest, or directory path.
+/// @return Resolved project configuration, or a diagnostic describing failure.
 il::support::Expected<ProjectConfig> resolveProject(const std::string &target) {
     // Determine what the target is
     fs::path targetPath = zanna::filesystem::pathFromUtf8(target);

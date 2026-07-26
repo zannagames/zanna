@@ -19,6 +19,12 @@
 // Links: PkgDeflate.hpp, src/runtime/core/rt_crc32.h
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares RFC 1952 GZIP compression and validated decompression.
+/// @details Inputs are borrowed for each call and output is returned in an owned
+///          byte vector; the implementation uses the self-contained raw DEFLATE codec.
+
 #pragma once
 
 #include <cstddef>
@@ -32,6 +38,8 @@ namespace zanna::pkg {
 /// @param len Length of input data.
 /// @param level DEFLATE compression level 1-9 (default 6).
 /// @return GZIP-compressed stream.
+/// @throws std::runtime_error If input pointers or GZIP field sizes are invalid.
+/// @throws DeflateError If compression fails.
 std::vector<uint8_t> gzip(const uint8_t *data, size_t len, int level = 6);
 
 /// @brief Decompress a GZIP stream and validate its CRC/ISIZE trailer.

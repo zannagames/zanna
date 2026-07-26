@@ -30,6 +30,9 @@ namespace zanna::tui::render {
 /// @details Performs a field-by-field comparison of the four colour channels.
 ///          The helper enables direct equality checks in algorithms without
 ///          forcing callers to write repetitive code at the call site.
+/// @param a First color.
+/// @param b Second color.
+/// @return true when all four channels match.
 bool operator==(const RGBA &a, const RGBA &b) {
     return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
 }
@@ -37,6 +40,9 @@ bool operator==(const RGBA &a, const RGBA &b) {
 /// @brief Determine whether two RGBA colours differ.
 /// @details Inverts @ref operator== so callers can reuse the optimised
 ///          comparison logic and keep colour inequality checks consistent.
+/// @param a First color.
+/// @param b Second color.
+/// @return true when at least one channel differs.
 bool operator!=(const RGBA &a, const RGBA &b) {
     return !(a == b);
 }
@@ -46,6 +52,9 @@ bool operator!=(const RGBA &a, const RGBA &b) {
 ///          attribute flags.  The overload is primarily used when diffing cell
 ///          contents to determine whether the renderer must emit attribute
 ///          changes.
+/// @param a First style.
+/// @param b Second style.
+/// @return true when both colors and the attribute bitset match.
 bool operator==(const Style &a, const Style &b) {
     return a.fg == b.fg && a.bg == b.bg && a.attrs == b.attrs;
 }
@@ -53,6 +62,9 @@ bool operator==(const Style &a, const Style &b) {
 /// @brief Negate the result of Style equality.
 /// @details Provides a convenient wrapper for inequality checks so calling
 ///          sites can remain expressive without duplicating comparisons.
+/// @param a First style.
+/// @param b Second style.
+/// @return true when any style component differs.
 bool operator!=(const Style &a, const Style &b) {
     return !(a == b);
 }
@@ -61,6 +73,9 @@ bool operator!=(const Style &a, const Style &b) {
 /// @details Cells are considered equal when the stored glyph, glyph width, and
 ///          visual style all match.  This definition mirrors what the renderer
 ///          would push to the terminal, making it a natural fit for diffing.
+/// @param a First cell.
+/// @param b Second cell.
+/// @return true when glyph, width, and style match.
 bool operator==(const Cell &a, const Cell &b) {
     return a.ch == b.ch && a.width == b.width && a.style == b.style;
 }
@@ -68,6 +83,9 @@ bool operator==(const Cell &a, const Cell &b) {
 /// @brief Determine whether two screen cells differ.
 /// @details Delegates to @ref operator== to ensure both overloads stay
 ///          perfectly in sync.
+/// @param a First cell.
+/// @param b Second cell.
+/// @return true when any rendered cell component differs.
 bool operator!=(const Cell &a, const Cell &b) {
     return !(a == b);
 }
@@ -77,6 +95,8 @@ bool operator!=(const Cell &a, const Cell &b) {
 ///          the previous snapshot in lockstep.  The function preserves existing
 ///          cell contents when growing so widgets can continue painting into the
 ///          expanded region before the next clear.
+/// @param rows New grid height.
+/// @param cols New grid width.
 void ScreenBuffer::resize(int rows, int cols) {
     rows_ = rows;
     cols_ = cols;
@@ -88,6 +108,9 @@ void ScreenBuffer::resize(int rows, int cols) {
 /// @details Computes the flat index into the backing array.  The method trusts
 ///          callers to respect bounds because widgets already clamp coordinates
 ///          during layout.
+/// @param y Zero-based row.
+/// @param x Zero-based column.
+/// @return Mutable reference to the selected cell.
 Cell &ScreenBuffer::at(int y, int x) {
     return cells_[static_cast<size_t>(y) * static_cast<size_t>(cols_) + static_cast<size_t>(x)];
 }
@@ -96,6 +119,9 @@ Cell &ScreenBuffer::at(int y, int x) {
 /// @details Shares the indexing logic with the mutable overload while exposing
 ///          a const reference so read-only code can inspect cell contents
 ///          without copying.
+/// @param y Zero-based row.
+/// @param x Zero-based column.
+/// @return Const reference to the selected cell.
 const Cell &ScreenBuffer::at(int y, int x) const {
     return cells_[static_cast<size_t>(y) * static_cast<size_t>(cols_) + static_cast<size_t>(x)];
 }
@@ -104,6 +130,7 @@ const Cell &ScreenBuffer::at(int y, int x) const {
 /// @details Constructs a prototype blank cell and replicates it across the
 ///          entire backing store.  The width defaults to one so later diffing
 ///          and rendering logic maintain correct cell counts for narrow glyphs.
+/// @param style Style assigned to every blank cell.
 void ScreenBuffer::clear(const Style &style) {
     Cell blank{};
     blank.ch = U' ';
@@ -116,6 +143,12 @@ void ScreenBuffer::clear(const Style &style) {
 /// @details Iterates through the specified region and sets each cell's character.
 ///          If a style pointer is provided, the cell style is also updated.
 ///          Bounds are automatically clamped to the buffer dimensions.
+/// @param x Requested left column.
+/// @param y Requested top row.
+/// @param w Requested width.
+/// @param h Requested height.
+/// @param ch Glyph assigned to each in-bounds cell.
+/// @param style Optional style assigned with the glyph.
 void ScreenBuffer::fillRect(int x, int y, int w, int h, char32_t ch, const Style *style) {
     int x0 = std::max(0, x);
     int y0 = std::max(0, y);
@@ -153,6 +186,7 @@ void ScreenBuffer::snapshotPrev() {
 ///          coalescing contiguous runs of mismatched cells into `DiffSpan`
 ///          entries.  The result contains the minimal set of horizontal ranges
 ///          that require redrawing.
+/// @param outSpans Output vector cleared and filled with changed horizontal ranges.
 void ScreenBuffer::computeDiff(std::vector<DiffSpan> &outSpans) const {
     outSpans.clear();
     if (prev_.size() != cells_.size()) {

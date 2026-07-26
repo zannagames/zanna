@@ -155,6 +155,8 @@ typedef struct {
 ///
 /// Used to unpack scalar lookup-table values from the codebook
 /// section of the setup header.
+/// @param val Encoded Vorbis float bit pattern.
+/// @return Decoded floating-point value.
 static float float32_unpack(uint32_t val) {
     int mantissa = (int)(val & 0x1FFFFF);
     int sign = (int)(val & 0x80000000);
@@ -426,6 +428,8 @@ static int vorbis_fail(vorbis_decoder_t *dec, const char *message) {
 /// Lazily computed once per block size and cached. The window
 /// shape is `sin(0.5 * π * sin²(π/(2n) * (i+0.5)))` so adjacent
 /// overlapping frames sum to 1.0 (perfect reconstruction).
+/// @param n Number of window samples to allocate and compute.
+/// @return Heap-allocated window samples, or NULL when allocation fails.
 static float *make_window(int n) {
     float *w = (float *)malloc((size_t)n * sizeof(float));
     if (!w)
@@ -443,6 +447,9 @@ static float *make_window(int n) {
 //===----------------------------------------------------------------------===//
 
 /// @brief Radix-2 in-place complex FFT (decimation in time).
+/// @param[in,out] re Real components of the complex input and transformed output.
+/// @param[in,out] im Imaginary components of the complex input and transformed output.
+/// @param n Number of complex samples; expected to be a power of two.
 static void fft_radix2(float *re, float *im, int n) {
     // Bit-reversal permutation
     for (int i = 1, j = 0; i < n; i++) {

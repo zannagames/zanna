@@ -15,6 +15,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements late-bound Linux desktop Settings portal queries.
+ *
+ * @details GIO is loaded dynamically and published through a one-time atomic
+ *          function table. Queries use the session bus with a finite timeout,
+ *          validate nested variant types and integer range, release every
+ *          temporary object, and leave caller output untouched on failure.
+ */
+
 #include "rt_gui_linux_portal.h"
 
 #include <dlfcn.h>
@@ -24,14 +34,22 @@
 #include <stddef.h>
 #include <string.h>
 
+/// @brief Opaque GIO session-bus connection type used through late binding.
 typedef struct GDBusConnection GDBusConnection;
+/// @brief Opaque GIO variant type used through late binding.
 typedef struct GVariant GVariant;
+/// @brief Opaque GIO error type used through late binding.
 typedef struct GError GError;
 
+/// @brief Immutable late-bound GIO surface required for portal Settings.Read.
 typedef struct rt_gui_gio_api {
+    /// @brief Process-lifetime dynamic-library handle.
     void *library;
+    /// @brief Synchronous session-bus connection entry point.
     GDBusConnection *(*bus_get_sync)(int bus_type, void *cancellable, GError **error);
+    /// @brief Variadic GVariant constructor entry point.
     GVariant *(*variant_new)(const char *format, ...);
+    /// @brief Synchronous D-Bus method invocation entry point.
     GVariant *(*connection_call_sync)(GDBusConnection *connection,
                                       const char *bus_name,
                                       const char *object_path,
@@ -43,17 +61,27 @@ typedef struct rt_gui_gio_api {
                                       int timeout_msec,
                                       void *cancellable,
                                       GError **error);
+    /// @brief Extract one child from a container variant.
     GVariant *(*variant_get_child_value)(GVariant *value, size_t index);
+    /// @brief Unwrap one variant-valued variant.
     GVariant *(*variant_get_variant)(GVariant *value);
+    /// @brief Return a variant's borrowed concrete type string.
     const char *(*variant_get_type_string)(GVariant *value);
+    /// @brief Decode an unsigned 32-bit variant.
     uint32_t (*variant_get_uint32)(GVariant *value);
+    /// @brief Decode a Boolean variant.
     int (*variant_get_boolean)(GVariant *value);
+    /// @brief Release one variant reference.
     void (*variant_unref)(GVariant *value);
+    /// @brief Release one generic GObject reference.
     void (*object_unref)(void *object);
+    /// @brief Release one GError object.
     void (*error_free)(GError *error);
 } rt_gui_gio_api_t;
 
+/// @brief Process-wide GIO handle and resolved function table.
 static rt_gui_gio_api_t g_rt_gui_gio;
+/// @brief Atomic loader state: unstarted, loading, ready, or unavailable.
 static atomic_int g_rt_gui_gio_state;
 
 /// @brief Initialize the process-wide late-bound GIO function table exactly once.
@@ -87,6 +115,9 @@ static int rt_gui_linux_portal_load(void) {
         return 0;
     }
 
+    /// @brief Resolve one required GIO symbol or atomically publish permanent failure.
+    /// @param field Function-table member receiving the resolved address.
+    /// @param symbol NUL-terminated dynamic symbol name.
 #define RT_GUI_GIO_LOAD(field, symbol)                                                            \
     do {                                                                                           \
         *(void **)(&g_rt_gui_gio.field) = dlsym(g_rt_gui_gio.library, symbol);                     \

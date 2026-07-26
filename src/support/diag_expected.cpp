@@ -70,6 +70,9 @@ bool isUtf8Continuation(unsigned char byte) {
 ///          sequences, and code points beyond U+10FFFF so JSON output never
 ///          contains malformed UTF-8.
 size_t validUtf8SequenceLength(std::string_view text, size_t index) {
+    /// @brief Return the unsigned byte at an offset from the candidate sequence lead.
+    /// @param offset Byte offset relative to @p index.
+    /// @return Unsigned byte value from @p text.
     const auto byteAt = [&](size_t offset) {
         return static_cast<unsigned char>(text[index + offset]);
     };
@@ -348,6 +351,13 @@ void printSourceMarker(uint32_t lineNumber,
 }
 
 /// @brief Print the source line and caret marker for a diagnostic-like location.
+/// @param loc Location selecting the file, line, and one-based caret column.
+/// @param underlineLength Number of source bytes to cover with the marker.
+/// @param os Output stream receiving the gutter, source line, and marker.
+/// @param sm Optional source manager used to retrieve the source line.
+/// @details Produces no output when the location cannot be resolved to a line.
+///          Source control bytes are escaped and the marker width is adjusted
+///          to remain aligned with the resulting visible representation.
 void printSourceSnippet(SourceLoc loc,
                         uint32_t underlineLength,
                         std::ostream &os,
@@ -443,6 +453,12 @@ void printTextEscaped(std::ostream &os, std::string_view text) {
 }
 
 /// @brief Print a diagnostic header without attached notes.
+/// @param diag Diagnostic supplying the location, severity, code, and message.
+/// @param os Output stream receiving the single-line header.
+/// @param sm Optional source manager used to resolve the location's file path.
+/// @details The optional path and coordinates precede the severity when they
+///          can be resolved. Diagnostic-controlled text is escaped so embedded
+///          control characters cannot forge additional output lines.
 void printDiagHeader(const Diag &diag, std::ostream &os, const SourceManager *sm) {
     if (sm && diag.loc.file_id != 0) {
         auto path = sm->getPath(diag.loc.file_id);
@@ -480,6 +496,8 @@ void printFixItTextRange(std::ostream &os, const SourceRange &range, const Sourc
     if (!range.isConcrete() && !range.isInsertion())
         return;
 
+    /// @brief Print one endpoint, including a resolved path when it is available.
+    /// @param loc Source location to render.
     const auto printPoint = [&](SourceLoc loc) {
         if (sm && loc.file_id != 0) {
             const auto path = sm->getPath(loc.file_id);
@@ -814,6 +832,12 @@ void printJsonDiagObject(const Diag &diag, std::ostream &os, const SourceManager
 }
 } // namespace
 
+/// @brief Emit text as a JSON-escaped, double-quoted string literal.
+/// @param os Output stream receiving the complete JSON string literal.
+/// @param text Raw byte string to validate, escape, and quote.
+/// @details Delegates to the diagnostic JSON escaper so command-line tools and
+///          diagnostic serializers share identical handling of controls,
+///          quotes, backslashes, valid UTF-8, and malformed byte sequences.
 void printJsonStringEscaped(std::ostream &os, std::string_view text) {
     printJsonEscaped(os, text);
 }
@@ -848,6 +872,8 @@ bool Expected<void>::hasValue() const noexcept {
 ///          conditionals such as `if (auto ok = doThing())`.  The conversion is
 ///          explicit enough to avoid accidental narrowing yet terse enough to be
 ///          pleasant in control flow.
+///
+/// @return True when the operation succeeded and no diagnostic is stored.
 Expected<void>::operator bool() const noexcept {
     return hasValue();
 }
@@ -969,6 +995,13 @@ void printDiag(const Diag &diag, std::ostream &os, const SourceManager *sm) {
     }
 }
 
+/// @brief Serialize a contiguous diagnostic sequence as the standard JSON envelope.
+/// @param diagnostics Diagnostics to place in the top-level array, in order.
+/// @param os Output stream receiving the compact JSON document.
+/// @param sm Optional source manager used to resolve paths and source lines.
+/// @details Every element includes its structured notes, fix-its, range, and
+///          optional source excerpt. The document ends with a newline for
+///          convenient command-line streaming, including for an empty span.
 void printDiagnosticsJson(std::span<const Diag> diagnostics,
                           std::ostream &os,
                           const SourceManager *sm) {
@@ -981,12 +1014,24 @@ void printDiagnosticsJson(std::span<const Diag> diagnostics,
     os << "]}\n";
 }
 
+/// @brief Serialize a vector of diagnostics as the standard JSON envelope.
+/// @param diagnostics Diagnostics to encode in vector order.
+/// @param os Output stream receiving the compact JSON document.
+/// @param sm Optional source manager used to resolve paths and source lines.
+/// @details Adapts the vector to a non-owning span and delegates to the common
+///          serializer, avoiding duplicate JSON formatting behavior.
 void printDiagnosticsJson(const std::vector<Diag> &diagnostics,
                           std::ostream &os,
                           const SourceManager *sm) {
     printDiagnosticsJson(std::span<const Diag>{diagnostics.data(), diagnostics.size()}, os, sm);
 }
 
+/// @brief Serialize one diagnostic in the standard diagnostics JSON envelope.
+/// @param diag Diagnostic to place in the single-element top-level array.
+/// @param os Output stream receiving the compact JSON document.
+/// @param sm Optional source manager used to resolve paths and source lines.
+/// @details Uses the same per-diagnostic object representation as the sequence
+///          overloads and terminates the complete document with a newline.
 void printDiagJson(const Diag &diag, std::ostream &os, const SourceManager *sm) {
     os << "{\"diagnostics\":[";
     printJsonDiagObject(diag, os, sm);

@@ -71,6 +71,7 @@ struct PushKey {
 
 /// @brief Hashes an original `eh.push` coordinate for unordered maps.
 struct PushKeyHash {
+    /// @brief Combines an original push coordinate into a deterministic hash.
     /// @param key Push coordinate to hash.
     /// @return Deterministic mixed block/instruction hash.
     std::size_t operator()(const PushKey &key) const noexcept {

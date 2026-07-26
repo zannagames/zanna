@@ -738,6 +738,7 @@ bool vg_spinner_is_indeterminate(const vg_spinner_t *spinner) {
 }
 
 /// @brief Consume the latched value-scrub completion edge (see header).
+/// @copydetails vg_spinner_was_scrub_finished
 bool vg_spinner_was_scrub_finished(vg_spinner_t *spinner) {
     if (!spinner || !spinner->scrub_finished)
         return false;

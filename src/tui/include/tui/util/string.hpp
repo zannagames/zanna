@@ -5,8 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tui/include/tui/util/string.hpp
-// Purpose: Provides string manipulation utilities for the TUI library.
+/// @file
+/// @brief Declares ASCII lowercase conversion helpers for TUI strings.
+/// @details Provides stateless in-place and copying conversions using
+///          unsigned-character-safe standard-library case folding.
 // Key invariants: ASCII-only case conversion (no Unicode support).
 // Ownership/Lifetime: Stateless inline utilities with no dynamic resources.
 // Links: docs/internals/architecture.md
@@ -25,6 +27,9 @@ namespace zanna::tui::util {
 /// @details Uses ASCII-only lowercase conversion via std::tolower.
 /// @param s String to convert.
 inline void toLowerInPlace(std::string &s) {
+    /// @brief Fold one byte to lowercase without signed-character undefined behavior.
+    /// @param c Byte to normalize.
+    /// @return Lowercase representation converted back to `char`.
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
     });

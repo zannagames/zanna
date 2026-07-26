@@ -124,6 +124,8 @@ union Slot {
     /// @brief Compare two slots for bitwise equality (type-agnostic).
     /// @note This compares the raw i64 representation. Use only when type is unknown
     ///       or when comparing integral/pointer types.
+    /// @param other Slot whose raw representation is compared with this slot.
+    /// @return @c true when both slots contain the same 64-bit representation.
     [[nodiscard]] inline bool bitwiseEquals(const Slot &other) const noexcept {
         return i64 == other.i64;
     }
@@ -179,8 +181,11 @@ struct BlockExecCache {
 /// @brief Call frame storing registers and operand stack.
 /// @invariant Stack pointer @c sp never exceeds @c stack size.
 struct Frame {
+    /// @brief Active exception-handler entry and its installation point.
     struct HandlerRecord {
+        /// @brief Borrowed handler block.
         const il::core::BasicBlock *handler = nullptr;
+        /// @brief Instruction offset captured when the handler was installed.
         size_t ipSnapshot = 0;
     };
 
@@ -188,9 +193,13 @@ struct Frame {
     /// @invariant When @c valid is true, @c block references the faulting block
     ///            and @c nextIp is either @c faultIp + 1 or @c block->instructions.size().
     struct ResumeState {
+        /// @brief Borrowed block containing the fault.
         const il::core::BasicBlock *block = nullptr;
+        /// @brief Index of the instruction that raised the trap.
         size_t faultIp = 0;
+        /// @brief Instruction index at which resumable execution continues.
         size_t nextIp = 0;
+        /// @brief Whether the remaining fields describe a resume point.
         bool valid = false;
     };
 
@@ -312,14 +321,27 @@ class VM {
     friend class detail::ThreadedStrategy;
 #endif
     friend class RuntimeBridge; ///< Runtime bridge accesses trap formatting helpers
+    /// @brief Raise a VM trap from the runtime bridge.
+    /// @param kind Broad trap category.
+    /// @param code Runtime-specific numeric error code.
     friend void vm_raise(TrapKind kind, int32_t code);
-    /// @brief Handles error condition.
+    /// @brief Raise a VM trap from an existing structured error.
+    /// @param error Error payload to dispatch or report.
     friend void vm_raise_from_error(const VmError &error);
     friend struct VMTestHook; ///< Unit tests access interpreter internals
+    /// @brief Acquire mutable storage for the current runtime trap token.
+    /// @return Pointer to VM-owned token storage.
     friend VmError *vm_acquire_trap_token();
+    /// @brief Inspect the current runtime trap token.
+    /// @return Pointer to the retained error, or @c nullptr when no token is valid.
     friend const VmError *vm_current_trap_token();
+    /// @brief Invalidate the current runtime trap token.
     friend void vm_clear_trap_token();
+    /// @brief Replace the message associated with the current trap token.
+    /// @param text Diagnostic text copied into VM-owned storage.
     friend void vm_store_trap_token_message(std::string_view text);
+    /// @brief Copy the message associated with the current trap token.
+    /// @return Current token message, or an empty string when unavailable.
     friend std::string vm_current_trap_message();
 
     /// @brief Result of executing one opcode.
@@ -345,16 +367,22 @@ class VM {
         using is_transparent = void;
 
         /// @brief Hash a string_view.
+        /// @param sv Character sequence to hash.
+        /// @return Hash value compatible with the equality functor.
         size_t operator()(std::string_view sv) const noexcept {
             return std::hash<std::string_view>{}(sv);
         }
 
         /// @brief Hash a std::string by delegating to the string_view overload.
+        /// @param s String to hash.
+        /// @return Hash value compatible with the equality functor.
         size_t operator()(const std::string &s) const noexcept {
             return (*this)(std::string_view{s});
         }
 
         /// @brief Hash a C-string by delegating to the string_view overload.
+        /// @param s Null-terminated string to hash.
+        /// @return Hash value compatible with the equality functor.
         size_t operator()(const char *s) const noexcept {
             return (*this)(std::string_view{s});
         }
@@ -365,31 +393,49 @@ class VM {
         using is_transparent = void;
 
         /// @brief Compare two string_views for equality.
+        /// @param a First character sequence.
+        /// @param b Second character sequence.
+        /// @return @c true when both sequences contain identical characters.
         bool operator()(std::string_view a, std::string_view b) const noexcept {
             return a == b;
         }
 
         /// @brief Compare two std::strings for equality.
+        /// @param a First string.
+        /// @param b Second string.
+        /// @return @c true when both strings contain identical characters.
         bool operator()(const std::string &a, const std::string &b) const noexcept {
             return a == b;
         }
 
         /// @brief Compare a std::string and a string_view for equality.
+        /// @param a String forming the left operand.
+        /// @param b Character sequence forming the right operand.
+        /// @return @c true when both operands contain identical characters.
         bool operator()(const std::string &a, std::string_view b) const noexcept {
             return a == b;
         }
 
         /// @brief Compare a string_view and a std::string for equality.
+        /// @param a Character sequence forming the left operand.
+        /// @param b String forming the right operand.
+        /// @return @c true when both operands contain identical characters.
         bool operator()(std::string_view a, const std::string &b) const noexcept {
             return a == b;
         }
 
         /// @brief Compare a C-string and a string_view for equality.
+        /// @param a Null-terminated string forming the left operand.
+        /// @param b Character sequence forming the right operand.
+        /// @return @c true when both operands contain identical characters.
         bool operator()(const char *a, std::string_view b) const noexcept {
             return std::string_view{a} == b;
         }
 
         /// @brief Compare a string_view and a C-string for equality.
+        /// @param a Character sequence forming the left operand.
+        /// @param b Null-terminated string forming the right operand.
+        /// @return @c true when both operands contain identical characters.
         bool operator()(std::string_view a, const char *b) const noexcept {
             return a == std::string_view{b};
         }
@@ -432,6 +478,8 @@ class VM {
             ///          (SBO check, type erasure, non-trivial destructor) on every
             ///          dispatch boundary.  The actual user callback is stored in
             ///          VM::pollCallback_ and invoked via VM::pollCallbackTrampoline_.
+            /// @param vm Active VM at the polling boundary.
+            /// @return `true` to continue dispatch.
             bool (*pollCallback)(VM *) = nullptr;
             bool enableOpcodeCounts = true; ///< Runtime toggle for opcode counting
         } config;                           ///< Per-run polling configuration
@@ -441,6 +489,7 @@ class VM {
         VM *owner = nullptr; ///< Owning VM used by callbacks
 
         /// @brief Access the owning VM for this execution state.
+        /// @return Non-owning pointer to the VM that created the state.
         VM *vm() {
             return owner;
         }
@@ -471,10 +520,14 @@ class VM {
     ///          common cases (HIGH-5 optimization).
     /// @invariant Constructor pushes state; destructor pops if state is still top.
     struct ExecStackGuard {
+        /// @brief VM whose active execution stack is guarded.
         VM &vm;
+        /// @brief Non-owning pointer to the pushed execution state.
         ExecState *state;
 
         /// @brief Push the execution state onto the VM stack.
+        /// @param vmRef VM whose execution stack receives the state.
+        /// @param stRef Execution state kept active for this guard's lifetime.
         ExecStackGuard(VM &vmRef, ExecState &stRef) noexcept : vm(vmRef), state(&stRef) {
             vm.execStack.push_back(state);
         }
@@ -488,22 +541,30 @@ class VM {
         }
 
         // Non-copyable, non-movable
+        /// @brief Execution-stack guards cannot be copied.
         ExecStackGuard(const ExecStackGuard &) = delete;
+        /// @brief Execution-stack guards cannot be copy-assigned.
         ExecStackGuard &operator=(const ExecStackGuard &) = delete;
+        /// @brief Execution-stack guards cannot be moved.
         ExecStackGuard(ExecStackGuard &&) = delete;
+        /// @brief Execution-stack guards cannot be move-assigned.
         ExecStackGuard &operator=(ExecStackGuard &&) = delete;
     };
 
     // Public map aliases for handler-facing utilities
+    /// @brief Function lookup table keyed by borrowed module-owned names.
     using FnMap = std::unordered_map<std::string_view,
                                      const il::core::Function *,
                                      TransparentHashSV,
                                      TransparentEqualSV>;
+    /// @brief Runtime string-handle table keyed by borrowed module-owned names.
     using StrMap = std::
         unordered_map<std::string_view, ZannaStringHandle, TransparentHashSV, TransparentEqualSV>;
 
+    /// @brief Mutable global addresses keyed by borrowed module-owned names.
     using MutableGlobalMap =
         std::unordered_map<std::string_view, void *, TransparentHashSV, TransparentEqualSV>;
+    /// @brief Allocated byte size for each mutable-global base address.
     using MutableGlobalSizeMap = std::unordered_map<const void *, size_t>;
 
     /// @brief Classification result for a VM memory access.
@@ -538,6 +599,7 @@ class VM {
         /// CONC-009 fix: flag set after init completes; debug-asserted on map access.
         std::atomic<bool> initComplete{false};
 
+        /// @brief Release storage allocated for mutable module globals.
         ~ProgramState();
     };
 
@@ -568,6 +630,13 @@ class VM {
     /// @brief Construct a VM bound to an existing shared program state.
     /// @details Used to implement VM threads: each VM instance has its own interpreter state but
     ///          shares globals and runtime context via @p program.
+    /// @param m IL module to execute; must outlive this VM.
+    /// @param program Initialized shared globals and runtime context.
+    /// @param tc Trace configuration for debugging and profiling output.
+    /// @param maxSteps Maximum instruction count, or zero for no limit.
+    /// @param dbg Initial breakpoint and watch configuration.
+    /// @param script Optional non-owning scripted debugger.
+    /// @param stackBytes Operand-stack capacity allocated for each frame.
     VM(const il::core::Module &m,
        std::shared_ptr<ProgramState> program,
        TraceConfig tc = {},
@@ -579,9 +648,13 @@ class VM {
     /// @brief Release runtime string handles retained by the VM.
     ~VM();
 
+    /// @brief VMs cannot be copied because they own mutable execution resources.
     VM(const VM &) = delete;
+    /// @brief VMs cannot be copy-assigned.
     VM &operator=(const VM &) = delete;
+    /// @brief Move VM-owned execution resources into a new instance.
     VM(VM &&) noexcept = default;
+    /// @brief VMs cannot be move-assigned because the bound module is a reference.
     VM &operator=(VM &&) = delete;
 
     /// @brief Access the IL module bound to this VM instance.
@@ -591,6 +664,7 @@ class VM {
     }
 
     /// @brief Access the shared program state for this VM instance (if any).
+    /// @return Shared ownership of the globals and runtime context.
     [[nodiscard]] std::shared_ptr<ProgramState> programState() const noexcept {
         return programState_;
     }
@@ -627,6 +701,13 @@ class VM {
     bool pollPendingInterrupt();
 
     /// @brief Function signature for opcode handlers.
+    /// @param vm Active virtual machine.
+    /// @param fr Current execution frame.
+    /// @param in Instruction being executed.
+    /// @param blocks Function block lookup map.
+    /// @param[in,out] bb Current basic block pointer.
+    /// @param[in,out] ip Instruction index within the current block.
+    /// @return Dispatch effects produced by the handler.
     using OpcodeHandler = ExecResult (*)(VM &,
                                          Frame &,
                                          const il::core::Instr &,
@@ -638,11 +719,13 @@ class VM {
     using OpcodeHandlerTable = std::array<OpcodeHandler, il::core::kNumOpcodes>;
 
     /// @brief Obtain immutable table mapping opcodes to handlers.
+    /// @return Process-lifetime handler table indexed by opcode.
     static const OpcodeHandlerTable &getOpcodeHandlers();
 
     // Dispatch interface methods - made public for dispatch strategy access
   public:
     /// @brief Reset interpreter bookkeeping for a new dispatch cycle.
+    /// @param state Execution state whose transient dispatch fields are reset.
     void beginDispatch(ExecState &state);
 
     /// @brief Select the next instruction to execute.
@@ -652,9 +735,13 @@ class VM {
     bool selectInstruction(ExecState &state, const il::core::Instr *&instr);
 
     /// @brief Trace an instruction and account for instruction counts.
+    /// @param instr Instruction about to execute.
+    /// @param frame Frame in which the instruction executes.
     void traceInstruction(const il::core::Instr &instr, Frame &frame);
 
     /// @brief Apply standard bookkeeping after executing an opcode.
+    /// @param state Execution state updated with the opcode result.
+    /// @param exec Result returned by the opcode handler.
     /// @return True when the caller should stop dispatching.
     bool finalizeDispatch(ExecState &state, const ExecResult &exec);
 
@@ -685,6 +772,12 @@ class VM {
     void refreshDebugFlags();
 
     /// @brief Execute an opcode via function table dispatch.
+    /// @param fr Active call frame.
+    /// @param in Instruction to dispatch.
+    /// @param blocks Label-to-block lookup for the active function.
+    /// @param bb Active block pointer, updated by control transfers.
+    /// @param ip Instruction pointer, updated by the handler.
+    /// @return Control-flow and return-value effects produced by the handler.
     ExecResult executeOpcode(Frame &fr,
                              const il::core::Instr &in,
                              const BlockMap &blocks,
@@ -695,6 +788,10 @@ class VM {
     void clearCurrentContext();
 
     /// @brief Update current trap context for instruction @p in.
+    /// @param fr Frame executing the instruction.
+    /// @param bb Block containing the instruction.
+    /// @param ip Instruction index within @p bb.
+    /// @param in Instruction whose source location is recorded.
     void setCurrentContext(Frame &fr,
                            const il::core::BasicBlock *bb,
                            size_t ip,
@@ -713,6 +810,7 @@ class VM {
     /// @details Prefers execStack (always up-to-date) over currentContext
     ///          (may be stale when fast-path dispatch skips setCurrentContext).
     ///          Used by trap-raising and diagnostic paths.
+    /// @return Snapshot of the best currently available instruction context.
     TrapContext currentTrapContext() const;
 
     /// @brief Build a full backtrace by walking the execution stack.
@@ -735,6 +833,7 @@ class VM {
     ///        and named locals of the top frame) for a DebugFrontend to serialize.
     /// @param reason Why execution paused ("breakpoint", "step", ...).
     /// @param loc Source location of the instruction execution is paused at.
+    /// @return Frontend-neutral description of the paused VM.
     DebugStopInfo buildStopInfo(std::string_view reason,
                                 const il::support::SourceLoc &loc) const;
 
@@ -760,6 +859,7 @@ class VM {
         ExecState *target; ///< Execution state to resume after unwinding.
 
         /// @brief Return a description of the signal for debugging.
+        /// @return Static, null-terminated diagnostic text.
         const char *what() const noexcept override;
     };
 
@@ -771,6 +871,7 @@ class VM {
         std::string message; ///< Formatted diagnostic message
     };
 
+    /// @brief Stable trap payload exposed to runtime error-construction helpers.
     struct TrapToken {
         VmError error{};     ///< Stored error payload for trap.err construction
         std::string message; ///< Message associated with the token
@@ -783,6 +884,8 @@ class VM {
 
     /// @brief Custom deleter for RtContext that calls rt_context_cleanup before deletion.
     struct RtContextDeleter {
+        /// @brief Shut down shared workers, clean the runtime context, and free it.
+        /// @param ctx Owned runtime context to destroy; @c nullptr is ignored.
         void operator()(RtContext *ctx) const noexcept;
     };
 
@@ -860,12 +963,19 @@ class VM {
     /// @brief Internal driver implementing the selected dispatch mechanism.
     struct DispatchDriver;
 
+    /// @brief Custom deleter allowing the private dispatch-driver type to remain incomplete here.
     struct DispatchDriverDeleter {
+        /// @brief Destroy a dispatch driver through its complete implementation type.
+        /// @param driver Owned driver to destroy; @c nullptr is accepted.
         void operator()(DispatchDriver *driver) const;
     };
 
+    /// @brief Selected dispatch driver owned by this VM.
     std::unique_ptr<DispatchDriver, DispatchDriverDeleter> dispatchDriver;
 
+    /// @brief Construct the driver implementing a dispatch strategy.
+    /// @param kind Dispatch mechanism requested for this VM.
+    /// @return Owning pointer to a driver implementing @p kind.
     static std::unique_ptr<DispatchDriver, DispatchDriverDeleter> makeDispatchDriver(
         DispatchKind kind);
 
@@ -882,6 +992,13 @@ class VM {
     /// @brief Remaining instructions to step before pausing.
     uint64_t stepBudget = 0;
 
+    /// @brief Frame-depth-aware debugger stepping operation.
+    /// @var DebugStepMode::None
+    /// No depth-aware step is active.
+    /// @var DebugStepMode::StepOver
+    /// Pause after the current source operation without entering callees.
+    /// @var DebugStepMode::StepOut
+    /// Pause after returning from the current frame.
     enum class DebugStepMode { None, StepOver, StepOut };
 
     /// @brief Active frame-depth-aware stepping mode.
@@ -972,6 +1089,7 @@ class VM {
 
     /// @brief Most recent trap emitted by the VM.
     TrapState lastTrap{};
+    /// @brief Runtime-visible token for the currently retained trap.
     TrapToken trapToken{};
 
   public:
@@ -999,6 +1117,7 @@ class VM {
     /// @param fn Function to execute.
     /// @param args Argument slots for entry block parameters.
     /// @param bb Set to point at the entry block.
+    /// @return Initialized frame with registers, parameters, and stack storage.
     Frame setupFrame(const il::core::Function &fn,
                      std::span<const Slot> args,
                      const il::core::BasicBlock *&bb);
@@ -1050,11 +1169,19 @@ class VM {
     /// @brief Execute instruction @p in updating control flow state.
     // executeOpcode, setCurrentContext, and clearCurrentContext moved to public section
 
-    /// @brief Format and record trap diagnostics.
+    /// @brief Build structured frame metadata for a trap.
+    /// @param error Error whose source and execution context are captured.
+    /// @return Frame descriptor suitable for diagnostic formatting.
     FrameInfo buildFrameInfo(const VmError &error) const;
+
+    /// @brief Format and retain a trap diagnostic as the latest VM failure.
+    /// @param error Structured error payload to retain.
+    /// @param frame Captured frame information associated with @p error.
+    /// @return Human-readable diagnostic text stored by the VM.
     std::string recordTrap(const VmError &error, const FrameInfo &frame);
 
     /// @brief Access active VM instance for thread-local trap reporting.
+    /// @return Active VM for the calling thread, or @c nullptr when none is bound.
     static VM *activeInstance();
 
     /// @brief Prepare trap state and search for an exception handler.
@@ -1094,32 +1221,52 @@ class VM {
                                             bool postExec);
 
     /// @brief Forward to debug control logic for pause decisions.
+    /// @param st Current execution state.
+    /// @param in Optional instruction associated with the pause boundary.
+    /// @param postExec Whether the boundary occurs after instruction execution.
+    /// @return Pause sentinel when execution should yield, otherwise @c std::nullopt.
     std::optional<Slot> shouldPause(ExecState &st, const il::core::Instr *in, bool postExec);
 
     /// @brief Apply a debugger script action to the current execution depth.
+    /// @param action Scripted debugger action to activate.
+    /// @param currentDepth Active execution-stack depth used by step-over/out.
     void applyDebugAction(DebugAction action, size_t currentDepth);
 
     /// @brief Pause execution or consume the next scripted debugger action.
+    /// @param st Execution state at the debugger stop.
+    /// @param reason Frontend-neutral reason for the stop.
+    /// @return Pause sentinel when execution remains suspended, otherwise @c std::nullopt.
     std::optional<Slot> pauseOrAdvanceDebugScript(ExecState &st, std::string_view reason);
 
     /// @brief Consume the current process-wide interrupt epoch for this VM, if any.
+    /// @return @c true when a new interrupt epoch was consumed.
     bool consumePendingInterrupt() noexcept;
 
     /// @brief Execute a single interpreter step.
+    /// @param st Execution state to advance by one instruction boundary.
+    /// @return Function result or pause sentinel when the loop should yield.
     std::optional<Slot> stepOnce(ExecState &st);
 
     /// @brief Handle a trap dispatch signal raised during interpretation.
+    /// @param signal Non-local control-flow signal naming the handler state.
+    /// @param st Current execution state receiving any handler transition.
+    /// @return @c true when the signal was handled by @p st.
     bool handleTrapDispatch(const TrapDispatchSignal &signal, ExecState &st);
 
     // Dispatch methods moved to public section
 
     /// @brief Fetch the next opcode for switch-based dispatch.
+    /// @param st Execution state whose instruction pointer is consulted.
+    /// @return Opcode at the current dispatch position.
     il::core::Opcode fetchOpcode(ExecState &st);
 
     /// @brief Process the result of an inline opcode handler.
+    /// @param st Execution state to update.
+    /// @param exec Handler result carrying control-flow or return effects.
     void handleInlineResult(ExecState &st, const ExecResult &exec);
 
     /// @brief Trap when no handler implementation exists for @p op.
+    /// @param op Opcode lacking a dispatch implementation.
     void trapUnimplemented(il::core::Opcode op);
 
     /// @brief Run the main interpreter loop.
@@ -1129,9 +1276,12 @@ class VM {
 
 #if defined(_WIN32)
     /// @brief Windows-only: execute one dispatch step inside a SEH __try/__except
-    /// frame so that hardware exceptions (AV, divide-by-zero) produce clean traps.
-    /// Kept in a separate function because MSVC forbids C++ objects with destructors
-    /// in the same stack frame as __try/__except.
+    ///        frame so that hardware exceptions (AV, divide-by-zero) produce clean traps.
+    /// @details Kept in a separate function because MSVC forbids C++ objects with
+    ///          destructors in the same stack frame as __try/__except.
+    /// @param context Shared interface supplied to the dispatch driver.
+    /// @param st Execution state advanced by the driver.
+    /// @return @c true when the current function completed.
     bool runDispatchStep(VMContext &context, ExecState &st);
 #endif
 
@@ -1149,6 +1299,7 @@ class VM {
 
   public:
     /// @brief Return executed instruction count.
+    /// @return Cumulative instruction count since construction or reset.
     uint64_t getInstrCount() const;
 
     /// @brief Retrieve the formatted diagnostic for the most recent unhandled trap.
@@ -1162,19 +1313,28 @@ class VM {
     void clearTrapState();
 
     /// @brief Emit a tail-call debug/trace event.
+    /// @param from Caller function, or @c nullptr when unavailable.
+    /// @param to Tail-called function, or @c nullptr when unavailable.
     void onTailCall(const il::core::Function *from, const il::core::Function *to);
 
 #if ZANNA_VM_OPCOUNTS
     /// @brief Access per-opcode execution counters.
+    /// @return Immutable counter array indexed by opcode value.
     const std::array<uint64_t, il::core::kNumOpcodes> &opcodeCounts() const;
     /// @brief Reset all opcode execution counters to zero.
     void resetOpcodeCounts();
     /// @brief Return top-N opcodes by execution count as (opcode index, count).
+    /// @param n Maximum number of nonzero counters to return.
+    /// @return Opcode/count pairs ordered from most to least frequently executed.
     std::vector<std::pair<int, uint64_t>> topOpcodes(std::size_t n) const;
 #endif
 
     // Polling configuration stored on VM and propagated to new ExecStates
+    /// @brief Instruction cadence for invoking the host poll callback; zero disables polling.
     uint32_t pollEveryN_ = 0;
+    /// @brief Optional host callback invoked by the lightweight poll trampoline.
+    /// @param vm Active VM at the polling boundary.
+    /// @return `true` to continue dispatch.
     std::function<bool(VM &)> pollCallback_{};
 
     /// @brief Static trampoline for the poll callback.
@@ -1182,6 +1342,8 @@ class VM {
     ///          the user-supplied @c std::function stored in @c pollCallback_.
     ///          Keeping std::function at VM level (set once) avoids per-instruction
     ///          overhead while the trampoline itself is a trivial indirect call.
+    /// @param vm VM whose configured callback is invoked.
+    /// @return Callback result indicating whether dispatch may continue.
     static bool pollCallbackTrampoline_(VM *vm) {
         return vm->pollCallback_(*vm);
     }

@@ -22,10 +22,22 @@
 //        src/runtime/graphics/math/rt_quat.h (related rotation representation)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares immutable row-major 4×4 matrix operations for 3D transforms.
+ *
+ * @details Mat4 provides affine factories, axis rotations, perspective and
+ *          orthographic projection, look-at views, element access, arithmetic,
+ *          point/direction transformation, transpose, determinant, trapping
+ *          and non-trapping inversion, negation, and approximate comparison.
+ */
+
 #pragma once
 
 #include <stdint.h>
 
+/// @brief Runtime class identifier assigned to managed Mat4 objects.
 #define RT_MAT4_CLASS_ID INT64_C(-0x600204)
 
 #ifdef __cplusplus

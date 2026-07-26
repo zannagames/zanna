@@ -46,26 +46,12 @@ constexpr const char *kUsageMessage = ZANNA_BASIC_TOOL_USAGE;
 
 /// @brief Load a BASIC source file and register it with a SourceManager.
 ///
-/// @details The helper performs the following workflow:
-///          1. Validate @p path and emit the shared usage text when no argument
-///             was supplied, allowing callers to exit early with a consistent
-///             message.
-///          2. Reject files larger than the 256 MB limit (or with an
-///             unmeasurable size) before any allocation, guarding against
-///             out-of-memory conditions on pathological inputs.
-///          3. Read the bytes into a pre-sized buffer in a single read,
-///             reporting an "incomplete read" diagnostic on a short read and an
-///             out-of-memory diagnostic if the allocation throws @c std::bad_alloc.
-///          4. Register the path with the provided @ref il::support::SourceManager
-///             so downstream diagnostics can resolve the file identifier back to
-///             the textual path.
-///          5. Copy the buffered contents into @p buffer only after the previous
-///             steps have succeeded, leaving the caller's storage untouched when
-///             failures occur.
-///          Errors while opening the file, exceeding the size limit, or
-///          registering the path are reported to @c std::cerr with human-readable
-///          messages.  The function returns an engaged optional only when the
-///          caller can safely proceed with compilation.
+/// @details A null path emits the build-configured usage message immediately.
+///          Otherwise the function delegates bounded reading and file-id
+///          registration to @ref il::tools::common::loadSourceBuffer, prints any
+///          returned structured diagnostic through the canonical text renderer,
+///          and transfers the loaded bytes into @p buffer only after every step
+///          succeeds. The caller's buffer therefore remains unchanged on error.
 ///
 /// @param path Filesystem path provided on the command line.
 /// @param buffer Destination string that receives the file contents on success.

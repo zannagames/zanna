@@ -20,6 +20,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_ws_server.c
+ * @brief Implements the managed plaintext WebSocket server.
+ * @details A serialized lifecycle owns the listener, bounded worker pool, and
+ *          generation-tagged client slots. Workers perform strict upgrades,
+ *          drain and validate frames, handle control traffic, and synchronize
+ *          per-client writes for broadcast and direct messaging.
+ */
+
 #include "rt_ws_server.h"
 #include "rt_websocket.h"
 
@@ -152,6 +161,8 @@ typedef struct {
 
 #include "rt_ws_shared.inc"
 
+/// @brief Close and release one owned managed TCP connection reference.
+/// @param[in,out] tcp_ptr Address of the owned handle; cleared before return.
 static void ws_release_tcp(void **tcp_ptr) {
     if (!tcp_ptr || !*tcp_ptr)
         return;
@@ -176,6 +187,7 @@ static void ws_release_managed_reference(void **object_ptr) {
 /// @details The worker retains its own reference and performs the final close
 ///          after bidirectional shutdown wakes any blocked handshake or frame
 ///          receive. The slot io and server state mutexes must be held.
+/// @param[in,out] client Occupied client slot whose transport is interrupted.
 static void ws_interrupt_slot_transport_locked(ws_client_t *client) {
     if (!client || !client->tcp)
         return;
@@ -204,6 +216,8 @@ static int64_t ws_server_default_worker_count(void) {
 }
 
 /// @brief Read the server's running flag under its state mutex.
+/// @param[in,out] s Server payload, or NULL.
+/// @return 1 when the server is running; otherwise 0.
 static int ws_server_is_running_locked(rt_ws_server_impl *s) {
     int running;
     if (!s)
@@ -214,6 +228,13 @@ static int ws_server_is_running_locked(rt_ws_server_impl *s) {
     return running;
 }
 
+/// @brief Send an exact native byte sequence over a runtime TCP connection.
+/// @details Large writes are split to the platform send() range and interrupted
+///          system calls are retried.
+/// @param[in] tcp Valid runtime TCP connection.
+/// @param[in] data Bytes to transmit.
+/// @param[in] len Exact number of bytes to send.
+/// @return 1 after all bytes are sent; otherwise 0 on an invalid socket, EOF, or send error.
 static int ws_server_send_raw(void *tcp, const void *data, size_t len) {
     socket_t sock = rt_tcp_socket_fd(tcp);
     size_t total = 0;
@@ -332,9 +353,12 @@ static int ws_tcp_recv_exact_handshake(rt_ws_server_impl *server,
 /// @details Bare LF, embedded NUL, stray CR, over-limit input, EOF, and native
 ///          allocation failure all reject the handshake. The caller owns the
 ///          returned NUL-terminated buffer and frees it with `free()`.
-/// @param tcp Valid runtime TCP connection.
-/// @param max_len Maximum line bytes excluding CRLF.
-/// @param len_out Receives the exact line length.
+/// @param[in] server Owning server whose running flag permits continued reads.
+/// @param[in] tcp Valid runtime TCP connection.
+/// @param[in] deadline_ms Absolute monotonic handshake deadline, or zero when unavailable.
+/// @param[in,out] timeout_polls_remaining Fallback poll budget when no clock is available.
+/// @param[in] max_len Maximum line bytes excluding CRLF.
+/// @param[out] len_out Receives the exact line length.
 /// @return Caller-owned line, or NULL on rejection/failure.
 static char *ws_tcp_recv_line_strict(rt_ws_server_impl *server,
                                      void *tcp,
@@ -396,6 +420,13 @@ static char *ws_tcp_recv_line_strict(rt_ws_server_impl *server,
 //=============================================================================
 
 /// @brief Send a WebSocket frame over a raw TCP connection (server-side: no masking).
+/// @details Emits one final frame using the canonical shortest payload-length
+///          form. RFC 6455 server frames are sent without a masking key.
+/// @param[in] tcp Valid runtime TCP connection.
+/// @param[in] opcode Frame opcode to encode.
+/// @param[in] data Payload bytes, or NULL when @p len is zero.
+/// @param[in] len Payload size in bytes.
+/// @return 1 when the complete frame is sent; otherwise 0.
 static int ws_server_send_frame(void *tcp, uint8_t opcode, const void *data, size_t len) {
     uint8_t header[10];
     size_t header_len = 2;
@@ -430,6 +461,15 @@ static int ws_server_send_frame(void *tcp, uint8_t opcode, const void *data, siz
 }
 
 /// @brief Read a WebSocket frame from a TCP connection (client frames are masked).
+/// @details Enforces reserved-bit, opcode, client masking, canonical length,
+///          control-frame, message-size, close-code, and close-reason rules.
+///          Protocol violations receive an appropriate Close frame.
+/// @param[in] tcp Valid runtime TCP connection.
+/// @param[out] fin_out Receives whether the FIN bit is set.
+/// @param[out] opcode_out Receives the validated opcode.
+/// @param[out] data_out Receives an allocated unmasked payload, or NULL when empty.
+/// @param[out] len_out Receives the payload size in bytes.
+/// @return 1 on success; otherwise 0 after transport, allocation, or protocol failure.
 static int ws_server_recv_frame(
     void *tcp, uint8_t *fin_out, uint8_t *opcode_out, uint8_t **data_out, size_t *len_out) {
     uint8_t header[2];
@@ -536,6 +576,13 @@ static int ws_server_recv_frame(
 }
 
 /// @brief Perform server-side WebSocket upgrade handshake.
+/// @details Reads a strictly CRLF-terminated request within aggregate line,
+///          header-count, byte, and time limits; validates required RFC 6455
+///          fields and origin authority; and emits the 101 response.
+/// @param[in,out] server Running server used for cancellation checks.
+/// @param[in] tcp Accepted runtime TCP connection.
+/// @param[in] required_subprotocol Optional exact protocol token the request must offer.
+/// @return 1 after sending a valid upgrade response; otherwise 0.
 static int ws_server_handshake(rt_ws_server_impl *server,
                                void *tcp,
                                const char *required_subprotocol) {
@@ -627,6 +674,7 @@ static int ws_server_handshake(rt_ws_server_impl *server,
 /// @brief GC finalizer: stop the accept thread and close all client connections, then destroy the
 /// platform mutex. Calling `_stop` first is idempotent, so this is safe even if the user already
 /// stopped the server explicitly.
+/// @param[in,out] obj Managed WebSocket server payload, or NULL.
 static void rt_ws_server_finalize(void *obj) {
     if (!obj)
         return;
@@ -654,6 +702,10 @@ static void rt_ws_server_finalize(void *obj) {
 /// @brief Deactivate a client slot and release its TCP handle (slot io lock +
 ///        state lock held so a concurrent broadcast cannot write to a handle
 ///        being torn down). Lock order: slot io, then state.
+/// @param[in,out] s Owning server payload.
+/// @param[in] slot Reserved client-slot index.
+/// @param[in] generation Generation that must still identify the reservation.
+/// @param[in] tcp Expected TCP handle; released only when it still matches the slot.
 static void ws_server_remove_client(rt_ws_server_impl *s,
                                     int slot,
                                     uint64_t generation,
@@ -678,6 +730,13 @@ static void ws_server_remove_client(rt_ws_server_impl *s,
 ///        frames and broadcasts never interleave on one socket — without a
 ///        global write lock that would let one slow peer stall every other
 ///        client's sends (VDOC-149).
+/// @param[in,out] s Owning server payload.
+/// @param[in] slot Client slot whose I/O mutex serializes the frame.
+/// @param[in] tcp Runtime TCP connection associated with @p slot.
+/// @param[in] opcode Frame opcode to send.
+/// @param[in] data Payload bytes, or NULL when @p len is zero.
+/// @param[in] len Payload length in bytes.
+/// @return 1 when the frame is sent; otherwise 0, including invalid arguments.
 static int ws_server_send_locked(
     rt_ws_server_impl *s, int slot, void *tcp, uint8_t opcode, const void *data, size_t len) {
     int ok = 0;
@@ -696,6 +755,10 @@ static int ws_server_send_locked(
 ///          installs a trap-recovery point and treats any trap as an orderly
 ///          disconnect for this client (worker threads must never abort the
 ///          process because a peer vanished).
+/// @param[in,out] s Owning server payload.
+/// @param[in] slot Reserved client-slot index.
+/// @param[in] generation Generation protecting the slot from ABA reuse.
+/// @param[in] tcp Worker-retained runtime TCP connection.
 static void ws_client_run(rt_ws_server_impl *s, int slot, uint64_t generation, void *tcp) {
     if (!s || !tcp || slot < 0)
         return;
@@ -824,6 +887,7 @@ done:
 
 /// @brief Worker-pool task: handshake an accepted socket, register the client,
 ///        then run its frame-servicing loop.
+/// @param[in] arg Owned ws_accept_task_t allocation; released on entry.
 static void ws_accept_task_run(void *arg) {
     ws_accept_task_t *task = (ws_accept_task_t *)arg;
     rt_ws_server_impl *s = task ? task->server : NULL;
@@ -884,6 +948,12 @@ static void ws_accept_task_run(void *arg) {
 // Accept Loop
 //=============================================================================
 
+/// @brief Accept plaintext TCP clients and submit generation-tagged handshake tasks.
+/// @details Reserves each visible client slot before worker submission so Stop
+///          can interrupt queued and handshaking connections. Rejected,
+///          over-capacity, and unqueued connections are closed immediately.
+/// @param[in] arg Retained server payload valid until the accept thread is joined.
+/// @return Platform thread result: zero on Windows or NULL on POSIX.
 #if RT_PLATFORM_WINDOWS
 static unsigned __stdcall ws_accept_loop(void *arg)
 #else
@@ -959,7 +1029,8 @@ static void *ws_accept_loop(void *arg)
 /// @brief Construct a WebSocket server bound (lazily) to `port`. Validates port range (0–65535; 0
 /// requests an OS-assigned ephemeral port reported by `Port` after Start) up front; allocates the
 /// impl with mutex + finalizer, but does NOT bind the TCP socket — that happens on `_start`.
-/// Returns a GC-managed handle.
+/// @param[in] port TCP port from 0 through 65535; zero requests an ephemeral port.
+/// @return Caller-owned managed server handle, or NULL after a returning allocation trap.
 void *rt_ws_server_new(int64_t port) {
     if (port < 0 || port > 65535) {
         rt_trap("WsServer: invalid port");
@@ -1004,6 +1075,7 @@ void *rt_ws_server_new(int64_t port) {
 /// @brief Start listening: bind the TCP server, mark `running=true`, and spawn the accept loop
 /// on a dedicated CRT-aware thread. Idempotent — calling
 /// while already running is a no-op.
+/// @param[in] obj Managed WebSocket server receiver; NULL is a no-op.
 void rt_ws_server_start(void *obj) {
     if (!obj)
         return;
@@ -1080,6 +1152,7 @@ void rt_ws_server_start(void *obj) {
 /// @brief Stop the server: set `running=false`, close the TCP listener (which unblocks
 /// `accept_for`), join the accept thread, then close every active client
 /// connection under the mutex. Designed to be safely called from any thread.
+/// @param[in] obj Managed WebSocket server receiver; NULL is a no-op.
 void rt_ws_server_stop(void *obj) {
     if (!obj)
         return;
@@ -1152,6 +1225,8 @@ void rt_ws_server_stop(void *obj) {
 ///          NUL rejection, before creating a native NUL-terminated copy.
 ///          Lifecycle serialization prevents Start from publishing a worker
 ///          that observes a freed token.
+/// @param[in] obj Managed WebSocket server receiver; NULL is a no-op.
+/// @param[in] subprotocol Optional managed RFC token; NULL or empty clears the requirement.
 void rt_ws_server_set_subprotocol(void *obj, rt_string subprotocol) {
     if (!obj)
         return;
@@ -1207,6 +1282,9 @@ void rt_ws_server_set_subprotocol(void *obj, rt_string subprotocol) {
 /// @details Native state is copied under the state mutex. A local recovery
 ///          point frees that snapshot before propagating an allocation trap
 ///          from managed String construction.
+/// @param[in] obj Managed WebSocket server receiver, or NULL.
+/// @return Caller-owned managed protocol String; empty when none is configured,
+///         or NULL after an invalid-object or allocation trap.
 rt_string rt_ws_server_subprotocol(void *obj) {
     if (!obj)
         return rt_str_empty();
@@ -1258,6 +1336,8 @@ rt_string rt_ws_server_subprotocol(void *obj) {
 /// Snapshots the client list, then sends per client under that client's io
 /// mutex so broadcast bytes never interleave with its worker's PONG/CLOSE
 /// frames — and a slow peer only stalls its own send, not other clients.
+/// @param[in] obj Managed WebSocket server receiver; NULL is a no-op.
+/// @param[in] message Managed String payload; NULL sends an empty text message.
 void rt_ws_server_broadcast(void *obj, rt_string message) {
     if (!obj)
         return;
@@ -1313,8 +1393,11 @@ void rt_ws_server_broadcast(void *obj, rt_string message) {
     }
 }
 
-/// @brief Binary-frame variant of `_broadcast`. `data` is interpreted as a `(int64 length, uint8*)`
-/// pair (the runtime's Bytes layout); same dead-client cleanup as the text variant.
+/// @brief Broadcast one binary frame to every active client.
+/// @details Uses the same per-client serialization, generation validation, and
+///          failed-client cleanup as the text broadcast.
+/// @param[in] obj Managed WebSocket server receiver; NULL is a no-op.
+/// @param[in] data Managed Bytes payload; NULL is a no-op.
 void rt_ws_server_broadcast_bytes(void *obj, void *data) {
     if (!obj || !data)
         return;
@@ -1372,6 +1455,8 @@ void rt_ws_server_broadcast_bytes(void *obj, void *data) {
 
 /// @brief Count active clients (only counts slots flagged active — slots from disconnected
 /// clients are skipped). Reads under the mutex for a consistent snapshot.
+/// @param[in] obj Managed WebSocket server receiver, or NULL.
+/// @return Number of active upgraded clients, or 0 for NULL or invalid receivers.
 int64_t rt_ws_server_client_count(void *obj) {
     if (!obj)
         return 0;
@@ -1387,8 +1472,11 @@ int64_t rt_ws_server_client_count(void *obj) {
     return count;
 }
 
-/// @brief Read the configured port. Always returns the value passed to `_new`, even before
-/// `_start` has bound the socket.
+/// @brief Read the server's configured or bound TCP port.
+/// @details Before Start this is the constructor value; after binding it is
+///          the actual listener port, including an OS-assigned ephemeral port.
+/// @param[in] obj Managed WebSocket server receiver, or NULL.
+/// @return Port from 0 through 65535, or 0 for NULL or invalid receivers.
 int64_t rt_ws_server_port(void *obj) {
     if (!obj)
         return 0;
@@ -1402,6 +1490,8 @@ int64_t rt_ws_server_port(void *obj) {
 }
 
 /// @brief Returns 1 between successful `_start` and `_stop`; 0 otherwise.
+/// @param[in] obj Managed WebSocket server receiver, or NULL.
+/// @return 1 while running; otherwise 0.
 int8_t rt_ws_server_is_running(void *obj) {
     if (!obj)
         return 0;
@@ -1413,6 +1503,9 @@ int8_t rt_ws_server_is_running(void *obj) {
 /// a client connects, performs the WebSocket handshake, returns the per-client TCP handle.
 /// Returns NULL on accept failure or handshake rejection. Use this when the application owns
 /// the accept loop instead of relying on the background broadcast model.
+/// @param[in] obj Managed WebSocket server receiver.
+/// @return Caller-owned managed TCP client after a successful upgrade, or NULL
+///         when no listener exists, accept fails, or the handshake is rejected.
 void *rt_ws_server_accept(void *obj) {
     if (!obj)
         return NULL;
@@ -1461,6 +1554,10 @@ void *rt_ws_server_accept(void *obj) {
 /// 64 MiB (per WebSocket security best practice) — over-cap closes with status 0x03F1
 /// "Message Too Big". Invalid UTF-8 in text frames closes with 0x03EF "Invalid Payload".
 /// Returns the decoded message as rt_string, or empty string on connection close/error.
+/// @param[in] tcp Managed upgraded TCP client; NULL returns an empty String.
+/// @return Caller-owned managed String containing the exact text or binary
+///         message bytes; empty on close/error, or NULL after an invalid-client
+///         or result-allocation trap.
 rt_string rt_ws_server_client_recv(void *tcp) {
     if (!tcp)
         return rt_str_empty();
@@ -1605,6 +1702,8 @@ rt_string rt_ws_server_client_recv(void *tcp) {
 
 /// @brief Send a TEXT frame to a single client. On send failure, closes the connection (caller
 /// can then drop the handle). Companion to `_client_recv` for the per-connection message loop.
+/// @param[in] tcp Managed upgraded TCP client; NULL is a no-op.
+/// @param[in] message Managed String payload; NULL sends an empty frame.
 void rt_ws_server_client_send(void *tcp, rt_string message) {
     if (!tcp)
         return;
@@ -1629,6 +1728,7 @@ void rt_ws_server_client_send(void *tcp, rt_string message) {
 
 /// @brief Send a polite WebSocket CLOSE frame (no payload) and tear down the TCP connection.
 /// Use when terminating a single client without affecting the server's other connections.
+/// @param[in] tcp Managed upgraded TCP client; NULL is a no-op.
 void rt_ws_server_client_close(void *tcp) {
     if (!tcp)
         return;

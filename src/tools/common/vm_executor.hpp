@@ -15,6 +15,9 @@
 
 #pragma once
 
+/// @file
+/// @brief Declares the shared checked-bytecode execution wrapper for CLI tools.
+
 #include "il/core/Module.hpp"
 
 #include <cstdint>

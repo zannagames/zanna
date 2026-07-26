@@ -23,6 +23,12 @@
 // Links: src/runtime/io/rt_compress.c (original implementation)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares self-contained raw DEFLATE compression and decompression.
+/// @details Inputs are borrowed only for the duration of each call; successful
+///          operations return fully owned byte vectors and enforce bounded output.
+
 #pragma once
 
 #include <cstddef>
@@ -33,6 +39,7 @@
 namespace zanna::pkg {
 
 /// @brief Error thrown when compression or decompression fails.
+/// @details Reports allocation, size-limit, truncation, and RFC 1951 validation failures.
 class DeflateError : public std::runtime_error {
   public:
     using std::runtime_error::runtime_error;

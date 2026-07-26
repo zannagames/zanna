@@ -15,18 +15,30 @@
 // Key invariants:
 //   - Public callback entry points use typed function pointers; compatibility
 //     adapters never call through an object-pointer cast.
-//   - SafeThread captures one worker trap and reports it deterministically to
-//     the joining caller while still releasing the native thread handle.
+//   - SafeThread captures a worker trap for explicit HasError/Error inspection;
+//     joining still releases the native thread resource without rethrowing it.
 // Ownership/Lifetime:
 //   - Thread objects own their native inner handle until join, detach, or
-//     finalization transfers/releases it. Callback arguments are borrowed.
+//     finalization transfers/releases it. Ordinary callback arguments are
+//     borrowed; Owned variants retain managed arguments through callback exit.
 //
 // Links: rt_threads_internal.h, rt_threads_win.c, rt_threads_posix.c, rt_threads.h
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements platform-neutral thread-handle helpers and SafeThread.
+/// @details SafeThread wraps a native Thread with a per-thread trap boundary,
+///          synchronized error storage, and optional managed-argument
+///          retention. Snapshot helpers retain inner Thread handles before
+///          invoking platform join, timed-join, ID, or liveness operations so
+///          concurrent wrapper finalization cannot invalidate them.
+
 #include "rt_threads_internal.h"
 
+/// @brief Join and release a retained inner Thread handle.
+/// @details Join traps are preserved across releasing @p inner and then raised again.
+/// @param inner Retained Thread handle to consume, or NULL.
 static void thread_join_inner_or_release(void *inner) {
     if (!inner)
         return;
@@ -47,6 +59,10 @@ static void thread_join_inner_or_release(void *inner) {
     thread_release_object(inner);
 }
 
+/// @brief Poll a retained inner Thread for completion, then release it.
+/// @details Poll traps are preserved across cleanup and raised again.
+/// @param inner Retained Thread handle to consume, or NULL.
+/// @return One when complete or @p inner is NULL, otherwise zero.
 int8_t thread_try_join_inner_or_release(void *inner) {
     if (!inner)
         return 1;
@@ -68,6 +84,11 @@ int8_t thread_try_join_inner_or_release(void *inner) {
     return joined;
 }
 
+/// @brief Timed-join a retained inner Thread handle, then release it.
+/// @details Join traps are preserved across cleanup and raised again.
+/// @param inner Retained Thread handle to consume, or NULL.
+/// @param ms Maximum join wait in milliseconds.
+/// @return One when complete or @p inner is NULL, otherwise zero on timeout.
 int8_t thread_join_for_inner_or_release(void *inner, int64_t ms) {
     if (!inner)
         return 1;
@@ -89,6 +110,9 @@ int8_t thread_join_for_inner_or_release(void *inner, int64_t ms) {
     return joined;
 }
 
+/// @brief Read a retained inner Thread's runtime identifier, then release it.
+/// @param inner Retained Thread handle to consume, or NULL.
+/// @return Runtime thread ID, or zero when @p inner is NULL.
 static int64_t thread_get_id_inner_or_release(void *inner) {
     if (!inner)
         return 0;
@@ -110,6 +134,9 @@ static int64_t thread_get_id_inner_or_release(void *inner) {
     return id;
 }
 
+/// @brief Read a retained inner Thread's liveness state, then release it.
+/// @param inner Retained Thread handle to consume, or NULL.
+/// @return One while the native thread is alive, otherwise zero.
 static int8_t thread_is_alive_inner_or_release(void *inner) {
     if (!inner)
         return 0;
@@ -136,6 +163,7 @@ static int8_t thread_is_alive_inner_or_release(void *inner) {
 //===----------------------------------------------------------------------===//
 
 /// @brief Drop the owned-arg refcount for a SafeThread context.
+/// @param ctx SafeThread context whose managed argument ownership is cleared.
 static void safe_thread_release_owned_arg(SafeThreadCtx *ctx) {
     if (!ctx || !ctx->owns_arg || !ctx->arg)
         return;
@@ -145,7 +173,8 @@ static void safe_thread_release_owned_arg(SafeThreadCtx *ctx) {
     ctx->owns_arg = 0;
 }
 
-/// @brief GC finalizer for SafeThread context — releases all owned per-thread state.
+/// @brief Finalize a SafeThread and release all owned per-thread state.
+/// @param obj SafeThread context being finalized.
 static void safe_thread_finalize(void *obj) {
     SafeThreadCtx *ctx = (SafeThreadCtx *)obj;
     if (!ctx)
@@ -168,6 +197,7 @@ static void safe_thread_finalize(void *obj) {
 /// @details Reads ctx->thread under the SafeThread monitor and retains it
 ///          before releasing the lock, so the caller holds a stable reference
 ///          even if another thread concurrently swaps/clears the inner thread.
+/// @param ctx SafeThread context to snapshot.
 /// @return The retained inner thread (caller releases), or NULL.
 void *safe_thread_copy_inner_thread(SafeThreadCtx *ctx) {
     if (!ctx)
@@ -196,7 +226,11 @@ void *safe_thread_copy_inner_thread(SafeThreadCtx *ctx) {
     return inner;
 }
 
-/// @brief Entry point wrapper that sets up trap recovery.
+/// @brief Execute a SafeThread callback behind a thread-local trap boundary.
+/// @details Captured diagnostics are stored under the context monitor. The
+///          optional owned argument and the worker's self-reference are
+///          released on every exit path.
+/// @param ctx_ptr Retained SafeThread context passed by the native trampoline.
 static void safe_thread_entry(void *ctx_ptr) {
     SafeThreadCtx *ctx = (SafeThreadCtx *)ctx_ptr;
     if (!ctx)
@@ -230,7 +264,14 @@ done:
         rt_obj_free(ctx);
 }
 
-/// @brief Start a thread with automatic trap/error capture (errors don't crash, they're stored).
+/// @brief Construct and start a SafeThread with optional argument retention.
+/// @details Allocates synchronized result state, optionally retains a managed
+///          argument, takes a self-reference for the worker, and starts the
+///          platform Thread. Partial failures balance every acquired resource.
+/// @param entry Typed callback executed by the SafeThread.
+/// @param arg Callback argument, which may be NULL.
+/// @param retain_arg Whether managed @p arg values are retained through callback exit.
+/// @return New caller-owned SafeThread handle, or NULL after a reported failure.
 static void *rt_thread_start_safe_impl(rt_thread_entry_fn entry, void *arg, int8_t retain_arg) {
     if (!entry)
         rt_trap("Thread.StartSafe: null entry");
@@ -299,12 +340,18 @@ static void *rt_thread_start_safe_impl(rt_thread_entry_fn entry, void *arg, int8
     return ctx;
 }
 
-/// @brief Start a typed native callback with trap capture.
+/// @brief Start a typed callback with trap capture and a borrowed argument.
+/// @param entry Typed callback executed once.
+/// @param arg Borrowed callback argument, or NULL.
+/// @return New caller-owned SafeThread handle, or NULL after a reported failure.
 void *rt_thread_start_safe_fn(rt_thread_entry_fn entry, void *arg) {
     return rt_thread_start_safe_impl(entry, arg, 0);
 }
 
-/// @brief Start a typed native callback with trap capture and managed-argument ownership.
+/// @brief Start a typed callback with trap capture and managed-argument ownership.
+/// @param entry Typed callback executed once.
+/// @param arg Managed value retained through callback exit, borrowed unmanaged pointer, or NULL.
+/// @return New caller-owned SafeThread handle, or NULL after a reported failure.
 void *rt_thread_start_safe_owned_fn(rt_thread_entry_fn entry, void *arg) {
     return rt_thread_start_safe_impl(entry, arg, 1);
 }
@@ -312,19 +359,28 @@ void *rt_thread_start_safe_owned_fn(rt_thread_entry_fn entry, void *arg) {
 /// @brief Spawn a "safe" thread — same as `rt_thread_start` but with stronger trap recovery.
 ///
 /// Safe threads route uncaught traps through a per-thread recovery
-/// path that returns control to the spawning thread instead of
-/// killing the process. Used by parallel-foreach and friends to
-/// keep one bad worker from taking down the whole pool.
+/// path and store the diagnostic for explicit inspection instead of
+/// aborting the process.
+/// @param entry Opaque ABI representation of a native thread callback.
+/// @param arg Borrowed callback argument, or NULL.
+/// @return New caller-owned SafeThread handle, or NULL after a reported failure.
 void *rt_thread_start_safe(void *entry, void *arg) {
     return rt_thread_start_safe_fn(thread_entry_from_opaque(entry), arg);
 }
 
 /// @brief Safe-thread variant that GC-retains `arg` (see `rt_thread_start_owned`).
+/// @param entry Opaque ABI representation of a native thread callback.
+/// @param arg Managed value retained through callback exit, borrowed unmanaged pointer, or NULL.
+/// @return New caller-owned SafeThread handle, or NULL after a reported failure.
 void *rt_thread_start_safe_owned(void *entry, void *arg) {
     return rt_thread_start_safe_owned_fn(thread_entry_from_opaque(entry), arg);
 }
 
-/// @brief Check whether a safe thread trapped with an error.
+/// @brief Check whether a SafeThread callback exited through its trap boundary.
+/// @details Regular Thread handles and NULL report zero. Wrong-class live
+///          objects trap. The result is synchronized and does not join.
+/// @param obj SafeThread or regular Thread handle to inspect.
+/// @return One when a SafeThread captured a trap, otherwise zero.
 int8_t rt_thread_has_error(void *obj) {
     if (!obj)
         return 0;
@@ -343,7 +399,12 @@ int8_t rt_thread_has_error(void *obj) {
     return trapped;
 }
 
-/// @brief Get the error message from a trapped safe thread (empty string if no error).
+/// @brief Copy the diagnostic captured by a trapped SafeThread.
+/// @details A trapped diagnostic becomes a caller-owned String. NULL, regular
+///          Thread handles, and SafeThreads without an error return the
+///          runtime's constant empty String; wrong-class objects trap.
+/// @param obj SafeThread or regular Thread handle to inspect.
+/// @return Caller-owned captured diagnostic, or a constant empty String.
 rt_string rt_thread_get_error(void *obj) {
     if (!obj)
         return rt_const_cstr("");
@@ -370,7 +431,11 @@ rt_string rt_thread_get_error(void *obj) {
     return rt_string_from_bytes(error, strlen(error));
 }
 
-/// @brief Join the underlying thread of a safe-started thread.
+/// @brief Join the native Thread wrapped by a SafeThread.
+/// @details Regular Thread handles are accepted and delegated directly.
+///          SafeThread error state remains available for separate inspection
+///          and is not raised by joining. NULL and wrong-class handles trap.
+/// @param obj SafeThread or regular Thread handle to join.
 void rt_thread_safe_join(void *obj) {
     if (!obj)
         rt_trap("Thread.SafeJoin: null object");
@@ -391,7 +456,11 @@ void rt_thread_safe_join(void *obj) {
     thread_join_inner_or_release(inner);
 }
 
-/// @brief Get the thread ID of a safe-started thread.
+/// @brief Get the runtime thread ID behind a SafeThread.
+/// @details Regular Thread handles are accepted. NULL returns zero and
+///          wrong-class live objects trap.
+/// @param obj SafeThread or regular Thread handle to inspect.
+/// @return Stable runtime thread ID, or zero for NULL.
 int64_t rt_thread_safe_get_id(void *obj) {
     if (!obj)
         return 0;
@@ -408,7 +477,11 @@ int64_t rt_thread_safe_get_id(void *obj) {
     return thread_get_id_inner_or_release(inner);
 }
 
-/// @brief Check if a safe-started thread is alive.
+/// @brief Check whether the native Thread behind a SafeThread is alive.
+/// @details Regular Thread handles are accepted. NULL returns zero and
+///          wrong-class live objects trap.
+/// @param obj SafeThread or regular Thread handle to inspect.
+/// @return One while the underlying native thread is alive, otherwise zero.
 int8_t rt_thread_safe_is_alive(void *obj) {
     if (!obj)
         return 0;

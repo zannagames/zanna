@@ -27,6 +27,14 @@
 // Links: src/runtime/io/rt_memstream.c (implementation), src/runtime/core/rt_string.h
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares the managed growable in-memory binary stream API.
+ * @details Exposes construction from capacity or Bytes, cursor and capacity
+ * properties, portable little-endian integer and IEEE floating-point I/O,
+ * string and Bytes copying, sparse writes with zero-filled gaps, snapshots,
+ * clearing, seeking, and skipping.
+ */
 #pragma once
 
 #include "rt_string.h"

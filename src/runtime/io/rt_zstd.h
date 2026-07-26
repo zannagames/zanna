@@ -26,6 +26,15 @@
 //   misc/plans/3d_overhaul/03-texture-pipeline.md
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares bounded, dependency-free Zstandard decompression entry points.
+ * @details Provides allocating and caller-destination single-frame APIs with
+ * dictionary rejection, exact input and output accounting, optional checksum
+ * verification, and explicit buffer ownership contracts.
+ */
+
 #ifndef RT_ZSTD_H
 #define RT_ZSTD_H
 

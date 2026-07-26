@@ -33,6 +33,15 @@
 //        docs/zannalib/localization/collation.md (user documentation).
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares locale-aware Collator construction and comparison services.
+ * @details Defines configurable comparison strength and case/accent handling,
+ * deterministic sort keys, stable list sorting, and the internal classifier
+ * and locale-tailoring contracts shared with the compact weight table.
+ */
+
 #pragma once
 
 #include "rt.hpp"
@@ -123,6 +132,11 @@ void *rt_collator_sort(void *self, void *items);
 // Internal API shared with the weight table
 //===----------------------------------------------------------------------===//
 
+/**
+ * @brief Locale-specific replacement weights for one Unicode scalar.
+ * @details Patch arrays are immutable borrowed data selected by canonical
+ * locale tag and captured by a Collator during construction.
+ */
 typedef struct rt_collator_locale_patch {
     /// Unicode scalar whose base weights are replaced.
     uint32_t codepoint;

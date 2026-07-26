@@ -22,6 +22,9 @@
 //===----------------------------------------------------------------------===//
 #pragma once
 
+/// @file
+/// @brief Declares an in-memory USTAR writer with safe paths and PAX extensions.
+
 #include <cstddef>
 #include <cstdint>
 #include <set>
@@ -31,6 +34,8 @@
 namespace zanna::pkg {
 
 /// @brief Writes USTAR tar archives.
+/// @details The writer copies each pending entry, rejects duplicate normalized
+///          paths, and can serialize the same accumulated state more than once.
 class TarWriter {
   public:
     /// @brief Add a regular file to the archive.
@@ -46,12 +51,22 @@ class TarWriter {
                  uint32_t mtime = 0);
 
     /// @brief Convenience: add a file from a string.
+    /// @param path Archive-relative file path.
+    /// @param content File bytes to copy.
+    /// @param mode Unix permission bits.
+    /// @param mtime Unix modification timestamp.
+    /// @throws std::runtime_error If the path is invalid or duplicate.
     void addFileString(const std::string &path,
                        const std::string &content,
                        uint32_t mode = 0644,
                        uint32_t mtime = 0);
 
     /// @brief Convenience: add a file from a vector.
+    /// @param path Archive-relative file path.
+    /// @param data File bytes to copy.
+    /// @param mode Unix permission bits.
+    /// @param mtime Unix modification timestamp.
+    /// @throws std::runtime_error If the path is invalid or duplicate.
     void addFileVec(const std::string &path,
                     const std::vector<uint8_t> &data,
                     uint32_t mode = 0644,
@@ -71,6 +86,8 @@ class TarWriter {
 
     /// @brief Finalize and return the complete tar archive.
     /// Appends two zero-filled 512-byte end-of-archive blocks.
+    /// @return Complete caller-owned USTAR byte stream.
+    /// @throws std::runtime_error If a size or header field overflows.
     std::vector<uint8_t> finish() const;
 
   private:

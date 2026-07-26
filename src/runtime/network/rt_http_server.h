@@ -17,6 +17,15 @@
 // Links: rt_http_router.h (routing), rt_network.h (TCP)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares threaded HTTP/1.1 server and handler-object services.
+ * @details Defines stable managed identities, route and dispatch binding,
+ * restartable listener lifecycle, synchronous parser/serializer access,
+ * immutable request queries, and transactional response construction.
+ */
+
 #pragma once
 
 #include "rt_string.h"

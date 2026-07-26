@@ -25,6 +25,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements stateless queries over a Locale's immutable data record.
+ * @details Applies invariant fallback through @ref rt_locale_get_data and
+ * returns fresh strings for display names, direction, measurement, and
+ * currency while exposing scalar calendar and right-to-left properties.
+ */
+
 #include "rt_locale_info.h"
 
 #include "rt_internal.h"

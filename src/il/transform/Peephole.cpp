@@ -166,6 +166,9 @@ static bool sameFloatConstant(double value, double target) {
 /// Peephole rules occasionally rely on reflexivity (e.g. @c xor x, x -> 0).
 /// This helper checks equality across the supported operand kinds to keep the
 /// rule application loop concise.
+/// @param a First IL value to compare.
+/// @param b Second IL value to compare.
+/// @return `true` when both values have the same kind and payload.
 static bool sameValue(const Value &a, const Value &b) {
     if (a.kind != b.kind)
         return false;

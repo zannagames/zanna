@@ -25,18 +25,29 @@
 //        src/runtime/io/rt_compress.h
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Shares RFC 1951 constants, Huffman state, and compressor helpers.
+ * @details Defines the 32-KiB history limits, canonical-code representations,
+ * fixed-tree publication state, length and distance lookup tables, supported
+ * levels, and cross-unit entry points used by inflate and deflate.
+ */
 
 #pragma once
 
 #include <stddef.h>
 #include <stdint.h>
 
+/** @name RFC 1951 LZ77 window and match limits
+ * @{ */
 #define WINDOW_SIZE 32768
 #define WINDOW_MASK 0x7FFF
 #define MAX_MATCH_LEN 258
 #define MIN_MATCH_LEN 3
 #define MAX_DISTANCE 32768
+/** @} */
 
+/** Canonical Huffman symbol, assigned code bits, and bit length. */
 typedef struct {
     uint16_t symbol; ///< Symbol value (literal, length code, or distance code).
     uint16_t code;   ///< Assigned bit pattern (MSB-aligned canonical code).
@@ -78,25 +89,32 @@ void *deflate_data(const uint8_t *data, size_t len, int level);
 void *gzip_data(const uint8_t *data, size_t len, int level);
 
 // Shared DEFLATE length/distance code tables (used by inflate + deflate).
+/** Extra-bit count indexed by length code 257 through 285. */
 static const int length_extra_bits[29] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2,
                                           2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
 
 // Base length for length codes 257-285
+/** Base match length indexed by length code 257 through 285. */
 static const int length_base[29] = {3,  4,  5,  6,  7,  8,  9,  10, 11,  13,  15,  17,  19,  23, 27,
                                     31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
 
 // Extra bits for distance codes 0-29
+/** Extra-bit count indexed by distance code 0 through 29. */
 static const int dist_extra_bits[30] = {0, 0, 0, 0, 1, 1, 2, 2,  3,  3,  4,  4,  5,  5,  6,
                                         6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
 
 // Base distance for distance codes 0-29
+/** Base backward distance indexed by distance code 0 through 29. */
 static const int dist_base[30] = {1,    2,    3,    4,    5,    7,    9,    13,    17,    25,
                                   33,   49,   65,   97,   129,  193,  257,  385,   513,   769,
                                   1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577};
 
 // Additional shared DEFLATE constants.
+/** @name Publicly supported compression-level range
+ * @{ */
 #define DEFLATE_MAX_LEVEL 9
 #define DEFLATE_MIN_LEVEL 1
+/** @} */
 
 // Shared byte/string helpers (defined in rt_compress.c).
 /// @brief Borrow writable storage from a runtime Bytes object.

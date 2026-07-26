@@ -32,6 +32,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements thread-bound native filesystem watching and event queuing.
+ * @details Adapts inotify, kqueue, and ReadDirectoryChangesW into the common
+ * Watcher contract, normalizes reported paths, maintains a fixed-capacity
+ * event ring with explicit overflow records, applies monotonic polling
+ * deadlines, and releases both native handles and managed state on shutdown.
+ */
+
 #include "rt_watcher.h"
 #include "rt_file_path.h"
 #include "rt_internal.h"
@@ -125,6 +134,7 @@ static int64_t watcher_deadline_remaining_us(int64_t deadline_us) {
     return deadline_us - now_us;
 }
 
+/** Maximum number of normalized events retained by one Watcher instance. */
 #define WATCHER_EVENT_QUEUE_SIZE 64
 
 /// Sentinel `dropped_count` for a NATIVE (kernel) queue overflow, where the OS
@@ -180,16 +190,22 @@ typedef struct rt_watcher_impl {
 #endif
 } rt_watcher_impl;
 
+/// @copydoc rt_trap_set_recovery()
 void rt_trap_set_recovery(jmp_buf *buf);
+/// @copydoc rt_trap_clear_recovery()
 void rt_trap_clear_recovery(void);
+/// @copydoc rt_trap_get_error()
 const char *rt_trap_get_error(void);
 
 #if RT_PLATFORM_LINUX
+/// @copydoc watcher_close_inotify()
 static void watcher_close_inotify(rt_watcher_impl *w);
 #elif RT_PLATFORM_MACOS
+/// @copydoc watcher_close_kqueue()
 static void watcher_close_kqueue(rt_watcher_impl *w);
 #endif
 #if RT_PLATFORM_WINDOWS
+/// @copydoc watcher_close_windows_handles()
 static void watcher_close_windows_handles(rt_watcher_impl *w);
 #endif
 

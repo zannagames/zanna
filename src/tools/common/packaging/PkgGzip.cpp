@@ -21,6 +21,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements RFC 1952 GZIP framing around the package DEFLATE codec.
+/// @details Generates deterministic headers, parses optional header fields, and
+///          validates both CRC-32 and ISIZE trailers during decompression.
+
 #include "PkgGzip.hpp"
 #include "PkgDeflate.hpp"
 
@@ -43,11 +48,15 @@ static_assert(kGzipMaxOutput == std::numeric_limits<uint32_t>::max(),
               "gzip trailer ISIZE is a 32-bit field");
 
 /// @brief Read a little-endian uint16_t from a possibly-unaligned byte pointer.
+/// @param p Address of at least two readable bytes.
+/// @return Decoded 16-bit value.
 uint16_t rdLE16(const uint8_t *p) {
     return static_cast<uint16_t>(p[0] | (p[1] << 8));
 }
 
 /// @brief Read a little-endian uint32_t from a possibly-unaligned byte pointer.
+/// @param p Address of at least four readable bytes.
+/// @return Decoded 32-bit value.
 uint32_t rdLE32(const uint8_t *p) {
     return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
            (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
@@ -56,6 +65,9 @@ uint32_t rdLE32(const uint8_t *p) {
 /// @brief Compute CRC-32 over a buffer, tolerating a null pointer when empty.
 /// @details Delegates to the runtime rt_crc32_compute; passes a dummy byte for
 ///          zero-length input so the call never dereferences a null pointer.
+/// @param data Borrowed input bytes, optionally null when `len` is zero.
+/// @param len Input length.
+/// @return Standard CRC-32 checksum.
 uint32_t crc32Bytes(const uint8_t *data, size_t len) {
     static constexpr uint8_t kEmpty = 0;
     return rt_crc32_compute(len == 0 ? &kEmpty : data, len);
@@ -65,6 +77,13 @@ uint32_t crc32Bytes(const uint8_t *data, size_t len) {
 
 /// @brief Wrap raw DEFLATE output in a GZIP container (RFC 1952).
 /// Header: method=8, flags=0, mtime=0, OS=0xFF. Trailer: CRC-32 + original size (little-endian).
+/// @param data Borrowed uncompressed bytes.
+/// @param len Input length, limited by the 32-bit ISIZE field.
+/// @param level DEFLATE compression level.
+/// @return Complete GZIP member bytes.
+/// @throws std::runtime_error If a non-empty input is null or a size exceeds
+///         the GZIP representation.
+/// @throws DeflateError If raw compression fails.
 std::vector<uint8_t> gzip(const uint8_t *data, size_t len, int level) {
     if (len > 0 && data == nullptr)
         throw std::runtime_error("gzip: null data pointer for non-empty input");
@@ -116,6 +135,11 @@ std::vector<uint8_t> gzip(const uint8_t *data, size_t len, int level) {
 /// Parses the 10-byte header, skips optional FEXTRA/FNAME/FCOMMENT/FHCRC fields, inflates
 /// the embedded DEFLATE payload, then verifies CRC-32 and size in the 8-byte trailer.
 /// Throws `std::runtime_error` on any header, trailer, or integrity violation.
+/// @param data Borrowed GZIP member bytes.
+/// @param len Compressed input length.
+/// @return Decompressed payload bytes.
+/// @throws std::runtime_error If the header, optional fields, trailer, CRC, or size is invalid.
+/// @throws DeflateError If the embedded raw stream cannot be decompressed.
 std::vector<uint8_t> gunzip(const uint8_t *data, size_t len) {
     if (!data || len < 18)
         throw std::runtime_error("gzip: stream too small");
@@ -137,6 +161,9 @@ std::vector<uint8_t> gunzip(const uint8_t *data, size_t len) {
             throw std::runtime_error("gzip: truncated extra field payload");
         pos += xlen;
     }
+    /// @brief Skip one NUL-terminated optional gzip header field.
+    /// @param field Field name used in truncation diagnostics.
+    /// @throws std::runtime_error If no terminator exists within the input.
     auto skipZString = [&](const char *field) {
         while (pos < len && data[pos] != 0)
             ++pos;

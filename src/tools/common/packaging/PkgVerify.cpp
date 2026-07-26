@@ -19,6 +19,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements dependency-free structural verification for generated
+///        package and installer containers.
+/// @details The routines in this translation unit parse untrusted in-memory
+///          archive bytes defensively, reject unsafe or duplicate paths, verify
+///          embedded integrity metadata, and report the first failure through
+///          a caller-provided diagnostic stream. Verification is read-only.
+
 #include "PkgVerify.hpp"
 #include "PkgGzip.hpp"
 #include "PkgHash.hpp"
@@ -42,38 +50,54 @@ namespace zanna::pkg {
 
 namespace {
 
-/// @brief Return true if any path component begins with "._" (AppleDouble sidecar).
+/// @brief Determine whether an archive path contains an AppleDouble sidecar component.
+/// @param path Slash-separated archive-relative path to inspect.
+/// @return true if any component begins with `._`; otherwise false.
 bool hasAppleDoubleComponent(const std::string &path);
 
 /// @brief Read a little-endian uint16_t from an unaligned byte pointer.
+/// @param p Pointer to at least two readable bytes.
+/// @return Decoded host-order 16-bit value.
 uint16_t rdLE16(const uint8_t *p) {
     return static_cast<uint16_t>(p[0] | (p[1] << 8));
 }
 
 /// @brief Read a little-endian uint32_t from an unaligned byte pointer.
+/// @param p Pointer to at least four readable bytes.
+/// @return Decoded host-order 32-bit value.
 uint32_t rdLE32(const uint8_t *p) {
     return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
            (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
 }
 
 /// @brief Read a big-endian uint16_t from an unaligned byte pointer (XAR/PE fields).
+/// @param p Pointer to at least two readable bytes.
+/// @return Decoded host-order 16-bit value.
 uint16_t rdBE16(const uint8_t *p) {
     return static_cast<uint16_t>((static_cast<uint16_t>(p[0]) << 8) | static_cast<uint16_t>(p[1]));
 }
 
 /// @brief Read a big-endian uint32_t from an unaligned byte pointer (XAR/PE fields).
+/// @param p Pointer to at least four readable bytes.
+/// @return Decoded host-order 32-bit value.
 uint32_t rdBE32(const uint8_t *p) {
     return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
            (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
 }
 
 /// @brief Read a big-endian uint64_t from an unaligned byte pointer (XAR header).
+/// @param p Pointer to at least eight readable bytes.
+/// @return Decoded host-order 64-bit value.
 uint64_t rdBE64(const uint8_t *p) {
     return (static_cast<uint64_t>(rdBE32(p)) << 32) | rdBE32(p + 4);
 }
 
 /// @brief Return true if the byte range [offset, offset+length) is entirely within [0, size).
 /// Used to guard all bounds-checked reads from archive and PE structures.
+/// @param offset Zero-based start of the candidate range.
+/// @param length Number of bytes in the candidate range.
+/// @param size Total size of the containing buffer.
+/// @return true when the complete range is addressable without overflow.
 bool hasRange(size_t offset, size_t length, size_t size) {
     return offset <= size && length <= size - offset;
 }
@@ -154,6 +178,9 @@ bool xmlUnescapeText(std::string_view text, std::string &out, std::string &err) 
 }
 
 /// @brief Rotate a 32-bit value right by @p bits (SHA-256 round operation).
+/// @param value Word to rotate.
+/// @param bits Rotation distance; SHA-256 callers supply a value in `[1, 31]`.
+/// @return The circular right rotation of @p value.
 uint32_t rotr32(uint32_t value, unsigned bits) {
     return (value >> bits) | (value << (32u - bits));
 }
@@ -162,6 +189,9 @@ uint32_t rotr32(uint32_t value, unsigned bits) {
 /// @details A self-contained SHA-256 used to check the integrity manifests that
 ///          the package writers embed (e.g. SHA-256 entries inside a ZIP). Kept
 ///          local to the verifier so it has no dependency on the runtime.
+/// @param data Buffer to hash; may be null only when @p len is zero.
+/// @param len Number of bytes available at @p data.
+/// @return The 32-byte digest encoded as 64 lowercase hexadecimal characters.
 std::string sha256Hex(const uint8_t *data, size_t len) {
     static constexpr std::array<uint32_t, 64> k = {
         0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u, 0x923f82a4u,
@@ -239,7 +269,12 @@ std::string sha256Hex(const uint8_t *data, size_t len) {
 }
 
 /// @brief Return true if @p text is exactly 64 hexadecimal digits (a SHA-256).
+/// @param text Candidate textual digest.
+/// @return true when @p text has the lexical form of a SHA-256 digest.
 bool isSha256Hex(const std::string &text) {
+    /// @brief Test whether one digest byte is a hexadecimal digit.
+    /// @param ch Byte to inspect.
+    /// @return `true` when the active C locale classifies `ch` as hexadecimal.
     return text.size() == 64 && std::all_of(text.begin(), text.end(), [](unsigned char ch) {
                return std::isxdigit(ch) != 0;
            });
@@ -247,6 +282,8 @@ bool isSha256Hex(const std::string &text) {
 
 /// @brief Return true if all 512 bytes of a USTAR tar block are zero.
 /// Two consecutive zero blocks mark the end-of-archive in the POSIX tar format.
+/// @param p Pointer to a complete 512-byte tar block.
+/// @return true when every byte in the block is zero.
 bool isAllZeroBlock(const uint8_t *p) {
     for (size_t i = 0; i < 512; ++i) {
         if (p[i] != 0)
@@ -256,8 +293,13 @@ bool isAllZeroBlock(const uint8_t *p) {
 }
 
 /// @brief Parse a fixed-width space/NUL-terminated decimal field (used in ar member headers).
-/// Returns false if the field contains non-digit characters before the terminator,
-/// or if the value overflows size_t.
+/// @details Leading padding is not accepted. After the first space or NUL, all
+///          remaining bytes must use the same permitted padding alphabet.
+/// @param field Pointer to the fixed-width field.
+/// @param width Number of bytes available at @p field.
+/// @param out Receives the parsed value; reset to zero before parsing.
+/// @return false for an empty field, invalid characters, non-padding suffix
+///         bytes, or a value that overflows `size_t`.
 bool parseDecimalField(const uint8_t *field, size_t width, size_t &out) {
     out = 0;
     bool sawDigit = false;
@@ -281,8 +323,12 @@ bool parseDecimalField(const uint8_t *field, size_t width, size_t &out) {
 }
 
 /// @brief Parse a fixed-width space/NUL-terminated octal field (used in USTAR tar headers
-/// for file size, checksum, mode, etc.). Returns false if the field contains
-/// non-octal characters before the terminator, or if the value overflows uint64_t.
+/// for file size, checksum, mode, etc.).
+/// @param field Pointer to the fixed-width field.
+/// @param width Number of bytes available at @p field.
+/// @param out Receives the parsed value; reset to zero before parsing.
+/// @return false for an empty field, invalid octal characters, non-padding
+///         suffix bytes, or a value that overflows `uint64_t`.
 bool parseOctalField(const uint8_t *field, size_t width, uint64_t &out) {
     out = 0;
     bool sawDigit = false;
@@ -306,7 +352,9 @@ bool parseOctalField(const uint8_t *field, size_t width, uint64_t &out) {
 }
 
 /// @brief Extract a NUL-terminated string from a fixed-width tar header field.
-/// Returns everything up to the first NUL byte, or all width bytes if none.
+/// @param field Pointer to the fixed-width field.
+/// @param width Number of bytes available at @p field.
+/// @return Bytes before the first NUL, or all @p width bytes when none is present.
 std::string tarFieldString(const uint8_t *field, size_t width) {
     size_t len = 0;
     while (len < width && field[len] != '\0')
@@ -383,6 +431,8 @@ bool parsePaxRecords(const uint8_t *payload,
 /// @brief Compute the POSIX USTAR header checksum: sum all 512 bytes treating the
 /// checksum field at bytes 148-155 as if they were spaces (0x20).
 /// The stored octal value must equal this sum for the header to be valid.
+/// @param hdr Pointer to a complete 512-byte tar header.
+/// @return Unsigned checksum calculated according to the USTAR convention.
 uint32_t tarChecksum(const uint8_t *hdr) {
     uint32_t sum = 0;
     for (size_t i = 0; i < 512; ++i)
@@ -394,6 +444,10 @@ uint32_t tarChecksum(const uint8_t *hdr) {
 /// Checks: 512-byte-aligned size, ustar magic, checksums, safe relative paths,
 /// non-duplicate entries, valid symlink targets (no escapes), and two end-of-archive
 /// zero blocks. Optionally collects normalized entry names into *outNames.
+/// @param data Uncompressed tar bytes.
+/// @param err Stream that receives the first structural diagnostic.
+/// @param outNames Optional set populated with normalized non-PAX entry paths.
+/// @return true when the complete stream is a safe, structurally valid USTAR archive.
 bool verifyTarBytes(const std::vector<uint8_t> &data,
                     std::ostream &err,
                     std::set<std::string> *outNames = nullptr) {
@@ -557,7 +611,9 @@ bool verifyTarBytes(const std::vector<uint8_t> &data,
 }
 
 /// @brief Parse an 8-character ASCII-hex field (newc CPIO header fields).
-/// @return false if any of the 8 characters is not a hex digit.
+/// @param field Pointer to exactly eight readable ASCII bytes.
+/// @param out Receives the decoded 32-bit value; reset to zero before parsing.
+/// @return false if any character is not a hexadecimal digit.
 bool parseHex32Field(const uint8_t *field, uint32_t &out) {
     out = 0;
     for (size_t i = 0; i < 8; ++i) {
@@ -578,7 +634,11 @@ bool parseHex32Field(const uint8_t *field, uint32_t &out) {
 
 /// @brief Parse a fixed-width all-octal-digit field (odc CPIO header fields).
 /// @details Unlike parseOctalField, every byte must be an octal digit (no
-///          space/NUL terminator). Returns false on a non-octal digit or overflow.
+///          space/NUL terminator).
+/// @param field Pointer to the fixed-width ASCII field.
+/// @param width Number of bytes available at @p field.
+/// @param out Receives the decoded value; reset to zero before parsing.
+/// @return false on a non-octal digit or `uint64_t` overflow.
 bool parseFixedOctalField(const uint8_t *field, size_t width, uint64_t &out) {
     out = 0;
     for (size_t i = 0; i < width; ++i) {
@@ -593,6 +653,9 @@ bool parseFixedOctalField(const uint8_t *field, size_t width, uint64_t &out) {
 }
 
 /// @brief Round @p value up to the next multiple of 4 (newc CPIO field alignment).
+/// @param value Unaligned byte offset or length.
+/// @return Smallest multiple of four greater than or equal to @p value.
+/// @pre @p value is at most `SIZE_MAX - 3`.
 size_t align4(size_t value) {
     return (value + 3u) & ~static_cast<size_t>(3u);
 }
@@ -600,6 +663,8 @@ size_t align4(size_t value) {
 /// @brief Return true if any path component begins with "._" (AppleDouble sidecar).
 /// @details AppleDouble files leak macOS resource forks into archives; the
 ///          verifiers reject them so packages stay clean and reproducible.
+/// @param path Slash-separated archive-relative path to inspect.
+/// @return true if any path component has the AppleDouble `._` prefix.
 bool hasAppleDoubleComponent(const std::string &path) {
     size_t pos = 0;
     while (pos <= path.size()) {
@@ -921,6 +986,10 @@ bool verifyCpioNewcBytes(const std::vector<uint8_t> &data,
 /// @brief Extract the text between the first @p openTag and following @p closeTag.
 /// @details A deliberately minimal XML scrape (no full parser) used to read fields
 ///          out of a XAR table-of-contents. Returns "" when either tag is absent.
+/// @param text XML-like text to search.
+/// @param openTag Complete opening token that precedes the desired content.
+/// @param closeTag Complete closing token that terminates the desired content.
+/// @return The intervening text, or an empty string if either token is absent.
 std::string extractXmlTagText(const std::string &text,
                               const std::string &openTag,
                               const std::string &closeTag) {
@@ -935,7 +1004,9 @@ std::string extractXmlTagText(const std::string &text,
 }
 
 /// @brief Parse a non-empty all-digit decimal string into a uint64_t.
-/// @return false on empty input or any non-digit character.
+/// @param text Candidate unsigned decimal representation.
+/// @param out Receives the parsed value; reset to zero after non-empty input is accepted.
+/// @return false on empty input, any non-digit character, or `uint64_t` overflow.
 bool parseUnsignedDecimalText(const std::string &text, uint64_t &out) {
     if (text.empty())
         return false;
@@ -1355,9 +1426,14 @@ bool verifyMacOSPkgInternal(const std::vector<uint8_t> &data,
 }
 
 /// @brief Compute the byte offset where overlay data begins in a PE file.
-/// Parses the DOS/COFF/section headers to find the end of the last section's
-/// raw data, then sets overlayOff to that position. Returns false (with a
-/// message to err) if the PE structure is malformed.
+/// @details Parses the DOS, COFF, optional, section, and security-directory
+///          headers. The overlay begins after the final section and ends before
+///          an Authenticode certificate table, when one is present.
+/// @param data Complete PE file bytes.
+/// @param overlayOff Receives the first byte after all section raw data.
+/// @param overlayEnd Receives the exclusive overlay end, excluding a certificate table.
+/// @param err Stream that receives the first structural diagnostic.
+/// @return true when all relevant headers and ranges are valid.
 bool parsePeOverlayRange(const std::vector<uint8_t> &data,
                          size_t &overlayOff,
                          size_t &overlayEnd,
@@ -1462,6 +1538,11 @@ bool parsePeOverlayRange(const std::vector<uint8_t> &data,
 /// @brief Check that every path in requiredPaths (after sanitization) is present in names.
 /// Used by the verifyXxxPayload family to assert the presence of critical files
 /// without re-parsing the archive structure.
+/// @param names Set of sanitized archive paths observed during verification.
+/// @param requiredPaths Caller-supplied paths that must be present.
+/// @param kind Archive-kind label used for path validation and diagnostics.
+/// @param err Stream that receives the first missing- or invalid-path diagnostic.
+/// @return true when every required path sanitizes to a non-empty member of @p names.
 bool requireArchivePaths(const std::set<std::string> &names,
                          const std::vector<std::string> &requiredPaths,
                          const char *kind,
@@ -1571,6 +1652,9 @@ bool verifyZipSha256Manifest(const ZipReader &reader, const char *kind, std::ost
         const auto bytes = reader.extract(*listed);
         const std::string actual = sha256Hex(bytes.data(), bytes.size());
         std::string expected = line.substr(0, 64);
+        /// @brief Normalize one expected-digest character to lowercase.
+        /// @param ch Character to fold.
+        /// @return Lowercase representation of `ch` as an unsigned-byte-safe conversion.
         std::transform(expected.begin(), expected.end(), expected.begin(), [](char ch) {
             return static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
         });
@@ -1595,6 +1679,12 @@ bool verifyZipSha256Manifest(const ZipReader &reader, const char *kind, std::ost
 
 /// @brief Verify a ZIP archive and assert the presence of all requiredEntries.
 /// Combines verifyZip (structural check) with requireArchivePaths (payload check).
+/// @param data Complete ZIP archive bytes.
+/// @param requiredEntries Paths that must occur in the archive.
+/// @param kind Archive-kind label used in diagnostics and path sanitization.
+/// @param err Stream that receives the first verification diagnostic.
+/// @return true when the ZIP structure, required inventory, and optional
+///         SHA-256 manifest all verify.
 bool verifyZipPayload(const std::vector<uint8_t> &data,
                       const std::vector<std::string> &requiredEntries,
                       const char *kind,
@@ -1621,6 +1711,10 @@ bool verifyZipPayload(const std::vector<uint8_t> &data,
 // ZIP Verification
 // ============================================================================
 
+/// @brief Verify a ZIP's structure, safe entry paths, extraction, and optional manifest.
+/// @param data Complete ZIP archive bytes.
+/// @param err Stream that receives the first verification diagnostic.
+/// @return true when every entry and the optional SHA-256 manifest are valid.
 bool verifyZip(const std::vector<uint8_t> &data, std::ostream &err) {
     if (!verifyZipStructure(data, err))
         return false;
@@ -1633,6 +1727,12 @@ bool verifyZip(const std::vector<uint8_t> &data, std::ostream &err) {
     }
 }
 
+/// @brief Verify the standard payload layout of a zipped macOS app bundle.
+/// @param data Complete ZIP archive bytes.
+/// @param appBundleName Expected top-level `.app` directory name.
+/// @param executableName Expected executable under `Contents/MacOS`.
+/// @param err Stream that receives the first verification diagnostic.
+/// @return true when the ZIP is valid and contains the standard bundle files.
 bool verifyMacOSAppZip(const std::vector<uint8_t> &data,
                        const std::string &appBundleName,
                        const std::string &executableName,
@@ -1644,6 +1744,12 @@ bool verifyMacOSAppZip(const std::vector<uint8_t> &data,
 /// @details Builds the standard required bundle path set, prefixes each caller
 ///          supplied resource path with `<bundle>/Contents/Resources`, and then
 ///          delegates to the shared ZIP payload verifier.
+/// @param data Complete ZIP archive bytes.
+/// @param appBundleName Expected top-level `.app` directory name.
+/// @param executableName Expected executable under `Contents/MacOS`.
+/// @param requiredResourcePaths Relative paths required below `Contents/Resources`.
+/// @param err Stream that receives the first verification diagnostic.
+/// @return true when the ZIP is valid and contains every standard and requested file.
 bool verifyMacOSAppZipPayload(const std::vector<uint8_t> &data,
                               const std::string &appBundleName,
                               const std::string &executableName,
@@ -1668,6 +1774,10 @@ bool verifyMacOSAppZipPayload(const std::vector<uint8_t> &data,
 /// validates control.tar.gz contains a "control" entry, and verifies the USTAR
 /// structure of both tarballs. If outDataNames is non-null, fills it with
 /// normalized paths from data.tar.gz for payload checking.
+/// @param data Complete Debian package bytes.
+/// @param err Stream that receives the first verification diagnostic.
+/// @param outDataNames Optional collector for normalized `data.tar.gz` entry paths.
+/// @return true when the ar container and both compressed tar members are valid.
 bool verifyDebInternal(const std::vector<uint8_t> &data,
                        std::ostream &err,
                        std::set<std::string> *outDataNames) {
@@ -1801,10 +1911,19 @@ bool verifyDebInternal(const std::vector<uint8_t> &data,
     return true;
 }
 
+/// @brief Verify the complete container structure of a Debian binary package.
+/// @param data Complete `.deb` bytes.
+/// @param err Stream that receives the first verification diagnostic.
+/// @return true when the ar member inventory and compressed tar members are valid.
 bool verifyDeb(const std::vector<uint8_t> &data, std::ostream &err) {
     return verifyDebInternal(data, err, nullptr);
 }
 
+/// @brief Verify a Debian package and require selected `data.tar.gz` paths.
+/// @param data Complete `.deb` bytes.
+/// @param requiredPaths Paths that must occur in the data payload.
+/// @param err Stream that receives the first verification diagnostic.
+/// @return true when the package verifies and every requested path is present.
 bool verifyDebPayload(const std::vector<uint8_t> &data,
                       const std::vector<std::string> &requiredPaths,
                       std::ostream &err) {
@@ -1814,6 +1933,10 @@ bool verifyDebPayload(const std::vector<uint8_t> &data,
     return requireArchivePaths(dataNames, requiredPaths, "DEB", err);
 }
 
+/// @brief Decompress and structurally verify a gzip-wrapped USTAR archive.
+/// @param data Complete `.tar.gz` bytes.
+/// @param err Stream that receives the first decompression or TAR diagnostic.
+/// @return true when gzip decoding and USTAR verification both succeed.
 bool verifyTarGz(const std::vector<uint8_t> &data, std::ostream &err) {
     try {
         const auto tarBytes = gunzip(data.data(), data.size());
@@ -1824,6 +1947,11 @@ bool verifyTarGz(const std::vector<uint8_t> &data, std::ostream &err) {
     }
 }
 
+/// @brief Verify a gzip-wrapped USTAR archive and require selected entry paths.
+/// @param data Complete `.tar.gz` bytes.
+/// @param requiredPaths Paths that must occur in the tar payload.
+/// @param err Stream that receives the first verification diagnostic.
+/// @return true when the tarball verifies and every requested path is present.
 bool verifyTarGzPayload(const std::vector<uint8_t> &data,
                         const std::vector<std::string> &requiredPaths,
                         std::ostream &err) {
@@ -1839,10 +1967,19 @@ bool verifyTarGzPayload(const std::vector<uint8_t> &data,
     }
 }
 
+/// @brief Verify a portable-ASCII or `newc` CPIO byte stream.
+/// @param data Complete CPIO archive bytes.
+/// @param err Stream that receives the first verification diagnostic.
+/// @return true when the stream has valid entries and a proper trailer.
 bool verifyCpioNewc(const std::vector<uint8_t> &data, std::ostream &err) {
     return verifyCpioNewcBytes(data, err);
 }
 
+/// @brief Verify a CPIO stream and require selected entry paths.
+/// @param data Complete CPIO archive bytes.
+/// @param requiredPaths Paths that must occur in the archive.
+/// @param err Stream that receives the first verification diagnostic.
+/// @return true when the archive verifies and every requested path is present.
 bool verifyCpioNewcPayload(const std::vector<uint8_t> &data,
                            const std::vector<std::string> &requiredPaths,
                            std::ostream &err) {
@@ -1852,15 +1989,28 @@ bool verifyCpioNewcPayload(const std::vector<uint8_t> &data,
     return requireArchivePaths(names, requiredPaths, "CPIO", err);
 }
 
+/// @brief Verify and extract the file inventory of a XAR archive in memory.
+/// @param data Complete XAR archive bytes.
+/// @param err Stream that receives the first header, checksum, XML, or payload diagnostic.
+/// @return true when the TOC and every embedded file verify.
 bool verifyXar(const std::vector<uint8_t> &data, std::ostream &err) {
     XarFileData files;
     return extractXarFiles(data, err, files);
 }
 
+/// @brief Verify a macOS flat package and its component payloads and scripts.
+/// @param data Complete flat `.pkg` bytes.
+/// @param err Stream that receives the first verification diagnostic.
+/// @return true when the XAR container and required package contents verify.
 bool verifyMacOSPkg(const std::vector<uint8_t> &data, std::ostream &err) {
     return verifyMacOSPkgInternal(data, err, nullptr);
 }
 
+/// @brief Verify a macOS flat package and require selected payload paths.
+/// @param data Complete flat `.pkg` bytes.
+/// @param requiredPaths Paths that must occur in the component payload.
+/// @param err Stream that receives the first verification diagnostic.
+/// @return true when the package verifies and every requested path is present.
 bool verifyMacOSPkgPayload(const std::vector<uint8_t> &data,
                            const std::vector<std::string> &requiredPaths,
                            std::ostream &err) {
@@ -1874,6 +2024,10 @@ bool verifyMacOSPkgPayload(const std::vector<uint8_t> &data,
 // PE Verification
 // ============================================================================
 
+/// @brief Verify the headers and non-overlapping raw sections of a PE32+ image.
+/// @param data Complete PE file bytes.
+/// @param err Stream that receives the first structural diagnostic.
+/// @return true for a bounded x86-64 or ARM64 PE32+ image with disjoint sections.
 bool verifyPE(const std::vector<uint8_t> &data, std::ostream &err) {
     if (data.size() < 64) {
         err << "PE: file too small (" << data.size() << " bytes)\n";
@@ -1986,6 +2140,10 @@ bool verifyPE(const std::vector<uint8_t> &data, std::ostream &err) {
     return true;
 }
 
+/// @brief Verify a PE32+ image and the ZIP overlay following its sections.
+/// @param data Complete PE file bytes, including the expected overlay.
+/// @param err Stream that receives the first PE or ZIP diagnostic.
+/// @return true when the PE and its non-empty ZIP overlay both verify.
 bool verifyPEZipOverlay(const std::vector<uint8_t> &data, std::ostream &err) {
     if (!verifyPE(data, err))
         return false;
@@ -2009,6 +2167,11 @@ bool verifyPEZipOverlay(const std::vector<uint8_t> &data, std::ostream &err) {
     return true;
 }
 
+/// @brief Verify a PE ZIP overlay and require selected outer ZIP entries.
+/// @param data Complete PE file bytes, including the expected overlay.
+/// @param requiredEntries Paths that must occur in the overlay ZIP.
+/// @param err Stream that receives the first verification diagnostic.
+/// @return true when the PE, overlay ZIP, and required inventory verify.
 bool verifyPEZipOverlayPayload(const std::vector<uint8_t> &data,
                                const std::vector<std::string> &requiredEntries,
                                std::ostream &err) {
@@ -2034,6 +2197,13 @@ bool verifyPEZipOverlayPayload(const std::vector<uint8_t> &data,
     return true;
 }
 
+/// @brief Verify required entries in both a PE overlay ZIP and one nested ZIP.
+/// @param data Complete PE file bytes, including the expected overlay.
+/// @param requiredOuterEntries Paths required in the overlay ZIP.
+/// @param innerZipEntry Overlay entry whose extracted bytes form the nested ZIP.
+/// @param requiredInnerEntries Paths required in the nested ZIP.
+/// @param err Stream that receives the first verification diagnostic.
+/// @return true when the PE and both ZIP inventories verify.
 bool verifyPEZipOverlayNestedPayload(const std::vector<uint8_t> &data,
                                      const std::vector<std::string> &requiredOuterEntries,
                                      const std::string &innerZipEntry,
@@ -2080,11 +2250,18 @@ bool verifyPEZipOverlayNestedPayload(const std::vector<uint8_t> &data,
 
 namespace {
 
+/// @brief Verified identity data retained while checking a native Windows package.
 struct VerifiedWindowsNativePackage {
-    WindowsInstallerMetadata metadata;
-    std::string payloadSha256;
+    WindowsInstallerMetadata metadata; ///< Parsed versioned installer contract.
+    std::string payloadSha256;          ///< Digest of the nested payload ZIP.
 };
 
+/// @brief Check that a PE's COFF machine matches installer architecture metadata.
+/// @param data Complete PE image bytes.
+/// @param architecture Metadata architecture (`arm64` selects ARM64; otherwise x64).
+/// @param err Stream that receives an architecture or header diagnostic.
+/// @param label Human-readable component name used in the diagnostic.
+/// @return true when the PE header is bounded and its machine value matches.
 bool windowsPeMatchesArchitecture(const std::vector<uint8_t> &data,
                                   std::string_view architecture,
                                   std::ostream &err,
@@ -2107,6 +2284,11 @@ bool windowsPeMatchesArchitecture(const std::vector<uint8_t> &data,
     return true;
 }
 
+/// @brief Reject outer ZIP entries not owned by native-installer metadata.
+/// @param outer Open reader for the installer's PE overlay ZIP.
+/// @param metadata Parsed contract defining all permitted outer entries.
+/// @param err Stream that receives the first unowned-entry diagnostic.
+/// @return true when every non-directory entry belongs to the declared inventory.
 bool verifyNativeOuterInventory(const ZipReader &outer,
                                 const WindowsInstallerMetadata &metadata,
                                 std::ostream &err) {
@@ -2129,6 +2311,13 @@ bool verifyNativeOuterInventory(const ZipReader &outer,
     return true;
 }
 
+/// @brief Compare setup metadata with the normalized maintenance contract.
+/// @details Removes the one detached maintenance executable from the setup's
+///          installed/core sizes and outer inventory, changes its mode, and
+///          compares canonical serialized metadata.
+/// @param setup Metadata parsed from the top-level setup executable.
+/// @param maintenance Metadata parsed from its embedded maintenance executable.
+/// @return true when the maintenance metadata is exactly the expected derivative.
 bool maintenanceContractMatches(const WindowsInstallerMetadata &setup,
                                 const WindowsInstallerMetadata &maintenance) {
     if (setup.outerFiles.size() != 1U)
@@ -2138,6 +2327,9 @@ bool maintenanceContractMatches(const WindowsInstallerMetadata &setup,
     if (maintenanceSize > normalized.installedSizeBytes)
         return false;
     normalized.installedSizeBytes -= maintenanceSize;
+    /// @brief Identify the mandatory core installer component.
+    /// @param component Component metadata to inspect.
+    /// @return `true` when the component identifier is exactly `core`.
     auto core = std::find_if(
         normalized.components.begin(),
         normalized.components.end(),
@@ -2151,6 +2343,16 @@ bool maintenanceContractMatches(const WindowsInstallerMetadata &setup,
            serializeWindowsInstallerMetadata(maintenance);
 }
 
+/// @brief Recursively verify one setup or maintenance native Windows package.
+/// @details Verifies the PE and overlay, parses schema metadata, checks declared
+///          payload and outer-file sizes and SHA-256 digests, validates the
+///          cleanup helper, and permits exactly one setup-to-maintenance level.
+/// @param data Complete native installer executable bytes.
+/// @param expectedMode Required metadata mode (`setup` or `maintenance`).
+/// @param depth Current recursion depth; values greater than one are rejected.
+/// @param verified Receives parsed metadata and the verified payload digest.
+/// @param err Stream that receives the first verification diagnostic.
+/// @return true when the executable and all declared or nested artifacts verify.
 bool verifyWindowsNativeInstallerImpl(const std::vector<uint8_t> &data,
                                       std::string_view expectedMode,
                                       unsigned depth,
@@ -2276,6 +2478,10 @@ bool verifyWindowsNativeInstallerImpl(const std::vector<uint8_t> &data,
 
 } // namespace
 
+/// @brief Verify a schema-versioned native Windows setup and maintenance pair.
+/// @param data Complete setup executable bytes.
+/// @param err Stream that receives the first verification diagnostic.
+/// @return true when the setup, payload, helpers, metadata, and maintenance image verify.
 bool verifyWindowsNativeInstaller(const std::vector<uint8_t> &data, std::ostream &err) {
     VerifiedWindowsNativePackage verified;
     return verifyWindowsNativeInstallerImpl(data, "setup", 0U, verified, err);
@@ -2286,6 +2492,9 @@ bool verifyWindowsNativeInstaller(const std::vector<uint8_t> &data, std::ostream
 ///          are the ASCII signature "koly". This does not mount the image, but
 ///          it rejects empty/truncated/non-UDIF files without depending on
 ///          macOS-only tooling.
+/// @param data Complete disk-image bytes.
+/// @param err Stream that receives a size or signature diagnostic.
+/// @return true when a 512-byte UDIF trailer with `koly` magic is present.
 bool verifyMacOSDmg(const std::vector<uint8_t> &data, std::ostream &err) {
     if (data.size() < 512u) {
         err << "dmg: file is too small to contain a UDIF trailer\n";
@@ -2303,6 +2512,13 @@ bool verifyMacOSDmg(const std::vector<uint8_t> &data, std::ostream &err) {
 }
 
 /// @brief Verify an RPM header and return its aligned end plus observed tag ids.
+/// @param data Complete RPM package bytes.
+/// @param offset Byte offset of the candidate header.
+/// @param name Header label used in diagnostics.
+/// @param endOffset Receives the first byte after the header store.
+/// @param tags Receives the set of tag identifiers present in the index.
+/// @param err Stream that receives the first bounds or format diagnostic.
+/// @return true when the header magic, index, store, and tag offsets are valid.
 static bool verifyRpmHeader(const std::vector<uint8_t> &data,
                             size_t offset,
                             const char *name,
@@ -2345,6 +2561,10 @@ static bool verifyRpmHeader(const std::vector<uint8_t> &data,
     return true;
 }
 
+/// @brief Verify the lead, headers, required tags, file list, and payload of an RPM.
+/// @param data Complete RPM package bytes.
+/// @param err Stream that receives the first structural diagnostic.
+/// @return true when the RPM container is structurally plausible and non-empty.
 bool verifyRpm(const std::vector<uint8_t> &data, std::ostream &err) {
     if (data.size() < 112u || data[0] != 0xED || data[1] != 0xAB || data[2] != 0xEE ||
         data[3] != 0xDB) {
@@ -2382,6 +2602,9 @@ bool verifyRpm(const std::vector<uint8_t> &data, std::ostream &err) {
         err << "rpm: main header is missing file-list tags\n";
         return false;
     }
+    /// @brief Test whether one byte in the prospective RPM payload is zero.
+    /// @param byte Payload byte to inspect.
+    /// @return `true` when `byte` equals zero.
     if (mainEnd >= data.size() || std::all_of(data.begin() + static_cast<std::ptrdiff_t>(mainEnd),
                                               data.end(),
                                               [](uint8_t byte) { return byte == 0; })) {

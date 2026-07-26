@@ -173,6 +173,9 @@ TypeRef Sema::resolveNamedType(const std::string &name, SourceLoc useLoc) const 
     if (aliasIt != typeAliases_.end())
         return aliasIt->second;
 
+    /// @brief Looks up a registered nominal type or alias.
+    /// @param candidate Semantic type name.
+    /// @return Registered type, or null.
     auto lookupRegisteredType = [&](const std::string &candidate) -> TypeRef {
         auto typeIt = typeRegistry_.find(candidate);
         if (typeIt != typeRegistry_.end())
@@ -183,6 +186,10 @@ TypeRef Sema::resolveNamedType(const std::string &name, SourceLoc useLoc) const 
         return nullptr;
     };
 
+    /// @brief Resolves a type exported by a file-bound module.
+    /// @param moduleName Visible bound module qualifier.
+    /// @param suffix Type name relative to the module.
+    /// @return File-scoped exported type, or null.
     auto resolveBoundFileModuleType = [&](const std::string &moduleName,
                                           const std::string &suffix) -> TypeRef {
         uint32_t boundFileId = 0;
@@ -376,6 +383,9 @@ TypeRef Sema::resolveTypeNode(const TypeNode *node) {
                 args.push_back(resolveTypeNode(arg.get()));
             }
 
+            /// @brief Validates the type-argument count of a generic type.
+            /// @param expected Required number of type arguments.
+            /// @return `true` when the count matches.
             auto requireArity = [&](size_t expected) {
                 if (args.size() == expected)
                     return true;

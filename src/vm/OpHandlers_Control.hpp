@@ -8,7 +8,8 @@
 // File: vm/OpHandlers_Control.hpp
 // Purpose: Declare control-flow opcode handlers and shared switch dispatch helpers.
 // Key invariants: Handlers maintain VM block state, propagate parameters, and honor trap contracts.
-// Ownership/Lifetime: Functions mutate the active VM frame without taking ownership of VM
+// Ownership/Lifetime: Functions mutate the active VM frame without taking
+//                     ownership of VM state or IL objects.
 // Links: docs/internals/architecture.md
 //
 //===----------------------------------------------------------------------===//
@@ -51,10 +52,10 @@ using ExecState = VMAccess::ExecState;
 /// @details Captures distinct case values, their successor indices, and the
 ///          default target index so the VM can build efficient dispatch tables.
 struct SwitchMeta {
-    const void *key = nullptr;
-    std::vector<int32_t> values;
-    std::vector<int32_t> succIdx;
-    int32_t defaultIdx = -1;
+    const void *key = nullptr; ///< Stable instruction address used as cache key.
+    std::vector<int32_t> values; ///< Distinct case selector values.
+    std::vector<int32_t> succIdx; ///< Successor index parallel to @ref values.
+    int32_t defaultIdx = -1; ///< Default successor index, or -1 if absent.
 };
 
 namespace inline_impl {
@@ -71,6 +72,9 @@ namespace inline_impl {
 inline bool validateSwitchI32Metadata(const il::core::Instr &in,
                                       const Frame &fr,
                                       const il::core::BasicBlock *bb) {
+    /// @brief Raise an invalid-switch trap with the current source context.
+    /// @param message Validation failure text.
+    /// @return Always `false` after recording the trap.
     auto trapInvalid = [&](std::string message) {
         RuntimeBridge::trap(TrapKind::InvalidOperation,
                             message,
@@ -185,13 +189,16 @@ inline zanna::vm::SwitchCacheEntry::Kind chooseBackend(const SwitchMeta &meta) {
     if (meta.values.empty())
         return zanna::vm::SwitchCacheEntry::Sorted;
 
+    /// @brief Backend-selection thresholds with environment-overridable defaults.
     struct Tunables {
-        int64_t denseMaxRange = 4096;
-        double denseMinDensity = 0.60;
-        std::size_t hashMinCases = 64;
-        double hashMaxDensity = 0.15;
+        int64_t denseMaxRange = 4096; ///< Largest range eligible for dense form.
+        double denseMinDensity = 0.60; ///< Minimum density for dense form.
+        std::size_t hashMinCases = 64; ///< Minimum cases for hashed form.
+        double hashMaxDensity = 0.15; ///< Maximum density for hashed form.
     };
 
+    /// @brief Load switch-dispatch thresholds from validated environment overrides.
+    /// @return Effective backend-selection tunables.
     static const Tunables t = [] {
         Tunables tv{};
         if (const char *s = std::getenv("ZANNA_SWITCH_DENSE_MAX_RANGE")) {
@@ -274,6 +281,10 @@ inline zanna::vm::HashedCases buildHashed(const SwitchMeta &meta) {
 inline zanna::vm::SortedCases buildSorted(const SwitchMeta &meta) {
     std::vector<size_t> order(meta.values.size());
     std::iota(order.begin(), order.end(), 0);
+    /// @brief Order case indices by their selector values.
+    /// @param a Left-hand case index.
+    /// @param b Right-hand case index.
+    /// @return `true` when case `a` has the smaller selector.
     std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
         return meta.values[a] < meta.values[b];
     });
@@ -472,6 +483,8 @@ inline VM::ExecResult handleSwitchI32Impl(VM &vm,
             }
         }
     } else {
+        /// @brief Dispatch lookup through the concrete cached switch backend.
+        /// @param backend Dense, sorted, or hashed backend selected by the variant.
         std::visit(
             [&](auto &backend) {
                 using BackendT = std::decay_t<decltype(backend)>;
@@ -498,6 +511,9 @@ inline VM::ExecResult handleSwitchI32Impl(VM &vm,
         return result;
     }
 
+    /// @brief Build one reusable jump target for a switch label index.
+    /// @param labelIndex Index into the instruction's label list.
+    /// @return Fully populated branch target bound to the current VM state.
     auto makeTarget = [&](size_t labelIndex) {
         il::vm::ops::common::Target target{};
         target.vm = &vm;

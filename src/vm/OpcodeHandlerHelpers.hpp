@@ -30,6 +30,9 @@ namespace il::vm::detail {
 /// @brief Mark common unused control-flow parameters in opcode handlers.
 /// @details Many arithmetic and comparison handlers don't use blocks, bb, or ip
 ///          parameters. This macro provides a consistent way to suppress warnings.
+/// @param blocks Block-map expression to mark as intentionally unused.
+/// @param bb Current-block expression to mark as intentionally unused.
+/// @param ip Instruction-pointer expression to mark as intentionally unused.
 #define VM_HANDLER_UNUSED_CONTROL_PARAMS(blocks, bb, ip)                                           \
     do {                                                                                           \
         (void)(blocks);                                                                            \
@@ -39,6 +42,12 @@ namespace il::vm::detail {
 
 /// @brief Mark all unused parameters in a simple opcode handler.
 /// @details For handlers that only use vm, fr, and in parameters.
+/// @param blocks Block-map expression forwarded to
+///        @ref VM_HANDLER_UNUSED_CONTROL_PARAMS.
+/// @param bb Current-block expression forwarded to
+///        @ref VM_HANDLER_UNUSED_CONTROL_PARAMS.
+/// @param ip Instruction-pointer expression forwarded to
+///        @ref VM_HANDLER_UNUSED_CONTROL_PARAMS.
 #define VM_HANDLER_UNUSED_ALL_CONTROL(blocks, bb, ip)                                              \
     VM_HANDLER_UNUSED_CONTROL_PARAMS(blocks, bb, ip)
 

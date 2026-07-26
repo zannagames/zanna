@@ -20,6 +20,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements generation and structural verification of Linux self-extracting bundles.
+/// @details The generated POSIX shell prefix safely extracts, caches, verifies,
+///          and launches an appended gzip-compressed tar payload without FUSE.
+
 #include "LinuxRuntimeStubGen.hpp"
 #include "PkgHash.hpp"
 #include "PkgUtils.hpp"
@@ -32,6 +37,9 @@
 namespace zanna::pkg {
 namespace {
 
+/// @brief Quote a value as one POSIX shell word.
+/// @param value Arbitrary text to quote.
+/// @return Single-quoted literal with embedded quotes escaped.
 std::string shellSingleQuote(std::string_view value) {
     std::string out;
     out.reserve(value.size() + 2);
@@ -46,6 +54,10 @@ std::string shellSingleQuote(std::string_view value) {
     return out;
 }
 
+/// @brief Validate a normalized package-relative token embedded in the shell stub.
+/// @param value Token to validate.
+/// @param fieldName Human-readable field name used in diagnostics.
+/// @throws std::runtime_error If the token is multiline, unsafe, or non-normalized.
 void validateStubToken(const std::string &value, const char *fieldName) {
     validateSingleLineField(value, fieldName);
     const std::string clean = sanitizePackageRelativePath(value, fieldName);
@@ -72,6 +84,9 @@ void validateOptionalSha256(const std::string &value) {
     }
 }
 
+/// @brief Locate the marker terminating the textual runtime stub.
+/// @param data Complete candidate bundle bytes.
+/// @return Iterator to the marker's first byte, or `data.end()` when absent.
 std::vector<uint8_t>::const_iterator payloadMarkerIt(const std::vector<uint8_t> &data) {
     const std::string marker = std::string(kLinuxRuntimePayloadMarker) + "\n";
     return std::search(data.begin(),
@@ -112,6 +127,13 @@ std::string shellAssignmentValue(std::string_view text, std::string_view name) {
 
 } // namespace
 
+/// @brief Generate the executable POSIX shell prefix for a Linux bundle.
+/// @details Validates and shell-quotes all embedded values, emits cache and
+///          extraction hardening, optional SHA-256 verification, command-line
+///          interfaces, and the final payload marker.
+/// @param params Cache identity, payload entry path, digest, and interface options.
+/// @return UTF-8 shell stub bytes ending immediately after the payload marker line.
+/// @throws std::runtime_error If an embedded token or digest is invalid.
 std::vector<uint8_t> buildLinuxRuntimeStub(const LinuxRuntimeStubParams &params) {
     validateStubToken(params.cacheName, "Linux bundle cache name");
     validateStubToken(params.entryPath, "Linux bundle entry path");
@@ -317,6 +339,13 @@ std::vector<uint8_t> buildLinuxRuntimeStub(const LinuxRuntimeStubParams &params)
     return std::vector<uint8_t>(text.begin(), text.end());
 }
 
+/// @brief Combine a generated runtime stub with a verified gzip-tar payload.
+/// @param params Runtime options; the payload digest is recomputed and overrides
+///        `params.payloadSha256` in the generated copy.
+/// @param payloadTarGz Complete gzip-compressed tar payload.
+/// @return Self-extracting bundle bytes containing the stub followed by the payload.
+/// @throws std::runtime_error If the payload is not valid gzip-compressed tar data
+///         or the runtime parameters are invalid.
 std::vector<uint8_t> buildLinuxAppImage(const LinuxRuntimeStubParams &params,
                                         const std::vector<uint8_t> &payloadTarGz) {
     if (payloadTarGz.size() < 2 || payloadTarGz[0] != 0x1F || payloadTarGz[1] != 0x8B)
@@ -333,6 +362,10 @@ std::vector<uint8_t> buildLinuxAppImage(const LinuxRuntimeStubParams &params,
     return out;
 }
 
+/// @brief Verify the framing, digest, and compressed-tar payload of a Linux bundle.
+/// @param data Complete candidate self-extracting bundle.
+/// @param err Optional destination for a diagnostic describing the first failure.
+/// @return `true` when the shebang, marker, optional checksum, and tarball are valid.
 bool verifyLinuxAppImage(const std::vector<uint8_t> &data, std::string *err) {
     if (data.size() < 4 || data[0] != '#' || data[1] != '!') {
         if (err)

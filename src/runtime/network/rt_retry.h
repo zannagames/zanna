@@ -20,6 +20,16 @@
 // Links: src/runtime/network/rt_retry.c (implementation)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_retry.h
+ * @brief Declares managed fixed-delay and exponential retry-policy APIs.
+ * @details Policies expose non-consuming availability checks, atomic attempt
+ *          reservation with a computed millisecond delay, attempt counters,
+ *          and reset. Exponential policies apply bounded jitter without
+ *          exceeding their normalized maximum delay.
+ */
+
 #pragma once
 
 #include <stdint.h>

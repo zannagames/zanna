@@ -464,6 +464,7 @@ vg_statusbar_t *vg_statusbar_create(vg_widget_t *parent) {
 }
 
 /// @brief vtable destroy — frees all items in all three zones and their backing arrays.
+/// @param widget StatusBar base widget being destroyed.
 static void statusbar_destroy(vg_widget_t *widget) {
     vg_statusbar_t *sb = (vg_statusbar_t *)widget;
 
@@ -488,6 +489,9 @@ static void statusbar_destroy(vg_widget_t *widget) {
 }
 
 /// @brief vtable measure — fills available_width; height is the fixed sb->height field.
+/// @param widget StatusBar base widget whose measured dimensions are updated.
+/// @param available_width Parent-provided horizontal space.
+/// @param available_height Parent-provided height; intentionally ignored.
 static void statusbar_measure(vg_widget_t *widget, float available_width, float available_height) {
     vg_statusbar_t *sb = (vg_statusbar_t *)widget;
     (void)available_height;
@@ -497,6 +501,11 @@ static void statusbar_measure(vg_widget_t *widget, float available_width, float 
 }
 
 /// @brief vtable arrange — stores the assigned bounds directly (no children to lay out).
+/// @param widget StatusBar base widget to position.
+/// @param x Assigned X origin.
+/// @param y Assigned Y origin.
+/// @param width Assigned outer width.
+/// @param height Assigned outer height.
 static void statusbar_arrange(vg_widget_t *widget, float x, float y, float width, float height) {
     widget->x = x;
     widget->y = y;
@@ -505,6 +514,13 @@ static void statusbar_arrange(vg_widget_t *widget, float x, float y, float width
 }
 
 /// @brief Draw a single status bar item (text, button, progress, separator, or spacer).
+/// @param sb StatusBar supplying theme, font, and hover state.
+/// @param win Backend window receiving primitive drawing commands.
+/// @param item Visible item to draw.
+/// @param x Left edge of the item's constrained slot.
+/// @param item_width Width available to the item.
+/// @param text_y Baseline Y coordinate for item text.
+/// @param canvas Backend canvas forwarded to font drawing.
 static void statusbar_draw_item(vg_statusbar_t *sb,
                                 vgfx_window_t win,
                                 vg_statusbar_item_t *item,
@@ -590,6 +606,14 @@ static void statusbar_draw_item(vg_statusbar_t *sb,
 }
 
 /// @brief Draw a left-to-right zone, truncating later pixels to @p zone_width.
+/// @param sb StatusBar supplying metrics and drawing state.
+/// @param win Backend window receiving primitives.
+/// @param items Zone item array in logical order.
+/// @param count Number of entries in @p items.
+/// @param zone_start Left edge of the constrained zone.
+/// @param zone_width Available zone width.
+/// @param text_y Baseline Y coordinate for text.
+/// @param canvas Backend canvas forwarded to font drawing.
 static void statusbar_draw_zone_forward(vg_statusbar_t *sb,
                                         vgfx_window_t win,
                                         vg_statusbar_item_t **items,
@@ -623,6 +647,14 @@ static void statusbar_draw_zone_forward(vg_statusbar_t *sb,
 }
 
 /// @brief Draw a right-to-left zone so rightmost status items remain visible first.
+/// @param sb StatusBar supplying metrics and drawing state.
+/// @param win Backend window receiving primitives.
+/// @param items Zone item array in logical order.
+/// @param count Number of entries in @p items.
+/// @param zone_start Left edge of the constrained zone.
+/// @param zone_width Available zone width.
+/// @param text_y Baseline Y coordinate for text.
+/// @param canvas Backend canvas forwarded to font drawing.
 static void statusbar_draw_zone_reverse(vg_statusbar_t *sb,
                                         vgfx_window_t win,
                                         vg_statusbar_item_t **items,
@@ -656,6 +688,8 @@ static void statusbar_draw_zone_reverse(vg_statusbar_t *sb,
 }
 
 /// @brief vtable paint — fills background, then paints constrained, non-overlapping zones.
+/// @param widget Arranged StatusBar base widget to render.
+/// @param canvas Backend canvas used for font and primitive drawing.
 static void statusbar_paint(vg_widget_t *widget, void *canvas) {
     vg_statusbar_t *sb = (vg_statusbar_t *)widget;
 
@@ -706,6 +740,13 @@ static void statusbar_paint(vg_widget_t *widget, void *canvas) {
 }
 
 /// @brief Hit-test a left-to-right zone using the same constrained widths as paint.
+/// @param sb StatusBar supplying item metrics.
+/// @param items Zone item array in logical order.
+/// @param count Number of entries in @p items.
+/// @param zone_start Left edge of the constrained zone.
+/// @param zone_width Available zone width.
+/// @param mouse_x Local horizontal pointer coordinate.
+/// @return Visible button item under the coordinate, or NULL.
 static vg_statusbar_item_t *statusbar_find_in_zone_forward(vg_statusbar_t *sb,
                                                           vg_statusbar_item_t **items,
                                                           size_t count,
@@ -740,6 +781,13 @@ static vg_statusbar_item_t *statusbar_find_in_zone_forward(vg_statusbar_t *sb,
 }
 
 /// @brief Hit-test a right-to-left zone so invisible overflow does not steal clicks.
+/// @param sb StatusBar supplying item metrics.
+/// @param items Zone item array in logical order.
+/// @param count Number of entries in @p items.
+/// @param zone_start Left edge of the constrained zone.
+/// @param zone_width Available zone width.
+/// @param mouse_x Local horizontal pointer coordinate.
+/// @return Visible button item under the coordinate, or NULL.
 static vg_statusbar_item_t *statusbar_find_in_zone_reverse(vg_statusbar_t *sb,
                                                           vg_statusbar_item_t **items,
                                                           size_t count,
@@ -774,6 +822,10 @@ static vg_statusbar_item_t *statusbar_find_in_zone_reverse(vg_statusbar_t *sb,
 }
 
 /// @brief Return the item whose local rect contains (mouse_x, mouse_y), or NULL.
+/// @param sb StatusBar whose three zones are hit-tested.
+/// @param mouse_x Local horizontal pointer coordinate.
+/// @param mouse_y Local vertical pointer coordinate.
+/// @return Visible button item under the point, or NULL.
 static vg_statusbar_item_t *find_item_at(vg_statusbar_t *sb, float mouse_x, float mouse_y) {
     if (mouse_y < 0.0f || mouse_y >= sb->base.height)
         return NULL;
@@ -800,6 +852,9 @@ static vg_statusbar_item_t *find_item_at(vg_statusbar_t *sb, float mouse_x, floa
 }
 
 /// @brief vtable handle_event — tracks hover and fires on_click for button items.
+/// @param widget StatusBar base widget receiving the event.
+/// @param event Mutable GUI event to interpret.
+/// @return True when a clickable item consumes the event.
 static bool statusbar_handle_event(vg_widget_t *widget, vg_event_t *event) {
     vg_statusbar_t *sb = (vg_statusbar_t *)widget;
 
@@ -1053,6 +1108,7 @@ void vg_statusbar_clear_zone(vg_statusbar_t *sb, vg_statusbar_zone_t zone) {
 /// @brief Unlink and free one exact retained StatusBar item record.
 /// @details The candidate is dereferenced only after an address match in the owner's retirement
 ///          chain, making foreign and already reclaimed pointers harmless.
+/// @copydetails vg_statusbar_reclaim_retired_item
 bool vg_statusbar_reclaim_retired_item(vg_statusbar_t *sb, vg_statusbar_item_t *item) {
     if (!sb || !item)
         return false;

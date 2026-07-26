@@ -19,7 +19,8 @@
 //     parsing, dispatch, validation, and KDF work are data-dependent.
 //   - Default Hash uses bounded scrypt in compatibility mode and PBKDF2 in approved mode.
 //   - Custom PBKDF2 requests below 100,000 trap instead of silently clamping.
-//   - Verify returns false (not trap) for mismatched passwords or invalid format.
+//   - Verify returns false for mismatched passwords and malformed records;
+//     invalid runtime handles and cryptographic allocation failures may trap.
 //   - The stored hash string is self-describing (includes algorithm and params).
 //
 // Ownership/Lifetime:
@@ -31,6 +32,16 @@
 //        src/runtime/text/rt_rand.h (salt generation)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_password.c
+ * @brief Implements self-describing password hashing and verification.
+ * @details Hashing generates an independent CSPRNG salt and applies bounded
+ *          scrypt in compatibility mode or PBKDF2-HMAC-SHA256 in approved and
+ *          explicit-iteration modes. Verification strictly parses stored
+ *          parameters, rederives a 32-byte value, compares it without
+ *          first-mismatch timing, and scrubs sensitive native buffers.
+ */
 
 #include "rt_password.h"
 
@@ -47,12 +58,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Legacy PBKDF2 policy.
+/// Default, minimum, and maximum accepted PBKDF2 iteration counts.
 #define DEFAULT_ITERATIONS 300000
 #define MIN_ITERATIONS 100000
 #define MAX_ITERATIONS 10000000
 
-// Current password-hash policy.
+/// Default and minimum scrypt policy parameters plus encoded field sizes.
 #define PASSWORD_SCRYPT_N_LOG2 RT_SCRYPT_DEFAULT_N_LOG2
 #define PASSWORD_SCRYPT_R RT_SCRYPT_DEFAULT_R
 #define PASSWORD_SCRYPT_P RT_SCRYPT_DEFAULT_P
@@ -70,6 +81,8 @@
 ///          stack frames after `rt_password_hash` / `rt_password_verify`
 ///          return. Run on every transient buffer before the function
 ///          exits (and on every error-path early return).
+/// @param ptr Writable buffer containing sensitive bytes.
+/// @param len Number of bytes to overwrite.
 static void password_secure_zero(void *ptr, size_t len) {
     volatile uint8_t *p = (volatile uint8_t *)ptr;
     while (len-- > 0)
@@ -77,7 +90,15 @@ static void password_secure_zero(void *ptr, size_t len) {
 }
 
 /// @brief Extract a raw byte pointer and byte count from an rt_string password.
-///        Traps on NULL or invalid string handles. A real empty password is valid.
+/// @details Traps on a null or invalid string handle, or a null @p len output.
+///          Empty passwords are valid and return a stable zero-length buffer.
+///          Embedded null bytes remain part of the password because the runtime
+///          string's declared byte length is authoritative.
+/// @param password Borrowed runtime string containing password bytes.
+/// @param len Destination for the password byte count; must be non-null.
+/// @param ok Optional destination set to one only after successful extraction.
+/// @return Borrowed pointer to the password bytes, or a non-null empty buffer
+///         after a validation trap.
 static const uint8_t *password_string_bytes(rt_string password, size_t *len, int *ok) {
     if (ok)
         *ok = 0;
@@ -135,6 +156,11 @@ static const char base64_chars[] =
 ///          three. Caller owns the returned buffer (must `free`).
 ///          Returns NULL on allocation failure. Used internally to
 ///          serialize the salt and hash into the on-disk hash format.
+/// @param data Byte buffer to encode; may be null only when @p len is zero.
+/// @param len Number of input bytes.
+/// @param out_len Destination for the encoded length; reset to zero first.
+/// @return Newly allocated null-terminated Base64 text, or `NULL` on invalid
+///         input, size overflow, or allocation failure.
 static char *base64_encode(const uint8_t *data, size_t len, size_t *out_len) {
     if (!out_len)
         return NULL;
@@ -181,6 +207,8 @@ static char *base64_encode(const uint8_t *data, size_t len, size_t *out_len) {
 ///          this is only called from `base64_decode` (rare path) and
 ///          the table would itself need to live somewhere in the
 ///          binary — branchless ranges win on size for the few calls.
+/// @param c Character to decode.
+/// @return Value in `[0, 63]`, or `-1` when @p c is outside the Base64 alphabet.
 static int base64_decode_char(char c) {
     if (c >= 'A' && c <= 'Z')
         return c - 'A';
@@ -201,6 +229,11 @@ static int base64_decode_char(char c) {
 ///          output length by 1 each (1 or 2 padding bytes legal).
 ///          On any non-Base64 byte, frees the buffer and returns
 ///          NULL — strict mode, no garbage-in/garbage-out.
+/// @param data Base64 field bytes; must be non-null.
+/// @param len Field length, which must be divisible by four.
+/// @param out_len Optional destination for decoded length; reset to zero first.
+/// @return Newly allocated decoded buffer, or `NULL` for malformed,
+///         non-canonical, or unallocatable input.
 static uint8_t *base64_decode(const char *data, size_t len, size_t *out_len) {
     if (out_len)
         *out_len = 0;
@@ -278,6 +311,9 @@ static uint8_t *base64_decode(const char *data, size_t len, size_t *out_len) {
 /// @details Used by Password.Verify so the timing of a verify call doesn't
 ///          leak the position of the first differing hash byte. Caller
 ///          must ensure both buffers are the same length.
+/// @param a First byte buffer.
+/// @param b Second byte buffer.
+/// @param len Number of bytes to compare in each buffer.
 /// @return 1 if all @p len bytes are equal, 0 otherwise.
 static int password_fixed_time_eq(const uint8_t *a, const uint8_t *b, size_t len) {
     uint8_t diff = 0;
@@ -292,6 +328,9 @@ static int password_fixed_time_eq(const uint8_t *a, const uint8_t *b, size_t len
 ///          (one decimal digit fits up to N=2^9 = 512; two digits cover
 ///          today's policy maximum). This helper extracts that exponent
 ///          and rejects N < 2 or non-power-of-two N values.
+/// @param n Candidate scrypt work factor.
+/// @return Base-two exponent for a supported shape, or `-1` when @p n is less
+///         than two or not a power of two.
 static int scrypt_log2_from_n(uint64_t n) {
     if (n < 2 || (n & (n - 1)) != 0)
         return -1;
@@ -308,6 +347,10 @@ static int scrypt_log2_from_n(uint64_t n) {
 ///          enforce safety against DoS), the password module enforces a
 ///          *minimum* cost so weakly-configured callers can't store easily-
 ///          cracked hashes. log2N ≥ PASSWORD_SCRYPT_MIN_N_LOG2 etc.
+/// @param log2n Base-two exponent of the scrypt N work factor.
+/// @param r Scrypt block-size parameter.
+/// @param p Scrypt parallelization parameter.
+/// @return Nonzero when every component meets its policy minimum.
 static int password_scrypt_params_strong_enough(int log2n, uint32_t r, uint32_t p) {
     return log2n >= (int)PASSWORD_SCRYPT_MIN_N_LOG2 && r >= PASSWORD_SCRYPT_MIN_R &&
            p >= PASSWORD_SCRYPT_MIN_P;
@@ -319,6 +362,13 @@ static int password_scrypt_params_strong_enough(int log2n, uint32_t r, uint32_t 
 ///          Used for both PBKDF2 (`prefix="PBKDF2"`, `params="<iters>"`)
 ///          and scrypt (`prefix="SCRYPT"`, `params="<log2N>$<r>$<p>"`)
 ///          encoded forms. Traps with @p op_name on base64 encoding failure.
+/// @param prefix Null-terminated algorithm identifier.
+/// @param params Optional null-terminated parameter field sequence.
+/// @param salt Fixed-size raw salt.
+/// @param hash Fixed-size derived password hash.
+/// @param op_name Trap message used for allocation or formatting failure.
+/// @return Newly allocated encoded record on success, or an empty runtime
+///         string after trapping on failure.
 static rt_string password_format_hash(const char *prefix,
                                       const char *params,
                                       const uint8_t salt[SALT_LENGTH],
@@ -360,6 +410,9 @@ static rt_string password_format_hash(const char *prefix,
 /// @brief Public Zanna.Crypto.Password.Hash — hash under the active module policy.
 /// @details Uses policy-default scrypt and the SCRYPT$ format in compatibility
 ///          mode, or PBKDF2-HMAC-SHA256 and the PBKDF2$ format in approved mode.
+/// @param password Borrowed runtime string whose complete byte sequence is hashed.
+/// @return Newly allocated self-describing password record on success, or an
+///         empty string after a validation or cryptographic trap.
 rt_string rt_password_hash(rt_string password) {
     if (rt_crypto_module_is_approved_mode())
         return rt_password_hash_with_iterations(password, DEFAULT_ITERATIONS);
@@ -373,6 +426,10 @@ rt_string rt_password_hash(rt_string password) {
 ///          callers learn about misconfiguration immediately. Verify
 ///          continues to accept this format alongside SCRYPT$ for
 ///          backward compatibility with old hashes.
+/// @param password Borrowed runtime string whose complete byte sequence is hashed.
+/// @param iterations PBKDF2 iteration count in `[100000, 10000000]`.
+/// @return Newly allocated PBKDF2 record on success, or an empty string after
+///         a validation, randomness, derivation, or allocation trap.
 rt_string rt_password_hash_with_iterations(rt_string password, int64_t iterations) {
     if (iterations < MIN_ITERATIONS) {
         rt_trap("Password.HashIters: iterations must be at least 100000");
@@ -412,6 +469,9 @@ rt_string rt_password_hash_with_iterations(rt_string password, int64_t iteration
 ///          policy minimum, intended to be slow enough to deter
 ///          brute-force on commodity hardware while staying fast enough
 ///          for an interactive login flow).
+/// @param password Borrowed runtime string whose complete byte sequence is hashed.
+/// @return Newly allocated scrypt record on success, or an empty string after
+///         trapping when scrypt is disabled or hashing fails.
 rt_string rt_password_hash_scrypt(rt_string password) {
     if (!rt_crypto_module_service_allowed(RT_CRYPTO_SERVICE_SCRYPT)) {
         rt_trap("Password.HashScrypt is disabled in approved mode");
@@ -430,6 +490,12 @@ rt_string rt_password_hash_scrypt(rt_string password) {
 ///          password-policy minimum strength — any violation traps. Used
 ///          by callers that want to pin supported cost parameters at or above
 ///          every current password-policy minimum.
+/// @param password Borrowed runtime string whose complete byte sequence is hashed.
+/// @param n64 Scrypt N work factor; must be a supported power of two.
+/// @param r64 Positive scrypt block-size parameter within runtime policy.
+/// @param p64 Positive scrypt parallelization parameter within runtime policy.
+/// @return Newly allocated scrypt record on success, or an empty string after
+///         a policy, validation, randomness, derivation, or allocation trap.
 rt_string rt_password_hash_scrypt_params(rt_string password,
                                          int64_t n64,
                                          int64_t r64,
@@ -488,6 +554,10 @@ rt_string rt_password_hash_scrypt_params(rt_string password,
 ///          the field bytes (caller frees), writes it to @p *out, sets
 ///          @p *out_len to the field length, and advances @p *p past the
 ///          '$' separator (or to end-of-string for the final field).
+/// @param p In/out cursor into a null-terminated encoded record.
+/// @param expected_b64_len Required field length in bytes.
+/// @param out Destination for the newly allocated field copy.
+/// @param out_len Destination for the copied field length.
 /// @return 1 on success, 0 if length doesn't match or allocation failed.
 static int password_parse_b64_field(const char **p,
                                     size_t expected_b64_len,
@@ -518,6 +588,14 @@ static int password_parse_b64_field(const char **p,
 ///          failure, securely zeros and frees both partial allocations
 ///          before returning 0. On success, the caller owns @p *salt and
 ///          @p *expected.
+/// @param salt_start Base64-encoded salt field.
+/// @param salt_b64_len Length of @p salt_start in bytes.
+/// @param hash_start Base64-encoded derived-hash field.
+/// @param hash_b64_len Length of @p hash_start in bytes.
+/// @param salt Destination for the allocated decoded salt.
+/// @param salt_len Destination for the decoded salt length.
+/// @param expected Destination for the allocated expected hash.
+/// @param expected_len Destination for the decoded expected-hash length.
 /// @return 1 on success, 0 on any decode or length mismatch.
 static int password_decode_salt_hash(const char *salt_start,
                                      size_t salt_b64_len,
@@ -555,6 +633,9 @@ static int password_decode_salt_hash(const char *salt_start,
 ///          returns 0 for any parse failure, format mismatch, or
 ///          incorrect password. Allocation or primitive failures can still trap;
 ///          login flows should expose one uniform authentication failure.
+/// @param password Borrowed runtime password to verify.
+/// @param hash_str Null-terminated record beginning with `"PBKDF2$"`.
+/// @return `1` when the derived value matches, otherwise `0`.
 static int password_verify_pbkdf2(rt_string password, const char *hash_str) {
     const char *p = hash_str + 7;
     char *end;
@@ -623,6 +704,9 @@ static int password_verify_pbkdf2(rt_string password, const char *hash_str) {
 ///          stored parameters, and compares using constant-time equality.
 ///          Returns 1 only on match; returns 0 for any parse / format /
 ///          parameter / password mismatch. Allocation or primitive failures can trap.
+/// @param password Borrowed runtime password to verify.
+/// @param hash_str Null-terminated record beginning with `"SCRYPT$"`.
+/// @return `1` when the derived value matches, otherwise `0`.
 static int password_verify_scrypt(rt_string password, const char *hash_str) {
     const char *p = hash_str + 7;
     char *end;
@@ -701,12 +785,16 @@ static int password_verify_scrypt(rt_string password, const char *hash_str) {
     return ok;
 }
 
-/// @brief Parse log2N / r / p out of a SCRYPT$ hash string without doing the actual verify.
-/// @details Used by rt_password_needs_rehash to compare the stored
-///          parameters against the exact current default tuple without
-///          re-running the (potentially slow) scrypt computation. Returns
-///          1 on successful parse, 0 if the format is wrong or any
-///          numeric field is out of range.
+/// @brief Parse and validate the parameters of a stored scrypt record.
+/// @details Used by `rt_password_needs_rehash` to inspect cost parameters
+///          without running scrypt. The complete record is validated,
+///          including supported costs, canonical Base64, and decoded field
+///          lengths.
+/// @param hash_str Null-terminated record beginning with `"SCRYPT$"`.
+/// @param log2n_out Optional destination for the stored base-two N exponent.
+/// @param r_out Optional destination for the stored block-size parameter.
+/// @param p_out Optional destination for the stored parallelization parameter.
+/// @return `1` for a complete supported record, otherwise `0`.
 static int password_stored_scrypt_params(const char *hash_str,
                                          long long *log2n_out,
                                          long long *r_out,
@@ -783,6 +871,9 @@ static int password_stored_scrypt_params(const char *hash_str,
 ///          encoded form, including base64 field lengths and decoded salt/hash
 ///          lengths, rather than accepting any string with a large iteration
 ///          count prefix.
+/// @param hash_str Null-terminated record beginning with `"PBKDF2$"`.
+/// @param iterations_out Optional destination for the validated iteration count.
+/// @return `1` for a complete supported record, otherwise `0`.
 static int password_stored_pbkdf2_params(const char *hash_str, long long *iterations_out) {
     const char *p = hash_str + 7;
     char *end;
@@ -838,6 +929,10 @@ static int password_stored_pbkdf2_params(const char *hash_str, long long *iterat
 ///          login flows can produce a uniform "invalid credentials"
 ///          response without leaking whether the failure was a wrong
 ///          password versus a corrupt stored hash.
+///          Null inputs and malformed records return zero, while invalid
+///          non-null handles or cryptographic allocation failures may trap.
+/// @param password Borrowed runtime password to verify.
+/// @param hash Borrowed self-describing password record.
 /// @return 1 on verified match, 0 otherwise.
 int8_t rt_password_verify(rt_string password, rt_string hash) {
     if (!password || !hash)
@@ -871,6 +966,7 @@ int8_t rt_password_verify(rt_string password, rt_string hash) {
 ///          returns 1, re-hash the just-verified plaintext password and
 ///          replace the stored hash. This is the standard rolling-upgrade
 ///          pattern for migrating users from PBKDF2 to scrypt over time.
+/// @param hash Borrowed encoded password record to inspect.
 /// @return 1 if a rehash is recommended, 0 if the stored hash is current.
 int8_t rt_password_needs_rehash(rt_string hash) {
     if (!hash)

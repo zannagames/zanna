@@ -12,20 +12,31 @@
 //
 // Key invariants:
 //   - Supported formats: JSON, XML, YAML, TOML, and CSV.
-//   - Unknown format enums return an empty string/NULL and set rt_serialize_error().
+//   - Unknown format enums return an empty string, null, zero, or -1 according
+//     to the operation; parse/format operations record a thread-local error.
 //   - Serialization produces a string; deserialization parses a string into
 //     Zanna maps, sequences, XML nodes, strings, boxed primitives, or NULL.
 //   - Cross-format conversion uses the native backends plus generic projections.
 //   - Error state is thread-local.
 //
 // Ownership/Lifetime:
-//   - Returned serialized strings and deserialized values are owned by caller.
+//   - Returned serialized strings, Results, and deserialized values are owned
+//     by the caller according to their runtime type.
 //   - Input strings are borrowed for the duration of the call.
 //
 // Links: src/runtime/text/rt_serialize.h (public API),
 //        src/runtime/text/rt_json.h, rt_xml.h, rt_toml.h, rt_yaml.h (backends)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_serialize.c
+ * @brief Implements the unified multi-format serialization facade.
+ * @details The module dispatches JSON, XML, YAML, TOML, and CSV parsing or
+ *          formatting, converts through generic managed projections, detects
+ *          likely source formats, captures thread-local diagnostics, and
+ *          provides nullable and Result-returning failure surfaces.
+ */
 
 #include "rt_serialize.h"
 #include "rt_format.h"
@@ -72,6 +83,7 @@ static _Thread_local rt_string g_last_error = NULL;
 ///          other's diagnostics. Released via `clear_error` at the
 ///          start of every public entry point so stale errors from
 ///          a prior call don't leak across operations.
+/// @param msg Required null-terminated diagnostic text to copy.
 static void set_error(const char *msg) {
     if (g_last_error)
         rt_string_unref(g_last_error);
@@ -86,11 +98,14 @@ static void clear_error(void) {
 }
 
 /// @brief Return 1 if the thread-local error string is currently non-empty.
+/// @return Nonzero when the current thread has a nonempty serialization error.
 static int has_error(void) {
     return g_last_error && rt_str_len(g_last_error) > 0;
 }
 
 /// @brief Set the thread-local error to `msg` if non-empty, else to `fallback`.
+/// @param msg Borrowed runtime diagnostic string.
+/// @param fallback Required null-terminated fallback text.
 static void set_error_from_string(rt_string msg, const char *fallback) {
     if (g_last_error)
         rt_string_unref(g_last_error);
@@ -101,6 +116,7 @@ static void set_error_from_string(rt_string msg, const char *fallback) {
 }
 
 /// @brief Release a GC object reference, freeing it if the refcount drops to zero.
+/// @param obj Runtime-managed object reference; null is ignored.
 static void release_obj(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
@@ -132,21 +148,30 @@ static void *serialize_parse_value_to_result(void *value, const char *fallback) 
 }
 
 /// @brief Return 1 if `obj` is a runtime Seq container.
+/// @param obj Borrowed candidate runtime object.
+/// @return Nonzero when @p obj has the Seq class and minimum payload layout.
 static int is_seq_obj(void *obj) {
     return rt_obj_is_instance(obj, RT_SEQ_CLASS_ID, SERIALIZE_SEQ_MIN_PAYLOAD);
 }
 
 /// @brief Return 1 if `obj` is a runtime Map container.
+/// @param obj Borrowed candidate runtime object.
+/// @return Nonzero when @p obj has the Map class and minimum payload layout.
 static int is_map_obj(void *obj) {
     return rt_obj_is_instance(obj, RT_MAP_CLASS_ID, SERIALIZE_MAP_MIN_PAYLOAD);
 }
 
 /// @brief Allocate a fresh `rt_string` from the null-terminated C string `s`.
+/// @param s Required null-terminated bytes to copy.
+/// @return Newly allocated runtime string.
 static rt_string make_cstr(const char *s) {
     return rt_string_from_bytes(s, strlen(s));
 }
 
 /// @brief Set a map key (given as a C literal) to `value`, releasing the temporary key string.
+/// @param map Borrowed destination Map.
+/// @param key Required null-terminated key text.
+/// @param value Borrowed value passed to the Map setter.
 static void map_set_cstr(void *map, const char *key, void *value) {
     rt_string k = make_cstr(key);
     rt_map_set(map, k, value);
@@ -156,6 +181,9 @@ static void map_set_cstr(void *map, const char *key, void *value) {
 /// @brief Return 1 if the `rt_string` `s` equals the null-terminated C string `cstr`.
 /// @details Compares the full runtime byte length, so a string whose bytes
 ///          continue past an embedded NUL never aliases `cstr` (VDOC-043).
+/// @param s Borrowed runtime string.
+/// @param cstr Required null-terminated comparison text.
+/// @return Nonzero when lengths and bytes are identical.
 static int str_eq_cstr(rt_string s, const char *cstr) {
     if (!s || !cstr)
         return 0;
@@ -167,6 +195,8 @@ static int str_eq_cstr(rt_string s, const char *cstr) {
 /// @brief Convert any Zanna value to a plain string for use as XML text/attribute content.
 ///        NULL→"null", bool→"true"/"false", int/float→numeric, boxed str→unwrapped,
 ///        anything else→JSON-formatted fallback.
+/// @param obj Borrowed generic runtime value.
+/// @return Caller-owned scalar string representation.
 static rt_string scalar_to_string(void *obj) {
     if (!obj)
         return make_cstr("null");
@@ -198,11 +228,15 @@ static rt_string scalar_to_string(void *obj) {
 }
 
 /// @brief Return 1 if `c` is a valid first character for an XML name (letter, `_`, or `:`).
+/// @param c Byte value to classify using the C ctype locale.
+/// @return Nonzero for an accepted initial XML-name byte.
 static int xml_name_start(int c) {
     return isalpha((unsigned char)c) || c == '_' || c == ':';
 }
 
 /// @brief Return 1 if `c` is a valid continuation character for an XML name.
+/// @param c Byte value to classify using the C ctype locale.
+/// @return Nonzero for an accepted continuation XML-name byte.
 static int xml_name_char(int c) {
     return isalnum((unsigned char)c) || c == '_' || c == ':' || c == '-' || c == '.';
 }
@@ -210,6 +244,10 @@ static int xml_name_char(int c) {
 /// @brief Produce a valid XML element name from `name`, prefixing `fallback` if the first char is
 /// invalid.
 ///        Invalid continuation characters are replaced with `_`.
+/// @param name Candidate name bytes, or null.
+/// @param name_len Number of candidate bytes.
+/// @param fallback Required null-terminated fallback/prefix.
+/// @return Newly allocated sanitized runtime string.
 static rt_string sanitized_xml_name(const char *name, size_t name_len, const char *fallback) {
     const char *src = (name && name_len > 0) ? name : fallback;
     size_t len = (name && name_len > 0) ? name_len : strlen(fallback);
@@ -236,6 +274,10 @@ static rt_string sanitized_xml_name(const char *name, size_t name_len, const cha
 ///        Map keys become child elements; `@attrs` keys become XML attributes;
 ///        `@text`/`#text` keys become text content; Seq items become `<item>` children;
 ///        scalars become element text content.
+/// @param name Requested element-name bytes.
+/// @param name_len Number of bytes in @p name.
+/// @param obj Borrowed generic value to project.
+/// @return Caller-owned XML element node, or null on construction failure.
 static void *generic_to_xml_element(const char *name, size_t name_len, void *obj) {
     rt_string tag = sanitized_xml_name(name, name_len, "item");
     void *elem = rt_xml_element(tag);
@@ -312,6 +354,9 @@ static void *generic_to_xml_element(const char *name, size_t name_len, void *obj
 
 /// @brief Serialize `obj` as XML, wrapping non-XML-node values in a `<root>` element first.
 ///        `indent > 0` produces pretty-printed output; `indent == 0` produces compact output.
+/// @param obj Borrowed XML node or generic runtime value.
+/// @param indent Pretty-print width; nonpositive selects compact output.
+/// @return Caller-owned XML text, or an empty string after projection failure.
 static rt_string format_xml_from_generic(void *obj, int64_t indent) {
     if (rt_xml_is_node(obj))
         return indent > 0 ? rt_xml_format_pretty(obj, indent) : rt_xml_format(obj);
@@ -329,6 +374,9 @@ static rt_string format_xml_from_generic(void *obj, int64_t indent) {
 /// @brief Insert `value` under `key` in `map`, promoting to a Seq on the second occurrence.
 ///        This implements the XML-to-JSON grouping convention: repeated same-tag siblings
 ///        are collected into a sequence rather than silently overwriting the first entry.
+/// @param map Borrowed destination Map.
+/// @param key Borrowed runtime key.
+/// @param value Borrowed value inserted or appended under @p key.
 static void add_grouped_child(void *map, rt_string key, void *value) {
     void *existing = rt_map_get(map, key);
     if (!existing) {
@@ -353,6 +401,8 @@ static void *xml_to_generic_value(void *node);
 
 /// @brief Convert an XML document node to a generic `Map{tag: value}` representation.
 ///        Finds the root element, converts its subtree, and wraps it under the root tag name.
+/// @param doc Borrowed XML document node.
+/// @return Caller-owned generic Map, or null when the document has no root.
 static void *xml_document_to_generic(void *doc) {
     void *root = rt_xml_root(doc);
     if (!root)
@@ -370,6 +420,9 @@ static void *xml_document_to_generic(void *doc) {
 ///        Element attributes go into `@attrs`; mixed text goes into `@text`;
 ///        child elements become map entries (grouped into Seq on repeated tags).
 ///        Text-only elements with no attributes return the text string directly.
+/// @param node Borrowed XML document, element, text, or CDATA node.
+/// @return Caller-owned generic Map, Seq-compatible value, string, or null for
+///         unsupported nodes and conversion failure.
 static void *xml_to_generic_value(void *node) {
     int64_t type = rt_xml_node_type(node);
     if (type == XML_NODE_DOCUMENT)
@@ -461,6 +514,8 @@ convert_error:
 /// @brief Serialize `obj` as TOML. Non-map objects are wrapped in a synthetic map
 ///        (`items` key for sequences, `value` key for scalars) so TOML's top-level
 ///        table requirement is satisfied.
+/// @param obj Borrowed generic runtime value.
+/// @return Caller-owned TOML text.
 static rt_string format_toml_from_generic(void *obj) {
     if (is_map_obj(obj))
         return rt_toml_format(obj);
@@ -474,6 +529,8 @@ static rt_string format_toml_from_generic(void *obj) {
 /// @brief Return 1 if `obj` is a Seq whose every element is also a Seq (i.e., a 2-D table).
 ///        An empty Seq is considered valid. Used to decide whether CSV format can be applied
 ///        directly.
+/// @param obj Borrowed candidate runtime value.
+/// @return Nonzero for an empty or entirely row-Seq outer Seq.
 static int seq_rows_are_sequences(void *obj) {
     if (!is_seq_obj(obj))
         return 0;
@@ -489,6 +546,8 @@ static int seq_rows_are_sequences(void *obj) {
 }
 
 /// @brief Convert `value` to a string and push it as the next cell in the CSV `row` Seq.
+/// @param row Borrowed destination row Seq.
+/// @param value Borrowed generic cell value.
 static void seq_push_string_cell(void *row, void *value) {
     rt_string s = scalar_to_string(value);
     rt_seq_push(row, (void *)s);
@@ -498,6 +557,8 @@ static void seq_push_string_cell(void *row, void *value) {
 /// @brief Serialize `obj` as CSV. A 2-D Seq passes through directly; a Map becomes
 ///        two-column key-value rows; a flat Seq becomes single-column rows; a scalar
 ///        becomes one row with one cell.
+/// @param obj Borrowed generic runtime value.
+/// @return Caller-owned CSV text.
 static rt_string format_csv_from_generic(void *obj) {
     if (seq_rows_are_sequences(obj))
         return rt_csv_format(obj);
@@ -548,6 +609,10 @@ static rt_string format_csv_from_generic(void *obj) {
 ///        Delegates to the appropriate backend: rt_json_parse, rt_xml_parse, rt_yaml_parse,
 ///        rt_toml_parse, or rt_csv_parse. Returns NULL on parse failure; call
 ///        `rt_serialize_error()` to retrieve the diagnostic message.
+/// @param text Borrowed serialized input.
+/// @param format One of the `rt_format_t` values.
+/// @return Caller-owned parsed value, or null for either a valid null document
+///         or failure; inspect `rt_serialize_error()` to distinguish them.
 void *rt_serialize_parse(rt_string text, int64_t format) {
     clear_error();
     if (!text) {
@@ -627,6 +692,10 @@ void *rt_serialize_parse_result(rt_string text, int64_t format) {
 ///          `rt_xml_format`, etc.) based on the `format` enum.
 ///          Returns an empty string on unknown format. Use
 ///          `rt_serialize_format_pretty` for indented output.
+/// @param obj Borrowed generic value or XML node.
+/// @param format Target `rt_format_t` value.
+/// @return Caller-owned serialized text, or empty text with a recorded error
+///         for an unknown target or failed generic projection.
 rt_string rt_serialize_format(void *obj, int64_t format) {
     clear_error();
 
@@ -660,6 +729,13 @@ rt_string rt_serialize_format(void *obj, int64_t format) {
 }
 
 /// @brief Serialize an object to a pretty-printed string in the specified format (JSON/XML/YAML).
+/// @details Indents less than one become two. TOML and CSV ignore indentation
+///          and use their compact formatters.
+/// @param obj Borrowed generic value or XML node.
+/// @param format Target `rt_format_t` value.
+/// @param indent Requested spaces per nesting level.
+/// @return Caller-owned serialized text, or empty text with a recorded error
+///         for an unknown target or failed projection.
 rt_string rt_serialize_format_pretty(void *obj, int64_t format, int64_t indent) {
     clear_error();
 
@@ -699,7 +775,12 @@ rt_string rt_serialize_format_pretty(void *obj, int64_t format, int64_t indent) 
 // Validation
 //=============================================================================
 
-/// @brief Check whether a string is valid in the specified format (JSON/XML/YAML).
+/// @brief Check whether text is valid in any supported serialization format.
+/// @details A null input records an error. Unknown format values return zero
+///          without setting an additional diagnostic.
+/// @param text Borrowed serialized input.
+/// @param format Candidate `rt_format_t` value.
+/// @return `1` when the selected backend accepts the text, otherwise `0`.
 int8_t rt_serialize_is_valid(rt_string text, int64_t format) {
     clear_error();
     if (!text) {
@@ -733,6 +814,10 @@ int8_t rt_serialize_is_valid(rt_string text, int64_t format) {
 //=============================================================================
 
 /// @brief Skip leading ASCII whitespace and return a pointer to the first non-space byte.
+/// @details This detector-specific rule skips every non-null byte at or below
+///          ASCII space.
+/// @param s Required null-terminated input cursor.
+/// @return Pointer to the first byte greater than ASCII space or the terminator.
 static const char *skip_ws(const char *s) {
     while (*s && ((unsigned char)*s <= ' '))
         s++;
@@ -751,6 +836,8 @@ static const char *skip_ws(const char *s) {
 ///          Returns the matching `RT_FORMAT_*` constant, or -1 for
 ///          NULL/empty/unknown input. Never throws — this is meant to be a
 ///          conservative best-effort guess used as a fallback.
+/// @param text Borrowed serialized input.
+/// @return Detected `rt_format_t` value, or `-1` when no heuristic matches.
 int64_t rt_serialize_detect(rt_string text) {
     const char *s;
     const char *line;
@@ -837,6 +924,9 @@ int64_t rt_serialize_detect(rt_string text) {
 /// @brief `Serialize.AutoParse(text)` — detect the format heuristically and parse with it.
 ///        Convenience for "load this file without knowing its format" workflows.
 ///        Sets an error and returns NULL if the format cannot be determined.
+/// @param text Borrowed serialized input.
+/// @return Caller-owned parsed value, or null for a valid null document or
+///         failure; inspect `rt_serialize_error()` for failure.
 void *rt_serialize_auto_parse(rt_string text) {
     int64_t format;
     clear_error();
@@ -877,6 +967,10 @@ void *rt_serialize_auto_parse_result(rt_string text) {
 ///          directions for some pairs (XML attributes ↔ JSON keys,
 ///          TOML datetimes ↔ JSON strings) — caller should expect
 ///          structural fidelity, not byte-for-byte equivalence.
+/// @param text Borrowed source-format text.
+/// @param from_format Source `rt_format_t` value.
+/// @param to_format Target `rt_format_t` value.
+/// @return Caller-owned converted text, or empty text with a diagnostic on failure.
 rt_string rt_serialize_convert(rt_string text, int64_t from_format, int64_t to_format) {
     void *parsed;
     void *value;
@@ -916,6 +1010,8 @@ rt_string rt_serialize_convert(rt_string text, int64_t from_format, int64_t to_f
 //=============================================================================
 
 /// @brief Return the human-readable name of a format constant (e.g., "JSON", "XML").
+/// @param format Candidate `rt_format_t` value.
+/// @return Newly allocated lowercase format name, or `"unknown"`.
 rt_string rt_serialize_format_name(int64_t format) {
     switch ((rt_format_t)format) {
         case RT_FORMAT_JSON:
@@ -934,6 +1030,8 @@ rt_string rt_serialize_format_name(int64_t format) {
 }
 
 /// @brief Return the MIME content-type string for a format (e.g., "application/json").
+/// @param format Candidate `rt_format_t` value.
+/// @return Newly allocated MIME type, or `"application/octet-stream"`.
 rt_string rt_serialize_mime_type(int64_t format) {
     switch ((rt_format_t)format) {
         case RT_FORMAT_JSON:
@@ -954,6 +1052,9 @@ rt_string rt_serialize_mime_type(int64_t format) {
 /// @brief Look up a format constant by its short name (case-insensitive: "json", "xml", ...).
 /// @details Inverse of `rt_serialize_format_name`. Accepts both
 ///          "yaml" and "yml" for YAML. Returns -1 for unknown names.
+///          Embedded null bytes are rejected.
+/// @param name Borrowed case-insensitive format name.
+/// @return Matching `rt_format_t` value, or `-1`.
 int64_t rt_serialize_format_from_name(rt_string name) {
     const char *s;
     if (!name)
@@ -995,6 +1096,8 @@ int64_t rt_serialize_format_from_name(rt_string name) {
 /// @details Stored per-thread, so concurrent serialize calls don't
 ///          step on each other's diagnostics. Cleared at the start of
 ///          every public entry point.
+/// @return Retained thread-local diagnostic string, or a newly allocated empty
+///         string when no error is recorded.
 rt_string rt_serialize_error(void) {
     if (g_last_error)
         return rt_string_ref(g_last_error);

@@ -28,6 +28,14 @@
 //        src/runtime/io/rt_file_ext.c (higher-level atomic file operations)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Defines shared inline UTF-8 stdio and atomic-replacement helpers.
+ * @details Adapts supported binary modes to non-inheritable native
+ * descriptors, constructs and exclusively opens adjacent sidecars, flushes
+ * file data, commits replacements atomically, and supplies UTF-8 deletion and
+ * process-identification utilities.
+ */
 #pragma once
 
 #include "rt_file_path.h"

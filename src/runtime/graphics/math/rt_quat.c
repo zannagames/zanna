@@ -35,6 +35,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements immutable Hamilton quaternion mathematics.
+ *
+ * @details Quaternions are stored inline as `(x, y, z, w)`, validated against
+ *          current and legacy managed layouts, normalized with overflow-safe
+ *          norms, composed and inverted, interpolated along shortest arcs,
+ *          applied to Vec3 values, and expanded into row-major Mat4 rotations.
+ */
+
 #include "rt_quat.h"
 
 #include "rt_heap.h"
@@ -45,11 +55,12 @@
 
 #include <math.h>
 
+/// @brief Inline vector and scalar components of one managed quaternion.
 typedef struct {
-    double x;
-    double y;
-    double z;
-    double w;
+    double x; ///< First imaginary component.
+    double y; ///< Second imaginary component.
+    double z; ///< Third imaginary component.
+    double w; ///< Real scalar component.
 } ZannaQuat;
 
 /// @brief Return whether @p q is a Quat-compatible heap payload.

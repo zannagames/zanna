@@ -29,6 +29,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Atomic cooperative-cancellation tokens with retained parent links.
+/// @details Local cancellation reads are lock-free. A monitor protects each
+///          token's weak intrusive child list so cancellation and finalization
+///          can safely race, while child-to-parent retention keeps ancestry
+///          available for recursive checks.
+
 #include "rt_cancellation.h"
 
 #include "rt_error.h"
@@ -51,6 +58,7 @@
 
 // --- Internal structures ---
 
+/// @brief Runtime payload of a cancellation token and its linkage metadata.
 typedef struct rt_cancellation_data {
 #if defined(_WIN32)
     volatile LONG cancelled;
@@ -70,6 +78,8 @@ typedef struct rt_cancellation_data {
 ///          Uses `atomic_init` (POSIX) or `InterlockedExchange` (Win32 — there is no
 ///          dedicated init primitive, but `InterlockedExchange` provides the same
 ///          happens-before guarantee for any subsequent reader).
+/// @param data Unpublished token payload to initialize.
+/// @param value Initial integer flag value.
 static inline void cancel_init(rt_cancellation_data *data, int value) {
 #if defined(_WIN32)
     InterlockedExchange(&data->cancelled, (LONG)value);
@@ -83,6 +93,8 @@ static inline void cancel_init(rt_cancellation_data *data, int value) {
 ///          atomic-load — no value can satisfy the compare so the flag is left untouched, but
 ///          the operation carries a sequentially-consistent ordering that older MSVC versions
 ///          didn't expose via a dedicated load intrinsic.
+/// @param data Token payload to read.
+/// @return Current local cancellation flag.
 static inline int cancel_load(rt_cancellation_data *data) {
 #if defined(_WIN32)
     return (int)InterlockedCompareExchange(&data->cancelled, 0, 0);
@@ -95,6 +107,8 @@ static inline int cancel_load(rt_cancellation_data *data) {
 /// @details Used both to flip a token to cancelled (`value = 1`) and to clear it via
 ///          `rt_cancellation_reset` (`value = 0`). Sequentially consistent so concurrent
 ///          `IsCancelled` callers see the new value without further synchronization.
+/// @param data Token payload to update.
+/// @param value New integer flag value.
 static inline void cancel_store(rt_cancellation_data *data, int value) {
 #if defined(_WIN32)
     InterlockedExchange(&data->cancelled, (LONG)value);
@@ -106,6 +120,7 @@ static inline void cancel_store(rt_cancellation_data *data, int value) {
 /// @brief Drop a runtime-managed object reference, freeing it if it was the last one.
 /// @details One-line wrapper used pervasively in this file's parent/child unlink paths so
 ///          each call site doesn't have to repeat the release-then-free dance. Safe on NULL.
+/// @param obj Runtime-managed object reference, or null.
 static void cancellation_release_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
@@ -116,6 +131,8 @@ static void cancellation_release_object(void *obj) {
 ///          NULL on a NULL input (caller treats that as a no-op) but raises a runtime trap
 ///          when given a non-cancellation object — that's a programming bug we want to
 ///          surface loudly rather than silently misinterpret as a token.
+/// @param token Candidate cancellation-token handle.
+/// @return Validated payload, or null for a null or trapped invalid input.
 static rt_cancellation_data *cancellation_require(void *token) {
     if (!token)
         return NULL;
@@ -132,6 +149,7 @@ static rt_cancellation_data *cancellation_require(void *token) {
 ///          enough to make cancellation sticky for the full descendant tree
 ///          without retaining weak child-list entries that may already be
 ///          finalizing and waiting to unlink from this monitor.
+/// @param data Token payload to cancel; null is ignored.
 static void cancellation_mark_cancelled(rt_cancellation_data *data) {
     if (!data)
         return;
@@ -153,6 +171,7 @@ static void cancellation_mark_cancelled(rt_cancellation_data *data) {
 ///          and release the local monitor. Any retained children are *not* released here —
 ///          children hold a retain on the parent (us), not the other way around, so by the
 ///          time we're finalizing, no live child can still reference us.
+/// @param obj Cancellation-token object to finalize; null is ignored.
 static void cancellation_finalizer(void *obj) {
     rt_cancellation_data *data = (rt_cancellation_data *)obj;
     if (!data)
@@ -187,7 +206,8 @@ static void cancellation_finalizer(void *obj) {
 
 // --- Public API ---
 
-/// @brief Create a new cancellation token (initially not cancelled).
+/// @brief Create an independent token in the non-cancelled state.
+/// @return New runtime-managed token, or null after an allocation trap.
 void *rt_cancellation_new(void) {
     void *obj = rt_obj_new_i64(RT_CANCELLATION_CLASS_ID, sizeof(rt_cancellation_data));
     if (!obj) {
@@ -215,7 +235,9 @@ void *rt_cancellation_new(void) {
     return obj;
 }
 
-/// @brief Check whether cancellation has been requested on this token.
+/// @brief Check this token and its retained ancestor chain for cancellation.
+/// @param token Cancellation token, or null.
+/// @return 1 if the token or any ancestor is cancelled, otherwise 0.
 int8_t rt_cancellation_is_cancelled(void *token) {
     if (!token)
         return 0;
@@ -238,7 +260,10 @@ int8_t rt_cancellation_is_cancelled(void *token) {
     return 0;
 }
 
-/// @brief Request cancellation on this token, propagating to all child tokens.
+/// @brief Atomically request cancellation and mark immediate linked children.
+/// @details Descendants observe cancellation either from their locally marked
+///          parent or by walking the retained ancestor chain.
+/// @param token Cancellation token, or null for a no-op.
 void rt_cancellation_cancel(void *token) {
     if (!token)
         return;
@@ -256,6 +281,7 @@ void rt_cancellation_cancel(void *token) {
 ///          parent check on subsequent calls. Reset is intended for tokens whose
 ///          cancellation request has been honoured and the same object is being recycled
 ///          for a fresh request — not as a way to undo a parent's cancellation.
+/// @param token Cancellation token, or null for a no-op.
 void rt_cancellation_reset(void *token) {
     if (!token)
         return;
@@ -267,7 +293,12 @@ void rt_cancellation_reset(void *token) {
     cancellation_release_object(token);
 }
 
-/// @brief Create a child token that is automatically cancelled when the parent is cancelled.
+/// @brief Create a token linked to a retained optional parent.
+/// @details The child is inserted into the parent's weak child list under its
+///          monitor. A parent already cancelled, or cancelled during linking,
+///          causes the child to start cancelled.
+/// @param parent Valid parent cancellation token, or null for an independent token.
+/// @return New runtime-managed child token, or null after invalid input or allocation failure.
 void *rt_cancellation_linked(void *parent) {
     rt_cancellation_data *parent_data = NULL;
     int8_t parent_cancelled = 0;
@@ -329,6 +360,8 @@ void *rt_cancellation_linked(void *parent) {
 /// @details Matches the naming convention used by other Zanna.Threads polling primitives
 ///          (e.g. `rt_future_check`). Identical semantics: returns 1 if this token or any
 ///          of its ancestors has been cancelled, else 0.
+/// @param token Cancellation token, or null.
+/// @return 1 if cancellation is observable, otherwise 0.
 int8_t rt_cancellation_check(void *token) {
     return rt_cancellation_is_cancelled(token);
 }
@@ -339,6 +372,7 @@ int8_t rt_cancellation_check(void *token) {
 ///          (not `RUNTIME_ERROR`) so `try { ... } catch InterruptedException` blocks in Zia
 ///          can distinguish cancellation from other faults. No-op if `token` is NULL or not
 ///          cancelled — callers can sprinkle these freely without performance worry.
+/// @param token Cancellation token, or null.
 void rt_cancellation_throw_if_cancelled(void *token) {
     if (rt_cancellation_check(token))
         rt_trap_raise_kind(RT_TRAP_KIND_INTERRUPT,

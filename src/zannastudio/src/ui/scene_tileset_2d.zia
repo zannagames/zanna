@@ -413,6 +413,50 @@ class SceneTilesetLibrary2D {
             destination, Entry(layer), layer + ":", tileId, x, y, cellSize);
     }
 
+    /// @brief Blit one layer tile with a layer opacity multiply (ADR 0195).
+    /// @details Full opacity routes through the cached fast path; anything
+    ///          less composites per pixel with the alpha scaled.
+    expose func DrawTileWithOpacity(destination: Pixels,
+                                    layer: Integer,
+                                    tileId: Integer,
+                                    x: Integer,
+                                    y: Integer,
+                                    cellSize: Integer,
+                                    opacity: Number) -> Boolean {
+        if opacity >= 0.999 {
+            return DrawTile(destination, layer, tileId, x, y, cellSize);
+        }
+        if opacity <= 0.001 { return true; }
+        var entry = Entry(layer);
+        if destination == null or entry == null or entry.pixels == null
+           or cellSize <= 0 or tileId <= 0 or tileId > entry.tileCount {
+            return false;
+        }
+        if cacheCellSize != cellSize {
+            ClearScaledCache();
+            cacheCellSize = cellSize;
+        }
+        var cached = ResolveScaledTile(
+            entry, layer + ":", tileId, cellSize);
+        if cached == null or cached.pixels == null { return false; }
+        var alphaScale = Convert.NumToInt(opacity * 256.0);
+        var row = 0;
+        while row < cellSize {
+            var column = 0;
+            while column < cellSize {
+                var rgba = cached.pixels.GetRgba(column, row);
+                var alpha = rgba % 256 * alphaScale / 256;
+                if alpha > 0 {
+                    destination.BlendPixel(
+                        x + column, y + row, rgba / 256, alpha);
+                }
+                column = column + 1;
+            }
+            row = row + 1;
+        }
+        return true;
+    }
+
     /// @brief Blit one frame of a cached object-sprite image (ADR 0179).
     /// @details `frame` is zero-based and addresses the image on the scene's
     ///          tile grid, exactly like layer-atlas frames. Sprite images share
@@ -678,27 +722,8 @@ class SceneTilesetLibrary2D {
             cacheCellSize = cellSize;
         }
 
-        var key = keyPrefix + tileId;
-        var cachedTile: ScaledTile2D = null;
-        if Map.Has(scaledTileCache, key) {
-            cachedTile = Map.Get(scaledTileCache, key) as ScaledTile2D;
-        } else {
-            var neededPixels = cellSize * cellSize;
-            if neededPixels <= 0
-               or cachedPixelCount + neededPixels
-                  > MAX_SCALED_CACHE_PIXELS {
-                cacheSaturated = true;
-                return false;
-            }
-            var scaled = ScaleTile(entry, tileId, cellSize);
-            if scaled == null { return false; }
-            cachedTile = new ScaledTile2D();
-            cachedTile.pixels = scaled;
-            cachedTile.hasTransparency =
-                HasTransparency(scaled, cellSize);
-            Map.Set(scaledTileCache, key, cachedTile);
-            cachedPixelCount = cachedPixelCount + neededPixels;
-        }
+        var cachedTile = ResolveScaledTile(
+            entry, keyPrefix, tileId, cellSize);
         if cachedTile == null or cachedTile.pixels == null { return false; }
         if cachedTile.hasTransparency {
             CompositeTile(
@@ -742,6 +767,31 @@ class SceneTilesetLibrary2D {
             return null;
         }
         return null;
+    }
+
+    /// @brief Resolve one scaled frame through the bounded cache.
+    hide func ResolveScaledTile(entry: TilesetEntry2D,
+                                keyPrefix: String,
+                                tileId: Integer,
+                                cellSize: Integer) -> ScaledTile2D {
+        var key = keyPrefix + tileId;
+        if Map.Has(scaledTileCache, key) {
+            return Map.Get(scaledTileCache, key) as ScaledTile2D;
+        }
+        var neededPixels = cellSize * cellSize;
+        if neededPixels <= 0
+           or cachedPixelCount + neededPixels > MAX_SCALED_CACHE_PIXELS {
+            cacheSaturated = true;
+            return null;
+        }
+        var scaled = ScaleTile(entry, tileId, cellSize);
+        if scaled == null { return null; }
+        var cachedTile = new ScaledTile2D();
+        cachedTile.pixels = scaled;
+        cachedTile.hasTransparency = HasTransparency(scaled, cellSize);
+        Map.Set(scaledTileCache, key, cachedTile);
+        cachedPixelCount = cachedPixelCount + neededPixels;
+        return cachedTile;
     }
 
     /// @brief Decide once whether a cached frame needs source-over blending.

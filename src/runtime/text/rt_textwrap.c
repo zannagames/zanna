@@ -23,9 +23,19 @@
 //   - Input strings are borrowed for the duration of the call.
 //
 // Links: src/runtime/text/rt_textwrap.h (public API),
-//        src/runtime/rt_string_builder.h (used to accumulate output lines)
+//        src/runtime/core/rt_string.h (runtime string operations),
+//        src/runtime/collections/rt_seq.h (WrapLines result)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_textwrap.c
+ * @brief Implements byte-width text wrapping and layout utilities.
+ * @details Operations wrap at whitespace or safe UTF-8 boundaries, split
+ *          wrapped lines, indent, dedent, hang, truncate or shorten with
+ *          suffixes, align text, and measure physical lines. Checked size
+ *          arithmetic prevents allocation overflow for large inputs.
+ */
 
 #include "rt_textwrap.h"
 #include "rt_internal.h"
@@ -36,6 +46,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Convert a nonnegative signed length to `size_t`.
+/// @param value Length to convert.
+/// @param op Trap message for negative or unrepresentable input.
+/// @return Converted length, or zero after a recoverable trap.
 static size_t checked_i64_to_size(int64_t value, const char *op) {
     if (value < 0) {
         rt_trap(op);
@@ -48,6 +62,12 @@ static size_t checked_i64_to_size(int64_t value, const char *op) {
     return (size_t)value;
 }
 
+/// @brief Compute `base + count * each` with overflow checking.
+/// @param base Fixed byte count.
+/// @param count Number of repeated units.
+/// @param each Bytes per repeated unit.
+/// @param op Trap message used on overflow.
+/// @return Checked sum, or zero after a recoverable trap.
 static size_t checked_mul_add(size_t base, size_t count, size_t each, const char *op) {
     if (each != 0 && count > (SIZE_MAX - base) / each) {
         rt_trap(op);
@@ -56,6 +76,10 @@ static size_t checked_mul_add(size_t base, size_t count, size_t each, const char
     return base + count * each;
 }
 
+/// @brief Allocate a byte buffer and trap on failure.
+/// @param size Allocation size in bytes.
+/// @param op Trap message used on failure.
+/// @return Newly allocated buffer, or null after a recoverable trap.
 static char *checked_malloc(size_t size, const char *op) {
     char *ptr = (char *)malloc(size);
     if (!ptr) {
@@ -65,6 +89,11 @@ static char *checked_malloc(size_t size, const char *op) {
     return ptr;
 }
 
+/// @brief Add one to a size value with overflow checking.
+/// @param value Input size.
+/// @param op Trap message used on overflow.
+/// @param out Destination for the incremented value.
+/// @return `1` on success, otherwise `0` after trapping.
 static int checked_add_one(size_t value, const char *op, size_t *out) {
     if (value == SIZE_MAX) {
         rt_trap(op);
@@ -74,6 +103,10 @@ static int checked_add_one(size_t value, const char *op, size_t *out) {
     return 1;
 }
 
+/// @brief Validate an optional runtime string handle.
+/// @param text Candidate string; null is accepted.
+/// @param op Trap message used for an invalid non-null handle.
+/// @return `1` for null or a valid string handle, otherwise `0`.
 static int textwrap_valid_string(rt_string text, const char *op) {
     if (!text || rt_string_is_handle(text))
         return 1;
@@ -81,10 +114,16 @@ static int textwrap_valid_string(rt_string text, const char *op) {
     return 0;
 }
 
+/// @brief Allocate an empty runtime string.
+/// @return Newly allocated zero-length runtime string.
 static rt_string textwrap_empty_string(void) {
     return rt_string_from_bytes("", 0);
 }
 
+/// @brief Allocate a null-terminated buffer containing spaces.
+/// @param count Nonnegative number of spaces.
+/// @param op Trap message used for invalid size or allocation failure.
+/// @return Newly allocated C buffer, or null after a recoverable trap.
 static char *alloc_spaces(int64_t count, const char *op) {
     size_t n = checked_i64_to_size(count, op);
     size_t alloc_size = 0;
@@ -102,15 +141,10 @@ static char *alloc_spaces(int64_t count, const char *op) {
 // Basic Text Wrapping
 //=============================================================================
 
-/// @brief Greedy word-wrap a string to fit within `width` columns per line.
-/// @details Walks character-by-character tracking the column position
-///          and the index of the most recent space. When the line
-///          overflows, breaks at that last space; if no space has
-///          been seen on the current line, force-breaks at the
-///          overflow point. Existing newlines in the input act as
-///          paragraph boundaries (column resets, last-space cleared).
-///          Widths less than or equal to zero disable wrapping.
 /// @brief Return 1 when src[idx] is a UTF-8 continuation byte (0b10xxxxxx).
+/// @param src Input byte buffer.
+/// @param idx Byte index to inspect.
+/// @return Nonzero when the byte has the UTF-8 continuation prefix.
 static int textwrap_is_continuation(const char *src, int64_t idx) {
     return ((unsigned char)src[idx] & 0xC0) == 0x80;
 }
@@ -118,12 +152,25 @@ static int textwrap_is_continuation(const char *src, int64_t idx) {
 /// @brief Back a byte index up to the nearest UTF-8 codepoint boundary at or
 ///        before it, never moving below `floor_idx`. Splitting a multi-byte
 ///        sequence would emit malformed UTF-8 on both sides (VDOC-046).
+/// @param src UTF-8 byte buffer.
+/// @param idx Candidate split byte index.
+/// @param floor_idx Lowest permitted index.
+/// @return Nearest codepoint-boundary byte index at or before @p idx.
 static int64_t textwrap_boundary_at_or_before(const char *src, int64_t idx, int64_t floor_idx) {
     while (idx > floor_idx && textwrap_is_continuation(src, idx))
         idx--;
     return idx;
 }
 
+/// @brief Greedily word-wrap text to a byte-width target.
+/// @details Breaks at the latest space or tab when possible and hard-wraps
+///          overlong words otherwise. Hard wraps retreat to UTF-8 codepoint
+///          boundaries, so a multibyte codepoint may make a line exceed the
+///          byte target. Existing line feeds reset wrapping. Nonpositive width
+///          returns a retained reference to valid input.
+/// @param text Borrowed runtime text; null becomes empty.
+/// @param width Target line width measured in bytes.
+/// @return Caller-owned wrapped runtime string.
 rt_string rt_textwrap_wrap(rt_string text, int64_t width) {
     if (!text)
         return textwrap_empty_string();
@@ -215,6 +262,12 @@ rt_string rt_textwrap_wrap(rt_string text, int64_t width) {
 }
 
 /// @brief Wrap text and return the result split into a Seq of rt_string lines (no trailing LF).
+/// @details The returned Seq owns each line. Empty wrapped text produces one
+///          empty line element.
+/// @param text Borrowed runtime text.
+/// @param width Target line width in bytes.
+/// @return Caller-owned Seq of caller-independent line strings, or null if Seq
+///         allocation fails.
 void *rt_textwrap_wrap_lines(rt_string text, int64_t width) {
     rt_string wrapped = rt_textwrap_wrap(text, width);
     void *lines = rt_seq_new();
@@ -245,6 +298,9 @@ void *rt_textwrap_wrap_lines(rt_string text, int64_t width) {
 /// @details In CPython, `wrap()` returns a list of lines and `fill()`
 ///          returns a single string. This runtime always returns a
 ///          string from both, so they collapse to the same call.
+/// @param text Borrowed runtime text.
+/// @param width Target line width in bytes.
+/// @return Caller-owned wrapped string from `rt_textwrap_wrap`.
 rt_string rt_textwrap_fill(rt_string text, int64_t width) {
     return rt_textwrap_wrap(text, width);
 }
@@ -258,6 +314,9 @@ rt_string rt_textwrap_fill(rt_string text, int64_t width) {
 ///          before each line and again after every embedded `\n`.
 ///          Counts lines up-front to size the output buffer exactly:
 ///          `src_len + line_count * pre_len`.
+/// @param text Borrowed runtime text; null is treated as empty.
+/// @param prefix Borrowed prefix; null or invalid input becomes empty after a trap.
+/// @return Caller-owned indented string.
 rt_string rt_textwrap_indent(rt_string text, rt_string prefix) {
     if (!textwrap_valid_string(text, "TextWrapper.Indent: invalid string"))
         return textwrap_empty_string();
@@ -320,6 +379,9 @@ rt_string rt_textwrap_indent(rt_string text, rt_string prefix) {
 ///          2. Emit each line with exactly those leading bytes skipped.
 ///          Tabs and spaces are compared literally so a partial tab is never
 ///          removed as if it were a run of spaces.
+/// @param text Borrowed runtime text; null becomes empty.
+/// @return Caller-owned dedented string, possibly a retained input reference
+///         when no common indentation exists.
 rt_string rt_textwrap_dedent(rt_string text) {
     if (!text)
         return textwrap_empty_string();
@@ -409,8 +471,11 @@ rt_string rt_textwrap_dedent(rt_string text) {
 /// @brief Indent every line *except* the first with `prefix` (hanging-indent style).
 /// @details Useful for "labelled paragraph" output where the first line
 ///          carries the label and continuation lines are indented to
-///          align under the body. The first non-empty line is left
+///          align under the body. The first physical line is left
 ///          alone; every subsequent line gets `prefix` prepended.
+/// @param text Borrowed runtime text; null becomes empty.
+/// @param prefix Borrowed continuation prefix; null is treated as empty.
+/// @return Caller-owned hanging-indent string.
 rt_string rt_textwrap_hang(rt_string text, rt_string prefix) {
     if (!text)
         return textwrap_empty_string();
@@ -467,6 +532,9 @@ rt_string rt_textwrap_hang(rt_string text, rt_string prefix) {
 //=============================================================================
 
 /// @brief Truncate to `width` characters total, appending `"..."` if it didn't fit.
+/// @param text Borrowed runtime text.
+/// @param width Maximum output byte budget.
+/// @return Caller-owned truncated string with a default ellipsis when shortened.
 rt_string rt_textwrap_truncate(rt_string text, int64_t width) {
     rt_string suffix = rt_const_cstr("...");
     rt_string result = rt_textwrap_truncate_with(text, width, suffix);
@@ -478,7 +546,11 @@ rt_string rt_textwrap_truncate(rt_string text, int64_t width) {
 /// @details If `text` already fits, returns it unchanged. Otherwise
 ///          keeps `width - suffix_len` characters and appends `suffix`.
 ///          Edge case: if `width <= suffix_len`, returns just the
-///          suffix (no useful prefix can fit).
+///          suffix truncated to a UTF-8 boundary.
+/// @param text Borrowed runtime text.
+/// @param width Maximum output byte budget.
+/// @param suffix Borrowed truncation suffix; null becomes empty.
+/// @return Caller-owned truncated string or retained input when it already fits.
 rt_string rt_textwrap_truncate_with(rt_string text, int64_t width, rt_string suffix) {
     if (!text)
         return textwrap_empty_string();
@@ -527,6 +599,9 @@ rt_string rt_textwrap_truncate_with(rt_string text, int64_t width, rt_string suf
 ///          (right side gets the extra char on odd widths). Falls
 ///          back to a head-truncate when `width < 5` (no room for
 ///          even three dots plus one char on each side).
+/// @param text Borrowed runtime text.
+/// @param width Maximum output byte budget.
+/// @return Caller-owned shortened string or retained input when it fits.
 rt_string rt_textwrap_shorten(rt_string text, int64_t width) {
     if (!text)
         return textwrap_empty_string();
@@ -563,6 +638,9 @@ rt_string rt_textwrap_shorten(rt_string text, int64_t width) {
 /// @brief Left-justify `text` in a `width`-column field, padding with trailing spaces.
 /// @details If `text` is already as wide or wider than `width`, it's
 ///          returned unchanged.
+/// @param text Borrowed runtime text; null is treated as zero bytes.
+/// @param width Target byte width.
+/// @return Caller-owned retained or space-padded string.
 rt_string rt_textwrap_left(rt_string text, int64_t width) {
     if (!text) {
         if (width <= 0)
@@ -593,6 +671,9 @@ rt_string rt_textwrap_left(rt_string text, int64_t width) {
 }
 
 /// @brief Right-justify `text` in a `width`-column field, padding with leading spaces.
+/// @param text Borrowed runtime text; null is treated as zero bytes.
+/// @param width Target byte width.
+/// @return Caller-owned retained or space-padded string.
 rt_string rt_textwrap_right(rt_string text, int64_t width) {
     if (!text) {
         if (width <= 0)
@@ -625,6 +706,9 @@ rt_string rt_textwrap_right(rt_string text, int64_t width) {
 /// @brief Center `text` in a `width`-column field with balanced space padding.
 /// @details For odd-padding cases the extra space goes on the right
 ///          (matching Python's `str.center`).
+/// @param text Borrowed runtime text; null is treated as zero bytes.
+/// @param width Target byte width.
+/// @return Caller-owned retained or space-padded string.
 rt_string rt_textwrap_center(rt_string text, int64_t width) {
     if (!text) {
         if (width <= 0)
@@ -668,9 +752,11 @@ rt_string rt_textwrap_center(rt_string text, int64_t width) {
 // Utility
 //=============================================================================
 
-/// @brief Count the number of lines in `text` (defined as `\n` count + 1).
+/// @brief Count physical lines without adding one for a trailing line feed.
 /// @details Empty input still counts as 1 line. Trailing newline does
 ///          not add an extra empty line.
+/// @param text Borrowed runtime text; null counts as one line.
+/// @return Physical line count under the trailing-newline rule.
 int64_t rt_textwrap_line_count(rt_string text) {
     if (!text)
         return 1;
@@ -690,6 +776,8 @@ int64_t rt_textwrap_line_count(rt_string text) {
 /// @brief Return the byte length of the longest line in `text`.
 /// @details Walks the input once, tracking the running line length
 ///          and resetting it on each newline.
+/// @param text Borrowed runtime text; null has length zero.
+/// @return Maximum line length measured in bytes.
 int64_t rt_textwrap_max_line_len(rt_string text) {
     if (!text)
         return 0;

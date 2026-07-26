@@ -13,6 +13,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares conversion from textual IL type names to core type values.
+ *
+ * @details The parser recognizes the normative primitive type spellings and
+ *          reports recognition through an optional caller-owned status flag,
+ *          returning a value object without retaining the input string.
+ */
+
 #pragma once
 
 #include "il/core/Type.hpp"

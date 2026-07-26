@@ -43,6 +43,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements immutable double-precision two-dimensional vectors.
+ *
+ * @details Vec2 validates current and legacy managed layouts, recycles
+ *          short-lived payloads through a thread-local LIFO pool, performs
+ *          component arithmetic and geometric operations, and uses
+ *          overflow-resistant norms for length, distance, and normalization.
+ */
+
 #include "rt_vec2.h"
 
 #include "rt_heap.h"
@@ -66,9 +76,12 @@
 //                        if full, fall through to rt_heap_free_zero_ref (free).
 //   4. vec2_alloc(): pool non-empty → pop, re-init fields, return (no malloc).
 
+/// @brief Maximum number of reclaimed Vec2 payloads retained per thread.
 #define VEC2_POOL_CAPACITY 32
 
+/// @brief Thread-local LIFO storage for reusable Vec2 payloads.
 static _Thread_local void *vec2_pool_buf_[VEC2_POOL_CAPACITY];
+/// @brief Number of populated entries in @ref vec2_pool_buf_.
 static _Thread_local int vec2_pool_top_ = 0;
 
 /// @brief Vec2 pool return-on-finalize — resurrects the object instead of freeing it.

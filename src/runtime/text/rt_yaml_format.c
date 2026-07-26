@@ -13,6 +13,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief YAML emitter and runtime-value type inspection implementation.
+/// @details Supported runtime values are serialized into deterministic
+///          block-style collections with round-trip-safe scalar quoting.
+
 #include "rt_yaml.h"
 #include "rt_format.h"
 
@@ -36,13 +41,20 @@
 // Formatting Helpers
 //=============================================================================
 
-/// @brief Forward declaration: serialise any Zanna value as YAML.
+/// @brief Serialize any supported runtime value into a shared YAML buffer.
+/// @param obj Runtime value to serialize; null represents YAML null.
+/// @param indent Spaces per collection nesting level.
+/// @param level Current collection nesting depth.
+/// @param buf Address of the heap-buffer pointer.
+/// @param cap Address of the buffer capacity.
+/// @param len Address of the populated byte count.
 static void format_value(void *obj, int indent, int level, char **buf, size_t *cap, size_t *len);
 
 /// Maximum block nesting the formatter will emit; matches the parser's
 /// YAML_MAX_DEPTH. Exceeding it (deeply nested or CYCLIC containers) aborts
 /// the format via this flag instead of recursing without bound.
 #define YAML_FORMAT_MAX_DEPTH 200
+/// @brief Set when the active format operation exceeds its bounded depth.
 static int g_yaml_format_depth_exceeded = 0;
 
 // ---------------------------------------------------------------------------
@@ -82,7 +94,13 @@ static bool yaml_format_reserve(char **buf, size_t *cap, size_t needed) {
     return true;
 }
 
-/// @brief Append `str` to a growing `*buf`, doubling capacity as needed.
+/// @brief Append a null-terminated string to a growing YAML buffer.
+/// @details Maintains a trailing null byte and stops after the reserve helper
+///          traps on size overflow or allocation failure.
+/// @param buf Address of the heap-buffer pointer.
+/// @param cap Address of the buffer capacity.
+/// @param len Address of the populated byte count.
+/// @param str Required null-terminated source string.
 static void buf_append(char **buf, size_t *cap, size_t *len, const char *str) {
     size_t slen = strlen(str);
     if (slen > SIZE_MAX - *len - 1u || !yaml_format_reserve(buf, cap, *len + slen))
@@ -92,7 +110,12 @@ static void buf_append(char **buf, size_t *cap, size_t *len, const char *str) {
     (*buf)[*len] = '\0';
 }
 
-/// @brief Append exactly `slen` bytes of `str` (embedded NUL bytes included).
+/// @brief Append an exact byte span, including embedded null bytes.
+/// @param buf Address of the heap-buffer pointer.
+/// @param cap Address of the buffer capacity.
+/// @param len Address of the populated byte count.
+/// @param str Source byte span.
+/// @param slen Number of source bytes.
 static void buf_append_bytes(char **buf, size_t *cap, size_t *len, const char *str, size_t slen) {
     if (slen > SIZE_MAX - *len - 1u || !yaml_format_reserve(buf, cap, *len + slen))
         return;
@@ -101,7 +124,11 @@ static void buf_append_bytes(char **buf, size_t *cap, size_t *len, const char *s
     (*buf)[*len] = '\0';
 }
 
-/// @brief Append a single byte (with realloc as needed).
+/// @brief Append one byte while preserving the buffer terminator.
+/// @param buf Address of the heap-buffer pointer.
+/// @param cap Address of the buffer capacity.
+/// @param len Address of the populated byte count.
+/// @param c Byte to append.
 static void buf_append_char(char **buf, size_t *cap, size_t *len, char c) {
     if (*len == SIZE_MAX || !yaml_format_reserve(buf, cap, *len + 1u))
         return;
@@ -110,7 +137,11 @@ static void buf_append_char(char **buf, size_t *cap, size_t *len, char c) {
     (*buf)[*len] = '\0';
 }
 
-/// @brief Append `spaces` literal space characters as block indentation.
+/// @brief Append literal spaces for block indentation.
+/// @param buf Address of the heap-buffer pointer.
+/// @param cap Address of the buffer capacity.
+/// @param len Address of the populated byte count.
+/// @param spaces Number of spaces to add; nonpositive values add none.
 static void buf_append_indent(char **buf, size_t *cap, size_t *len, int spaces) {
     for (int i = 0; i < spaces; i++)
         buf_append_char(buf, cap, len, ' ');
@@ -123,6 +154,9 @@ static void buf_append_indent(char **buf, size_t *cap, size_t *len, int spaces) 
 /// `~`), or contain reserved indicator characters (`:`, `#`, `[`,
 /// `{`, `&`, `*`, etc.) or leading/trailing whitespace. In any of
 /// those cases we wrap them in double quotes for safe round-tripping.
+/// @param str Candidate scalar byte span.
+/// @param slen Scalar length in bytes.
+/// @return `true` when plain emission would be empty, ambiguous, or syntactically reserved.
 static bool needs_quoting(const char *str, size_t slen) {
     if (!str || slen == 0)
         return true;
@@ -165,6 +199,13 @@ static bool needs_quoting(const char *str, size_t slen) {
 /// When quoted, escapes `\\`, `\"`, and the standard control
 /// characters (`\n`, `\t`, etc.) so the output round-trips through
 /// `parse_quoted_string`.
+/// @param str Scalar byte span, or null for an empty scalar.
+/// @param slen Scalar length in bytes.
+/// @param indent Current indentation width, reserved for formatting parity.
+/// @param level Current nesting level, reserved for formatting parity.
+/// @param buf Address of the heap-buffer pointer.
+/// @param cap Address of the buffer capacity.
+/// @param len Address of the populated byte count.
 static void format_string(
     const char *str, size_t slen, int indent, int level, char **buf, size_t *cap, size_t *len) {
     if (!str || slen == 0) {
@@ -227,7 +268,15 @@ static void format_string(
 ///   - Map[Any,Any]          → block mapping (`key: value` lines)
 /// `indent` is the indent step (typically 2); `level` is the
 /// current nesting depth. Blocks emit a leading newline so they
-/// can sit after a `key:` or `-`.
+/// can sit after a `key:` or `-`. Unknown object kinds are emitted as
+/// YAML null, and nesting beyond @c YAML_FORMAT_MAX_DEPTH sets the shared
+/// failure flag.
+/// @param obj Runtime value to serialize; null represents YAML null.
+/// @param indent Spaces per collection nesting level.
+/// @param level Current collection nesting depth.
+/// @param buf Address of the heap-buffer pointer.
+/// @param cap Address of the buffer capacity.
+/// @param len Address of the populated byte count.
 static void format_value(void *obj, int indent, int level, char **buf, size_t *cap, size_t *len) {
     if (level > YAML_FORMAT_MAX_DEPTH) {
         g_yaml_format_depth_exceeded = 1;
@@ -358,6 +407,8 @@ static void format_value(void *obj, int indent, int level, char **buf, size_t *c
 
 /// @brief `Yaml.Format(obj)` — serialize a Zanna value as a YAML string (2-space indent).
 ///        Delegates to `rt_yaml_format_indent` with `indent=2`.
+/// @param obj Map, sequence, string, boxed scalar, null, or unknown runtime object.
+/// @return Owned YAML string; empty when the nesting bound is exceeded.
 rt_string rt_yaml_format(void *obj) {
     return rt_yaml_format_indent(obj, 2);
 }
@@ -365,6 +416,9 @@ rt_string rt_yaml_format(void *obj) {
 /// @brief `Yaml.FormatIndent(obj, indent)` — serialize with a custom indent width (1–8).
 ///        Values outside [1, 8] are clamped to 2 or 8 respectively.
 ///        Output always uses block-style collections and quotes ambiguous scalars.
+/// @param obj Map, sequence, string, boxed scalar, null, or unknown runtime object.
+/// @param indent Requested indentation width; values below one use two.
+/// @return Owned YAML string; empty when the nesting bound is exceeded.
 rt_string rt_yaml_format_indent(void *obj, int64_t indent) {
     if (indent < 1)
         indent = 2;
@@ -393,6 +447,8 @@ rt_string rt_yaml_format_indent(void *obj, int64_t indent) {
 
 /// @brief `Yaml.TypeOf(obj)` — return a string describing the YAML type of a parsed value.
 ///        Returns "null", "bool", "int", "float", "string", "sequence", "mapping", or "unknown".
+/// @param obj Runtime value to classify; null is the YAML null category.
+/// @return Owned category-name string.
 rt_string rt_yaml_type_of(void *obj) {
     if (!obj)
         return rt_string_from_bytes("null", 4);

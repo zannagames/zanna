@@ -10,7 +10,7 @@
 // Key invariants:
 //   - Exception objects carry a class ID for type-based catch dispatch.
 //   - Exception objects are reference-counted and contain a message string.
-//   - rt_exc_class_id returns the class ID for use in EhEntry IL opcodes.
+//   - rt_exc_is_exception compares the exact built-in Exception class ID.
 //   - Exception objects follow normal refcount rules; callers must balance retain/release.
 //
 // Ownership/Lifetime:
@@ -20,6 +20,16 @@
 // Links: src/runtime/oop/rt_exc.c (implementation), src/runtime/core/rt_string.h
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_exc.h
+ * @brief Declares construction and inspection of built-in Exception objects.
+ * @details Exceptions are reference-counted managed values with a stable class
+ *          identifier and an optionally retained message String. Accessors
+ *          borrow stored state, while creation returns one caller-owned
+ *          reference for transfer to exception-handling machinery.
+ */
+
 #pragma once
 
 #include "rt_string.h"
@@ -34,18 +44,20 @@ extern "C" {
 #define RT_EXCEPTION_CLASS_ID 1
 
 /// @brief Create a new Exception object with the given message.
-/// @param msg The exception message (string pointer).
-/// @return Pointer to the newly allocated Exception object.
+/// @param[in] msg Managed exception message retained by the object, or NULL.
+/// @return Caller-owned managed Exception with reference count one, or NULL on
+///         allocation failure.
 void *rt_exc_new(rt_string msg);
 
 /// @brief Get the message from an Exception object.
-/// @param exc Pointer to an Exception object.
-/// @return The exception message string.
+/// @param[in] exc Exception payload, or NULL.
+/// @return Borrowed message String, or NULL when the receiver or message is NULL.
+/// @warning This low-level accessor assumes every non-null pointer has the Exception layout.
 rt_string rt_exc_get_message(void *exc);
 
-/// @brief Check if an object is an Exception or derives from it.
-/// @param obj Pointer to an object.
-/// @return 1 if the object is an Exception, 0 otherwise.
+/// @brief Check whether an object has the exact built-in Exception class ID.
+/// @param[in] obj Candidate managed object, or NULL.
+/// @return 1 for an exact Exception instance; otherwise 0.
 int64_t rt_exc_is_exception(void *obj);
 
 #ifdef __cplusplus

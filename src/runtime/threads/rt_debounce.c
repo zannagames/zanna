@@ -36,6 +36,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Passive, monitor-protected debounce and throttle timing state.
+/// @details These objects do not schedule callbacks. Callers signal or attempt
+///          an operation and poll readiness using monotonic millisecond samples.
+
 #include "rt_debounce.h"
 
 #include "rt_internal.h"
@@ -67,6 +72,10 @@ static LARGE_INTEGER g_debounce_freq;
 ///          cache it once into `g_debounce_freq` rather than calling it on every timing
 ///          sample. Always returns TRUE so a failed probe is cached and later samples use
 ///          the monotonic `GetTickCount64` fallback.
+/// @param once Windows one-time initialization state.
+/// @param param Unused initialization parameter.
+/// @param ctx Unused output-context slot.
+/// @return Always @c TRUE to mark initialization complete.
 static BOOL CALLBACK debounce_freq_init(PINIT_ONCE once, PVOID param, PVOID *ctx) {
     (void)once;
     (void)param;
@@ -82,6 +91,7 @@ static BOOL CALLBACK debounce_freq_init(PINIT_ONCE once, PVOID param, PVOID *ctx
 ///          ticks → ms via a split-modulo to avoid `int64_t` overflow on long-running
 ///          processes), with `GetTickCount64` as a fallback. POSIX uses `CLOCK_MONOTONIC`,
 ///          falling back to `CLOCK_REALTIME`; it returns 0 only if both POSIX sources fail.
+/// @return Current monotonic or fallback time in whole milliseconds.
 static int64_t current_time_ms(void) {
 #if defined(_WIN32)
     LARGE_INTEGER counter;
@@ -106,6 +116,8 @@ static int64_t current_time_ms(void) {
 }
 
 /// @brief Return elapsed milliseconds since @p start_ms, clamping backward clocks to zero.
+/// @param start_ms Earlier millisecond timestamp.
+/// @return Nonnegative elapsed milliseconds.
 static int64_t elapsed_since_ms(int64_t start_ms) {
     int64_t now = current_time_ms();
     return now > start_ms ? now - start_ms : 0;
@@ -113,6 +125,7 @@ static int64_t elapsed_since_ms(int64_t start_ms) {
 
 // --- Debouncer ---
 
+/// @brief Monitor-protected state of one passive debouncer.
 typedef struct {
     void *monitor;
     int64_t delay_ms;
@@ -127,6 +140,9 @@ typedef struct {
 ///          (e.g. `IsReady(null) → 0`) can keep their hot path simple. A non-null pointer
 ///          with the wrong class id always traps regardless of the flag — that's a
 ///          programmer error we want surfaced loudly.
+/// @param debouncer Candidate Debouncer handle.
+/// @param trap_on_null Nonzero to trap on null.
+/// @return Validated payload, or null for an accepted null/trap path.
 static rt_debounce_data *debounce_require(void *debouncer, int8_t trap_on_null) {
     if (!debouncer) {
         if (trap_on_null)
@@ -141,6 +157,7 @@ static rt_debounce_data *debounce_require(void *debouncer, int8_t trap_on_null) 
 }
 
 /// @brief Drop one GC reference to @p obj and free it if the count hit zero.
+/// @param obj Runtime-managed object reference, or null.
 static void debounce_release_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
@@ -148,6 +165,7 @@ static void debounce_release_object(void *obj) {
 
 /// @brief GC finalizer for a `Debounce` timer — releases the monitor the timer
 ///        synchronizes on, no-op if already torn down.
+/// @param obj Debouncer payload to finalize; null is ignored.
 static void debounce_finalizer(void *obj) {
     rt_debounce_data *data = (rt_debounce_data *)obj;
     if (!data || !data->monitor)
@@ -159,6 +177,8 @@ static void debounce_finalizer(void *obj) {
 
 /// @brief Create a new debouncer — signal() must be followed by delay_ms of quiet before is_ready()
 /// returns true.
+/// @param delay_ms Quiet period in milliseconds; negative values become zero.
+/// @return New runtime-managed Debouncer, or null after an allocation trap.
 void *rt_debounce_new(int64_t delay_ms) {
     void *obj = rt_obj_new_i64(RT_DEBOUNCER_CLASS_ID, sizeof(rt_debounce_data));
     if (!obj) {
@@ -186,6 +206,7 @@ void *rt_debounce_new(int64_t delay_ms) {
 ///          `delay_ms` has elapsed since *this* call (not the previous one). The signal count
 ///          saturates at `INT64_MAX` rather than wrapping, which is fine for diagnostics use
 ///          and avoids a wraparound surprise in long-running daemons.
+/// @param debouncer Debouncer handle; null is ignored.
 void rt_debounce_signal(void *debouncer) {
     if (!debouncer)
         return;
@@ -209,6 +230,8 @@ void rt_debounce_signal(void *debouncer) {
 ///          starts at zero. Elapsed time is computed via `elapsed_since_ms`, which clamps
 ///          backward-clock readings to zero so a system-time adjustment cannot make a
 ///          previously-ready debouncer regress to "not ready".
+/// @param debouncer Debouncer handle; null is not ready.
+/// @return 1 after a signal followed by the configured quiet period, otherwise 0.
 int8_t rt_debounce_is_ready(void *debouncer) {
     if (!debouncer)
         return 0;
@@ -229,7 +252,8 @@ int8_t rt_debounce_is_ready(void *debouncer) {
     return ready;
 }
 
-/// @brief Reset the debouncer's signal time and count to zero.
+/// @brief Return a debouncer to its never-signalled state.
+/// @param debouncer Debouncer handle; null is ignored.
 void rt_debounce_reset(void *debouncer) {
     if (!debouncer)
         return;
@@ -245,7 +269,9 @@ void rt_debounce_reset(void *debouncer) {
     debounce_release_object(debouncer);
 }
 
-/// @brief Return the debounce delay in milliseconds.
+/// @brief Read the configured nonnegative debounce delay.
+/// @param debouncer Debouncer handle; null reports zero.
+/// @return Delay in milliseconds.
 int64_t rt_debounce_get_delay(void *debouncer) {
     if (!debouncer)
         return 0;
@@ -264,6 +290,8 @@ int64_t rt_debounce_get_delay(void *debouncer) {
 /// @details Useful for instrumentation — e.g. logging "coalesced N signals into one event"
 ///          when the debouncer finally fires. Counter saturates at `INT64_MAX`. Reset to
 ///          zero by `rt_debounce_reset`.
+/// @param debouncer Debouncer handle; null reports zero.
+/// @return Saturating signal count since construction or the last reset.
 int64_t rt_debounce_get_signal_count(void *debouncer) {
     if (!debouncer)
         return 0;
@@ -280,6 +308,7 @@ int64_t rt_debounce_get_signal_count(void *debouncer) {
 
 // --- Throttler ---
 
+/// @brief Monitor-protected state of one passive throttler.
 typedef struct {
     void *monitor;
     int64_t interval_ms;
@@ -292,6 +321,9 @@ typedef struct {
 /// @details Mirror of `debounce_require` for the throttler class id. Same `trap_on_null`
 ///          contract: 1 to trap on NULL, 0 to silently return NULL so callers can shortcut
 ///          the no-op case. A wrong class id always traps.
+/// @param throttler Candidate Throttler handle.
+/// @param trap_on_null Nonzero to trap on null.
+/// @return Validated payload, or null for an accepted null/trap path.
 static rt_throttle_data *throttle_require(void *throttler, int8_t trap_on_null) {
     if (!throttler) {
         if (trap_on_null)
@@ -307,6 +339,7 @@ static rt_throttle_data *throttle_require(void *throttler, int8_t trap_on_null) 
 
 /// @brief GC finalizer for a `Throttle` limiter — mirror of `debounce_finalizer`
 ///        but on the throttle-data struct.
+/// @param obj Throttler payload to finalize; null is ignored.
 static void throttle_finalizer(void *obj) {
     rt_throttle_data *data = (rt_throttle_data *)obj;
     if (!data || !data->monitor)
@@ -317,6 +350,8 @@ static void throttle_finalizer(void *obj) {
 }
 
 /// @brief Create a new throttle — try() returns true at most once per interval_ms.
+/// @param interval_ms Minimum interval in milliseconds; negative values become zero.
+/// @return New runtime-managed Throttler, or null after an allocation trap.
 void *rt_throttle_new(int64_t interval_ms) {
     void *obj = rt_obj_new_i64(RT_THROTTLER_CLASS_ID, sizeof(rt_throttle_data));
     if (!obj) {
@@ -339,7 +374,11 @@ void *rt_throttle_new(int64_t interval_ms) {
     return obj;
 }
 
-/// @brief Attempt to pass through the throttle; returns 1 if allowed, 0 if rate-limited.
+/// @brief Atomically claim the current throttle slot if it is available.
+/// @details The first attempt always succeeds. Success stamps the current time
+///          and increments a saturating count; rejection changes no state.
+/// @param throttler Throttler handle; null is rejected.
+/// @return 1 when allowed, otherwise 0.
 int8_t rt_throttle_try(void *throttler) {
     if (!throttler)
         return 0;
@@ -366,7 +405,9 @@ int8_t rt_throttle_try(void *throttler) {
     return 0;
 }
 
-/// @brief Check whether the throttle interval has elapsed (without consuming it).
+/// @brief Check availability without claiming the throttle slot.
+/// @param throttler Throttler handle; null is rejected.
+/// @return 1 before the first success or after the interval, otherwise 0.
 int8_t rt_throttle_can_proceed(void *throttler) {
     if (!throttler)
         return 0;
@@ -387,7 +428,8 @@ int8_t rt_throttle_can_proceed(void *throttler) {
     return ready;
 }
 
-/// @brief Reset the throttler's timing so the next try always succeeds.
+/// @brief Clear throttle timing and the successful-operation count.
+/// @param throttler Throttler handle; null is ignored.
 void rt_throttle_reset(void *throttler) {
     if (!throttler)
         return;
@@ -403,7 +445,9 @@ void rt_throttle_reset(void *throttler) {
     debounce_release_object(throttler);
 }
 
-/// @brief Return the throttle interval in milliseconds.
+/// @brief Read the configured nonnegative throttle interval.
+/// @param throttler Throttler handle; null reports zero.
+/// @return Interval in milliseconds.
 int64_t rt_throttle_get_interval(void *throttler) {
     if (!throttler)
         return 0;
@@ -422,6 +466,8 @@ int64_t rt_throttle_get_interval(void *throttler) {
 /// @details Counts successes only — calls that returned 0 (rate-limited) are not included.
 ///          Useful for telemetry like "events allowed through this rate limiter so far".
 ///          Counter saturates at `INT64_MAX`. Reset to zero by `rt_throttle_reset`.
+/// @param throttler Throttler handle; null reports zero.
+/// @return Saturating successful-operation count.
 int64_t rt_throttle_get_count(void *throttler) {
     if (!throttler)
         return 0;
@@ -436,7 +482,9 @@ int64_t rt_throttle_get_count(void *throttler) {
     return count;
 }
 
-/// @brief Return milliseconds remaining until the next try would succeed (0 if ready).
+/// @brief Compute the nonnegative time until the next claim can succeed.
+/// @param throttler Throttler handle; null is treated as ready.
+/// @return Milliseconds remaining, or zero before the first success or when ready.
 int64_t rt_throttle_remaining_ms(void *throttler) {
     if (!throttler)
         return 0;

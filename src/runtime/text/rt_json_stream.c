@@ -7,7 +7,7 @@
 //
 // File: src/runtime/text/rt_json_stream.c
 // Purpose: Implements a SAX-style pull-based streaming JSON parser for the
-//          Zanna.Text.JsonStream class. Emits tokens one at a time: ObjectStart,
+//          Zanna.Data.JsonStream class. Emits tokens one at a time: ObjectStart,
 //          ObjectEnd, ArrayStart, ArrayEnd, Key, String, Number, Bool, Null.
 //
 // Key invariants:
@@ -21,7 +21,7 @@
 //   - The input string is retained so the source bytes stay alive while streaming.
 //
 // Ownership/Lifetime:
-//   - The stream object is heap-allocated and managed by the runtime GC.
+//   - The stream object is reference-counted and owned by its caller.
 //   - An internal string buffer is grown dynamically and freed with the stream.
 //   - Key and String token values are returned as fresh rt_string allocations.
 //
@@ -29,6 +29,16 @@
 //        src/runtime/text/rt_json.h (document-mode JSON parser for small inputs)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_json_stream.c
+ * @brief Implements an in-memory pull-token JSON parser.
+ * @details Each managed stream retains its complete source and incremental
+ *          object/array state, emits one structural or scalar token per call,
+ *          decodes String and key escapes into reusable scratch storage,
+ *          preserves raw numeric lexemes, and enters terminal error or end
+ *          states after one complete document.
+ */
 
 #include "rt_json_stream.h"
 
@@ -45,8 +55,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// Fixed number of container-state slots, including the unused depth-zero slot.
 #define MAX_DEPTH 256
 
+/// State-machine phase for the currently open object or array.
 typedef enum {
     JSON_CTX_OBJECT_KEY_OR_END = 1,
     JSON_CTX_OBJECT_KEY = 2,
@@ -58,26 +70,27 @@ typedef enum {
     JSON_CTX_ARRAY_AFTER_VALUE = 8
 } json_stream_ctx_state_t;
 
+/// Mutable state retained by one in-memory pull parser.
 typedef struct {
-    rt_string input_owner;
-    const char *input;
-    size_t len;
-    size_t pos;
-    rt_json_tok_type_t current_type;
-    char *str_buf;
-    size_t str_buf_len;
-    size_t str_buf_cap;
-    double num_value;
-    size_t num_start;
-    size_t num_len;
-    int8_t bool_value;
-    int64_t depth;
-    char *error_msg;
-    int8_t expect_key;
-    int8_t in_object[MAX_DEPTH];
-    int8_t first_value[MAX_DEPTH];
-    uint8_t state[MAX_DEPTH];
-    int8_t top_value_seen;
+    rt_string input_owner;               ///< Retained source string.
+    const char *input;                   ///< Borrowed bytes from @c input_owner.
+    size_t len;                          ///< Source length in bytes.
+    size_t pos;                          ///< Current source byte offset.
+    rt_json_tok_type_t current_type;     ///< Most recently emitted token.
+    char *str_buf;                       ///< Decoded key/string scratch bytes.
+    size_t str_buf_len;                  ///< Decoded content length.
+    size_t str_buf_cap;                  ///< Scratch allocation capacity.
+    double num_value;                    ///< Most recently parsed numeric value.
+    size_t num_start;                    ///< Source offset of latest number.
+    size_t num_len;                      ///< Raw byte length of latest number.
+    int8_t bool_value;                   ///< Most recently parsed Boolean value.
+    int64_t depth;                       ///< Number of currently open containers.
+    char *error_msg;                     ///< Heap-owned parse diagnostic.
+    int8_t expect_key;                   ///< Whether the current object expects a key.
+    int8_t in_object[MAX_DEPTH];         ///< Container-kind flags by depth.
+    int8_t first_value[MAX_DEPTH];       ///< First-value markers by depth.
+    uint8_t state[MAX_DEPTH];            ///< @ref json_stream_ctx_state_t by depth.
+    int8_t top_value_seen;               ///< Whether the single root value began.
 } rt_json_stream_impl;
 
 /// @brief GC finalizer — release the input ref, scratch string buffer, and error string.
@@ -87,6 +100,7 @@ typedef struct {
 ///          for value accumulation, `error_msg` for the most recent
 ///          error) are freed here. All pointers nulled afterwards
 ///          so a double finalize is safe.
+/// @param obj Stream payload being finalized; null is ignored.
 static void stream_finalizer(void *obj) {
     rt_json_stream_impl *s = (rt_json_stream_impl *)obj;
     if (s) {
@@ -102,6 +116,7 @@ static void stream_finalizer(void *obj) {
 }
 
 /// @brief Advance the cursor past any RFC 8259 whitespace (`space`, `tab`, `\n`, `\r`).
+/// @param s Mutable stream state.
 static void skip_whitespace(rt_json_stream_impl *s) {
     while (s->pos < s->len) {
         char c = s->input[s->pos];
@@ -116,6 +131,8 @@ static void skip_whitespace(rt_json_stream_impl *s) {
 /// @details Combines whitespace skipping with peeking — most state-
 ///          machine transitions need both, so this saves a separate
 ///          call at every dispatch point.
+/// @param s Mutable stream state whose whitespace is consumed.
+/// @return Next non-whitespace byte without consuming it, or NUL at EOF.
 static char peek(rt_json_stream_impl *s) {
     skip_whitespace(s);
     if (s->pos >= s->len)
@@ -129,6 +146,8 @@ static char peek(rt_json_stream_impl *s) {
 ///          message copy, the type still flips to ERROR but the
 ///          message becomes NULL — so callers should not assume a
 ///          non-NULL `error_msg` whenever `current_type == ERROR`.
+/// @param s Mutable stream to mark failed.
+/// @param msg Borrowed NUL-terminated detail, or null for no stored message.
 static void set_error(rt_json_stream_impl *s, const char *msg) {
     s->current_type = RT_JSON_TOK_ERROR;
     free(s->error_msg);
@@ -143,6 +162,7 @@ static void set_error(rt_json_stream_impl *s, const char *msg) {
 }
 
 /// @brief Reset the value-accumulator buffer to empty (without freeing capacity).
+/// @param s Mutable stream whose decoded-string length is reset.
 static void str_buf_clear(rt_json_stream_impl *s) {
     s->str_buf_len = 0;
 }
@@ -150,8 +170,9 @@ static void str_buf_clear(rt_json_stream_impl *s) {
 /// @brief Append one byte to the value buffer, growing capacity when needed.
 /// @details Initial allocation grows from 0 to ≥64; subsequent growth
 ///          doubles. Records an error and bails on allocation failure
-///          rather than crashing — the caller's next `peek` will
-///          observe `current_type = ERROR`.
+///          rather than crashing.
+/// @param s Mutable stream owning the scratch buffer.
+/// @param c Byte to append.
 static void str_buf_push(rt_json_stream_impl *s, char c) {
     if (s->str_buf_len + 1 >= s->str_buf_cap) {
         if (s->str_buf_cap > SIZE_MAX / 2) {
@@ -177,6 +198,9 @@ static void str_buf_push(rt_json_stream_impl *s, char c) {
 /// @details Accepts both upper and lower case hex. Returns 0 on EOF
 ///          mid-sequence or any non-hex byte; advances the cursor by
 ///          exactly 4 on success.
+/// @param s Mutable stream positioned at the first hexadecimal byte.
+/// @param out Non-null output receiving the decoded 16-bit value on success.
+/// @return `1` after four valid digits, otherwise `0`.
 static int parse_hex4(rt_json_stream_impl *s, uint32_t *out) {
     uint32_t val = 0;
     for (int i = 0; i < 4; i++) {
@@ -205,6 +229,8 @@ static int parse_hex4(rt_json_stream_impl *s, uint32_t *out) {
 ///          - U+10000..U+10FFFF → 4 bytes (`11110xxx 10xxxxxx ×3`)
 ///          Caller is expected to have already resolved surrogate
 ///          pairs to a single scalar.
+/// @param s Mutable stream receiving UTF-8 bytes in its string scratch buffer.
+/// @param cp Unicode scalar value to encode.
 static void encode_utf8(rt_json_stream_impl *s, uint32_t cp) {
     if (cp < 0x80) {
         str_buf_push(s, (char)cp);
@@ -232,6 +258,8 @@ static void encode_utf8(rt_json_stream_impl *s, uint32_t cp) {
 ///            scalar (Plane 1+).
 ///          On any malformed escape, unterminated string, or
 ///          incomplete surrogate pair, sets the error flag and returns 0.
+/// @param s Mutable stream positioned at the opening quote.
+/// @return `1` after consuming a valid closing quote, otherwise `0`.
 static int parse_string_content(rt_json_stream_impl *s) {
     str_buf_clear(s);
     if (s->pos >= s->len || s->input[s->pos] != '"') {
@@ -341,6 +369,8 @@ static int parse_string_content(rt_json_stream_impl *s) {
 ///          parser for conversion. Sets an error and returns 0 on
 ///          malformed input, including leading zeroes, missing fraction digits,
 ///          and missing exponent digits.
+/// @param s Mutable stream positioned at the number's first byte.
+/// @return `1` after storing the finite double and raw span, otherwise `0`.
 static int parse_number(rt_json_stream_impl *s) {
     size_t start = s->pos;
     if (s->pos < s->len && s->input[s->pos] == '-')
@@ -409,6 +439,10 @@ static int parse_number(rt_json_stream_impl *s) {
 ///          unchanged) on EOF before completion or mismatch. The
 ///          length is passed explicitly so the call site doesn't pay
 ///          for `strlen` at every literal check.
+/// @param s Mutable stream positioned at a potential literal.
+/// @param lit Borrowed literal bytes to compare.
+/// @param len Number of bytes in @p lit.
+/// @return `1` on a complete match, otherwise `0`.
 static int match_literal(rt_json_stream_impl *s, const char *lit, size_t len) {
     if (s->pos + len > s->len)
         return 0;
@@ -423,8 +457,14 @@ static int match_literal(rt_json_stream_impl *s, const char *lit, size_t len) {
 //=============================================================================
 
 /// @brief Construct a streaming JSON parser positioned at the start of `json`. Returns a
-/// GC-managed handle; advance through tokens via `_next` and read values via the type-specific
+/// reference-counted handle; advance through tokens via `_next` and read values via the type-specific
 /// `_string_value` / `_number_value` / `_bool_value` accessors.
+/// @details Retains the complete source string because this parser is pull-based
+///          but not incrementally fed. Null input constructs an empty stream
+///          whose first `Next` call returns an error token.
+/// @param json Borrowed source string retained for the stream lifetime.
+/// @return Newly allocated opaque stream object owned by the caller, or null
+///         after an allocation trap.
 void *rt_json_stream_new(rt_string json) {
     rt_json_stream_impl *s =
         (rt_json_stream_impl *)rt_obj_new_i64(0, (int64_t)sizeof(rt_json_stream_impl));
@@ -458,6 +498,13 @@ void *rt_json_stream_new(rt_string json) {
 /// @brief Advance to the next token. Returns the token type (RT_JSON_TOK_* enum). Use the
 /// type-specific accessors below to read the value once positioned. Returns RT_JSON_TOK_END
 /// at end of input or RT_JSON_TOK_ERROR on parse failure (call `_error` for diagnostic).
+/// @details Emits exactly one structural, key, or scalar token per call. ERROR
+///          and END states are terminal and are returned idempotently.
+///          Malformed syntax, invalid UTF-8, non-finite numbers, trailing
+///          content, and more than 255 open containers produce ERROR without a
+///          syntax trap.
+/// @param parser Borrowed mutable stream handle; null returns ERROR.
+/// @return One `RT_JSON_TOK_*` value represented as `int64_t`.
 int64_t rt_json_stream_next(void *parser) {
     if (!parser)
         return RT_JSON_TOK_ERROR;
@@ -715,14 +762,20 @@ void *rt_json_stream_next_result(void *parser) {
 }
 
 /// @brief Return the type of the most-recently-consumed token (RT_JSON_TOK_* enum).
+/// @param parser Borrowed stream handle.
+/// @return Current token type, or ERROR for a null handle.
 int64_t rt_json_stream_token_type(void *parser) {
     if (!parser)
         return RT_JSON_TOK_ERROR;
     return ((rt_json_stream_impl *)parser)->current_type;
 }
 
-/// @brief Read the string value at the current STRING / KEY token. Returns the unescaped
-/// string content, or an empty string when the current token is not string-typed.
+/// @brief Copy the decoded bytes held for the most recent STRING or KEY token.
+/// @details The accessor does not independently verify the current token; call
+///          it only while positioned on STRING or KEY. Empty decoded values and
+///          null handles both return an owned empty string.
+/// @param parser Borrowed stream handle.
+/// @return Newly allocated decoded string owned by the caller.
 rt_string rt_json_stream_string_value(void *parser) {
     if (!parser)
         return rt_const_cstr("");
@@ -732,13 +785,23 @@ rt_string rt_json_stream_string_value(void *parser) {
     return rt_const_cstr("");
 }
 
-/// @brief Read the numeric value at the current NUMBER token (returns 0.0 if not a number).
+/// @brief Read the finite double stored for the most recent NUMBER token.
+/// @details The accessor does not verify the current token; before the first
+///          number it returns the initialized value zero.
+/// @param parser Borrowed stream handle.
+/// @return Most recently parsed double, or `0.0` for a null handle.
 double rt_json_stream_number_value(void *parser) {
     if (!parser)
         return 0.0;
     return ((rt_json_stream_impl *)parser)->num_value;
 }
 
+/// @brief Copy the exact source lexeme for the current NUMBER token.
+/// @details Unlike `rt_json_stream_number_value`, this accessor verifies the
+///          current token and validates the retained source span.
+/// @param parser Borrowed stream handle.
+/// @return Newly allocated raw number text, or an owned empty string when the
+///         handle/token/span is unsuitable.
 rt_string rt_json_stream_number_text(void *parser) {
     if (!parser)
         return rt_const_cstr("");
@@ -749,7 +812,11 @@ rt_string rt_json_stream_number_text(void *parser) {
     return rt_string_from_bytes(s->input + s->num_start, s->num_len);
 }
 
-/// @brief Read the boolean value at the current BOOL token (1 = true, 0 = false / not bool).
+/// @brief Read the value stored for the most recent BOOL token.
+/// @details The accessor does not verify the current token; before the first
+///          Boolean it returns the initialized false value.
+/// @param parser Borrowed stream handle.
+/// @return `1` for the latest true token, otherwise `0`.
 int8_t rt_json_stream_bool_value(void *parser) {
     if (!parser)
         return 0;
@@ -757,6 +824,8 @@ int8_t rt_json_stream_bool_value(void *parser) {
 }
 
 /// @brief Current nesting depth (number of open `[`/`{` minus close `]`/`}`). 0 = top level.
+/// @param parser Borrowed stream handle.
+/// @return Number of currently open containers, or zero for a null handle.
 int64_t rt_json_stream_depth(void *parser) {
     if (!parser)
         return 0;
@@ -765,6 +834,11 @@ int64_t rt_json_stream_depth(void *parser) {
 
 /// @brief Skip past the current value (including nested arrays/objects). Useful for selectively
 /// parsing only certain fields and ignoring large irrelevant subtrees in big JSON documents.
+/// @details When positioned on a container-start token, repeatedly advances
+///          through its matching end token. Primitive tokens are already fully
+///          consumed, so skipping them is a no-op. Errors and end-of-input stop
+///          the loop.
+/// @param parser Borrowed mutable stream handle; null is ignored.
 void rt_json_stream_skip(void *parser) {
     if (!parser)
         return;
@@ -784,7 +858,12 @@ void rt_json_stream_skip(void *parser) {
     /* Primitive values are already consumed */
 }
 
-/// @brief Returns 1 if more tokens remain (i.e., the next `_next` won't immediately return END).
+/// @brief Check whether unprocessed source or an open container remains.
+/// @details Returns false for null, terminal END/ERROR, and exhausted top-level
+///          input. Trailing non-whitespace source counts as remaining work even
+///          when the next call will classify it as ERROR.
+/// @param parser Borrowed stream handle.
+/// @return `1` when another call must process input/state, otherwise `0`.
 int8_t rt_json_stream_has_next(void *parser) {
     if (!parser)
         return 0;
@@ -800,6 +879,8 @@ int8_t rt_json_stream_has_next(void *parser) {
 }
 
 /// @brief Return the diagnostic message for the most recent parse error (empty if none).
+/// @param parser Borrowed stream handle.
+/// @return Newly allocated copy of the error detail, or an owned empty string.
 rt_string rt_json_stream_error(void *parser) {
     if (!parser)
         return rt_const_cstr("");

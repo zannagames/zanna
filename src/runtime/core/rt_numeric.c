@@ -31,6 +31,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements locale-independent BASIC numeric parsing and formatting.
+ *
+ * @details VAL-style conversion accepts the runtime's strict decimal grammar,
+ *          recognizes non-finite spellings as unsuccessful conversions, and
+ *          reports status through caller-provided storage. Numeric formatting
+ *          uses transient C-locale state and caller-owned buffers so behavior
+ *          is deterministic across host locale settings and platforms.
+ */
+
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE 1
 #endif

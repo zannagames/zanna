@@ -32,6 +32,15 @@
 //        docs/zannalib/localization/formatting.md (user documentation).
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares locale-aware relative-time formatting services.
+ * @details Defines formatter construction and style selection, automatic
+ * duration coarsening, timestamp-difference formatting, explicit long and
+ * short forms, and caller-selected unit rendering.
+ */
+
 #pragma once
 
 #include "rt.hpp"

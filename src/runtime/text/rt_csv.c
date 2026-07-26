@@ -33,6 +33,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_csv.c
+ * @brief Implements RFC 4180-style CSV parsing and formatting.
+ * @details The parser handles quoted fields, doubled quotes, embedded line
+ *          endings, CRLF/LF/CR record separators, and validated one-byte
+ *          delimiters. Formatting quotes fields only when required and builds
+ *          caller-owned element-owning sequences and Strings transactionally.
+ */
+
 #include "rt_csv.h"
 
 #include "rt_box.h"
@@ -64,6 +73,10 @@ static void release_local_obj(void *obj) {
 /// @details Raw runtime strings are retained, boxed strings are unboxed, and other boxed/runtime
 ///          values use the shared object stringification path. This avoids interpreting arbitrary
 ///          object payloads as rt_string handles.
+/// @param val Runtime field value; NULL produces NULL.
+/// @param owned Optional flag cleared initially and set when the returned
+///        non-NULL string reference must be released by the caller.
+/// @return Retained or newly stringified runtime string, or NULL for @p val NULL.
 static rt_string csv_value_to_string(void *val, bool *owned) {
     if (owned)
         *owned = false;
@@ -80,6 +93,11 @@ static rt_string csv_value_to_string(void *val, bool *owned) {
 }
 
 /// @brief Get delimiter character from string.
+/// @details NULL and empty strings select comma. Other values must be exactly
+///          one non-NUL byte and cannot be quote, CR, or LF; invalid values trap
+///          and return comma as the recovery fallback.
+/// @param delim Optional runtime delimiter string.
+/// @return Validated delimiter byte or DEFAULT_DELIMITER.
 static char get_delim(rt_string delim) {
     int64_t len = delim ? rt_str_len(delim) : 0;
     if (!delim || len <= 0)
@@ -97,10 +115,18 @@ static char get_delim(rt_string delim) {
     return d;
 }
 
+/// @brief Test whether a runtime object is a Seq with the expected payload size.
+/// @param obj Candidate runtime object.
+/// @return True for a valid Seq instance, otherwise false.
 static bool csv_is_seq(void *obj) {
     return rt_obj_is_instance(obj, RT_SEQ_CLASS_ID, sizeof(rt_seq_impl)) != 0;
 }
 
+/// @brief Add to an output-size accumulator with overflow trapping.
+/// @param total Mutable accumulated size.
+/// @param add Increment to add.
+/// @param op Trap diagnostic on overflow.
+/// @return True after updating @p total, or false after an overflow trap.
 static bool csv_checked_add(size_t *total, size_t add, const char *op) {
     if (*total > SIZE_MAX - add) {
         rt_trap(op);
@@ -111,6 +137,10 @@ static bool csv_checked_add(size_t *total, size_t add, const char *op) {
 }
 
 /// @brief Check if field needs quoting for CSV output.
+/// @param field Borrowed field bytes.
+/// @param len Field byte count.
+/// @param delim Active delimiter byte.
+/// @return True when the field contains delimiter, quote, CR, or LF.
 static bool needs_quoting(const char *field, size_t len, char delim) {
     for (size_t i = 0; i < len; i++) {
         char c = field[i];
@@ -135,6 +165,10 @@ typedef struct {
 } csv_parser;
 
 /// @brief Initialize parser state.
+/// @param p Parser structure to initialize.
+/// @param input Borrowed CSV input bytes.
+/// @param len Input byte count.
+/// @param delim Validated single-byte delimiter.
 static void parser_init(csv_parser *p, const char *input, size_t len, char delim) {
     p->input = input;
     p->len = len;
@@ -160,11 +194,15 @@ static void csv_parse_error(csv_parser *p, const char *message) {
 }
 
 /// @brief Check if parser is at end of input.
+/// @param p Parser state.
+/// @return True when the cursor is at or beyond the input length.
 static bool parser_eof(csv_parser *p) {
     return p->pos >= p->len;
 }
 
 /// @brief Peek current character without advancing.
+/// @param p Parser state.
+/// @return Current byte, or NUL at end-of-input.
 static char parser_peek(csv_parser *p) {
     if (p->pos >= p->len)
         return '\0';
@@ -172,6 +210,8 @@ static char parser_peek(csv_parser *p) {
 }
 
 /// @brief Consume current character and advance.
+/// @param p Parser state.
+/// @return Consumed byte, or NUL without advancing at end-of-input.
 static char parser_consume(csv_parser *p) {
     if (p->pos >= p->len)
         return '\0';
@@ -341,6 +381,13 @@ static rt_string parse_field(csv_parser *p, bool *at_line_end) {
 }
 
 /// @brief Parse a single row (line) of CSV.
+/// @details Always attempts at least one field, so an empty record produces one
+///          empty string. On a field error, returns the partially built
+///          element-owning row with @c p->has_error set for the outer parser to
+///          discard.
+/// @param p Parser positioned at the start of a row.
+/// @return Caller-owned Seq of field strings, possibly partial after a recorded
+///         parse failure, or NULL when row allocation fails.
 static void *parse_row(csv_parser *p) {
     void *row = rt_seq_new();
     if (!row) {
@@ -366,6 +413,10 @@ static void *parse_row(csv_parser *p) {
     return row;
 }
 
+/// @brief Validate and consume one CSV field without allocating its value.
+/// @param p Parser positioned at a field start.
+/// @param at_line_end Receives true when the field ends the current record.
+/// @return True for valid quoting/termination syntax, otherwise false.
 static bool validate_field(csv_parser *p, bool *at_line_end) {
     *at_line_end = false;
 
@@ -440,6 +491,9 @@ static bool validate_field(csv_parser *p, bool *at_line_end) {
     return true;
 }
 
+/// @brief Validate and consume one complete CSV row.
+/// @param p Parser positioned at a row start.
+/// @return True when every field through the row terminator is valid.
 static bool validate_row(csv_parser *p) {
     bool at_line_end = false;
     do {
@@ -455,6 +509,7 @@ static bool validate_row(csv_parser *p) {
 
 /// @brief Format a single field for CSV output.
 /// @param field Field string.
+/// @param field_len Field byte count.
 /// @param delim Delimiter character.
 /// @param out Output buffer (must have enough space).
 /// @return Number of bytes written.
@@ -482,6 +537,10 @@ static size_t format_field(const char *field, size_t field_len, char delim, char
 }
 
 /// @brief Calculate output size for a formatted field.
+/// @param field Borrowed field bytes.
+/// @param field_len Field byte count.
+/// @param delim Active delimiter byte.
+/// @return Exact formatted byte count, or SIZE_MAX after an overflow trap.
 static size_t calc_field_size(const char *field, size_t field_len, char delim) {
     if (!needs_quoting(field, field_len, delim))
         return field_len;
@@ -524,8 +583,8 @@ static size_t calc_field_size(const char *field, size_t field_len, char delim) {
 ///
 /// @param line The CSV line to parse.
 ///
-/// @return A Seq containing the parsed field strings. Returns an empty Seq
-///         if line is NULL. Never returns NULL.
+/// @return A caller-owned Seq containing parsed field strings, an empty Seq for
+///         NULL input, or NULL after a parse/allocation failure.
 ///
 /// @note Uses comma (`,`) as the delimiter. For other delimiters, use
 ///       rt_csv_parse_line_with.
@@ -562,13 +621,13 @@ void *rt_csv_parse_line(rt_string line) {
 /// ```
 ///
 /// @param line The CSV line to parse.
-/// @param delim String whose first character is the delimiter. If empty
-///              or NULL, defaults to comma.
+/// @param delim Exactly one delimiter byte. Empty or NULL selects comma; longer
+///              values and quote/CR/LF/NUL delimiters trap.
 ///
-/// @return A Seq containing the parsed field strings. Returns an empty Seq
-///         if line is NULL. Never returns NULL.
+/// @return A caller-owned Seq containing parsed field strings, an empty Seq for
+///         NULL input, or NULL after a parse/allocation failure.
 ///
-/// @note Only the first character of delim is used.
+/// @note The delimiter is validated as exactly one permitted byte.
 /// @note O(n) time complexity where n is the line length.
 ///
 /// @see rt_csv_parse_line For the default comma delimiter
@@ -630,8 +689,8 @@ void *rt_csv_parse_line_with(rt_string line, rt_string delim) {
 ///
 /// @param text The CSV text containing one or more rows.
 ///
-/// @return A Seq of Seqs, where each inner Seq contains the fields of one row.
-///         Returns an empty Seq if text is NULL or empty. Never returns NULL.
+/// @return A caller-owned Seq of element-owning row Seqs, an empty Seq for NULL
+///         or empty input, or NULL after a parse/allocation failure.
 ///
 /// @note Uses comma (`,`) as the delimiter. For other delimiters, use
 ///       rt_csv_parse_with.
@@ -663,13 +722,13 @@ void *rt_csv_parse(rt_string text) {
 /// ```
 ///
 /// @param text The CSV text containing one or more rows.
-/// @param delim String whose first character is the delimiter. If empty
-///              or NULL, defaults to comma.
+/// @param delim Exactly one delimiter byte. Empty or NULL selects comma; longer
+///              values and quote/CR/LF/NUL delimiters trap.
 ///
-/// @return A Seq of Seqs, where each inner Seq contains the fields of one row.
-///         Returns an empty Seq if text is NULL or empty. Never returns NULL.
+/// @return A caller-owned Seq of element-owning row Seqs, an empty Seq for NULL
+///         or empty input, or NULL after a parse/allocation failure.
 ///
-/// @note Only the first character of delim is used.
+/// @note The delimiter is validated as exactly one permitted byte.
 /// @note O(n) time complexity where n is the total text length.
 ///
 /// @see rt_csv_parse For the default comma delimiter
@@ -708,6 +767,12 @@ void *rt_csv_parse_with(rt_string text, rt_string delim) {
     return rows;
 }
 
+/// @brief Validate comma-delimited CSV syntax without constructing rows.
+/// @details Accepts CRLF, LF, and CR record endings and the same quoted-field
+///          grammar as the parser. A NULL handle is invalid, while empty text is
+///          a valid empty document.
+/// @param text CSV text to inspect.
+/// @return 1 when syntactically valid, otherwise 0.
 int8_t rt_csv_is_valid(rt_string text) {
     if (!text)
         return 0;
@@ -785,13 +850,13 @@ rt_string rt_csv_format_line(void *fields) {
 /// ```
 ///
 /// @param fields A Seq of strings to format as CSV.
-/// @param delim String whose first character is the delimiter. If empty
-///              or NULL, defaults to comma.
+/// @param delim Exactly one delimiter byte. Empty or NULL selects comma; longer
+///              values and quote/CR/LF/NUL delimiters trap.
 ///
 /// @return A CSV-formatted string representing one row. Returns an empty
 ///         string if fields is NULL or empty.
 ///
-/// @note Only the first character of delim is used.
+/// @note The delimiter is validated as exactly one permitted byte.
 /// @note The returned string does NOT include a trailing newline.
 /// @note O(n) time complexity where n is total character count.
 ///
@@ -927,13 +992,13 @@ rt_string rt_csv_format(void *rows) {
 ///
 /// @param rows A Seq of Seqs, where each inner Seq contains the fields of
 ///             one row.
-/// @param delim String whose first character is the delimiter. If empty
-///              or NULL, defaults to comma.
+/// @param delim Exactly one delimiter byte. Empty or NULL selects comma; longer
+///              values and quote/CR/LF/NUL delimiters trap.
 ///
 /// @return Complete CSV text with rows separated by newlines. Returns an
 ///         empty string if rows is NULL or empty.
 ///
-/// @note Only the first character of delim is used.
+/// @note The delimiter is validated as exactly one permitted byte.
 /// @note Each row ends with a newline character (`\n`).
 /// @note O(n) time complexity where n is total character count.
 ///

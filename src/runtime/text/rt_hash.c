@@ -17,7 +17,8 @@
 //   - CRC32 lookup-table initialization uses atomic once-state and is safe for
 //     concurrent first use.
 //   - Input may be a string or rt_bytes; both paths produce identical digests.
-//   - All hash state is stack-allocated; no per-call heap allocation.
+//   - Digest and MAC working state is stack-allocated; only returned runtime
+//     strings allocate result storage.
 //   - The HMAC helpers (hmac_hash_*) dispatch on `hmac_hash_alg_t` so the
 //     PBKDF2 and scrypt KDF code can switch hash algorithms without each
 //     KDF having to know the per-hash context layout.
@@ -35,6 +36,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_hash.c
+ * @brief Implements digest, HMAC, CRC32, SipHash, and fixed-time comparison APIs.
+ * @details The module provides legacy MD5 and SHA-1, SHA-256, matching HMAC
+ *          primitives, noncryptographic CRC32, process-keyed SipHash-2-4, and
+ *          length-aware equality. Approved-mode policy gates legacy services,
+ *          and sensitive keyed working state is scrubbed after use.
+ */
+
 #include "rt_hash.h"
 
 #include "rt_bytes.h"
@@ -48,8 +58,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-/// @brief Zero len bytes at ptr through a volatile pointer so the compiler
-///        cannot eliminate the write as a dead store when zeroing key material.
+/// @brief Erase a byte range through volatile stores.
+/// @details Volatile access prevents the compiler from eliminating the writes
+///          as dead stores when clearing key material or intermediate state.
+/// @param ptr Writable start of the range to clear.
+/// @param len Number of bytes to overwrite with zero.
 static void hash_secure_zero(void *ptr, size_t len) {
     volatile uint8_t *p = (volatile uint8_t *)ptr;
     while (len-- > 0)
@@ -58,7 +71,8 @@ static void hash_secure_zero(void *ptr, size_t len) {
 
 /// @brief Check whether a crypto service is allowed by the active module policy.
 /// @details In APPROVED mode the policy gate returns 0 for legacy services
-///          (MD5, SHA-1, CRC32, SipHash). This helper traps with @p message
+///          (MD5, SHA-1, CRC32, and the legacy SipHash-named fast-hash gate).
+///          This helper traps with @p message
 ///          and returns 0 so public entry points can stop when trap recovery
 ///          returns control to the runtime.
 /// @param service Crypto-module service identifier being requested.
@@ -74,8 +88,13 @@ static int hash_require_service(rt_crypto_module_service_t service, const char *
 }
 
 /// @brief Extract a raw byte pointer and byte count from an rt_string.
-///        Returns an empty buffer for real zero-length strings, but traps on
-///        NULL or invalid string objects so they are not silently hashed as "".
+/// @details Returns an empty buffer for real zero-length strings, but traps on
+///          null or invalid string objects so they are not silently hashed as
+///          empty. Failure leaves @p ok false and reports zero length.
+/// @param str Borrowed runtime string to inspect.
+/// @param len Non-null output receiving the byte length.
+/// @param ok Optional output set to one only for a valid string.
+/// @return Borrowed immutable string bytes, or a stable empty buffer on failure.
 static const uint8_t *hash_string_bytes(rt_string str, size_t *len, int *ok) {
     if (ok)
         *ok = 0;
@@ -128,6 +147,7 @@ static const uint8_t *hash_string_bytes(rt_string str, size_t *len, int *ok) {
 /// @param bytes Candidate Bytes object, or NULL for empty input.
 /// @param len Receives the byte length on success, or zero on failure.
 /// @param context Public API name used in trap messages.
+/// @param ok Optional output set to one only for valid input.
 /// @return Borrowed immutable byte pointer valid for the duration of the call.
 static const uint8_t *hash_bytes_data(void *bytes, size_t *len, const char *context, int *ok) {
     const char *api = context ? context : "Hash.Bytes";
@@ -173,10 +193,11 @@ static const uint8_t *hash_bytes_data(void *bytes, size_t *len, const char *cont
 // MD5 Implementation (RFC 1321)
 //=============================================================================
 
+/// Incremental MD5 state following RFC 1321.
 typedef struct {
-    uint32_t state[4];
-    uint64_t bit_count;
-    uint8_t buffer[64];
+    uint32_t state[4]; ///< Four chaining words.
+    uint64_t bit_count; ///< Number of message bits consumed.
+    uint8_t buffer[64]; ///< Partial 512-bit input block.
 } MD5_CTX;
 
 #define MD5_F(x, y, z) (((x) & (y)) | ((~x) & (z)))
@@ -226,6 +247,8 @@ typedef struct {
 /// The four round functions (F, G, H, I) plus per-round constants
 /// are unrolled into 64 statements at compile time — this is the
 /// canonical "textbook" MD5 implementation.
+/// @param state Four chaining words updated in place.
+/// @param block Complete 64-byte message block.
 static void md5_transform(uint32_t state[4], const uint8_t block[64]) {
     uint32_t a = state[0], b = state[1], c = state[2], d = state[3];
     uint32_t x[16];
@@ -314,6 +337,7 @@ static void md5_transform(uint32_t state[4], const uint8_t block[64]) {
 }
 
 /// @brief Initialise an MD5 context with the standard A/B/C/D IV constants.
+/// @param ctx Writable context to initialize.
 static void md5_init(MD5_CTX *ctx) {
     ctx->bit_count = 0;
     ctx->state[0] = 0x67452301;
@@ -323,6 +347,9 @@ static void md5_init(MD5_CTX *ctx) {
 }
 
 /// @brief Stream `len` bytes through the MD5 context, transforming whenever 64 bytes accumulate.
+/// @param ctx Initialized context to update.
+/// @param data Borrowed input bytes.
+/// @param len Number of bytes at @p data.
 static void md5_update(MD5_CTX *ctx, const uint8_t *data, size_t len) {
     size_t i, index, partLen;
 
@@ -352,6 +379,8 @@ static void md5_update(MD5_CTX *ctx, const uint8_t *data, size_t len) {
 }
 
 /// @brief Append MD-strengthening (0x80 + zeros + 64-bit length) and emit the 16-byte digest.
+/// @param digest Writable 16-byte output buffer.
+/// @param ctx Initialized context to finalize.
 static void md5_final(uint8_t digest[16], MD5_CTX *ctx) {
     static const uint8_t padding[64] = {0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                                         0,    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -379,6 +408,9 @@ static void md5_final(uint8_t digest[16], MD5_CTX *ctx) {
 }
 
 /// @brief One-shot MD5: init → update → final. Compute the 16-byte hash of `data`.
+/// @param data Borrowed message bytes.
+/// @param len Number of message bytes.
+/// @param digest Writable 16-byte digest buffer.
 static void compute_md5(const uint8_t *data, size_t len, uint8_t digest[16]) {
     MD5_CTX ctx;
     md5_init(&ctx);
@@ -390,10 +422,11 @@ static void compute_md5(const uint8_t *data, size_t len, uint8_t digest[16]) {
 // SHA1 Implementation (RFC 3174 / FIPS 180-1)
 //=============================================================================
 
+/// Incremental SHA-1 state following FIPS 180.
 typedef struct {
-    uint32_t state[5];
-    uint64_t bit_count;
-    uint8_t buffer[64];
+    uint32_t state[5]; ///< Five chaining words.
+    uint64_t bit_count; ///< Number of message bits consumed.
+    uint8_t buffer[64]; ///< Partial 512-bit input block.
 } SHA1_CTX;
 
 #define SHA1_ROL(value, bits) (((value) << (bits)) | ((value) >> (32 - (bits))))
@@ -402,6 +435,8 @@ typedef struct {
 ///
 /// Expands the 16-word block to 80 words via the message schedule,
 /// then runs the four 20-step rounds with rotating logical functions.
+/// @param state Five chaining words updated in place.
+/// @param buffer Complete 64-byte message block.
 static void sha1_transform(uint32_t state[5], const uint8_t buffer[64]) {
     uint32_t a, b, c, d, e;
     uint32_t w[80];
@@ -461,6 +496,7 @@ static void sha1_transform(uint32_t state[5], const uint8_t buffer[64]) {
 }
 
 /// @brief Initialise a SHA-1 context with the FIPS 180-4 IV.
+/// @param ctx Writable context to initialize.
 static void sha1_init(SHA1_CTX *ctx) {
     ctx->state[0] = 0x67452301;
     ctx->state[1] = 0xEFCDAB89;
@@ -471,6 +507,9 @@ static void sha1_init(SHA1_CTX *ctx) {
 }
 
 /// @brief Stream `len` bytes through the SHA-1 context (transforms whenever 64 bytes accumulate).
+/// @param ctx Initialized context to update.
+/// @param data Borrowed input bytes.
+/// @param len Number of bytes at @p data.
 static void sha1_update(SHA1_CTX *ctx, const uint8_t *data, size_t len) {
     size_t i, j;
 
@@ -495,6 +534,8 @@ static void sha1_update(SHA1_CTX *ctx, const uint8_t *data, size_t len) {
 }
 
 /// @brief Pad and emit the 20-byte SHA-1 digest.
+/// @param digest Writable 20-byte output buffer.
+/// @param ctx Initialized context to finalize.
 static void sha1_final(uint8_t digest[20], SHA1_CTX *ctx) {
     uint8_t finalcount[8];
     uint8_t c;
@@ -517,6 +558,9 @@ static void sha1_final(uint8_t digest[20], SHA1_CTX *ctx) {
 }
 
 /// @brief One-shot SHA-1: init → update → final.
+/// @param data Borrowed message bytes.
+/// @param len Number of message bytes.
+/// @param digest Writable 20-byte digest buffer.
 static void compute_sha1(const uint8_t *data, size_t len, uint8_t digest[20]) {
     SHA1_CTX ctx;
     sha1_init(&ctx);
@@ -528,12 +572,14 @@ static void compute_sha1(const uint8_t *data, size_t len, uint8_t digest[20]) {
 // SHA256 Implementation (RFC 6234 / FIPS 180-4)
 //=============================================================================
 
+/// Incremental SHA-256 state following FIPS 180-4.
 typedef struct {
-    uint32_t state[8];
-    uint64_t bitcount;
-    uint8_t buffer[64];
+    uint32_t state[8]; ///< Eight chaining words.
+    uint64_t bitcount; ///< Number of message bits consumed.
+    uint8_t buffer[64]; ///< Partial 512-bit input block.
 } SHA256_CTX;
 
+/// FIPS 180-4 SHA-256 round constants.
 static const uint32_t sha256_k[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -557,6 +603,8 @@ static const uint32_t sha256_k[64] = {
 /// Same shape as the SHA-1 transform but with the SHA-256 message
 /// schedule (W[16..63] from sigma0/sigma1 of earlier words) and 64
 /// rounds with K[0..63] constants.
+/// @param ctx Initialized context whose chaining state is updated.
+/// @param data Complete 64-byte message block.
 static void sha256_transform(SHA256_CTX *ctx, const uint8_t data[64]) {
     uint32_t a, b, c, d, e, f, g, h, t1, t2, m[64];
 
@@ -601,6 +649,7 @@ static void sha256_transform(SHA256_CTX *ctx, const uint8_t data[64]) {
 }
 
 /// @brief Initialise a SHA-256 context with the FIPS 180-4 IV constants.
+/// @param ctx Writable context to initialize.
 static void sha256_init(SHA256_CTX *ctx) {
     ctx->bitcount = 0;
     ctx->state[0] = 0x6a09e667;
@@ -614,6 +663,9 @@ static void sha256_init(SHA256_CTX *ctx) {
 }
 
 /// @brief Stream `len` bytes through the SHA-256 context.
+/// @param ctx Initialized context to update.
+/// @param data Borrowed input bytes.
+/// @param len Number of bytes at @p data.
 static void sha256_update(SHA256_CTX *ctx, const uint8_t *data, size_t len) {
     size_t idx = (size_t)(ctx->bitcount / 8 % 64);
     if (len > (UINT64_MAX - ctx->bitcount) / 8) {
@@ -640,6 +692,8 @@ static void sha256_update(SHA256_CTX *ctx, const uint8_t *data, size_t len) {
 }
 
 /// @brief Pad and emit the 32-byte SHA-256 digest.
+/// @param hash Writable 32-byte digest buffer.
+/// @param ctx Initialized context to finalize.
 static void sha256_final(uint8_t hash[32], SHA256_CTX *ctx) {
     size_t i = ctx->bitcount / 8 % 64;
 
@@ -669,6 +723,9 @@ static void sha256_final(uint8_t hash[32], SHA256_CTX *ctx) {
 }
 
 /// @brief One-shot SHA-256: init → update → final.
+/// @param data Borrowed message bytes.
+/// @param len Number of message bytes.
+/// @param hash Writable 32-byte digest buffer.
 static void compute_sha256(const uint8_t *data, size_t len, uint8_t hash[32]) {
     SHA256_CTX ctx;
     sha256_init(&ctx);
@@ -712,7 +769,8 @@ static void compute_sha256(const uint8_t *data, size_t len, uint8_t hash[32]) {
 /// Print "MD5: " & checksum
 /// ```
 ///
-/// @param str The string to hash. NULL is treated as empty string.
+/// @param str Borrowed non-null string to hash. Null or invalid handles trap
+///            and produce an empty fallback if trap recovery returns.
 ///
 /// @return A 32-character lowercase hex string representing the MD5 hash.
 ///
@@ -807,7 +865,8 @@ rt_string rt_hash_md5_bytes(void *bytes) {
 /// Print "SHA1: " & hash
 /// ```
 ///
-/// @param str The string to hash. NULL is treated as empty string.
+/// @param str Borrowed non-null string to hash. Null or invalid handles trap
+///            and produce an empty fallback if trap recovery returns.
 ///
 /// @return A 40-character lowercase hex string representing the SHA-1 hash.
 ///
@@ -877,7 +936,9 @@ rt_string rt_hash_sha1_bytes(void *bytes) {
 /// returns it as a 64-character lowercase hexadecimal string. SHA-256 is part
 /// of the SHA-2 family and is currently considered cryptographically secure.
 ///
-/// **This is the recommended hash function for security applications.**
+/// **This is the preferred digest primitive among the algorithms in this
+/// module. Use HMAC or a dedicated KDF when keyed or password-hard behavior is
+/// required.**
 ///
 /// **Use cases:**
 /// - Password hashing (with proper salting and key stretching)
@@ -915,7 +976,8 @@ rt_string rt_hash_sha1_bytes(void *bytes) {
 /// Dim hash = Hash.SHA256(saltedPassword)
 /// ```
 ///
-/// @param str The string to hash. NULL is treated as empty string.
+/// @param str Borrowed non-null string to hash. Null or invalid handles trap
+///            and produce an empty fallback if trap recovery returns.
 ///
 /// @return A 64-character lowercase hex string representing the SHA-256 hash.
 ///
@@ -942,10 +1004,10 @@ rt_string rt_hash_sha256(rt_string str) {
 ///
 /// Calculates the 256-bit SHA-256 message digest of binary data and returns it
 /// as a 64-character lowercase hexadecimal string. This is the recommended
-/// function for securely hashing binary data.
+/// function for computing a collision-resistant digest of binary data.
 ///
-/// **This is the recommended hash function for security applications
-/// involving binary data.**
+/// **For authenticated integrity, use the HMAC-SHA-256 entry point rather than
+/// an unkeyed digest.**
 ///
 /// **Usage example:**
 /// ```
@@ -1031,7 +1093,8 @@ rt_string rt_hash_sha256_bytes(void *bytes) {
 /// End If
 /// ```
 ///
-/// @param str The string to compute CRC32 for. NULL is treated as empty string.
+/// @param str Borrowed non-null string to checksum. Null or invalid handles
+///            trap and produce zero if trap recovery returns.
 ///
 /// @return The 32-bit CRC32 checksum as an integer (0 to 4294967295).
 ///
@@ -1108,20 +1171,25 @@ int64_t rt_hash_crc32_bytes(void *bytes) {
 // HMAC Implementation (RFC 2104)
 //=============================================================================
 
-#define HMAC_BLOCK_SIZE 64 // Block size for MD5, SHA1, SHA256
+/// Compression-block size shared by MD5, SHA-1, and SHA-256.
+#define HMAC_BLOCK_SIZE 64
 
+/// Hash primitive selected by the generic HMAC dispatch helpers.
 typedef enum { HMAC_HASH_MD5, HMAC_HASH_SHA1, HMAC_HASH_SHA256 } hmac_hash_alg_t;
 
+/// Storage large enough for any supported incremental hash context.
 typedef union {
-    MD5_CTX md5;
-    SHA1_CTX sha1;
-    SHA256_CTX sha256;
+    MD5_CTX md5;       ///< Active storage for HMAC-MD5.
+    SHA1_CTX sha1;     ///< Active storage for HMAC-SHA-1.
+    SHA256_CTX sha256; ///< Active storage for HMAC-SHA-256.
 } hmac_hash_ctx_t;
 
 /// @brief Return the digest length in bytes for the given hash algorithm tag.
 /// @details MD5 = 16, SHA-1 = 20, SHA-256 = 32. Used by callers that need to
 ///          allocate output buffers without baking per-algorithm constants
 ///          into their own code.
+/// @param alg Supported hash algorithm selector.
+/// @return Digest length in bytes, or zero for an unknown selector.
 static size_t hmac_digest_size(hmac_hash_alg_t alg) {
     switch (alg) {
         case HMAC_HASH_MD5:
@@ -1139,6 +1207,8 @@ static size_t hmac_digest_size(hmac_hash_alg_t alg) {
 ///          The shared union lets KDFs (PBKDF2, scrypt) hold one stack-
 ///          allocated context type and feed any of three algorithms into it
 ///          without per-algorithm specialization.
+/// @param alg Hash algorithm selector.
+/// @param ctx Writable union to initialize for @p alg.
 static void hmac_hash_init(hmac_hash_alg_t alg, hmac_hash_ctx_t *ctx) {
     switch (alg) {
         case HMAC_HASH_MD5:
@@ -1157,6 +1227,10 @@ static void hmac_hash_init(hmac_hash_alg_t alg, hmac_hash_ctx_t *ctx) {
 /// @details Dispatches by @p alg to md5_update / sha1_update / sha256_update.
 ///          NULL @p data with non-zero @p len traps; NULL @p data with zero
 ///          @p len is normalized to a one-byte empty buffer for safety.
+/// @param alg Hash algorithm active in @p ctx.
+/// @param ctx Initialized hash context to update.
+/// @param data Borrowed input byte range.
+/// @param len Number of bytes at @p data.
 static void hmac_hash_update(hmac_hash_alg_t alg,
                              hmac_hash_ctx_t *ctx,
                              const uint8_t *data,
@@ -1183,6 +1257,9 @@ static void hmac_hash_update(hmac_hash_alg_t alg,
 /// @brief Finalize the hash and write the digest to @p digest.
 /// @details Dispatches by @p alg to md5_final / sha1_final / sha256_final.
 ///          @p digest must have at least hmac_digest_size(alg) bytes capacity.
+/// @param alg Hash algorithm active in @p ctx.
+/// @param ctx Initialized hash context to finalize.
+/// @param digest Writable output with capacity for the selected digest.
 static void hmac_hash_final(hmac_hash_alg_t alg, hmac_hash_ctx_t *ctx, uint8_t *digest) {
     switch (alg) {
         case HMAC_HASH_MD5:
@@ -1201,6 +1278,10 @@ static void hmac_hash_final(hmac_hash_alg_t alg, hmac_hash_ctx_t *ctx, uint8_t *
 /// @details Convenience wrapper for the common pattern of hashing a single
 ///          input buffer in one go. Securely zeros the context after final
 ///          so any sensitive intermediate state doesn't linger on the stack.
+/// @param alg Hash algorithm to apply.
+/// @param data Borrowed input byte range.
+/// @param len Number of bytes at @p data.
+/// @param digest Writable output with capacity for the selected digest.
 static void hmac_hash_once(hmac_hash_alg_t alg, const uint8_t *data, size_t len, uint8_t *digest) {
     hmac_hash_ctx_t ctx;
     hmac_hash_init(alg, &ctx);
@@ -1216,6 +1297,9 @@ static void hmac_hash_once(hmac_hash_alg_t alg, const uint8_t *data, size_t len,
 /// @param data Data to authenticate.
 /// @param data_len Length of data in bytes.
 /// @param out Output buffer (must be at least digest_size bytes).
+/// @details Implements RFC 2104 key normalization plus inner and outer hash
+///          passes. All padded keys, hash contexts, and intermediate digest
+///          bytes are securely erased before return. Invalid pointers trap.
 static void hmac_compute(hmac_hash_alg_t alg,
                          const uint8_t *key,
                          size_t key_len,
@@ -1277,18 +1361,33 @@ static void hmac_compute(hmac_hash_alg_t alg,
 }
 
 /// @brief Compute HMAC-MD5 with raw bytes.
+/// @param key Borrowed key bytes.
+/// @param key_len Number of key bytes.
+/// @param data Borrowed message bytes.
+/// @param data_len Number of message bytes.
+/// @param out Writable 16-byte MAC buffer.
 static void hmac_md5_raw(
     const uint8_t *key, size_t key_len, const uint8_t *data, size_t data_len, uint8_t out[16]) {
     hmac_compute(HMAC_HASH_MD5, key, key_len, data, data_len, out);
 }
 
 /// @brief Compute HMAC-SHA1 with raw bytes.
+/// @param key Borrowed key bytes.
+/// @param key_len Number of key bytes.
+/// @param data Borrowed message bytes.
+/// @param data_len Number of message bytes.
+/// @param out Writable 20-byte MAC buffer.
 static void hmac_sha1_raw(
     const uint8_t *key, size_t key_len, const uint8_t *data, size_t data_len, uint8_t out[20]) {
     hmac_compute(HMAC_HASH_SHA1, key, key_len, data, data_len, out);
 }
 
 /// @brief Compute HMAC-SHA256 with raw bytes (exported for PBKDF2).
+/// @param key Borrowed key bytes.
+/// @param key_len Number of key bytes.
+/// @param data Borrowed message bytes.
+/// @param data_len Number of message bytes.
+/// @param out Writable 32-byte MAC buffer.
 void rt_hash_hmac_sha256_raw(
     const uint8_t *key, size_t key_len, const uint8_t *data, size_t data_len, uint8_t out[32]) {
     hmac_compute(HMAC_HASH_SHA256, key, key_len, data, data_len, out);
@@ -1299,6 +1398,13 @@ void rt_hash_hmac_sha256_raw(
 //=============================================================================
 
 /// @brief Compute HMAC-MD5 of string data with string key.
+/// @details Invalid or null strings trap. MD5 policy restrictions also trap in
+///          approved mode. If trap recovery returns, an empty string is used
+///          as the failure sentinel.
+/// @param key Borrowed non-null key string.
+/// @param data Borrowed non-null message string.
+/// @return Newly allocated 32-character lowercase hexadecimal MAC, or an
+///         empty fallback string after a trapped error.
 rt_string rt_hash_hmac_md5(rt_string key, rt_string data) {
     if (!hash_require_service(RT_CRYPTO_SERVICE_MD5, "Hash.HmacMD5 is disabled in approved mode"))
         return rt_const_cstr("");
@@ -1315,6 +1421,12 @@ rt_string rt_hash_hmac_md5(rt_string key, rt_string data) {
 }
 
 /// @brief Compute HMAC-MD5 of Bytes data with Bytes key.
+/// @details Null Bytes references represent empty buffers. Invalid object
+///          types and approved-mode MD5 policy violations trap.
+/// @param key Borrowed Bytes key, or null for an empty key.
+/// @param data Borrowed Bytes message, or null for empty input.
+/// @return Newly allocated 32-character lowercase hexadecimal MAC, or an
+///         empty fallback string after a trapped error.
 rt_string rt_hash_hmac_md5_bytes(void *key, void *data) {
     if (!hash_require_service(RT_CRYPTO_SERVICE_MD5,
                               "Hash.HmacMD5Bytes is disabled in approved mode"))
@@ -1335,6 +1447,12 @@ rt_string rt_hash_hmac_md5_bytes(void *key, void *data) {
 }
 
 /// @brief Compute HMAC-SHA1 of string data with string key.
+/// @details Invalid or null strings trap. SHA-1 policy restrictions also trap
+///          in approved mode.
+/// @param key Borrowed non-null key string.
+/// @param data Borrowed non-null message string.
+/// @return Newly allocated 40-character lowercase hexadecimal MAC, or an
+///         empty fallback string after a trapped error.
 rt_string rt_hash_hmac_sha1(rt_string key, rt_string data) {
     if (!hash_require_service(RT_CRYPTO_SERVICE_SHA1, "Hash.HmacSHA1 is disabled in approved mode"))
         return rt_const_cstr("");
@@ -1351,6 +1469,12 @@ rt_string rt_hash_hmac_sha1(rt_string key, rt_string data) {
 }
 
 /// @brief Compute HMAC-SHA1 of Bytes data with Bytes key.
+/// @details Null Bytes references represent empty buffers. Invalid object
+///          types and approved-mode SHA-1 policy violations trap.
+/// @param key Borrowed Bytes key, or null for an empty key.
+/// @param data Borrowed Bytes message, or null for empty input.
+/// @return Newly allocated 40-character lowercase hexadecimal MAC, or an
+///         empty fallback string after a trapped error.
 rt_string rt_hash_hmac_sha1_bytes(void *key, void *data) {
     if (!hash_require_service(RT_CRYPTO_SERVICE_SHA1,
                               "Hash.HmacSHA1Bytes is disabled in approved mode"))
@@ -1372,6 +1496,12 @@ rt_string rt_hash_hmac_sha1_bytes(void *key, void *data) {
 }
 
 /// @brief Compute HMAC-SHA256 of string data with string key.
+/// @details Both arguments must be valid runtime strings; null or invalid
+///          handles trap and yield an empty fallback if recovery returns.
+/// @param key Borrowed non-null key string.
+/// @param data Borrowed non-null message string.
+/// @return Newly allocated 64-character lowercase hexadecimal MAC, or an
+///         empty fallback string after a trapped error.
 rt_string rt_hash_hmac_sha256(rt_string key, rt_string data) {
     size_t key_len, data_len;
     int key_ok, data_ok;
@@ -1386,6 +1516,12 @@ rt_string rt_hash_hmac_sha256(rt_string key, rt_string data) {
 }
 
 /// @brief Compute HMAC-SHA256 of Bytes data with Bytes key.
+/// @details Null Bytes references represent empty buffers; invalid non-null
+///          runtime objects trap.
+/// @param key Borrowed Bytes key, or null for an empty key.
+/// @param data Borrowed Bytes message, or null for empty input.
+/// @return Newly allocated 64-character lowercase hexadecimal MAC, or an
+///         empty fallback string after a trapped error.
 rt_string rt_hash_hmac_sha256_bytes(void *key, void *data) {
     size_t key_len, data_len;
     int key_ok, data_ok;
@@ -1411,6 +1547,10 @@ rt_string rt_hash_hmac_sha256_bytes(void *key, void *data) {
 ///          byte XOR into a single accumulator, so the running time depends
 ///          only on the input length — never on where (or how many) bytes
 ///          differ.
+/// @param a Borrowed first byte range.
+/// @param a_len Number of bytes at @p a.
+/// @param b Borrowed second byte range.
+/// @param b_len Number of bytes at @p b.
 /// @return 1 if equal, 0 if not (or if lengths differ).
 static int8_t fixed_time_eq(const uint8_t *a, size_t a_len, const uint8_t *b, size_t b_len) {
     uint8_t diff = 0;
@@ -1430,6 +1570,8 @@ static int8_t fixed_time_eq(const uint8_t *a, size_t a_len, const uint8_t *b, si
 ///          correct. Used internally by Password.Verify and exposed for
 ///          application code comparing MAC tags or session IDs where a
 ///          standard `==` would leak prefix-equality timing.
+/// @param a Borrowed first non-null runtime string.
+/// @param b Borrowed second non-null runtime string.
 /// @return 1 if the strings are byte-for-byte equal, 0 otherwise.
 int8_t rt_hash_constant_time_equals(rt_string a, rt_string b) {
     size_t a_len, b_len;
@@ -1445,6 +1587,8 @@ int8_t rt_hash_constant_time_equals(rt_string a, rt_string b) {
 /// @details Same semantics as rt_hash_constant_time_equals but for raw byte
 ///          arrays. NULL is treated as an empty byte array; invalid non-empty
 ///          Bytes objects trap instead of being silently compared as empty.
+/// @param a Borrowed first Bytes object, or null for an empty buffer.
+/// @param b Borrowed second Bytes object, or null for an empty buffer.
 /// @return 1 if the buffers are byte-for-byte equal, 0 otherwise.
 int8_t rt_hash_constant_time_equals_bytes(void *a, void *b) {
     size_t a_len, b_len;
@@ -1461,14 +1605,18 @@ int8_t rt_hash_constant_time_equals_bytes(void *a, void *b) {
 }
 
 //=============================================================================
-// Fast Keyed Non-Cryptographic Hash (SipHash-2-4)
+// Fast Per-Process-Keyed Hash (SipHash-2-4)
 //=============================================================================
 
 #include "rt_hash_util.h"
 
-/// @brief Compute fast per-process keyed hash of a string.
-/// @param str Input string.
-/// @return 64-bit hash value.
+/// @brief Compute a per-process-keyed SipHash-2-4 value for a string.
+/// @details The historical helper name `rt_fnv1a` aliases the runtime's
+///          SipHash implementation. Null or invalid strings trap rather than
+///          denoting empty input. Approved-mode policy disables this service.
+/// @param str Borrowed non-null input string.
+/// @return SipHash bit pattern reinterpreted as signed 64-bit, or zero after a
+///         policy/input trap. Values are stable only within one process run.
 int64_t rt_hash_fast(rt_string str) {
     if (!hash_require_service(RT_CRYPTO_SERVICE_SIPHASH, "Hash.Fast is disabled in approved mode"))
         return 0;
@@ -1480,9 +1628,10 @@ int64_t rt_hash_fast(rt_string str) {
     return (int64_t)rt_fnv1a(data, len);
 }
 
-/// @brief Compute fast per-process keyed hash of a Bytes object.
-/// @param bytes Input Bytes object.
-/// @return 64-bit hash value.
+/// @brief Compute a per-process-keyed SipHash-2-4 value for a Bytes object.
+/// @param bytes Borrowed input Bytes object, or null for an empty buffer.
+/// @return SipHash bit pattern reinterpreted as signed 64-bit, or zero after a
+///         policy/type trap. Values are stable only within one process run.
 int64_t rt_hash_fast_bytes(void *bytes) {
     if (!hash_require_service(RT_CRYPTO_SERVICE_SIPHASH,
                               "Hash.FastBytes is disabled in approved mode"))
@@ -1499,9 +1648,10 @@ int64_t rt_hash_fast_bytes(void *bytes) {
     return result;
 }
 
-/// @brief Compute fast per-process keyed hash of an integer value.
-/// @param value Input integer.
-/// @return 64-bit hash value.
+/// @brief Compute keyed SipHash-2-4 over an integer's little-endian bytes.
+/// @param value Signed integer whose two's-complement bit pattern is encoded.
+/// @return SipHash bit pattern reinterpreted as signed 64-bit, or zero after a
+///         policy trap. Values are stable only within one process run.
 int64_t rt_hash_fast_int(int64_t value) {
     if (!hash_require_service(RT_CRYPTO_SERVICE_SIPHASH,
                               "Hash.FastInt is disabled in approved mode"))

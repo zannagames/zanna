@@ -5,9 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the syntax highlighting system for Zanna's TUI
-// editor. SyntaxRuleSet manages a collection of regex-based highlighting
-// rules and provides per-line span computation with caching.
+/// @file
+/// @brief Declares regex-driven syntax highlighting with per-line caching.
+/// @details SyntaxRuleSet loads pattern/style pairs, computes highlighted byte
+///          spans in registration order, and reuses results while a line's
+///          content remains unchanged.
 //
 // Each SyntaxRule pairs a regular expression pattern with a render Style.
 // When a line is queried, all rules are applied to produce a list of
@@ -86,7 +88,8 @@ class SyntaxRuleSet {
     void invalidate(std::size_t lineNo);
 
   private:
-    std::vector<SyntaxRule> rules_{};
+    std::vector<SyntaxRule> rules_{}; ///< Highlighting rules in application order.
+    /// @brief Cached source text and spans keyed by zero-based line number.
     std::unordered_map<std::size_t, std::pair<std::string, std::vector<Span>>> cache_{};
 };
 

@@ -31,6 +31,14 @@
 //        src/runtime/io/rt_path_exe.c
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares the process-wide layered asset manager.
+ * @details Provides initialization, typed or raw loading, existence and size
+ * queries, enumeration, and dynamic ZPAK mounting. Resolution snapshots
+ * embedded, mounted, or loose-file sources while retaining any selected pack
+ * through the complete load.
+ */
 
 #pragma once
 

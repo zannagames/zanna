@@ -28,6 +28,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Defines locale-loader arena ownership and plural-parser boundaries.
+ * @details Shares the allocation tracking structures, zeroed arena allocator,
+ * and bounded CLDR plural-rule parser used to build one disposable graph for
+ * every dynamically loaded locale record.
+ */
+
 #pragma once
 
 #include <stddef.h>

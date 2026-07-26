@@ -18,6 +18,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares cross-module linkage for IL functions and globals.
+ *
+ * @details Linkage distinguishes module-private definitions, definitions
+ *          exported for other modules, and declarations imported for linker
+ *          resolution. The accompanying formatter provides the stable
+ *          lowercase spelling used by diagnostics and textual tooling.
+ */
+
 #pragma once
 
 namespace il::core {

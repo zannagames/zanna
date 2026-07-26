@@ -29,6 +29,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements locale-bound translation bundles and interpolation.
+ * @details Owns validated string maps, resolves direct and locale-qualified
+ * keys through bounded acyclic fallback chains, expands named and positional
+ * placeholders, and selects cardinal plural variants with localized digits.
+ */
+
 #include "rt_message_bundle.h"
 
 #include "rt_asset.h"
@@ -57,15 +65,19 @@
 // Forward declarations for optional external helpers
 //===----------------------------------------------------------------------===//
 
+/// @copydoc rt_io_file_read_all_text()
 extern rt_string rt_io_file_read_all_text(rt_string path);
+/// @copydoc rt_json_parse_object()
 extern void *rt_json_parse_object(rt_string text);
 
 //===----------------------------------------------------------------------===//
 // Instance struct
 //===----------------------------------------------------------------------===//
 
+/** Maximum number of MessageBundle nodes inspected during one chain walk. */
 #define RT_MSG_BUNDLE_MAX_DEPTH 16
 
+/** GC payload for a locale-bound translation map and optional fallback. */
 typedef struct rt_message_bundle {
     void *locale;                 ///< Locale handle; strong ref through GC
     const rt_locale_data_t *data; ///< retained locale data for plural lookup

@@ -20,6 +20,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements fail-closed validation for branded Windows installer models.
+/// @details Text, identifiers, action relationships, and progress callbacks are
+///          checked before the native dialog layer allocates any resources.
+
 #include "WindowsInstallerBrandValidation.hpp"
 
 #include <algorithm>
@@ -46,16 +51,30 @@ constexpr size_t kMaximumActionCount = 12U;
 constexpr int kMaximumNativeControlId = 0xFFFF;
 constexpr std::array<int, 8> kInternalControlIds = {3101, 3102, 3103, 3104, 3105, 3106, 3107, 3108};
 
+/// @brief Test whether a UTF-16 code unit begins a surrogate pair.
+/// @param value Code unit to classify.
+/// @return `true` when @p value is in the high-surrogate range.
 bool isHighSurrogate(wchar_t value) noexcept {
     const unsigned codeUnit = static_cast<unsigned>(value);
     return codeUnit >= 0xD800U && codeUnit <= 0xDBFFU;
 }
 
+/// @brief Test whether a UTF-16 code unit completes a surrogate pair.
+/// @param value Code unit to classify.
+/// @return `true` when @p value is in the low-surrogate range.
 bool isLowSurrogate(wchar_t value) noexcept {
     const unsigned codeUnit = static_cast<unsigned>(value);
     return codeUnit >= 0xDC00U && codeUnit <= 0xDFFFU;
 }
 
+/// @brief Validate one native installer text field before creating controls.
+/// @details Enforces required-field and length constraints, rejects embedded
+///          NULs, and verifies that every UTF-16 surrogate is correctly paired.
+/// @param field Human-readable field name included in validation errors.
+/// @param value Borrowed UTF-16 text to validate.
+/// @param maximumUnits Maximum permitted number of UTF-16 code units.
+/// @param required Whether an empty value is invalid.
+/// @throws std::runtime_error If any text constraint is violated.
 void validateText(std::string_view field,
                   std::wstring_view value,
                   size_t maximumUnits,
@@ -79,12 +98,22 @@ void validateText(std::string_view field,
     }
 }
 
+/// @brief Test whether a branded page declares an action with a given identifier.
+/// @param page Page model whose action list is searched.
+/// @param id Native control identifier to locate.
+/// @return `true` when one action has identifier @p id.
 bool containsAction(const BrandedInstallerPage &page, int id) noexcept {
+    /// @brief Test whether one page action has the requested control identifier.
+    /// @param action Action definition to inspect.
+    /// @return `true` when the action identifier equals the captured identifier.
     return std::any_of(page.actions.begin(), page.actions.end(), [id](const auto &action) {
         return action.id == id;
     });
 }
 
+/// @brief Test whether an identifier belongs to cancellation or internal controls.
+/// @param id Native control identifier to classify.
+/// @return `true` when callers must not assign @p id to a page action.
 bool isReservedControlId(int id) noexcept {
     return id == IDCANCEL ||
            std::find(kInternalControlIds.begin(), kInternalControlIds.end(), id) !=
@@ -93,6 +122,13 @@ bool isReservedControlId(int id) noexcept {
 
 } // namespace
 
+/// @brief Validate a branded installer page before allocating native resources.
+/// @details Requires a module instance and a bounded, unambiguous action model;
+///          validates all visible text and ensures default, close, and
+///          verification behavior refers to declared actions.
+/// @param instance Module instance that will own the native dialog.
+/// @param page Borrowed branded page model to validate.
+/// @throws std::runtime_error If the model cannot be represented safely.
 void validateBrandedInstallerPage(HINSTANCE instance, const BrandedInstallerPage &page) {
     if (!instance)
         throw std::runtime_error("branded setup page requires a module instance");
@@ -141,6 +177,17 @@ void validateBrandedInstallerPage(HINSTANCE instance, const BrandedInstallerPage
         throw std::runtime_error("branded setup verification action has no checkbox text");
 }
 
+/// @brief Validate the branded progress page and its work callback.
+/// @details Applies the same bounded UTF-16 rules used by ordinary branded
+///          pages and requires both a native module instance and executable
+///          work before window creation begins.
+/// @param instance Module instance that will own the native progress dialog.
+/// @param windowTitle Native window title.
+/// @param eyebrow Optional short context label above the heading.
+/// @param heading Required primary progress heading.
+/// @param body Optional explanatory body text.
+/// @param work Callback that performs the installer operation.
+/// @throws std::runtime_error If required state is missing or text is invalid.
 void validateBrandedInstallerProgress(HINSTANCE instance,
                                       std::wstring_view windowTitle,
                                       std::wstring_view eyebrow,

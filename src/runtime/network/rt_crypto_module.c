@@ -23,6 +23,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements the process-global cryptographic policy module.
+ * @details Serializes mode and lifecycle transitions, runs power-up known-
+ * answer tests, gates services in approved mode, and instantiates, reseeds,
+ * and generates from a zero-allocation HMAC-SHA-256 DRBG.
+ */
+
 #include "rt_crypto_module.h"
 
 #include "rt_crypto.h"
@@ -45,20 +53,28 @@
 
 /// @brief Process-global HMAC-SHA-256 DRBG state.
 typedef struct rt_hmac_drbg_state {
-    uint8_t k[32];
-    uint8_t v[32];
-    uint64_t reseed_counter;
-    int ready;
+    uint8_t k[32];           ///< Current HMAC key.
+    uint8_t v[32];           ///< Current generated-value state.
+    uint64_t reseed_counter; ///< Generate requests since the last seed.
+    int ready;               ///< Whether the state has been instantiated.
 } rt_hmac_drbg_state_t;
 
+/** Entropy bytes consumed when instantiating or reseeding the DRBG. */
 #define RT_HMAC_DRBG_SEED_LEN 48
+/** Maximum bytes produced by one NIST DRBG Generate request. */
 #define RT_HMAC_DRBG_MAX_REQUEST 65536u
+/** NIST request-count ceiling before mandatory reseeding. */
 #define RT_HMAC_DRBG_RESEED_INTERVAL (UINT64_C(1) << 48)
 
+/** Current process-global cryptographic operating mode. */
 static rt_crypto_module_mode_t g_mode = RT_CRYPTO_MODULE_MODE_COMPAT;
+/** Current process-global module lifecycle state. */
 static rt_crypto_module_state_t g_state = RT_CRYPTO_MODULE_STATE_UNINITIALIZED;
+/** Process-lifetime diagnostic corresponding to the current lifecycle state. */
 static const char *g_status = "uninitialized";
+/** Process-global HMAC-DRBG state protected by @ref g_module_lock. */
 static rt_hmac_drbg_state_t g_drbg;
+/** Atomic flag serializing all module state and DRBG access. */
 static volatile int g_module_lock = 0;
 
 /// @brief Yield the processor while waiting for the crypto module lock.

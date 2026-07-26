@@ -27,6 +27,14 @@
 // Links: src/runtime/io/rt_path.c (implementation), src/runtime/core/rt_string.h
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares cross-platform lexical and filesystem path utilities.
+ * @details Exposes joining, component extraction, extension replacement,
+ * lexical normalization, absolute-path conversion, final-component link
+ * inspection, native separator lookup, and executable-directory discovery
+ * with explicit managed versus malloc-owned return contracts.
+ */
 #pragma once
 
 #include "rt_string.h"

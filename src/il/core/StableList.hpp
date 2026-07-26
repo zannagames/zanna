@@ -20,6 +20,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Defines an owning random-access container with stable element addresses.
+ *
+ * @details `StableList` separates logical order from object storage: a vector
+ *          orders pointers into fixed-address pooled slots. Growing, inserting,
+ *          or erasing unrelated elements may invalidate iterators like a
+ *          vector operation, but never relocates surviving objects. Erased
+ *          slots return to an internal free list for later construction.
+ */
+
 #pragma once
 
 #include <algorithm>
@@ -44,8 +55,11 @@ namespace il::core {
 ///          not moved by unrelated container mutations.
 /// @tparam T Element type owned by the list.
 template <class T> class StableList {
+    /// @brief One fixed-address pooled storage location for an optional element.
     struct Slot {
+        /// @brief Constructed element while the slot is live.
         std::optional<T> value;
+        /// @brief Next unused slot when this slot belongs to the free list.
         Slot *nextFree{nullptr};
 
         /// @brief Access the live value stored in this slot.
@@ -61,23 +75,35 @@ template <class T> class StableList {
         }
     };
 
+    /// @brief One owned allocation containing a fixed number of pooled slots.
     struct Chunk {
+        /// @brief Contiguous array whose slot addresses remain stable.
         std::unique_ptr<Slot[]> slots;
+        /// @brief Number of slots allocated in @ref slots.
         std::size_t size{0};
     };
 
+    /// @brief Logical-order storage of pointers to live pooled slots.
     using Storage = std::vector<Slot *>;
 
+    /// @brief Random-access iterator adapting a slot-vector iterator to `T`.
+    /// @tparam IsConst Whether dereference exposes const-qualified elements.
     template <bool IsConst> class IteratorBase {
+        /// @brief Backing iterator type selected from the constness of this adapter.
         using StorageIterator = std::conditional_t<IsConst,
                                                    typename Storage::const_iterator,
                                                    typename Storage::iterator>;
 
       public:
+        /// @brief Standard iterator category for random-access operations.
         using iterator_category = std::random_access_iterator_tag;
+        /// @brief Signed distance type inherited from the slot-vector iterator.
         using difference_type = typename StorageIterator::difference_type;
+        /// @brief Element type exposed by the iterator.
         using value_type = T;
+        /// @brief Const-qualified or mutable element reference type.
         using reference = std::conditional_t<IsConst, const T &, T &>;
+        /// @brief Const-qualified or mutable element pointer type.
         using pointer = std::conditional_t<IsConst, const T *, T *>;
 
         /// @brief Construct a singular iterator.
@@ -228,20 +254,32 @@ template <class T> class StableList {
         /// @param it Backing slot-vector position.
         explicit IteratorBase(StorageIterator it) : it_(it) {}
 
+        /// @brief Current logical position in the live-slot vector.
         StorageIterator it_{};
     };
 
   public:
+    /// @brief Type of elements owned by the container.
     using value_type = T;
+    /// @brief Unsigned size and index type.
     using size_type = typename Storage::size_type;
+    /// @brief Signed iterator-distance type.
     using difference_type = typename Storage::difference_type;
+    /// @brief Mutable element reference type.
     using reference = T &;
+    /// @brief Read-only element reference type.
     using const_reference = const T &;
+    /// @brief Mutable element pointer type.
     using pointer = T *;
+    /// @brief Read-only element pointer type.
     using const_pointer = const T *;
+    /// @brief Mutable random-access iterator type.
     using iterator = IteratorBase<false>;
+    /// @brief Read-only random-access iterator type.
     using const_iterator = IteratorBase<true>;
+    /// @brief Mutable reverse iterator type.
     using reverse_iterator = std::reverse_iterator<iterator>;
+    /// @brief Read-only reverse iterator type.
     using const_reverse_iterator = std::reverse_iterator<const_iterator>;
 
     /// @brief Construct an empty list.
@@ -323,31 +361,37 @@ template <class T> class StableList {
     }
 
     /// @brief Return an iterator to the first element.
+    /// @return Mutable iterator equal to end() when the list is empty.
     iterator begin() noexcept {
         return iterator(slots_.begin());
     }
 
     /// @brief Return an iterator one past the last element.
+    /// @return Mutable past-the-end iterator.
     iterator end() noexcept {
         return iterator(slots_.end());
     }
 
     /// @brief Return a const iterator to the first element.
+    /// @return Read-only iterator equal to end() when the list is empty.
     const_iterator begin() const noexcept {
         return const_iterator(slots_.begin());
     }
 
     /// @brief Return a const iterator one past the last element.
+    /// @return Read-only past-the-end iterator.
     const_iterator end() const noexcept {
         return const_iterator(slots_.end());
     }
 
     /// @brief Return a const iterator to the first element.
+    /// @return Read-only iterator equal to cend() when the list is empty.
     const_iterator cbegin() const noexcept {
         return begin();
     }
 
     /// @brief Return a const iterator one past the last element.
+    /// @return Read-only past-the-end iterator.
     const_iterator cend() const noexcept {
         return end();
     }
@@ -608,6 +652,7 @@ template <class T> class StableList {
     }
 
   private:
+    /// @brief Minimum allocation granularity for pooled storage growth.
     static constexpr size_type kSlotsPerChunk = 64;
 
     /// @brief Grow pooled slot storage until at least @p requested slots are free.
@@ -705,9 +750,13 @@ template <class T> class StableList {
         other.freeCount_ = 0;
     }
 
+    /// @brief Live slots in logical sequence order.
     Storage slots_;
+    /// @brief Owning allocations that keep every slot address stable.
     std::vector<Chunk> chunks_;
+    /// @brief Head of the singly linked free-slot list.
     Slot *free_{nullptr};
+    /// @brief Number of slots currently reachable from @ref free_.
     size_type freeCount_{0};
 };
 

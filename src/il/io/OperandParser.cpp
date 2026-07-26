@@ -480,6 +480,8 @@ Expected<void> OperandParser::parseCallOperands(const std::string &text) {
 
 /// @brief Parse call.indirect operands: %fnPtr(%arg1, %arg2, ...).
 /// @details First operand is function pointer, remaining are arguments in parens.
+/// @param text Operand text beginning with the indirect function value or signature.
+/// @return Success after populating the instruction, or a structured parse diagnostic.
 Expected<void> OperandParser::parseCallIndirectOperands(const std::string &text) {
     std::string work = trim(text);
     if (!work.empty() && work.front() == '[') {

@@ -19,6 +19,16 @@
 // Links: src/runtime/graphics/input/rt_inputmgr.c (implementation), src/runtime/graphics/input/rt_input.h
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares the high-level debounced and unified InputManager API.
+ *
+ * @details InputManager delegates frame edges and levels to keyboard, mouse,
+ *          and gamepad state, adds per-key debounce timing, and combines common
+ *          navigation, confirm/cancel, and analog-axis intents across devices.
+ */
+
 #pragma once
 
 #include "rt_string.h"
@@ -28,7 +38,7 @@
 extern "C" {
 #endif
 
-/// Opaque handle to an InputManager instance.
+/// @brief Opaque handle to a GC-managed InputManager instance.
 typedef struct rt_inputmgr_impl *rt_inputmgr;
 
 /// @brief Allocates and initializes a new InputManager instance.

@@ -189,6 +189,7 @@ Lowerer::CtrlState Lowerer::emitDo(const DoStmt &stmt) {
     state.after = done;
     ctx.setCurrentByIndex(currentIdx);
     ctx.loopState().push(done);
+    /// @brief Emits the DO-loop header and its condition-controlled branch.
     auto emitHead = [&]() {
         func = ctx.function();
         if (func->blocks[headIdx].label.empty())

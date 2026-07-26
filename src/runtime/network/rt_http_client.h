@@ -18,6 +18,15 @@
 // Links: rt_http_client.c (implementation), rt_network_http.c (transport)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares synchronized stateful HttpClient session services.
+ * @details Defines session construction, method-specific requests, persistent
+ * validated headers and cookies, timeouts and redirect policy, transactional
+ * keep-alive pooling, and caller-owned cookie snapshots and responses.
+ */
+
 #pragma once
 
 #include "rt_string.h"

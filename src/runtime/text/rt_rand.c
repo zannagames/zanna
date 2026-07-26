@@ -18,15 +18,26 @@
 //     rejection sampling.
 //   - Failure to read from the CSPRNG traps with a descriptive error.
 //   - Direct platform calls and approved DRBG access are thread-safe. The cached
-//     non-Apple POSIX `/dev/urandom` descriptor has a known first-use data race.
+//     non-Apple POSIX `/dev/urandom` descriptor uses acquire/release publication
+//     plus a mutex for first-use initialization.
 //
 // Ownership/Lifetime:
 //   - All returned rt_string and rt_bytes values are fresh allocations.
 //
 // Links: src/runtime/text/rt_rand.h (public API),
-//        src/runtime/text/rt_guid.h (UUID generation uses the same CSPRNG)
+//        src/runtime/network/rt_crypto_module.h (approved-mode DRBG),
+//        src/runtime/collections/rt_bytes.h (returned byte container)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_rand.c
+ * @brief Implements cryptographically secure random Bytes and integers.
+ * @details Compatibility mode reads platform CSPRNG sources and approved mode
+ *          delegates to the locked module HMAC-DRBG. Byte requests allocate
+ *          exact managed output, while inclusive signed-integer ranges use
+ *          rejection sampling to eliminate modulo bias.
+ */
 
 #include "rt_rand.h"
 
@@ -92,6 +103,9 @@ static int rand_urandom_fd(void) {
 }
 #endif
 
+/// @brief Overwrite a temporary random-byte buffer without dead-store removal.
+/// @param ptr Writable buffer to clear.
+/// @param len Number of bytes to overwrite.
 static void rand_secure_zero(void *ptr, size_t len) {
     volatile uint8_t *p = (volatile uint8_t *)ptr;
     while (len-- > 0)
@@ -202,7 +216,15 @@ static int secure_random_fill(uint8_t *buf, size_t len) {
 #endif
 }
 
-/// @brief Generate cryptographically secure random bytes.
+/// @brief Generate a caller-selected number of cryptographically secure bytes.
+/// @details Zero returns a newly allocated empty Bytes object. A negative or
+///          unrepresentable count, temporary allocation failure, or entropy
+///          failure traps and returns an empty Bytes object if trap recovery
+///          resumes execution. Successful output is copied into a runtime Bytes
+///          container before the temporary buffer is cleared.
+/// @param count Number of bytes to generate.
+/// @return Caller-owned Bytes object containing exactly @p count random bytes
+///         on success, or an empty Bytes object after a recoverable trap.
 void *rt_crypto_rand_bytes(int64_t count) {
     if (count < 0) {
         rt_trap("Rand.Bytes: count must not be negative");
@@ -239,13 +261,15 @@ void *rt_crypto_rand_bytes(int64_t count) {
 }
 
 /// @brief Generate a cryptographically secure random integer in range [min, max].
-///
-/// Uses rejection sampling to ensure uniform distribution without bias.
-/// The algorithm:
-/// 1. Calculate the range size
-/// 2. Find the smallest power of 2 >= range
-/// 3. Generate random values in [0, 2^k) and reject if >= range
-/// 4. Add min to get final result
+/// @details Computes the inclusive width in unsigned arithmetic, masks each
+///          random 64-bit candidate to the smallest covering bit width, and
+///          rejects candidates outside the range. A zero unsigned width denotes
+///          the complete 64-bit signed domain. If @p min exceeds @p max the
+///          function traps and returns @p min only if trap recovery resumes;
+///          entropy failure traps and aborts.
+/// @param min Inclusive lower bound.
+/// @param max Inclusive upper bound.
+/// @return Uniformly distributed integer in `[@p min, @p max]`.
 int64_t rt_crypto_rand_int(int64_t min, int64_t max) {
     if (min > max) {
         rt_trap("Rand.Int: min must not be greater than max");

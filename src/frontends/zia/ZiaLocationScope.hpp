@@ -12,6 +12,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares lexical source-location restoration for the Zia lowerer.
+/// @details ZiaLocationScope borrows one Lowerer, captures its current
+///          diagnostic/emission location, installs a temporary value, and
+///          restores the capture deterministically on destruction.
+
 #pragma once
 
 #include "support/source_location.hpp"

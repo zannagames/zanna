@@ -202,8 +202,8 @@ void buildNamespaceRegistry(const Program &program,
     // Segments are pushed when entering NAMESPACE blocks and popped when exiting.
     std::vector<std::string> nsStack;
 
-    // Helper lambda to join namespace segments with dots.
-    // Example: ["Zanna", "Graphics"] -> "Zanna.Graphics"
+    /// @brief Joins active namespace segments with dots.
+    /// @return Qualified namespace, or an empty string at global scope.
     auto joinNs = [&]() -> std::string {
         if (nsStack.empty())
             return {};
@@ -228,6 +228,8 @@ void buildNamespaceRegistry(const Program &program,
     // Recursive lambda to scan statements and populate the registry.
     // This is the core AST walker that finds declarations.
     std::function<void(const std::vector<StmtPtr> &)> scan;
+    /// @brief Recursively scans declarations into the semantic registry.
+    /// @param stmts Statement list in the active namespace.
     scan = [&](const std::vector<StmtPtr> &stmts) {
         for (const auto &stmtPtr : stmts) {
             if (!stmtPtr)

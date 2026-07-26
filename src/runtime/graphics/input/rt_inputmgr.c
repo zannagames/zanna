@@ -32,6 +32,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements debounced and unified high-level input queries.
+ *
+ * @details Each GC-managed instance tracks bounded per-key debounce timers,
+ *          while ordinary keyboard, mouse, and gamepad queries delegate to
+ *          frame-coherent global input state. Unified helpers merge digital
+ *          navigation and analog stick input into common actions and axes.
+ */
+
 #include "rt_inputmgr.h"
 #include "rt_input.h"
 #include "rt_object.h"
@@ -39,15 +49,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Maximum number of keys to track for debouncing
+/// @brief Maximum number of simultaneous per-manager debounce entries.
 #define MAX_DEBOUNCE_KEYS 32
 
-/// Internal structure for InputManager.
+/// @brief Private bounded debounce state for one InputManager.
 struct rt_inputmgr_impl {
-    int64_t debounce_delay;                     // Frames to wait for debounce
-    int64_t debounce_timers[MAX_DEBOUNCE_KEYS]; // Per-key debounce timers
-    int64_t debounce_keys[MAX_DEBOUNCE_KEYS];   // Key codes being debounced
-    int64_t debounce_count;                     // Number of keys being tracked
+    int64_t debounce_delay;                     ///< Frames to wait for debounce.
+    int64_t debounce_timers[MAX_DEBOUNCE_KEYS]; ///< Per-key debounce timers.
+    int64_t debounce_keys[MAX_DEBOUNCE_KEYS];   ///< Key codes being debounced.
+    int64_t debounce_count;                     ///< Number of keys being tracked.
 };
 
 /// @brief Create a new inputmgr object.

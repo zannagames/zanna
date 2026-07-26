@@ -22,6 +22,14 @@
 // Links: src/runtime/threads/rt_future.c (implementation)
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Declares thread-safe Promise and Future asynchronous-result primitives.
+/// @details A Promise publishes exactly one value or error, and its Future
+///          exposes blocking, timed, polling, and completion-listener APIs.
+///          Runtime-managed values are retained or transferred according to
+///          the selected setter; returned owned results carry a reference that
+///          callers must release or transfer.
+
 #pragma once
 
 #include "rt_string.h"
@@ -36,39 +44,46 @@ extern "C" {
 //=============================================================================
 
 /// @brief Create a new Promise.
-/// @details A Promise is used to set a value that will be received by a Future.
-/// @return Opaque Promise object pointer.
+/// @details The new Promise is pending and may be settled exactly once from
+///          any thread. Allocation or synchronization initialization failure
+///          raises a runtime trap.
+/// @return New caller-owned opaque Promise object.
 void *rt_promise_new(void);
 
 /// @brief Get the Future associated with this Promise.
 /// @details The Future can be passed to another thread to receive the result.
-///          Multiple calls return the same Future object.
+///          Calls share one live cached wrapper; after that wrapper is
+///          finalized, a later call may create a replacement for the same
+///          Promise state. Allocation and refcount failures trap.
 /// @param promise Promise object pointer.
-/// @return Associated Future object pointer.
+/// @return Associated Future object with a caller-owned reference.
 void *rt_promise_get_future(void *promise);
 
 /// @brief Complete the Promise with a value.
-/// @details The associated Future is resolved with this value.
-///          Can only be called once; subsequent calls trap.
+/// @details Retains a runtime-managed @p value for the Promise, wakes all
+///          waiters, and invokes listeners in registration order. NULL is a
+///          valid successful result. Subsequent completion attempts trap.
 /// @param promise Promise object pointer.
-/// @param value The result value.
+/// @param value Runtime-managed result to retain, or NULL.
 void rt_promise_set(void *promise, void *value);
 
 /// @brief Complete the Promise with a retained runtime-managed value.
-/// @details Retains @p value before resolving the promise and releases it from
-///          the promise finalizer. Only use this when @p value is a runtime-
-///          managed object or string handle.
+/// @details This explicit ownership spelling has the same retain semantics as
+///          @ref rt_promise_set. The Promise releases its reference during
+///          finalization. Duplicate completion balances the attempted retain
+///          and traps.
 /// @param promise Promise object pointer.
-/// @param value Runtime-managed result object.
+/// @param value Runtime-managed result object to retain, or NULL.
 void rt_promise_set_owned(void *promise, void *value);
 
 /// @brief Complete the Promise by transferring one existing value reference.
 /// @details The promise owns @p value after this call and releases it from the
 ///          promise finalizer. Unlike rt_promise_set_owned, this does not
 ///          retain first; callers must only use it for callback results whose
-///          reference is being handed to the Future.
+///          reference is being handed to the Future. The input reference is
+///          consumed even when duplicate completion traps.
 /// @param promise Promise object pointer.
-/// @param value Runtime-managed result object or raw pointer.
+/// @param value Producer-owned runtime reference to transfer, or NULL.
 void rt_promise_set_transferred(void *promise, void *value);
 
 /// @brief Try to complete a producer-owned Promise by transferring one value reference.
@@ -86,10 +101,11 @@ void rt_promise_set_transferred(void *promise, void *value);
 int8_t rt_promise_try_set_transferred(void *promise, void *value);
 
 /// @brief Complete the Promise with an error.
-/// @details The associated Future is resolved with an error state.
-///          Can only be called once; subsequent calls trap.
+/// @details Copies the diagnostic, resolves the Future as an error, wakes
+///          waiters, and invokes listeners. NULL becomes `"Unknown error"`.
+///          Subsequent completion attempts trap.
 /// @param promise Promise object pointer.
-/// @param error Error message string.
+/// @param error Borrowed error-message String, or NULL.
 void rt_promise_set_error(void *promise, rt_string error);
 
 /// @brief Try to reject a producer-owned Promise from a native C string without propagating OOM.
@@ -108,6 +124,8 @@ void rt_promise_set_error(void *promise, rt_string error);
 int8_t rt_promise_try_set_error_cstr(void *promise, const char *error);
 
 /// @brief Check if the Promise is already completed.
+/// @details Returns a synchronized point-in-time snapshot and does not block.
+///          NULL or invalid tolerant handles return zero.
 /// @param promise Promise object pointer.
 /// @return 1 if completed, 0 otherwise.
 int8_t rt_promise_is_done(void *promise);
@@ -118,71 +136,91 @@ int8_t rt_promise_is_done(void *promise);
 
 /// @brief Get the value from the Future, blocking until resolved.
 /// @details Blocks until the associated Promise is completed.
-///          Traps if the Promise was completed with an error.
+///          Error completion and native wait failures trap. Promise-owned
+///          results are retained for the caller; raw borrowed results remain
+///          borrowed, and a successful NULL value returns NULL.
 /// @param future Future object pointer.
-/// @return The result value.
+/// @return Successful result value, possibly NULL.
 void *rt_future_get(void *future);
 
 /// @brief Get the value with a timeout.
-/// @details Blocks up to @p ms milliseconds for the result.
+/// @details Blocks up to @p ms milliseconds. Successful Promise-owned results
+///          are retained before being stored. Passing NULL for @p out checks
+///          only successful completion. Non-positive timeouts poll immediately;
+///          native wait failures trap.
 /// @param future Future object pointer.
 /// @param ms Timeout in milliseconds.
-/// @param out Pointer to store the result value.
+/// @param out Optional pointer to receive the successful result.
 /// @return 1 if resolved with value, 0 if timed out or error.
 int8_t rt_future_get_for(void *future, int64_t ms, void **out);
 
 /// @brief Check if the Future is resolved.
-/// @details Returns immediately without blocking.
+/// @details Returns a synchronized point-in-time snapshot without blocking.
+///          Either successful or error completion counts as resolved.
 /// @param future Future object pointer.
 /// @return 1 if resolved (value or error), 0 if still pending.
 int8_t rt_future_is_done(void *future);
 
 /// @brief Check if the Future resolved with an error.
+/// @details Pending, successful, NULL, and invalid tolerant handles return zero.
 /// @param future Future object pointer.
 /// @return 1 if resolved with error, 0 otherwise.
 int8_t rt_future_is_error(void *future);
 
 /// @brief Get the error message if the Future resolved with an error.
+/// @details An actual error is returned with a caller-owned String reference.
+///          Pending, successful, invalid, and message-less errors yield the
+///          constant empty String.
 /// @param future Future object pointer.
-/// @return Error message, or empty string if no error.
+/// @return Referenced error message, or a constant empty String.
 rt_string rt_future_get_error(void *future);
 
 /// @brief Try to get the value without blocking (IL-friendly).
-/// @details Returns the value if resolved, or NULL if pending or error.
+/// @details Promise-owned successful values are retained for the caller.
+///          NULL is ambiguous between pending, error, and a successful NULL
+///          payload; use @ref rt_future_try_get_option when that matters.
 /// @param future Future object pointer.
-/// @return The value, or NULL if not yet resolved or resolved with error.
+/// @return Successful value, or NULL when unavailable or itself NULL.
 void *rt_future_try_get_val(void *future);
 
 /// @brief Try to get the value without blocking as an Option.
 /// @details Returns `Some(value)` when the future has resolved successfully and
 ///          `None` when it is still pending or resolved with an error. A
-///          successful NULL value is represented as `Some(NULL)`.
+///          successful NULL value is represented as `Some(NULL)`. The returned
+///          Option is caller-owned.
 /// @param future Future object pointer.
-/// @return Opaque Zanna.Option object.
+/// @return Caller-owned opaque Zanna.Option object.
 void *rt_future_try_get_option(void *future);
 
 /// @brief Get the value with a timeout (IL-friendly).
 /// @details Blocks up to @p ms milliseconds. Returns the value if resolved,
-///          or NULL if timed out or resolved with error.
+///          or NULL if timed out or resolved with error. Promise-owned results
+///          are retained for the caller. Non-positive timeouts poll
+///          immediately, and native wait failures trap.
 /// @param future Future object pointer.
 /// @param ms Timeout in milliseconds.
-/// @return The value, or NULL on timeout/error.
+/// @return Successful value, or NULL on timeout, error, or a null result.
 void *rt_future_get_for_val(void *future, int64_t ms);
 
 /// @brief Try to get the value without blocking.
-/// @details Returns immediately if resolved, NULL if pending or error.
+/// @details Promise-owned successful values are retained before storage. A
+///          NULL @p out performs only a successful-completion check and can
+///          therefore distinguish a successful NULL value.
 /// @param future Future object pointer.
 /// @param out Pointer to store the result value (can be NULL to just check).
 /// @return 1 if resolved with value, 0 if pending or error.
 int8_t rt_future_try_get(void *future, void **out);
 
 /// @brief Wait for the Future to be resolved.
-/// @details Blocks until resolved (value or error).
+/// @details Blocks until either value or error completion without propagating
+///          the stored error. Native wait failures trap.
 /// @param future Future object pointer.
 void rt_future_wait(void *future);
 
 /// @brief Wait for the Future with a timeout.
-/// @details Blocks up to @p ms milliseconds.
+/// @details Blocks up to @p ms milliseconds. Both successful and error
+///          completion count as resolved; non-positive timeouts poll
+///          immediately, and native wait failures trap.
 /// @param future Future object pointer.
 /// @param ms Timeout in milliseconds.
 /// @return 1 if resolved, 0 if timed out.
@@ -190,7 +228,16 @@ int8_t rt_future_wait_for(void *future, int64_t ms);
 
 /// @brief Internal extended listener hook with cancellation cleanup.
 /// @details Like rt_future_on_complete, but also records an optional cleanup
-///          callback that runs if the listener is removed before completion.
+///          callback that runs if the listener is removed before completion,
+///          its Promise is abandoned, or the completion callback traps. An
+///          already-completed Future invokes @p callback synchronously.
+///          Callback and cleanup traps are swallowed.
+/// @param future Future object pointer.
+/// @param callback Listener receiving the completed @p future and @p ctx.
+/// @param ctx Opaque listener context.
+/// @param cancel Optional cleanup callback receiving @p ctx.
+/// @return 1 on registration or synchronous invocation, 0 for invalid input
+///         or listener allocation failure.
 int8_t rt_future_on_complete_ex(void *future,
                                 void (*callback)(void *future, void *ctx),
                                 void *ctx,
@@ -209,7 +256,11 @@ int8_t rt_future_on_complete(void *future, void (*callback)(void *future, void *
 /// @brief Internal listener removal hook used by async combinators.
 /// @details Removes the matching completion listener if it is still pending.
 ///          When removed, any cancellation cleanup registered with
-///          rt_future_on_complete_ex is invoked exactly once.
+///          rt_future_on_complete_ex is invoked exactly once behind a trap
+///          boundary. The first callback/context match is removed.
+/// @param future Future whose pending listener chain is searched.
+/// @param callback Completion callback used as part of the listener key.
+/// @param ctx Context pointer used as the other part of the listener key.
 /// @return 1 if a listener was removed, 0 otherwise.
 int8_t rt_future_cancel_listener(void *future,
                                  void (*callback)(void *future, void *ctx),
@@ -226,7 +277,9 @@ int8_t rt_future_cancel_listener(void *future,
 void *rt_future_peek_value(void *future);
 
 /// @brief Internal query for whether the stored value is promise-owned.
-/// @details Returns true for results completed via rt_promise_set_owned.
+/// @details Retaining setters and ownership-transfer settlement create owned
+///          values. Pending, errored, null-valued, and invalid Futures report
+///          false.
 /// @param future Future object pointer.
 /// @return 1 when the stored value is promise-owned, otherwise 0.
 int8_t rt_future_value_is_owned(void *future);

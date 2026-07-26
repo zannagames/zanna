@@ -20,6 +20,15 @@
 //        src/runtime/network/rt_tls.c (integration)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares dependency-free P-256 signature and key-agreement services.
+ * @details Defines caller-buffer contracts for SHA-256 ECDSA verification and
+ * signing, public-key derivation, and ECDH shared x-coordinate computation
+ * over canonical big-endian scalar and point encodings.
+ */
+
 #pragma once
 
 #include <stddef.h>

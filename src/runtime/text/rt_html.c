@@ -13,10 +13,11 @@
 //
 // Key invariants:
 //   - Parsing is tolerant: unclosed tags, self-closing tags, and malformed HTML
-//     are handled gracefully without trapping.
+//     are handled without syntax traps; allocation and size failures may trap.
 //   - Each node is an rt_map with keys "tag", "text", "attrs", "children".
-//   - Escape handles the 5 standard HTML entities (&, <, >, ", ') plus numerics.
-//   - StripTags removes all markup and returns only the concatenated text content.
+//   - Escape replaces &, <, >, ", and '; Unescape additionally recognizes a
+//     small named-entity set and semicolon-terminated ASCII numerics.
+//   - StripTags removes markup and inserts spaces at recognized block boundaries.
 //   - ExtractLinks finds all href attribute values in anchor elements.
 //   - All functions are thread-safe with no global mutable state.
 //
@@ -28,6 +29,15 @@
 //        src/runtime/text/rt_xml.h (strict XML parser, related)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_html.c
+ * @brief Implements tolerant HTML tree scanning and text utilities.
+ * @details The scanner builds Map-based element and text nodes while repairing
+ *          malformed parentage where possible. Companion operations escape or
+ *          decode a bounded entity subset, strip markup with block spacing,
+ *          extract readable text, and collect anchor targets.
+ */
 
 #include "rt_html.h"
 
@@ -49,6 +59,10 @@
 // Internal Helpers
 //=============================================================================
 
+/// @brief Release one locally owned runtime-object reference.
+/// @details Frees the object when dropping the reference reduces its runtime
+///          reference count to zero. Null pointers are ignored.
+/// @param obj Runtime object reference owned by the current scope.
 static void release_local_obj(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
@@ -82,11 +96,20 @@ static int html_stack_reserve(void ***stack, size_t *capacity, size_t needed) {
     return 1;
 }
 
+/// @brief Compare two bytes after locale-sensitive single-byte case folding.
+/// @param a First byte.
+/// @param b Second byte.
+/// @return Non-zero when `tolower` maps both bytes to the same value.
 static int ascii_eq_ci(char a, char b) {
     return tolower((unsigned char)a) == tolower((unsigned char)b);
 }
 
 /// @brief Case-insensitive prefix match.
+/// @details The caller must ensure @p s contains at least as many readable
+///          bytes as the NUL-terminated prefix.
+/// @param s Candidate byte range.
+/// @param prefix NUL-terminated prefix text.
+/// @return Non-zero when @p s begins with @p prefix ignoring case.
 static int starts_with_ci(const char *s, const char *prefix) {
     while (*prefix) {
         if (tolower((unsigned char)*s) != tolower((unsigned char)*prefix))
@@ -97,6 +120,11 @@ static int starts_with_ci(const char *s, const char *prefix) {
     return 1;
 }
 
+/// @brief Test a prefix without reading beyond a bounded candidate range.
+/// @param s Start of the candidate bytes.
+/// @param end One-past-the-end candidate pointer.
+/// @param prefix NUL-terminated prefix text.
+/// @return Non-zero when the bounded range begins with @p prefix ignoring case.
 static int starts_with_ci_bounded(const char *s, const char *end, const char *prefix) {
     while (*prefix) {
         if (s >= end || !ascii_eq_ci(*s, *prefix))
@@ -107,6 +135,12 @@ static int starts_with_ci_bounded(const char *s, const char *end, const char *pr
     return 1;
 }
 
+/// @brief Compare two explicit byte ranges ignoring character case.
+/// @param a First byte range.
+/// @param a_len Number of bytes at @p a.
+/// @param b Second byte range.
+/// @param b_len Number of bytes at @p b.
+/// @return Non-zero when lengths and case-folded bytes are equal.
 static int bytes_eq_ci(const char *a, size_t a_len, const char *b, size_t b_len) {
     if (a_len != b_len)
         return 0;
@@ -117,6 +151,11 @@ static int bytes_eq_ci(const char *a, size_t a_len, const char *b, size_t b_len)
     return 1;
 }
 
+/// @brief Determine whether a slash is the final token in an opening tag.
+/// @details Whitespace between the slash and the bounded tag end is permitted.
+/// @param p Candidate slash position.
+/// @param tag_end Pointer to the closing `>` byte, excluded from the range.
+/// @return Non-zero when @p p is a slash followed only by whitespace.
 static int slash_closes_tag(const char *p, const char *tag_end) {
     if (p >= tag_end || *p != '/')
         return 0;
@@ -126,6 +165,11 @@ static int slash_closes_tag(const char *p, const char *tag_end) {
     return p == tag_end;
 }
 
+/// @brief Find one byte within a half-open range.
+/// @param p Start of the range.
+/// @param end One-past-the-end pointer.
+/// @param needle Byte to locate.
+/// @return Pointer to the first matching byte, or null when absent.
 static const char *find_byte_bounded(const char *p, const char *end, char needle) {
     while (p < end) {
         if (*p == needle)
@@ -135,6 +179,12 @@ static const char *find_byte_bounded(const char *p, const char *end, char needle
     return NULL;
 }
 
+/// @brief Find an exact byte sequence within a half-open range.
+/// @param p Start of the search range.
+/// @param end One-past-the-end pointer.
+/// @param needle Byte sequence to locate.
+/// @param needle_len Number of bytes in @p needle.
+/// @return Pointer to the first match, @p p for an empty needle, or null.
 static const char *find_bytes_bounded(const char *p,
                                       const char *end,
                                       const char *needle,
@@ -149,6 +199,10 @@ static const char *find_bytes_bounded(const char *p,
     return NULL;
 }
 
+/// @brief Look up a Map member using a temporary runtime-string key.
+/// @param map Borrowed runtime Map.
+/// @param key_cstr NUL-terminated member name.
+/// @return Borrowed stored object, or null when the key is absent.
 static void *map_get_cstr(void *map, const char *key_cstr) {
     rt_string key = rt_const_cstr(key_cstr);
     void *value = rt_map_get(map, key);
@@ -156,16 +210,35 @@ static void *map_get_cstr(void *map, const char *key_cstr) {
     return value;
 }
 
+/// @brief Compare a runtime string with an explicit byte range ignoring case.
+/// @details A null runtime string compares equal only to an empty range.
+/// @param value Borrowed runtime string.
+/// @param bytes Byte range to compare.
+/// @param len Number of bytes at @p bytes.
+/// @return Non-zero when lengths and case-folded bytes are equal.
 static int runtime_string_eq_ci_bytes(rt_string value, const char *bytes, size_t len) {
     if (!value)
         return len == 0;
     return bytes_eq_ci(rt_string_cstr(value), (size_t)rt_str_len(value), bytes, len);
 }
 
+/// @brief Test whether a byte may terminate an HTML tag name.
+/// @param c Candidate byte.
+/// @return Non-zero for `>`, `/`, space, tab, newline, or carriage return.
 static int tag_boundary(char c) {
     return c == '>' || c == '/' || c == ' ' || c == '\t' || c == '\n' || c == '\r';
 }
 
+/// @brief Match an opening or closing tag name at a bounded `<` position.
+/// @details Comparison is case-insensitive and requires a valid tag-name
+///          boundary after the requested bytes, preventing prefix matches such
+///          as `"p"` against `"pre"`.
+/// @param lt Candidate `<` pointer.
+/// @param end One-past-the-end input pointer.
+/// @param tag Requested tag-name bytes.
+/// @param tag_len Number of bytes in @p tag.
+/// @param closing Non-zero to require a `/` immediately after `<`.
+/// @return Non-zero when the requested tag form begins at @p lt.
 static int tag_name_matches_at(
     const char *lt, const char *end, const char *tag, size_t tag_len, int closing) {
     if (lt >= end || *lt != '<')
@@ -181,6 +254,12 @@ static int tag_name_matches_at(
     return p + tag_len == end || tag_boundary(p[tag_len]);
 }
 
+/// @brief Determine whether stripped markup should introduce a text separator.
+/// @details Extracts the case-insensitive tag name from the bounded markup and
+///          recognizes common block elements plus `br` and `hr`.
+/// @param tag_start Pointer at or within the opening markup.
+/// @param tag_end Pointer to the closing `>` byte, excluded from the range.
+/// @return Non-zero for a recognized block or explicit-break tag.
 static int tag_is_text_separator(const char *tag_start, const char *tag_end) {
     static const char *const separators[] = {
         "address",    "article", "aside",  "blockquote", "br",  "dd", "div", "dl",  "dt",
@@ -207,6 +286,14 @@ static int tag_is_text_separator(const char *tag_start, const char *tag_end) {
 }
 
 /// @brief Create a new HTML node as a map with tag, text, attrs, children.
+/// @details Copies both byte ranges, creates an empty attribute Map and an
+///          element-owning child Seq, and stores all four objects under the
+///          `"tag"`, `"text"`, `"attrs"`, and `"children"` keys.
+/// @param tag Tag-name bytes, or null when @p tag_len is zero.
+/// @param tag_len Number of tag-name bytes.
+/// @param text Text bytes, or null when @p text_len is zero.
+/// @param text_len Number of text bytes.
+/// @return Newly allocated node Map owned by the caller.
 static void *make_node(const char *tag, size_t tag_len, const char *text, size_t text_len) {
     void *node = rt_map_new();
 
@@ -239,6 +326,9 @@ static void *make_node(const char *tag, size_t tag_len, const char *text, size_t
 }
 
 /// @brief Known self-closing HTML tags.
+/// @param tag Tag-name bytes.
+/// @param len Number of bytes in @p tag.
+/// @return Non-zero when the case-insensitive name is an HTML void element.
 static int is_self_closing_tag(const char *tag, size_t len) {
     // Common self-closing tags
     static const char *self_closing[] = {"br",
@@ -278,6 +368,9 @@ static int is_self_closing_tag(const char *tag, size_t len) {
 ///          Skips whitespace runs between tokens. Names are stored
 ///          case-as-is (caller normalizes if needed). Stops cleanly
 ///          at `end` even on malformed input — never reads past.
+/// @param attrs_map Borrowed runtime Map receiving copied names and values.
+/// @param start First byte after the opening tag name.
+/// @param end Pointer excluding the closing delimiter.
 static void parse_attrs(void *attrs_map, const char *start, const char *end) {
     const char *p = start;
     while (p < end) {
@@ -349,10 +442,13 @@ static void parse_attrs(void *attrs_map, const char *start, const char *end) {
 ///
 /// Creates a root node with tag="" and populates it with children representing
 /// the parsed HTML structure. Each node is a map with "tag", "text", "attrs",
-/// and "children" keys.
+/// and "children" keys. Comments and declarations are skipped, whitespace-only
+/// text nodes are omitted, attribute spelling is preserved, and entity text is
+/// not decoded. The scanner tolerates malformed structure but can trap for
+/// allocation failure or excessive nesting.
 ///
-/// @param str HTML text to parse.
-/// @return Root map node. Returns an empty root node for NULL/empty input.
+/// @param str Borrowed HTML text; null and empty inputs produce an empty root.
+/// @return Newly allocated root Map owning its complete node tree.
 void *rt_html_parse(rt_string str) {
     void *root = make_node("", 0, "", 0);
     if (!str)
@@ -515,8 +611,8 @@ void *rt_html_parse(rt_string str) {
 ///
 /// Combines strip_tags + unescape for a single call to get readable text.
 ///
-/// @param str HTML text.
-/// @return Plain text string.
+/// @param str Borrowed HTML text; null is treated as empty.
+/// @return Newly allocated plain-text string owned by the caller.
 rt_string rt_html_to_text(rt_string str) {
     rt_string stripped = rt_html_strip_tags(str);
     rt_string result = rt_html_unescape(stripped);
@@ -526,10 +622,12 @@ rt_string rt_html_to_text(rt_string str) {
 
 /// @brief Escapes HTML special characters.
 ///
-/// Replaces <, >, &, ", ' with their HTML entity equivalents.
+/// Replaces `<`, `>`, `&`, `"`, and `'` with `&lt;`, `&gt;`, `&amp;`,
+/// `&quot;`, and `&#39;`, respectively. All other bytes, including embedded
+/// NULs and non-ASCII bytes, are copied unchanged.
 ///
-/// @param str Text to escape.
-/// @return Escaped HTML-safe string. Returns empty string for NULL input.
+/// @param str Borrowed text to escape; null is treated as empty.
+/// @return Newly allocated escaped string owned by the caller.
 rt_string rt_html_escape(rt_string str) {
     if (!str)
         return rt_string_from_bytes("", 0);
@@ -631,10 +729,12 @@ rt_string rt_html_escape(rt_string str) {
 /// @brief Unescapes HTML entities to their character equivalents.
 ///
 /// Handles: &lt; &gt; &amp; &quot; &#39; &apos; &nbsp; and numeric
-/// character references (&#NNN; and &#xHHH;) for ASCII range.
+/// character references (&#NNN; and &#xHHH;) for non-NUL ASCII bytes. Named
+/// matching is case-insensitive and a terminating semicolon is required.
+/// Unknown, malformed, zero, and non-ASCII references remain unchanged.
 ///
-/// @param str String with HTML entities.
-/// @return Unescaped string. Returns empty string for NULL input.
+/// @param str Borrowed string containing entities; null is treated as empty.
+/// @return Newly allocated decoded string owned by the caller.
 rt_string rt_html_unescape(rt_string str) {
     if (!str)
         return rt_string_from_bytes("", 0);
@@ -730,11 +830,13 @@ rt_string rt_html_unescape(rt_string str) {
 
 /// @brief Removes all HTML tags from a string.
 ///
-/// Simple state machine that strips everything between < and >.
-/// Does NOT unescape entities (use rt_html_to_text for that).
+/// Simple state machine that strips everything between `<` and `>`. A single
+/// space is inserted after recognized block/break tags when needed, and
+/// trailing separator spaces are removed. Entities remain encoded; use
+/// `rt_html_to_text` to decode the supported subset.
 ///
-/// @param str HTML text.
-/// @return String with tags stripped. Returns empty string for NULL input.
+/// @param str Borrowed HTML text; null is treated as empty.
+/// @return Newly allocated tag-stripped string owned by the caller.
 rt_string rt_html_strip_tags(rt_string str) {
     if (!str)
         return rt_string_from_bytes("", 0);
@@ -780,11 +882,13 @@ rt_string rt_html_strip_tags(rt_string str) {
 
 /// @brief Extracts all href values from anchor (<a>) tags.
 ///
-/// Scans through HTML for <a ...href="url"...> patterns and extracts the
-/// URL values.
+/// Scans opening anchor tags and accepts quoted, unquoted, or Boolean `href`
+/// attributes with case-insensitive tag and attribute names. Values are copied
+/// verbatim without entity decoding or URL normalization. At most one value is
+/// returned per anchor.
 ///
-/// @param str HTML text.
-/// @return Seq of href value strings. Empty seq for NULL input.
+/// @param str Borrowed HTML text; null is treated as empty.
+/// @return Newly allocated element-owning Seq of copied href strings.
 void *rt_html_extract_links(rt_string str) {
     void *seq = rt_seq_new();
     rt_seq_set_owns_elements(seq, 1);
@@ -868,12 +972,13 @@ void *rt_html_extract_links(rt_string str) {
 
 /// @brief Extracts text content of all elements matching a tag name.
 ///
-/// Finds all occurrences of <tag>...</tag> and extracts the text between
-/// them (with inner tags stripped).
+/// Finds paired occurrences of `<tag>...</tag>` while tracking nested elements
+/// with the same case-insensitive name. Inner markup is stripped but entities
+/// are not decoded. Self-closing and unclosed matches produce no entry.
 ///
-/// @param str HTML text.
-/// @param tag Tag name to match (case-insensitive).
-/// @return Seq of text content strings. Empty seq for NULL input.
+/// @param str Borrowed HTML text; null is treated as empty.
+/// @param tag Borrowed non-empty tag name matched case-insensitively.
+/// @return Newly allocated element-owning Seq of newly allocated text strings.
 void *rt_html_extract_text(rt_string str, rt_string tag) {
     void *seq = rt_seq_new();
     rt_seq_set_owns_elements(seq, 1);

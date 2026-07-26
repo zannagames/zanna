@@ -22,6 +22,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares the stable-storage representation of an IL basic block.
+ *
+ * @details A basic block owns its ordered instructions and incoming SSA block
+ *          parameters, carries both textual and interned label identities, and
+ *          records whether a terminator has closed the block. The enclosing
+ *          function is responsible for label uniqueness and predecessor-edge
+ *          argument compatibility.
+ */
+
 #pragma once
 
 #include "il/core/Instr.hpp"
@@ -35,27 +46,27 @@ namespace il::core {
 
 /// @brief Sequence of instructions terminated by a control-flow instruction.
 struct BasicBlock {
-    /// Human-readable identifier for the block within its function.
+    /// @brief Human-readable identifier for the block within its function.
     ///
     /// @invariant Non-empty and unique in the parent function.
     std::string label;
 
-    /// Parameters representing incoming SSA values.
+    /// @brief Parameters representing incoming SSA values.
     ///
     /// @invariant Count and types match each predecessor edge.
     std::vector<Param> params;
 
-    /// Ordered list of IL instructions belonging to this block.
+    /// @brief Ordered list of IL instructions belonging to this block.
     ///
     /// @invariant If @c terminated is true, the last instruction must be a terminator.
     StableList<Instr> instructions;
 
-    /// Indicates whether the block ends with a control-flow instruction.
+    /// @brief Indicates whether the block ends with a control-flow instruction.
     ///
     /// @invariant Reflects whether the last instruction is a terminator.
     bool terminated = false;
 
-    /// Interned handle for @ref label within the owning Module.
+    /// @brief Interned handle for @ref label within the owning Module.
     ///
     /// Invalid until populated by a Module helper or by construction paths that
     /// have access to the parent Module.

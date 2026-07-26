@@ -19,6 +19,9 @@
 
 #pragma once
 
+/// @file
+/// @brief Declares single-threaded open-document storage and URI conversion.
+
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -40,16 +43,23 @@ class DocumentStore {
     void open(const std::string &uri, int documentVersion, std::string content);
 
     /// @brief Update a document's content and version.
+    /// @param uri Document URI used as the verbatim key.
+    /// @param documentVersion New client version.
+    /// @param content New full text, moved into storage.
     void update(const std::string &uri, int documentVersion, std::string content);
 
     /// @brief Close a document (remove from store).
+    /// @param uri Document URI used as the verbatim key.
     void close(const std::string &uri);
 
     /// @brief Get the content of a document.
+    /// @param uri Document URI used as the verbatim key.
     /// @return Pointer to content string, or nullptr if not found.
     const std::string *getContent(const std::string &uri) const;
 
     /// @brief Check if a document is open.
+    /// @param uri Document URI used as the verbatim key.
+    /// @return true when the URI is tracked.
     bool isOpen(const std::string &uri) const;
 
     /// @brief Return the last client-provided document version for @p uri.
@@ -59,6 +69,8 @@ class DocumentStore {
 
     /// @brief Extract a file path from a URI.
     /// @details Strips "file://" prefix and URL-decodes valid %XX sequences.
+    /// @param uri File URI or plain path accepted by the broad converter.
+    /// @return Decoded filesystem path.
     /// @throws std::runtime_error when the URI is malformed or contains an encoded path separator.
     static std::string uriToPath(const std::string &uri);
 

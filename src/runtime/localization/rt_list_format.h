@@ -28,6 +28,15 @@
 //        docs/zannalib/localization/formatting.md (user documentation).
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares locale-aware conjunction, disjunction, and unit list joining.
+ * @details Defines formatter construction and Locale ownership together with
+ * fresh-result APIs implementing CLDR pair/start/middle/end template folding
+ * for empty, singleton, pair, and longer runtime lists.
+ */
+
 #pragma once
 
 #include "rt.hpp"

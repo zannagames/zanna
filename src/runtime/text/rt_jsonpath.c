@@ -8,21 +8,21 @@
 // File: src/runtime/text/rt_jsonpath.c
 // Purpose: Implements a JSONPath-like path resolver for the Zanna.Data.JsonPath
 //          class. Evaluates dot-separated paths against a parsed rt_map/rt_seq
-//          JSON tree (from rt_json.c). The supported syntax is: dot segments
+//          JSON tree (from rt_json_parse.c). The supported syntax is: dot segments
 //          (`a.b`), bracket indices (`[0]`, negative from the end) and quoted
 //          bracket keys (`["k"]`/`['k']`), an optional leading `$`, and — in
 //          `Query` only — a single wildcard `*` segment. Recursive descent
 //          (`..`), slices, filters, and unions are NOT implemented.
 //
 // Key invariants:
-//   - Input JSON must be pre-parsed by rt_json into an rt_map tree (raw JSON
-//     source strings are auto-parsed).
+//   - Inputs may be pre-parsed trees or raw/boxed JSON source strings, which
+//     are auto-parsed through rt_json_parse.
 //   - Query returns a Seq of all matched nodes; empty Seq if no match.
 //   - '$' is the root selector; '.' separates child segments.
 //   - Array indices in brackets are zero-based; negative indices from the end.
 //   - In Query, the single wildcard '*' matches all children of the current node.
-//   - Unrecognized or malformed path forms resolve to "no match" (NULL / empty
-//     Seq / false); the resolver does not emit syntax diagnostics or traps.
+//   - Path resolution emits no dedicated syntax diagnostics; allocation and
+//     raw-JSON parse failures may still trap.
 //
 // Ownership/Lifetime:
 //   - The input JSON tree is borrowed unless a raw JSON string root is auto-parsed.
@@ -33,6 +33,16 @@
 //        src/runtime/text/rt_json.h (JSON parser producing the input tree)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_jsonpath.c
+ * @brief Implements JSONPath-like navigation over managed JSON values.
+ * @details The resolver accepts parsed trees or auto-parsed String roots and
+ *          handles optional root markers, dotted members, quoted bracket keys,
+ *          positive or negative sequence indices, and a single Query wildcard.
+ *          Lookup, membership, defaulting, scalar conversion, and query results
+ *          retain values for their callers.
+ */
 
 #include "rt_jsonpath.h"
 
@@ -54,19 +64,31 @@
 
 #include "rt_trap.h"
 
+/// Minimum payload size required before treating an object as a Seq.
 #define JSONPATH_SEQ_MIN_PAYLOAD (sizeof(int64_t) * 2 + sizeof(void *) + sizeof(int8_t))
+/// Minimum payload size required before treating an object as a Map.
 #define JSONPATH_MAP_MIN_PAYLOAD (sizeof(void *) * 2 + sizeof(size_t) * 2)
 
+/// @brief Test whether a runtime pointer is a sufficiently large Seq object.
+/// @param obj Candidate borrowed runtime object.
+/// @return Non-zero only for a valid Seq instance.
 static int is_seq_obj(void *obj) {
     return obj && !rt_string_is_handle(obj) &&
            rt_obj_is_instance(obj, RT_SEQ_CLASS_ID, JSONPATH_SEQ_MIN_PAYLOAD);
 }
 
+/// @brief Test whether a runtime pointer is a sufficiently large Map object.
+/// @param obj Candidate borrowed runtime object.
+/// @return Non-zero only for a valid Map instance.
 static int is_map_obj(void *obj) {
     return obj && !rt_string_is_handle(obj) &&
            rt_obj_is_instance(obj, RT_MAP_CLASS_ID, JSONPATH_MAP_MIN_PAYLOAD);
 }
 
+/// @brief Release one locally owned runtime-object reference.
+/// @details Frees the object when dropping the reference reaches zero. Null
+///          pointers, including JSON null, are ignored.
+/// @param obj Runtime object reference owned by the current scope.
 static void release_local_obj(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
@@ -116,7 +138,14 @@ static int jsonpath_parse_i64_span(const char *text, int64_t len, int64_t *out_i
 /// @brief Navigate one path segment, reporting whether the container held it.
 /// @details `*found` distinguishes a stored JSON null (C NULL value, found)
 ///          from an absent key/index (not found) — the value tree uses C NULL
-///          for both, so the container must be consulted directly.
+///          for both, so the container must be consulted directly. Segments
+///          beginning with a digit or `-` are always interpreted as Seq
+///          indices; other segments are case-sensitive Map keys.
+/// @param current Borrowed current container.
+/// @param seg Segment byte range.
+/// @param len Number of bytes in @p seg.
+/// @param found Non-null output receiving container-level existence.
+/// @return Borrowed child value, including null for stored JSON null or absence.
 static void *navigate_segment_ex(void *current, const char *seg, int64_t len, int *found) {
     *found = 0;
     if (!current || len == 0)
@@ -160,7 +189,13 @@ static void *navigate_segment_ex(void *current, const char *seg, int64_t len, in
 /// @details `*out_found` is 1 when every segment was present in its container —
 ///          including a terminal segment whose stored value is JSON null — and 0
 ///          when any segment was absent. This lets `Has`/`GetOr` distinguish a
-///          present null member from a missing path.
+///          present null member from a missing path. Empty paths and `$`
+///          select the root. Dots are optional separators; bracket quotes are
+///          stripped but do not implement escapes.
+/// @param root Borrowed parsed JSON root.
+/// @param path NUL-terminated path expression.
+/// @param out_found Non-null output receiving terminal existence.
+/// @return Borrowed resolved value, or null for stored JSON null/absence.
 static void *resolve_path_ex(void *root, const char *path, int *out_found) {
     *out_found = 0;
     if (!root)
@@ -230,6 +265,10 @@ static void *resolve_path_ex(void *root, const char *path, int *out_found) {
     return current;
 }
 
+/// @brief Resolve a path without preserving null-versus-missing existence.
+/// @param root Borrowed parsed JSON root.
+/// @param path NUL-terminated path expression.
+/// @return Borrowed terminal value, or null for absence/JSON null.
 static void *resolve_path(void *root, const char *path) {
     int found = 0;
     return resolve_path_ex(root, path, &found);
@@ -245,10 +284,13 @@ static void *resolve_path(void *root, const char *path) {
 ///             resolve `remaining` against it and push if found.
 ///          2. **Map** → enumerate the keys, then iterate values
 ///             with the same push-or-resolve logic.
-///          The "try seq first, fall through to map" pattern works
-///          because Maps' first 8 bytes (vptr) read as zero, so
-///          `rt_seq_len` returns 0 for them — no separate type
-///          discriminator needed.
+///          Container types are checked explicitly before using their public
+///          APIs. Resolved terminal JSON-null values are omitted when a
+///          remaining path exists because the convenience resolver cannot
+///          distinguish them from absence.
+/// @param current Borrowed wildcard parent container.
+/// @param remaining NUL-terminated suffix after `*`, or empty for direct children.
+/// @param results Borrowed mutable result Seq that owns pushed elements.
 static void collect_wildcard(void *current, const char *remaining, void *results) {
     if (!current)
         return;
@@ -291,8 +333,14 @@ static void collect_wildcard(void *current, const char *remaining, void *results
 // --- Public API ---
 
 /// @brief Auto-detect if root is a raw JSON string and parse it.
-/// @details Checks the RT_STRING_MAGIC header to identify raw strings,
-///          and also handles boxed strings (from Zia str→ptr conversion).
+/// @details Direct and boxed runtime strings are interpreted as complete JSON
+///          source text and passed to `rt_json_parse`; every other runtime
+///          value is returned unchanged. Parsed JSON null and parse failure
+///          both return null.
+/// @param root Borrowed candidate tree or JSON source value.
+/// @param owned Optional output set to one when a non-null parsed tree must be
+///              released by the caller.
+/// @return Borrowed original tree, newly allocated parsed tree, or null.
 static void *auto_parse_root(void *root, int *owned) {
     if (owned)
         *owned = 0;
@@ -319,6 +367,9 @@ static void *auto_parse_root(void *root, int *owned) {
     return root;
 }
 
+/// @brief Retain a resolved runtime value for transfer to an API caller.
+/// @param value Borrowed resolved object, or null for JSON null.
+/// @return The same pointer with one added reference when non-null.
 static void *retain_jsonpath_value(void *value) {
     if (value)
         rt_obj_retain_maybe(value);
@@ -329,6 +380,7 @@ static void *retain_jsonpath_value(void *value) {
 /// @details Paths are text: the resolver walks C strings, so a path whose runtime
 ///          byte length extends past a NUL would silently address a different
 ///          (shorter) path. Such paths match nothing instead (VDOC-038).
+/// @param path Borrowed runtime path string.
 /// @return NUL-terminated path text, or NULL when the path contains a NUL byte.
 static const char *jsonpath_path_cstr(rt_string path) {
     if (!path)
@@ -340,7 +392,13 @@ static const char *jsonpath_path_cstr(rt_string path) {
     return p;
 }
 
-/// @brief Navigate a parsed JSON tree by dot-separated path (e.g., "user.name").
+/// @brief Navigate a parsed JSON tree by a JSONPath-like expression.
+/// @details The root may instead be direct or boxed JSON source text, which is
+///          parsed temporarily. Empty paths and `$` return the root. Stored
+///          JSON null and missing paths both return null through this API.
+/// @param root Borrowed parsed tree or raw/boxed JSON source string.
+/// @param path Borrowed path string without embedded NUL bytes.
+/// @return Retained caller-owned terminal value, or null for missing/JSON null.
 void *rt_jsonpath_get(void *root, rt_string path) {
     if (!root || !path)
         return NULL;
@@ -360,8 +418,9 @@ void *rt_jsonpath_get(void *root, rt_string path) {
     return result;
 }
 
-/// @brief Navigate a JSON tree by path, returning a default value if the path doesn't exist.
 /// @brief Resolve a path with existence tracking, sharing the auto-parse root logic.
+/// @param root Borrowed parsed tree or raw/boxed JSON source string.
+/// @param path Borrowed path string.
 /// @param out_found Receives 1 when the terminal segment exists (even as JSON null).
 /// @return Retained value at the path, or NULL when missing or stored null.
 static void *jsonpath_get_ex(void *root, rt_string path, int *out_found) {
@@ -384,6 +443,14 @@ static void *jsonpath_get_ex(void *root, rt_string path, int *out_found) {
     return result;
 }
 
+/// @brief Resolve a path and substitute a default only when it is missing.
+/// @details A present JSON-null member returns null and does not select the
+///          default. Whichever non-null value is returned is retained for the
+///          caller.
+/// @param root Borrowed parsed tree or raw/boxed JSON source string.
+/// @param path Borrowed path string.
+/// @param def Borrowed default runtime value.
+/// @return Caller-owned retained resolved/default value, or null.
 void *rt_jsonpath_get_or(void *root, rt_string path, void *def) {
     // The default applies only when the path is MISSING: a present JSON null
     // member is a real value and is returned as NULL rather than replaced.
@@ -395,6 +462,11 @@ void *rt_jsonpath_get_or(void *root, rt_string path, void *def) {
 }
 
 /// @brief Check whether a path exists in a parsed JSON tree.
+/// @details Container membership is tracked separately from the value, so a
+///          present JSON-null terminal reports true.
+/// @param root Borrowed parsed tree or raw/boxed JSON source string.
+/// @param path Borrowed path string.
+/// @return `1` when every segment exists, otherwise `0`.
 int8_t rt_jsonpath_has(void *root, rt_string path) {
     // Existence is judged by the containers along the path, so a present JSON
     // null member reports true while a missing key/index reports false.
@@ -406,6 +478,14 @@ int8_t rt_jsonpath_has(void *root, rt_string path) {
 }
 
 /// @brief Query a JSON tree with wildcard path support (returns a sequence of matching values).
+/// @details Supports the first `*` found in the path. Without a wildcard, at
+///          most one non-null result is appended. With one, every direct child
+///          of the resolved parent is optionally followed through the suffix.
+///          Result ordering follows Seq order or implementation-defined Map-key
+///          snapshot order.
+/// @param root Borrowed parsed tree or raw/boxed JSON source string.
+/// @param path Borrowed path string without embedded NUL bytes.
+/// @return Newly allocated element-owning Seq of retained matches.
 void *rt_jsonpath_query(void *root, rt_string path) {
     void *results = rt_seq_new();
     rt_seq_set_owns_elements(results, 1);
@@ -473,7 +553,15 @@ void *rt_jsonpath_query(void *root, rt_string path) {
     return results;
 }
 
-/// @brief Get a string value at a JSON path (returns empty string if missing or wrong type).
+/// @brief Resolve and convert a scalar path value to a runtime string.
+/// @details Direct/boxed strings are copied or retained; boxed I64, finite or
+///          non-finite F64, and I1 values are formatted as text. Containers,
+///          JSON null, and missing paths are not convertible. @p out is
+///          required for a successful result and is left untouched on failure.
+/// @param root Borrowed parsed tree or raw/boxed JSON source string.
+/// @param path Borrowed path string.
+/// @param out Non-null output receiving a caller-owned string on success.
+/// @return `1` when a scalar conversion was stored, otherwise `0`.
 int8_t rt_jsonpath_try_get_str(void *root, rt_string path, rt_string *out) {
     void *val = rt_jsonpath_get(root, path);
     if (!val)
@@ -512,6 +600,11 @@ int8_t rt_jsonpath_try_get_str(void *root, rt_string path, rt_string *out) {
     return 0;
 }
 
+/// @brief Resolve and stringify a scalar, using empty text as failure sentinel.
+/// @param root Borrowed parsed tree or raw/boxed JSON source string.
+/// @param path Borrowed path string.
+/// @return Caller-owned converted string, or an owned empty string when absent
+///         or not convertible.
 rt_string rt_jsonpath_get_str(void *root, rt_string path) {
     rt_string result = NULL;
     if (rt_jsonpath_try_get_str(root, path, &result))
@@ -519,7 +612,15 @@ rt_string rt_jsonpath_get_str(void *root, rt_string path) {
     return rt_string_from_bytes("", 0); // empty on absence or non-convertible value
 }
 
-/// @brief Get an integer value at a JSON path (returns 0 if missing or wrong type).
+/// @brief Resolve and convert a scalar path value to `int64_t`.
+/// @details I64 is preserved, F64 uses the runtime's defined saturating
+///          conversion, I1 becomes zero/one, and direct or boxed strings use
+///          exact integer parsing. Containers, JSON null, missing paths, and
+///          non-numeric strings fail. @p out is written only on success.
+/// @param root Borrowed parsed tree or raw/boxed JSON source string.
+/// @param path Borrowed path string.
+/// @param out Optional output receiving the converted value.
+/// @return `1` for a convertible scalar, otherwise `0`.
 int8_t rt_jsonpath_try_get_int(void *root, rt_string path, int64_t *out) {
     void *val = rt_jsonpath_get(root, path);
     if (!val)
@@ -552,6 +653,10 @@ int8_t rt_jsonpath_try_get_int(void *root, rt_string path, int64_t *out) {
     return ok;
 }
 
+/// @brief Resolve and convert an integer, using zero as the legacy failure sentinel.
+/// @param root Borrowed parsed tree or raw/boxed JSON source string.
+/// @param path Borrowed path string.
+/// @return Converted integer, or zero when absent or not convertible.
 int64_t rt_jsonpath_get_int(void *root, rt_string path) {
     int64_t result = 0;
     rt_jsonpath_try_get_int(root, path, &result);

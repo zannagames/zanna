@@ -5,21 +5,18 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/tools/windows_installer/WindowsInstallerHost.cpp
-// Purpose: Implement native installer package discovery, UTF conversion,
-//          command-line parsing, deterministic inspection, and session logging.
-//
-// Key invariants:
-//   - The ZIP overlay is derived from its EOCD/central-directory relationship;
-//     untrusted bytes are never located by filename scanning alone.
-//   - Metadata and payload entries are extracted with CRC/DEFLATE validation.
-//   - Options are case-insensitive but reject unknown or conflicting spellings.
-//   - Logs use unique files, UTC timestamps, and sanitized single-line messages.
-//
-// Ownership/Lifetime:
-//   - Archive readers borrow buffers only within loadHostPackage.
-//
-// Links: WindowsInstallerHost.hpp, ZipReader.hpp, WindowsInstallerMetadata.hpp
+/// @file
+/// @brief Implements installer package discovery, Unicode conversion, strict
+///        command parsing, deterministic inspection, and session logging.
+///
+/// The ZIP overlay is derived from its EOCD and central-directory relationship.
+/// Metadata, PE images, inventory, hashes, and archive entries are verified
+/// before lifecycle mutation. Options reject conflicts, and logs use sanitized
+/// single-line UTF-8 records. Archive readers borrow buffers only within loading.
+///
+/// @see WindowsInstallerHost.hpp
+/// @see ZipReader.hpp
+/// @see WindowsInstallerMetadata.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -49,33 +46,58 @@ namespace {
 
 constexpr uint64_t kMaximumInstallerExecutableBytes = 2ULL * 1024ULL * 1024ULL * 1024ULL;
 
+/// @brief Decode an unsigned 16-bit little-endian integer.
+/// @param p Pointer to at least two readable bytes.
+/// @return Decoded value.
 uint16_t readLe16(const uint8_t *p) {
     return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8U);
 }
 
+/// @brief Decode an unsigned 32-bit little-endian integer.
+/// @param p Pointer to at least four readable bytes.
+/// @return Decoded value.
 uint32_t readLe32(const uint8_t *p) {
     return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8U) |
            (static_cast<uint32_t>(p[2]) << 16U) | (static_cast<uint32_t>(p[3]) << 24U);
 }
 
+/// @brief Fold ASCII letters in a wide string to lowercase.
+/// @param value Text to transform.
+/// @return Folded copy; non-ASCII code units are unchanged.
 std::wstring lowerWide(std::wstring value) {
+    /// @brief Fold one wide ASCII uppercase code unit to lowercase.
+    /// @param ch Code unit to normalize.
+    /// @return Lowercase ASCII code unit or the unchanged input.
     std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) -> wchar_t {
         return ch >= L'A' && ch <= L'Z' ? static_cast<wchar_t>(ch + (L'a' - L'A')) : ch;
     });
     return value;
 }
 
+/// @brief Fold ASCII letters in a narrow string to lowercase.
+/// @param value Text to transform.
+/// @return Folded copy; non-ASCII bytes are unchanged.
 std::string lowerAscii(std::string value) {
+    /// @brief Fold one narrow ASCII uppercase byte to lowercase.
+    /// @param ch Byte to normalize.
+    /// @return Lowercase ASCII byte or the unchanged input.
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
         return static_cast<char>(ch >= 'A' && ch <= 'Z' ? ch + ('a' - 'A') : ch);
     });
     return value;
 }
 
+/// @brief Test whether a byte is an ASCII letter or digit.
+/// @param ch Candidate byte.
+/// @return @c true for A-Z, a-z, or 0-9.
 bool isAsciiAlnum(unsigned char ch) {
     return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9');
 }
 
+/// @brief Read a bounded installer executable without sharing writes.
+/// @param path Executable path to open.
+/// @return Complete stable file bytes.
+/// @throws std::runtime_error On open, size, read, concurrent-change, or close failure.
 std::vector<uint8_t> readWholeFile(const fs::path &path) {
     HANDLE file = CreateFileW(path.c_str(),
                               GENERIC_READ,
@@ -128,6 +150,11 @@ struct OverlayRange {
     size_t length{0};
 };
 
+/// @brief Locate a structurally valid ZIP overlay at the end of an executable.
+/// @param bytes Complete executable bytes.
+/// @return Offset and length of the ZIP archive.
+/// @throws std::runtime_error When no bounded single-disk EOCD/central directory
+///         relationship reaches the exact file end.
 OverlayRange locateZipOverlay(const std::vector<uint8_t> &bytes) {
     constexpr uint32_t kEocdSignature = 0x06054B50U;
     constexpr uint32_t kCentralSignature = 0x02014B50U;
@@ -169,10 +196,19 @@ OverlayRange locateZipOverlay(const std::vector<uint8_t> &bytes) {
     throw std::runtime_error("installer ZIP end record is missing or invalid");
 }
 
+/// @brief Copy an arbitrary byte vector into a narrow string.
+/// @param bytes Source bytes.
+/// @return String preserving every byte, including embedded NULs.
 std::string bytesToString(const std::vector<uint8_t> &bytes) {
     return std::string(reinterpret_cast<const char *>(bytes.data()), bytes.size());
 }
 
+/// @brief Validate a bounded executable PE32+ image and its target architecture.
+/// @param bytes Complete candidate image.
+/// @param architecture Metadata architecture name, @c x64 or @c arm64.
+/// @param label Human-readable image label used in errors.
+/// @throws std::runtime_error On malformed headers, sections, image properties,
+///         unsupported metadata, or architecture mismatch.
 void requirePeArchitecture(const std::vector<uint8_t> &bytes,
                            std::string_view architecture,
                            std::string_view label) {
@@ -260,6 +296,10 @@ void requirePeArchitecture(const std::vector<uint8_t> &bytes,
     }
 }
 
+/// @brief Require the outer archive to match its owned metadata inventory exactly.
+/// @param outer Verified outer ZIP reader.
+/// @param metadata Parsed installer metadata describing required entries.
+/// @throws std::runtime_error For missing, extra, or unowned files/directories.
 void requireOuterInventory(const zanna::pkg::ZipReader &outer,
                            const zanna::pkg::WindowsInstallerMetadata &metadata) {
     std::set<std::string> required = {
@@ -298,6 +338,9 @@ void requireOuterInventory(const zanna::pkg::ZipReader &outer,
     }
 }
 
+/// @brief Escape bytes for inclusion in a JSON string literal body.
+/// @param value Unquoted UTF-8 or metadata text.
+/// @return Escaped text without surrounding quotes.
 std::string jsonEscape(std::string_view value) {
     std::ostringstream out;
     for (unsigned char ch : value) {
@@ -329,10 +372,19 @@ std::string jsonEscape(std::string_view value) {
     return out.str();
 }
 
+/// @brief Test an already-normalized wide option prefix.
+/// @param value Candidate text.
+/// @param prefix Prefix to match exactly.
+/// @return @c true when @p prefix begins at offset zero.
 bool startsWith(std::wstring_view value, std::wstring_view prefix) {
     return value.size() >= prefix.size() && value.substr(0, prefix.size()) == prefix;
 }
 
+/// @brief Extract an inline option value following @c = or @c :.
+/// @param original Original-cased option text supplying the returned value.
+/// @param lower Lowercase copy used for matching.
+/// @param name Lowercase option name without separator.
+/// @return Owned value when either inline spelling matches, otherwise nullopt.
 std::optional<std::wstring> optionValue(std::wstring_view original,
                                         std::wstring_view lower,
                                         std::wstring_view name) {
@@ -343,6 +395,10 @@ std::optional<std::wstring> optionValue(std::wstring_view original,
     return std::nullopt;
 }
 
+/// @brief Parse a nonzero decimal maintenance-handoff process ID.
+/// @param text Decimal UTF-16 digits.
+/// @return DWORD process identifier.
+/// @throws std::runtime_error On empty, nondigit, zero, or overflow input.
 DWORD parseHandoffProcessId(std::wstring_view text) {
     if (text.empty())
         throw std::runtime_error("invalid internal handoff process identifier");
@@ -359,6 +415,10 @@ DWORD parseHandoffProcessId(std::wstring_view text) {
     return static_cast<DWORD>(value);
 }
 
+/// @brief Parse and normalize a comma-separated component selection.
+/// @param text User-supplied component IDs.
+/// @return Unique lowercase UTF-8 identifiers.
+/// @throws std::runtime_error On empty, duplicate, or invalid identifiers.
 std::set<std::string> parseComponents(std::wstring_view text) {
     std::set<std::string> result;
     size_t start = 0;
@@ -383,6 +443,10 @@ std::set<std::string> parseComponents(std::wstring_view text) {
     return result;
 }
 
+/// @brief Parse a component-preset name and accepted aliases.
+/// @param value User-supplied preset spelling.
+/// @return Normalized preset enumeration.
+/// @throws std::runtime_error When the preset is unknown.
 ComponentPreset parseComponentPreset(std::wstring value) {
     value = lowerWide(std::move(value));
     if (value == L"minimal")
@@ -396,6 +460,10 @@ ComponentPreset parseComponentPreset(std::wstring value) {
     throw std::runtime_error("/type must be minimal, typical, sdk, or complete");
 }
 
+/// @brief Sanitize and bound one user-visible message for a single log record.
+/// @param message Raw UTF-16 message.
+/// @return Bounded text with controls/bidi markers replaced, invalid surrogates
+///         repaired, and truncation explicitly marked.
 std::wstring sanitizeLogLine(std::wstring_view message) {
     std::wstring result;
     constexpr size_t kMaximumLine = 8192;
@@ -433,6 +501,10 @@ std::wstring sanitizeLogLine(std::wstring_view message) {
     return result;
 }
 
+/// @brief Append and durably flush one UTF-8 log record.
+/// @param handle Open writable file handle.
+/// @param record Complete record bytes.
+/// @return @c true when every byte was written and the file buffer flushed.
 bool appendLogRecord(HANDLE handle, std::string_view record) {
     size_t offset = 0;
     while (offset < record.size()) {
@@ -453,6 +525,11 @@ bool appendLogRecord(HANDLE handle, std::string_view record) {
 
 } // namespace
 
+/// @brief Strictly decode UTF-8 package text to UTF-16.
+/// @param text UTF-8 bytes.
+/// @return Decoded wide string.
+/// @throws std::runtime_error On invalid encoding, Windows conversion failure,
+///         or input beyond API limits.
 std::wstring utf8ToWide(std::string_view text) {
     if (text.empty())
         return {};
@@ -474,6 +551,10 @@ std::wstring utf8ToWide(std::string_view text) {
     return out;
 }
 
+/// @brief Strictly encode UTF-16 Windows text as UTF-8.
+/// @param text UTF-16 code units.
+/// @return Encoded UTF-8 bytes.
+/// @throws std::runtime_error On invalid surrogates, API failure, or oversized input.
 std::string wideToUtf8(std::wstring_view text) {
     if (text.empty())
         return {};
@@ -503,6 +584,9 @@ std::string wideToUtf8(std::wstring_view text) {
     return out;
 }
 
+/// @brief Format a Windows error code as compact user-facing text.
+/// @param error Win32 error code.
+/// @return System message without trailing punctuation/whitespace, or a numeric fallback.
 std::wstring formatWindowsError(DWORD error) {
     wchar_t *buffer = nullptr;
     const DWORD length = FormatMessageW(
@@ -524,6 +608,10 @@ std::wstring formatWindowsError(DWORD error) {
     return result;
 }
 
+/// @brief Quote one argument according to CommandLineToArgvW escaping rules.
+/// @param argument Unquoted argument text.
+/// @return Safe command-line representation, left unquoted when possible.
+/// @throws std::runtime_error If slash-doubling arithmetic would overflow.
 std::wstring quoteCommandLineArgument(std::wstring_view argument) {
     if (argument.empty())
         return L"\"\"";
@@ -553,6 +641,9 @@ std::wstring quoteCommandLineArgument(std::wstring_view argument) {
     return out;
 }
 
+/// @brief Resolve the running installer executable path.
+/// @return Absolute module path.
+/// @throws std::runtime_error On API failure or paths beyond the Windows limit.
 fs::path currentExecutablePath() {
     std::wstring buffer(512, L'\0');
     while (buffer.size() <= 32768) {
@@ -569,6 +660,10 @@ fs::path currentExecutablePath() {
     throw std::runtime_error("installer executable path exceeds the Windows limit");
 }
 
+/// @brief Build a unique default installer log path in the temporary directory.
+/// @param identifier Package identifier embedded in the filename.
+/// @return Path containing UTC timestamp and process ID.
+/// @throws std::runtime_error When the temporary directory or identifier conversion fails.
 fs::path defaultLogPath(std::string_view identifier) {
     wchar_t tempPath[32768]{};
     const DWORD count = GetTempPathW(static_cast<DWORD>(std::size(tempPath)), tempPath);
@@ -585,11 +680,14 @@ fs::path defaultLogPath(std::string_view identifier) {
     return fs::path(tempPath) / leaf.str();
 }
 
+/// @brief Close the owned log handle, if open.
 Logger::~Logger() {
     if (handle_ != INVALID_HANDLE_VALUE)
         CloseHandle(handle_);
 }
 
+/// @brief Move a logger and transfer its handle and callbacks.
+/// @param other Logger left with an invalid handle.
 Logger::Logger(Logger &&other) noexcept
     : handle_(other.handle_), path_(std::move(other.path_)),
       progressCallback_(std::move(other.progressCallback_)),
@@ -597,6 +695,9 @@ Logger::Logger(Logger &&other) noexcept
     other.handle_ = INVALID_HANDLE_VALUE;
 }
 
+/// @brief Replace this logger by moving another logger's resources.
+/// @param other Logger whose handle, path, and callbacks are transferred.
+/// @return Reference to this logger.
 Logger &Logger::operator=(Logger &&other) noexcept {
     if (this == &other)
         return *this;
@@ -610,6 +711,10 @@ Logger &Logger::operator=(Logger &&other) noexcept {
     return *this;
 }
 
+/// @brief Open or create an append-only UTF-8 installer log.
+/// @param path Destination file, whose parent directories are created.
+/// @details Closes any prior handle and writes a UTF-8 BOM only to an empty file.
+/// @throws std::runtime_error On directory, close, open, size, BOM, or flush failure.
 void Logger::open(const fs::path &path) {
     if (handle_ != INVALID_HANDLE_VALUE) {
         const HANDLE previous = handle_;
@@ -656,6 +761,10 @@ void Logger::open(const fs::path &path) {
     }
 }
 
+/// @brief Append a timestamped sanitized log line and publish progress text.
+/// @param level Short severity label.
+/// @param message Raw user-visible message.
+/// @throws std::runtime_error On encoding or durable-write failure.
 void Logger::write(std::wstring_view level, std::wstring_view message) {
     if (handle_ != INVALID_HANDLE_VALUE) {
         SYSTEMTIME now{};
@@ -685,26 +794,38 @@ void Logger::write(std::wstring_view level, std::wstring_view message) {
     }
 }
 
+/// @brief Write an informational record.
+/// @param message Message to sanitize and append.
 void Logger::info(std::wstring_view message) {
     write(L"INFO", message);
 }
 
+/// @brief Write a warning record.
+/// @param message Message to sanitize and append.
 void Logger::warning(std::wstring_view message) {
     write(L"WARN", message);
 }
 
+/// @brief Write an error record.
+/// @param message Message to sanitize and append.
 void Logger::error(std::wstring_view message) {
     write(L"ERROR", message);
 }
 
+/// @brief Replace the optional presentation progress callback.
+/// @param callback Callable invoked after each record, or empty to clear it.
 void Logger::setProgressCallback(std::function<void(std::wstring_view)> callback) {
     progressCallback_ = std::move(callback);
 }
 
+/// @brief Replace the optional cooperative cancellation callback.
+/// @param callback Predicate queried by cancellationRequested(), or empty to clear.
 void Logger::setCancellationCallback(std::function<bool()> callback) {
     cancellationCallback_ = std::move(callback);
 }
 
+/// @brief Query the current cooperative cancellation predicate.
+/// @return Callback result, @c false when absent, or @c true if the callback throws.
 bool Logger::cancellationRequested() const {
     if (!cancellationCallback_)
         return false;
@@ -717,6 +838,12 @@ bool Logger::cancellationRequested() const {
     }
 }
 
+/// @brief Parse and cross-validate the installer's Unicode command line.
+/// @param argc Number of argument pointers.
+/// @param argv CommandLineToArgvW-compatible arguments.
+/// @return Normalized lifecycle, UI, scope, component, integration, and worker options.
+/// @throws std::runtime_error On unknown, repeated, conflicting, missing, or
+///         contextually invalid options.
 HostOptions parseCommandLine(int argc, wchar_t **argv) {
     HostOptions result;
     std::optional<Operation> explicitOperation;
@@ -730,6 +857,9 @@ HostOptions parseCommandLine(int argc, wchar_t **argv) {
     bool uninstallWorkerSpecified = false;
     bool handoffParentSpecified = false;
     bool helpRequested = false;
+    /// @brief Record one mutually exclusive lifecycle operation.
+    /// @param operation Requested operation.
+    /// @throws std::runtime_error If any operation was already specified.
     auto setOperation = [&](Operation operation) {
         if (explicitOperation)
             throw std::runtime_error(
@@ -739,6 +869,9 @@ HostOptions parseCommandLine(int argc, wchar_t **argv) {
         explicitOperation = operation;
         result.operation = operation;
     };
+    /// @brief Record one mutually exclusive installer UI level.
+    /// @param level Requested UI level.
+    /// @throws std::runtime_error If a UI level was already specified.
     auto setUiLevel = [&](UiLevel level) {
         if (uiSpecified)
             throw std::runtime_error(result.uiLevel == level
@@ -747,6 +880,11 @@ HostOptions parseCommandLine(int argc, wchar_t **argv) {
         uiSpecified = true;
         result.uiLevel = level;
     };
+    /// @brief Record an explicit enabled or disabled integration option.
+    /// @param[in,out] field Optional state to assign.
+    /// @param value Requested Boolean state.
+    /// @param name Option name used in diagnostics.
+    /// @throws std::runtime_error If the integration option was already specified.
     auto setIntegration = [](std::optional<bool> &field, bool value, std::string_view name) {
         if (field)
             throw std::runtime_error(
@@ -756,6 +894,9 @@ HostOptions parseCommandLine(int argc, wchar_t **argv) {
                     : "conflicting installer integration options for " + std::string(name));
         field = value;
     };
+    /// @brief Record the requested installation scope.
+    /// @param scope User or machine scope selected by the command line.
+    /// @throws std::runtime_error If a scope was already specified.
     auto setScope = [&](InstallScope scope) {
         if (scopeSpecified)
             throw std::runtime_error(result.scope == scope ? "/scope was specified more than once"
@@ -763,6 +904,9 @@ HostOptions parseCommandLine(int argc, wchar_t **argv) {
         scopeSpecified = true;
         result.scope = scope;
     };
+    /// @brief Record the requested component-selection preset.
+    /// @param preset Preset selected by `/type` or `/preset`.
+    /// @throws std::runtime_error If a preset was already specified.
     auto setPreset = [&](ComponentPreset preset) {
         if (presetSpecified)
             throw std::runtime_error(result.componentPreset == preset
@@ -771,6 +915,10 @@ HostOptions parseCommandLine(int argc, wchar_t **argv) {
         presetSpecified = true;
         result.componentPreset = preset;
     };
+    /// @brief Set one non-repeatable Boolean command-line flag.
+    /// @param[in,out] field Flag state to set.
+    /// @param name Option name used in diagnostics.
+    /// @throws std::runtime_error If the flag is already set.
     auto setFlag = [](bool &field, std::string_view name) {
         if (field)
             throw std::runtime_error(std::string(name) + " was specified more than once");
@@ -952,6 +1100,8 @@ HostOptions parseCommandLine(int argc, wchar_t **argv) {
     return result;
 }
 
+/// @brief Return the complete native installer command-line reference.
+/// @return Static help text describing operations, options, and process exit codes.
 std::wstring commandLineHelp() {
     return LR"HELP(Zanna Tools Installer
 
@@ -985,6 +1135,12 @@ Exit codes:
 )HELP";
 }
 
+/// @brief Load and verify an installer executable and every owned overlay artifact.
+/// @param executablePath Installer image to read.
+/// @return Fully owned executable, metadata, payload, cleanup helper, text, and
+///         outer-file buffers.
+/// @throws std::runtime_error On executable/ZIP structure, PE architecture,
+///         inventory, extraction, size, or SHA-256 verification failure.
 HostPackage loadHostPackage(const fs::path &executablePath) {
     HostPackage package;
     package.executablePath = executablePath;
@@ -1049,6 +1205,9 @@ HostPackage loadHostPackage(const fs::path &executablePath) {
     return package;
 }
 
+/// @brief Render deterministic inspection JSON from a verified host package.
+/// @param package Fully verified package returned by loadHostPackage().
+/// @return UTF-16 JSON document containing identity, update, payload, and component metadata.
 std::wstring inspectPackageJson(const HostPackage &package) {
     const auto &m = package.metadata;
     std::ostringstream out;

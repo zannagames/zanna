@@ -18,6 +18,16 @@
 // Links: src/runtime/network/rt_ratelimit.c (implementation)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_ratelimit.h
+ * @brief Declares the managed token-bucket rate-limiter API.
+ * @details RateLimiter instances begin full, refill continuously up to their
+ *          configured capacity, and support immediate single- or multi-token
+ *          acquisition. The accessors expose normalized capacity, balance,
+ *          and refill configuration without transferring object ownership.
+ */
+
 #pragma once
 
 #include <stdint.h>

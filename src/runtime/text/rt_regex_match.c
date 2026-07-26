@@ -16,8 +16,9 @@
 //     aborts a match attempt rather than backtracking unboundedly.
 //   - re_find_match / re_find_match_with_groups are the engine entry points
 //     consumed by the core's public rt_pattern_* API.
-//   - Capture-group recording inside quantifiers is best-effort (last match
-//     wins), not fully PCRE-compliant.
+//   - The capture matcher uses continuations so groups and quantified groups
+//     participate in backtracking; a repeated group reports its final
+//     participating iteration.
 //
 // Ownership/Lifetime:
 //   - Operates on caller-owned compiled patterns and text buffers; allocates
@@ -28,6 +29,16 @@
 //        src/runtime/text/rt_regex_internal.h (shared engine types)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_regex_match.c
+ * @brief Implements bounded backtracking over compiled regex ASTs.
+ * @details The engine evaluates literals, anchors, classes, concatenation,
+ *          alternation, groups, and greedy or lazy quantifiers against borrowed
+ *          byte strings. A shared step budget limits pathological
+ *          backtracking, and capture-aware continuations restore ranges as
+ *          alternative paths are explored.
+ */
 
 #include "rt_regex.h"
 #include "rt_regex_internal.h"
@@ -50,6 +61,7 @@
 /* S-11: Maximum backtracking steps before aborting (ReDoS guard) */
 #define RE_MAX_STEPS 1000000
 
+/// State shared by one non-capturing search, including its global step budget.
 typedef struct {
     const char *text;
     int text_len;
@@ -116,6 +128,14 @@ static int collect_quant_positions(
     return num;
 }
 
+/// @brief Allocate scratch storage for every possible end position.
+/// @details Reserves one slot per remaining subject byte plus two boundary
+///          slots. Invalid positions, arithmetic overflow, and allocation
+///          failure trap.
+/// @param text_len Total subject length in bytes.
+/// @param pos Current byte position in `[0, text_len]`.
+/// @param capacity_out Optional destination for element capacity; reset first.
+/// @return Newly allocated integer array, or `NULL` after a trap.
 static int *alloc_match_positions(int text_len, int pos, int *capacity_out) {
     if (capacity_out)
         *capacity_out = 0;
@@ -147,6 +167,12 @@ static int *alloc_match_positions(int text_len, int pos, int *capacity_out) {
 /// ascending order, matching the quantifier enumerator's convention
 /// (greedy callers walk the list backwards). Falls back to a single
 /// `match_node` attempt for simple nodes.
+/// @param ctx Active non-capturing match context.
+/// @param n AST node to evaluate.
+/// @param pos Starting subject byte position.
+/// @param positions Destination array for exclusive end positions.
+/// @param max_positions Capacity of @p positions.
+/// @return Number of end positions written in ascending order.
 static int collect_node_positions(
     match_context *ctx, re_node *n, int pos, int *positions, int max_positions) {
     if (!positions || max_positions <= 0)
@@ -258,6 +284,11 @@ static int collect_node_positions(
 /// any backtracking — there's no "what comes after" to consult. Used
 /// when the quantifier is the entire pattern or the last child of a
 /// concat. The full backtracking version lives in `match_concat_from`.
+/// @param ctx Active non-capturing match context.
+/// @param n Quantifier AST node.
+/// @param pos Starting subject byte position.
+/// @param end_pos Destination for the chosen exclusive end position.
+/// @return `true` when the quantifier's minimum can be satisfied.
 static bool match_quant(match_context *ctx, re_node *n, int pos, int *end_pos) {
     bool greedy = n->data.quant.greedy;
 
@@ -293,6 +324,11 @@ static bool match_quant(match_context *ctx, re_node *n, int pos, int *end_pos) {
 /// Increments the global step counter on each call and bails (returns
 /// false) when the S-11 ReDoS cap is exceeded — this is what protects
 /// the engine from catastrophic backtracking inputs.
+/// @param ctx Active non-capturing match context.
+/// @param n AST node to match; null is a successful empty expression.
+/// @param pos Starting subject byte position.
+/// @param end_pos Destination for the exclusive end position.
+/// @return `true` on a successful node match, otherwise `false`.
 static bool match_node(match_context *ctx, re_node *n, int pos, int *end_pos) {
     if (!ctx || !end_pos || pos < 0 || pos > ctx->text_len)
         return false;
@@ -381,6 +417,13 @@ static bool match_node(match_context *ctx, re_node *n, int pos, int *end_pos) {
 /// `match_node` ensures even pathological cases bail eventually.
 /// Non-quantifier children are matched once; if they succeed we tail
 /// into the next child.
+/// @param ctx Active non-capturing match context.
+/// @param children Ordered AST child array.
+/// @param count Number of children.
+/// @param index Index of the next child to match.
+/// @param pos Current subject byte position.
+/// @param end_pos Destination for the final exclusive end position.
+/// @return `true` when the remaining sequence matches.
 static bool match_concat_from(
     match_context *ctx, re_node **children, int count, int index, int pos, int *end_pos) {
     if (index >= count) {
@@ -436,6 +479,13 @@ static bool match_concat_from(
 /// Walks the cursor forward one byte at a time, attempting `match_node`
 /// at each position. Caps the total search step count via `RE_MAX_STEPS`
 /// (S-11). Returns true on first hit with start/end set.
+/// @param cp Borrowed compiled pattern.
+/// @param text Borrowed subject byte buffer.
+/// @param text_len Number of subject bytes.
+/// @param start_from First candidate byte position.
+/// @param match_start Destination for the inclusive match start.
+/// @param match_end Destination for the exclusive match end.
+/// @return `true` for the first successful match, otherwise `false`.
 static bool find_match(compiled_pattern *cp,
                        const char *text,
                        int text_len,
@@ -460,6 +510,13 @@ static bool find_match(compiled_pattern *cp,
 ///
 /// Wraps the static helper for the cached-pattern API and any other
 /// in-process consumer that holds a compiled pattern directly.
+/// @param cp Borrowed compiled pattern.
+/// @param text Borrowed subject byte buffer.
+/// @param text_len Number of subject bytes.
+/// @param start_from First candidate byte position.
+/// @param match_start Destination for the inclusive match start.
+/// @param match_end Destination for the exclusive match end.
+/// @return `true` if a match is found within the shared step budget.
 bool re_find_match(re_compiled_pattern *cp,
                    const char *text,
                    int text_len,
@@ -505,6 +562,11 @@ typedef struct {
 /// index=previous position; group: aux=group start).
 typedef struct gcont gcont;
 struct gcont {
+    /// @brief Resume one capture-aware matcher continuation frame.
+    /// @param ctx Mutable capture-matching context.
+    /// @param pos Current input position.
+    /// @param self Current continuation frame.
+    /// @return `true` when this frame and its successor match.
     bool (*fn)(match_context_groups *ctx, int pos, const gcont *self);
     const gcont *next;
     re_node **children;
@@ -518,11 +580,20 @@ static bool match_node_g(match_context_groups *ctx, re_node *n, int pos, const g
 static bool match_quant_g(
     match_context_groups *ctx, re_node *n, int matched, int pos, const gcont *k);
 
+/// @brief Invoke a capture matcher's continuation.
+/// @param ctx Active capture-tracking context.
+/// @param pos Current subject byte position.
+/// @param k Continuation frame to invoke.
+/// @return Result reported by the continuation.
 static bool gapply(match_context_groups *ctx, int pos, const gcont *k) {
     return k->fn(ctx, pos, k);
 }
 
 /// @brief Terminal continuation: the whole pattern matched ending at `pos`.
+/// @param ctx Capture context whose accepted end is updated.
+/// @param pos Exclusive full-match end position.
+/// @param self Terminal continuation frame; unused.
+/// @return Always `true`.
 static bool gc_accept(match_context_groups *ctx, int pos, const gcont *self) {
     (void)self;
     ctx->accept_end = pos;
@@ -532,10 +603,23 @@ static bool gc_accept(match_context_groups *ctx, int pos, const gcont *self) {
 static bool match_seq_g(
     match_context_groups *ctx, re_node **children, int count, int index, int pos, const gcont *k);
 
+/// @brief Resume a sequence after one child has matched.
+/// @param ctx Active capture-tracking context.
+/// @param pos Exclusive end of the preceding child.
+/// @param self Continuation frame describing the remaining children.
+/// @return Whether the remaining sequence and outer continuation match.
 static bool gc_seq(match_context_groups *ctx, int pos, const gcont *self) {
     return match_seq_g(ctx, self->children, self->count, self->index, pos, self->next);
 }
 
+/// @brief Match a capture-aware sequence from a selected child index.
+/// @param ctx Active capture-tracking context.
+/// @param children Ordered AST child array.
+/// @param count Number of children.
+/// @param index Index of the next child.
+/// @param pos Current subject byte position.
+/// @param k Continuation after the complete sequence.
+/// @return Whether the remaining sequence and continuation match.
 static bool match_seq_g(
     match_context_groups *ctx, re_node **children, int count, int index, int pos, const gcont *k) {
     if (index >= count)
@@ -545,6 +629,12 @@ static bool match_seq_g(
 }
 
 /// @brief Continuation after one quantifier child match: iterate or stop.
+/// @details A zero-width child stops repetition immediately to guarantee
+///          progress.
+/// @param ctx Active capture-tracking context.
+/// @param pos Exclusive end of the repeated child.
+/// @param self Frame containing the previous position and repetition count.
+/// @return Whether further repetition or the outer continuation succeeds.
 static bool gc_quant(match_context_groups *ctx, int pos, const gcont *self) {
     if (pos == self->index) {
         // Zero-width child match: no progress; stop iterating.
@@ -554,10 +644,17 @@ static bool gc_quant(match_context_groups *ctx, int pos, const gcont *self) {
 }
 
 /// @brief True for quantifier children that always consume exactly one byte.
+/// @param child AST node to classify.
+/// @return `true` for literal, class, or dot nodes.
 static bool quant_child_simple(const re_node *child) {
     return child->type == RE_LITERAL || child->type == RE_CLASS || child->type == RE_DOT;
 }
 
+/// @brief Test a single-byte node at a subject position without continuations.
+/// @param ctx Capture context containing the subject.
+/// @param child Literal, dot, or character-class node.
+/// @param pos Candidate byte position.
+/// @return `true` when @p child consumes the byte at @p pos.
 static bool simple_match_at(const match_context_groups *ctx, const re_node *child, int pos) {
     if (pos >= ctx->text_len)
         return false;
@@ -580,6 +677,12 @@ static bool simple_match_at(const match_context_groups *ctx, const re_node *chil
 /// iterative run-length fast path so `(\d+)`-style patterns never deepen
 /// the C stack per repetition. Complex children recurse through `gc_quant`
 /// frames, bounded by RE_MAX_CAPTURE_DEPTH.
+/// @param ctx Active capture-tracking context.
+/// @param n Quantifier AST node.
+/// @param matched Number of child repetitions already completed.
+/// @param pos Current subject byte position.
+/// @param k Continuation following the quantifier.
+/// @return Whether some permitted repetition count satisfies @p k.
 static bool match_quant_g(
     match_context_groups *ctx, re_node *n, int matched, int pos, const gcont *k) {
     re_node *child = n->data.quant.child;
@@ -631,6 +734,10 @@ static bool match_quant_g(
 
 /// @brief Continuation closing a capture group: record the span, restore on
 ///        backtrack so failed branches leave no stale captures.
+/// @param ctx Capture context and output arrays to update.
+/// @param pos Exclusive group end position.
+/// @param self Frame containing the group node, start, and next continuation.
+/// @return Whether the continuation after the group succeeds.
 static bool gc_group_end(match_context_groups *ctx, int pos, const gcont *self) {
     int idx = self->node->group_index;
     if (idx >= 0 && idx < ctx->max_groups) {
@@ -647,6 +754,12 @@ static bool gc_group_end(match_context_groups *ctx, int pos, const gcont *self) 
     return gapply(ctx, pos, self->next);
 }
 
+/// @brief Dispatch one capture-aware AST node after common guards.
+/// @param ctx Active capture-tracking context.
+/// @param n Non-null AST node to match.
+/// @param pos Starting subject byte position.
+/// @param k Continuation to invoke after the node.
+/// @return Whether the node and continuation match.
 static bool match_node_g_inner(match_context_groups *ctx, re_node *n, int pos, const gcont *k) {
     switch (n->type) {
         case RE_LITERAL:
@@ -695,6 +808,13 @@ static bool match_node_g_inner(match_context_groups *ctx, re_node *n, int pos, c
 }
 
 /// @brief Capture-tracking matcher entry: guards, then dispatch.
+/// @details Enforces both the global step budget and recursive depth cap. A
+///          null node acts as an empty expression and immediately continues.
+/// @param ctx Active capture-tracking context.
+/// @param n AST node to match, or null.
+/// @param pos Starting subject byte position.
+/// @param k Continuation to invoke after the node.
+/// @return Whether the node and continuation match within configured bounds.
 static bool match_node_g(match_context_groups *ctx, re_node *n, int pos, const gcont *k) {
     if (!ctx || pos < 0 || pos > ctx->text_len)
         return false;
@@ -717,6 +837,17 @@ static bool match_node_g(match_context_groups *ctx, re_node *n, int pos, const g
 /// follow lexical (opening-parenthesis) numbering. On success,
 /// `*num_groups` is the pattern's group count (clamped to `max_groups`);
 /// groups that did not participate in the match report start/end -1.
+/// @param cp Borrowed compiled pattern.
+/// @param text Borrowed subject byte buffer.
+/// @param text_len Number of subject bytes.
+/// @param start_from First candidate byte position.
+/// @param match_start Destination for the inclusive full-match start.
+/// @param match_end Destination for the exclusive full-match end.
+/// @param group_starts Capture-start output array.
+/// @param group_ends Capture-end output array.
+/// @param max_groups Capacity of each capture array.
+/// @param num_groups Destination for the reported capture count.
+/// @return `true` for the first match found within step and depth limits.
 static bool find_match_groups(compiled_pattern *cp,
                               const char *text,
                               int text_len,
@@ -754,6 +885,17 @@ static bool find_match_groups(compiled_pattern *cp,
 /// Wraps `find_match_groups` for callers that hold a compiled pattern
 /// directly (cached-pattern wrapper, replace-with-references helpers,
 /// etc.).
+/// @param cp Borrowed compiled pattern.
+/// @param text Borrowed subject byte buffer.
+/// @param text_len Number of subject bytes.
+/// @param start_from First candidate byte position.
+/// @param match_start Destination for the inclusive full-match start.
+/// @param match_end Destination for the exclusive full-match end.
+/// @param group_starts Preallocated capture-start array.
+/// @param group_ends Preallocated capture-end array.
+/// @param max_groups Capacity of each capture array.
+/// @param num_groups Destination for the reported capture count.
+/// @return `true` if a match is found within the engine bounds.
 bool re_find_match_with_groups(re_compiled_pattern *cp,
                                const char *text,
                                int text_len,

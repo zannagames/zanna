@@ -80,12 +80,17 @@ int dumpRuntimeDescriptors() {
 
     const auto &reg = runtimeRegistry();
 
+    /// @brief Runtime descriptors sharing one signature id and handler.
     struct DescriptorGroup {
         std::optional<il::runtime::RtSig> sig{};
         il::runtime::RuntimeHandler handler{nullptr};
         std::vector<const RuntimeDescriptor *> descriptors;
         size_t firstIndex{0};
 
+        /// @brief Test whether a descriptor belongs to this grouping key.
+        /// @param otherSig Candidate runtime signature identifier.
+        /// @param otherHandler Candidate runtime implementation handler.
+        /// @return true when both key components match this group.
         bool matches(std::optional<il::runtime::RtSig> otherSig,
                      il::runtime::RuntimeHandler otherHandler) const noexcept {
             return sig == otherSig && handler == otherHandler;
@@ -98,6 +103,9 @@ int dumpRuntimeDescriptors() {
     for (size_t i = 0; i < reg.size(); ++i) {
         const auto &d = reg[i];
         const auto sig = findRuntimeSignatureId(d.name);
+        /// @brief Match an existing descriptor group by signature and implementation handler.
+        /// @param group Candidate group.
+        /// @return `true` when `group` accepts the current descriptor key.
         auto it = std::find_if(groups.begin(), groups.end(), [&](const DescriptorGroup &group) {
             return group.matches(sig, d.handler);
         });
@@ -113,6 +121,9 @@ int dumpRuntimeDescriptors() {
         }
     }
 
+    /// @brief Render a comma-separated list of IL type spellings.
+    /// @param ts Types to serialize.
+    /// @return Comma-delimited type text.
     auto typeListToString = [](const std::vector<il::core::Type> &ts) -> std::string {
         std::ostringstream os;
         for (size_t i = 0; i < ts.size(); ++i) {
@@ -123,6 +134,10 @@ int dumpRuntimeDescriptors() {
         return os.str();
     };
 
+    /// @brief Render runtime signature effects and trap classification.
+    /// @param s Signature whose throw, read, and purity flags are serialized.
+    /// @param trap Runtime trap classification to append.
+    /// @return Human-readable comma-separated effect list.
     auto effectsToString = [](const il::runtime::RuntimeSignature &s,
                               il::runtime::RuntimeTrapClass trap) -> std::string {
         std::vector<std::string> items;
@@ -152,6 +167,10 @@ int dumpRuntimeDescriptors() {
         return os.str();
     };
 
+    /// @brief Restore descriptor groups to their first registry occurrence.
+    /// @param a Left-hand group.
+    /// @param b Right-hand group.
+    /// @return `true` when `a` first appeared before `b`.
     std::sort(groups.begin(), groups.end(), [](const auto &a, const auto &b) {
         return a.firstIndex < b.firstIndex;
     });
@@ -221,6 +240,8 @@ bool endsWith(std::string_view text, std::string_view suffix) {
 }
 
 /// @brief Return whether a name belongs to the reviewed Graphics3D/Game3D boundary.
+/// @param name Public runtime function, class, property-target, or method-target name.
+/// @return true for names rooted at `Zanna.Graphics3D.` or `Zanna.Game3D.`.
 bool isThreeDRuntimeName(std::string_view name) {
     return startsWith(name, "Zanna.Graphics3D.") || startsWith(name, "Zanna.Game3D.");
 }
@@ -312,11 +333,17 @@ std::vector<std::string> splitRuntimeTypeList(std::string_view text) {
         }
         if (i == text.size() || (text[i] == ',' && angleDepth == 0)) {
             std::string item(text.substr(start, i - start));
+            /// @brief Identify the first non-whitespace byte of a parameter token.
+            /// @param c Byte to inspect.
+            /// @return `true` when `c` is not whitespace.
             item.erase(item.begin(), std::find_if(item.begin(), item.end(), [](unsigned char c) {
                            return !std::isspace(c);
                        }));
             item.erase(std::find_if(item.rbegin(),
                                     item.rend(),
+                                    /// @brief Identify the last non-whitespace byte of a token.
+                                    /// @param c Byte to inspect.
+                                    /// @return `true` when `c` is not whitespace.
                                     [](unsigned char c) { return !std::isspace(c); })
                            .base(),
                        item.end());
@@ -372,6 +399,7 @@ void emitStringArrayJson(std::ostream &os, const std::vector<std::string> &value
 ///          requiring tools to guess what punctuation means.
 /// @param os Stream receiving JSON.
 /// @param rawType Type token from a public signature.
+/// @param nullableOverride Optional authoritative nullability replacing suffix inference.
 void emitRuntimeApiTypeJson(std::ostream &os,
                             std::string_view rawType,
                             std::optional<bool> nullableOverride = std::nullopt) {
@@ -424,6 +452,9 @@ void emitRuntimeApiTypeJson(std::ostream &os,
 ///          domains, the raw C boundary can return null for invalid handles, absence, failed
 ///          readback/import, or a trapped allocation, so object/pointer results are conservatively
 ///          and explicitly nullable. Primitive, string, and void results are non-nullable.
+/// @param name Public runtime function or binding-target name.
+/// @param signature Compact runtime signature used to classify the return type.
+/// @return Explicit nullability when known, or nullopt when the row is not classified.
 std::optional<bool> runtimeReturnNullable(std::string_view name, std::string_view signature) {
     const RuntimeApiSignatureParts sig = parseRuntimeApiSignature(signature);
     if (!sig.valid)
@@ -652,6 +683,13 @@ std::optional<std::string_view> explicitRuntimeFallibility(std::string_view name
     return std::nullopt;
 }
 
+/// @brief Infer how a runtime API row communicates operational failure.
+/// @details Applies explicit per-row policy first, then recognizes option/result,
+///          nullable, status, sentinel, side-channel, and trap conventions from
+///          the reviewed API boundaries and public name/signature shape.
+/// @param name Public runtime function or binding-target name.
+/// @param signature Compact runtime signature.
+/// @return Stable fallibility classification for generated API metadata.
 std::string inferRuntimeFallibility(std::string_view name, std::string_view signature) {
     const RuntimeApiSignatureParts sig = parseRuntimeApiSignature(signature);
     const std::string_view leaf = lastRuntimeNameSegment(name);
@@ -966,6 +1004,8 @@ bool inferRuntimeMethodIsStatic(
 }
 
 /// @brief Map an opcode TypeCategory to its stable JSON name.
+/// @param category Opcode result or operand type category.
+/// @return Static lowercase category spelling used by `--dump-opcodes`.
 const char *typeCategoryName(il::core::TypeCategory category) {
     using il::core::TypeCategory;
     switch (category) {
@@ -1279,6 +1319,7 @@ int dumpRuntimeClasses() {
 /// @details The top-level help intentionally stays short. Subcommand-specific
 ///          help carries detailed flags so unrelated implementation options do
 ///          not crowd the common command list.
+/// @param out Stream that receives the formatted top-level help text.
 void printTopLevelUsage(std::ostream &out) {
     out << "zanna v" << ZANNA_VERSION_STR << "\n"
         << "Usage: zanna <command> [arguments]\n"
@@ -1316,6 +1357,7 @@ void printTopLevelUsage(std::ostream &out) {
         << "       zanna --version\n";
 }
 
+/// @brief Print top-level usage to the standard error stream.
 void usage() {
     printTopLevelUsage(std::cerr);
 }
@@ -1329,6 +1371,7 @@ int invokeHelp(int (*handler)(int, char **)) {
 }
 
 /// @brief Print usage for the `zanna codegen` subcommand (architectures + options).
+/// @param out Stream that receives the code-generation help text.
 void codegenUsage(std::ostream &out = std::cerr) {
     out << "Usage: zanna codegen <arch> <file.il> [options]\n"
         << "\n"

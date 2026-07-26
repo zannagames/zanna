@@ -21,6 +21,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements deterministic in-memory XAR archive generation.
+/// @details Flat sanitized entries are rebuilt into a directory-tree TOC, file
+///          payloads may be zlib-compressed, and SHA-1 metadata is emitted in
+///          the big-endian XAR container format used by macOS flat packages.
+
 #include "XarWriter.hpp"
 
 #include "PkgHash.hpp"
@@ -38,6 +44,8 @@ namespace zanna::pkg {
 namespace {
 
 /// @brief Sanitize an entry path and require it to be non-empty.
+/// @param path Caller-supplied archive-relative path.
+/// @return Sanitized non-empty path.
 /// @throws std::runtime_error when the path is empty, ".", or unsafe.
 std::string normalizeXarPath(const std::string &path) {
     const std::string clean = sanitizePackageRelativePath(path, "xar file path");
@@ -47,6 +55,8 @@ std::string normalizeXarPath(const std::string &path) {
 }
 
 /// @brief Escape the five XML metacharacters (&, <, >, ", ') for TOC text.
+/// @param text Plain text to embed in an XML node.
+/// @return Text with all five predefined XML entities escaped.
 std::string xmlEscape(const std::string &text) {
     std::string out;
     out.reserve(text.size());
@@ -76,12 +86,16 @@ std::string xmlEscape(const std::string &text) {
 }
 
 /// @brief Append a 16-bit value to @p out in big-endian byte order (XAR header).
+/// @param out Destination byte vector.
+/// @param value Host-order value to encode.
 void appendBE16(std::vector<uint8_t> &out, uint16_t value) {
     out.push_back(static_cast<uint8_t>((value >> 8) & 0xffu));
     out.push_back(static_cast<uint8_t>(value & 0xffu));
 }
 
 /// @brief Append a 32-bit value to @p out in big-endian byte order (XAR header).
+/// @param out Destination byte vector.
+/// @param value Host-order value to encode.
 void appendBE32(std::vector<uint8_t> &out, uint32_t value) {
     out.push_back(static_cast<uint8_t>((value >> 24) & 0xffu));
     out.push_back(static_cast<uint8_t>((value >> 16) & 0xffu));
@@ -90,6 +104,8 @@ void appendBE32(std::vector<uint8_t> &out, uint32_t value) {
 }
 
 /// @brief Append a 64-bit value to @p out in big-endian byte order (XAR header).
+/// @param out Destination byte vector.
+/// @param value Host-order value to encode.
 void appendBE64(std::vector<uint8_t> &out, uint64_t value) {
     for (int shift = 56; shift >= 0; shift -= 8)
         out.push_back(static_cast<uint8_t>((value >> shift) & 0xffu));
@@ -119,6 +135,8 @@ struct XarTreeNode {
 
 /// @brief Split a '/'-separated path into its components (including a trailing
 ///        empty component if the path ends in '/').
+/// @param path Slash-separated archive path.
+/// @return Components in order, preserving a terminal empty component.
 std::vector<std::string> splitPathComponents(const std::string &path) {
     std::vector<std::string> parts;
     size_t pos = 0;
@@ -168,6 +186,9 @@ XarTreeNode *ensureDirectoryNode(XarTreeNode &root, const std::string &path, uin
 /// @details Creates intermediate directory nodes for all but the last path
 ///          component, then attaches a leaf file node pointing at @p entry.
 ///          Throws on a duplicate path or a parent that is already a file.
+/// @param root Tree root to modify.
+/// @param entry Prepared file whose path and metadata back the new leaf.
+/// @throws std::runtime_error On empty, duplicate, or file-as-parent paths.
 void addFileNode(XarTreeNode &root, const PreparedEntry &entry) {
     const auto parts = splitPathComponents(entry.path);
     if (parts.empty())
@@ -252,6 +273,10 @@ void writeTreeNodeXml(std::ostringstream &toc, const XarTreeNode &node, int &id,
 
 } // namespace
 
+/// @brief Add or merge a directory in the pending XAR tree.
+/// @param path Archive-relative directory path.
+/// @param mode Permission bits, masked to the supported low 12 bits.
+/// @throws std::runtime_error If @p path is empty or unsafe.
 void XarWriter::addDirectory(const std::string &path, uint32_t mode) {
     const std::string clean = normalizeXarPath(path);
     if (!seenNames_.insert(clean).second)
@@ -263,6 +288,13 @@ void XarWriter::addDirectory(const std::string &path, uint32_t mode) {
     entries_.push_back(std::move(entry));
 }
 
+/// @brief Add a copied raw-buffer file to the pending archive.
+/// @param name Archive-relative file path.
+/// @param data File bytes; may be null only when @p size is zero.
+/// @param size Number of bytes available at @p data.
+/// @param compress Whether to zlib-compress the heap payload.
+/// @param mode Permission bits, masked to the supported low 12 bits.
+/// @throws std::runtime_error On unsafe/duplicate paths or null non-empty data.
 void XarWriter::addFile(
     const std::string &name, const uint8_t *data, size_t size, bool compress, uint32_t mode) {
     const std::string clean = normalizeXarPath(name);
@@ -281,6 +313,12 @@ void XarWriter::addFile(
     entries_.push_back(std::move(entry));
 }
 
+/// @brief Add a copied byte-vector file to the pending archive.
+/// @param name Archive-relative file path.
+/// @param data File bytes to copy.
+/// @param compress Whether to zlib-compress the heap payload.
+/// @param mode Permission bits, masked to the supported low 12 bits.
+/// @throws std::runtime_error On unsafe or duplicate paths.
 void XarWriter::addFileVec(const std::string &name,
                            const std::vector<uint8_t> &data,
                            bool compress,
@@ -288,6 +326,12 @@ void XarWriter::addFileVec(const std::string &name,
     addFile(name, data.data(), data.size(), compress, mode);
 }
 
+/// @brief Add copied string bytes as a pending archive file.
+/// @param name Archive-relative file path.
+/// @param content File bytes to copy without transcoding.
+/// @param compress Whether to zlib-compress the heap payload.
+/// @param mode Permission bits, masked to the supported low 12 bits.
+/// @throws std::runtime_error On unsafe or duplicate paths.
 void XarWriter::addFileString(const std::string &name,
                               const std::string &content,
                               bool compress,
@@ -301,7 +345,9 @@ void XarWriter::addFileString(const std::string &name,
 /// @details File payloads are laid out in the heap (after the 20 reserved
 ///          checksum bytes) and their offsets recorded; the directory tree is
 ///          rebuilt and rendered to XML; the TOC is zlib-compressed and its SHA-1
-///          stored at heap offset 0. See the header for the return contract.
+///          stored at heap offset 0.
+/// @return Complete caller-owned XAR byte stream; pending entries are unchanged.
+/// @throws std::runtime_error On tree conflicts, compression failure, or size overflow.
 std::vector<uint8_t> XarWriter::finish() const {
     std::vector<PreparedEntry> prepared;
     prepared.reserve(entries_.size());
@@ -371,6 +417,9 @@ std::vector<uint8_t> XarWriter::finish() const {
     return out;
 }
 
+/// @brief Serialize the archive and atomically replace the destination file.
+/// @param path Native output path.
+/// @throws std::runtime_error On serialization, temporary-file, or replacement failure.
 void XarWriter::finishToFile(const std::string &path) const {
     auto data = finish();
     writeFileAtomic(path, data);

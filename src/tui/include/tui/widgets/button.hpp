@@ -5,9 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the Button widget for Zanna's TUI framework.
-// Button displays a labeled interactive element with a border that can
-// be activated by pressing Enter when focused.
+/// @file
+/// @brief Declares a themed, keyboard-activated button widget.
+/// @details Button paints a centered label inside a border and invokes an
+///          optional owned callback when Enter is pressed while focused.
 //
 // The button renders its label text centered within a bordered rectangle
 // using theme-appropriate styles. When the user presses Enter while the
@@ -40,6 +41,8 @@ namespace zanna::tui::widgets {
 ///          focused states respectively.
 class Button : public ui::Widget {
   public:
+    /// @brief Callback invoked when the button is activated.
+    /// @details Takes no arguments and returns no value.
     using OnClick = std::function<void()>;
 
     /// @brief Construct button.
@@ -49,19 +52,22 @@ class Button : public ui::Widget {
     Button(std::string text, OnClick onClick, const style::Theme &theme);
 
     /// @brief Paint button with border and label.
+    /// @param sb Screen buffer receiving border, fill, and centered text.
     void paint(render::ScreenBuffer &sb) override;
 
     /// @brief Handle key events for activation.
+    /// @param ev Input event to inspect for Enter.
     /// @return True if event consumed.
     bool onEvent(const ui::Event &ev) override;
 
     /// @brief Buttons want focus to receive input.
+    /// @return Always true.
     [[nodiscard]] bool wantsFocus() const override;
 
   private:
-    std::string text_{};
-    OnClick onClick_{};
-    const style::Theme &theme_;
+    std::string text_{};          ///< Owned label text.
+    OnClick onClick_{};           ///< Optional owned activation callback.
+    const style::Theme &theme_;   ///< Borrowed render palette.
 };
 
 } // namespace zanna::tui::widgets

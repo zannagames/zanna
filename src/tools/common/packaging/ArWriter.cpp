@@ -15,11 +15,17 @@
 //   - Data for odd-size members is followed by a '\n' padding byte.
 //
 // Ownership/Lifetime:
-//   - Single-use writer, accumulates members then outputs.
+//   - Writer owns accumulated member copies and supports repeated const output.
 //
 // Links: ArWriter.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements validated serialization of Debian-compatible `ar` containers.
+/// @details The implementation emits only the portable short-name representation
+///          required by `.deb` archives and guards all in-memory size estimates
+///          and fixed-width header fields against overflow.
 
 #include "ArWriter.hpp"
 #include "PkgUtils.hpp"
@@ -35,6 +41,9 @@ namespace {
 /// @brief Add @p value to @p total while checking for size_t overflow.
 /// @details The ar writer stores all output in memory. Guarding the pre-reserve estimate keeps
 ///          pathological member sets from wrapping the requested capacity before serialization.
+/// @param total Running byte estimate updated on success.
+/// @param value Additional bytes to include.
+/// @throws std::runtime_error When the addition would overflow `size_t`.
 void checkedAddEstimate(size_t &total, size_t value) {
     if (value > std::numeric_limits<size_t>::max() - total)
         throw std::runtime_error("ArWriter: archive size estimate overflow");
@@ -45,6 +54,12 @@ void checkedAddEstimate(size_t &total, size_t value) {
 
 /// @brief Store one archive member. Copies `data` into an internal buffer along
 /// with the name, mtime, and mode; the member is appended to the output on finish().
+/// @param name Unique short member name without the serialized trailing slash.
+/// @param data Payload bytes, nullable only when @p size is zero.
+/// @param size Number of bytes to copy from @p data.
+/// @param mtime Unix modification timestamp written in decimal.
+/// @param mode File type/permission bits written in octal.
+/// @throws std::runtime_error For invalid names, duplicates, or null nonempty data.
 void ArWriter::addMember(
     const std::string &name, const uint8_t *data, size_t size, uint32_t mtime, uint32_t mode) {
     if (name.empty())
@@ -72,6 +87,10 @@ void ArWriter::addMember(
 }
 
 /// @brief Convenience wrapper: converts the string to a byte span and delegates to addMember().
+/// @param name Member name passed to @ref addMember.
+/// @param content String bytes copied as the payload.
+/// @param mtime Unix modification timestamp.
+/// @param mode File type/permission bits.
 void ArWriter::addMemberString(const std::string &name,
                                const std::string &content,
                                uint32_t mtime,
@@ -80,6 +99,10 @@ void ArWriter::addMemberString(const std::string &name,
 }
 
 /// @brief Convenience wrapper: delegates to addMember() with the vector's data pointer and size.
+/// @param name Member name passed to @ref addMember.
+/// @param data Vector payload copied into writer storage.
+/// @param mtime Unix modification timestamp.
+/// @param mode File type/permission bits.
 void ArWriter::addMemberVec(const std::string &name,
                             const std::vector<uint8_t> &data,
                             uint32_t mtime,
@@ -90,8 +113,12 @@ void ArWriter::addMemberVec(const std::string &name,
 namespace {
 
 /// @brief Write a right-space-padded ASCII field into a fixed-width ar header slot.
-/// Throws if `value` is longer than `width`; the ar format has no overflow indicator so
-/// silent truncation would produce a silently malformed archive.
+/// @param buf Destination header slot with at least @p width writable bytes.
+/// @param value ASCII field text to copy.
+/// @param width Exact serialized field width.
+/// @param fieldName Field label used in an overflow exception.
+/// @throws std::runtime_error If @p value exceeds @p width; the format has no
+///         overflow indicator and truncation would silently corrupt the archive.
 void writeField(uint8_t *buf, const std::string &value, size_t width, const char *fieldName) {
     if (value.size() > width)
         throw std::runtime_error(std::string("ar ") + fieldName + " field too long: " + value);
@@ -102,8 +129,11 @@ void writeField(uint8_t *buf, const std::string &value, size_t width, const char
 } // namespace
 
 /// @brief Serialize all accumulated members into a complete ar archive byte stream.
-/// Emits the global "!<arch>\n" magic, then for each member writes the 60-byte
-/// fixed-field header followed by the data and an optional '\n' pad byte for odd sizes.
+/// @details Emits the global `"!<arch>\n"` magic, then for each member writes
+///          the 60-byte fixed-field header followed by the data and an optional
+///          newline pad byte for odd sizes.
+/// @return Newly allocated archive bytes in member insertion order.
+/// @throws std::runtime_error When size estimation or a header field overflows.
 std::vector<uint8_t> ArWriter::finish() const {
     std::vector<uint8_t> out;
 
@@ -161,8 +191,10 @@ std::vector<uint8_t> ArWriter::finish() const {
 }
 
 /// @brief Finalize the archive and write it atomically to `path`.
-/// Calls finish() to build the byte stream, then delegates to the shared
-/// same-directory temporary-file writer.
+/// @details Calls @ref finish to build the byte stream, then delegates to the
+///          shared same-directory temporary-file writer.
+/// @param path Destination filesystem path to replace.
+/// @throws std::exception If serialization or atomic output fails.
 void ArWriter::finishToFile(const std::string &path) const {
     auto data = finish();
     writeFileAtomic(path, data);

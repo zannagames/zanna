@@ -5,22 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/tools/windows_installer/main.cpp
-// Purpose: Provide the Unicode Win32 entry point for setup, maintenance,
-//          repair, and uninstall operations.
-//
-// Key invariants:
-//   - Help and the launch self-test are available without a package overlay.
-//   - Package verification and log initialization precede lifecycle mutation.
-//   - Automation output is complete or reported as an error; an explicit output
-//     path is replaced atomically and never exposes a partial JSON document.
-//   - Fatal diagnostics are visible interactively and written to stderr when
-//     inherited by automation.
-//
-// Ownership/Lifetime:
-//   - CommandLineToArgvW memory is released before process exit.
-//
-// Links: WindowsInstallerHost.hpp, WindowsInstallerLifecycle.cpp
+/// @file main.cpp
+/// @brief Provides the Unicode Win32 entry point for setup and maintenance operations.
+///
+/// Help and launch self-test modes do not require a package overlay. Package verification and log
+/// initialization precede lifecycle mutation. Automation output is either complete or reported as
+/// an error, and explicit output files are replaced atomically. Fatal diagnostics reach inherited
+/// standard error and, outside quiet mode, an interactive dialog.
+///
+/// CommandLineToArgvW memory and the COM apartment are released before process exit.
 //
 //===----------------------------------------------------------------------===//
 
@@ -40,18 +33,23 @@
 
 namespace {
 
+/// @brief RAII owner for the entry thread's single-threaded COM apartment.
 class ComApartment {
   public:
+    /// @brief Attempt to initialize COM for shell and dialog services.
     ComApartment() {
         result_ = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
         initialized_ = SUCCEEDED(result_);
     }
 
+    /// @brief Balance successful COM initialization.
     ~ComApartment() {
         if (initialized_)
             CoUninitialize();
     }
 
+    /// @brief Report whether COM is usable in the current apartment.
+    /// @return @c true for successful initialization, including compatible prior initialization.
     bool available() const {
         return SUCCEEDED(result_);
     }
@@ -63,6 +61,10 @@ class ComApartment {
 
 namespace fs = std::filesystem;
 
+/// @brief Write every UTF-8 byte to an existing Windows handle.
+/// @param handle Writable file or inherited stream handle.
+/// @param utf8 Complete byte string to emit.
+/// @return @c true after a complete write; @c false on invalid handle or write failure.
 bool writeUtf8(HANDLE handle, const std::string &utf8) {
     if (handle == nullptr || handle == INVALID_HANDLE_VALUE)
         return false;
@@ -82,6 +84,9 @@ bool writeUtf8(HANDLE handle, const std::string &utf8) {
     return true;
 }
 
+/// @brief Convert a UTF-8 exception message without allowing diagnostic handling to throw.
+/// @param message NUL-terminated UTF-8 text, or null.
+/// @return Converted message or a stable fallback for empty or invalid input.
 std::wstring safeWideDiagnostic(const char *message) noexcept {
     try {
         return message ? zanna::installer::utf8ToWide(message)
@@ -91,15 +96,27 @@ std::wstring safeWideDiagnostic(const char *message) noexcept {
     }
 }
 
+/// @brief Encode UTF-16 text and write it to an inherited stream.
+/// @param handle Inherited standard-output or standard-error handle.
+/// @param text Text to encode.
+/// @return @c true after complete output.
 bool writeInherited(HANDLE handle, std::wstring_view text) {
     return writeUtf8(handle, zanna::installer::wideToUtf8(text));
 }
 
+/// @brief Throw a UTF-8 runtime error describing a failed output action.
+/// @param action User-facing description of the attempted action.
+/// @param error Win32 error code to format.
+/// @throws std::runtime_error Always.
 [[noreturn]] void throwOutputError(std::wstring_view action, DWORD error) {
     throw std::runtime_error(zanna::installer::wideToUtf8(
         std::wstring(action) + L": " + zanna::installer::formatWindowsError(error)));
 }
 
+/// @brief Encode and atomically publish an automation output document.
+/// @param destination Final output path.
+/// @param text Complete UTF-16 document to encode as UTF-8.
+/// @throws std::runtime_error If unique staging, writing, flushing, closing, or commit fails.
 void writeFileAtomically(const fs::path &destination, std::wstring_view text) {
     const std::string utf8 = zanna::installer::wideToUtf8(text);
     fs::path temporary;
@@ -145,6 +162,10 @@ void writeFileAtomically(const fs::path &destination, std::wstring_view text) {
     }
 }
 
+/// @brief Route complete automation output to an atomic file or inherited standard output.
+/// @param options Parsed output-path selection.
+/// @param text Complete automation document.
+/// @throws std::runtime_error If the selected destination cannot receive the complete document.
 void writeAutomationOutput(const zanna::installer::HostOptions &options, std::wstring_view text) {
     if (!options.outputPath.empty()) {
         writeFileAtomically(options.outputPath, text);
@@ -156,6 +177,10 @@ void writeAutomationOutput(const zanna::installer::HostOptions &options, std::ws
     }
 }
 
+/// @brief Compare paths by normalized spelling and, when needed, filesystem identity.
+/// @param left First path.
+/// @param right Second path.
+/// @return @c true when paths compare ordinally equal or name the same file object.
 bool samePath(const fs::path &left, const fs::path &right) {
     const std::wstring leftText = fs::absolute(left).lexically_normal().wstring();
     const std::wstring rightText = fs::absolute(right).lexically_normal().wstring();
@@ -198,6 +223,10 @@ bool samePath(const fs::path &left, const fs::path &right) {
     return equal;
 }
 
+/// @brief Reject log and output targets that alias the executable or each other.
+/// @param options Parsed log and automation-output paths.
+/// @param executable Running installer path.
+/// @throws std::runtime_error If any session path aliases an unsafe target.
 void validateSessionPaths(const zanna::installer::HostOptions &options,
                           const fs::path &executable) {
     if (!options.logPath.empty() && samePath(options.logPath, executable))
@@ -210,6 +239,10 @@ void validateSessionPaths(const zanna::installer::HostOptions &options,
     }
 }
 
+/// @brief Report a fatal diagnostic to inherited stderr and permitted interactive UI.
+/// @param options Parsed UI policy, or null before option parsing.
+/// @param title Interactive dialog title.
+/// @param message Complete diagnostic text.
 void showFatal(const zanna::installer::HostOptions *options,
                std::wstring_view title,
                std::wstring_view message) noexcept {
@@ -230,6 +263,9 @@ void showFatal(const zanna::installer::HostOptions *options,
 
 } // namespace
 
+/// @brief Initialize process services and dispatch the requested installer operation.
+/// @param instance Current module instance used by native installer surfaces.
+/// @return Stable installer process exit code.
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     const ComApartment comApartment;
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);

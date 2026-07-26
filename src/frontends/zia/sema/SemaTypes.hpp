@@ -18,6 +18,14 @@
 // Links: frontends/zia/Sema.hpp, frontends/zia/Types.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Defines Zia semantic symbols, persistent definition snapshots, and
+///        lexical scope lookup.
+/// @details Scope owns name-to-symbol values and borrows an immutable parent
+///          link, while ScopedSymbol retains position/owner metadata after
+///          transient analysis scopes have been popped.
+
 #pragma once
 
 #include "frontends/zia/AST.hpp"

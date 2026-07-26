@@ -20,6 +20,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares single-predecessor block merging for SimplifyCFG.
+ *
+ * @details The subtransform substitutes incoming edge arguments for block
+ *          parameters and splices eligible blocks into unconditional
+ *          predecessors while preserving exception-sensitive CFG structure.
+ */
+
 #pragma once
 
 #include "il/transform/SimplifyCFG.hpp"

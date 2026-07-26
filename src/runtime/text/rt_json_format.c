@@ -7,7 +7,7 @@
 //
 // File: src/runtime/text/rt_json_format.c
 // Purpose: JSON serialization and value-type classification for the
-//          Zanna.Text.Json class per RFC 8259 §7. Walks a Zanna value tree
+//          Zanna.Data.Json class per RFC 8259 §7. Walks a Zanna value tree
 //          (Map/Seq/String/boxed primitives) and emits compact or
 //          pretty-printed JSON text.
 //
@@ -26,6 +26,15 @@
 //        src/runtime/text/rt_json_parse.c (inverse: JSON text → value)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_json_format.c
+ * @brief Implements JSON serialization and managed-value type classification.
+ * @details The serializer walks Maps, sequences, runtime Strings, and boxed
+ *          primitives, escapes RFC 8259 text, formats finite numbers
+ *          locale-independently, supports compact and indented output, and
+ *          rejects cyclic or excessively nested object graphs.
+ */
 
 #include "rt_json.h"
 
@@ -50,26 +59,29 @@
 #include <xlocale.h>
 #endif
 
-/// Minimum payload bytes read by Seq/Map public APIs during JSON formatting.
+/// Minimum payload size required before treating an object as a Seq.
 #define JSON_SEQ_MIN_PAYLOAD (sizeof(int64_t) * 2 + sizeof(void *) + sizeof(int8_t))
+/// Minimum payload size required before treating an object as a Map.
 #define JSON_MAP_MIN_PAYLOAD (sizeof(void *) * 2 + sizeof(size_t) * 2)
 
 //=============================================================================
 // String Formatting Helpers
 //=============================================================================
 
+/// Growable, NUL-terminated scratch buffer for serialized JSON bytes.
 typedef struct {
-    char *buf;
-    size_t len;
-    size_t cap;
-    int failed;
+    char *buf;  ///< Heap allocation containing accumulated bytes.
+    size_t len; ///< Number of content bytes, excluding the terminator.
+    size_t cap; ///< Total allocated capacity in bytes.
+    int failed; ///< Sticky allocation, overflow, or graph-error flag.
 } string_builder;
 
+/// Active-container stack used for cycle and nesting-depth detection.
 typedef struct {
-    void **items;
-    size_t len;
-    size_t cap;
-    int failed;
+    void **items; ///< Borrowed Map/Seq pointers on the current recursion path.
+    size_t len;   ///< Number of active entries.
+    size_t cap;   ///< Allocated pointer capacity.
+    int failed;   ///< Sticky graph/depth/allocation error flag.
 } format_context;
 
 // ---------------------------------------------------------------------------
@@ -78,7 +90,10 @@ typedef struct {
 // converts it into an `rt_string` and frees the scratch buffer.
 // ---------------------------------------------------------------------------
 
-/// @brief Initialise an empty string-builder with no allocation.
+/// @brief Initialize an empty builder with a 256-byte scratch allocation.
+/// @details Allocation failure marks the builder failed and raises a runtime
+///          trap, allowing later append helpers to become no-ops.
+/// @param sb Writable builder state.
 static void sb_init(string_builder *sb) {
     sb->cap = 256;
     sb->len = 0;
@@ -93,6 +108,11 @@ static void sb_init(string_builder *sb) {
 }
 
 /// @brief Ensure the builder has room for at least `needed` more bytes; doubles capacity.
+/// @details Detects length/capacity overflow. Reallocation failure releases the
+///          old buffer, marks the builder failed, and raises a trap.
+/// @param sb Initialized builder to grow.
+/// @param needed Additional capacity required, including any requested
+///               terminator reserve.
 static void sb_grow(string_builder *sb, size_t needed) {
     if (sb->failed)
         return;
@@ -128,6 +148,8 @@ static void sb_grow(string_builder *sb, size_t needed) {
 }
 
 /// @brief Append a NUL-terminated C string to the builder.
+/// @param sb Initialized destination builder.
+/// @param s Borrowed non-null NUL-terminated source.
 static void sb_append(string_builder *sb, const char *s) {
     if (sb->failed)
         return;
@@ -141,6 +163,8 @@ static void sb_append(string_builder *sb, const char *s) {
 }
 
 /// @brief Append a single byte to the builder.
+/// @param sb Initialized destination builder.
+/// @param c Byte to append before the maintained NUL terminator.
 static void sb_append_char(string_builder *sb, char c) {
     if (sb->failed)
         return;
@@ -152,6 +176,11 @@ static void sb_append_char(string_builder *sb, char c) {
 }
 
 /// @brief Append `indent * level` literal spaces (pretty-print indentation).
+/// @details Non-positive indentation performs no work. Negative levels and
+///          multiplication overflow mark the builder failed and trap.
+/// @param sb Initialized destination builder.
+/// @param indent Spaces per nesting level.
+/// @param level Current non-negative nesting level.
 static void sb_append_indent(string_builder *sb, int64_t indent, int64_t level) {
     if (sb->failed)
         return;
@@ -173,6 +202,10 @@ static void sb_append_indent(string_builder *sb, int64_t indent, int64_t level) 
 }
 
 /// @brief Convert the builder's contents to an `rt_string` and free the scratch buffer.
+/// @details A failed or missing buffer produces an owned empty fallback string.
+/// @param sb Builder to consume; its scratch buffer is invalidated.
+/// @return Newly allocated runtime string containing the accumulated bytes, or
+///         an empty fallback after an earlier failure.
 static rt_string sb_finish(string_builder *sb) {
     if (sb->failed || !sb->buf) {
         free(sb->buf);
@@ -184,6 +217,16 @@ static rt_string sb_finish(string_builder *sb) {
     return result;
 }
 
+/// @brief Format text with C-locale numeric punctuation.
+/// @details Uses `_vsnprintf_l` on Windows and a temporary thread-local locale
+///          on POSIX, preventing the process locale from introducing a decimal
+///          comma into JSON numbers.
+/// @param buffer Writable output buffer.
+/// @param size Total capacity of @p buffer.
+/// @param fmt Borrowed printf-compatible format string.
+/// @param args Variadic arguments matching @p fmt.
+/// @return Number of formatted bytes as reported by the platform function, or
+///         `-1` when arguments or locale setup are invalid.
 static int json_vsnprintf_c_locale(char *buffer, size_t size, const char *fmt, va_list args) {
     if (!buffer || size == 0 || !fmt)
         return -1;
@@ -225,6 +268,11 @@ static int json_vsnprintf_c_locale(char *buffer, size_t size, const char *fmt, v
 #endif
 }
 
+/// @brief Variadic wrapper around `json_vsnprintf_c_locale`.
+/// @param buffer Writable output buffer.
+/// @param size Total capacity of @p buffer.
+/// @param fmt Borrowed printf-compatible format string followed by its values.
+/// @return Number of formatted bytes, or `-1` on failure.
 static int json_snprintf_c_locale(char *buffer, size_t size, const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
@@ -233,6 +281,8 @@ static int json_snprintf_c_locale(char *buffer, size_t size, const char *fmt, ..
     return written;
 }
 
+/// @brief Initialize an empty serialization recursion context.
+/// @param ctx Writable context state.
 static void format_ctx_init(format_context *ctx) {
     ctx->items = NULL;
     ctx->len = 0;
@@ -240,6 +290,8 @@ static void format_ctx_init(format_context *ctx) {
     ctx->failed = 0;
 }
 
+/// @brief Release a recursion context's pointer stack and reset its fields.
+/// @param ctx Context to invalidate.
 static void format_ctx_free(format_context *ctx) {
     free(ctx->items);
     ctx->items = NULL;
@@ -248,6 +300,14 @@ static void format_ctx_free(format_context *ctx) {
     ctx->failed = 0;
 }
 
+/// @brief Push a container onto the active serialization path.
+/// @details Rejects repeated active pointers as cycles, enforces
+///          `JSON_MAX_DEPTH`, and grows the pointer stack geometrically. Shared
+///          acyclic children are permitted once a prior path has exited.
+/// @param ctx Active recursion context.
+/// @param obj Borrowed Map or Seq pointer to enter; null is a no-op.
+/// @return `1` when entered or null, otherwise `0` after trapping and setting
+///         the sticky failure flag.
 static int format_ctx_enter(format_context *ctx, void *obj) {
     if (ctx->failed)
         return 0;
@@ -285,6 +345,11 @@ static int format_ctx_enter(format_context *ctx, void *obj) {
     return 1;
 }
 
+/// @brief Remove a container from the active serialization path.
+/// @details Normally pops the final entry; a defensive reverse search also
+///          removes an out-of-order match while preserving the other entries.
+/// @param ctx Active recursion context.
+/// @param obj Borrowed container pointer to remove.
 static void format_ctx_exit(format_context *ctx, void *obj) {
     if (!obj || ctx->len == 0)
         return;
@@ -309,7 +374,10 @@ static void format_ctx_exit(format_context *ctx, void *obj) {
 ///
 /// Escapes per RFC 8259 §7: `\\`, `\"`, `\b`, `\f`, `\n`, `\r`,
 /// `\t`. Other control characters (0x00-0x1F) become `\u00XX`.
-/// Non-ASCII bytes pass through verbatim — JSON allows raw UTF-8.
+/// Non-ASCII bytes pass through verbatim; callers are responsible for ensuring
+/// they form valid UTF-8. A null string is emitted as an empty JSON string.
+/// @param sb Initialized destination builder.
+/// @param s Borrowed runtime string to quote and escape.
 static void format_string(string_builder *sb, rt_string s) {
     sb_append_char(sb, '"');
 
@@ -366,6 +434,11 @@ static void format_string(string_builder *sb, rt_string s) {
 //=============================================================================
 
 /// @brief Forward declaration: serialise any Zanna value as JSON.
+/// @param sb Destination builder.
+/// @param obj Borrowed runtime value, or null for JSON null.
+/// @param indent Spaces per level, or zero for compact output.
+/// @param level Current nesting level.
+/// @param ctx Active recursion context.
 static void format_value(
     string_builder *sb, void *obj, int64_t indent, int64_t level, format_context *ctx);
 
@@ -373,6 +446,11 @@ static void format_value(
 ///
 /// `indent == 0` emits compactly (`[1,2,3]`); `indent > 0` puts
 /// each element on its own line at `(level + 1) * indent` spaces.
+/// @param sb Destination builder.
+/// @param seq Borrowed runtime Seq.
+/// @param indent Spaces per level, or zero for compact output.
+/// @param level Current container nesting level.
+/// @param ctx Active recursion context used for cycle/depth checks.
 static void format_array(
     string_builder *sb, void *seq, int64_t indent, int64_t level, format_context *ctx) {
     if (!format_ctx_enter(ctx, seq)) {
@@ -414,9 +492,13 @@ static void format_array(
 
 /// @brief Emit a Map as a JSON object, optionally pretty-printed.
 ///
-/// Iterates the map in insertion order (Zanna Maps preserve it).
-/// Each key is forced to its string form via `format_string`; non-
-/// string keys are silently coerced.
+/// Iterates a copied key snapshot in the implementation-defined Map order.
+/// Runtime Maps expose string keys, which are escaped with `format_string`.
+/// @param sb Destination builder.
+/// @param map Borrowed runtime Map.
+/// @param indent Spaces per level, or zero for compact output.
+/// @param level Current container nesting level.
+/// @param ctx Active recursion context used for cycle/depth checks.
 static void format_object(
     string_builder *sb, void *map, int64_t indent, int64_t level, format_context *ctx) {
     if (!format_ctx_enter(ctx, map)) {
@@ -477,7 +559,13 @@ static void format_object(
 ///   - Seq[Any]              → JSON array via `format_array`
 ///   - Map[Any,Any]          → JSON object via `format_object`
 /// `indent == 0` produces compact output; positive values trigger
-/// pretty printing with `indent` spaces per level.
+/// pretty printing with `indent` spaces per level. Non-finite F64 values,
+/// unknown objects, and invalid float-formatting results become `null`.
+/// @param sb Destination builder.
+/// @param obj Borrowed runtime value, or null for JSON null.
+/// @param indent Spaces per level, or zero for compact output.
+/// @param level Current nesting level.
+/// @param ctx Active recursion context.
 static void format_value(
     string_builder *sb, void *obj, int64_t indent, int64_t level, format_context *ctx) {
     if (sb->failed || ctx->failed)
@@ -587,9 +675,10 @@ static void format_value(
 /// ' Output: {"name":"Alice","age":30}
 /// ```
 ///
-/// @param obj The Zanna value to format.
+/// @param obj Borrowed Zanna value to format, or null for JSON null.
 ///
-/// @return Compact JSON string.
+/// @return Newly allocated compact JSON string owned by the caller, or an empty
+///         fallback after a trapped serialization failure.
 ///
 /// @note O(n) time complexity where n is the total data size.
 /// @note NaN and Infinity are formatted as null.
@@ -633,10 +722,11 @@ rt_string rt_json_format(void *obj) {
 /// ' }
 /// ```
 ///
-/// @param obj The Zanna value to format.
+/// @param obj Borrowed Zanna value to format, or null for JSON null.
 /// @param indent Number of spaces per indentation level (typically 2 or 4).
 ///
-/// @return Pretty-printed JSON string.
+/// @return Newly allocated pretty-printed JSON string owned by the caller, or
+///         an empty fallback after a trapped serialization failure.
 ///
 /// @note O(n) time complexity where n is the total data size.
 /// @note If indent <= 0, behaves like rt_json_format (compact output).
@@ -669,6 +759,7 @@ rt_string rt_json_format_pretty(void *obj, int64_t indent) {
 /// - "string" - for String values
 /// - "array" - for Seq values
 /// - "object" - for Map values
+/// - "unknown" - for every other runtime object
 ///
 /// **Example:**
 /// ```
@@ -679,9 +770,9 @@ rt_string rt_json_format_pretty(void *obj, int64_t indent) {
 /// Print Json.TypeOf(obj.Get(2))    ' "null"
 /// ```
 ///
-/// @param obj The parsed JSON value.
+/// @param obj Borrowed parsed or format-compatible runtime value.
 ///
-/// @return String describing the type.
+/// @return Newly allocated string naming the classified JSON/runtime type.
 rt_string rt_json_type_of(void *obj) {
     if (!obj)
         return rt_string_from_bytes("null", 4);

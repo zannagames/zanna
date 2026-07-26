@@ -28,6 +28,13 @@
 // Links: InstallerStubGen.hpp, PEBuilder.hpp, WindowsPackageBuilder.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares Windows installer and uninstaller bootstrap-code generation.
+/// @details Validated package layout metadata is lowered into architecture-specific
+///          x86-64 or AArch64 machine code, embedded read-only data, and an ordered
+///          PE import list suitable for @ref PEBuilder integration.
+
 #pragma once
 
 #include "PEBuilder.hpp"
@@ -40,6 +47,8 @@
 namespace zanna::pkg {
 
 /// @brief Base directory anchor for a file or directory entry in the installer.
+/// @details The generated host resolves these logical roots at runtime according
+///          to per-user or machine-wide installation scope.
 enum class WindowsInstallRoot : uint64_t {
     InstallDir = 0,   ///< Relative to %ProgramFiles%\<installDirName>
     DesktopDir = 1,   ///< Relative to the user's Desktop folder
@@ -47,15 +56,30 @@ enum class WindowsInstallRoot : uint64_t {
 };
 
 /// @brief A directory that the installer should create or the uninstaller should remove.
+/// @details @ref relativePath is interpreted beneath the runtime-resolved
+///          @ref root and must already satisfy Windows package path validation.
 struct WindowsPackageDirEntry {
     WindowsInstallRoot root{WindowsInstallRoot::InstallDir}; ///< Base directory anchor
     std::string relativePath; ///< Path relative to root (e.g. "assets\\fonts")
 };
 
 /// @brief A file to be extracted from the ZIP overlay by the installer.
+/// @details Records both the destination and the exact stored-overlay location,
+///          size, integrity metadata, optional component ownership, and original
+///          payload path needed by extraction and upgrade cleanup.
 struct WindowsPackageFileEntry {
+    /// @brief Construct an empty install-root file record.
     WindowsPackageFileEntry() = default;
 
+    /// @brief Construct a complete package file record.
+    /// @param rootValue Runtime destination root.
+    /// @param relativePathValue Destination path beneath @p rootValue.
+    /// @param overlayDataOffsetValue Stored byte offset within the appended ZIP.
+    /// @param sizeBytesValue Uncompressed file size.
+    /// @param crc32Value CRC-32 of uncompressed bytes.
+    /// @param sha256Value Optional SHA-256 of stored overlay bytes.
+    /// @param componentIdValue Optional owning component identifier.
+    /// @param sourcePathValue Source path in the inner or bootstrap archive.
     WindowsPackageFileEntry(WindowsInstallRoot rootValue,
                             std::string relativePathValue,
                             uint64_t overlayDataOffsetValue,
@@ -80,6 +104,8 @@ struct WindowsPackageFileEntry {
 };
 
 /// @brief One user-selectable installer component.
+/// @details Component identifiers tie wizard selection, silent-install
+///          environment flags, and individual payload ownership together.
 struct WindowsOptionalComponent {
     std::string id;             ///< Stable ASCII id used by silent flags and payload metadata
     std::string label;          ///< Checkbox label shown in the native setup wizard
@@ -88,6 +114,8 @@ struct WindowsOptionalComponent {
 };
 
 /// @brief A file-type association to register in the Windows registry.
+/// @details Each association supplies the extension keys, ProgID metadata, MIME
+///          value, and literal command arguments emitted by installer code.
 struct WindowsFileAssociationEntry {
     std::string extension;            ///< Extension including leading dot (e.g. ".zia")
     std::string description;          ///< Human-readable type description
@@ -100,22 +128,26 @@ struct WindowsFileAssociationEntry {
 /// @details Unlike the legacy embedded .lnk payload, these fields do not bake
 ///          the package's default scope or destination into the link.
 struct WindowsNativeShortcutEntry {
-    WindowsInstallRoot root{WindowsInstallRoot::StartMenuDir};
-    std::string relativePath;
-    std::string targetRoot;
-    std::string targetPath;
-    std::string workingRoot;
-    std::string workingPath;
-    std::string argumentPrefix;
-    std::string argumentPath;
-    std::string description;
-    std::string iconRoot;
-    std::string iconPath;
-    int32_t iconIndex{0};
-    std::string componentId;
+    WindowsInstallRoot root{WindowsInstallRoot::StartMenuDir}; ///< Shortcut destination root.
+    std::string relativePath; ///< Link path relative to @ref root.
+    std::string targetRoot;   ///< Logical root code for the target executable.
+    std::string targetPath;   ///< Target path relative to @ref targetRoot.
+    std::string workingRoot;  ///< Logical root code for the working directory.
+    std::string workingPath;  ///< Working path relative to @ref workingRoot.
+    std::string argumentPrefix; ///< Literal command argument prefix.
+    std::string argumentPath;   ///< Optional rooted path appended to arguments.
+    std::string description;    ///< User-visible shortcut description.
+    std::string iconRoot;       ///< Logical root code for the icon resource.
+    std::string iconPath;       ///< Icon path relative to @ref iconRoot.
+    int32_t iconIndex{0};       ///< Resource index within the icon file.
+    std::string componentId;    ///< Optional component controlling link creation.
 };
 
 /// @brief Full layout metadata consumed by the installer/uninstaller stub codegen.
+/// @details This is the architecture-neutral contract between package assembly
+///          and bootstrap generation. Paths, offsets, digests, registry metadata,
+///          UI text, component ownership, and upgrade manifests must describe
+///          the same finalized package payload.
 struct WindowsPackageLayout {
     std::string displayName;    ///< User-visible application name (e.g. "Crackman")
     std::string installDirName; ///< Subdirectory under %ProgramFiles% (e.g. "Crackman")
@@ -175,6 +207,9 @@ struct WindowsPackageLayout {
 };
 
 /// @brief Result of building an installer/uninstaller stub.
+/// @details The PE builder places @ref textSection as executable code, appends
+///          @ref stubData to read-only data at @ref stubDataRVAOffset, and emits
+///          the ordered @ref imports expected by generated IAT slot calls.
 struct StubResult {
     std::vector<uint8_t> textSection; ///< Machine code for .text
     std::vector<uint8_t> stubData;    ///< Embedded string data (appended to .rdata)
@@ -188,6 +223,8 @@ struct StubResult {
 /// @param layout Package layout and extraction metadata.
 /// @param arch   Payload architecture ("x64" or "arm64").
 /// @return StubResult with .text bytes, data, and import list.
+/// @throws std::runtime_error When layout invariants, architecture selection,
+///         import ordering, or generated branch/data limits are invalid.
 StubResult buildInstallerStub(const WindowsPackageLayout &layout, const std::string &arch);
 
 /// @brief Build the uninstaller stub machine code.
@@ -195,6 +232,8 @@ StubResult buildInstallerStub(const WindowsPackageLayout &layout, const std::str
 /// @param layout Package layout and uninstall metadata.
 /// @param arch   Payload architecture ("x64" or "arm64").
 /// @return StubResult with .text bytes, data, and import list.
+/// @throws std::runtime_error When layout invariants, architecture selection,
+///         import ordering, or generated branch/data limits are invalid.
 StubResult buildUninstallerStub(const WindowsPackageLayout &layout, const std::string &arch);
 
 } // namespace zanna::pkg

@@ -25,6 +25,15 @@
 //        src/runtime/network/rt_http2_internal.h
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares the synchronous callback-backed HTTP/2 transport.
+ * @details Defines byte I/O callbacks, owned header/request/response values,
+ * client and server connection lifecycles, validated request/response exchange,
+ * diagnostic access, and matching cleanup helpers.
+ */
+
 #pragma once
 
 #include <stddef.h>

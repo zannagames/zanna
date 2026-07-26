@@ -21,6 +21,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements procedural and resized icon payload generation for package targets.
+/// @details The implementation validates RGBA source geometry, encodes PNG-backed
+///          ICNS and ICO records with the required byte order, produces hicolor
+///          size maps, and supplies the built-in Zanna fallback artwork.
+
 #include "IconGenerator.hpp"
 
 #include <cstdlib>
@@ -54,6 +60,8 @@ static const IcnsTypeEntry kIcnsTypes[] = {
 };
 
 /// @brief Append a 32-bit big-endian integer to `out`. Used for all ICNS numeric fields.
+/// @param out Byte buffer extended by four bytes.
+/// @param val Unsigned integer to encode.
 void writeBE32(std::vector<uint8_t> &out, uint32_t val) {
     out.push_back(static_cast<uint8_t>((val >> 24) & 0xFF));
     out.push_back(static_cast<uint8_t>((val >> 16) & 0xFF));
@@ -63,6 +71,8 @@ void writeBE32(std::vector<uint8_t> &out, uint32_t val) {
 
 /// @brief Append a 16-bit little-endian integer to `out`. Used for ICO ICONDIR and ICONDIRENTRY
 /// fields.
+/// @param out Byte buffer extended by two bytes.
+/// @param val Unsigned integer to encode.
 void writeLE16(std::vector<uint8_t> &out, uint16_t val) {
     out.push_back(static_cast<uint8_t>(val & 0xFF));
     out.push_back(static_cast<uint8_t>((val >> 8) & 0xFF));
@@ -70,6 +80,8 @@ void writeLE16(std::vector<uint8_t> &out, uint16_t val) {
 
 /// @brief Append a 32-bit little-endian integer to `out`. Used for ICO SizeInBytes and FileOffset
 /// fields.
+/// @param out Byte buffer extended by four bytes.
+/// @param val Unsigned integer to encode.
 void writeLE32(std::vector<uint8_t> &out, uint32_t val) {
     out.push_back(static_cast<uint8_t>(val & 0xFF));
     out.push_back(static_cast<uint8_t>((val >> 8) & 0xFF));
@@ -106,8 +118,10 @@ void validateSourceImage(const PkgImage &srcImage) {
 }
 
 /// @brief Safely narrow a `size_t` byte count to `uint32_t` for icon format header fields.
-/// Throws PNGError if `value` exceeds UINT32_MAX — both ICNS and ICO store sizes as
-/// 32-bit fields so an oversize entry cannot be represented in the format.
+/// @param value Host-sized byte count to narrow.
+/// @param format Format label included in the failure message.
+/// @return Representable 32-bit byte count.
+/// @throws PNGError If @p value exceeds UINT32_MAX; ICNS and ICO cannot encode it.
 uint32_t checkedIconSize(size_t value, const char *format) {
     if (value > std::numeric_limits<uint32_t>::max())
         throw PNGError(std::string("icon: ") + format + " entry is too large");
@@ -117,9 +131,11 @@ uint32_t checkedIconSize(size_t value, const char *format) {
 } // namespace
 
 /// @brief Build a macOS ICNS container embedding PNG data at each standard icon size.
-/// Resizes the source image to each kIcnsTypes entry, encodes as PNG, and assembles
-/// the ICNS format: 8-byte global header followed by type+size+PNG-data entries.
-/// The total-size field at offset 4 is patched in after all entries are written.
+/// @param srcImage Square RGBA image at least 32 pixels per side.
+/// @return Complete modern ICNS container bytes.
+/// @details Resizes the source to each @ref kIcnsTypes entry, PNG-encodes it,
+///          emits type/size/data records, and patches the global total-size field.
+/// @throws PNGError When validation, image processing, or size narrowing fails.
 std::vector<uint8_t> generateIcns(const PkgImage &srcImage) {
     validateSourceImage(srcImage);
     std::vector<uint8_t> result;
@@ -168,9 +184,12 @@ std::vector<uint8_t> generateIcns(const PkgImage &srcImage) {
 //=============================================================================
 
 /// @brief Build a Windows ICO container embedding PNG data at each standard icon size.
-/// Generates entries for all kIcoSizes, then writes the 6-byte ICONDIR, the
-/// ICONDIRENTRY array (16 bytes each), and finally the PNG data blobs in order.
-/// Width/Height values of 256+ are encoded as 0 per the ICO specification.
+/// @param srcImage Square RGBA image at least 32 pixels per side.
+/// @return Complete ICO container bytes.
+/// @details Generates every @ref kIcoSizes PNG, writes the ICONDIR and directory
+///          records, then appends payloads in order. A dimension of 256 is encoded
+///          as zero per the ICO specification.
+/// @throws PNGError When validation, image processing, or 32-bit offsets fail.
 std::vector<uint8_t> generateIco(const PkgImage &srcImage) {
     validateSourceImage(srcImage);
 
@@ -272,7 +291,9 @@ PkgImage defaultZannaToolchainIconImage() {
         }
     }
 
-    // Italic lean shared by every stroke: rows near the top shift right.
+    /// @brief Calculate the italic offset shared by every rendered stroke.
+    /// @param y Artwork row whose horizontal displacement is required.
+    /// @return Horizontal offset, with rows near the top shifted farther right.
     const auto lean = [](uint32_t y) { return static_cast<int>((204u - y) / 8u); };
 
     // Steel diagonal from the top bar's right end to the base bar's left end.
@@ -322,8 +343,11 @@ PkgImage defaultZannaToolchainIconImage() {
 //=============================================================================
 
 /// @brief Produce individual PNG files at each Linux hicolor icon size.
-/// Returns a map keyed by pixel dimension (from kLinuxIconSizes) whose values are
-/// encoded PNG byte vectors, ready to be written into a package's icon hierarchy.
+/// @param srcImage Square RGBA image at least 32 pixels per side.
+/// @return Ordered map from @ref kLinuxIconSizes dimensions to encoded PNG bytes.
+/// @details Each value is a freshly resized and encoded image ready for the
+///          corresponding hicolor `<size>x<size>/apps` directory.
+/// @throws PNGError When validation, resizing, or encoding fails.
 std::map<uint32_t, std::vector<uint8_t>> generateMultiSizePngs(const PkgImage &srcImage) {
     validateSourceImage(srcImage);
     std::map<uint32_t, std::vector<uint8_t>> result;

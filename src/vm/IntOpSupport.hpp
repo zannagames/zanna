@@ -6,12 +6,21 @@
 //===----------------------------------------------------------------------===//
 //
 // File: vm/IntOpSupport.hpp
-// Purpose: Shared helpers for integer opcode handlers, covering trap dispatch and
+// Purpose: Shared helpers for integer opcode handlers, covering trap dispatch,
+//          width selection, checked arithmetic, division, shifts, and bounds.
 // Key invariants: Helpers operate on canonicalised Slot values and honour IL trap
+//                 semantics for exceptional arithmetic.
 // Ownership/Lifetime: Stateless inline helpers; no heap allocation or ownership transfer.
 // Links: docs/il/il-guide.md#reference §Integer Arithmetic, §Bitwise and Shifts,
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Defines shared integer-operation kernels and dispatch helpers for VM
+///        opcode handlers.
+/// @details The stateless helpers select IL integer widths, execute checked and
+///          unchecked arithmetic, normalize bounds results, and route semantic
+///          failures through the VM's contextual trap machinery.
 
 #pragma once
 
@@ -315,6 +324,12 @@ void applyCheckedRem(const il::core::Instr &in,
 }
 
 /// @brief Function pointer type for checked signed binary operations.
+/// @param in Instruction providing type and source metadata.
+/// @param fr Active execution frame.
+/// @param bb Current basic block, or null.
+/// @param[out] out Destination slot.
+/// @param lhsVal Left operand slot.
+/// @param rhsVal Right operand slot.
 using CheckedSignedBinaryFn = void (*)(const il::core::Instr &,
                                        Frame &,
                                        const il::core::BasicBlock *,
@@ -382,7 +397,7 @@ template <typename T>
 /// @brief Check whether a signed 64-bit value fits in a narrower signed type.
 /// @tparam NarrowT Target narrow signed integer type.
 /// @param value Value to check.
-/// @return True if value fits within NarrowT's range.
+/// @return @c true if @p value fits within @c NarrowT's range.
 template <typename NarrowT> [[nodiscard]] constexpr bool fitsSignedRange(int64_t value) noexcept {
     return value >= static_cast<int64_t>(std::numeric_limits<NarrowT>::min()) &&
            value <= static_cast<int64_t>(std::numeric_limits<NarrowT>::max());
@@ -420,7 +435,7 @@ void applyUnsignedDivOrRem(const il::core::Instr &in,
 /// @brief Check whether an unsigned 64-bit value fits in a narrower unsigned type.
 /// @tparam NarrowT Target narrow unsigned integer type.
 /// @param value Value to check.
-/// @return True if value fits within NarrowT's range.
+/// @return @c true if @p value fits within @c NarrowT's range.
 template <typename NarrowT>
 [[nodiscard]] constexpr bool fitsUnsignedRange(uint64_t value) noexcept {
     return value <= static_cast<uint64_t>(std::numeric_limits<NarrowT>::max());
@@ -434,23 +449,41 @@ template <typename NarrowT>
 
 /// @brief Function pointer type for overflow-checking binary operations.
 /// @tparam T Integer type to operate on.
-/// @details Returns true on overflow, result is written to *out.
+/// @param lhs Left operand.
+/// @param rhs Right operand.
+/// @param[out] out Receives the result when representable.
+/// @return `true` on overflow.
 template <typename T> using OverflowCheckFn = bool (*)(T lhs, T rhs, T *out);
 
 /// @brief Stateless overflow-checking add function for use as function pointer.
 /// @details Delegates to ops::checked_add which handles MSVC portability.
+/// @tparam T Integer operand and result type.
+/// @param lhs Left operand.
+/// @param rhs Right operand.
+/// @param out Destination for the sum when representable.
+/// @return @c true when addition overflows; otherwise @c false.
 template <typename T> inline bool overflowAdd(T lhs, T rhs, T *out) {
     return ops::checked_add(lhs, rhs, out);
 }
 
 /// @brief Stateless overflow-checking sub function for use as function pointer.
 /// @details Delegates to ops::checked_sub which handles MSVC portability.
+/// @tparam T Integer operand and result type.
+/// @param lhs Left operand.
+/// @param rhs Right operand.
+/// @param out Destination for the difference when representable.
+/// @return @c true when subtraction overflows; otherwise @c false.
 template <typename T> inline bool overflowSub(T lhs, T rhs, T *out) {
     return ops::checked_sub(lhs, rhs, out);
 }
 
 /// @brief Stateless overflow-checking mul function for use as function pointer.
 /// @details Delegates to ops::checked_mul which handles MSVC portability.
+/// @tparam T Integer operand and result type.
+/// @param lhs Left operand.
+/// @param rhs Right operand.
+/// @param out Destination for the product when representable.
+/// @return @c true when multiplication overflows; otherwise @c false.
 template <typename T> inline bool overflowMul(T lhs, T rhs, T *out) {
     return ops::checked_mul(lhs, rhs, out);
 }
@@ -489,6 +522,13 @@ inline void applyOverflowingBinaryDirect(const il::core::Instr &in,
 /// @tparam OverflowFn32 Function pointer for int32_t overflow check.
 /// @tparam OverflowFn64 Function pointer for int64_t overflow check.
 /// @details Uses template function pointers instead of lambdas for efficiency.
+/// @param in Instruction whose result type selects the integer width.
+/// @param fr Active frame used for trap diagnostics.
+/// @param bb Current basic block pointer, which may be @c nullptr.
+/// @param out Output slot written when the operation succeeds.
+/// @param lhsVal Left operand slot.
+/// @param rhsVal Right operand slot.
+/// @param trapMessage Diagnostic emitted if the selected operation overflows.
 template <OverflowCheckFn<int16_t> OverflowFn16,
           OverflowCheckFn<int32_t> OverflowFn32,
           OverflowCheckFn<int64_t> OverflowFn64>

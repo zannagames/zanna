@@ -5,9 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the TreeView widget and TreeNode data structure for
-// Zanna's TUI framework. TreeView displays a hierarchical tree of labeled
-// nodes with expand/collapse functionality, similar to a file explorer.
+/// @file
+/// @brief Declares an expandable hierarchical tree widget and owning tree nodes.
+/// @details TreeView flattens expanded subtrees into a visible navigation list,
+///          paints depth-based indentation, and handles keyboard cursor and
+///          expansion changes.
 //
 // Each TreeNode contains a label, child nodes, and expansion state.
 // The TreeView renders visible nodes (expanded subtrees) with indentation
@@ -41,13 +43,18 @@ namespace zanna::tui::widgets {
 ///          unique_ptr, a non-owning parent pointer for traversal, and a flag indicating
 ///          whether the node's children are visible (expanded).
 struct TreeNode {
-    std::string label{};
-    std::vector<std::unique_ptr<TreeNode>> children{};
-    TreeNode *parent{nullptr};
-    bool expanded{false};
+    std::string label{}; ///< Owned display label.
+    std::vector<std::unique_ptr<TreeNode>> children{}; ///< Owned child nodes.
+    TreeNode *parent{nullptr}; ///< Non-owning parent pointer, null for roots.
+    bool expanded{false}; ///< Whether direct children participate in the visible tree.
 
+    /// @brief Construct a detached collapsed node.
+    /// @param lbl Display label moved into the node.
     explicit TreeNode(std::string lbl);
 
+    /// @brief Adopt a child and establish its parent pointer.
+    /// @param child Node to append to owned children.
+    /// @return Raw pointer to the adopted child.
     TreeNode *add(std::unique_ptr<TreeNode> child);
 };
 
@@ -58,28 +65,39 @@ struct TreeNode {
 class TreeView : public ui::Widget {
   public:
     /// @brief Construct with root nodes and theme.
+    /// @param roots Owned top-level tree nodes.
+    /// @param theme Borrowed render palette that must outlive the widget.
     TreeView(std::vector<std::unique_ptr<TreeNode>> roots, const style::Theme &theme);
 
     /// @brief Paint visible nodes.
+    /// @param sb Screen buffer receiving indented tree rows.
     void paint(render::ScreenBuffer &sb) override;
 
     /// @brief Handle navigation and expansion keys.
+    /// @param ev Input event to interpret.
     /// @return True if event consumed.
     bool onEvent(const ui::Event &ev) override;
 
     /// @brief Tree view wants focus for keyboard handling.
+    /// @return Always true.
     [[nodiscard]] bool wantsFocus() const override;
 
     /// @brief Current node under cursor.
+    /// @return Non-owning pointer to the active visible node, or nullptr.
     [[nodiscard]] TreeNode *current() const;
 
   private:
-    std::vector<std::unique_ptr<TreeNode>> roots_{};
-    const style::Theme &theme_;
-    std::vector<TreeNode *> visible_{};
-    int cursor_{0};
+    std::vector<std::unique_ptr<TreeNode>> roots_{}; ///< Owned top-level nodes.
+    const style::Theme &theme_;                      ///< Borrowed render palette.
+    std::vector<TreeNode *> visible_{}; ///< Non-owning depth-first visible-node cache.
+    int cursor_{0};                    ///< Index into @c visible_.
 
+    /// @brief Rebuild the visible-node cache from expansion state and clamp the cursor.
     void rebuild();
+
+    /// @brief Count parent links from a node to its root.
+    /// @param n Node whose indentation depth is requested.
+    /// @return Zero-based tree depth.
     static int depth(TreeNode *n);
 };
 

@@ -425,6 +425,9 @@ static void lowerCBr(const il::core::Instr &term,
     const auto &cond = term.operands[0];
     bool loweredViaCompare = false;
     if (cond.kind == il::core::Value::Kind::Temp) {
+        /// @brief Tests whether an instruction produces the branch condition.
+        /// @param I Candidate instruction.
+        /// @return `true` when `I` defines `cond`.
         const auto it = std::find_if(
             inBB.instructions.begin(), inBB.instructions.end(), [&](const il::core::Instr &I) {
                 return I.result && *I.result == cond.id;
@@ -706,6 +709,10 @@ static void lowerSwitchI32(
         }
     }
 
+    /// @brief Orders switch cases by their integer key.
+    /// @param lhs Left switch case.
+    /// @param rhs Right switch case.
+    /// @return `true` when `lhs` has the smaller key.
     std::sort(cases.begin(), cases.end(), [](const SwitchCase &lhs, const SwitchCase &rhs) {
         return lhs.value < rhs.value;
     });

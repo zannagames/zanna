@@ -13,6 +13,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares arithmetic, operand-evaluation, result-storage, and control
+///        helpers shared by VM opcode handlers.
+/// @details The utilities provide cross-platform checked integer operations,
+///          cached operand evaluation, consistent register ownership updates,
+///          and validation of resume and error tokens.
+
 #pragma once
 
 #include "vm/OpHandlerAccess.hpp"
@@ -350,6 +357,16 @@ void storeResult(Frame &fr, const il::core::Instr &in, const Slot &val);
 ///       When @c ExecState::blockCache is populated the pre-resolved @c ResolvedOp
 ///       array is used to avoid the @c std::vector<Value> heap indirection.
 struct OperandDispatcher {
+    /// @brief Evaluate two instruction operands and apply a computation.
+    /// @details Uses the current block's pre-resolved operand cache when
+    ///          available, falls back to general VM evaluation otherwise, then
+    ///          stores the functor-produced slot through @ref storeResult.
+    /// @tparam Compute Callable accepting output, left, and right slots.
+    /// @param vm Active VM used for operand evaluation.
+    /// @param fr Current frame providing registers.
+    /// @param in Binary instruction containing two operands and result metadata.
+    /// @param compute Computation that writes the output slot.
+    /// @return Empty execution result indicating normal fallthrough.
     template <typename Compute>
     static VM::ExecResult runBinary(VM &vm,
                                     Frame &fr,
@@ -373,6 +390,16 @@ struct OperandDispatcher {
         return {};
     }
 
+    /// @brief Evaluate two instruction operands and apply a predicate.
+    /// @details Shares the cached evaluation path with @ref runBinary, converts
+    ///          the predicate result to canonical integer boolean form, and
+    ///          stores it in the instruction destination.
+    /// @tparam Compare Callable returning a truth value for two operand slots.
+    /// @param vm Active VM used for operand evaluation.
+    /// @param fr Current frame providing registers.
+    /// @param in Comparison instruction containing operands and result metadata.
+    /// @param compare Predicate applied to the evaluated slots.
+    /// @return Empty execution result indicating normal fallthrough.
     template <typename Compare>
     static VM::ExecResult runCompare(VM &vm,
                                      Frame &fr,
@@ -442,7 +469,8 @@ void trapInvalidResume(Frame &fr,
 /// @brief Resolve an error token slot to the corresponding VmError payload.
 /// @param fr Active frame holding error state.
 /// @param slot Slot expected to contain an error token.
-/// @return Pointer to the VmError if the token is valid, or nullptr.
+/// @return Explicit error pointer from @p slot, the current trap token when one
+///         exists, or the address of @ref Frame::activeError as a final fallback.
 const VmError *resolveErrorToken(Frame &fr, const Slot &slot);
 } // namespace control
 } // namespace il::vm::detail

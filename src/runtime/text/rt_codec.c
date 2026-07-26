@@ -27,6 +27,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_codec.c
+ * @brief Implements Base64, hexadecimal, and URL byte-string codecs.
+ * @details Stateless helpers encode runtime String bytes with canonical RFC
+ *          alphabets, strictly validate Base64 and hexadecimal input, and
+ *          provide forgiving percent decoding for form-compatible URL text.
+ *          Every successful transformation returns fresh managed storage.
+ */
+
 
 #include "rt_codec.h"
 
@@ -42,6 +51,7 @@
 static const char b64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// @brief Convert Base64 character to value (0-63).
+/// @param c Candidate byte from the standard padded Base64 alphabet.
 /// @return Value 0-63, -2 for '=', or -1 if invalid.
 static int b64_digit_value(char c) {
     if (c >= 'A' && c <= 'Z')
@@ -61,6 +71,8 @@ static int b64_digit_value(char c) {
 
 /// @brief Check if character is unreserved in URL encoding.
 /// @details Unreserved: A-Z a-z 0-9 - _ . ~
+/// @param c Byte to classify.
+/// @return 1 for an RFC 3986 unreserved ASCII byte, otherwise 0.
 static int is_url_unreserved(unsigned char c) {
     return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~';

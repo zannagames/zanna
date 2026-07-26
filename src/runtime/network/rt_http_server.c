@@ -20,8 +20,18 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements the threaded HTTP/1.1 server and managed handler objects.
+ * @details Owns listener and worker lifecycles, bounded request parsing and
+ * keep-alive framing, synchronized route and handler bindings, active
+ * connection interruption, and trap-safe managed ServerReq/ServerRes dispatch.
+ */
+
 #if !defined(_WIN32)
+/** Enable Darwin extensions required by the POSIX server adapter. */
 #define _DARWIN_C_SOURCE 1
+/** Enable GNU/POSIX extensions required by the server implementation. */
 #define _GNU_SOURCE 1
 #endif
 
@@ -50,29 +60,42 @@
 #include <string.h>
 
 #ifdef _WIN32
+/** Restrict the Windows SDK surface to core declarations. */
 #define WIN32_LEAN_AND_MEAN
 #include <process.h>
 #include <windows.h>
+/** Windows compatibility alias for case-insensitive string comparison. */
 #define strcasecmp _stricmp
+/** Windows compatibility alias for bounded case-insensitive comparison. */
 #define strncasecmp _strnicmp
 typedef CRITICAL_SECTION http_server_mutex_t;
+/** Initialize a Windows HttpServer mutex. */
 #define HTTP_SERVER_MUTEX_INIT(m) (InitializeCriticalSection(m), 1)
+/** Acquire a Windows HttpServer mutex. */
 #define HTTP_SERVER_MUTEX_LOCK(m) EnterCriticalSection(m)
+/** Release a Windows HttpServer mutex. */
 #define HTTP_SERVER_MUTEX_UNLOCK(m) LeaveCriticalSection(m)
+/** Destroy a Windows HttpServer mutex. */
 #define HTTP_SERVER_MUTEX_DESTROY(m) DeleteCriticalSection(m)
 #else
 #include <pthread.h>
 #include <strings.h>
 #include <unistd.h>
 typedef pthread_mutex_t http_server_mutex_t;
+/** Initialize a POSIX HttpServer mutex and report success. */
 #define HTTP_SERVER_MUTEX_INIT(m) (pthread_mutex_init(m, NULL) == 0)
+/** Acquire a POSIX HttpServer mutex. */
 #define HTTP_SERVER_MUTEX_LOCK(m) pthread_mutex_lock(m)
+/** Release a POSIX HttpServer mutex. */
 #define HTTP_SERVER_MUTEX_UNLOCK(m) pthread_mutex_unlock(m)
+/** Destroy a POSIX HttpServer mutex. */
 #define HTTP_SERVER_MUTEX_DESTROY(m) pthread_mutex_destroy(m)
 #endif
 
 #include "rt_trap.h"
+/// @copydoc rt_trap_net()
 extern void rt_trap_net(const char *msg, int err_code);
+/// @copydoc rt_trap_get_net_code()
 extern int rt_trap_get_net_code(void);
 
 /// @brief Expose a runtime String's exact bytes while detecting embedded nulls.
@@ -107,10 +130,15 @@ static int server_string_has_embedded_nul(rt_string s, const char **data_out, si
 // Internal Structures
 //=============================================================================
 
+/** Maximum request-line or individual header-line bytes. */
 #define HTTP_REQ_MAX_LINE 8192
+/** Maximum number of header fields accepted in one request. */
 #define HTTP_REQ_MAX_HEADERS 100
+/** Maximum decoded request body bytes. */
 #define HTTP_REQ_MAX_BODY (16 * 1024 * 1024) // 16 MB
+/** Maximum encoded body storage including chunk-framing overhead. */
 #define HTTP_REQ_MAX_ENCODED_BODY (HTTP_REQ_MAX_BODY + 65536)
+/** Maximum concurrently tracked connections for stop interruption. */
 #define HTTP_SERVER_MAX_ACTIVE_CONNS 4096
 
 /// @brief Compute the internal worker-pool size for HTTP server instances.
@@ -129,6 +157,7 @@ static int64_t http_server_default_worker_count(void) {
     return cores;
 }
 
+/** Parsed request snapshot transferred into a managed ServerReq payload. */
 typedef struct {
     char *method;
     char *path;
@@ -141,6 +170,7 @@ typedef struct {
     void *params;  // Map (from router)
 } server_req_t;
 
+/** Mutable response builder state stored in a managed ServerRes payload. */
 typedef struct {
     int status_code;
     void *headers; // Map
@@ -149,10 +179,12 @@ typedef struct {
     bool sent;
 } server_res_t;
 
+/** Route-index metadata connecting router matches to handler tags. */
 typedef struct {
     char *tag;
 } route_entry_t;
 
+/** Native or VM handler dispatch tuple owned by the server. */
 typedef struct {
     char *tag;
     rt_http_server_handler_dispatch_fn dispatch;
@@ -160,6 +192,7 @@ typedef struct {
     rt_http_server_handler_cleanup_fn cleanup;
 } handler_binding_t;
 
+/** Complete private lifecycle, routing, worker, and connection state of a server. */
 typedef struct {
     void *router;     // HttpRouter
     void *tcp_server; // TcpServer
@@ -190,10 +223,15 @@ typedef struct {
     bool lifecycle_lock_initialized;
 } rt_http_server_impl;
 
+/// @copydoc free_server_req()
 static void free_server_req(server_req_t *req);
+/// @copydoc free_server_res()
 static void free_server_res(server_res_t *res);
+/// @copydoc build_route_response()
 static void build_route_response(rt_http_server_impl *server, server_req_t *req, server_res_t *res);
+/// @copydoc free_route_entries()
 static void free_route_entries(rt_http_server_impl *server);
+/// @copydoc free_handler_bindings()
 static void free_handler_bindings(rt_http_server_impl *server);
 
 /// @brief Acquire the mutex protecting running state and active-connection bookkeeping.

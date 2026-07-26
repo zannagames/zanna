@@ -28,6 +28,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements POSIX environment-based host-locale detection.
+ * @details Walks LC_ALL, LC_MESSAGES, and LANG in precedence order, ignores
+ * C/POSIX invariant values, cleans encoding and modifier suffixes, and emits
+ * an inert alternate symbol when this adapter is not selected.
+ */
+
 #include "rt_locale_platform.h"
 #include "rt_locale_posix_tag.h"
 #include "rt_platform.h"

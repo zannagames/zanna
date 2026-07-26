@@ -386,6 +386,7 @@ void Lowerer::lowerAsyncFunctionDecl(FunctionDecl &decl,
                                      TypeRef declaredReturnType,
                                      const std::vector<TypeRef> &cachedParamTypes) {
     {
+        /// @brief Clears per-function state after lowering an async entry or worker.
         auto resetLoweringState = [&]() {
             blockMgr_.reset(nullptr);
             locals_.clear();
@@ -398,6 +399,8 @@ void Lowerer::lowerAsyncFunctionDecl(FunctionDecl &decl,
             currentReturnType_ = nullptr;
         };
 
+        /// @brief Emits the default async-worker return for an unterminated body.
+        /// @param payloadType Declared future payload type.
         auto emitAsyncImplicitReturn = [&](TypeRef payloadType) {
             if (isTerminated())
                 return;

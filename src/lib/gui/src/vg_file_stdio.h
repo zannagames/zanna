@@ -16,6 +16,12 @@
 // Links: src/lib/gui/src/font/vg_font.c, src/lib/gui/src/widgets/vg_image.c
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Provides a portable UTF-8 binary-read opener for GUI assets.
+/// @details Windows paths are converted strictly to UTF-16 and opened with a
+///          non-inheritable descriptor; other platforms delegate to `fopen`.
+
 #pragma once
 
 #include "../../../runtime/rt_platform.h"

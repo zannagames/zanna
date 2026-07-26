@@ -16,6 +16,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements modal overlay hosting and centred popup presentation.
+/// @details A modal host owns its root widget and an ordered overlay stack,
+///          routes input to the topmost active layer, and paints overlays after
+///          the root.  Popups provide a focusable, dismissible boxed overlay.
+
 #include "tui/ui/modal.hpp"
 
 #include "tui/render/box.hpp"
@@ -30,6 +36,7 @@ namespace zanna::tui::ui {
 ///          layout and painting alongside modal overlays.  The constructor keeps
 ///          the stack of modals empty; they are pushed as needed via
 ///          @ref pushModal.
+/// @param root Root content widget whose ownership transfers to the host.
 ModalHost::ModalHost(std::unique_ptr<Widget> root) : root_(std::move(root)) {}
 
 /// @brief Access the non-modal root widget managed by the host.
@@ -38,6 +45,8 @@ ModalHost::ModalHost(std::unique_ptr<Widget> root) : root_(std::move(root)) {}
 ///          managers or perform additional configuration without taking
 ///          ownership away from the host.  The pointer remains valid for the
 ///          host's lifetime.
+/// @return Non-owning pointer to the root widget, or @c nullptr when the host
+///         was constructed without one.
 Widget *ModalHost::root() {
     return root_.get();
 }
@@ -47,6 +56,7 @@ Widget *ModalHost::root() {
 /// @details Returning @c true allows the host to intercept events before they
 ///          reach underlying widgets, ensuring that modal overlays behave as a
 ///          focus trap until dismissed.
+/// @return Always @c true.
 bool ModalHost::wantsFocus() const {
     return true;
 }
@@ -58,8 +68,10 @@ bool ModalHost::wantsFocus() const {
 ///          dismiss itself.  Regardless of type, the modal receives ownership via
 ///          @c unique_ptr and is appended to the stack, making it the active
 ///          overlay during painting and event handling.
+/// @param modal Overlay widget whose ownership transfers to the host.
 void ModalHost::pushModal(std::unique_ptr<Widget> modal) {
     if (auto *p = dynamic_cast<Popup *>(modal.get())) {
+        /// @brief Remove the active modal when the popup requests closure.
         p->setOnClose([this] { popModal(); });
     }
     modals_.push_back(std::move(modal));
@@ -84,6 +96,7 @@ void ModalHost::popModal() {
 ///          modal overlay.  This keeps overlays full-screen while allowing them
 ///          to centre or otherwise position their internal content relative to
 ///          the available space.
+/// @param r Rectangle assigned to the host, root, and each modal layer.
 void ModalHost::layout(const Rect &r) {
     Widget::layout(r);
     if (root_) {
@@ -100,6 +113,7 @@ void ModalHost::layout(const Rect &r) {
 ///          backdrop is emulated by filling the host rectangle with spaces when
 ///          at least one modal exists.  Finally, each modal paints itself in
 ///          stack order so that later entries appear on top.
+/// @param sb Screen buffer that receives the root and overlay rendering.
 void ModalHost::paint(render::ScreenBuffer &sb) {
     if (root_) {
         root_->paint(sb);
@@ -118,6 +132,9 @@ void ModalHost::paint(render::ScreenBuffer &sb) {
 ///          function reports it as handled.  Without modals the root widget is
 ///          given a chance to handle the event; failing that, the call returns
 ///          @c false to indicate the event was not consumed.
+/// @param ev Input event to dispatch.
+/// @return @c true when a modal is active or the root consumes @p ev; otherwise
+///         @c false.
 bool ModalHost::onEvent(const Event &ev) {
     if (!modals_.empty()) {
         (void)modals_.back()->onEvent(ev);
@@ -135,6 +152,8 @@ bool ModalHost::onEvent(const Event &ev) {
 ///          centre a bounding box that fits inside the host rectangle.  Actual
 ///          dimensions are clamped to the available space to avoid painting
 ///          outside the terminal surface.
+/// @param w Preferred popup width in terminal cells.
+/// @param h Preferred popup height in terminal cells.
 Popup::Popup(int w, int h) : width_(w), height_(h) {}
 
 /// @brief Indicate that popups require keyboard focus for dismissal keys.
@@ -142,6 +161,7 @@ Popup::Popup(int w, int h) : width_(w), height_(h) {}
 /// @details Returning @c true guarantees the popup receives key events, allowing
 ///          it to handle escape or enter presses for dismissal without relying
 ///          on bubbling through other widgets.
+/// @return Always @c true.
 bool Popup::wantsFocus() const {
     return true;
 }
@@ -152,6 +172,7 @@ bool Popup::wantsFocus() const {
 ///          the modal host.  It is invoked by @ref onEvent when the user presses
 ///          a dismissal key, allowing the host to remove the popup from its
 ///          stack.
+/// @param cb Callback to store; an empty function disables close notification.
 void Popup::setOnClose(std::function<void()> cb) {
     onClose_ = std::move(cb);
 }
@@ -161,6 +182,7 @@ void Popup::setOnClose(std::function<void()> cb) {
 /// @details The box dimensions are clamped so they never exceed the available
 ///          space.  The resulting rectangle is cached in @ref box_ for later use
 ///          when painting borders and background.
+/// @param r Available host rectangle within which the popup is centred.
 void Popup::layout(const Rect &r) {
     Widget::layout(r);
     int w = std::min(width_, r.w);
@@ -177,6 +199,7 @@ void Popup::layout(const Rect &r) {
 ///          the supplied screen buffer and rely on the precomputed @ref box_.
 ///          The routine assumes the box fits entirely within the buffer; the
 ///          layout stage enforces this by clamping dimensions.
+/// @param sb Screen buffer that receives the popup border and interior.
 void Popup::paint(render::ScreenBuffer &sb) {
     render::drawBox(sb, box_.x, box_.y, box_.w, box_.h);
 }
@@ -187,6 +210,8 @@ void Popup::paint(render::ScreenBuffer &sb) {
 ///          when present, signalling the modal host to remove the popup.  Other
 ///          keys are ignored and bubble up by returning @c false, allowing the
 ///          application to decide how to handle them.
+/// @param ev Input event to inspect.
+/// @return @c true for an escape or enter key event; otherwise @c false.
 bool Popup::onEvent(const Event &ev) {
     const auto &k = ev.key;
     if (k.code == term::KeyEvent::Code::Esc || k.code == term::KeyEvent::Code::Enter) {

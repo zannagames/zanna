@@ -387,7 +387,10 @@ void LinearAllocator::assignPinnedSlots() {
     if (ranked.empty()) {
         return;
     }
-    /// Rank hotter slots first with frame offset as a deterministic tie break.
+    /// @brief Orders frame slots by descending hotness with a stable offset tie break.
+    /// @param a Left slot and statistics pair.
+    /// @param b Right slot and statistics pair.
+    /// @return `true` when `a` should be considered before `b`.
     std::sort(ranked.begin(), ranked.end(), [](const auto &a, const auto &b) {
         if (a.second->weight != b.second->weight)
             return a.second->weight > b.second->weight;
@@ -398,7 +401,7 @@ void LinearAllocator::assignPinnedSlots() {
     // pools (never the reserved scratch registers, which are not pool
     // members). Each pinned register is removed from its pool for the whole
     // function and recorded as used so the prologue saves it.
-    /// Remove the first target-designated callee-saved register from a pool.
+    /// @brief Removes the first target-designated callee-saved register from a pool.
     ///
     /// @param[in,out] pool Class-specific free register deque.
     /// @param calleeSaved Target's ordered saved-register set for the class.
@@ -533,7 +536,9 @@ void LinearAllocator::restoreFromPredecessor(std::size_t bi) {
     // spill state before restoring any register-carried values; allocator
     // state from whichever block happened to be visited last is not valid on
     // a different CFG edge.
-    /// Reset each live-out state to the predecessor's canonical spill-backed form.
+    /// @brief Resets live-out states to the predecessor's canonical spill-backed form.
+    /// @param[in,out] states Register-allocation state map to update.
+    /// @param liveOut Virtual registers live at the predecessor exit.
     const auto restoreSpills = [](auto &states, const auto &liveOut) {
         for (const uint16_t vid : liveOut) {
             auto it = states.find(vid);
@@ -550,7 +555,9 @@ void LinearAllocator::restoreFromPredecessor(std::size_t bi) {
 
     // Restore in sorted vreg order so register-pool mutation order is
     // independent of hash-map iteration order (deterministic codegen).
-    /// Return map keys in ascending order for deterministic pool mutation.
+    /// @brief Returns map keys in ascending order for deterministic pool mutation.
+    /// @param map Virtual-register-to-physical-register map.
+    /// @return Sorted virtual-register identifiers.
     const auto sortedKeys = [](const std::unordered_map<uint16_t, PhysReg> &map) {
         std::vector<uint16_t> keys;
         keys.reserve(map.size());
@@ -1023,7 +1030,9 @@ void LinearAllocator::allocateBlock(MBasicBlock &bb) {
         // liveOut sets are unordered; process them in sorted vreg order so the
         // emitted spill sequence and the register-pool release order do not
         // depend on the STL implementation's hash iteration order.
-        /// Copy a live-out set into deterministic virtual-register order.
+        /// @brief Copies a live-out set into deterministic virtual-register order.
+        /// @param set Live-out virtual-register identifiers.
+        /// @return Sorted identifiers.
         const auto sortedLiveOut = [](const std::unordered_set<uint16_t> &set) {
             std::vector<uint16_t> sorted(set.begin(), set.end());
             std::sort(sorted.begin(), sorted.end());
@@ -1118,7 +1127,8 @@ void LinearAllocator::handleCall(MInstr &ins, std::vector<MInstr> &rewritten) {
     // between STL implementations and codegen must stay byte-identical
     // across platforms.
     std::vector<MInstr> preCall;
-    /// Spill or retire every resident value held in a caller-saved register.
+    /// @brief Spills or retires residents held in caller-saved registers.
+    /// @param cls Register class whose resident values are processed.
     const auto spillCallerSavedResidents = [&](RegClass cls) {
         auto &states = (cls == RegClass::GPR) ? gprStates_ : fprStates_;
         std::vector<uint16_t> resident;
@@ -1458,7 +1468,8 @@ void LinearAllocator::releaseBlockState() {
     // Release in sorted vreg order: the pool is a FIFO, so the order registers
     // return to it shapes every later allocation. Hash-map iteration order
     // would make the emitted code differ between STL implementations.
-    /// Return all residents of one class in deterministic vreg order.
+    /// @brief Returns all residents of one class in deterministic vreg order.
+    /// @param cls Register class to release.
     const auto releaseAll = [&](RegClass cls) {
         auto &states = (cls == RegClass::GPR) ? gprStates_ : fprStates_;
         std::vector<uint16_t> resident;

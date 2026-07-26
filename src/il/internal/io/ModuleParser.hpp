@@ -13,6 +13,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares dispatch for module-scope IL directives.
+ *
+ * @details The module parser recognizes declarations and metadata at top level,
+ *          updates the destination module through `ParserState`, and delegates
+ *          multi-line function definitions to the function parser while
+ *          preserving the shared input stream and diagnostic channel.
+ */
+
 #pragma once
 
 #include "il/internal/io/ParserState.hpp"

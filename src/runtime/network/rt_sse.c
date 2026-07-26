@@ -20,6 +20,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_sse.c
+ * @brief Implements a strict reconnecting HTTP EventSource client.
+ * @details The client performs bounded HTTP or HTTPS setup, parses response
+ *          framing and Server-Sent Event fields incrementally, preserves
+ *          partial parser state across whole-event timeouts, and coordinates a
+ *          single receive owner with concurrent cancellation and close.
+ */
+
 // Feature-test macros must appear before every system header. Defining them is
 // harmless on non-POSIX toolchains and avoids raw OS checks in runtime modules.
 #ifndef _DARWIN_C_SOURCE
@@ -251,7 +260,10 @@ static int sse_string_is_cstr(rt_string value) {
     return length == 0 || memchr(bytes, '\0', (size_t)length) == NULL;
 }
 
-/// @brief Drop any partial line/event state (stream restart or teardown).
+/// @brief Drop partial line and event state for restart or teardown.
+/// @details Releases native raw/payload fragments and pending event type,
+///          clears accumulated data metadata, and resets payload pushback.
+/// @param sse Client parser state to reset.
 static void sse_reset_partial_state(rt_sse_impl *sse) {
     sse_native_discard(sse->raw_pending);
     sse->raw_pending = NULL;
@@ -269,6 +281,10 @@ static void sse_reset_partial_state(rt_sse_impl *sse) {
     sse->payload_skip_optional_lf = 0;
 }
 
+/// @brief Check whether a host requires brackets in an HTTP authority.
+/// @param host NUL-terminated parsed host.
+/// @return One for an unbracketed colon-bearing host, typically IPv6;
+///         otherwise zero.
 static int sse_host_needs_brackets(const char *host) {
     return host && strchr(host, ':') != NULL && host[0] != '[';
 }
@@ -290,6 +306,10 @@ static int sse_header_value_is_valid(const char *value, size_t length) {
     return 1;
 }
 
+/// @brief Validate a parsed host before placing it in an HTTP Host field.
+/// @param host Nonempty NUL-terminated host text.
+/// @return One when no whitespace, controls, DEL, or URL delimiters are
+///         present; otherwise zero.
 static int sse_host_is_valid(const char *host) {
     if (!host || !*host)
         return 0;
@@ -300,6 +320,10 @@ static int sse_host_is_valid(const char *host) {
     return 1;
 }
 
+/// @brief Validate an origin-form HTTP request target.
+/// @param target NUL-terminated path and optional query.
+/// @return One when the target begins with slash and contains no whitespace,
+///         controls, DEL, or fragment marker; otherwise zero.
 static int sse_request_target_is_valid(const char *target) {
     if (!target || target[0] != '/')
         return 0;
@@ -451,6 +475,11 @@ static socket_t sse_create_tcp_socket(const char *host, int port, int timeout_ms
     return sock;
 }
 
+/// @brief Format a stable SSE connection diagnostic from a network category.
+/// @param msg Destination byte buffer.
+/// @param msg_cap Destination capacity including the terminator.
+/// @param prefix Operation-specific diagnostic prefix.
+/// @param err_code Runtime network error category.
 static void sse_format_connect_error(char *msg, size_t msg_cap, const char *prefix, int err_code) {
     const char *detail = "connection failed";
     if (err_code == Err_HostNotFound)
@@ -462,6 +491,11 @@ static void sse_format_connect_error(char *msg, size_t msg_cap, const char *pref
     snprintf(msg, msg_cap, "%s: %s", prefix, detail);
 }
 
+/// @brief Detach and close the currently published SSE transport.
+/// @details Transport and all HTTP body-framing/read-ahead state are reset
+///          atomically under the state mutex. TLS or the plain socket is then
+///          closed outside the critical section. The operation is idempotent.
+/// @param sse Client whose transport is consumed; NULL is a no-op.
 static void sse_close_transport(rt_sse_impl *sse) {
     if (!sse)
         return;
@@ -527,8 +561,10 @@ static int sse_close_was_requested(rt_sse_impl *sse) {
     return requested;
 }
 
-/// @brief GC finalizer: tear down the active transport (TLS/TCP) and free the cached last-event
-/// metadata strings.
+/// @brief Finalize an SSE client and every native resource it owns.
+/// @details Closes the transport, discards partial parser state, event storage,
+///          URL and metadata snapshots, then destroys initialized mutexes.
+/// @param obj SSE client allocation being finalized, or NULL.
 static void rt_sse_finalize(void *obj) {
     if (!obj)
         return;
@@ -555,8 +591,14 @@ static void rt_sse_finalize(void *obj) {
 // Transport Helpers
 //=============================================================================
 
-/// @brief Loop-write `len` bytes through whichever transport is active. Same dual-path pattern
-/// as rt_smtp.c — TLS retries until drained; plain TCP delegates to the rt_tcp send-all helper.
+/// @brief Send an entire byte span through the active TLS or TCP transport.
+/// @details Both paths drain short writes; the plain path retries interrupted
+///          system calls.
+/// @param sse Active SSE client with a published transport.
+/// @param data Byte span to transmit.
+/// @param len Number of bytes to send.
+/// @return One after all bytes are written; zero on closure or transport
+///         failure.
 static int sse_transport_send_all(rt_sse_impl *sse, const void *data, size_t len) {
     if (sse->tls) {
         size_t total = 0;
@@ -583,9 +625,14 @@ static int sse_transport_send_all(rt_sse_impl *sse, const void *data, size_t len
     return 1;
 }
 
-/// @brief Read up to `len` bytes from the active transport. TCP path allocates a temporary Bytes
-/// chunk and copies into the caller's buffer; TLS path reads directly. Same shape as rt_smtp's
-/// version — slight extra copy for TCP in exchange for transport-uniform line-reading code above.
+/// @brief Read bytes directly from the active TLS or TCP transport.
+/// @details The TCP path retries interrupted system calls; the TLS path
+///          delegates record processing to the session.
+/// @param sse Active SSE client with a published transport.
+/// @param buffer Destination byte buffer.
+/// @param len Maximum bytes to receive.
+/// @return Positive byte count, zero for orderly closure, or a negative
+///         transport result on failure.
 static long sse_transport_read(rt_sse_impl *sse, void *buffer, size_t len) {
     if (sse->tls)
         return rt_tls_recv(sse->tls, buffer, len);
@@ -598,6 +645,14 @@ static long sse_transport_read(rt_sse_impl *sse, void *buffer, size_t len) {
     }
 }
 
+/// @brief Read one raw HTTP byte through the client's native read-ahead buffer.
+/// @details Enforces the receive operation's single monotonic deadline, updates
+///          timeout/EOF/error classification, and preserves unread buffered
+///          bytes for later framing consumers.
+/// @param sse Active receive owner.
+/// @param byte Destination for one received byte.
+/// @return One when a byte is produced; otherwise zero with read-failure state
+///         recorded on @p sse.
 static int sse_raw_recv_byte(rt_sse_impl *sse, uint8_t *byte) {
     if (sse->read_buf_pos < sse->read_buf_len) {
         *byte = sse->read_buf[sse->read_buf_pos++];
@@ -1366,6 +1421,19 @@ static int sse_connect_timeout(rt_sse_impl *sse, int *timeout_out) {
     return 1;
 }
 
+/// @brief Open and validate an EventSource stream for one absolute URL.
+/// @details Parses HTTP(S), follows at most five redirects, establishes and
+///          publishes TCP/TLS ownership, sends a bounded GET request, consumes
+///          informational replies, and accepts only status 200 with a supported
+///          event-stream content type and unambiguous body framing. Reconnects
+///          may attach the last safe event ID. One recovery ledger releases
+///          every partially acquired native and managed resource after traps.
+/// @param sse Initialized client receiving transport and framing state.
+/// @param url_str Absolute NUL-terminated HTTP or HTTPS URL.
+/// @param allow_resume Nonzero to send a safe nonempty Last-Event-ID.
+/// @param err_msg Destination for a stable failure diagnostic.
+/// @param err_msg_cap Destination capacity including the terminator.
+/// @return One when a usable stream is published; otherwise zero.
 static int sse_open_url(
     rt_sse_impl *sse, const char *url_str, int allow_resume, char *err_msg, size_t err_msg_cap) {
     rt_string url = NULL;
@@ -2412,6 +2480,9 @@ static void *sse_receive_result_owned(rt_string data, int delivered, const char 
 /// @details Receives are serialized. Consecutive `data` fields, including empty
 ///          fields, are joined with one LF. Empty is returned after close; use
 ///          @ref rt_sse_recv_for_result to distinguish empty data from timeout.
+/// @param obj Valid SSE client, or NULL for the legacy empty sentinel.
+/// @return Caller-owned event-data String, or an empty String after terminal
+///         close.
 rt_string rt_sse_recv(void *obj) {
     if (!obj)
         return rt_str_empty();
@@ -2472,6 +2543,8 @@ void *rt_sse_recv_for_result(void *obj, int64_t timeout_ms) {
 
 /// @brief Return whether the client still owns a locally open-looking transport.
 /// @details This is a synchronized local-state query, not a remote liveness probe.
+/// @param obj Valid SSE client; NULL yields zero.
+/// @return One while local state is open and owns a transport; otherwise zero.
 int8_t rt_sse_is_open(void *obj) {
     if (!obj)
         return 0;
@@ -2491,6 +2564,7 @@ int8_t rt_sse_is_open(void *obj) {
 ///          shutdown to wake an active receive without freeing its TLS/session
 ///          storage. The receive owner performs the final close; an idle client
 ///          is detached and closed immediately. The operation is idempotent.
+/// @param obj Valid SSE client; NULL is a no-op.
 void rt_sse_close(void *obj) {
     if (!obj)
         return;
@@ -2554,6 +2628,10 @@ static rt_string sse_metadata_snapshot(rt_sse_impl *sse, int event_type, const c
 }
 
 /// @brief Return the type of the most recently dispatched event.
+/// @details Event type does not carry over when a later event omits its
+///          `event:` field.
+/// @param obj Valid SSE client; NULL yields an empty String.
+/// @return Caller-owned synchronized event-type snapshot.
 rt_string rt_sse_last_event_type(void *obj) {
     if (!obj)
         return rt_str_empty();
@@ -2561,7 +2639,9 @@ rt_string rt_sse_last_event_type(void *obj) {
     return sse ? sse_metadata_snapshot(sse, 1, "SSE.LastEventType: allocation failed") : NULL;
 }
 
-/// @brief Return the most recently accepted event ID.
+/// @brief Return the most recently accepted EventSource ID.
+/// @param obj Valid SSE client; NULL yields an empty String.
+/// @return Caller-owned synchronized event-ID snapshot.
 rt_string rt_sse_last_event_id(void *obj) {
     if (!obj)
         return rt_str_empty();

@@ -21,6 +21,14 @@
 // Links: rt_videoplayer.h, rt_avi.h, rt_pixels.h
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements managed AVI/MJPEG and Ogg/Theora video playback.
+ * @details Loads bounded file data through runtime I/O, prepares omitted MJPEG
+ * Huffman tables, coordinates AVI indexes or Ogg/Theora packet decoding,
+ * maintains stable display and scratch frames, synchronizes optional audio,
+ * and implements playback, update, stop, and transactional seek behavior.
+ */
 
 #ifdef ZANNA_ENABLE_GRAPHICS
 
@@ -46,25 +54,39 @@
 #include <string.h>
 
 #include "rt_trap.h"
+/// @copydoc rt_trap_set_recovery()
 extern void rt_trap_set_recovery(jmp_buf *buf);
+/// @copydoc rt_trap_clear_recovery()
 extern void rt_trap_clear_recovery(void);
+/// @copydoc rt_string_cstr()
 extern const char *rt_string_cstr(rt_string str);
+/// @copydoc rt_pixels_new()
 extern void *rt_pixels_new(int64_t width, int64_t height);
+/// @copydoc rt_pixels_width()
 extern int64_t rt_pixels_width(void *pixels);
+/// @copydoc rt_pixels_height()
 extern int64_t rt_pixels_height(void *pixels);
+/// @copydoc rt_jpeg_decode_buffer()
 extern void *rt_jpeg_decode_buffer(const uint8_t *data, size_t len);
+/// @copydoc rt_jpeg_decode_buffer_rgba32()
 extern int rt_jpeg_decode_buffer_rgba32(const uint8_t *data,
                                         size_t len,
                                         uint32_t **out_pixels,
                                         int64_t *out_width,
                                         int64_t *out_height);
+/// @copydoc rt_jpeg_decode_buffer_into_rgba32()
 extern int rt_jpeg_decode_buffer_into_rgba32(
     const uint8_t *data, size_t len, uint32_t *dst_pixels, int64_t dst_width, int64_t dst_height);
 
+/** Maximum complete video-file size accepted by the in-memory player. */
 #define VIDEOPLAYER_MAX_FILE_BYTES (INT64_C(512) * 1024 * 1024)
+/** Maximum number of Ogg/Theora frames decoded during one update call. */
 #define VIDEOPLAYER_MAX_OGV_UPDATE_DECODE_FRAMES 8
+/** Consecutive malformed Ogg video packets tolerated before playback stops. */
 #define VIDEOPLAYER_MAX_OGV_CONSECUTIVE_DECODE_ERRORS 16
+/** Largest MJPEG injection scratch buffer retained between frame decodes. */
 #define VIDEOPLAYER_MJPEG_SCRATCH_RETAIN_MAX (2u * 1024u * 1024u)
+/** Marks compatibility helpers that may be unused in a particular toolchain build. */
 #if defined(__clang__) || defined(__GNUC__)
 #define VIDEOPLAYER_UNUSED_PRIVATE __attribute__((unused))
 #else
@@ -72,6 +94,7 @@ extern int rt_jpeg_decode_buffer_into_rgba32(
 #endif
 
 /* Internal pixel struct for direct buffer copy */
+/** Minimal internal view of a managed Pixels object's dimensions and RGBA storage. */
 typedef struct {
     int64_t width, height;
     uint32_t *data;
@@ -199,6 +222,7 @@ static void *videoplayer_read_file_bytes(rt_string path, size_t *out_len, uint8_
  * MJPEG frames in AVI often omit these; we inject them before SOS.
  *=========================================================================*/
 
+/** Complete baseline JPEG Huffman-table segment injected into MJPEG frames that omit DHT. */
 static const uint8_t std_dht[] = {
     0xFF,
     0xC4, /* DHT marker */
@@ -821,6 +845,12 @@ static int decode_mjpeg_frame_into_rgba32(const uint8_t *data,
         decode_data, decode_size, dst_pixels, dst_width, dst_height);
 }
 
+/**
+ * @brief Managed VideoPlayer payload and all container-specific playback state.
+ * @details Owns retained file bytes, AVI or Ogg/Theora decoder state, optional
+ * audio playback, stable display and decode Pixels objects, and reusable
+ * MJPEG injection storage. The finalizer releases every owned field.
+ */
 typedef struct {
     void *vptr;
     /* File data */

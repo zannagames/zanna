@@ -53,9 +53,22 @@ typedef struct vg_tab {
     struct vg_tab *retired_next; ///< Retired-tab list link
 } vg_tab_t;
 
-/// @brief Tab callbacks
+/// @brief Notify a client that a tab became selected.
+/// @param tabbar TabBar widget that owns the tab.
+/// @param tab Borrowed selected tab.
+/// @param user_data Opaque pointer registered with the TabBar.
 typedef void (*vg_tab_select_callback_t)(vg_widget_t *tabbar, vg_tab_t *tab, void *user_data);
+/// @brief Ask a client whether a requested tab close may proceed.
+/// @param tabbar TabBar widget that owns the tab.
+/// @param tab Borrowed tab requested for closure.
+/// @param user_data Opaque pointer registered with the TabBar.
+/// @return True to permit closure, or false to veto it.
 typedef bool (*vg_tab_close_callback_t)(vg_widget_t *tabbar, vg_tab_t *tab, void *user_data);
+/// @brief Notify a client after a tab is reordered.
+/// @param tabbar TabBar widget that owns the tab.
+/// @param tab Borrowed reordered tab.
+/// @param new_index New zero-based index.
+/// @param user_data Opaque pointer registered with the TabBar.
 typedef void (*vg_tab_reorder_callback_t)(vg_widget_t *tabbar,
                                           vg_tab_t *tab,
                                           int new_index,
@@ -636,22 +649,28 @@ void vg_outputpane_set_max_lines(vg_outputpane_t *pane, size_t max);
 void vg_outputpane_set_font(vg_outputpane_t *pane, vg_font_t *font, float size);
 
 /// @brief Pixel advance of one monospace character cell (the width of "M" in the pane's font).
+/// @param pane Output pane whose configured font is measured.
 /// @return The cell width in pixels, or 0 when no font is set.
 int vg_outputpane_cell_width(const vg_outputpane_t *pane);
 
 /// @brief Pixel height of one line in the pane's font.
+/// @param pane Output pane whose configured font is measured.
 /// @return The line height in pixels, or 0 when no font is set.
 int vg_outputpane_cell_height(const vg_outputpane_t *pane);
 
 /// @brief Pixel width of @p text rendered in the pane's font (sums glyph advances).
+/// @param pane Output pane supplying the configured font and size.
+/// @param text NUL-terminated text to measure.
 /// @return The text width in pixels, or 0 when no font is set or @p text is NULL/empty.
 int vg_outputpane_measure_text(const vg_outputpane_t *pane, const char *text);
 
 /// @brief Whole character columns that fit across the pane's arranged width.
+/// @param pane Arranged output pane to measure.
 /// @return floor(width / cellWidth), or 0 when no font is set.
 int vg_outputpane_columns_for_width(const vg_outputpane_t *pane);
 
 /// @brief Whole rows that fit down the pane's arranged height.
+/// @param pane Arranged output pane to measure.
 /// @return floor(height / cellHeight), or 0 when no font is set.
 int vg_outputpane_rows_for_height(const vg_outputpane_t *pane);
 
@@ -659,6 +678,8 @@ int vg_outputpane_rows_for_height(const vg_outputpane_t *pane);
 ///        a cursor-position overwrite model (handles \r, \b, ESC[K, CSI H/f, cursor
 ///        moves), parses and swallows non-SGR escape sequences, and captures keyboard
 ///        focus, queueing keystrokes for vg_outputpane_take_input. Off = append-only log.
+/// @param pane Output pane whose interpretation and input policy is changed.
+/// @param enabled True for interactive terminal behavior, or false for append-only logging.
 void vg_outputpane_set_terminal_mode(vg_outputpane_t *pane, bool enabled);
 
 /// @brief Drain queued keystroke bytes (terminal mode). Returns a heap string the caller
@@ -667,6 +688,8 @@ void vg_outputpane_set_terminal_mode(vg_outputpane_t *pane, bool enabled);
 /// @details This compatibility helper NUL-terminates the returned buffer. Call
 ///          vg_outputpane_take_input_bytes when the exact byte length matters,
 ///          because terminal input can contain embedded NUL control bytes.
+/// @param pane Terminal-mode output pane whose pending input should be drained.
+/// @return NUL-terminated heap buffer owned by the caller, or NULL when empty.
 char *vg_outputpane_take_input(vg_outputpane_t *pane);
 
 /// @brief Drain queued terminal-input bytes with an explicit byte count.
@@ -683,6 +706,8 @@ char *vg_outputpane_take_input_bytes(vg_outputpane_t *pane, size_t *len_out);
 
 /// @brief Advance the terminal caret blink timer by @p dt seconds (terminal mode + focused);
 ///        toggles caret visibility and marks the pane for repaint on each phase change.
+/// @param pane Output pane whose caret animation is advanced.
+/// @param dt Positive elapsed time in seconds.
 void vg_outputpane_tick(vg_outputpane_t *pane, float dt);
 
 //=============================================================================

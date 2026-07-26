@@ -27,6 +27,13 @@
 //        Theora spec: https://www.theora.org/doc/Theora.pdf
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares the dependency-free Theora video decoder.
+ * @details Defines public identification/setup metadata, owned reference and
+ * output-plane state, and the lifecycle, header, frame, and packet
+ * classification entry points used by Ogg video playback.
+ */
 #pragma once
 
 #include <stddef.h>
@@ -36,6 +43,7 @@
 extern "C" {
 #endif
 
+/** Number of Huffman tables carried by a complete Theora setup header. */
 #define THEORA_MAX_HUFFMAN_TABLES 80
 
 /// @brief Theora decoder context.

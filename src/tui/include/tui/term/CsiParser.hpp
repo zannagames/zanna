@@ -5,10 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the CsiParser class, which interprets ANSI CSI
-// (Control Sequence Introducer) escape sequences for Zanna's TUI input
-// decoder. CSI sequences begin with ESC [ and encode special keys,
-// mouse events, and terminal mode changes.
+/// @file
+/// @brief Declares ANSI Control Sequence Introducer input decoding.
+/// @details CsiParser interprets complete `ESC [` sequences as special keys,
+///          modifiers, SGR mouse reports, and bracketed-paste transitions,
+///          appending events to caller-owned output buffers.
 //
 // The parser handles:
 //   - Cursor movement keys (arrows, Home, End, Page Up/Down, Insert, Delete)
@@ -52,6 +53,9 @@ struct CsiResult {
 class CsiParser {
   public:
     /// @brief Construct a parser bound to output event buffers.
+    /// @param keys Borrowed destination for decoded key events.
+    /// @param mouse Borrowed destination for decoded mouse events.
+    /// @param paste_buffer Borrowed accumulation buffer for bracketed paste text.
     CsiParser(std::vector<KeyEvent> &keys,
               std::vector<MouseEvent> &mouse,
               std::string &paste_buffer);
@@ -81,11 +85,14 @@ class CsiParser {
     [[nodiscard]] unsigned decode_mod(int value) const;
 
   private:
+    /// @brief Decode and append one SGR mouse report.
+    /// @param final CSI final byte distinguishing press/motion from release.
+    /// @param params Semicolon-separated button and coordinate parameters.
     void handle_sgr_mouse(char final, std::string_view params);
 
-    std::vector<KeyEvent> &key_events_;
-    std::vector<MouseEvent> &mouse_events_;
-    std::string &paste_buffer_;
+    std::vector<KeyEvent> &key_events_;     ///< Borrowed key-event destination.
+    std::vector<MouseEvent> &mouse_events_; ///< Borrowed mouse-event destination.
+    std::string &paste_buffer_;             ///< Borrowed bracketed-paste buffer.
 };
 
 } // namespace zanna::tui::term

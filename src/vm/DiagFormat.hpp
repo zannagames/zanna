@@ -13,6 +13,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares cold-path diagnostic message builders used by the VM.
+/// @details These helpers centralize wording for runtime-kind, helper lookup,
+///          call-arity, and branch-arity failures.  Each function returns an
+///          owning string and performs formatting only when an error is reported.
+
 #pragma once
 
 #include "il/core/Type.hpp"

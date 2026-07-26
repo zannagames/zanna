@@ -30,6 +30,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares the validated ZPAK archive reader and ownership API.
+ * @details Exposes decoded archive and entry metadata, memory and file open
+ * paths, explicit reference management, name lookup, integrity-checked entry
+ * extraction, and the borrowing rules for archive-owned metadata and blobs.
+ */
+
 #pragma once
 
 #include "rt_zpak_format.h"

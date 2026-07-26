@@ -448,6 +448,8 @@ std::size_t runAddressingFolds(MFunction &fn) {
                 for (auto it = addrDefs.begin(); it != addrDefs.end();) {
                     const auto &entry = it->second;
                     /// @brief Tests whether the current definition overwrites a tracked operand.
+                    /// @param src Tracked register operand.
+                    /// @return `true` when `defReg` and `src` name the same register.
                     const auto matches = [&](const MOperand &src) {
                         return defReg.isPhys == src.reg.isPhys && defReg.cls == src.reg.cls &&
                                defReg.idOrPhys == src.reg.idOrPhys;

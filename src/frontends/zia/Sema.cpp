@@ -299,6 +299,9 @@ int conversionCost(TypeRef paramType, TypeRef argType, bool allowRuntimeObjectCo
 //=============================================================================
 
 /// @brief Resolve the declaring owner for a field visible from a type.
+/// @param typeName Type at which inherited field lookup begins.
+/// @param fieldName Field identifier to locate.
+/// @return Declaring owner and semantic field type, or `std::nullopt`.
 std::optional<Sema::FieldResolution> Sema::resolveFieldEntry(const std::string &typeName,
                                                              const std::string &fieldName) const {
     // Fast path: a directly-declared field needs no base-class walk and no
@@ -489,6 +492,9 @@ bool Sema::registerFunctionOverload(const std::string &name,
     family.push_back(decl);
     functionDeclTypes_[decl] = funcType;
 
+    /// @brief Builds the lowered symbol name for one function overload.
+    /// @param fn Registered function declaration.
+    /// @return Arity- and type-key-mangled symbol name.
     auto overloadLoweredName = [&](FunctionDecl *fn) {
         auto typeIt = functionDeclTypes_.find(fn);
         ZANNA_ZIA_ASSERT(typeIt != functionDeclTypes_.end(),
@@ -563,6 +569,9 @@ bool Sema::registerMethodOverload(const std::string &ownerType,
     methodSignatureKeys_.try_emplace(decl, sigKey);
     methodDispatchKeys_.try_emplace(decl, methodDispatchKey(*decl, methodType));
 
+    /// @brief Builds the owner-qualified lowered name for one method overload.
+    /// @param method Registered method declaration.
+    /// @return Arity- and type-key-mangled method symbol name.
     auto overloadLoweredMethodName = [&](MethodDecl *method) {
         MethodInstanceKey key{ownerType, method};
         auto typeIt = ownerMethodTypes_.find(key);
@@ -602,6 +611,8 @@ std::vector<MethodDecl *> Sema::collectMethodOverloads(const std::string &typeNa
     std::vector<MethodDecl *> result;
     std::unordered_set<std::string> seenSignatures;
 
+    /// @brief Adds one owner's non-shadowed method overload family.
+    /// @param owner Semantic owner type name.
     auto addFamily = [&](const std::string &owner) {
         auto it = methodOverloads_.find(owner + "." + methodName);
         if (it == methodOverloads_.end())
@@ -760,6 +771,8 @@ MethodDecl *Sema::resolveMethodOverload(const std::string &ownerType,
     std::vector<std::string> candidates;
     std::unordered_set<std::string> seenSignatures;
 
+    /// @brief Scores viable overloads declared by one candidate owner.
+    /// @param candidateOwner Semantic owner type name.
     auto considerOwner = [&](const std::string &candidateOwner) {
         auto it = methodOverloads_.find(candidateOwner + "." + methodName);
         if (it == methodOverloads_.end())
@@ -992,6 +1005,10 @@ bool Sema::bindCallArgs(const std::vector<CallArg> &args,
     const bool hasVariadic = !params.empty() && params.back().isVariadic;
     const size_t fixedCount = hasVariadic ? params.size() - 1 : params.size();
 
+    /// @brief Reports an argument-binding failure when diagnostics are enabled.
+    /// @param message Diagnostic message.
+    /// @param errLoc Source location for the error.
+    /// @return Always `false`.
     auto fail = [&](const std::string &message, SourceLoc errLoc) {
         if (reportErrors)
             const_cast<Sema *>(this)->error(errLoc, message);
@@ -1159,6 +1176,9 @@ bool Sema::checkRuntimePointerSafety(const std::string &calleeName,
     if (!hasSafety)
         return true;
 
+    /// @brief Formats a safe-Zia raw-pointer rejection with replacement guidance.
+    /// @param detail Description of the unsafe runtime surface.
+    /// @return Complete diagnostic message.
     auto diagnosticMessage = [&](std::string detail) {
         std::string message = "Runtime API '" + calleeName + "' exposes " + detail +
                               " and is unavailable in safe Zia";
@@ -1176,6 +1196,9 @@ bool Sema::checkRuntimePointerSafety(const std::string &calleeName,
         return false;
     }
 
+    /// @brief Tests whether an exposed parameter maps to a raw runtime pointer.
+    /// @param exposedParamIndex Parameter index after hidden leading parameters.
+    /// @return `true` when the corresponding runtime parameter is raw.
     auto isRawParam = [&](size_t exposedParamIndex) -> bool {
         size_t fullIndex = skipLeadingParams + exposedParamIndex;
         if (fullIndex < safety.rawPointerParams.size())
@@ -1185,6 +1208,9 @@ bool Sema::checkRuntimePointerSafety(const std::string &calleeName,
         return false;
     };
 
+    /// @brief Retrieves the safe callback-bridge role for an exposed parameter.
+    /// @param exposedParamIndex Parameter index after hidden leading parameters.
+    /// @return Configured bridge role, or `None`.
     auto bridgeRoleFor = [&](size_t exposedParamIndex) -> RuntimePointerBridgeRole {
         size_t fullIndex = skipLeadingParams + exposedParamIndex;
         if (fullIndex < safety.bridgeRoles.size())
@@ -1370,6 +1396,8 @@ MethodDecl *Sema::resolveMethodArgOverload(const std::string &ownerType,
     std::vector<std::string> candidates;
     std::unordered_set<std::string> seenSignatures;
 
+    /// @brief Binds and scores named-argument overloads for one candidate owner.
+    /// @param candidateOwner Semantic owner type name.
     auto considerOwner = [&](const std::string &candidateOwner) {
         auto it = methodOverloads_.find(candidateOwner + "." + methodName);
         if (it == methodOverloads_.end())
@@ -1587,6 +1615,9 @@ bool Sema::registerTypeDeclarationSymbol(Decl &decl, const std::string &semantic
     sym.decl = &decl;
     sym.isExported = decl.isExported;
 
+    /// @brief Converts generic parameter names to semantic type-parameter references.
+    /// @param params Generic parameter names.
+    /// @return Type arguments in declaration order.
     auto makeGenericArgs = [](const std::vector<std::string> &params) {
         std::vector<TypeRef> args;
         args.reserve(params.size());
@@ -1726,6 +1757,10 @@ void Sema::resolvePendingTypeAliases(
 ///          assignability registries are populated. Generic relationships are deferred until
 ///          instantiation.
 void Sema::registerNominalTypeRelationships(std::vector<DeclPtr> &declarations) {
+    /// @brief Registers resolved interface implementations for one nominal type.
+    /// @param ownerName Semantic owner type name.
+    /// @param loc Declaration location for type-resolution diagnostics.
+    /// @param interfaces Declared interface names.
     auto registerInterfaces = [this](const std::string &ownerName,
                                      const SourceLoc &loc,
                                      const std::vector<std::string> &interfaces) {

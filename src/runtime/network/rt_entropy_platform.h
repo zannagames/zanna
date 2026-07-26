@@ -21,6 +21,15 @@
 //        src/runtime/network/rt_crypto_module.c
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares the fail-closed operating-system entropy adapter.
+ * @details Defines caller-buffer byte and scalar requests backed exclusively
+ * by platform CSPRNG facilities, with no deterministic fallback or retained
+ * adapter state.
+ */
+
 #pragma once
 
 #include <stddef.h>

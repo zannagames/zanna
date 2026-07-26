@@ -21,6 +21,13 @@
 // Links: src/runtime/graphics/media/rt_theora.h, src/runtime/graphics/media/rt_videoplayer.h
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares planar YCbCr 4:2:0, 4:2:2, and 4:4:4 conversion to RGBA.
+ * @details All entry points borrow their input and output buffers, use
+ * limited-range BT.601 coefficients, perform nearest-neighbor chroma
+ * upsampling where required, and emit opaque packed `0xRRGGBBAA` pixels.
+ */
 #pragma once
 
 #include <stdint.h>

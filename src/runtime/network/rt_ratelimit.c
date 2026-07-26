@@ -18,6 +18,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_ratelimit.c
+ * @brief Implements the managed continuously refilled token-bucket limiter.
+ * @details Whole-token capacity and balance use exact signed integers while a
+ *          fractional carry preserves sub-token refill progress. Public
+ *          operations validate managed identity, advance state from the
+ *          monotonic clock, and perform all-or-nothing token acquisition.
+ */
+
 #include "rt_ratelimit.h"
 
 #include "rt_internal.h"

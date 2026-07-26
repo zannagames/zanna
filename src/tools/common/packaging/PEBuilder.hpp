@@ -19,11 +19,17 @@
 //   - Resource section embeds RT_MANIFEST for UAC elevation.
 //
 // Ownership/Lifetime:
-//   - Single-use builder. Accumulates sections, then emits complete PE.
+//   - Pure build functions return owned bytes; the file helper writes caller-owned bytes.
 //
 // Links: WindowsPackageBuilder.hpp, Microsoft PE Format specification
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares dependency-free PE32+ executable and manifest generation.
+/// @details Models import/resource metadata and emits complete AMD64 or ARM64
+///          Windows images with optional raw overlays.
+
 #pragma once
 
 #include <array>
@@ -35,8 +41,8 @@ namespace zanna::pkg {
 
 /// @brief Functions imported from a single DLL for the import directory.
 struct PEImport {
-    std::string dllName;                 ///< DLL to import from (e.g. "kernel32.dll").
-    std::vector<std::string> functions;  ///< Imported function names from that DLL.
+    std::string dllName;                ///< NUL-terminated DLL name emitted in `.rdata`.
+    std::vector<std::string> functions; ///< Ordered name imports forming ILT and IAT slots.
 };
 
 /// @brief VERSIONINFO metadata embedded as an RT_VERSION resource.
@@ -117,19 +123,29 @@ struct PEBuildParams {
 std::vector<uint8_t> buildPE(const PEBuildParams &params);
 
 /// @brief Write a PE to a file.
+/// @param pe Complete PE image bytes.
+/// @param path Destination file path.
 /// @throws std::runtime_error on write failure.
 void writePEToFile(const std::vector<uint8_t> &pe, const std::string &path);
 
 /// @brief Generate a basic UAC manifest requesting admin elevation.
+/// @return `requireAdministrator` application-manifest XML without compatibility declarations.
 std::string generateUacManifest();
 
 /// @brief Generate UAC manifest with optional Windows compatibility metadata.
+/// @param minOsWindows Optional minimum dotted-numeric Windows version.
+/// @return `requireAdministrator` application-manifest XML.
+/// @throws std::runtime_error If the version syntax or component count is invalid.
 std::string generateUacManifest(const std::string &minOsWindows);
 
 /// @brief Generate a UAC manifest requesting asInvoker (no elevation).
+/// @return `asInvoker` application-manifest XML without compatibility declarations.
 std::string generateAsInvokerManifest();
 
 /// @brief Generate an asInvoker manifest with optional Windows compatibility metadata.
+/// @param minOsWindows Optional minimum dotted-numeric Windows version.
+/// @return `asInvoker` application-manifest XML.
+/// @throws std::runtime_error If the version syntax or component count is invalid.
 std::string generateAsInvokerManifest(const std::string &minOsWindows);
 
 } // namespace zanna::pkg

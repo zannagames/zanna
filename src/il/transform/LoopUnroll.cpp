@@ -15,6 +15,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements conservative full unrolling for statically counted IL loops.
+ *
+ * @details The implementation validates a supported induction comparison and
+ *          checked constant step, simulates a bounded exact trip count, rejects
+ *          trapping or effectful body instructions, and clones each iteration
+ *          with fresh SSA identities. Final loop-carried values are threaded
+ *          directly to the exit before the original loop blocks are removed.
+ */
+
 #include "il/transform/LoopUnroll.hpp"
 
 #include "il/transform/AnalysisIDs.hpp"
@@ -99,15 +110,15 @@ bool tempDefinedInLoop(const Function &function, const Loop &loop, unsigned temp
 
 /// @brief Information about a simple counted loop.
 struct CountedLoop {
-    /// Initial value of the induction variable.
+    /// @brief Initial value of the induction variable.
     long long initValue = 0;
-    /// Final value (exclusive) for the loop bound.
+    /// @brief Constant comparison bound for the induction variable.
     long long endValue = 0;
-    /// Step size per iteration.
+    /// @brief Signed step applied after each iteration.
     long long step = 1;
-    /// Index of the induction variable in header params.
+    /// @brief Index of the induction variable in the header parameters.
     size_t ivParamIndex = 0;
-    /// Computed trip count.
+    /// @brief Exact number of body iterations proved by bounded simulation.
     unsigned tripCount = 0;
 };
 
@@ -670,7 +681,9 @@ bool fullyUnrollLoop(Function &function,
     // Remove original loop blocks from function
     std::unordered_set<std::string> loopBlockLabels(loop.blockLabels.begin(),
                                                     loop.blockLabels.end());
-    /// Remove every block whose label belongs to the now-expanded loop.
+    /// @brief Test whether a block belonged to the now-expanded loop.
+    /// @param b Candidate function block.
+    /// @return True when @p b should be removed after full expansion.
     function.blocks.erase(
         std::remove_if(function.blocks.begin(),
                        function.blocks.end(),
@@ -762,7 +775,8 @@ PreservedAnalyses LoopUnroll::run(Function &function, AnalysisManager &analysis)
 /// @copydoc registerLoopUnrollPass()
 void registerLoopUnrollPass(PassRegistry &registry) {
     // Sequential: rewrites loop CFG and recomputes whole-module loop/CFG snapshots.
-    /// Construct a default-configured loop unroller for the sequential pipeline.
+    /// @brief Construct a default-configured loop unroller for the sequential pipeline.
+    /// @return Newly owned `LoopUnroll` pass.
     registry.registerFunctionPass(
         "loop-unroll", []() { return std::make_unique<LoopUnroll>(); }, false);
 }

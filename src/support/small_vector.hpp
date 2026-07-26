@@ -20,6 +20,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Defines a vector-like container with fixed-capacity inline storage.
+/// @details `SmallVector` constructs its first `N` elements inside the container
+///          object and allocates only after that capacity is exceeded. It owns
+///          every constructed element, provides contiguous storage throughout,
+///          and preserves standard vector-style iterator invalidation rules when
+///          storage changes.
+
 #pragma once
 
 #include <algorithm>
@@ -36,11 +44,14 @@ namespace il::support {
 
 /// @brief A vector-like container with inline storage for small element counts.
 ///
-/// SmallVector<T, N> stores up to N elements in inline storage (no heap allocation).
-/// When more than N elements are needed, it switches to heap allocation.
+/// @details `SmallVector<T, N>` stores up to `N` elements in inline storage
+///          without allocating. When more elements are needed, it permanently
+///          switches to allocator-backed storage until cleared and explicitly
+///          replaced by an assignment path that fits inline. Elements occupy a
+///          contiguous range `[data(), data() + size())` in either mode.
 ///
-/// @tparam T Element type (must be trivially copyable for optimal performance).
-/// @tparam N Number of elements to store inline (default: 8).
+/// @tparam T Copy-constructible element type, or nothrow move-constructible type.
+/// @tparam N Positive number of elements stored inline; defaults to eight.
 template <typename T, size_t N = 8> class SmallVector {
     static_assert(N > 0, "SmallVector inline capacity must be positive");
     static_assert(
@@ -64,12 +75,14 @@ template <typename T, size_t N = 8> class SmallVector {
 
     /// @brief Return the typed pointer for inline raw storage.
     /// @return Pointer to the first inline slot; slots may be unconstructed.
+    /// @warning Only positions below `size_` contain live `T` objects.
     [[nodiscard]] T *inlineData() noexcept {
         return std::launder(reinterpret_cast<T *>(inlineStorage_));
     }
 
     /// @brief Return the typed pointer for const inline raw storage.
     /// @return Pointer to the first inline slot; slots may be unconstructed.
+    /// @warning Only positions below `size_` contain live `T` objects.
     [[nodiscard]] const T *inlineData() const noexcept {
         return std::launder(reinterpret_cast<const T *>(inlineStorage_));
     }
@@ -84,6 +97,7 @@ template <typename T, size_t N = 8> class SmallVector {
 
     /// @brief Release heap storage after all constructed elements are gone.
     /// @details Leaves the vector in inline-storage mode with zero heap capacity.
+    /// @pre No live elements remain in the heap buffer.
     void releaseHeap() noexcept {
         if (heap_) {
             AllocTraits::deallocate(allocator_, heap_, capacity_);
@@ -257,6 +271,11 @@ template <typename T, size_t N = 8> class SmallVector {
     }
 
     /// @brief Move elements from another vector's inline storage into this vector.
+    /// @param other Inline-backed source whose elements should be transferred.
+    /// @details Constructs elements sequentially in this object's unused inline
+    ///          storage, then destroys the source elements and leaves @p other
+    ///          empty. On a throwing move, constructed destination elements are
+    ///          destroyed while the source remains valid but may be partly moved.
     void moveInlineFrom(SmallVector &other) noexcept(std::is_nothrow_move_constructible_v<T>) {
         size_t constructed = 0;
         if constexpr (std::is_nothrow_move_constructible_v<T>) {
@@ -289,10 +308,13 @@ template <typename T, size_t N = 8> class SmallVector {
     using const_iterator = const T *;
 
     /// @brief Construct an empty SmallVector.
+    /// @details Selects inline-storage mode with no live elements or allocation.
     SmallVector() noexcept = default;
 
     /// @brief Construct from initializer list.
     /// @param init List of elements to copy into the vector.
+    /// @details Reserves enough contiguous capacity, then copy-constructs values
+    ///          in list order. Partially constructed state is cleaned on failure.
     SmallVector(std::initializer_list<T> init) {
         reserve(init.size());
         size_t constructed = 0;
@@ -311,6 +333,9 @@ template <typename T, size_t N = 8> class SmallVector {
 
     /// @brief Copy constructor.
     /// @param other Source vector to copy elements from.
+    /// @details The new vector chooses storage based on @p other's size rather
+    ///          than copying its spare capacity. Construction is rolled back if
+    ///          an element copy throws.
     SmallVector(const SmallVector &other) {
         reserve(other.size_);
         size_t constructed = 0;
@@ -327,7 +352,7 @@ template <typename T, size_t N = 8> class SmallVector {
 
     /// @brief Move constructor.
     /// @details If @p other uses heap storage, the buffer is stolen in O(1).
-    ///          If @p other uses inline storage, elements are copied element-wise.
+    ///          If @p other uses inline storage, elements are moved element-wise.
     /// @param other Source vector to move from; left empty after the move.
     SmallVector(SmallVector &&other) noexcept(std::is_nothrow_move_constructible_v<T>) {
         if (other.isHeap()) {
@@ -343,6 +368,8 @@ template <typename T, size_t N = 8> class SmallVector {
     }
 
     /// @brief Destructor.
+    /// @details Destroys live elements in reverse order and releases heap storage
+    ///          when the vector has exceeded its inline capacity.
     ~SmallVector() {
         clear();
         releaseHeap();
@@ -351,6 +378,9 @@ template <typename T, size_t N = 8> class SmallVector {
     /// @brief Copy assignment.
     /// @param other Source vector to copy elements from.
     /// @return Reference to this vector.
+    /// @details Self-assignment is a no-op. Otherwise replacement construction
+    ///          preserves the existing value until potentially throwing copies
+    ///          have succeeded.
     SmallVector &operator=(const SmallVector &other) {
         if (this != &other)
             replaceWithCopiedElements(other);
@@ -382,8 +412,11 @@ template <typename T, size_t N = 8> class SmallVector {
 
     /// @brief Reserve capacity for at least @p n elements.
     /// @details If @p n exceeds current capacity, allocates a new heap buffer
-    ///          and copies existing elements. No-op if capacity is already sufficient.
+    ///          and relocates existing elements by nothrow move or by copy.
+    ///          No-op if capacity is already sufficient. Reallocation invalidates
+    ///          every pointer, reference, iterator, and span into the vector.
     /// @param n Minimum number of elements the vector should be able to hold.
+    /// @throws std::bad_array_new_length If @p n exceeds allocator limits.
     void reserve(size_t n) {
         if (n <= capacity())
             return;
@@ -418,12 +451,16 @@ template <typename T, size_t N = 8> class SmallVector {
 
     /// @brief Add an element to the end.
     /// @param value Element to copy-append.
+    /// @details Delegates to @ref emplace_back, including its alias-safe growth
+    ///          behavior when @p value refers to an existing element.
     void push_back(const T &value) {
         emplace_back(value);
     }
 
     /// @brief Add an element to the end (move version).
     /// @param value Element to move-append.
+    /// @details Delegates construction and any required geometric growth to
+    ///          @ref emplace_back.
     void push_back(T &&value) {
         emplace_back(std::move(value));
     }
@@ -432,6 +469,9 @@ template <typename T, size_t N = 8> class SmallVector {
     /// @tparam Args Constructor argument types.
     /// @param args Arguments forwarded to the element constructor.
     /// @return Reference to the newly constructed element.
+    /// @details Grows geometrically when full. A growth operation invalidates
+    ///          existing references and iterators; construction failure leaves
+    ///          the element count unchanged.
     template <typename... Args> reference emplace_back(Args &&...args) {
         if (size_ >= capacity())
             return growAndEmplaceBack(growthCapacity(checkedAppendSize()),
@@ -443,6 +483,8 @@ template <typename T, size_t N = 8> class SmallVector {
     }
 
     /// @brief Remove the last element.
+    /// @pre The vector is not empty.
+    /// @details Destroys the final element without changing storage capacity.
     void pop_back() {
         assert(size_ > 0);
         --size_;
@@ -450,6 +492,8 @@ template <typename T, size_t N = 8> class SmallVector {
     }
 
     /// @brief Clear all elements.
+    /// @details Destroys all live elements in reverse order while retaining the
+    ///          current inline or heap allocation for later reuse.
     void clear() noexcept {
         destroyRange(data(), size_);
         size_ = 0;
@@ -457,7 +501,9 @@ template <typename T, size_t N = 8> class SmallVector {
 
     /// @brief Resize to @p n elements.
     /// @details New elements beyond the current size are default-initialized.
-    ///          If @p n is smaller than size(), excess elements are logically removed.
+    ///          If @p n is smaller than size(), excess elements are destroyed.
+    ///          If construction of a new element fails, already-added elements
+    ///          from this resize are removed and the original size is restored.
     /// @param n Desired element count.
     void resize(size_t n) {
         if (n < size_) {
@@ -481,6 +527,9 @@ template <typename T, size_t N = 8> class SmallVector {
     /// @brief Resize to @p n elements, filling new slots with @p value.
     /// @param n Desired element count.
     /// @param value Value to assign to newly created elements.
+    /// @details Copies @p value before reallocation when it may alias an existing
+    ///          element. Shrinking destroys the discarded suffix; growth failure
+    ///          removes any elements constructed by this call.
     void resize(size_t n, const T &value) {
         if (n < size_) {
             destroyRange(data() + n, size_ - n);
@@ -534,12 +583,16 @@ template <typename T, size_t N = 8> class SmallVector {
 
     /// @brief Return a pointer to the underlying element storage.
     /// @return Pointer to the first element (inline or heap buffer).
+    /// @note The pointer denotes contiguous storage but must not be dereferenced
+    ///       when the vector is empty.
     [[nodiscard]] T *data() noexcept {
         return isHeap() ? heap_ : inlineData();
     }
 
     /// @brief Return a const pointer to the underlying element storage.
     /// @return Const pointer to the first element (inline or heap buffer).
+    /// @note The pointer denotes contiguous storage but must not be dereferenced
+    ///       when the vector is empty.
     [[nodiscard]] const T *data() const noexcept {
         return isHeap() ? heap_ : inlineData();
     }
@@ -645,6 +698,8 @@ template <typename T, size_t N = 8> class SmallVector {
     }
 
     /// @brief Disallow mutable spans from temporaries.
+    /// @details Prevents a borrowing mutable view from outliving a temporary
+    ///          vector and its inline or heap storage.
     [[nodiscard]] std::span<T> span() && = delete;
 
     /// @brief Explicit conversion to const span.
@@ -654,6 +709,8 @@ template <typename T, size_t N = 8> class SmallVector {
     }
 
     /// @brief Disallow const spans from temporaries.
+    /// @details Prevents a borrowing read-only view from outliving a temporary
+    ///          vector and its inline or heap storage.
     [[nodiscard]] std::span<const T> span() const && = delete;
 };
 

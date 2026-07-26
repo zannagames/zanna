@@ -23,6 +23,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Enumerates AArch64 Machine IR opcodes through a reusable X-macro.
+/// @details Consumers define @c ZANNA_MIR_OPCODE before inclusion to generate
+///          the enum, mnemonic lookup, or another order-sensitive metadata
+///          structure from this single ABI-stable list.
+/// @def ZANNA_MIR_OPCODE
+/// @param name Machine opcode identifier emitted by the including consumer.
+
 #ifndef ZANNA_MIR_OPCODE
 #error "Define ZANNA_MIR_OPCODE(name) before including MOpcodeDef.inc"
 #endif

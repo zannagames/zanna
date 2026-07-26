@@ -99,6 +99,13 @@ std::size_t TextBuffer::lineStart(std::size_t lineNo) const {
     return line_index_.start(lineNo);
 }
 
+/// @brief Resolve the byte offset immediately after a line's visible contents.
+/// @details For non-final lines, subtracts the terminating newline byte from the
+///          next line's start.  The final line ends at the logical buffer size,
+///          and an out-of-range line number likewise resolves to that sentinel.
+/// @param lineNo Zero-based line index.
+/// @return Exclusive end offset of the line contents, excluding a terminating
+///         newline when one is present.
 std::size_t TextBuffer::lineEnd(std::size_t lineNo) const {
     if (lineNo >= line_index_.count()) {
         return table_.size();
@@ -166,6 +173,9 @@ void TextBuffer::endTxn() {
 /// @param text UTF-8 string to insert.
 void TextBuffer::insert(std::size_t pos, std::string_view text) {
     auto change = table_.insertInternal(pos, text);
+    /// @brief Forward one piece-table insertion to the line index.
+    /// @param changePos Byte offset of the applied insertion.
+    /// @param inserted Inserted UTF-8 bytes.
     change.notifyInsert([this](std::size_t changePos, std::string_view inserted) {
         line_index_.onInsert(changePos, inserted);
     });
@@ -182,6 +192,9 @@ void TextBuffer::insert(std::size_t pos, std::string_view text) {
 /// @param len Number of bytes to remove.
 void TextBuffer::erase(std::size_t pos, std::size_t len) {
     auto change = table_.eraseInternal(pos, len);
+    /// @brief Forward one piece-table erasure to the line index.
+    /// @param changePos Byte offset of the applied erasure.
+    /// @param removed Removed UTF-8 bytes.
     change.notifyErase([this](std::size_t changePos, std::string_view removed) {
         line_index_.onErase(changePos, removed);
     });
@@ -197,14 +210,22 @@ void TextBuffer::erase(std::size_t pos, std::size_t len) {
 ///          callbacks during undo.
 /// @return True when an edit was undone.
 bool TextBuffer::undo() {
+    /// @brief Replay one history operation in reverse against the piece table.
+    /// @param op Recorded edit operation to undo.
     return history_.undo([this](const EditHistory::Op &op) {
         if (op.type == EditHistory::OpType::Insert) {
             auto change = table_.eraseInternal(op.pos, op.text.size());
+            /// @brief Forward an undo erasure to the line index.
+            /// @param changePos Byte offset of the erasure.
+            /// @param removed Removed UTF-8 bytes.
             change.notifyErase([this](std::size_t changePos, std::string_view removed) {
                 line_index_.onErase(changePos, removed);
             });
         } else {
             auto change = table_.insertInternal(op.pos, op.text);
+            /// @brief Forward an undo insertion to the line index.
+            /// @param changePos Byte offset of the insertion.
+            /// @param inserted Inserted UTF-8 bytes.
             change.notifyInsert([this](std::size_t changePos, std::string_view inserted) {
                 line_index_.onInsert(changePos, inserted);
             });
@@ -218,14 +239,22 @@ bool TextBuffer::undo() {
 ///          edit history in lockstep.
 /// @return True when an edit was reapplied.
 bool TextBuffer::redo() {
+    /// @brief Replay one history operation forward against the piece table.
+    /// @param op Recorded edit operation to redo.
     return history_.redo([this](const EditHistory::Op &op) {
         if (op.type == EditHistory::OpType::Insert) {
             auto change = table_.insertInternal(op.pos, op.text);
+            /// @brief Forward a redo insertion to the line index.
+            /// @param changePos Byte offset of the insertion.
+            /// @param inserted Inserted UTF-8 bytes.
             change.notifyInsert([this](std::size_t changePos, std::string_view inserted) {
                 line_index_.onInsert(changePos, inserted);
             });
         } else {
             auto change = table_.eraseInternal(op.pos, op.text.size());
+            /// @brief Forward a redo erasure to the line index.
+            /// @param changePos Byte offset of the erasure.
+            /// @param removed Removed UTF-8 bytes.
             change.notifyErase([this](std::size_t changePos, std::string_view removed) {
                 line_index_.onErase(changePos, removed);
             });
@@ -240,7 +269,7 @@ std::string TextBuffer::str() const {
     return table_.getText(0, table_.size());
 }
 
-/// @brief Retrieve a single line of text including trailing newline characters.
+/// @brief Retrieve a single line of text without its trailing newline.
 /// @details Uses @ref LineIndex to compute the start/end offsets and copies the
 ///          range out of the piece table.  Out-of-range requests yield an empty
 ///          string, matching editor expectations.

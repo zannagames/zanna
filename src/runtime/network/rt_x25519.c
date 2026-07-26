@@ -13,6 +13,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_x25519.c
+ * @brief Implements RFC 7748 X25519 key agreement.
+ * @details The implementation uses ten mixed-radix limbs for arithmetic in
+ *          GF(2^255-19), a constant-pattern Montgomery ladder for scalar
+ *          multiplication, scalar clamping, and runtime entropy for key
+ *          generation. Secret intermediate and output storage is scrubbed on
+ *          failure paths.
+ */
+
 #include "rt_crypto.h"
 #include "rt_crypto_module.h"
 #include "rt_trap.h"
@@ -34,18 +44,22 @@
 typedef int64_t fe[10];
 
 /// @brief `h := f` (10-limb copy).
+/// @param[out] h Destination field element.
+/// @param[in] f Source field element; it may alias @p h.
 static void fe_copy(fe h, const fe f) {
     for (int i = 0; i < 10; i++)
         h[i] = f[i];
 }
 
 /// @brief Set `h` to the field zero.
+/// @param[out] h Field element to clear.
 static void fe_0(fe h) {
     for (int i = 0; i < 10; i++)
         h[i] = 0;
 }
 
 /// @brief Set `h` to the field identity (1).
+/// @param[out] h Field element to initialize.
 static void fe_1(fe h) {
     h[0] = 1;
     for (int i = 1; i < 10; i++)
@@ -53,12 +67,18 @@ static void fe_1(fe h) {
 }
 
 /// @brief `h := f + g` (limb-wise; carries deferred to next multiplication).
+/// @param[out] h Destination field element; it may alias either input.
+/// @param[in] f First addend.
+/// @param[in] g Second addend.
 static void fe_add(fe h, const fe f, const fe g) {
     for (int i = 0; i < 10; i++)
         h[i] = f[i] + g[i];
 }
 
 /// @brief `h := f - g` (limb-wise; carries deferred).
+/// @param[out] h Destination field element; it may alias either input.
+/// @param[in] f Minuend.
+/// @param[in] g Subtrahend.
 static void fe_sub(fe h, const fe f, const fe g) {
     for (int i = 0; i < 10; i++)
         h[i] = f[i] - g[i];
@@ -70,6 +90,9 @@ static void fe_sub(fe h, const fe f, const fe g) {
 /// `19·g_i` pre-multipliers absorbing the wrap from the prime
 /// reduction. Carries are propagated in two passes so each output
 /// limb fits the 25/26-bit constraint.
+/// @param[out] h Destination reduced field element; it may alias either input.
+/// @param[in] f First factor.
+/// @param[in] g Second factor.
 static void fe_mul(fe h, const fe f, const fe g) {
     int64_t f0 = f[0], f1 = f[1], f2 = f[2], f3 = f[3], f4 = f[4];
     int64_t f5 = f[5], f6 = f[6], f7 = f[7], f8 = f[8], f9 = f[9];
@@ -153,6 +176,8 @@ static void fe_mul(fe h, const fe f, const fe g) {
 }
 
 /// @brief `h := f * f`. Just a convenience wrapper over `fe_mul`.
+/// @param[out] h Destination reduced field element; it may alias @p f.
+/// @param[in] f Field element to square.
 static void fe_sq(fe h, const fe f) {
     fe_mul(h, f, f);
 }
@@ -162,6 +187,8 @@ static void fe_sq(fe h, const fe f) {
 /// Computes `z^(p-2)` where `p = 2^255 - 19` using the standard
 /// 254-square + 11-multiply addition chain — the inversion you'd
 /// find in any reference Curve25519 implementation. Constant-time.
+/// @param[out] out Destination multiplicative inverse; it may alias @p z.
+/// @param[in] z Field element to invert.
 static void fe_invert(fe out, const fe z) {
     fe t0, t1, t2, t3;
 
@@ -212,6 +239,8 @@ static void fe_invert(fe out, const fe z) {
 /// requires this for X25519 to make the function tolerate
 /// non-canonical encodings. Each limb extracts a 25- or 26-bit
 /// slice using the alternating mixed-radix layout.
+/// @param[out] h Destination mixed-radix field element.
+/// @param[in] s 32-byte little-endian u-coordinate.
 static void fe_from_bytes(fe h, const uint8_t s[32]) {
     h[0] = ((int64_t)s[0] | ((int64_t)s[1] << 8) | ((int64_t)s[2] << 16) |
             (((int64_t)s[3] & 0x03) << 24)) &
@@ -252,6 +281,8 @@ static void fe_from_bytes(fe h, const uint8_t s[32]) {
 /// carries) so the output is the unique canonical representation
 /// — important so that two different limb shapes for the same
 /// value still produce identical wire bytes.
+/// @param[out] s Destination 32-byte canonical little-endian encoding.
+/// @param[in] h Field element to reduce and serialize.
 static void fe_to_bytes(uint8_t s[32], const fe h) {
     int64_t h0 = h[0], h1 = h[1], h2 = h[2], h3 = h[3], h4 = h[4];
     int64_t h5 = h[5], h6 = h[6], h7 = h[7], h8 = h[8], h9 = h[9];
@@ -334,6 +365,10 @@ static void fe_to_bytes(uint8_t s[32], const fe h) {
     s[31] = (uint8_t)(h9 >> 18);
 }
 
+/// @brief Conditionally exchange two field elements without secret-dependent branches.
+/// @param[in,out] a First field element.
+/// @param[in,out] b Second field element.
+/// @param[in] swap Low bit selects exchange when one and no change when zero.
 static void fe_cswap(fe a, fe b, int swap) {
     uint64_t mask = UINT64_C(0) - (uint64_t)(swap & 1);
     for (int i = 0; i < 10; i++) {
@@ -352,6 +387,9 @@ static void fe_cswap(fe a, fe b, int swap) {
 /// and clear bit 7 of byte 31). The conditional swap uses a XOR
 /// mask derived from `swap = b_prev XOR b_curr` so each iteration
 /// performs the same operations regardless of the secret bit.
+/// @param[out] out 32-byte canonical little-endian result.
+/// @param[in] scalar 32-byte scalar; copied, clamped, and securely erased internally.
+/// @param[in] point 32-byte peer u-coordinate; its high bit is ignored per RFC 7748.
 static void x25519_scalarmult(uint8_t out[32], const uint8_t scalar[32], const uint8_t point[32]) {
     fe x1, x2, z2, x3, z3, tmp0, tmp1;
     uint8_t e[32];
@@ -419,6 +457,9 @@ static const uint8_t x25519_basepoint[32] = {9};
 /// The clamping required by RFC 7748 §5 happens inside
 /// `x25519_scalarmult` — callers can therefore pass any 32 random
 /// bytes as the secret without pre-clamping.
+/// @param[out] secret Buffer that receives 32 bytes from the runtime CSPRNG.
+/// @param[out] public_key Buffer that receives the corresponding public u-coordinate.
+/// @note Traps when either output buffer is NULL or the entropy source fails.
 void rt_x25519_keygen(uint8_t secret[32], uint8_t public_key[32]) {
     if (!secret || !public_key) {
         rt_trap("X25519.Keygen: output buffer is null");
@@ -432,6 +473,11 @@ void rt_x25519_keygen(uint8_t secret[32], uint8_t public_key[32]) {
 ///
 /// Used by TLS 1.3 (RFC 8446 §7.4.2) and other protocols that need
 /// an ECDH key agreement step.
+/// @param[in] secret Local 32-byte private scalar.
+/// @param[in] peer_public Peer 32-byte public u-coordinate.
+/// @param[out] shared Buffer that receives the 32-byte shared secret.
+/// @return 0 for a nonzero shared secret, or -1 for null arguments or the
+///         all-zero result associated with a low-order peer input.
 int rt_x25519(const uint8_t secret[32], const uint8_t peer_public[32], uint8_t shared[32]) {
     if (!secret || !peer_public || !shared)
         return -1;

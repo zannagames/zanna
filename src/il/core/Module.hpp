@@ -21,6 +21,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares the top-level container for one IL compilation unit.
+ *
+ * @details A `Module` owns its format/target metadata, external declarations,
+ *          globals, function definitions, and identifier interner. Textual
+ *          names remain authoritative for diagnostics and serialization;
+ *          module-scoped symbol sidecars provide stable, compact identities
+ *          for analyses and transformations.
+ */
+
 #pragma once
 
 #include "il/core/Extern.hpp"

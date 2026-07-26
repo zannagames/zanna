@@ -24,6 +24,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements framework-free macOS locale detection from POSIX settings.
+ * @details Applies environment precedence, rejects invariant sentinels, and
+ * normalizes the first usable locale value into the caller's bounded buffer.
+ */
+
 #include "rt_locale_platform.h"
 #include "rt_locale_posix_tag.h"
 #include "rt_platform.h"

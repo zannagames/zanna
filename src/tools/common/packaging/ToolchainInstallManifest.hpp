@@ -23,6 +23,12 @@
 
 #pragma once
 
+/// @file
+/// @brief Declares staged-toolchain manifest value types and layout policies.
+/// @details The API discovers an installed tree, records owned file metadata,
+///          validates required Zanna components, and maps entries into native
+///          installer destinations.
+
 #include "PackageConfig.hpp"
 
 #include <cstdint>
@@ -77,6 +83,8 @@ struct ToolchainInstallManifest {
     std::vector<FileAssoc> fileAssociations; ///< File-type associations to register.
 
     /// @brief Sum of sizeBytes for all non-symlink entries.
+    /// @return Total installed payload size in bytes.
+    /// @throws std::overflow_error If the sum exceeds `uint64_t`.
     uint64_t totalSizeBytes() const;
 };
 
@@ -91,24 +99,36 @@ enum class InstallPathPolicy {
 /// @brief Walk stagePrefix and build a ToolchainInstallManifest from its contents.
 /// If installManifestPath is given, the file at that path provides version/arch/platform
 /// metadata; otherwise these fields are inferred from the staged directory tree.
+/// @param stagePrefix Existing root of the staged installation.
+/// @param installManifestPath Optional CMake-generated file inventory.
+/// @return Validated manifest sorted by staged-relative path.
+/// @throws std::runtime_error If discovery, containment, metadata, or validation fails.
 ToolchainInstallManifest gatherToolchainInstallManifest(
     const std::filesystem::path &stagePrefix,
     std::optional<std::filesystem::path> installManifestPath = std::nullopt);
 
 /// @brief Validate that a manifest contains all required toolchain binaries and
 /// libraries. Throws std::runtime_error describing the first missing required entry.
+/// @param manifest Candidate manifest, including live staged source paths.
+/// @throws std::runtime_error On invalid metadata, paths, sizes, symlinks, or inventory.
 void validateToolchainInstallManifest(const ToolchainInstallManifest &manifest);
 
 /// @brief Return the canonical binary tools that every toolchain installer must ship.
+/// @return Logical binary base names without platform-specific extensions.
 std::vector<std::string> requiredToolchainBinaryNames();
 
 /// @brief Map a toolchain file entry to its destination install path string under policy.
 /// Returns a relative path (no leading "/") for all policies except LinuxUsrRoot which
 /// returns a path rooted at "/usr/".
+/// @param file Manifest entry to map.
+/// @param policy Platform destination-layout convention.
+/// @return Sanitized destination path for the selected policy.
+/// @throws std::runtime_error If the recorded staged-relative path is unsafe.
 std::string mapInstallPath(const ToolchainFileEntry &file, InstallPathPolicy policy);
 
 /// @brief Return the default file associations for Zanna toolchain packages
 /// (.zia and .bas source files).
+/// @return Stable Zia, BASIC, and IL association descriptors.
 std::vector<FileAssoc> defaultToolchainFileAssociations();
 
 } // namespace zanna::pkg

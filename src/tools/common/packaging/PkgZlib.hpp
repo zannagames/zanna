@@ -17,6 +17,11 @@
 //===----------------------------------------------------------------------===//
 #pragma once
 
+/// @file
+/// @brief Declares minimal RFC 1950 compression and decompression helpers.
+/// @details These APIs wrap the repository-native DEFLATE engine and return
+///          caller-owned byte vectors without retaining input pointers.
+
 #include <cstddef>
 #include <cstdint>
 #include <vector>

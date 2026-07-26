@@ -44,7 +44,7 @@ namespace il::vm::detail::control {
 ///          register.  The helper never modifies control flow and simply returns
 ///          to the dispatcher.
 ///
-/// @param vm Virtual machine instance (unused).
+/// @param vm Virtual machine used to evaluate an optional error operand.
 /// @param fr Frame providing the active error state.
 /// @param in Instruction indicating which field to retrieve.
 /// @param blocks Map of block labels to block pointers (unused).
@@ -104,6 +104,13 @@ VM::ExecResult handleErrGet(VM &vm,
 ///          source program; the runtime only needs to know about push/pop and
 ///          resume operations.  Consequently the handler intentionally performs
 ///          no work and returns immediately.
+/// @param vm VM argument required by the common handler signature; unused.
+/// @param fr Frame argument required by the common handler signature; unused.
+/// @param in Marker instruction; no operands are consumed.
+/// @param blocks Block map required by the common handler signature; unused.
+/// @param bb Current block argument; unchanged.
+/// @param ip Instruction pointer argument; unchanged.
+/// @return Empty result indicating normal continuation.
 VM::ExecResult handleEhEntry(VM &vm,
                              Frame &fr,
                              const il::core::Instr &in,
@@ -123,9 +130,14 @@ VM::ExecResult handleEhEntry(VM &vm,
 ///
 /// @details Validates that a destination label accompanies the opcode, resolves
 ///          it to a basic block, and pushes a handler record capturing the
-///          target block together with the instruction pointer snapshot.  The
-///          snapshot enables resume.next to continue from the trapping
-///          instruction's successor.
+///          target block together with the installation instruction snapshot.
+/// @param vm VM argument required by the common handler signature; unused.
+/// @param fr Active frame whose exception-handler stack is updated.
+/// @param in Handler installation instruction containing the target label.
+/// @param blocks Label-to-block lookup used to resolve the handler.
+/// @param bb Current block pointer used for diagnostics.
+/// @param ip Current instruction index captured in the handler record.
+/// @return Empty result indicating normal continuation after installation.
 VM::ExecResult handleEhPush(VM &vm,
                             Frame &fr,
                             const il::core::Instr &in,
@@ -163,6 +175,13 @@ VM::ExecResult handleEhPush(VM &vm,
 ///          safety net in case control flow leaves a protected region without a
 ///          corresponding resume, ensuring stale handlers do not survive across
 ///          scopes.
+/// @param vm VM argument required by the common handler signature; unused.
+/// @param fr Active frame whose newest handler is removed.
+/// @param in Pop instruction; no operands are consumed.
+/// @param blocks Block map required by the common handler signature; unused.
+/// @param bb Current block argument; unchanged.
+/// @param ip Instruction pointer argument; unchanged.
+/// @return Empty result indicating normal continuation.
 VM::ExecResult handleEhPop(VM &vm,
                            Frame &fr,
                            const il::core::Instr &in,
@@ -188,6 +207,13 @@ VM::ExecResult handleEhPop(VM &vm,
 ///          diagnostic via @ref trapInvalidResume.  Resume tokens are
 ///          single-use; consuming one invalidates it to prevent stale
 ///          resumptions after handler unwinding.
+/// @param vm Virtual machine used to evaluate the token operand.
+/// @param fr Active frame owning the resume state.
+/// @param in Resume instruction containing the token.
+/// @param blocks Block map required by the common handler signature; unused.
+/// @param bb Current block pointer redirected to the faulting block.
+/// @param ip Instruction pointer redirected to the faulting instruction.
+/// @return Jump result on success, or normal result after an invalid-token trap.
 VM::ExecResult handleResumeSame(VM &vm,
                                 Frame &fr,
                                 const il::core::Instr &in,
@@ -228,6 +254,13 @@ VM::ExecResult handleResumeSame(VM &vm,
 ///          counter recorded when the resume token was created.  This is used
 ///          for trap handlers that want to skip the trapping instruction rather
 ///          than re-executing it.
+/// @param vm Virtual machine used to evaluate the token operand.
+/// @param fr Active frame owning the resume state.
+/// @param in Resume instruction containing the token.
+/// @param blocks Block map required by the common handler signature; unused.
+/// @param bb Current block pointer redirected to the faulting block.
+/// @param ip Instruction pointer redirected to the saved successor.
+/// @return Jump result on success, or normal result after an invalid-token trap.
 VM::ExecResult handleResumeNext(VM &vm,
                                 Frame &fr,
                                 const il::core::Instr &in,
@@ -268,6 +301,13 @@ VM::ExecResult handleResumeNext(VM &vm,
 ///          detailed diagnostics when either is invalid.  On success the frame's
 ///          resume state is cleared and control transfers through
 ///          @ref branchToTarget to reuse branch argument propagation logic.
+/// @param vm Virtual machine used to evaluate the token and branch arguments.
+/// @param fr Active frame owning resume state and target parameters.
+/// @param in Resume instruction containing a token and destination label.
+/// @param blocks Label-to-block lookup used for target validation and transfer.
+/// @param bb Current block pointer updated by the branch.
+/// @param ip Instruction pointer reset by the branch.
+/// @return Branch result on success, or normal result after validation traps.
 VM::ExecResult handleResumeLabel(VM &vm,
                                  Frame &fr,
                                  const il::core::Instr &in,
@@ -311,6 +351,13 @@ VM::ExecResult handleResumeLabel(VM &vm,
 ///          falls back to the current trap token or the frame's active error.
 ///          The resulting kind is stored as an integer in the destination
 ///          register, enabling IL code to branch on trap categories.
+/// @param vm Virtual machine used to evaluate an optional error operand.
+/// @param fr Active frame supplying the fallback error and result storage.
+/// @param in Trap-kind query instruction.
+/// @param blocks Block map required by the common handler signature; unused.
+/// @param bb Current block argument; unchanged.
+/// @param ip Instruction pointer argument; unchanged.
+/// @return Empty result indicating normal continuation after storing the kind.
 VM::ExecResult handleTrapKind(VM &vm,
                               Frame &fr,
                               const il::core::Instr &in,
@@ -347,6 +394,13 @@ VM::ExecResult handleTrapKind(VM &vm,
 ///          original error code for diagnostic purposes before being written to
 ///          the result register.  This bridges the legacy `err` semantics into
 ///          the structured trap path so diagnostics remain consistent.
+/// @param vm Virtual machine used to evaluate code and message operands.
+/// @param fr Active frame supplying operands, context, and result storage.
+/// @param in Trap-token construction instruction.
+/// @param blocks Block map required by the common handler signature; unused.
+/// @param bb Current block pointer used for malformed-instruction diagnostics.
+/// @param ip Instruction pointer argument; unchanged.
+/// @return Empty result indicating normal continuation after token construction.
 VM::ExecResult handleTrapErr(VM &vm,
                              Frame &fr,
                              const il::core::Instr &in,
@@ -396,6 +450,13 @@ VM::ExecResult handleTrapErr(VM &vm,
 ///          to the runtime trap helpers.  The function always marks the
 ///          execution result as returned so the interpreter unwinds to the
 ///          caller after the trap is raised.
+/// @param vm Virtual machine used to evaluate a legacy error-code operand.
+/// @param fr Active frame supplying operand and diagnostic context.
+/// @param in Trap instruction selecting the raising semantics.
+/// @param blocks Block map required by the common handler signature; unused.
+/// @param bb Current block pointer required by the common signature; unchanged.
+/// @param ip Instruction pointer required by the common signature; unchanged.
+/// @return Result marked returned after the trap has been raised.
 VM::ExecResult handleTrap(VM &vm,
                           Frame &fr,
                           const il::core::Instr &in,

@@ -79,6 +79,8 @@ VM::ExecResult handleAlloca(VM &vm,
     // Alignment must be a power of 2 for bitwise operations to work correctly
     static_assert((alignment & (alignment - 1)) == 0, "alignment must be power of 2");
 
+    /// @brief Raise the common alloca stack-overflow trap.
+    /// @return Empty execution result after recording the trap.
     auto trapOverflow = [&]() -> VM::ExecResult {
         RuntimeBridge::trap(
             TrapKind::Overflow, "stack overflow in alloca", in.loc, fr.func->name, "");
@@ -311,7 +313,7 @@ VM::ExecResult handleConstNull(VM &vm,
 ///          and stores it directly in the destination slot.  No conversion or
 ///          computation is performed; the operand is expected to already be a
 ///          properly-encoded f64 value.
-/// @param vm Virtual machine orchestrating execution (unused).
+/// @param vm Virtual machine used to evaluate the constant operand.
 /// @param fr Active frame providing destination storage.
 /// @param in Instruction describing the constant.
 /// @param blocks Map of basic blocks for the current function (unused).

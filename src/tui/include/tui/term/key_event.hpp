@@ -5,10 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the KeyEvent, MouseEvent, and PasteEvent structs
-// representing terminal input events for Zanna's TUI. These are the
-// low-level event types produced by the InputDecoder from raw terminal
-// byte sequences.
+/// @file
+/// @brief Declares value types for decoded terminal key, mouse, and paste input.
+/// @details These transport-independent events preserve special-key identity,
+///          Unicode code points, modifier state, mouse coordinates/buttons,
+///          and owned bracketed-paste text.
 //
 // KeyEvent represents a single keypress with optional modifier flags
 // (Shift, Alt, Ctrl). It can represent either a special key (arrows,
@@ -88,13 +89,14 @@ struct KeyEvent {
 /// @details Captures button presses, releases, movement, and scroll wheel actions.
 ///          Coordinates are 0-based terminal cell positions.
 struct MouseEvent {
+    /// @brief Mouse action represented by an event.
     enum class Type { Down, Up, Move, Wheel };
 
-    Type type{Type::Move};
-    int x{0};
-    int y{0};
-    unsigned buttons{0};
-    unsigned mods{0};
+    Type type{Type::Move}; ///< Button, motion, or wheel action.
+    int x{0};              ///< Zero-based terminal column.
+    int y{0};              ///< Zero-based terminal row.
+    unsigned buttons{0};   ///< Terminal-decoder button-state bitset.
+    unsigned mods{0};      ///< Bitwise combination of KeyEvent modifier flags.
 };
 
 /// @brief Carries text from a bracketed paste operation.

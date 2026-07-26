@@ -31,6 +31,14 @@
 //        src/runtime/io/rt_file_path.h (mode string helpers)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements the context-owned BASIC file-channel table.
+ * @details Grows and searches channel entries under the runtime context lock,
+ * maps legacy open/read/write/seek/EOF operations to reusable RtFile handles,
+ * translates structured errors into legacy codes, and closes all active
+ * descriptors during context teardown.
+ */
 
 #include "rt_file.h"
 

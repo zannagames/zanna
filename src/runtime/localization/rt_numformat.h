@@ -33,6 +33,15 @@
 //        docs/zannalib/localization/formatting.md (user documentation).
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares configurable locale-aware number formatting and parsing.
+ * @details Defines formatter ownership and option accessors, decimal, integer,
+ * percent, currency, scientific, and ordinal output, and strict or optional
+ * decimal, integer, and currency parse services.
+ */
+
 #pragma once
 
 #include "rt.hpp"

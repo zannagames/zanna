@@ -32,6 +32,15 @@
 //        docs/zannalib/localization/formatting.md (user documentation).
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares locale-aware DateFormat construction and rendering services.
+ * @details Exposes canonical date, time, and combined styles, bounded custom
+ * CLDR-like patterns, DateOnly formatting, and localized calendar-name
+ * lookups while defining result and Locale-handle ownership.
+ */
+
 #pragma once
 
 #include "rt.hpp"

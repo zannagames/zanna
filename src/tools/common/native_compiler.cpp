@@ -65,13 +65,14 @@
 namespace zanna::tools {
 namespace {
 
-/// @brief Build a collision-resistant path in the system temp directory.
+/// @brief Build a collision-resistant candidate path in the system temp directory.
 ///
 /// @details Combines four sources of uniqueness so concurrent and repeated
-///          compilations never clobber one another's transient files: the
+///          compilations are unlikely to choose the same transient name: the
 ///          process id, a steady-clock tick, and a monotonically increasing
-///          process-local atomic counter, all under the OS temp directory. The
-///          resulting name is `<prefix>_<pid>_<tick>_<counter><extension>`.
+///          process-local atomic counter, all under the OS temp directory.
+///          Exclusive reservation by @ref reserveTempPath provides the actual
+///          collision guarantee.
 ///
 /// @param prefix Leading filename component identifying the artifact kind.
 /// @param extension File extension to append (including the leading dot).
@@ -99,6 +100,7 @@ std::string generateUniqueTempPath(const char *prefix, const char *extension) {
 /// @details Opens the file with O_CREAT|O_EXCL (the Windows equivalent), so the
 ///          call fails if the path already exists; this closes the TOCTOU window
 ///          between generating a unique temp name and actually using it.
+/// @param path Candidate filesystem path to reserve as an empty file.
 /// @return True when the path was reserved; false when it already existed.
 /// @throws std::runtime_error for non-collision failures such as permission or
 ///         filesystem errors.
@@ -155,6 +157,14 @@ std::string generateTempIlPath() {
     return generateTempFilePath("zanna_build", ".il");
 }
 
+/// @brief Generate and exclusively reserve a temporary file.
+/// @param prefix Leading component used to identify the temporary artifact.
+/// @param extension Filename suffix, conventionally including a leading dot.
+/// @return UTF-8 path to the newly created empty file.
+/// @details Tries up to 64 independently generated candidates and returns after
+///          exclusive creation succeeds. The caller is responsible for removal.
+/// @throws std::runtime_error When temp-directory discovery, file creation, or
+///         all collision retries fail.
 std::string generateTempFilePath(const char *prefix, const char *extension) {
     for (int attempt = 0; attempt < 64; ++attempt) {
         std::string path = generateUniqueTempPath(prefix, extension);
@@ -171,8 +181,19 @@ std::string generateTempFilePath(const char *prefix, const char *extension) {
 ///          blobs and extra object files are attached to the pipeline options
 ///          when provided. Pipeline output is forwarded to stdout/stderr and the
 ///          pipeline's exit code is returned; both backends map a thrown
-///          std::exception to exit code 2. See the header for the full
-///          parameter contract.
+///          std::exception from pipeline execution to exit code 2.
+/// @param ilPath Textual IL input file to parse.
+/// @param outputPath Destination native object or executable path.
+/// @param arch Backend architecture to select.
+/// @param assetBlobPath Optional ZPAK blob path for read-only-data embedding.
+/// @param assetObjPath Optional additional object containing asset symbols.
+/// @param backendOptimizeLevel Backend optimization level.
+/// @param skipIlOptimization Whether frontend IL optimization already ran.
+/// @param timePasses Whether to emit per-pass timing statistics.
+/// @param fastLink Whether to select the faster link strategy.
+/// @param windowsDebugRuntime Optional Windows debug-CRT override.
+/// @param stackSize Requested executable stack bytes, or zero for the default.
+/// @return Backend pipeline exit code, or two for a caught execution exception.
 int compileToNative(const std::string &ilPath,
                     const std::string &outputPath,
                     TargetArch arch,
@@ -256,10 +277,25 @@ int compileToNative(const std::string &ilPath,
 /// @brief Compile an in-memory IL module to a native binary.
 /// @details Backend dispatch mirrors @ref compileToNative, but the module is fed
 ///          to the pipeline via @c runWithModule (moved in) instead of being
-///          reparsed from disk. A synthetic temp IL path is generated only to
-///          populate @c input_il_path for diagnostics; no IL is written there.
+///          reparsed from disk. The debug source path, or `<in-memory>` when it
+///          is empty, populates @c input_il_path for diagnostics without writing
+///          any IL text.
 ///          @p moduleAlreadyVerified lets callers skip a redundant verification
-///          pass. See the header for the full parameter contract.
+///          pass.
+/// @param module IL module transferred into the selected pipeline.
+/// @param debugSourcePath Source path used for debug metadata and diagnostics.
+/// @param outputPath Destination native object or executable path.
+/// @param arch Backend architecture to select.
+/// @param assetBlobPath Optional ZPAK blob path for read-only-data embedding.
+/// @param assetObjPath Optional additional object containing asset symbols.
+/// @param backendOptimizeLevel Backend optimization level.
+/// @param skipIlOptimization Whether frontend IL optimization already ran.
+/// @param moduleAlreadyVerified Whether the caller has completed verification.
+/// @param timePasses Whether to emit per-pass timing statistics.
+/// @param fastLink Whether to select the faster link strategy.
+/// @param windowsDebugRuntime Optional Windows debug-CRT override.
+/// @param stackSize Requested executable stack bytes, or zero for the default.
+/// @return Backend pipeline exit code, or two for a caught execution exception.
 int compileModuleToNative(il::core::Module module,
                           const std::string &debugSourcePath,
                           const std::string &outputPath,

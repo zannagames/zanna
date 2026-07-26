@@ -5,19 +5,13 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/tools/zanna/cmd_eval.cpp
-// Purpose: Entry point for the `zanna eval` subcommand. Evaluates a single
-//          Zia or BASIC snippet through the REPL adapters and reports the
-//          result on stdout, optionally as structured JSON.
-// Key invariants:
-//   - The snippet is evaluated as one REPL input with a fresh session.
-//   - Exit codes are stable: 0 success, 1 usage error, 2 compile/eval error,
-//     3 runtime trap.
-//   - JSON output is a single object on stdout; diagnostics stay on stderr.
-// Ownership/Lifetime:
-//   - The language adapter lives for the duration of the command.
-// Links: src/repl/ReplSession.hpp, src/repl/ZiaReplAdapter.hpp,
-//        src/repl/BasicReplAdapter.hpp, docs/tools/cli.md
+/// @file cmd_eval.cpp
+/// @brief Implements single-snippet Zia and BASIC evaluation through fresh REPL sessions.
+///
+/// The command evaluates exactly one input, optionally reads it from bounded stdin, and emits
+/// either human output or one structured JSON object. Diagnostics remain on stderr. Exit codes
+/// distinguish usage errors, compile/evaluation failures, and runtime traps. The selected language
+/// adapter is owned only for the command duration.
 //
 //===----------------------------------------------------------------------===//
 
@@ -38,6 +32,7 @@ namespace {
 constexpr std::size_t kMaxEvalStdinBytes = 4ULL * 1024ULL * 1024ULL;
 
 /// @brief Print usage for `zanna eval` to the given stream.
+/// @param os Destination stream.
 void printEvalUsage(std::ostream &os) {
     os << "Usage: zanna eval [options] [code]\n"
        << "\n"
@@ -64,6 +59,8 @@ void printEvalUsage(std::ostream &os) {
 }
 
 /// @brief Map a REPL result type to its stable JSON string name.
+/// @param type Adapter result category.
+/// @return Stable JSON-facing type spelling.
 std::string_view resultTypeName(zanna::repl::ResultType type) {
     switch (type) {
         case zanna::repl::ResultType::None:
@@ -85,6 +82,8 @@ std::string_view resultTypeName(zanna::repl::ResultType type) {
 }
 
 /// @brief Emit a string as a JSON-escaped, double-quoted literal.
+/// @param os Destination stream.
+/// @param text Unquoted bytes to escape.
 void printJsonString(std::ostream &os, std::string_view text) {
     il::support::printJsonStringEscaped(os, text);
 }

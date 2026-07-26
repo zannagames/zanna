@@ -19,6 +19,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares the canonical enumeration of all Zanna IL opcodes.
+ *
+ * @details The opcode list is generated from `Opcode.def` so parsing,
+ *          verification, interpretation, and code generation share one
+ *          contiguous identity space. `Opcode::Count` is a non-instruction
+ *          sentinel used to size indexed metadata tables.
+ */
+
 #pragma once
 
 #include <cstddef>
@@ -28,6 +38,10 @@ namespace il::core {
 /// @brief All instruction opcodes defined by the IL.
 /// @see docs/il/il-guide.md#reference §3 for opcode descriptions.
 enum class Opcode {
+/// @def IL_OPCODE
+/// @brief Expands one opcode-definition record into its enumeration name.
+/// @param NAME C++ enumerator identifying the opcode.
+/// @param ... Remaining canonical opcode metadata, unused by this expansion.
 #define IL_OPCODE(NAME, ...) NAME,
 #include "il/core/Opcode.def"
 #undef IL_OPCODE

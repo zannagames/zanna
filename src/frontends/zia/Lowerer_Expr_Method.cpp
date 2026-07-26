@@ -303,6 +303,8 @@ std::optional<LowerResult> Lowerer::lowerListCombinator(Value baseValue,
 
     // Loop scaffolding shared by every combinator: iterate index 0..count over a
     // snapshot of the receiver list held in a slot.
+    /// @brief Initializes list, index, and length slots for a combinator loop.
+    /// @param list List value to iterate.
     auto beginLoop = [&](Value list) {
         createSlot(listVar, ptr);
         createSlot(idxVar, i64);
@@ -311,6 +313,7 @@ std::optional<LowerResult> Lowerer::lowerListCombinator(Value baseValue,
         storeToSlot(idxVar, Value::constInt(0), i64);
         storeToSlot(lenVar, emitCallRet(i64, kListCount, {list}), i64);
     };
+    /// @brief Removes the temporary combinator-loop slots.
     auto cleanupLoop = [&]() {
         removeSlot(listVar);
         removeSlot(idxVar);
@@ -318,18 +321,26 @@ std::optional<LowerResult> Lowerer::lowerListCombinator(Value baseValue,
     };
 
     // Load and unbox the current element inside a loop body.
+    /// @brief Loads and unboxes the current list element.
+    /// @return Current element and its IL type.
     auto currentElement = [&]() -> LowerResult {
         Value list = loadFromSlot(listVar, ptr);
         Value idx = loadFromSlot(idxVar, i64);
         Value boxed = emitCallRet(ptr, kListGet, {list, idx});
         return emitUnboxValue(boxed, ilElemType, elemType);
     };
+    /// @brief Advances the combinator-loop index by one.
     auto advance = [&]() {
         Value idx = loadFromSlot(idxVar, i64);
         storeToSlot(idxVar, emitBinary(Opcode::IAddOvf, i64, idx, Value::constInt(1)), i64);
     };
 
     // Invoke the closure argument at `argIndex` with the given arguments.
+    /// @brief Invokes a closure argument using the uniform environment-first ABI.
+    /// @param argIndex Call-expression argument containing the closure.
+    /// @param callArgs User arguments passed after the closure environment.
+    /// @param retIl Expected IL return type.
+    /// @return Indirect-call result.
     auto callClosure = [&](size_t argIndex, const std::vector<Value> &callArgs,
                            Type retIl) -> Value {
         auto closure = lowerExpr(expr->args[argIndex].value.get());
@@ -546,6 +557,9 @@ std::optional<LowerResult> Lowerer::lowerMapMethodCall(Value baseValue,
     const char *keysHelper = integerKeyed ? kIntMapKeys : kMapKeys;
     const char *valuesHelper = integerKeyed ? kIntMapValues : kMapValues;
 
+    /// @brief Lowers and coerces a map key to its runtime representation.
+    /// @param keyExpr Map key expression.
+    /// @return Runtime map-key value.
     auto lowerRuntimeKey = [&](Expr *keyExpr) {
         auto keyResult = lowerExpr(keyExpr);
         return coerceMapKeyForRuntime(keyResult.value, keyResult.type, baseType);
@@ -1137,6 +1151,9 @@ LowerResult Lowerer::lowerStructLiteral(StructLiteralExpr *expr) {
 
     std::vector<const FieldDecl *> fieldDecls = collectStructFieldDecls(sema_, typeName);
 
+    /// @brief Produces the zero/default value for a struct field IL type.
+    /// @param ilType Field IL type.
+    /// @return Type-appropriate default value.
     auto typedDefaultFor = [&](Type ilType) -> Value {
         switch (ilType.kind) {
             case Type::Kind::I1:

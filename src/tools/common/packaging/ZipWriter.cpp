@@ -23,6 +23,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements deterministic ZIP32 writing with Unix file metadata.
+/// @details Entries are sanitized and copied into local records immediately;
+///          finalization emits the central directory and EOCD, with optional
+///          DEFLATE compression and reproducible DOS timestamps.
+
 #include "ZipWriter.hpp"
 #include "PkgDeflate.hpp"
 #include "PkgUtils.hpp"
@@ -67,12 +73,16 @@ static constexpr int kEndRecordSize = 22;
 //=============================================================================
 
 /// @brief Write a 16-bit little-endian integer into an unaligned byte buffer at p.
+/// @param p Pointer to at least two writable bytes.
+/// @param v Host-order value to encode.
 static inline void putU16(uint8_t *p, uint16_t v) {
     p[0] = static_cast<uint8_t>(v & 0xFF);
     p[1] = static_cast<uint8_t>((v >> 8) & 0xFF);
 }
 
 /// @brief Write a 32-bit little-endian integer into an unaligned byte buffer at p.
+/// @param p Pointer to at least four writable bytes.
+/// @param v Host-order value to encode.
 static inline void putU32(uint8_t *p, uint32_t v) {
     p[0] = static_cast<uint8_t>(v & 0xFF);
     p[1] = static_cast<uint8_t>((v >> 8) & 0xFF);
@@ -92,6 +102,8 @@ ZipWriter::ZipWriter() {
 
 ZipWriter::~ZipWriter() = default;
 
+/// @brief Reject mutation or repeated finalization of a completed archive.
+/// @throws std::runtime_error If this writer has already been finalized.
 void ZipWriter::ensureOpen() const {
     if (finalized_)
         throw std::runtime_error("ZipWriter: archive has already been finalized");
@@ -99,12 +111,20 @@ void ZipWriter::ensureOpen() const {
 
 /// @brief Enforce ZIP32 limits: entry count ≤ 65535, archive size ≤ 4 GiB, name length ≤ 65535.
 /// All three limits arise from the 16- or 32-bit integer fields in the PKWARE spec.
+/// @param value Candidate current or projected quantity.
+/// @param maxValue Largest value representable by the corresponding ZIP32 field.
+/// @param what Quantity description used in diagnostics.
+/// @throws std::runtime_error If @p value exceeds @p maxValue.
 void ZipWriter::validateArchiveLimit(size_t value, size_t maxValue, const char *what) const {
     if (value > maxValue) {
         throw std::runtime_error(std::string("ZipWriter: ZIP64 is not supported for ") + what);
     }
 }
 
+/// @brief Check a projected append against the 32-bit archive-offset limit.
+/// @param additionalBytes Number of bytes about to be appended.
+/// @param what Quantity description used in diagnostics.
+/// @throws std::runtime_error If the projected buffer cannot use ZIP32 offsets.
 void ZipWriter::validateProjectedArchiveSize(size_t additionalBytes, const char *what) const {
     if (additionalBytes > 0xFFFFFFFFu || buffer_.size() > 0xFFFFFFFFu - additionalBytes) {
         throw std::runtime_error(std::string("ZipWriter: ZIP64 is not supported for ") + what);
@@ -114,6 +134,9 @@ void ZipWriter::validateProjectedArchiveSize(size_t additionalBytes, const char 
 /// @brief Normalize and validate a ZIP entry name: convert backslashes to forward
 /// slashes, strip trailing slashes (then re-append for directories), and run
 /// sanitizePackageRelativePath to reject absolute paths and ".." components.
+/// @param name Caller-supplied file or directory entry name.
+/// @return Sanitized ZIP32-length path using forward slashes.
+/// @throws std::runtime_error If the path is empty/unsafe or exceeds ZIP32 limits.
 std::string ZipWriter::normalizeEntryName(const std::string &name) const {
     validateArchiveLimit(name.size(), 0xFFFFu, "entry names longer than 65535 bytes");
     std::string normalized = name;
@@ -133,6 +156,11 @@ std::string ZipWriter::normalizeEntryName(const std::string &name) const {
     return normalized;
 }
 
+/// @brief Normalize a symlink target and require it to remain inside the archive root.
+/// @param entryName Sanitized archive path of the symlink.
+/// @param target Caller-supplied target text.
+/// @return Slash-normalized relative target.
+/// @throws std::runtime_error If empty, multi-line, absolute, escaping, or oversized.
 std::string ZipWriter::normalizeSymlinkTarget(const std::string &entryName,
                                               const std::string &target) const {
     if (target.empty())
@@ -163,6 +191,9 @@ std::string ZipWriter::normalizeSymlinkTarget(const std::string &entryName,
 }
 
 /// @brief Append len raw bytes to the internal archive buffer.
+/// @param data Source bytes; may be null only when @p len is zero.
+/// @param len Number of bytes to append.
+/// @throws std::runtime_error For null non-empty input.
 void ZipWriter::writeBytes(const uint8_t *data, size_t len) {
     if (len == 0)
         return;
@@ -172,6 +203,7 @@ void ZipWriter::writeBytes(const uint8_t *data, size_t len) {
 }
 
 /// @brief Append a 16-bit little-endian integer to the archive buffer.
+/// @param v Host-order value to encode.
 void ZipWriter::writeU16(uint16_t v) {
     uint8_t buf[2];
     putU16(buf, v);
@@ -179,6 +211,7 @@ void ZipWriter::writeU16(uint16_t v) {
 }
 
 /// @brief Append a 32-bit little-endian integer to the archive buffer.
+/// @param v Host-order value to encode.
 void ZipWriter::writeU32(uint32_t v) {
     uint8_t buf[4];
     putU32(buf, v);
@@ -190,12 +223,17 @@ namespace {
 /// @brief Compute CRC-32 over a buffer, tolerating a null pointer when empty.
 /// @details Passes a dummy byte for zero-length input so the runtime CRC call
 ///          never dereferences null; used to checksum every ZIP entry.
+/// @param data Input bytes; may be null only when @p len is zero.
+/// @param len Number of bytes to checksum.
+/// @return CRC-32 of the uncompressed entry data.
 uint32_t crc32Bytes(const uint8_t *data, size_t len) {
     static constexpr uint8_t kEmpty = 0;
     return rt_crc32_compute(len == 0 ? &kEmpty : data, len);
 }
 
 /// @brief Thread-safe UTC conversion (gmtime_s on Windows, gmtime_r else).
+/// @param timestamp Unix timestamp to convert.
+/// @param out Receives broken-down UTC on success.
 /// @return false if the platform call fails.
 bool portableGmTime(std::time_t timestamp, std::tm &out) {
 #if defined(_WIN32)
@@ -231,6 +269,7 @@ bool sourceDateEpoch(std::time_t &timestamp) {
 /// @details The DOS date format cannot represent years before 1980 or after
 ///          2107, so out-of-range times are pinned to the respective boundary to
 ///          keep the emitted ZIP date field valid.
+/// @param t Broken-down UTC value modified in place if outside the DOS range.
 void clampDosTime(std::tm &t) {
     const int year = t.tm_year + 1900;
     if (year < 1980) {
@@ -254,6 +293,9 @@ void clampDosTime(std::tm &t) {
 /// @brief Populate time and date with a DOS timestamp. Reproducible by default: stamps a fixed
 /// epoch interpreted in UTC, so identical inputs yield byte-identical archives regardless of build
 /// time or host timezone. Set SOURCE_DATE_EPOCH to stamp a specific Unix timestamp instead.
+/// @param time Receives packed DOS time.
+/// @param date Receives packed DOS date.
+/// @throws std::runtime_error If `SOURCE_DATE_EPOCH` is malformed or out of range.
 void ZipWriter::getDosTime(uint16_t &time, uint16_t &date) {
     std::time_t stamp = 0;        // Deterministic default; clamped up to the 1980 DOS floor below.
     (void)sourceDateEpoch(stamp); // Overrides `stamp` only when SOURCE_DATE_EPOCH is set.
@@ -271,6 +313,12 @@ void ZipWriter::getDosTime(uint16_t &time, uint16_t &date) {
 /// @brief Add a regular file entry. Computes CRC-32, optionally DEFLATE-compresses the
 /// data (skipped if compressed output ≥ original), writes the local file header,
 /// and records an Entry + LayoutEntry for central-directory and stub-offset use.
+/// @param name Archive-relative entry name.
+/// @param data Uncompressed file bytes; may be null only when @p len is zero.
+/// @param len Number of uncompressed bytes.
+/// @param unixMode Unix type and permission bits for external attributes.
+/// @throws std::runtime_error On duplicate/unsafe input, finalization, compression,
+///         null data, or a ZIP32 limit.
 void ZipWriter::addFile(const std::string &name,
                         const uint8_t *data,
                         size_t len,
@@ -350,6 +398,10 @@ void ZipWriter::addFile(const std::string &name,
 }
 
 /// @brief Convenience overload: add a file entry whose content is a std::string.
+/// @param name Archive-relative entry name.
+/// @param content File bytes to copy without transcoding.
+/// @param unixMode Unix type and permission bits.
+/// @throws std::runtime_error Under the same conditions as addFile().
 void ZipWriter::addFileString(const std::string &name,
                               const std::string &content,
                               uint32_t unixMode) {
@@ -359,6 +411,9 @@ void ZipWriter::addFileString(const std::string &name,
 /// @brief Add a directory entry (zero-length data, trailing "/" in name). The MS-DOS
 /// directory attribute bit (0x10) is set in the lower half of externalAttrs so
 /// Windows extractors create the directory even without reading Unix mode bits.
+/// @param name Archive-relative directory name.
+/// @param unixMode Unix directory type and permission bits.
+/// @throws std::runtime_error On duplicate/unsafe input, finalization, or ZIP32 limits.
 void ZipWriter::addDirectory(const std::string &name, uint32_t unixMode) {
     ensureOpen();
     std::string dirName = name;
@@ -417,6 +472,9 @@ void ZipWriter::addDirectory(const std::string &name, uint32_t unixMode) {
 /// @brief Add a Unix symlink entry. The symlink target is stored as the entry's file
 /// data. Unix mode 0120777 in the upper 16 bits of externalAttrs tells Info-ZIP
 /// compatible extractors (including macOS Archive Utility) that this is a symlink.
+/// @param name Archive-relative symlink name.
+/// @param target Relative target that must remain inside the archive root.
+/// @throws std::runtime_error On duplicate/unsafe input, finalization, or ZIP32 limits.
 void ZipWriter::addSymlink(const std::string &name, const std::string &target) {
     ensureOpen();
     const std::string entryName = normalizeEntryName(name);
@@ -476,10 +534,15 @@ void ZipWriter::addSymlink(const std::string &name, const std::string &target) {
 /// @brief Append central directory file headers followed by the EOCD record to @p archive.
 /// @details This helper does not mutate finalized_ and is safe for staging a completed archive in
 /// a temporary buffer before committing writer state.
+/// @param archive Buffer already containing every local record; receives final records.
+/// @throws std::runtime_error If entry counts, names, or projected offsets exceed ZIP32.
 void ZipWriter::appendCentralDirectory(std::vector<uint8_t> &archive) const {
     validateArchiveLimit(entries_.size(), 0xFFFFu, "more than 65535 entries");
     validateArchiveLimit(archive.size(), 0xFFFFFFFFu, "archives larger than 4 GiB");
 
+    /// @brief Append one byte range to the staged archive.
+    /// @param data Borrowed source bytes.
+    /// @param len Number of bytes to append.
     auto appendBytes = [&archive](const uint8_t *data, size_t len) {
         archive.insert(archive.end(), data, data + len);
     };
@@ -542,6 +605,8 @@ void ZipWriter::writeCentralDirectory() {
 
 /// @brief Finalize the archive and write it to disk at path. Appends the central
 /// directory and EOCD, then writes the entire buffer to the output file.
+/// @param path Destination replaced atomically after successful staging.
+/// @throws std::runtime_error On repeated finalization, ZIP32 overflow, or write failure.
 void ZipWriter::finish(const std::string &path) {
     ensureOpen();
 

@@ -35,12 +35,23 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements named keyboard chord and timed combo detection.
+ *
+ * @details GC-managed detectors store copied names and bounded key arrays,
+ *          atomically replace definitions after fallible allocation, evaluate
+ *          simultaneous held-key transitions, advance ordered sequences with
+ *          timeout and wrong-order reset rules, and retain one-frame results.
+ */
+
 #include "rt_keychord.h"
 
 #include "rt_input.h"
 #include "rt_internal.h"
 #include "rt_object.h"
 
+/// @copydoc rt_unbox_i64()
 extern int64_t rt_unbox_i64(void *box);
 #include "rt_seq.h"
 #include "rt_string.h"
@@ -49,31 +60,51 @@ extern int64_t rt_unbox_i64(void *box);
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Maximum number of public key codes in one chord or combo.
 #define KC_MAX_KEYS 16
+/// @brief Initial number of named-pattern slots allocated per detector.
 #define KC_INITIAL_CAPACITY 8
 
+/// @brief Discriminates simultaneous chords from ordered timed combos.
 typedef enum { KC_TYPE_CHORD = 0, KC_TYPE_COMBO = 1 } kc_type;
 
+/// @brief Owned definition and mutable detection state for one named pattern.
 typedef struct {
+    /// @brief Owned NUL-terminated unique pattern name.
     char *name;
+    /// @brief Simultaneous or sequential pattern kind.
     kc_type type;
+    /// @brief Ordered public key codes used by the pattern.
     int64_t keys[KC_MAX_KEYS];
+    /// @brief Number of initialized entries in @ref keys.
     int64_t key_count;
+    /// @brief Maximum inter-key gap for combos, in update frames.
     int64_t window_frames;
     /* Chord state */
+    /// @brief Whether a chord was active during the preceding update.
     int8_t was_active;
+    /// @brief Current chord-held or combo-completion-frame state.
     int8_t is_active;
+    /// @brief One-frame activation/completion edge.
     int8_t triggered;
     /* Combo state */
+    /// @brief Index of the next expected combo key.
     int64_t combo_index;
+    /// @brief Detector frame on which the latest combo key matched.
     uint64_t last_match_frame;
 } kc_entry;
 
+/// @brief Private growable pattern table for one managed detector.
 typedef struct {
+    /// @brief Reserved runtime virtual-table slot.
     void *vptr;
+    /// @brief Owned pattern allocation.
     kc_entry *entries;
+    /// @brief Number of initialized pattern entries.
     int64_t count;
+    /// @brief Allocated entry capacity.
     int64_t capacity;
+    /// @brief Monotonic update counter used for combo timeouts.
     uint64_t frame_counter;
 } rt_keychord_impl;
 

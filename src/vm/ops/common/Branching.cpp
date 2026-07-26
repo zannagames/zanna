@@ -14,6 +14,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements shared switch selection and branch transfer mechanics.
+/// @details These helpers resolve cached or direct block targets, validate
+///          destination arity, retain string parameters, update control state,
+///          and produce structured diagnostics for malformed branches.
+
 #include "vm/ops/common/Branching.hpp"
 
 #include "il/core/BasicBlock.hpp"
@@ -221,9 +227,9 @@ void jump(Frame &frame, Target target) {
 /// @brief Evaluate the scrutinee operand for switch-like opcodes.
 /// @details Looks up the active VM instance, evaluates the operand using the
 ///          generic VM access helper, and coerces the result to a 32-bit scalar
-///          suitable for table lookups.  The helper asserts the presence of a
-///          running VM because switch opcode handlers are only valid during
-///          execution.
+///          suitable for table lookups. A missing active VM raises an
+///          InvalidOperation trap and returns a zero scalar only if the trap
+///          observer permits execution to continue.
 /// @param frame Active frame providing operand slots.
 /// @param instr Instruction containing the scrutinee operand metadata.
 /// @return Scalar representation of the scrutinee value.

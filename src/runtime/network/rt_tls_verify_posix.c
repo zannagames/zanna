@@ -14,6 +14,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_tls_verify_posix.c
+ * @brief Implements native PEM-bundle certificate verification on POSIX.
+ * @details The verifier discovers or loads a bounded trust bundle, parses
+ *          candidate roots and intermediates, builds and validates certificate
+ *          chains with in-tree cryptography, enforces X.509 constraints and
+ *          hostname policy, and verifies TLS 1.3 CertificateVerify signatures.
+ */
+
 #include "rt_tls_verify_internal.h"
 
 #if !defined(_WIN32)
@@ -68,7 +77,13 @@ static RT_TLS_MAYBE_UNUSED const char *find_ca_bundle(void) {
 }
 
 /// @brief Decode a Base64 PEM body (between header/footer markers) into DER bytes.
-///        Skips whitespace and stops at '=' padding.
+/// @details ASCII whitespace is ignored and decoding stops at the first
+///          padding character. Any other non-Base64 character rejects the
+///          input.
+/// @param[in] pem_b64 Base64 text to decode; it need not be null-terminated.
+/// @param[in] b64_len Number of bytes available at @p pem_b64.
+/// @param[out] out_der Caller-provided buffer that receives decoded DER bytes.
+/// @param[in] max_der Capacity of @p out_der in bytes.
 /// @return Number of DER bytes written; 0 on output-buffer overflow or invalid input.
 static RT_TLS_MAYBE_UNUSED size_t pem_decode_cert(const char *pem_b64,
                                                   size_t b64_len,
@@ -112,6 +127,10 @@ static RT_TLS_MAYBE_UNUSED size_t pem_decode_cert(const char *pem_b64,
 }
 
 /// @brief Compare two DER-encoded X.509 Name structures for byte-exact equality.
+/// @param[in] a_der First complete DER Name TLV.
+/// @param[in] a_len Length of @p a_der in bytes.
+/// @param[in] b_der Second complete DER Name TLV.
+/// @param[in] b_len Length of @p b_der in bytes.
 /// @return 1 if equal, 0 otherwise.
 static RT_TLS_MAYBE_UNUSED int der_names_equal(const uint8_t *a_der,
                                                size_t a_len,
@@ -122,6 +141,9 @@ static RT_TLS_MAYBE_UNUSED int der_names_equal(const uint8_t *a_der,
 
 /// @brief Return a pointer into cert_der at the DER-encoded Issuer field, and write its total
 ///        TLV length (header + value) into *issuer_len.
+/// @param[in] cert_der Complete DER-encoded X.509 certificate.
+/// @param[in] cert_len Length of @p cert_der in bytes.
+/// @param[out] issuer_len Receives the complete Issuer Name TLV length.
 /// @return Non-null pointer into cert_der on success, NULL if the certificate is malformed.
 static RT_TLS_MAYBE_UNUSED const uint8_t *cert_get_issuer(const uint8_t *cert_der,
                                                           size_t cert_len,
@@ -159,6 +181,8 @@ static RT_TLS_MAYBE_UNUSED const uint8_t *cert_get_issuer(const uint8_t *cert_de
 ///          decimal digits ("YYMMDD..." or "YYYYMMDD..."). This helper
 ///          parses one 2-digit field with strict validation — any non-digit
 ///          byte rejects the timestamp.
+/// @param[in] data Pointer to at least two ASCII bytes.
+/// @param[out] out Receives the parsed value from 0 through 99.
 /// @return 1 on success, 0 on any non-digit byte.
 static int der_decimal_2(const uint8_t *data, int *out) {
     if (data[0] < '0' || data[0] > '9' || data[1] < '0' || data[1] > '9')
@@ -172,6 +196,8 @@ static int der_decimal_2(const uint8_t *data, int *out) {
 ///          four-digit year. UTCTime uses 2-digit years (parsed via
 ///          der_decimal_2 with century inference); GeneralizedTime uses
 ///          this 4-digit form directly.
+/// @param[in] data Pointer to at least four ASCII bytes.
+/// @param[out] out Receives the parsed value from 0 through 9999.
 /// @return 1 on success, 0 on any non-digit byte.
 static int der_decimal_4(const uint8_t *data, int *out) {
     int hi, lo;
@@ -185,6 +211,8 @@ static int der_decimal_4(const uint8_t *data, int *out) {
 /// @details Standard rule: divisible by 4, except century years not
 ///          divisible by 400. Used by der_time_days_in_month to validate
 ///          February day counts.
+/// @param[in] year Four-digit Gregorian calendar year.
+/// @return Nonzero when @p year is a leap year; otherwise zero.
 static int der_time_is_leap_year(int year) {
     return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
 }
@@ -194,6 +222,9 @@ static int der_time_is_leap_year(int year) {
 ///          a date like "2026-02-30" must be rejected. Returns 0 for
 ///          out-of-range month values; 29 for February in leap years; the
 ///          standard table value otherwise.
+/// @param[in] year Gregorian calendar year used for February.
+/// @param[in] month One-based month number.
+/// @return Number of days in @p month, or 0 when @p month is outside 1 through 12.
 static int der_time_days_in_month(int year, int month) {
     static const int days[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
     if (month < 1 || month > 12)
@@ -204,6 +235,12 @@ static int der_time_days_in_month(int year, int month) {
 }
 
 /// @brief Parse a UTC DER UTCTime or GeneralizedTime value into a time_t.
+/// @details Only the canonical seconds-and-`Z` forms are accepted: 13-byte
+///          UTCTime and 15-byte GeneralizedTime. Calendar fields are checked
+///          before conversion to UTC.
+/// @param[in] data DER time value bytes, excluding the tag and length.
+/// @param[in] len Number of value bytes at @p data.
+/// @param[in] tag DER tag 0x17 for UTCTime or 0x18 for GeneralizedTime.
 /// @return Parsed time, or (time_t)-1 on format error.
 static time_t parse_der_time(const uint8_t *data, size_t len, uint8_t tag) {
     struct tm tm_val;
@@ -248,6 +285,8 @@ static time_t parse_der_time(const uint8_t *data, size_t len, uint8_t tag) {
 }
 
 /// @brief Check that the certificate's Validity window contains the current wall-clock time.
+/// @param[in] cert_der Complete DER-encoded X.509 certificate.
+/// @param[in] cert_len Length of @p cert_der in bytes.
 /// @return 0 if the certificate is currently valid, -1 if expired, not-yet-valid, or malformed.
 static RT_TLS_MAYBE_UNUSED int cert_check_expiry(const uint8_t *cert_der, size_t cert_len) {
     uint8_t t;
@@ -322,6 +361,8 @@ typedef struct {
 static RT_TLS_MAYBE_UNUSED size_t hash_len_from_id(rt_rsa_hash_t hash_id);
 
 /// @brief Check whether a certificate is self-signed (Subject == Issuer byte-for-byte).
+/// @param[in] cert_der Complete DER-encoded X.509 certificate.
+/// @param[in] cert_len Length of @p cert_der in bytes.
 /// @return 1 if self-signed, 0 otherwise.
 static RT_TLS_MAYBE_UNUSED int cert_is_self_signed(const uint8_t *cert_der, size_t cert_len) {
     size_t subject_len = 0;
@@ -332,7 +373,11 @@ static RT_TLS_MAYBE_UNUSED int cert_is_self_signed(const uint8_t *cert_der, size
 }
 
 /// @brief Check whether a certificate permits TLS server authentication (native macOS/Linux).
-///        Same logic as the Windows variant but implemented with the in-tree DER parser.
+/// @details When KeyUsage is present, digitalSignature must be asserted. When
+///          ExtendedKeyUsage is present, it must include serverAuth or
+///          anyExtendedKeyUsage. Malformed recognized extensions fail closed.
+/// @param[in] cert_der Complete DER-encoded X.509 certificate.
+/// @param[in] cert_len Length of @p cert_der in bytes.
 /// @return 1 if both KeyUsage and ExtendedKeyUsage checks pass, 0 otherwise.
 static RT_TLS_MAYBE_UNUSED int cert_allows_tls_server_auth(const uint8_t *cert_der,
                                                            size_t cert_len) {
@@ -464,6 +509,10 @@ static RT_TLS_MAYBE_UNUSED int cert_allows_tls_server_auth(const uint8_t *cert_d
 }
 
 /// @brief Check whether a certificate is a CA (BasicConstraints cA=TRUE and KeyUsage keyCertSign).
+/// @details BasicConstraints must be present and assert cA. If KeyUsage is
+///          present, keyCertSign must also be asserted.
+/// @param[in] cert_der Complete DER-encoded X.509 certificate.
+/// @param[in] cert_len Length of @p cert_der in bytes.
 /// @return 1 if the certificate is a CA with appropriate key usage, 0 otherwise.
 static RT_TLS_MAYBE_UNUSED int cert_is_ca(const uint8_t *cert_der, size_t cert_len) {
     static const uint8_t OID_BASIC_CONSTRAINTS[] = {0x55, 0x1d, 0x13};
@@ -579,6 +628,13 @@ static RT_TLS_MAYBE_UNUSED int cert_is_ca(const uint8_t *cert_der, size_t cert_l
 
 /// @brief Extract the RSA public key from a certificate's SubjectPublicKeyInfo and parse it
 ///        into *out via rt_rsa_parse_public_key_pkcs1.
+/// @details The SubjectPublicKeyInfo algorithm must be rsaEncryption with
+///          absent or NULL parameters and a byte-aligned BIT STRING. The
+///          function initializes @p out; the caller must release populated key
+///          material with rt_rsa_key_free().
+/// @param[in] cert_der Complete DER-encoded X.509 certificate.
+/// @param[in] cert_len Length of @p cert_der in bytes.
+/// @param[out] out RSA key object that receives parsed, owned key components.
 /// @return 1 on success, 0 if the key is absent, malformed, or not RSA.
 static RT_TLS_MAYBE_UNUSED int cert_get_rsa_pubkey(const uint8_t *cert_der,
                                                    size_t cert_len,
@@ -653,8 +709,13 @@ static RT_TLS_MAYBE_UNUSED int cert_get_rsa_pubkey(const uint8_t *cert_der,
 }
 
 /// @brief Extract an EC P-256 public key from a certificate's SubjectPublicKeyInfo.
-///        Requires OID 1.2.840.10045.2.1 (id-ecPublicKey) with named curve prime256v1.
-///        Writes the uncompressed point coordinates (X, Y) to x_out/y_out.
+/// @details Requires OID 1.2.840.10045.2.1 (id-ecPublicKey) with named curve
+///          prime256v1 and an uncompressed point encoded as exactly 32-byte X
+///          and Y coordinates.
+/// @param[in] cert_der Complete DER-encoded X.509 certificate.
+/// @param[in] cert_len Length of @p cert_der in bytes.
+/// @param[out] x_out Receives the 32-byte big-endian affine X coordinate.
+/// @param[out] y_out Receives the 32-byte big-endian affine Y coordinate.
 /// @return 0 on success, -1 if absent, malformed, or not an EC P-256 key.
 static RT_TLS_MAYBE_UNUSED int cert_get_ec_pubkey(const uint8_t *cert_der,
                                                   size_t cert_len,
@@ -734,6 +795,13 @@ static RT_TLS_MAYBE_UNUSED int cert_get_ec_pubkey(const uint8_t *cert_der,
     return 0;
 }
 
+/// @brief Check whether a DER INTEGER is a canonical positive ECDSA scalar.
+/// @details Zero, negative encodings, and redundant leading-zero octets are
+///          rejected. A single leading zero is accepted only when required to
+///          keep the following high bit from indicating a negative value.
+/// @param[in] bytes INTEGER value bytes, excluding the DER tag and length.
+/// @param[in] len Number of value bytes at @p bytes.
+/// @return 1 for a canonical positive encoding; otherwise 0.
 static int ecdsa_der_integer_is_canonical(const uint8_t *bytes, size_t len) {
     if (!bytes || len == 0)
         return 0;
@@ -748,6 +816,10 @@ static int ecdsa_der_integer_is_canonical(const uint8_t *bytes, size_t len) {
 
 /// @brief Parse a DER-encoded ECDSA signature (SEQUENCE { INTEGER r, INTEGER s }) and write
 ///        the r and s scalars as 32-byte big-endian values (zero-padded, leading 0x00 stripped).
+/// @param[in] sig Complete DER-encoded ECDSA signature.
+/// @param[in] sig_len Length of @p sig in bytes.
+/// @param[out] r_out Receives the normalized 32-byte big-endian R scalar.
+/// @param[out] s_out Receives the normalized 32-byte big-endian S scalar.
 /// @return 0 on success, -1 on malformed input.
 static RT_TLS_MAYBE_UNUSED int parse_ecdsa_sig_der(const uint8_t *sig,
                                                    size_t sig_len,
@@ -805,6 +877,14 @@ static RT_TLS_MAYBE_UNUSED int parse_ecdsa_sig_der(const uint8_t *sig,
 /// @brief Decompose an X.509 certificate into its three top-level components:
 ///        TBSCertificate (for hashing), signatureAlgorithm OID, and signatureValue bit-string.
 ///        All output pointers point into cert_der; no allocation is performed.
+/// @param[in] cert_der Complete DER-encoded X.509 certificate.
+/// @param[in] cert_len Length of @p cert_der in bytes.
+/// @param[out] tbs_der Receives the complete TBSCertificate TLV.
+/// @param[out] tbs_len Receives the length of @p tbs_der in bytes.
+/// @param[out] alg_der Receives the complete signature AlgorithmIdentifier TLV.
+/// @param[out] alg_len Receives the length of @p alg_der in bytes.
+/// @param[out] sig_bytes Receives the signature BIT STRING payload after its unused-bit byte.
+/// @param[out] sig_len Receives the signature payload length in bytes.
 /// @return 1 on success, 0 if the certificate structure is malformed.
 static RT_TLS_MAYBE_UNUSED int cert_extract_signature_parts(const uint8_t *cert_der,
                                                             size_t cert_len,
@@ -856,6 +936,9 @@ static RT_TLS_MAYBE_UNUSED int cert_extract_signature_parts(const uint8_t *cert_
 }
 
 /// @brief Map a DER OID value to one of SHA-256, SHA-384, or SHA-512.
+/// @param[in] oid DER OBJECT IDENTIFIER value bytes, excluding tag and length.
+/// @param[in] oid_len Number of bytes at @p oid.
+/// @param[out] hash_id Receives the corresponding runtime RSA hash identifier.
 /// @return 1 and sets *hash_id if the OID is recognised, 0 otherwise.
 static RT_TLS_MAYBE_UNUSED int cert_parse_hash_oid(const uint8_t *oid,
                                                    size_t oid_len,
@@ -880,8 +963,13 @@ static RT_TLS_MAYBE_UNUSED int cert_parse_hash_oid(const uint8_t *oid,
 }
 
 /// @brief Parse an RSASSA-PSS AlgorithmIdentifier parameter SEQUENCE (RFC 4055 §3.1).
-///        Populates alg->hash_id, validates the MGF-1 hash matches, and checks the salt length
-///        equals the hash output length.  Only SHA-256/384/512 hash+MGF combinations are accepted.
+/// @details Populates @p alg's hash identifier, requires the MGF-1 hash to
+///          match it, requires a salt equal to the digest length, and accepts
+///          only trailerField 1. Only explicit SHA-256, SHA-384, or SHA-512
+///          hash, mask, and salt fields are accepted.
+/// @param[in] params_der Complete DER RSASSA-PSS-params SEQUENCE.
+/// @param[in] params_len Length of @p params_der in bytes.
+/// @param[in,out] alg Signature classification whose hash identifier is populated.
 /// @return 1 if the PSS parameters are valid and consistent, 0 otherwise.
 static RT_TLS_MAYBE_UNUSED int cert_parse_pss_params(const uint8_t *params_der,
                                                      size_t params_len,
@@ -1000,6 +1088,9 @@ static RT_TLS_MAYBE_UNUSED int cert_parse_pss_params(const uint8_t *params_der,
 /// @brief Parse a certificate signatureAlgorithm SEQUENCE and classify it as one of
 ///        RSA-PKCS1, RSA-PSS, or ECDSA-P256, filling in alg->kind and alg->hash_id.
 ///        RSA-PSS additionally validates the parameters via cert_parse_pss_params.
+/// @param[in] alg_der Complete DER AlgorithmIdentifier SEQUENCE.
+/// @param[in] alg_len Length of @p alg_der in bytes.
+/// @param[out] alg Receives the recognized signature family and digest identifier.
 /// @return 1 if recognised and parsed, 0 otherwise.
 static RT_TLS_MAYBE_UNUSED int cert_parse_signature_algorithm(const uint8_t *alg_der,
                                                               size_t alg_len,
@@ -1089,6 +1180,7 @@ static RT_TLS_MAYBE_UNUSED int cert_parse_signature_algorithm(const uint8_t *alg
 }
 
 /// @brief Return the digest output length in bytes for a given hash identifier.
+/// @param[in] hash_id Runtime RSA digest identifier.
 /// @return 32, 48, or 64; 0 for unknown IDs.
 static RT_TLS_MAYBE_UNUSED size_t hash_len_from_id(rt_rsa_hash_t hash_id) {
     return hash_id == RT_RSA_HASH_SHA256   ? 32
@@ -1099,6 +1191,10 @@ static RT_TLS_MAYBE_UNUSED size_t hash_len_from_id(rt_rsa_hash_t hash_id) {
 
 /// @brief Hash data with the algorithm specified by hash_id and write the digest to out (max 64
 /// bytes).
+/// @param[in] hash_id Digest algorithm to apply.
+/// @param[in] data Input byte sequence.
+/// @param[in] len Number of input bytes at @p data.
+/// @param[out] out Buffer of at least 64 bytes that receives the digest prefix.
 /// @return 1 on success, 0 for unknown hash_id.
 static RT_TLS_MAYBE_UNUSED int hash_bytes_for_id(rt_rsa_hash_t hash_id,
                                                  const uint8_t *data,
@@ -1121,6 +1217,10 @@ static RT_TLS_MAYBE_UNUSED int hash_bytes_for_id(rt_rsa_hash_t hash_id,
 
 /// @brief Verify the digital signature on cert_der using the public key from issuer_der.
 ///        Supports RSA-PKCS1, RSA-PSS, and ECDSA-P256 based on the signatureAlgorithm OID.
+/// @param[in] cert_der DER certificate whose TBSCertificate and signature are verified.
+/// @param[in] cert_len Length of @p cert_der in bytes.
+/// @param[in] issuer_der DER issuer certificate providing the verification key.
+/// @param[in] issuer_len Length of @p issuer_der in bytes.
 /// @return 1 if the signature is valid, 0 on error or verification failure.
 static RT_TLS_MAYBE_UNUSED int verify_cert_signature(const uint8_t *cert_der,
                                                      size_t cert_len,
@@ -1185,7 +1285,10 @@ static RT_TLS_MAYBE_UNUSED int verify_cert_signature(const uint8_t *cert_der,
 }
 
 /// @brief Read an entire file into a freshly allocated, null-terminated buffer (POSIX).
-///        Caller must free() the returned pointer.
+/// @details Files larger than TLS_TRUST_BUNDLE_MAX_BYTES are rejected. The
+///          caller owns the returned buffer and must release it with free().
+/// @param[in] path Null-terminated path of the file to read.
+/// @param[out] len_out Optional destination for the file size, initialized to zero on failure.
 /// @return Pointer to buffer on success, NULL on any I/O or allocation error.
 static RT_TLS_MAYBE_UNUSED char *tls_read_file_text(const char *path, size_t *len_out) {
     FILE *f = NULL;
@@ -1223,8 +1326,13 @@ fail:
 }
 
 /// @brief Iterate through PEM certificates in a bundle.
-///        On each call, advances *pos past the next "-----BEGIN CERTIFICATE-----" ... "-----END
-///        CERTIFICATE-----" block and sets *body_out/*body_len_out to the Base64 body.
+/// @details On each call, advances @p pos past the next BEGIN/END CERTIFICATE
+///          block and returns a borrowed view of the enclosed Base64 text.
+/// @param[in] pem Null-terminated PEM bundle text.
+/// @param[in] pem_len Number of bytes in @p pem, excluding its terminator.
+/// @param[in,out] pos Search offset on entry; advanced past the matched end marker.
+/// @param[out] body_out Receives a borrowed pointer to the Base64 body.
+/// @param[out] body_len_out Receives the body length in bytes.
 /// @return 1 if a certificate block was found, 0 at end-of-bundle or on parse error.
 static RT_TLS_MAYBE_UNUSED int pem_next_certificate(
     const char *pem, size_t pem_len, size_t *pos, const char **body_out, size_t *body_len_out) {
@@ -1251,6 +1359,10 @@ static RT_TLS_MAYBE_UNUSED int pem_next_certificate(
 }
 
 /// @brief Search a PEM bundle for a certificate whose DER encoding exactly matches cert_der.
+/// @param[in] pem Null-terminated PEM trust-bundle text.
+/// @param[in] pem_len Number of bundle bytes, excluding the terminator.
+/// @param[in] cert_der DER certificate to locate.
+/// @param[in] cert_len Length of @p cert_der in bytes.
 /// @return 1 if a matching certificate is found, 0 otherwise.
 static RT_TLS_MAYBE_UNUSED int bundle_contains_exact_cert(const char *pem,
                                                           size_t pem_len,
@@ -1277,6 +1389,10 @@ static RT_TLS_MAYBE_UNUSED int bundle_contains_exact_cert(const char *pem,
 /// @brief Check whether a PEM bundle contains a trusted CA that issued child_der.
 ///        Matches by Issuer/Subject equality, validates the CA cert's expiry, BasicConstraints,
 ///        and verifies the child certificate's signature with the CA's public key.
+/// @param[in] pem Null-terminated PEM trust-bundle text.
+/// @param[in] pem_len Number of bundle bytes, excluding the terminator.
+/// @param[in] child_der DER certificate whose issuer is sought.
+/// @param[in] child_len Length of @p child_der in bytes.
 /// @return 1 if a valid trusted issuer is found, 0 otherwise.
 static RT_TLS_MAYBE_UNUSED int bundle_has_trusted_issuer(const char *pem,
                                                          size_t pem_len,
@@ -1315,8 +1431,13 @@ static RT_TLS_MAYBE_UNUSED int bundle_has_trusted_issuer(const char *pem,
 }
 
 /// @brief Validate the server certificate chain against a PEM CA bundle (native macOS/Linux).
-///        Uses session->ca_file if set, otherwise probes standard OS bundle paths.
-///        Checks EKU, expiry, BasicConstraints, and cryptographic signatures for each link.
+/// @details Uses the session CA file when configured and otherwise probes
+///          standard system bundle paths. The leaf is checked for TLS server
+///          usage and unsupported critical extensions; each chain link is
+///          checked for validity, CA authorization, and signature integrity.
+///          Intermediates may be supplied out of order and each can be consumed
+///          at most once. On failure, @p session receives a stable error string.
+/// @param[in,out] session TLS session containing the peer chain and trust configuration.
 /// @return RT_TLS_OK on success, RT_TLS_ERROR_HANDSHAKE on validation failure.
 int tls_verify_chain(rt_tls_session_t *session) {
     struct cert_ref {
@@ -1449,8 +1570,14 @@ int tls_verify_chain(rt_tls_session_t *session) {
 }
 
 /// @brief Verify the TLS 1.3 CertificateVerify message using in-tree ECDSA-P256 or RSA (native).
-///        Builds the 130-byte signed content, hashes it, and dispatches to ecdsa_p256_verify
-///        or rt_rsa_pss_verify / rt_rsa_pkcs1_v15_verify based on the signature scheme.
+/// @details Builds the RFC 8446 server CertificateVerify content from the
+///          stored transcript hash, hashes it according to the advertised
+///          scheme, and verifies ECDSA P-256 or RSA-PSS signatures with the
+///          leaf certificate key. On failure, @p session receives a stable
+///          error string when it is non-null.
+/// @param[in,out] session TLS session containing the transcript hash and leaf certificate.
+/// @param[in] data CertificateVerify body beginning with scheme and signature length fields.
+/// @param[in] len Number of bytes available at @p data.
 /// @return RT_TLS_OK on success, RT_TLS_ERROR_HANDSHAKE on any failure.
 int tls_verify_cert_verify(rt_tls_session_t *session, const uint8_t *data, size_t len) {
     uint16_t sig_scheme = 0;

@@ -19,6 +19,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements the fixed-point driver for SimplifyCFG subtransforms.
+ *
+ * @details The driver repeatedly invokes enabled CFG rewrite components until
+ *          none reports a change, accumulates their statistics, and invalidates
+ *          cached function analyses after mutation. Compatibility verification
+ *          hooks remain no-ops because whole-module verification is owned by
+ *          pass-manager instrumentation.
+ */
 
 #include "il/transform/SimplifyCFG.hpp"
 

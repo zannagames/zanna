@@ -42,12 +42,20 @@ namespace zanna::tui::widgets {
 ///          installs the default renderer.  Clients can later swap the renderer
 ///          via @ref setRenderer() to alter presentation without replacing the
 ///          control.
+/// @param items Initial row labels, moved into the widget.
+/// @param theme Borrowed theme that must outlive the list view.
 ListView::ListView(std::vector<std::string> items, const style::Theme &theme)
     : items_(std::move(items)), theme_(theme) {
     selected_.resize(items_.size(), false);
     if (!items_.empty()) {
         selected_[0] = true;
     }
+    /// @brief Render one list item with the built-in row renderer.
+    /// @param sb Screen buffer receiving the row.
+    /// @param row Absolute screen row.
+    /// @param item Item label.
+    /// @param selected Whether the item is selected.
+    /// @param theme Theme argument supplied by the renderer interface.
     renderer_ = [this](render::ScreenBuffer &sb,
                        int row,
                        const std::string &item,

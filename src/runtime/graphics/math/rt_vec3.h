@@ -23,10 +23,19 @@
 //        src/runtime/graphics/math/rt_quat.h (quaternion rotations)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares the runtime-managed three-dimensional vector API.
+ * @details Exposes Vec3 construction, component access and mutation, arithmetic,
+ * geometric products, interpolation, projection, reflection, magnitude
+ * limiting, and comparison helpers. Unless explicitly identified as a mutator,
+ * operations return a newly managed Vec3 and leave their operands unchanged.
+ */
 #pragma once
 
 #include <stdint.h>
 
+/** Runtime class identifier stored on managed Vec3 payloads. */
 #define RT_VEC3_CLASS_ID INT64_C(-0x600206)
 
 #ifdef __cplusplus

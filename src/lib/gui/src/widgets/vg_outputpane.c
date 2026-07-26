@@ -274,6 +274,9 @@ static void outputpane_apply_sgr_params(vg_outputpane_t *pane, const int *params
 }
 
 /// @brief VTable set_font trampoline — forwards to vg_outputpane_set_font.
+/// @param widget Output-pane base widget whose font is updated.
+/// @param font Borrowed font handle forwarded to the typed setter.
+/// @param size Requested font size in pixels.
 static void outputpane_set_font_widget(vg_widget_t *widget, void *font, float size) {
     if (!widget || !font)
         return;
@@ -344,6 +347,8 @@ static size_t outputpane_utf8_byte_offset_for_column(const char *text, size_t ta
 }
 
 /// @brief Return the total character count across all segments of a line.
+/// @param line Output line whose segment lengths are summed.
+/// @return Total logical character count, or zero for NULL.
 static size_t outputpane_line_length(const vg_output_line_t *line) {
     size_t len = 0;
     if (!line)
@@ -360,6 +365,10 @@ static size_t outputpane_line_length(const vg_output_line_t *line) {
 }
 
 /// @brief Measure the pixel width of the text in a line up to target_col characters.
+/// @param pane Output pane supplying font and size information.
+/// @param line Line whose prefix is measured.
+/// @param target_col Exclusive logical character column at which to stop.
+/// @return Pixel width of the available prefix.
 static float outputpane_prefix_width(vg_outputpane_t *pane,
                                      const vg_output_line_t *line,
                                      uint32_t target_col) {
@@ -410,6 +419,7 @@ static float outputpane_prefix_width(vg_outputpane_t *pane,
 //=============================================================================
 
 /// @brief Free all segment text buffers and the segments array owned by line.
+/// @param line Line whose owned segment storage is released and reset.
 static void free_output_line(vg_output_line_t *line) {
     if (!line)
         return;
@@ -443,6 +453,7 @@ static void outputpane_free_line_storage(vg_output_line_t *lines,
 }
 
 /// @brief Reset all selection state fields to the unselected state.
+/// @param pane Output pane whose selection is cleared.
 static void outputpane_clear_selection(vg_outputpane_t *pane) {
     if (!pane)
         return;
@@ -454,6 +465,7 @@ static void outputpane_clear_selection(vg_outputpane_t *pane) {
 }
 
 /// @brief Adjust cursor and selection coordinates after the first line is evicted.
+/// @param pane Output pane whose logical line indices shift down by one.
 static void outputpane_note_evicted_first_line(vg_outputpane_t *pane) {
     if (!pane)
         return;
@@ -476,6 +488,9 @@ static void outputpane_note_evicted_first_line(vg_outputpane_t *pane) {
 }
 
 /// @brief Physical array index for a logical output line.
+/// @param pane Output pane owning the circular line buffer.
+/// @param logical_index Zero-based logical line index.
+/// @return Wrapped physical slot index, or zero when no buffer exists.
 static size_t outputpane_physical_line_index(const vg_outputpane_t *pane, size_t logical_index) {
     if (!pane || pane->line_capacity == 0)
         return 0;
@@ -483,6 +498,9 @@ static size_t outputpane_physical_line_index(const vg_outputpane_t *pane, size_t
 }
 
 /// @brief Return a logical line pointer from the circular line buffer.
+/// @param pane Output pane owning the circular line buffer.
+/// @param logical_index Zero-based logical line index.
+/// @return Mutable line pointer, or NULL when the index is out of range.
 static vg_output_line_t *outputpane_line_at(vg_outputpane_t *pane, size_t logical_index) {
     if (!pane || logical_index >= pane->line_count || pane->line_capacity == 0)
         return NULL;
@@ -490,6 +508,8 @@ static vg_output_line_t *outputpane_line_at(vg_outputpane_t *pane, size_t logica
 }
 
 /// @brief Return the newest logical line, or NULL when the pane is empty.
+/// @param pane Output pane whose final line is requested.
+/// @return Mutable newest-line pointer, or NULL when no line exists.
 static vg_output_line_t *outputpane_last_line(vg_outputpane_t *pane) {
     if (!pane || pane->line_count == 0)
         return NULL;
@@ -497,6 +517,9 @@ static vg_output_line_t *outputpane_last_line(vg_outputpane_t *pane) {
 }
 
 /// @brief Grow the line ring while preserving logical order.
+/// @param pane Output pane whose owned line array is replaced.
+/// @param new_cap Required nonzero line capacity.
+/// @return True when growth succeeds; false for invalid size or allocation failure.
 static bool outputpane_grow_lines(vg_outputpane_t *pane, size_t new_cap) {
     if (!pane || new_cap == 0 || new_cap > SIZE_MAX / sizeof(vg_output_line_t))
         return false;
@@ -515,6 +538,7 @@ static bool outputpane_grow_lines(vg_outputpane_t *pane, size_t new_cap) {
 }
 
 /// @brief Evict the oldest logical line in O(1).
+/// @param pane Output pane whose oldest line is freed and removed.
 static void outputpane_evict_first_line(vg_outputpane_t *pane) {
     if (!pane || pane->line_count == 0 || pane->line_capacity == 0)
         return;
@@ -527,6 +551,8 @@ static void outputpane_evict_first_line(vg_outputpane_t *pane) {
 }
 
 /// @brief Append and return a zeroed segment slot to line, growing the array if needed.
+/// @param line Output line that owns the segment array.
+/// @return Newly appended segment slot, or NULL on overflow or allocation failure.
 static vg_styled_segment_t *add_segment(vg_output_line_t *line) {
     if (line->segment_count >= line->segment_capacity) {
         if (line->segment_capacity > SIZE_MAX / 2u)
@@ -583,6 +609,8 @@ static bool outputpane_append_segment_copy(
 }
 
 /// @brief Append a new empty line to pane, evicting the oldest if the ring buffer is full.
+/// @param pane Output pane whose circular buffer receives the line.
+/// @return Mutable new line, or NULL when disabled or allocation fails.
 static vg_output_line_t *add_line(vg_outputpane_t *pane) {
     if (!pane || pane->max_lines == 0)
         return NULL;
@@ -616,6 +644,7 @@ static vg_output_line_t *add_line(vg_outputpane_t *pane) {
 //=============================================================================
 
 /// @brief Apply the buffered ANSI SGR escape sequence to pane's current color/bold state.
+/// @param pane Output pane containing the buffered escape and mutable style state.
 static void process_ansi_escape(vg_outputpane_t *pane) {
     int params[16];
     int param_count = 0;
@@ -680,6 +709,7 @@ vg_outputpane_t *vg_outputpane_create(void) {
 
 /// @brief Widget-vtable destroy hook: free every output line (and its
 ///        segment buffers) and the line array.
+/// @param widget Output-pane base widget being destroyed.
 static void outputpane_destroy(vg_widget_t *widget) {
     vg_outputpane_t *pane = (vg_outputpane_t *)widget;
 
@@ -705,6 +735,9 @@ void vg_outputpane_destroy(vg_outputpane_t *pane) {
 
 /// @brief Widget-vtable measure hook: the output pane fills the available
 ///        space (no intrinsic size).
+/// @param widget Output-pane base widget whose measured size is updated.
+/// @param available_width Parent-provided width.
+/// @param available_height Parent-provided height.
 static void outputpane_measure(vg_widget_t *widget, float available_width, float available_height) {
     (void)available_width;
     (void)available_height;
@@ -716,6 +749,8 @@ static void outputpane_measure(vg_widget_t *widget, float available_width, float
 
 /// @brief Widget-vtable paint hook: draw the visible lines with per-segment
 ///        colors, the selection highlight, and the border.
+/// @param widget Arranged output-pane base widget to render.
+/// @param canvas Backend canvas used for clipping and drawing.
 static void outputpane_paint(vg_widget_t *widget, void *canvas) {
     vg_outputpane_t *pane = (vg_outputpane_t *)widget;
     vg_theme_t *theme = vg_theme_get_current();
@@ -1019,12 +1054,16 @@ static bool term_queue_function_key(vg_outputpane_t *pane, vg_key_t key, uint32_
 }
 
 /// @brief Widget-vtable can_focus: focusable only in interactive terminal mode.
+/// @param widget Output-pane base widget whose focus eligibility is queried.
+/// @return True when terminal mode is enabled and the widget is enabled and visible.
 static bool outputpane_can_focus(vg_widget_t *widget) {
     vg_outputpane_t *pane = (vg_outputpane_t *)widget;
     return pane->terminal_mode && widget->enabled && widget->visible;
 }
 
 /// @brief Widget-vtable on_focus: track focus so the terminal caret can render.
+/// @param widget Output-pane base widget receiving the focus transition.
+/// @param gained True when focus is acquired, or false when it is lost.
 static void outputpane_on_focus(vg_widget_t *widget, bool gained) {
     vg_outputpane_t *pane = (vg_outputpane_t *)widget;
     pane->has_focus = gained;
@@ -1037,6 +1076,9 @@ static void outputpane_on_focus(vg_widget_t *widget, bool gained) {
 
 /// @brief Widget-vtable event hook: terminal keyboard input + focus (terminal mode),
 ///        scrolling, and click/drag text selection. Returns true if consumed.
+/// @param widget Output-pane base widget receiving the event.
+/// @param event Mutable GUI event to interpret.
+/// @return True when the pane consumes the event.
 static bool outputpane_handle_event(vg_widget_t *widget, vg_event_t *event) {
     vg_outputpane_t *pane = (vg_outputpane_t *)widget;
 
@@ -1186,6 +1228,8 @@ static bool outputpane_handle_event(vg_widget_t *widget, vg_event_t *event) {
 // the cells are coalesced back into styled segments after each chunk.
 
 /// @brief UTF-8 sequence length implied by a lead byte (1..4; 1 for invalid/continuation).
+/// @param c Candidate UTF-8 lead byte.
+/// @return Expected encoded length from one through four bytes.
 static int outputpane_utf8_len(unsigned char c) {
     if (c < 0x80)
         return 1;
@@ -1199,6 +1243,9 @@ static int outputpane_utf8_len(unsigned char c) {
 }
 
 /// @brief Encode a Unicode codepoint to UTF-8; returns the byte count (1..4).
+/// @param cp Unicode code point to encode.
+/// @param[out] out Destination with capacity for at least four bytes.
+/// @return Number of bytes written.
 static int outputpane_encode_utf8(uint32_t cp, char *out) {
     if (cp < 0x80) {
         out[0] = (char)cp;
@@ -1223,6 +1270,9 @@ static int outputpane_encode_utf8(uint32_t cp, char *out) {
 }
 
 /// @brief Ensure the terminal cell buffer can hold at least @p need cells.
+/// @param pane Output pane that owns the cell buffer.
+/// @param need Minimum required cell capacity.
+/// @return True when sufficient storage is available; false on overflow or allocation failure.
 static bool term_ensure_cells(vg_outputpane_t *pane, size_t need) {
     if (pane->cell_capacity >= need)
         return true;
@@ -1240,6 +1290,8 @@ static bool term_ensure_cells(vg_outputpane_t *pane, size_t need) {
 }
 
 /// @brief Reset a cell to a blank space with default colors.
+/// @param pane Output pane supplying default foreground and background colors.
+/// @param[out] cell Terminal cell reset in place.
 static void term_blank_cell(vg_outputpane_t *pane, vg_term_cell_t *cell) {
     cell->utf8[0] = '\0';
     cell->fg = pane->default_fg;
@@ -1341,6 +1393,9 @@ static void term_load_cells_from_line(vg_outputpane_t *pane, size_t logical_line
 }
 
 /// @brief Write a glyph at the cursor column (overwriting), extending with blanks as needed.
+/// @param pane Output pane whose cursor line and column are updated.
+/// @param bytes UTF-8 glyph bytes to copy.
+/// @param len Number of bytes in @p bytes, clamped to the cell representation.
 static void term_put_glyph(vg_outputpane_t *pane, const char *bytes, int len) {
     if (len < 1)
         len = 1;
@@ -1370,6 +1425,7 @@ static void term_put_glyph(vg_outputpane_t *pane, const char *bytes, int len) {
 }
 
 /// @brief Rebuild the cursor line's styled segments from the cell buffer.
+/// @param pane Output pane whose current terminal line is regenerated.
 static void term_flush_cells(vg_outputpane_t *pane) {
     if (!pane)
         return;
@@ -1449,22 +1505,30 @@ static void term_restore_cursor(vg_outputpane_t *pane) {
 }
 
 /// @brief Visible terminal rows for margin defaults (fallback before layout).
+/// @param pane Output pane whose current geometry determines the row count.
+/// @return Positive visible row count, falling back to 24 before layout.
 static int term_screen_rows(const vg_outputpane_t *pane) {
     int rows = vg_outputpane_rows_for_height(pane);
     return rows > 0 ? rows : 24;
 }
 
 /// @brief True when a DECSTBM scroll region is set and well-formed.
+/// @param pane Output pane whose terminal margins are inspected.
+/// @return True when the configured bottom margin follows a non-negative top margin.
 static bool term_region_active(const vg_outputpane_t *pane) {
     return pane->term_scroll_top >= 0 && pane->term_scroll_bottom > pane->term_scroll_top;
 }
 
 /// @brief Absolute logical row of the active region's top margin.
+/// @param pane Output pane supplying origin and top-margin state.
+/// @return Absolute zero-based logical top row.
 static size_t term_region_top_abs(const vg_outputpane_t *pane) {
     return pane->term_origin_line + (size_t)(pane->term_scroll_top > 0 ? pane->term_scroll_top : 0);
 }
 
 /// @brief Absolute logical row of the active region's bottom margin (inclusive).
+/// @param pane Output pane supplying origin and margin or screen-height state.
+/// @return Absolute zero-based inclusive bottom row.
 static size_t term_region_bottom_abs(const vg_outputpane_t *pane) {
     int bottom = term_region_active(pane) ? pane->term_scroll_bottom : term_screen_rows(pane) - 1;
     return pane->term_origin_line + (size_t)(bottom > 0 ? bottom : 0);
@@ -1472,6 +1536,9 @@ static size_t term_region_bottom_abs(const vg_outputpane_t *pane) {
 
 /// @brief Swap the full line structs at two logical rows (segment ownership
 ///        moves with the struct; both rows must exist).
+/// @param pane Output pane owning both line records.
+/// @param a First logical row index.
+/// @param b Second logical row index.
 static void term_swap_lines(vg_outputpane_t *pane, size_t a, size_t b) {
     vg_output_line_t *la = outputpane_line_at(pane, a);
     vg_output_line_t *lb = outputpane_line_at(pane, b);
@@ -1520,6 +1587,7 @@ static void term_scroll_range(
 }
 
 /// @brief Reset the tab-stop bitset to the default every-8-columns ruler.
+/// @param pane Output pane whose terminal tab stops are reset.
 static void term_init_default_tabs(vg_outputpane_t *pane) {
     memset(pane->term_tab_stops, 0, sizeof(pane->term_tab_stops));
     for (size_t col = 8; col < sizeof(pane->term_tab_stops) * 8; col += 8)
@@ -1527,6 +1595,9 @@ static void term_init_default_tabs(vg_outputpane_t *pane) {
 }
 
 /// @brief Set or clear the tab stop at @p col in the bitset.
+/// @param pane Output pane whose tab-stop bitset is updated.
+/// @param col Zero-based terminal column.
+/// @param set True to install the stop, or false to remove it.
 static void term_set_tab_stop(vg_outputpane_t *pane, uint32_t col, bool set) {
     if (col >= sizeof(pane->term_tab_stops) * 8)
         return;
@@ -1538,6 +1609,9 @@ static void term_set_tab_stop(vg_outputpane_t *pane, uint32_t col, bool set) {
 
 /// @brief Next tab stop strictly after @p col, or one column past the current
 ///        width when no stop remains (HT never writes glyphs, it only moves).
+/// @param pane Output pane whose tab-stop bitset is searched.
+/// @param col Current zero-based terminal column.
+/// @return Next configured stop or the fallback column beyond the current width.
 static uint32_t term_next_tab_stop(const vg_outputpane_t *pane, uint32_t col) {
     const uint32_t limit = (uint32_t)(sizeof(pane->term_tab_stops) * 8);
     for (uint32_t c = col + 1; c < limit; c++) {
@@ -1583,6 +1657,7 @@ static void term_newline(vg_outputpane_t *pane) {
 }
 
 /// @brief Clear the terminal display while preserving current ANSI styling.
+/// @param pane Output pane whose terminal lines and cursor are reset.
 static void term_clear_display(vg_outputpane_t *pane) {
     if (!pane)
         return;
@@ -1989,6 +2064,8 @@ static void term_dispatch_csi(vg_outputpane_t *pane, char final) {
 }
 
 /// @brief Terminal-mode append: full escape state machine + cursor-position overwrite.
+/// @param pane Terminal-mode output pane receiving the text.
+/// @param text NUL-terminated byte stream containing UTF-8 and terminal escapes.
 static void outputpane_append_terminal(vg_outputpane_t *pane, const char *text) {
     const unsigned char *p = (const unsigned char *)text;
     while (*p) {
@@ -2134,6 +2211,9 @@ static void outputpane_append_terminal(vg_outputpane_t *pane, const char *text) 
 }
 
 /// @brief Queue raw bytes for the controller to drain to the PTY (terminal keystrokes).
+/// @param pane Output pane that owns the pending-input buffer.
+/// @param bytes Raw input bytes to append.
+/// @param len Number of bytes available at @p bytes.
 static void term_queue_input(vg_outputpane_t *pane, const char *bytes, size_t len) {
     if (len == 0)
         return;
@@ -2155,6 +2235,7 @@ static void term_queue_input(vg_outputpane_t *pane, const char *bytes, size_t le
 }
 
 /// @brief Enable/disable interactive terminal mode (see header).
+/// @copydetails vg_outputpane_set_terminal_mode
 void vg_outputpane_set_terminal_mode(vg_outputpane_t *pane, bool enabled) {
     if (!pane)
         return;
@@ -2207,11 +2288,13 @@ char *vg_outputpane_take_input_bytes(vg_outputpane_t *pane, size_t *len_out) {
 }
 
 /// @brief Drain queued keystroke bytes; caller frees. NULL when empty.
+/// @copydetails vg_outputpane_take_input
 char *vg_outputpane_take_input(vg_outputpane_t *pane) {
     return vg_outputpane_take_input_bytes(pane, NULL);
 }
 
 /// @brief Advance the terminal caret blink (no-op unless terminal mode + focused).
+/// @copydetails vg_outputpane_tick
 void vg_outputpane_tick(vg_outputpane_t *pane, float dt) {
     if (!pane || !pane->terminal_mode || !pane->has_focus || dt <= 0.0f)
         return;

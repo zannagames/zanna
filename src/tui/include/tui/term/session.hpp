@@ -5,11 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the TerminalSession class, which manages the
-// acquisition and restoration of raw terminal mode for Zanna's TUI.
-// On POSIX systems, it saves the original termios settings and configures
-// the terminal for raw input (no echo, no canonical processing). On
-// Windows, it enables Virtual Terminal Processing for ANSI escape codes.
+/// @file
+/// @brief Declares the cross-platform raw-terminal RAII session.
+/// @details Saves and restores POSIX termios or Windows console modes while
+///          enabling raw input and ANSI/virtual-terminal behavior for TUI use.
 //
 // TerminalSession follows RAII semantics: the constructor enters raw mode
 // and the destructor restores the original terminal state. This ensures
@@ -65,13 +64,13 @@ class TerminalSession {
     bool active() const;
 
   private:
-    bool active_{false};
+    bool active_{false}; ///< Whether terminal acquisition succeeded and needs restoration.
 #if ZANNATUI_POSIX
-    termios orig_{};
+    termios orig_{}; ///< Original POSIX terminal attributes.
 #endif
 #if defined(_WIN32)
-    DWORD orig_out_mode_{0};
-    DWORD orig_in_mode_{0};
+    DWORD orig_out_mode_{0}; ///< Original Windows output console mode.
+    DWORD orig_in_mode_{0};  ///< Original Windows input console mode.
 #endif
 };
 

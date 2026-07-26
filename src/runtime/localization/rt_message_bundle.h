@@ -28,6 +28,15 @@
 //        docs/zannalib/localization/messages.md (user documentation).
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares locale-bound translation catalogs and formatting services.
+ * @details Defines construction from maps, JSON, and assets; owned and optional
+ * lookup forms; named, positional, and plural interpolation; bounded fallback
+ * chaining; and direct-key enumeration.
+ */
+
 #pragma once
 
 #include "rt.hpp"

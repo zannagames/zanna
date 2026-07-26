@@ -12,6 +12,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements backward SSA liveness analysis for IL functions.
+ *
+ * @details The implementation builds compact predecessor and successor maps,
+ *          discovers the dense temporary-id universe, computes per-block
+ *          definition and upward-use sets, and iterates the standard backward
+ *          transfer equations to a fixed point using word-packed bitsets.
+ */
+
 #include "il/transform/analysis/Liveness.hpp"
 
 #include "il/analysis/CFG.hpp"
@@ -52,7 +62,7 @@ bool LivenessInfo::SetView::empty() const {
 /// @brief Access the underlying bitset describing the view.
 ///
 /// @return Reference to the underlying bitset.
-/// @throws Assertion failure when the view is empty.
+/// @pre The view must be attached to a bitset.
 const std::vector<bool> &LivenessInfo::SetView::bits() const {
     assert(bits_ && "liveness set view is empty");
     return *bits_;
@@ -125,7 +135,7 @@ namespace {
 ///          the iterative liveness fixed-point computation.
 class ChunkedBitset {
   public:
-    /// Number of bits stored in one machine word.
+    /// @brief Number of bits stored in one machine word.
     static constexpr std::size_t kBitsPerChunk = 64;
 
     /// @brief Construct an empty bitset.
@@ -222,17 +232,21 @@ class ChunkedBitset {
     }
 
   private:
+    /// @brief Logical number of addressable bits.
     std::size_t bitCount_{0};
+    /// @brief Packed words containing the bit values.
     std::vector<uint64_t> chunks_;
 };
 
+/// @brief Per-block definition and upward-exposed-use sets.
 struct BlockInfo {
     /// @brief Prepare per-block definition/use bitsets sized to @p valueCount.
+    /// @param valueCount Number of dense SSA identifiers represented by each set.
     explicit BlockInfo(std::size_t valueCount = 0) : defs(valueCount), uses(valueCount) {}
 
-    /// Values defined by block parameters or instruction results.
+    /// @brief Values defined by block parameters or instruction results.
     ChunkedBitset defs;
-    /// Values used before their first definition in the block.
+    /// @brief Values used before their first definition in the block.
     ChunkedBitset uses;
 };
 
@@ -246,7 +260,8 @@ struct BlockInfo {
 std::size_t determineValueCapacity(const core::Function &fn) {
     unsigned maxId = 0;
     bool sawId = false;
-    /// Extend the observed dense-id range with one temporary.
+    /// @brief Extend the observed dense-id range with one temporary.
+    /// @param id Temporary identifier observed in the function.
     auto noteId = [&](unsigned id) {
         maxId = std::max(maxId, id);
         sawId = true;

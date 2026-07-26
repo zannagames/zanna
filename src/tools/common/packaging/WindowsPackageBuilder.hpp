@@ -29,6 +29,11 @@
 //===----------------------------------------------------------------------===//
 #pragma once
 
+/// @file
+/// @brief Declares native Windows application and toolchain installer builders.
+/// @details Both builders produce self-extracting PE32+ setup executables backed
+///          by a deterministic metadata contract and nested ZIP payload.
+
 #include "PackageConfig.hpp"
 #include "ToolchainInstallManifest.hpp"
 
@@ -84,6 +89,8 @@ void buildWindowsPackage(const WindowsBuildParams &params);
 ///
 /// Returns an empty vector when the input is not a supported PE32+ image or the
 /// import directory cannot be parsed safely.
+/// @param data Complete candidate PE bytes.
+/// @return Lowercase imported DLL names, or an empty vector when unavailable.
 std::vector<std::string> importedDllNamesFromPe(const std::vector<uint8_t> &data);
 
 /// @brief Parameters for building a Windows toolchain installer from a staged manifest.

@@ -287,6 +287,10 @@ std::vector<Symbol> Sema::getVisibleSymbolsAtPosition(uint32_t fileId,
         candidates.push_back({ss.symbol, ss.loc, depth});
     }
 
+    /// @brief Orders completion candidates by innermost scope and latest declaration.
+    /// @param a Left candidate.
+    /// @param b Right candidate.
+    /// @return `true` when `a` should shadow `b`.
     std::stable_sort(
         candidates.begin(), candidates.end(), [](const Candidate &a, const Candidate &b) {
             if (a.depth != b.depth)
@@ -429,6 +433,8 @@ std::vector<Symbol> Sema::getRuntimeMembers(const std::string &className) const 
 
     std::unordered_set<std::string> emittedMembers;
 
+    /// @brief Appends deduplicated methods declared by one runtime class.
+    /// @param sourceClass Runtime class whose methods are exposed.
     auto appendRuntimeMethods = [&](const il::runtime::RuntimeClass *sourceClass) {
         if (!sourceClass)
             return;
@@ -457,6 +463,8 @@ std::vector<Symbol> Sema::getRuntimeMembers(const std::string &className) const 
             if (!emittedMembers.insert(std::move(key)).second)
                 continue;
 
+            /// @brief Finds the extern symbol backing the current runtime method.
+            /// @return Matching global extern symbol, or null.
             if (const Symbol *externSym = [&]() -> const Symbol * {
                     if (!method.target || scopes_.empty())
                         return nullptr;

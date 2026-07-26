@@ -25,6 +25,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_socket_platform_win.c
+ * @brief Implements the WinSock side of the native socket adapter.
+ * @details The adapter performs process-lifetime WinSock initialization,
+ *          wraps handle lifecycle and WSA error classification, configures
+ *          nonblocking and timeout behavior, and rebuilds mutable select state
+ *          while preserving one deadline across interruptions.
+ */
+
 #include "rt_socket_platform.h"
 
 #include "rt_internal.h"
@@ -211,6 +220,7 @@ bool rt_socket_pending_error(socket_t sock, int *error_out) {
 /// @param sock Socket handle to configure.
 /// @param timeout_ms Timeout in milliseconds; negative values are treated as zero.
 /// @param is_recv true selects SO_RCVTIMEO, false selects SO_SNDTIMEO.
+/// @return True when setsockopt succeeds; otherwise false.
 bool set_socket_timeout(socket_t sock, int timeout_ms, bool is_recv) {
     if (timeout_ms < 0)
         timeout_ms = 0;
@@ -225,6 +235,10 @@ bool set_socket_timeout(socket_t sock, int timeout_ms, bool is_recv) {
 typedef void(WSAAPI *rt_wsa_set_last_error_fn)(int);
 
 /// @brief Set WinSock's thread-local error without expanding native imports.
+/// @details Resolves WSASetLastError dynamically so CRT-less entry paths retain
+///          the runtime's constrained native import surface; SetLastError is a
+///          defensive fallback when the symbol is unavailable.
+/// @param error Native WinSock error code to publish for the current thread.
 static void rt_socket_set_last_error(int error) {
     HMODULE winsock = GetModuleHandleW(L"ws2_32.dll");
     rt_wsa_set_last_error_fn set_error =

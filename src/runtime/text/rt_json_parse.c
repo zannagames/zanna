@@ -14,7 +14,8 @@
 // Key invariants:
 //   - All JSON numbers are parsed as IEEE 754 double (Box.F64).
 //   - Unicode escape sequences (\uXXXX), including surrogate pairs, are decoded.
-//   - Nesting beyond JSON_MAX_DEPTH unwinds without trapping (S-16).
+//   - Nesting beyond JSON_MAX_DEPTH first unwinds without trapping; the public
+//     entry point then reports the error through its selected trap/status mode.
 //   - Invalid input traps with a line/column diagnostic unless trap_errors is
 //     cleared (rt_json_try_parse), in which case the error is reported via out
 //     parameters.
@@ -28,6 +29,15 @@
 //        src/runtime/text/rt_json_format.c (inverse: value → JSON text)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_json_parse.c
+ * @brief Implements allocating recursive-descent JSON parsing.
+ * @details The parser decodes validated UTF-8 and Unicode escapes, constructs
+ *          caller-owned Maps, element-owning sequences, Strings, and boxed
+ *          primitives, replaces duplicate object members, enforces finite
+ *          nesting, and supports either trapping or structured diagnostics.
+ */
 
 #include "rt_json.h"
 
@@ -47,11 +57,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Release one locally owned parsed-value reference.
+/// @details Frees the runtime object if dropping this reference reaches zero.
+///          JSON null is represented by a null pointer and needs no action.
+/// @param value Parsed runtime object owned by the current scope.
 static void json_release_value(void *value) {
     if (value && rt_obj_release_check0(value))
         rt_obj_free(value);
 }
 
+/// @brief Discard a parsed value using the correct string/object release path.
+/// @param value Parsed runtime string, boxed value, container, or JSON null.
 static void json_discard_value(void *value) {
     if (!value)
         return;
@@ -140,11 +156,14 @@ static int json_object_set_checked(json_parser *p, void *map, rt_string key, voi
     return 1;
 }
 
-/// @brief Trap with a `Json.Parse: …` diagnostic carrying line/column from `p->pos`.
+/// @brief Record a line/column parse diagnostic and optionally trap.
 ///
 /// Computes the location lazily by walking from the start; cheap
 /// for typical-sized JSON inputs and avoids tracking line/col on
-/// every byte advance.
+/// every byte advance. Stores the detail and one-based location, moves the
+/// cursor to EOF, and traps only when `p->trap_errors` is set.
+/// @param p Mutable parser state to mark failed.
+/// @param msg Diagnostic detail, or null for `"parse error"`.
 static void parser_error(json_parser *p, const char *msg) {
     const char *detail = msg ? msg : "parse error";
 
@@ -181,6 +200,8 @@ static void parser_error(json_parser *p, const char *msg) {
 /// @details JSON `null` is represented by a C `NULL` value in the runtime tree.
 ///          Callers must inspect the parser error state to distinguish a valid
 ///          root `null` from parse failure.
+/// @param p Mutable parser positioned before a value.
+/// @return Newly allocated parsed value, or null for JSON null/error/depth.
 static void *parse_value(json_parser *p);
 
 //=============================================================================
@@ -222,6 +243,13 @@ static int json_string_ensure_capacity(char **buf_io, size_t *cap_io, size_t len
 
 
 /// @brief Parse a JSON string (starting after the opening quote).
+/// @details Consumes both quotes, decodes all RFC 8259 escapes, combines valid
+///          UTF-16 surrogate pairs, emits UTF-8, rejects unescaped controls,
+///          and validates raw UTF-8 sequences. Syntax errors mark @p p and
+///          return an empty fallback string for caller cleanup.
+/// @param p Mutable parser positioned at the opening quote.
+/// @return Newly allocated decoded runtime string, or an empty fallback after
+///         a parse/allocation error.
 static rt_string parse_string(json_parser *p) {
     if (parser_consume(p) != '"') {
         parser_error(p, "expected string");
@@ -441,12 +469,15 @@ static rt_string parse_string(json_parser *p) {
 // Number Parsing
 //=============================================================================
 
-/// @brief Parse a JSON number — returns a boxed Int64 or Float64.
+/// @brief Parse a JSON number into a boxed Float64.
 ///
 /// Per RFC 8259 §6: optional `-`, integer part (no leading zeros
 /// except `0` itself), optional `.fraction`, optional
-/// `e[+-]exponent`. If neither `.` nor `e` appears we return a
-/// boxed Int64; otherwise a boxed Float64. Traps on malformed input.
+/// `e[+-]exponent`. All forms are converted through the shared double parser;
+/// non-finite or out-of-range results are rejected.
+/// @param p Mutable parser positioned at the number's first byte.
+/// @return Newly allocated boxed F64 value, including an owned zero fallback
+///         after an error.
 static void *parse_number(json_parser *p) {
     size_t start = p->pos;
 
@@ -519,7 +550,11 @@ static void *parse_number(json_parser *p) {
 /// Increments `p->depth` on `[` and decrements on `]`; if the
 /// depth-cap is exceeded the parser sets `depth_exceeded` and
 /// unwinds without trapping (S-16). Comma-separated values; empty
-/// array is allowed; trailing commas are not.
+/// array is allowed; trailing commas are not. The returned Seq owns appended
+/// element references, including null entries.
+/// @param p Mutable parser positioned at `[`.
+/// @return Newly allocated element-owning Seq, possibly partial when the
+///         parser error/depth flags are set, or null on allocation/depth error.
 static void *parse_array(json_parser *p) {
     if (p->has_error)
         return NULL;
@@ -605,6 +640,10 @@ static void *parse_array(json_parser *p) {
 /// empty object `{}` is allowed. Same depth-tracking story as
 /// `parse_array`. RFC 8259 doesn't require unique keys but we
 /// follow the convention of "last wins".
+/// @param p Mutable parser positioned at `{`.
+/// @return Newly allocated Map owning parsed keys and values, possibly partial
+///         when parser error/depth flags are set, or null on allocation/depth
+///         error.
 static void *parse_object(json_parser *p) {
     if (p->has_error)
         return NULL;
@@ -718,7 +757,10 @@ static void *parse_object(json_parser *p) {
 ///   - `"` → `parse_string`
 ///   - digit, `-` → `parse_number`
 ///   - `t`, `f`, `n` → boolean / null literal (must match `true`/`false`/`null`)
-/// Traps on any other character.
+/// Traps or records an error on any other character, according to parser mode.
+/// @param p Mutable parser positioned before a JSON value.
+/// @return Newly allocated runtime value, or null for JSON null, parse failure,
+///         or propagated depth overflow; inspect @p p to distinguish them.
 static void *parse_value(json_parser *p) {
     if (p->has_error)
         return NULL;
@@ -790,7 +832,7 @@ static void *parse_value(json_parser *p) {
 /// - Arrays become Seq
 /// - Strings stay as String
 /// - Numbers become boxed f64
-/// - Booleans become boxed i64 (0 or 1)
+/// - Booleans become boxed i1
 /// - null becomes NULL
 ///
 /// **Example:**
@@ -804,11 +846,13 @@ static void *parse_value(json_parser *p) {
 ///
 /// **Error handling:**
 /// Traps with descriptive error message on invalid JSON, including line
-/// and column information.
+/// and column information. A null input returns null directly; an empty
+/// runtime string is an error.
 ///
-/// @param text The JSON text to parse.
+/// @param text Borrowed JSON text to parse.
 ///
-/// @return Parsed value (Map, Seq, String, boxed number, boxed bool, or NULL).
+/// @return Caller-owned parsed value (Map, Seq, String, boxed number, boxed
+///         bool), or null for JSON null, null input, or a trapped error.
 ///
 /// @note O(n) time complexity where n is the text length.
 /// @note Thread-safe (no global state).
@@ -859,6 +903,18 @@ void *rt_json_parse(rt_string text) {
     return result;
 }
 
+/// @brief Parse one complete JSON value while reporting syntax errors by status.
+/// @details Initializes every supplied output before parsing. Successful JSON
+///          null is distinguished by return value one with a null value output.
+///          When @p out_value is omitted, a successfully parsed non-null value
+///          is released. Syntax and depth errors do not call the parser trap
+///          path, though lower-level allocation failures may still trap.
+/// @param text Borrowed JSON text; null and empty input report `"empty input"`.
+/// @param out_value Optional output receiving the caller-owned parsed value.
+/// @param out_message Optional output receiving a caller-owned failure detail.
+/// @param out_line Optional output receiving a one-based line or zero.
+/// @param out_column Optional output receiving a one-based column or zero.
+/// @return `1` on success, including JSON null, otherwise `0`.
 int8_t rt_json_try_parse(rt_string text,
                          void **out_value,
                          rt_string *out_message,

@@ -289,6 +289,9 @@ char *vg_filedialog_platform_home_dir(void) {
 /// @details Handles drive roots, ordinary UNC share roots, extended drive
 ///          roots, and extended UNC share roots. A zero result means the input
 ///          has no recognized absolute root.
+/// @param path NUL-terminated path whose absolute-root prefix is measured.
+/// @return Number of bytes that form the indivisible root, or zero for a null,
+///         relative, or unrecognized path.
 static size_t vg_filedialog_platform_root_length(const char *path) {
     size_t length;
     size_t cursor;

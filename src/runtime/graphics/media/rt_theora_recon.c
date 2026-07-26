@@ -24,6 +24,14 @@
 //        src/runtime/graphics/media/rt_theora_internal.h (shared types/helpers)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements Theora inverse transforms and frame reconstruction.
+ * @details Restores predicted DC values, performs fixed-point inverse DCT,
+ * reconstructs intra and motion-compensated blocks into YCbCr planes, applies
+ * in-loop filtering, and snapshots mutable entropy state so failed packets do
+ * not corrupt the decoder.
+ */
 
 #include "rt_theora.h"
 #include "rt_theora_internal.h"
@@ -60,7 +68,9 @@ static void undo_dc_prediction(theora_priv_t *priv) {
     }
 }
 
+/** Convert a positive floating-point IDCT constant to 12-bit fixed point. */
 #define TH_FIX(x) ((int64_t)((x) * 4096.0 + 0.5))
+/** Round and descale a fixed-point IDCT intermediate through the checked helper. */
 #define TH_DESCALE(x, n) theora_idct_descale_i64((x), (n))
 
 /// @brief Clamp a 64-bit intermediate to the int32 range used by the IDCT workspace.

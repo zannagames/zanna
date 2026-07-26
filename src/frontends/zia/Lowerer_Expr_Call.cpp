@@ -1033,6 +1033,9 @@ LowerResult Lowerer::lowerCall(CallExpr *expr) {
         // Check if this is a namespace-qualified function call (e.g., Math.add or
         // Outer.Inner.getValue) Recursively build the qualified name from nested FieldExpr nodes
         std::string qualifiedName;
+        /// @brief Recursively appends an identifier/field callee to `qualifiedName`.
+        /// @param e Callee expression node.
+        /// @return `true` when the expression is a pure qualified-name chain.
         std::function<bool(Expr *)> buildQualifiedName = [&](Expr *e) -> bool {
             if (auto *ident = exprAs<IdentExpr>(e, ExprKind::Ident)) {
                 qualifiedName = ident->name;

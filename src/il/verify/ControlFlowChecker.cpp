@@ -344,6 +344,15 @@ bool iterateBlockInstructions(VerifyInstrFn verifyInstrFn,
     /// @details Captures callback output, forwards parsed warnings to the sink,
     ///          and converts failure text into an `Expected` error anchored to
     ///          the current instruction.
+    /// @param fnRef Function being verified.
+    /// @param bbRef Containing basic block.
+    /// @param instrRef Current instruction.
+    /// @param blockMapRef Function block map.
+    /// @param externsRef Visible extern declarations.
+    /// @param funcsRef Visible function declarations.
+    /// @param typesRef Type-inference context.
+    /// @param warningSink Structured warning destination.
+    /// @return Success or a structured verification error.
     VerifyInstrFnExpected shim =
         [&](const Function &fnRef,
             const BasicBlock &bbRef,

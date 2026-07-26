@@ -1277,6 +1277,8 @@ bool gunzipExact(const std::vector<uint8_t> &input,
         }
         position += extra;
     }
+    /// @brief Skip one NUL-terminated optional gzip header field.
+    /// @return `true` after consuming its terminator; `false` when truncated.
     auto skipTerminated = [&]() {
         while (position < input.size() && input[position] != 0u)
             ++position;
@@ -2082,6 +2084,10 @@ class ImportParser {
         }
         std::sort(document.tilesets.begin(),
                   document.tilesets.end(),
+                  /// @brief Order parsed tilesets by their first global tile ID.
+                  /// @param left First tileset candidate.
+                  /// @param right Second tileset candidate.
+                  /// @return `true` when @p left precedes @p right by first GID.
                   [](const Tileset &left, const Tileset &right) {
                       return left.firstGid < right.firstGid;
                   });
@@ -3096,6 +3102,8 @@ class ImportParser {
             return false;
         }
         OwnedObject mergedProperties(rt_seq_new_owned());
+        /// @brief Append a parsed property sequence to the merged template properties.
+        /// @param properties Borrowed candidate property Seq; non-Seqs are ignored.
         auto appendProperties = [&](void *properties) {
             if (!isSeq(properties))
                 return;
@@ -3992,6 +4000,8 @@ class ImportParser {
         if (rt_xml_child_count(mergedProperties.get()) > 0)
             rt_xml_append(merged.get(), mergedProperties.get());
 
+        /// @brief Clone non-property shape children into the merged template object.
+        /// @param object Borrowed XML object whose shape children should be appended.
         auto appendShapes = [&](void *object) {
             int64_t count = rt_xml_child_count(object);
             for (int64_t index = 0; index < count; ++index) {
@@ -4534,6 +4544,10 @@ class ImportParser {
         }
         std::sort(document.tilesets.begin(),
                   document.tilesets.end(),
+                  /// @brief Order parsed tilesets by their first global tile ID.
+                  /// @param left First tileset candidate.
+                  /// @param right Second tileset candidate.
+                  /// @return `true` when @p left precedes @p right by first GID.
                   [](const Tileset &left, const Tileset &right) {
                       return left.firstGid < right.firstGid;
                   });

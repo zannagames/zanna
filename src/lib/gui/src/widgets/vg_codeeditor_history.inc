@@ -215,10 +215,10 @@ static void edit_history_destroy(vg_edit_history_t *history) {
     free(history);
 }
 
+VG_UNUSED
 /// @brief Destroys all operations in @p history and resets count and current_index to 0 without
 /// freeing the struct.
 /// @param history History to empty while retaining its operation array.
-VG_UNUSED
 static void edit_history_clear(vg_edit_history_t *history) {
     if (!history)
         return;
@@ -327,10 +327,10 @@ static vg_edit_op_t *edit_history_pop_redo(vg_edit_history_t *history) {
     return op;
 }
 
+VG_UNUSED
 /// @brief Begins an edit group so that subsequent pushed operations share a group_id for atomic
 /// undo.
 /// @param history History entering grouped-recording mode.
-VG_UNUSED
 static void edit_history_begin_group(vg_edit_history_t *history) {
     if (!history)
         return;
@@ -338,9 +338,9 @@ static void edit_history_begin_group(vg_edit_history_t *history) {
     history->current_group = history->next_group_id++;
 }
 
+VG_UNUSED
 /// @brief Ends the current edit group, clearing is_grouping and current_group on @p history.
 /// @param history History leaving grouped-recording mode.
-VG_UNUSED
 static void edit_history_end_group(vg_edit_history_t *history) {
     if (!history)
         return;

@@ -21,6 +21,14 @@
 //        src/runtime/io/rt_dir_page.cpp
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements immediate-child directory listing and filtered variants.
+ * @details Enumerates native directory handles without recursion, excludes
+ * synthetic dot entries, converts names strictly, filters files or
+ * subdirectories, owns returned string elements, and supplies both
+ * empty-on-error and trapping Seq contracts.
+ */
 
 #include "rt_dir.h"
 #include "rt_dir_internal.h"

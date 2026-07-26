@@ -525,6 +525,8 @@ struct vg_widget {
 void vg_widget_init(vg_widget_t *widget, vg_widget_type_t type, const vg_widget_vtable_t *vtable);
 
 /// @brief Return true when @p widget points at a live ZannaGUI widget.
+/// @param widget Candidate widget handle to validate without dereferencing stale storage.
+/// @return True when @p widget is present in the toolkit's live-widget registry.
 bool vg_widget_is_live(const vg_widget_t *widget);
 
 /// @brief Allocate and initialise a generic container widget.
@@ -1141,14 +1143,18 @@ void vg_set_wheel_speed(float speed);
 float vg_get_wheel_speed(void);
 
 /// @brief Save the current toolkit-global widget runtime state.
+/// @param[out] state Snapshot destination; NULL is ignored.
 void vg_widget_get_runtime_state(vg_widget_runtime_state_t *state);
 
 /// @brief Restore toolkit-global widget runtime state from a prior snapshot.
 /// @details Widget pointers in the snapshot are restored only if they still
 ///          look like live widget handles; invalid entries are treated as NULL.
+/// @param state Snapshot to restore; NULL is ignored.
 void vg_widget_set_runtime_state(const vg_widget_runtime_state_t *state);
 
 /// @brief Record that a real click activation occurred on @p widget.
+/// @param widget Live widget that reported the activation.
+/// @param timestamp_ms Monotonic event timestamp in milliseconds.
 void vg_widget_note_click(vg_widget_t *widget, uint64_t timestamp_ms);
 
 /// @brief Clear the per-dispatch click activation marker.

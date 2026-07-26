@@ -91,6 +91,9 @@ void buildFunctionEdges(CFGContext &ctx, il::core::Function &fn) {
         if (!isBranchTerminator)
             continue;
 
+        /// @brief Resolves and appends one terminator successor label.
+        /// @param labelIndex Edge index used for symbol-backed labels.
+        /// @param label Textual target label.
         auto appendLabel = [&](std::size_t labelIndex, const std::string &label) {
             if (labelIndex < term.labelSymbols.size() && term.labelSymbols[labelIndex]) {
                 auto symbolIt = symbolMap.find(term.labelSymbols[labelIndex]);

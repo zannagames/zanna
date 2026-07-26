@@ -5,10 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the Utf8Decoder class, a stateful byte-at-a-time
-// UTF-8 decoder for Zanna's TUI input processing pipeline. The decoder
-// accepts individual bytes via feed() and produces Unicode code points
-// when complete multi-byte sequences are recognized.
+/// @file
+/// @brief Declares incremental byte-at-a-time UTF-8 decoding.
+/// @details Utf8Decoder accumulates one- through four-byte sequences, validates
+///          Unicode scalar constraints, and reports completed code points,
+///          errors, and byte-replay requests without allocation.
 //
 // The decoder correctly handles all valid UTF-8 sequences (1-4 bytes)
 // and detects invalid sequences, signaling errors via the Utf8Result
@@ -54,15 +55,16 @@ class Utf8Decoder {
     [[nodiscard]] Utf8Result feed(unsigned char byte) noexcept;
 
     /// @brief Whether the decoder is currently idle (no pending continuation).
+    /// @return true when no continuation byte is expected.
     [[nodiscard]] bool idle() const noexcept;
 
     /// @brief Reset decoder to initial state discarding partial sequence.
     void reset() noexcept;
 
   private:
-    uint32_t cp_{0};
-    unsigned expected_{0};
-    unsigned length_{0};
+    uint32_t cp_{0};      ///< Code-point bits accumulated for the current sequence.
+    unsigned expected_{0}; ///< Continuation bytes still required.
+    unsigned length_{0};   ///< Total encoded length selected by the leading byte.
 };
 
 } // namespace zanna::tui::term

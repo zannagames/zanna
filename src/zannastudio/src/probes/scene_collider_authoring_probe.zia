@@ -51,6 +51,7 @@ bind "../ui/app_shell";
 bind "../ui/scene_asset_browser";
 bind "../ui/scene_collider_3d";
 bind "../ui/scene_editor_3d";
+bind "../ui/scene_panels_3d";
 
 bind GUI = Zanna.GUI;
 bind Str = Zanna.String;
@@ -121,7 +122,7 @@ func main() {
     }
 
     var editor = new scene_editor_3d.SceneEditor3D();
-    editor.Setup(shell.workbench.scene3DHost, shell.app);
+    scene_panels_3d.Build(editor,shell.workbench.scene3DHost, shell.app);
     var documents = new document_manager.DocumentManager();
     var sceneDoc = documents.NewScene3DDocument();
     shell.SelectSurface(file_utils.DOC_KIND_SCENE_3D);

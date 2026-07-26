@@ -35,12 +35,24 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements runtime menus, context menus, and shared bar-item helpers.
+ *
+ * @details The bindings authenticate stable managed subhandles, maintain
+ *          MenuBar-owned and standalone ContextMenu hierarchies, synchronize
+ *          accelerators and native menu state, bridge retained item lifetimes,
+ *          and provide icon plus StatusBar/Toolbar helpers shared with bar code.
+ */
+
 #include "rt_gui_internal.h"
 #include "rt_pixels.h"
 #include "rt_platform.h"
 
 #ifdef ZANNA_ENABLE_GRAPHICS
 
+/// @brief Record the StatusBar item activated during the current GUI frame.
+/// @param item Borrowed lower-toolkit item pointer, or nullptr to clear the record.
 void rt_gui_set_clicked_statusbar_item(void *item);
 
 //=============================================================================

@@ -15,19 +15,29 @@
 //   - CompareExchange atomically reads, compares, conditionally writes, and
 //     returns the pre-operation value in a single monitor-protected section.
 //   - Add returns the value after the increment (post-increment semantics).
-//   - The Windows path uses lock-free InterlockedExchange64/CompareExchange64.
-//   - The POSIX path uses monitors (mutex + condition variable).
+//   - The Windows path composes the object monitor with Interlocked 64-bit
+//     primitives so individual accesses remain atomic on 32-bit Windows.
+//   - The POSIX path protects the stored value through the object monitor.
 //   - No busy-waiting; all blocking uses the monitor's condition variable.
 //
 // Ownership/Lifetime:
 //   - SafeI64 objects are heap-allocated and managed by the runtime GC.
-//   - The monitor is allocated alongside the cell and freed in the finalizer.
+//   - Monitor state is associated with the cell address by the monitor runtime
+//     and retired by normal runtime object finalization.
 //
 // Links: src/runtime/threads/rt_safe_i64.h (public API, via rt_threads.h),
 //        src/runtime/threads/rt_monitor.h (underlying synchronization primitive),
 //        src/runtime/threads/rt_threads.h (thread-related includes)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements the monitor-composable `Zanna.Threads.SafeI64` cell.
+/// @details Every operation participates in the cell's object monitor, making
+///          it atomic both alone and inside an explicit reentrant monitor
+///          section. Windows additionally uses Interlocked 64-bit primitives
+///          for safe access on 32-bit targets; POSIX reads and writes the value
+///          while holding the monitor.
 
 #include "rt_threads.h"
 
@@ -41,6 +51,8 @@
 /// @details Uses memcpy (well-defined type punning) rather than a signed cast,
 ///          whose result would be implementation-defined for values above
 ///          INT64_MAX — important since this backs atomic load results.
+/// @param value Unsigned two's-complement bit pattern.
+/// @return Signed integer with exactly the same object representation.
 static int64_t safe_i64_from_u64(uint64_t value) {
     int64_t out;
     memcpy(&out, &value, sizeof(out));
@@ -62,7 +74,12 @@ typedef struct RtSafeI64Win {
     volatile LONG64 value;
 } RtSafeI64Win;
 
-/// @brief Validate + cast a SafeI64 handle for the Win32 path. Traps with `what` on NULL input.
+/// @brief Validate and cast a SafeI64 handle for the Windows backend.
+/// @details NULL input traps with @p what when supplied; a live runtime object
+///          of any other class traps with the generic invalid-object diagnostic.
+/// @param obj Candidate SafeI64 runtime object.
+/// @param what Diagnostic used for NULL input.
+/// @return Valid Windows SafeI64 payload, or NULL after a returning trap hook.
 static RtSafeI64Win *require_safe_win(void *obj, const char *what) {
     if (!obj) {
         rt_trap(what ? what : "SafeI64: null object");
@@ -75,7 +92,9 @@ static RtSafeI64Win *require_safe_win(void *obj, const char *what) {
     return (RtSafeI64Win *)obj;
 }
 
-/// @brief Win32 SafeI64 constructor — see POSIX `rt_safe_i64_new` for full contract.
+/// @brief Create a Windows SafeI64 cell with an initial value.
+/// @param initial Initial signed 64-bit value.
+/// @return New caller-owned SafeI64 object, or NULL after allocation traps.
 void *rt_safe_i64_new(int64_t initial) {
     RtSafeI64Win *cell =
         (RtSafeI64Win *)rt_obj_new_i64(RT_SAFE_I64_CLASS_ID, (int64_t)sizeof(RtSafeI64Win));
@@ -89,6 +108,10 @@ void *rt_safe_i64_new(int64_t initial) {
 
 /// @brief Win32 SafeI64 read — implemented as `InterlockedCompareExchange64(.,0,0)` so the read
 /// is atomic on 32-bit Windows builds (a plain `MOV` of a 64-bit value isn't atomic on x86).
+/// @details The cell monitor is held around the interlocked read so this
+///          operation composes with explicit monitor-protected transactions.
+/// @param obj SafeI64 object to read.
+/// @return Current value, or zero after an invalid-object trap returns.
 int64_t rt_safe_i64_get(void *obj) {
     RtSafeI64Win *cell = require_safe_win(obj, "SafeI64.Get: null object");
     if (!cell)
@@ -100,7 +123,10 @@ int64_t rt_safe_i64_get(void *obj) {
     return value;
 }
 
-/// @brief Win32 SafeI64 write — `InterlockedExchange64` for atomicity on 32-bit Windows.
+/// @brief Replace a Windows SafeI64 value atomically.
+/// @details The cell monitor is held around `InterlockedExchange64`.
+/// @param obj SafeI64 object to update.
+/// @param value New signed 64-bit value.
 void rt_safe_i64_set(void *obj, int64_t value) {
     RtSafeI64Win *cell = require_safe_win(obj, "SafeI64.Set: null object");
     if (!cell)
@@ -111,6 +137,11 @@ void rt_safe_i64_set(void *obj, int64_t value) {
 }
 
 /// @brief Win32 SafeI64 atomic add — returns the new value with two's-complement wraparound.
+/// @details The cell monitor is held around `InterlockedExchangeAdd64`; unsigned
+///          arithmetic computes a defined wrapped result from the returned old value.
+/// @param obj SafeI64 object to update.
+/// @param delta Signed increment, which may be negative.
+/// @return Post-add value, or zero after an invalid-object trap returns.
 int64_t rt_safe_i64_add(void *obj, int64_t delta) {
     RtSafeI64Win *cell = require_safe_win(obj, "SafeI64.Add: null object");
     if (!cell)
@@ -125,6 +156,12 @@ int64_t rt_safe_i64_add(void *obj, int64_t delta) {
 /// @brief Win32 SafeI64 CAS — `InterlockedCompareExchange64` is one machine instruction (LOCK
 /// CMPXCHG8B/CMPXCHG16B). Returns the value as it was BEFORE the swap; caller compares against
 /// `expected` to determine whether the swap actually happened.
+/// @details The cell monitor is held so the operation composes with other
+///          monitor-protected SafeI64 accesses.
+/// @param obj SafeI64 object to update.
+/// @param expected Value required for replacement.
+/// @param desired Value stored when the comparison succeeds.
+/// @return Pre-operation value, or zero after an invalid-object trap returns.
 int64_t rt_safe_i64_compare_exchange(void *obj, int64_t expected, int64_t desired) {
     RtSafeI64Win *cell = require_safe_win(obj, "SafeI64.CompareExchange: null object");
     if (!cell)

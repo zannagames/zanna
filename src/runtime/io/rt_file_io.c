@@ -26,6 +26,14 @@
 //        src/runtime/io/rt_file_path.h (mode string helpers)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements portable descriptor-backed RtFile primitives.
+ * @details Validates modes and handles, opens non-inheritable descriptors,
+ * translates host errors into RtError values, consumes descriptors safely on
+ * close, performs exact or bounded binary I/O and 64-bit seeks, and reads
+ * CR/LF/CRLF lines within a fixed allocation ceiling.
+ */
 
 #include "rt_file.h"
 
@@ -43,6 +51,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+/** Fallback overflow error used on hosts that do not define `EOVERFLOW`. */
 #ifndef EOVERFLOW
 #define EOVERFLOW ERANGE
 #endif
@@ -102,6 +111,7 @@ typedef unsigned short mode_t;
 #include <unistd.h>
 #endif
 
+/** Maximum number of non-terminator bytes accepted by one line read. */
 #define RT_FILE_MAX_LINE_BYTES (16u * 1024u * 1024u)
 
 /// @brief Clamp errno values into the 32-bit range stored by @ref RtError.

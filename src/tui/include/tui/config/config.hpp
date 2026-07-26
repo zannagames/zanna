@@ -5,9 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the configuration system for Zanna's TUI, providing
-// structured types for theme colors, editor settings, and key bindings
-// that can be loaded from an INI-style configuration file.
+/// @file
+/// @brief Declares the INI-backed configuration model for Zanna TUI.
+/// @details Provides value types for semantic theme styles, editor behavior,
+///          and global key bindings, plus the loader that overlays a file onto
+///          functional defaults.
 //
 // The Config struct aggregates all configurable aspects of the TUI:
 //   - Theme: maps semantic roles to RGBA color styles
@@ -42,26 +44,26 @@ namespace zanna::tui::config {
 /// @details Configurable via the [theme] section of the configuration file.
 ///          Each field corresponds to a semantic role used by widgets.
 struct Theme {
-    render::Style normal{};
-    render::Style accent{};
-    render::Style disabled{};
-    render::Style selection{};
+    render::Style normal{};    ///< Default text and background style.
+    render::Style accent{};    ///< Emphasized controls and active highlights.
+    render::Style disabled{};  ///< Unavailable-control presentation.
+    render::Style selection{}; ///< Selected text or list-item presentation.
 };
 
 /// @brief Editor behavior configuration settings.
 /// @details Configurable via the [editor] section of the configuration file.
 ///          Controls text display properties like tab width and word wrapping.
 struct Editor {
-    unsigned tab_width{4};
-    bool soft_wrap{false};
+    unsigned tab_width{4};  ///< Display width assigned to tab characters.
+    bool soft_wrap{false}; ///< Whether long logical lines wrap to the viewport.
 };
 
 /// @brief Associates a key chord with a command identifier for key binding configuration.
 /// @details Loaded from the [keymap] section of the configuration file. Each binding
 ///          maps a keyboard shortcut to a registered command name.
 struct Binding {
-    input::KeyChord chord{};
-    input::CommandId command{};
+    input::KeyChord chord{};   ///< Key chord that triggers the binding.
+    input::CommandId command{}; ///< Registered command identifier to invoke.
 };
 
 /// @brief Aggregated configuration for the TUI application.
@@ -69,9 +71,9 @@ struct Binding {
 ///          that can be loaded from a configuration file. Default values provide
 ///          a functional dark-theme setup with standard key bindings.
 struct Config {
-    Theme theme{};
-    std::vector<Binding> keymap_global{};
-    Editor editor{};
+    Theme theme{};                       ///< Semantic application color palette.
+    std::vector<Binding> keymap_global{}; ///< Application-wide key bindings.
+    Editor editor{};                     ///< Text-editor behavior settings.
 };
 
 /// @brief Load TUI configuration from an INI-style file.

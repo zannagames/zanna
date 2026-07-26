@@ -25,6 +25,13 @@
 // src/runtime/core/rt_string.h
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares low-level file handles and BASIC channel-oriented file I/O.
+ * @details Defines reusable descriptor state, BASIC OPEN modes, structured-
+ * error operations for byte, line, seek, and write access, and the legacy
+ * runtime channel ABI managed per execution context.
+ */
 #pragma once
 
 #include "rt_error.h"

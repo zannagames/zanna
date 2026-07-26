@@ -97,6 +97,9 @@ void Lowerer::lowerCondBranch(const Expr &expr,
             Function *func = ctx.function();
             assert(func && ctx.current());
 
+            /// @brief Resolves a block pointer to its stable function index.
+            /// @param bb Block owned by the active procedure.
+            /// @return Index of `bb` in the active function.
             auto indexOf = [&](BasicBlock *bb) {
                 assert(bb && "lowerCondBranch requires non-null block");
                 return ctx.blockIndex(bb);
@@ -140,6 +143,9 @@ void Lowerer::lowerCondBranch(const Expr &expr,
     // (e.g., array bounds checks) and invalidate the trueBlk/falseBlk pointers
     ProcedureContext &ctx = context();
     Function *func = ctx.function();
+    /// @brief Resolves a block pointer to its stable function index.
+    /// @param bb Block owned by the active procedure.
+    /// @return Index of `bb` in the active function.
     auto indexOf = [&](BasicBlock *bb) {
         assert(bb && "lowerCondBranch requires non-null block");
         return ctx.blockIndex(bb);

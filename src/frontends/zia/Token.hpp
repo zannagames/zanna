@@ -778,6 +778,9 @@ struct Token {
     /// }
     /// @endcode
     //=========================================================================
+    /// @brief Checks whether this token has one specific kind.
+    /// @param k Token kind to compare with @ref kind.
+    /// @return `true` when the kinds match.
     bool is(TokenKind k) const {
         return kind == k;
     }
@@ -799,6 +802,10 @@ struct Token {
     /// }
     /// @endcode
     //=========================================================================
+    /// @brief Checks whether this token matches any supplied kind.
+    /// @tparam Kinds Token-kind argument types accepted by @ref is.
+    /// @param kinds Candidate token kinds.
+    /// @return `true` when at least one candidate matches.
     template <typename... Kinds> bool isOneOf(Kinds... kinds) const {
         return (is(kinds) || ...);
     }

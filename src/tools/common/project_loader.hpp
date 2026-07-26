@@ -17,6 +17,11 @@
 
 #pragma once
 
+/// @file
+/// @brief Declares shared Zia/BASIC project discovery and manifest parsing.
+/// @details Resolved configurations own absolute source paths, build controls,
+///          packaging metadata, and optional asset embedding declarations.
+
 #include "support/diag_expected.hpp"
 #include "tools/common/packaging/PackageConfig.hpp"
 

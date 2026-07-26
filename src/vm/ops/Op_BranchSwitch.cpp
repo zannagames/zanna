@@ -53,7 +53,7 @@ using zanna::vm::SwitchCacheEntry;
 using zanna::vm::SwitchMode;
 
 thread_local SwitchMode g_switchMode =
-    SwitchMode::Auto; ///< Global override for switch backend selection.
+    SwitchMode::Auto; ///< Per-thread override for switch backend selection.
 
 } // namespace
 
@@ -195,6 +195,8 @@ VM::ExecResult handleSwitchI32(VM &vm,
             }
         }
     } else {
+        /// @brief Dispatch lookup through the concrete cached switch backend.
+        /// @param backend Dense, sorted, or hashed backend selected by the variant.
         std::visit(
             [&](auto &backend) {
                 using BackendT = std::decay_t<decltype(backend)>;
@@ -211,6 +213,9 @@ VM::ExecResult handleSwitchI32(VM &vm,
 
     il::support::SmallVector<il::vm::ops::common::Case, 16> cases;
     cases.reserve(in.labels.size());
+    /// @brief Build one reusable jump target for a switch label index.
+    /// @param labelIndex Index into the instruction's label list.
+    /// @return Fully populated branch target bound to the current VM state.
     auto makeTarget = [&](size_t labelIndex) {
         il::vm::ops::common::Target target{};
         target.vm = &vm;
@@ -254,6 +259,13 @@ VM::ExecResult handleSwitchI32(VM &vm,
 /// @details Simply forwards to @ref branchToTarget with successor index zero.
 ///          This keeps the common validation and parameter propagation logic in
 ///          one place.
+/// @param vm Virtual machine used to evaluate branch arguments.
+/// @param fr Active frame receiving target-block parameters.
+/// @param in Unconditional branch instruction.
+/// @param blocks Label-to-block lookup for the active function.
+/// @param bb Current block pointer updated to the selected successor.
+/// @param ip Instruction pointer reset when the jump succeeds.
+/// @return Execution result reporting the jump or malformed target trap.
 VM::ExecResult handleBr(VM &vm,
                         Frame &fr,
                         const il::core::Instr &in,
@@ -269,6 +281,13 @@ VM::ExecResult handleBr(VM &vm,
 ///          predicate is non-zero or the second label otherwise.  Control is
 ///          transferred through @ref branchToTarget so parameter handling remains
 ///          consistent with other branch forms.
+/// @param vm Virtual machine used to evaluate the condition and branch arguments.
+/// @param fr Active frame supplying operands and receiving target parameters.
+/// @param in Conditional branch instruction with true and false successors.
+/// @param blocks Label-to-block lookup for the active function.
+/// @param bb Current block pointer updated to the selected successor.
+/// @param ip Instruction pointer reset when the jump succeeds.
+/// @return Execution result reporting the selected jump or malformed target trap.
 VM::ExecResult handleCBr(VM &vm,
                          Frame &fr,
                          const il::core::Instr &in,

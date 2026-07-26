@@ -27,6 +27,13 @@
 // Links: src/runtime/io/rt_file_path.c (implementation)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares internal file-mode and runtime-string path adapters.
+ * @details Provides BASIC-to-stdio mode mapping, validated POSIX flag
+ * translation, embedded-NUL-safe borrowed path views, arbitrary borrowed byte
+ * views, and strict Windows UTF-8/UTF-16 conversion ownership contracts.
+ */
 #pragma once
 
 #include "rt_string.h"

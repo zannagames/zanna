@@ -17,6 +17,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares structural canonicalization of natural IL loops.
+ *
+ * @details The pass gives each supported natural loop a dedicated preheader
+ *          and can merge multiple equivalent trivial latches into one
+ *          forwarding block. Rewrites preserve SSA by cloning header
+ *          parameters and threading edge arguments, producing the form
+ *          expected by later loop optimizations.
+ */
+
 #pragma once
 
 #include "il/transform/PassRegistry.hpp"

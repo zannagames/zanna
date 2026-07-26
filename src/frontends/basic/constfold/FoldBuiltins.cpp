@@ -136,6 +136,9 @@ std::optional<double> parse_val_string(const std::string &s) {
     if (*raw == '\0')
         return 0.0;
 
+    /// @brief Tests whether a character is an ASCII decimal digit.
+    /// @param ch Character to inspect.
+    /// @return `true` for `0` through `9`.
     auto isDigit = [](char ch) { return ch >= '0' && ch <= '9'; };
 
     if (*raw == '+' || *raw == '-') {

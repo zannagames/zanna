@@ -13,6 +13,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares the thread-safe string-to-symbol interning table.
+/// @details The interner owns one canonical copy of each distinct string and
+///          assigns compact, one-based @ref Symbol identifiers. Individual
+///          operations are synchronized; borrowed lookup views remain stable
+///          across further interning but not removal, assignment, or destruction.
+
 #pragma once
 
 #include "symbol.hpp"
@@ -30,33 +37,33 @@ namespace il::support {
 /// @brief Interns strings to provide stable Symbol identifiers.
 /// @invariant Symbol 0 is reserved for invalid.
 /// @ownership Stores copies of strings internally.
+/// @details Unique strings are stored in a deque so appending new entries does
+///          not invalidate views of earlier entries. Symbols are local to one
+///          interner and may not be resolved meaningfully by another instance.
 class StringInterner {
   public:
-    /// Constructs an interner optionally bounded by @p maxSymbols.
-    ///
-    /// The limit defaults to the full 32-bit Symbol address space, ensuring
-    /// backwards compatibility with existing callers.  Tests can request a
-    /// smaller cap to exercise overflow handling deterministically.
+    /// @brief Construct an interner optionally bounded by @p maxSymbols.
+    /// @param maxSymbols Maximum number of distinct strings that can be stored.
+    /// @details The limit defaults to the full 32-bit Symbol address space.
+    ///          Once reached, new unique strings produce the invalid symbol,
+    ///          while already interned strings remain resolvable.
     explicit StringInterner(uint32_t maxSymbols = std::numeric_limits<uint32_t>::max()) noexcept;
 
-    /// Interns a string to produce a stable symbol for repeated use.
-    ///
-    /// Stores a copy of @p str if it has not been seen before and assigns it a
-    /// new Symbol. Subsequent calls with the same string yield the existing
-    /// Symbol without duplicating storage, enabling fast comparisons and
-    /// lookups. When the interner reaches its capacity, the function returns
-    /// an invalid Symbol (id 0) and leaves the input string uninterned.
+    /// @brief Intern a string to produce a stable symbol for repeated use.
     /// @param str String to intern.
-    /// @return Symbol uniquely identifying the interned string.
+    /// @return Symbol uniquely identifying the interned string, or symbol zero
+    ///         when the configured unique-string capacity is exhausted.
+    /// @details Stores a copy of @p str if it has not been seen before. Repeated
+    ///          calls with equal content return the existing symbol without
+    ///          duplicating storage.
     Symbol intern(std::string_view str);
 
-    /// Retrieves the original string associated with a Symbol.
-    ///
-    /// Use to obtain the text for a symbol returned by intern(), for example in
-    /// diagnostics or reverse mappings. Passing an invalid Symbol yields an
-    /// empty view.
+    /// @brief Retrieve the original string associated with a Symbol.
     /// @param sym Symbol previously returned by intern().
-    /// @return View of the interned string.
+    /// @return View of the interned string, or an empty view when invalid.
+    /// @details This convenience API cannot distinguish an invalid symbol from
+    ///          a valid symbol whose interned text is empty; use
+    ///          @ref lookupOptional when that distinction matters.
     std::string_view lookup(Symbol sym) const;
 
     /// @brief Check whether @p sym identifies a currently interned string.
@@ -70,11 +77,15 @@ class StringInterner {
     [[nodiscard]] std::optional<std::string_view> lookupOptional(Symbol sym) const;
 
     /// @brief Return the number of currently interned symbols.
+    /// @return Count of canonical strings currently owned by the interner.
     [[nodiscard]] size_t size() const;
 
     /// @brief Remove symbols appended after a transaction checkpoint.
+    /// @param symbolCount Number of earliest symbols to retain.
     /// @details Existing symbol ids remain stable because only a storage suffix
-    /// is removed. Intended for parser rollback.
+    ///          is removed. Values at or above the removed suffix may later be
+    ///          assigned new text; views into removed strings are invalidated.
+    ///          A count greater than the current size is a no-op.
     void truncate(size_t symbolCount);
 
     /// @brief Copy constructor.
@@ -112,10 +123,16 @@ class StringInterner {
     struct TransparentHash {
         using is_transparent = void;
 
+        /// @brief Hash a borrowed string view by content.
+        /// @param sv String view to hash.
+        /// @return Hash value compatible with every overload in this functor.
         size_t operator()(std::string_view sv) const noexcept {
             return std::hash<std::string_view>{}(sv);
         }
 
+        /// @brief Hash an owned string using the borrowed-view implementation.
+        /// @param s String to hash.
+        /// @return Content hash compatible with the string-view overload.
         size_t operator()(const std::string &s) const noexcept {
             return (*this)(std::string_view{s});
         }
@@ -129,18 +146,34 @@ class StringInterner {
     struct TransparentEqual {
         using is_transparent = void;
 
+        /// @brief Compare two borrowed views by string content.
+        /// @param lhs Left-hand string view.
+        /// @param rhs Right-hand string view.
+        /// @return True when the byte sequences are equal.
         bool operator()(std::string_view lhs, std::string_view rhs) const noexcept {
             return lhs == rhs;
         }
 
+        /// @brief Compare two owned strings by content.
+        /// @param lhs Left-hand string.
+        /// @param rhs Right-hand string.
+        /// @return True when the byte sequences are equal.
         bool operator()(const std::string &lhs, const std::string &rhs) const noexcept {
             return lhs == rhs;
         }
 
+        /// @brief Compare an owned string with a borrowed view.
+        /// @param lhs Left-hand owned string.
+        /// @param rhs Right-hand string view.
+        /// @return True when the byte sequences are equal.
         bool operator()(const std::string &lhs, std::string_view rhs) const noexcept {
             return lhs == rhs;
         }
 
+        /// @brief Compare a borrowed view with an owned string.
+        /// @param lhs Left-hand string view.
+        /// @param rhs Right-hand owned string.
+        /// @return True when the byte sequences are equal.
         bool operator()(std::string_view lhs, const std::string &rhs) const noexcept {
             return lhs == rhs;
         }

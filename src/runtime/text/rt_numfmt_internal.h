@@ -27,6 +27,16 @@
 //        src/runtime/localization/rt_numformat.c (primary client).
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_numfmt_internal.h
+ * @brief Declares shared decimal digit-grouping support.
+ * @details Invariant and localized number formatters call this
+ *          implementation-only helper to append a caller-owned digit span into
+ *          a caller-owned StringBuilder with a configurable byte separator and
+ *          right-to-left group width.
+ */
+
 #pragma once
 
 #include "rt_string_builder.h"
@@ -39,13 +49,13 @@ extern "C" {
 
 /// @brief Append @p digits into @p sb with @p sep inserted every @p group_size
 ///        digits from the right.
-/// @details Uses no heap of its own; traps via rt_trap() when the string
-///          builder reports allocation failure. @p digits must contain
-///          exactly @p dlen ASCII decimal characters — callers render the
-///          integer magnitude into a fixed buffer via snprintf("%llu") first.
+/// @details Traps via `rt_trap()` when the string builder reports allocation
+///          failure. @p digits must contain exactly @p dlen ASCII decimal
+///          characters. A null or empty separator, nonpositive group size, or
+///          group size at least @p dlen appends the input unchanged.
 /// @param sb          Destination string builder (non-null).
 /// @param digits      Pointer to the digit bytes (non-null).
-/// @param dlen        Number of digit bytes (>= 1).
+/// @param dlen        Number of digit bytes; nonpositive values append nothing.
 /// @param sep         Group separator bytes; NULL or zero-length means no
 ///                    grouping (digits emitted as-is).
 /// @param sep_len     Length of @p sep in bytes.

@@ -19,6 +19,12 @@
 // Links: LinuxPackageBuilder.cpp, TarWriter.hpp, PkgGzip.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares Linux self-extracting runtime-stub generation and verification.
+/// @details A textual POSIX shell runtime is combined with a gzip-tar payload to
+///          form one executable, FUSE-independent bundle.
+
 #pragma once
 
 #include <cstdint>
@@ -27,25 +33,36 @@
 
 namespace zanna::pkg {
 
-/// Marker line separating the runtime stub from the appended Linux bundle payload.
+/// @brief Marker line separating the runtime stub from its appended binary payload.
+/// @details The payload begins on the line immediately following this marker.
 constexpr const char *kLinuxRuntimePayloadMarker = "__ZANNA_APPIMAGE_PAYLOAD_BELOW__";
 
-/// Parameters for the self-extracting Linux bundle runtime stub.
+/// @brief Parameters embedded in the self-extracting Linux bundle runtime stub.
 struct LinuxRuntimeStubParams {
-    std::string cacheName;     ///< Stable bundle cache prefix, e.g. "zanna-1.2.3-x64".
-    std::string entryPath;     ///< Payload-relative executable path, e.g. "bin/zanna".
-    std::string payloadSha256; ///< Optional 64-char SHA-256 digest for the appended tar.gz payload.
+    std::string cacheName; ///< Stable normalized cache prefix, such as `zanna-1.2.3-x64`.
+    std::string entryPath; ///< Normalized payload-relative executable path, such as `bin/zanna`.
+    std::string payloadSha256; ///< Optional lowercase SHA-256 of the appended tar.gz payload.
     bool appImageInterface{false}; ///< Expose AppImage-named flags for real application AppImages.
 };
 
-/// Build the self-extracting Linux bundle runtime stub bytes.
+/// @brief Build the textual runtime prefix for a self-extracting Linux bundle.
+/// @param params Validated values and command-line interface options to embed.
+/// @return Executable shell-stub bytes ending with the payload marker line.
+/// @throws std::runtime_error If a token is unsafe or the optional digest is invalid.
 std::vector<uint8_t> buildLinuxRuntimeStub(const LinuxRuntimeStubParams &params);
 
-/// Build a complete self-extracting Linux bundle from a gzip-compressed tar payload.
+/// @brief Build a complete self-extracting Linux bundle.
+/// @param params Runtime values; the payload digest is computed from `payloadTarGz`.
+/// @param payloadTarGz Valid gzip-compressed tar payload to append.
+/// @return Runtime prefix and payload concatenated into one executable byte vector.
+/// @throws std::runtime_error If the payload or parameters are invalid.
 std::vector<uint8_t> buildLinuxAppImage(const LinuxRuntimeStubParams &params,
                                         const std::vector<uint8_t> &payloadTarGz);
 
-/// Verify the basic self-extracting Linux bundle layout.
+/// @brief Verify a self-extracting Linux bundle and its payload.
+/// @param data Complete candidate bundle bytes.
+/// @param err Optional destination for the first validation diagnostic.
+/// @return `true` if framing, optional SHA-256 metadata, and tar.gz payload are valid.
 bool verifyLinuxAppImage(const std::vector<uint8_t> &data, std::string *err = nullptr);
 
 } // namespace zanna::pkg

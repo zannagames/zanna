@@ -121,6 +121,8 @@ std::string stripCommentImpl(const std::string &text, bool allowSemicolon) {
 /// `#` and `//` begin comments only when they occur outside a quoted string and
 /// are at the beginning of a line or preceded by whitespace. This preserves IL
 /// identifiers such as BASIC-style `%name#` and `@F#`.
+/// @param text Source line to scan.
+/// @return Prefix preceding the first eligible inline comment marker.
 std::string stripInlineComment(const std::string &text) {
     return stripCommentImpl(text, false);
 }

@@ -37,6 +37,13 @@
 //        src/runtime/graphics/3d/render/rt_canvas3d_overlay.c
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Defines the built-in printable-ASCII 8-by-8 bitmap font.
+ * @details Stores one MSB-left byte per glyph row, exposes bounded lookup
+ * through the public API, and supplies a process-lifetime blank fallback for
+ * every codepoint outside ASCII 32 through 126.
+ */
 /// @brief Embedded 8x8 bitmap font data and accessors.
 /// @details Supplies a fixed monospace font for runtime text rendering. Glyphs
 ///          cover ASCII 32-126 inclusive, with a zero glyph returned for out-

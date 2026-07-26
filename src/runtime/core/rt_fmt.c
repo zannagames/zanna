@@ -984,6 +984,7 @@ static const char *tens_words[] = {
 ///          unique words for them rather than composing from tens+ones.
 /// @param buf Output buffer to write into.
 /// @param cap Remaining capacity of buf.
+/// @param[in,out] pos Current write offset, advanced for appended text.
 /// @param n Value in range [0, 999].
 /// @return Number of characters written (not including NUL terminator).
 static int words_chunk(char *buf, size_t cap, size_t *pos, uint64_t n) {

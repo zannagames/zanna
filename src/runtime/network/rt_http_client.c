@@ -20,6 +20,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements synchronized stateful HTTP client sessions.
+ * @details Manages persistent default headers, scoped cookie storage,
+ * configurable redirects and timeouts, transactional keep-alive pool
+ * replacement, exact-length request inputs, and trap-safe ownership across
+ * every request and redirect hop.
+ */
+
 #include "rt_http_client.h"
 #include "rt_network_http_internal.h"
 #include "rt_network_time.inc"
@@ -40,22 +49,33 @@
 #include <string.h>
 #include <time.h>
 #ifdef _WIN32
+/** Restrict the Windows SDK surface to core declarations. */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+/** Windows compatibility alias for case-insensitive string comparison. */
 #define strcasecmp _stricmp
+/** Windows compatibility alias for bounded case-insensitive comparison. */
 #define strncasecmp _strnicmp
 typedef CRITICAL_SECTION http_client_mutex_t;
+/** Initialize a Windows HttpClient mutex. */
 #define HTTP_CLIENT_MUTEX_INIT(m) (InitializeCriticalSection(m), 1)
+/** Acquire a Windows HttpClient mutex. */
 #define HTTP_CLIENT_MUTEX_LOCK(m) EnterCriticalSection(m)
+/** Release a Windows HttpClient mutex. */
 #define HTTP_CLIENT_MUTEX_UNLOCK(m) LeaveCriticalSection(m)
+/** Destroy a Windows HttpClient mutex. */
 #define HTTP_CLIENT_MUTEX_DESTROY(m) DeleteCriticalSection(m)
 #else
 #include <pthread.h>
 #include <strings.h>
 typedef pthread_mutex_t http_client_mutex_t;
+/** Initialize a POSIX HttpClient mutex and report success. */
 #define HTTP_CLIENT_MUTEX_INIT(m) (pthread_mutex_init(m, NULL) == 0)
+/** Acquire a POSIX HttpClient mutex. */
 #define HTTP_CLIENT_MUTEX_LOCK(m) pthread_mutex_lock(m)
+/** Release a POSIX HttpClient mutex. */
 #define HTTP_CLIENT_MUTEX_UNLOCK(m) pthread_mutex_unlock(m)
+/** Destroy a POSIX HttpClient mutex. */
 #define HTTP_CLIENT_MUTEX_DESTROY(m) pthread_mutex_destroy(m)
 #endif
 
@@ -70,6 +90,7 @@ typedef pthread_mutex_t http_client_mutex_t;
 // Internal Structure
 //=============================================================================
 
+/** One native cookie-jar record with owned identity and attribute strings. */
 typedef struct rt_http_cookie {
     char *name;
     char *value;
@@ -84,6 +105,7 @@ typedef struct rt_http_cookie {
     struct rt_http_cookie *next;
 } rt_http_cookie;
 
+/** Internal SameSite policy values stored on parsed cookies. */
 enum {
     HTTP_COOKIE_SAMESITE_UNSPECIFIED = 0,
     HTTP_COOKIE_SAMESITE_LAX = 1,
@@ -91,6 +113,7 @@ enum {
     HTTP_COOKIE_SAMESITE_NONE = 3
 };
 
+/** Complete private state of one managed HttpClient session. */
 typedef struct {
     void *default_headers; // Map<String, String>
     rt_http_cookie *cookies;

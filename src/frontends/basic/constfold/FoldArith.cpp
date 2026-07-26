@@ -259,6 +259,7 @@ std::optional<Value> tryFold(AST::BinaryExpr::Op op, Value lhs, Value rhs) {
 
 } // namespace
 
+/// @copydoc fold_unary_arith(AST::UnaryExpr::Op, const AST::Expr &)
 AST::ExprPtr fold_unary_arith(AST::UnaryExpr::Op op, const AST::Expr &value) {
     auto numeric = numeric_from_expr(value);
     if (!numeric)
@@ -290,6 +291,15 @@ AST::ExprPtr fold_unary_arith(AST::UnaryExpr::Op op, const AST::Expr &value) {
     return out;
 }
 
+/// @brief Folds a binary arithmetic operation over normalized constants.
+/// @details Converts both operands to the internal numeric representation,
+///          applies BASIC promotion and checked folding rules, and converts a
+///          valid result back to the public constant representation.
+/// @param op Binary arithmetic operator to evaluate.
+/// @param lhs Left constant operand.
+/// @param rhs Right constant operand.
+/// @return Folded constant, or `std::nullopt` when either operand is
+///         non-numeric or the requested operation cannot be folded safely.
 std::optional<Constant> fold_arith(AST::BinaryExpr::Op op,
                                    const Constant &lhs,
                                    const Constant &rhs) {

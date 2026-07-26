@@ -29,6 +29,14 @@
 //        src/runtime/io/rt_memstream.h (in-memory counterpart)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements GC-managed binary file streams over portable stdio.
+ * @details Adapts UTF-8 paths and 64-bit positioning, validates opaque
+ * handles, synchronizes C update streams when changing I/O direction,
+ * clamps Bytes ranges, tracks EOF, and guarantees native-stream cleanup
+ * during explicit close, allocation failure, or finalization.
+ */
 
 #include "rt_binfile.h"
 
@@ -47,6 +55,8 @@
 #include <string.h>
 
 // IO-C-2/C-3: Use 64-bit seek/tell to support files larger than 2GB.
+/** @name Platform-selected 64-bit stdio positioning operations
+ * @{ */
 #if defined(_WIN32)
 #define binfile_fseek(fp, off, whence) _fseeki64((fp), (off), (whence))
 #define binfile_ftell(fp) _ftelli64((fp))
@@ -54,6 +64,7 @@
 #define binfile_fseek(fp, off, whence) fseeko((fp), (off_t)(off), (whence))
 #define binfile_ftell(fp) ftello((fp))
 #endif
+/** @} */
 
 /// @brief BinFile implementation structure.
 typedef struct rt_binfile_impl {
@@ -63,8 +74,11 @@ typedef struct rt_binfile_impl {
     int8_t last_op; ///< Last stdio direction used on update streams.
 } rt_binfile_impl;
 
+/// @copydoc rt_trap_set_recovery()
 void rt_trap_set_recovery(jmp_buf *buf);
+/// @copydoc rt_trap_clear_recovery()
 void rt_trap_clear_recovery(void);
+/// @copydoc rt_trap_get_error()
 const char *rt_trap_get_error(void);
 
 /// @brief Determine whether a pointer is a valid runtime BinFile object.
@@ -122,9 +136,12 @@ static rt_binfile_impl *binfile_alloc_or_close(FILE *fp, const char *fallback) {
     return bf;
 }
 
+/** @name Last-operation states used to synchronize update streams
+ * @{ */
 #define BINFILE_OP_NONE 0
 #define BINFILE_OP_READ 1
 #define BINFILE_OP_WRITE 2
+/** @} */
 
 /// @brief Transition the FILE* from write mode to read mode before a read call.
 ///

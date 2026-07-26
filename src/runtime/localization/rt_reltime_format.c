@@ -32,6 +32,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements locale-aware relative-time phrase formatting.
+ * @details Captures locale templates, selects coarse units from bounded
+ * millisecond magnitudes, resolves integer plural categories, supports long
+ * and short styles, expands past/future placeholders, and formats explicit
+ * units or timestamp differences.
+ */
+
 #include "rt_reltime_format.h"
 
 #include "rt_heap.h"
@@ -62,9 +71,9 @@ typedef enum {
 
 /// @brief Retained locale state and mutable style for RelativeTimeFormat.
 typedef struct rt_reltimefmt_inst {
-    void *locale;
-    const rt_locale_data_t *data;
-    rtf_style_t style;
+    void *locale;                 ///< Retained Locale handle, if supplied.
+    const rt_locale_data_t *data; ///< Retained immutable locale-data snapshot.
+    rtf_style_t style;            ///< Active long or short template family.
 } rt_reltimefmt_inst_t;
 
 /// @brief Unchecked cast of an opaque handle to the RelativeTimeFormat inst.
@@ -257,7 +266,7 @@ static int unit_from_name(const char *name, rtf_unit_t *out) {
 
 /// @brief Automatically selected unit and truncated absolute count.
 typedef struct {
-    rtf_unit_t unit;
+    rtf_unit_t unit; ///< Largest threshold-crossed unit.
     int64_t count; // absolute count in the selected unit
 } unit_pick_t;
 

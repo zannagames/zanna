@@ -602,9 +602,15 @@ class RuntimeNeedsScanner final : public BasicAstWalker<RuntimeNeedsScanner> {
                 strFeatureForNumeric(lowerer_.classifyNumericType(*expr.args[0])));
 
         const auto &rule = getBuiltinScanRule(expr.builtin);
+        /// @brief Tests whether a builtin argument slot is present.
+        /// @param idx Argument index to query.
+        /// @return `true` when the index exists and contains an expression.
         auto hasArg = [&](std::size_t idx) {
             return idx < expr.args.size() && expr.args[idx] != nullptr;
         };
+        /// @brief Retrieves a cached builtin argument classification.
+        /// @param idx Argument index to query.
+        /// @return Cached type, or `std::nullopt` when unavailable.
         auto argType = [&](std::size_t idx) -> std::optional<Lowerer::ExprType> {
             return idx < argTypes.size() ? argTypes[idx] : std::nullopt;
         };

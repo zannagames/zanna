@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 /**
- * @file
+ * @file cmd_codegen_x64.hpp
  * @brief x86‑64 code generation subcommand glue for `ilc`.
  *
  * Declares the argv-style entry point used by the `ilc codegen x64` command and
@@ -45,6 +45,7 @@ int cmd_codegen_x64(int argc, char **argv);
 /// Projects embedding ilc within a richer command-line parser can wire the
 /// x86-64 backend by invoking this helper. The current implementation is a
 /// placeholder until the CLI abstraction lands.
+/// \param cli Structured CLI object reserved for future command registration.
 void register_codegen_x64_commands(CLI &cli);
 
 } // namespace zanna::tools::ilc

@@ -5,16 +5,17 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tools/lsp-common/ServerMain.hpp
-// Purpose: Shared stdio entry-point runner for Zanna language servers.
-// Key invariants:
-//   - --mcp uses newline-delimited JSON-RPC.
-//   - --lsp uses Content-Length framed JSON-RPC.
-//   - Auto-detection accepts only JSON object input or a Content-Length header.
-// Ownership/Lifetime:
-//   - The runner owns the bridge and transport for the duration of the process.
-//   - Handlers borrow both objects while the event loop is active.
-// Links: tools/lsp-common/LspHandler.hpp, tools/lsp-common/McpHandler.hpp
+/// @file
+/// @brief Defines the shared stdio entry-point runner for Zanna language servers.
+///
+/// The runner parses common protocol flags, owns a language-specific bridge and
+/// transport for the process lifetime, and invokes the MCP or LSP event loop.
+/// MCP uses newline-delimited JSON-RPC; LSP uses Content-Length framing.
+/// Auto-detection accepts only a leading JSON-object byte or Content-Length
+/// header and never consumes the byte used to select the protocol.
+///
+/// @see LspHandler.hpp
+/// @see McpHandler.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -35,7 +36,7 @@
 
 namespace zanna::server {
 
-/// @brief Protocol mode selected by a language server command line.
+/// @brief Protocol mode selected explicitly or inferred from standard input.
 enum class LanguageServerMode {
     Mcp,        ///< Serve newline-delimited MCP JSON-RPC.
     Lsp,        ///< Serve Content-Length framed LSP JSON-RPC.

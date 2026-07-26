@@ -5,14 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tools/lsp-common/TextUtils.cpp
-// Purpose: Implementation of text scanning utilities for hover/cursor ops.
-// Key invariants:
-//   - Line/column are 1-based
-//   - Dot-chain scanning walks backwards from the cursor
-// Ownership/Lifetime:
-//   - All returned data is fully owned
-// Links: tools/lsp-common/TextUtils.hpp
+/// @file
+/// @brief Implements compiler-coordinate text scanning for hover and cursor
+///        operations.
+///
+/// Coordinates are one-based. Scanning is byte-oriented and recognizes ASCII
+/// alphanumeric/underscore identifier components plus dot-separated receiver
+/// chains. Returned context owns all extracted text.
+///
+/// @see TextUtils.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -22,10 +23,21 @@
 
 namespace zanna::server {
 
+/// @brief Test whether a source byte belongs to an identifier.
+/// @param c Candidate byte.
+/// @return @c true for alphanumeric bytes or underscore.
+/// @note Classification converts through unsigned char before calling the C
+///       character API, avoiding undefined behavior for negative char values.
 bool isIdentChar(char c) {
     return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
 }
 
+/// @brief Extract an identifier and its dot-chain receiver at a source position.
+/// @param source Full source buffer.
+/// @param line One-based requested line.
+/// @param col One-based byte column; positions past line end are clamped.
+/// @return Owned hover context. @c valid is false for missing lines, nonpositive
+///         coordinates, or positions that do not touch an identifier.
 HoverContext extractIdentifierAtCursor(const std::string &source, int line, int col) {
     HoverContext ctx;
     if (line <= 0 || col <= 0)

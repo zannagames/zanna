@@ -3413,6 +3413,7 @@ static void treeview_edit_sync(vg_treeview_t *tree) {
 }
 
 /// @brief Begin an inline edit of one visible row (see header contract).
+/// @copydetails vg_treeview_begin_edit
 bool vg_treeview_begin_edit(vg_treeview_t *tree,
                             vg_tree_node_t *node,
                             const char *initial_text) {
@@ -3453,11 +3454,13 @@ bool vg_treeview_begin_edit(vg_treeview_t *tree,
 }
 
 /// @brief Return whether an inline row edit is in progress (see header).
+/// @copydetails vg_treeview_is_editing
 bool vg_treeview_is_editing(const vg_treeview_t *tree) {
     return tree && tree->edit_active;
 }
 
 /// @brief Consume the latched inline-edit commit edge (see header).
+/// @copydetails vg_treeview_was_edit_committed
 bool vg_treeview_was_edit_committed(vg_treeview_t *tree) {
     if (!tree || !tree->edit_committed)
         return false;
@@ -3466,11 +3469,13 @@ bool vg_treeview_was_edit_committed(vg_treeview_t *tree) {
 }
 
 /// @brief Return the most recently committed inline-edit text (see header).
+/// @copydetails vg_treeview_get_edit_text
 const char *vg_treeview_get_edit_text(const vg_treeview_t *tree) {
     return tree ? tree->edit_text : NULL;
 }
 
 /// @brief Return the node whose inline edit most recently committed (see header).
+/// @copydetails vg_treeview_get_edited_node
 vg_tree_node_t *vg_treeview_get_edited_node(vg_treeview_t *tree) {
     if (!tree || !vg_tree_node_is_live(tree->edit_committed_node) ||
         tree->edit_committed_node->owner != tree)
@@ -3479,6 +3484,7 @@ vg_tree_node_t *vg_treeview_get_edited_node(vg_treeview_t *tree) {
 }
 
 /// @brief Cancel any inline edit in progress without committing (see header).
+/// @copydetails vg_treeview_cancel_edit
 void vg_treeview_cancel_edit(vg_treeview_t *tree) {
     if (!tree)
         return;

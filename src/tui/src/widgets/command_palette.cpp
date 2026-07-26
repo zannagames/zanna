@@ -30,6 +30,9 @@ using zanna::tui::term::KeyEvent;
 /// @details Stores references to collaborators and immediately generates the
 ///          initial result list so the widget paints correctly before receiving
 ///          user input.
+/// @param km Borrowed command registry and dispatcher that must outlive the
+///        palette.
+/// @param theme Borrowed theme that must outlive the palette.
 CommandPalette::CommandPalette(input::Keymap &km, const style::Theme &theme)
     : km_(km), theme_(theme) {
     update();
@@ -38,6 +41,7 @@ CommandPalette::CommandPalette(input::Keymap &km, const style::Theme &theme)
 /// @brief Command palette must hold focus to accept incremental query input.
 /// @details Returning true ensures the application routes keystrokes directly to
 ///          the widget whenever it is active.
+/// @return Always @c true.
 bool CommandPalette::wantsFocus() const {
     return true;
 }
@@ -61,6 +65,9 @@ void CommandPalette::update() {
 /// @details Supports backspace, enter, and printable ASCII characters.  Enter
 ///          executes the first match, while typing adds characters to the query
 ///          and re-filters the result list.  Unhandled keys bubble up to callers.
+/// @param ev Input event to interpret.
+/// @return @c true for Backspace, Enter, or accepted printable ASCII input;
+///         otherwise @c false.
 bool CommandPalette::onEvent(const ui::Event &ev) {
     using Code = KeyEvent::Code;
     if (ev.key.code == Code::Backspace) {
@@ -88,6 +95,7 @@ bool CommandPalette::onEvent(const ui::Event &ev) {
 /// @details Clears the widget's rectangle, renders the prompt prefixed with a
 ///          colon, and lists the currently matched command names.  Rows beyond
 ///          the widget height are clipped.
+/// @param sb Screen buffer that receives the prompt and filtered command list.
 void CommandPalette::paint(render::ScreenBuffer &sb) {
     const auto &st = theme_.style(style::Role::Normal);
     for (int y = 0; y < rect_.h; ++y) {

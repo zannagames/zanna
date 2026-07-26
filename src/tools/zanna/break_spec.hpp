@@ -5,11 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tools/zanna/break_spec.hpp
-// Purpose: Helpers for parsing --break flag specifications.
-// Key invariants: None.
-// Ownership/Lifetime: N/A.
-// Links: docs/internals/codemap.md
+/// @file break_spec.hpp
+/// @brief Declares syntactic recognition of command-line source breakpoints.
+///
+/// The helper performs no filesystem access and retains no state.
 //
 //===----------------------------------------------------------------------===//
 
@@ -25,7 +24,7 @@ namespace ilc {
 /// side contains at least one non-whitespace character and the right side is a
 /// decimal line number.
 /// @param spec Single token supplied to the `--break` flag.
-/// @returns `true` when the token matches the source break format; `false`
+/// @return `true` when the token matches the source break format; `false`
 /// otherwise.
 /// @note This check is purely syntactic and does not verify file existence or
 /// line bounds.

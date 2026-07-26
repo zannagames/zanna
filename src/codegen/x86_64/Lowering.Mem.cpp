@@ -484,6 +484,8 @@ void emitGEP(const ILInstr &instr, MIRBuilder &builder) {
 
 /// @brief Lower a const_null instruction (null pointer constant).
 /// @details Produces a zero-valued pointer by moving immediate 0 into the result register.
+/// @param instr IL instruction providing the pointer result identifier and kind.
+/// @param builder MIR builder receiving the constant materialization.
 void emitConstNull(const ILInstr &instr, MIRBuilder &builder) {
     if (instr.resultId < 0) {
         phaseAUnsupported("const_null: missing result");
@@ -500,6 +502,8 @@ void emitConstNull(const ILInstr &instr, MIRBuilder &builder) {
 /// @brief Lower a const_f64 instruction (double-precision floating-point constant).
 /// @details Materialises the 64-bit constant by transferring the bit pattern through
 ///          a GPR temporary into the XMM destination register.
+/// @param instr IL instruction providing the floating result and literal operand.
+/// @param builder MIR builder receiving the materialization sequence.
 void emitConstF64(const ILInstr &instr, MIRBuilder &builder) {
     if (instr.resultId < 0 || instr.ops.empty()) {
         return;
@@ -519,6 +523,8 @@ void emitConstF64(const ILInstr &instr, MIRBuilder &builder) {
 
 /// @brief Lower a gaddr instruction (global address).
 /// @details Loads the address of a global symbol into the result register using LEA.
+/// @param instr IL instruction providing the pointer result and global label operand.
+/// @param builder MIR builder receiving the address materialization.
 void emitGAddr(const ILInstr &instr, MIRBuilder &builder) {
     if (instr.resultId < 0 || instr.ops.empty()) {
         return;
@@ -539,6 +545,8 @@ void emitGAddr(const ILInstr &instr, MIRBuilder &builder) {
 /// @brief Lower an addr_of instruction (address of a local alloca).
 /// @details The alloca instruction already produces a pointer to the stack slot.
 ///          AddrOf simply forwards that pointer to the result register.
+/// @param instr IL instruction providing the pointer result and source alloca value.
+/// @param builder MIR builder receiving the pointer copy.
 void emitAddrOf(const ILInstr &instr, MIRBuilder &builder) {
     if (instr.resultId < 0 || instr.ops.empty()) {
         return;

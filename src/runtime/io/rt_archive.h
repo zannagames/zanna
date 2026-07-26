@@ -27,6 +27,13 @@
 // Links: src/runtime/io/rt_archive.c (implementation), src/runtime/core/rt_string.h
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares managed ZIP archive reading, extraction, and creation.
+ * @details Exposes bounded file- and memory-backed readers, entry metadata
+ * and content access, traversal-safe extraction, transactional writer
+ * mutation, atomic finalization, and non-throwing ZIP classification.
+ */
 #pragma once
 
 #include "rt_string.h"

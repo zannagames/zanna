@@ -7,9 +7,11 @@
 
 // Platform feature macros must appear before ANY includes.
 #ifndef _DARWIN_C_SOURCE
+/** Enable Darwin/BSD socket extensions required by the network adapter. */
 #define _DARWIN_C_SOURCE 1 // macOS: expose BSD extensions
 #endif
 #ifndef _GNU_SOURCE
+/** Enable GNU socket extensions required by the Linux network adapter. */
 #define _GNU_SOURCE 1 // Linux: expose ip_mreq
 #endif
 
@@ -38,6 +40,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements managed blocking TCP connections and listeners.
+ * @details Provides platform initialization, exact endpoint validation,
+ * timed multi-address connection, partial and complete I/O, persistent
+ * timeouts, atomic pool leasing, and close-safe listener accept registration
+ * that prevents descriptor-reuse races.
+ */
+
 #include "rt_network_internal.h"
 
 #include "rt_heap.h"
@@ -50,32 +61,36 @@
 // Tcp Connection Structure
 //=============================================================================
 
+/** Complete managed TCP payload with immutable endpoint and mutable socket state. */
 typedef struct rt_tcp {
-    uint64_t magic;                     // RT_TCP_MAGIC for fully initialized handles
-    socket_t sock;                      // Socket descriptor
-    char *host;                         // Remote host (allocated)
-    int port;                           // Remote port
-    int local_port;                     // Local port
-    bool is_open;                       // Connection state
-    int recv_timeout_ms;                // Receive timeout (0 = none)
-    int send_timeout_ms;                // Send timeout (0 = none)
-    volatile uint64_t pool_owner_token; // 0 or the exclusive ConnectionPool lease identity
+    uint64_t magic;                     ///< Fully initialized handle sentinel.
+    socket_t sock;                      ///< Owned socket descriptor.
+    char *host;                         ///< Owned immutable remote host text.
+    int port;                           ///< Remote port.
+    int local_port;                     ///< Captured local port.
+    bool is_open;                       ///< Native connection state.
+    int recv_timeout_ms;                ///< Receive timeout; zero means none.
+    int send_timeout_ms;                ///< Send timeout; zero means none.
+    volatile uint64_t pool_owner_token; ///< Exclusive ConnectionPool lease identity or zero.
 } rt_tcp_t;
 
 //=============================================================================
 // TcpServer Structure
 //=============================================================================
 
+/** Managed TCP listener payload with atomic accept/close coordination. */
 typedef struct rt_tcp_server {
-    uint64_t magic;              // RT_TCP_SERVER_MAGIC for fully initialized handles
-    socket_t sock;               // Listening socket; stable while active_accepts > 0
-    char *address;               // Bound address (allocated)
-    int port;                    // Listening port
-    volatile int is_listening;   // Atomic accepting/closed state
-    volatile int active_accepts; // Registered operations that may access sock
+    uint64_t magic;              ///< Fully initialized handle sentinel.
+    socket_t sock;               ///< Listener stable while active accepts remain.
+    char *address;               ///< Owned recorded bound address.
+    int port;                    ///< Actual listening port.
+    volatile int is_listening;   ///< Atomic accepting/closed state.
+    volatile int active_accepts; ///< Registered operations allowed to access @ref sock.
 } rt_tcp_server_t;
 
+/** Payload sentinel for fully initialized managed TCP handles. */
 #define RT_TCP_MAGIC UINT64_C(0x5A54435048414E44)
+/** Payload sentinel for fully initialized managed TcpServer handles. */
 #define RT_TCP_SERVER_MAGIC UINT64_C(0x5A54435053525652)
 
 /// @brief Release one temporary managed object owned by a TCP operation.

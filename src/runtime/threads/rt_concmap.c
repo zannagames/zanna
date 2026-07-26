@@ -29,6 +29,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Mutex-protected, string-keyed concurrent hash map implementation.
+/// @details Entries use FNV-1a hashing and separate chaining. Key bytes are
+///          copied, values are retained, and GC graph mutations are bracketed
+///          so collector traversal can inspect the table without taking its
+///          platform mutex.
+
 #include "rt_concmap.h"
 
 #include "rt_gc.h"
@@ -60,14 +67,20 @@
 #define CM_LOAD_FACTOR_NUM 3
 #define CM_LOAD_FACTOR_DEN 4
 
+/// @brief Install a trap-recovery jump target for the current thread.
+/// @param buf Recovery buffer to install.
 void rt_trap_set_recovery(jmp_buf *buf);
+/// @brief Clear the current thread's trap-recovery target.
 void rt_trap_clear_recovery(void);
+/// @brief Read the current thread's most recent trap message.
+/// @return Borrowed diagnostic text, or null.
 const char *rt_trap_get_error(void);
 
 //=============================================================================
 // Internal types
 //=============================================================================
 
+/// @brief One separately chained map entry with an owned key copy.
 typedef struct cm_entry {
     char *key;
     size_t key_len;
@@ -76,6 +89,7 @@ typedef struct cm_entry {
     struct cm_entry *next;
 } cm_entry;
 
+/// @brief Runtime payload and platform mutex for a concurrent map.
 typedef struct {
     void *vptr;
     cm_entry **buckets;
@@ -109,6 +123,9 @@ typedef struct {
 ///          hash and compare paths can operate on (data, len) pairs
 ///          uniformly. Hashing uses the full byte length (not strlen) so
 ///          embedded NULs in keys remain distinct.
+/// @param key Runtime string key, or null for the empty key.
+/// @param out_len Receives the key length in bytes.
+/// @return Borrowed key bytes valid while @p key remains alive.
 static const char *get_key_data(rt_string key, size_t *out_len) {
     if (!key) {
         *out_len = 0;
@@ -128,6 +145,10 @@ static const char *get_key_data(rt_string key, size_t *out_len) {
 ///          via maybe_resize), so linear traversal is the right choice.
 ///          memcmp on the full byte length means embedded NULs don't
 ///          collapse keys together.
+/// @param head First entry in the bucket chain, or null.
+/// @param key Candidate key bytes.
+/// @param key_len Candidate byte length.
+/// @param hash Precomputed FNV-1a hash.
 /// @return Pointer to the matching entry, or NULL if not found.
 static cm_entry *find_entry(cm_entry *head, const char *key, size_t key_len, uint64_t hash) {
     cm_entry *e = head;
@@ -142,6 +163,9 @@ static cm_entry *find_entry(cm_entry *head, const char *key, size_t key_len, uin
 /// @brief Validate-and-cast an opaque ConcurrentMap handle to its impl.
 /// @details Standard pattern: NULL @p obj traps when @p trap_on_null is
 ///          set, otherwise returns NULL; wrong-class id always traps.
+/// @param obj Candidate ConcurrentMap handle.
+/// @param trap_on_null Nonzero to trap on a null handle.
+/// @return Validated map payload, or null for an accepted null/trap path.
 static rt_concmap_impl *concmap_require(void *obj, int8_t trap_on_null) {
     if (!obj) {
         if (trap_on_null)
@@ -156,6 +180,7 @@ static rt_concmap_impl *concmap_require(void *obj, int8_t trap_on_null) {
 }
 
 /// @brief Drop one GC reference to @p obj and free it if the count hit zero.
+/// @param obj Runtime-managed object reference, or null.
 static void concmap_release_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
@@ -163,12 +188,16 @@ static void concmap_release_object(void *obj) {
 
 /// @brief Snapshot the current trap error message into @p buffer (or
 ///        @p fallback if none) so it survives lock cleanup before re-raise.
+/// @param buffer Destination character array.
+/// @param buffer_size Destination capacity including its terminator.
+/// @param fallback Required message when no trap diagnostic is available.
 static void concmap_save_trap_error(char *buffer, size_t buffer_size, const char *fallback) {
     const char *err = rt_trap_get_error();
     snprintf(buffer, buffer_size, "%s", err && err[0] ? err : fallback);
 }
 
 /// @brief Release the runtime reference carried by a stored map @p value.
+/// @param value Retained runtime value, or null.
 static void release_retained_value(void *value) {
     if (value && rt_obj_release_check0(value))
         rt_obj_free(value);
@@ -176,6 +205,7 @@ static void release_retained_value(void *value) {
 
 /// @brief Free an entry's heap storage (its key copy and the entry struct)
 ///        WITHOUT touching its value reference (see free_entry for that).
+/// @param e Entry to destroy, or null.
 static void free_entry_storage(cm_entry *e) {
     if (e) {
         free(e->key);
@@ -188,6 +218,7 @@ static void free_entry_storage(cm_entry *e) {
 /// @details Used by Delete and bucket clear paths. The key is a freshly
 ///          malloc'd copy so we own it; the value carries a runtime ref
 ///          that we release. NULL @p e is a no-op.
+/// @param e Entry to destroy, or null.
 static void free_entry(cm_entry *e) {
     if (e) {
         free(e->key);
@@ -200,7 +231,11 @@ static void free_entry(cm_entry *e) {
 ///        trap-recovering on failure: if the retain traps, @p entry is freed
 ///        and the saved error (or @p fallback) is re-raised so the map never
 ///        keeps a half-constructed entry.
-/// @return non-zero on success; does not return on the trap path.
+/// @param obj Retained map reference released during trap cleanup.
+/// @param entry Prepared entry whose storage is freed on failure.
+/// @param value Runtime value to retain, or null.
+/// @param fallback Diagnostic used when the captured trap has no message.
+/// @return 1 on success; the failure path cleans up and re-raises the trap.
 static int8_t retain_value_or_free_entry(void *obj,
                                          cm_entry *entry,
                                          void *value,
@@ -231,6 +266,7 @@ static int8_t retain_value_or_free_entry(void *obj,
 ///          `capacity * 2` overflow. On allocation failure leaves the map
 ///          untouched at the old capacity (callers continue to function;
 ///          only the load factor degrades).
+/// @param cm Locked map to grow; invalid or unrepresentable capacities are ignored.
 static void cm_resize(rt_concmap_impl *cm) {
     if (!cm || cm->capacity == 0 || cm->capacity > SIZE_MAX / 2)
         return;
@@ -261,6 +297,7 @@ static void cm_resize(rt_concmap_impl *cm) {
 ///          (currently 3/4). The threshold is computed in two pieces so the
 ///          intermediate `capacity * NUM` doesn't overflow size_t for
 ///          large maps. Caller must hold the map mutex.
+/// @param cm Locked map whose post-insertion load is inspected.
 static void maybe_resize(rt_concmap_impl *cm) {
     size_t threshold =
         (cm->capacity / CM_LOAD_FACTOR_DEN) * CM_LOAD_FACTOR_NUM +
@@ -294,6 +331,8 @@ static void cm_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
 /// @details The caller has retained the value and verified that the key is
 ///          absent. Insertion and any resulting rehash occur within one graph
 ///          mutation so collector traversal sees a complete old or new table.
+/// @param cm Locked map receiving the entry.
+/// @param entry Fully initialized entry whose ownership transfers to @p cm.
 static void cm_publish_entry_locked(rt_concmap_impl *cm, cm_entry *entry) {
     rt_gc_mutator_enter();
     size_t idx = (size_t)(entry->hash % cm->capacity);
@@ -307,6 +346,9 @@ static void cm_publish_entry_locked(rt_concmap_impl *cm, cm_entry *entry) {
 /// @brief Replace an entry value while holding the ConcurrentMap mutex.
 /// @details No reference count is changed here: the caller has retained the
 ///          new value and releases the returned old ownership after unlocking.
+/// @param entry Existing locked entry to update.
+/// @param value Already retained replacement value, possibly null.
+/// @return Previous retained value whose ownership transfers to the caller.
 static void *cm_replace_value_locked(cm_entry *entry, void *value) {
     rt_gc_mutator_enter();
     void *old_value = entry->value;
@@ -316,6 +358,7 @@ static void *cm_replace_value_locked(cm_entry *entry, void *value) {
 }
 
 /// @brief Free a detached list of entries after it is no longer map-reachable.
+/// @param entries Head of a detached entry list, or null.
 static void free_entry_list(cm_entry *entries) {
     while (entries) {
         cm_entry *next = entries->next;
@@ -327,6 +370,8 @@ static void free_entry_list(cm_entry *entries) {
 /// @brief Detach every bucket chain and reset the count to zero.
 /// @details Caller must hold the map mutex. The returned list is no longer
 ///          reachable from the map and may be freed after unlocking.
+/// @param cm Locked map to empty.
+/// @return Head of one combined detached entry list, or null.
 static cm_entry *cm_detach_entries_unlocked(rt_concmap_impl *cm) {
     rt_gc_mutator_enter();
     cm_entry *entries = NULL;
@@ -348,6 +393,7 @@ static cm_entry *cm_detach_entries_unlocked(rt_concmap_impl *cm) {
 
 /// @brief GC finalizer for a `ConcMap` — detaches entries under the lock,
 ///        then releases retained values outside the mutex.
+/// @param obj ConcurrentMap payload being finalized.
 static void cm_finalizer(void *obj) {
     rt_concmap_impl *cm = (rt_concmap_impl *)obj;
     CM_LOCK(cm);
@@ -371,7 +417,9 @@ static void cm_finalizer(void *obj) {
 // Public API
 //=============================================================================
 
-/// @brief Create a new thread-safe concurrent hash map (string keys, one map-wide mutex).
+/// @brief Create an empty concurrent map with 16 initial buckets.
+/// @return New runtime-managed map, or null after an allocation, mutex, or GC
+///         tracking trap.
 void *rt_concmap_new(void) {
     rt_concmap_impl *cm =
         (rt_concmap_impl *)rt_obj_new_i64(RT_CONCMAP_CLASS_ID, (int64_t)sizeof(rt_concmap_impl));
@@ -432,7 +480,9 @@ void *rt_concmap_new(void) {
     return cm;
 }
 
-/// @brief Return the number of elements in the concmap.
+/// @brief Read the exact entry count while holding the map mutex.
+/// @param obj ConcurrentMap handle; null reports zero.
+/// @return Entry count at the instant of the locked read.
 int64_t rt_concmap_len(void *obj) {
     if (!obj)
         return 0;
@@ -447,12 +497,20 @@ int64_t rt_concmap_len(void *obj) {
     return len;
 }
 
-/// @brief Check whether the concmap has no entries.
+/// @brief Test whether the locked entry count is zero.
+/// @param obj ConcurrentMap handle; null is treated as empty.
+/// @return 1 when empty, otherwise 0.
 int8_t rt_concmap_is_empty(void *obj) {
     return rt_concmap_len(obj) == 0 ? 1 : 0;
 }
 
-/// @brief Set a value in the concmap.
+/// @brief Atomically insert or replace a string-keyed value.
+/// @details The complete key byte span is copied and @p value is retained. On
+///          replacement the old value is released after unlocking. A null key
+///          denotes the empty string and a null value is permitted.
+/// @param obj ConcurrentMap handle; null is ignored.
+/// @param key String key to copy, or null for the empty key.
+/// @param value Runtime value to retain, or null.
 void rt_concmap_set(void *obj, rt_string key, void *value) {
     if (!obj)
         return;
@@ -526,6 +584,9 @@ void rt_concmap_set(void *obj, rt_string key, void *value) {
 /// @brief Look up a value by string key. Returns a freshly-retained reference (caller releases)
 /// or NULL if absent. The string key is hashed via FNV-1a and the bucket is scanned linearly
 /// (collision chaining); thread-safe via the map's mutex.
+/// @param obj ConcurrentMap handle; null behaves as a miss.
+/// @param key String key, or null for the empty key.
+/// @return Retained stored value, or null for an absent or null-valued entry.
 void *rt_concmap_get(void *obj, rt_string key) {
     if (!obj)
         return NULL;
@@ -566,6 +627,10 @@ void *rt_concmap_get(void *obj, rt_string key) {
 
 /// @brief Look up a value, returning `default_value` if missing. Only the found value is
 /// retained; `default_value`'s lifetime is the caller's responsibility (passed-through unchanged).
+/// @param obj ConcurrentMap handle; null returns @p default_value.
+/// @param key String key, or null for the empty key.
+/// @param default_value Borrowed fallback returned unchanged on a miss.
+/// @return Retained stored value on a hit, otherwise borrowed @p default_value.
 void *rt_concmap_get_or(void *obj, rt_string key, void *default_value) {
     if (!obj)
         return default_value;
@@ -604,7 +669,10 @@ void *rt_concmap_get_or(void *obj, rt_string key, void *default_value) {
     return result;
 }
 
-/// @brief Check whether a key/element exists in the concmap.
+/// @brief Test whether a key exists, including when its stored value is null.
+/// @param obj ConcurrentMap handle; null behaves as empty.
+/// @param key String key, or null for the empty key.
+/// @return 1 when an entry exists, otherwise 0.
 int8_t rt_concmap_has(void *obj, rt_string key) {
     if (!obj)
         return 0;
@@ -625,7 +693,13 @@ int8_t rt_concmap_has(void *obj, rt_string key) {
     return found;
 }
 
-/// @brief Set the if missing of the concmap.
+/// @brief Atomically insert a key only when no matching entry exists.
+/// @details A prepared key copy and retained value are discarded if another
+///          entry already owns the key when the mutex is acquired.
+/// @param obj ConcurrentMap handle; null returns failure.
+/// @param key String key to copy, or null for the empty key.
+/// @param value Runtime value to retain on insertion, or null.
+/// @return 1 when inserted, or 0 when the key already exists or input is null.
 int8_t rt_concmap_set_if_missing(void *obj, rt_string key, void *value) {
     if (!obj)
         return 0;
@@ -692,7 +766,12 @@ int8_t rt_concmap_set_if_missing(void *obj, rt_string key, void *value) {
     return 1;
 }
 
-/// @brief Remove an entry from the concmap.
+/// @brief Atomically detach and destroy a matching entry.
+/// @details The table edge is removed under the mutex and GC barrier; the key
+///          storage and retained value are released after unlocking.
+/// @param obj ConcurrentMap handle; null behaves as empty.
+/// @param key String key, or null for the empty key.
+/// @return 1 when removed, otherwise 0.
 int8_t rt_concmap_remove(void *obj, rt_string key) {
     if (!obj)
         return 0;
@@ -730,7 +809,8 @@ int8_t rt_concmap_remove(void *obj, rt_string key) {
     return 0;
 }
 
-/// @brief Remove all entries from the concmap.
+/// @brief Atomically detach all entries and release them after unlocking.
+/// @param obj ConcurrentMap handle; null is ignored.
 void rt_concmap_clear(void *obj) {
     if (!obj)
         return;
@@ -748,6 +828,8 @@ void rt_concmap_clear(void *obj) {
 /// @brief Return a snapshot Seq containing every key currently in the map. The Seq owns its
 /// element strings (`set_owns_elements(1)`) so caller release frees them. Order is bucket-walk
 /// order — NOT insertion order; treat it as unordered.
+/// @param obj ConcurrentMap handle; null yields an empty snapshot.
+/// @return New owning sequence of copied key strings.
 void *rt_concmap_keys(void *obj) {
     void *seq = rt_seq_new();
     rt_seq_set_owns_elements(seq, 1);
@@ -855,6 +937,8 @@ void *rt_concmap_keys(void *obj) {
 /// @brief Return a snapshot Seq of all values. Like `_keys`, the Seq owns its elements (so the
 /// values get released when the Seq is) — implies a retain on each map value at snapshot time.
 /// Bucket-walk order; not insertion order.
+/// @param obj ConcurrentMap handle; null yields an empty snapshot.
+/// @return New owning sequence of retained values in bucket-walk order.
 void *rt_concmap_values(void *obj) {
     void *seq = rt_seq_new();
     rt_seq_set_owns_elements(seq, 1);

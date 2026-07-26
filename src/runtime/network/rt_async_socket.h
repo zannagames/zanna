@@ -23,6 +23,15 @@
 //        rt_future.h (result transport), rt_threadpool.h (worker executor)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares Future-based asynchronous TCP and HTTP adapters.
+ * @details Defines pre-use shared-pool configuration and caller-owned Future
+ * contracts for bounded connect, retained send/receive handles, and
+ * snapshotted one-shot HTTP request arguments.
+ */
+
 #pragma once
 
 #include "rt_string.h"

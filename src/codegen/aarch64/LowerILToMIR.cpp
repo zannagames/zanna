@@ -191,6 +191,8 @@ static std::unordered_map<unsigned, std::size_t> countTempUses(const il::core::F
     using il::core::Value;
 
     std::unordered_map<unsigned, std::size_t> uses;
+    /// @brief Increments the use count for a temporary.
+    /// @param id Temporary identifier to count.
     auto touch = [&](unsigned id) { ++uses[id]; };
 
     for (const auto &block : fn.blocks) {
@@ -247,6 +249,9 @@ static int callerStackParamOffset(std::size_t stackSlotIndex) {
 /// @param fn Function whose parameters and instruction results are classified.
 /// @return Sparse temp-id to GPR/FPR map.
 static std::unordered_map<unsigned, RegClass> buildTempRegClassMap(const il::core::Function &fn) {
+    /// @brief Selects the machine register class for an IL type.
+    /// @param type IL type to classify.
+    /// @return FPR for `f64`; otherwise GPR.
     auto classForType = [](const il::core::Type &type) {
         return type.kind == il::core::Type::Kind::F64 ? RegClass::FPR : RegClass::GPR;
     };
@@ -446,6 +451,7 @@ static PhiAssignment allocatePhiSlots(const il::core::Function &fn, FrameBuilder
 
 [[maybe_unused]] std::optional<std::size_t>
 // cppcheck-suppress unusedFunction
+/// @copydoc LowerILToMIR::knownVarArgNamedArgs()
 LowerILToMIR::knownVarArgNamedArgs(std::string_view callee) const {
     const auto it = knownVarArgNamedArgCounts_.find(std::string(callee));
     if (it == knownVarArgNamedArgCounts_.end())
@@ -453,6 +459,7 @@ LowerILToMIR::knownVarArgNamedArgs(std::string_view callee) const {
     return it->second;
 }
 
+/// @copydoc LowerILToMIR::lowerFunction()
 MFunction LowerILToMIR::lowerFunction(const il::core::Function &fn) const {
     MFunction mf{};
     mf.name = fn.name;
@@ -538,9 +545,13 @@ MFunction LowerILToMIR::lowerFunction(const il::core::Function &fn) const {
         // NOTE: Do NOT clear tempRegClass here - we need to preserve class info for
         // cross-block temps that are spilled/reloaded. It's already cleared at function start.
         // Helper lambda to get current output block (avoids dangling references)
+        /// @brief Retrieves the current output block without retaining a stale reference.
+        /// @return Output block corresponding to `bi`.
         auto bbOutFn = [&]() -> MBasicBlock & { return mf.blocks[bi]; };
         std::unordered_set<unsigned> reloadedCrossBlockTemps;
 
+        /// @brief Reloads a cross-block temporary once at the current block entry.
+        /// @param tempId Identifier of the temporary to reload.
         auto reloadCrossBlockTempAtBlockEntry = [&](unsigned tempId) {
             auto spillIt = liveness.crossBlockSpillOffset.find(tempId);
             auto defIt = liveness.tempDefBlock.find(tempId);
@@ -939,6 +950,10 @@ MFunction LowerILToMIR::lowerFunction(const il::core::Function &fn) const {
             requests.push_back(&entry.second);
         std::sort(requests.begin(),
                   requests.end(),
+                  /// @brief Orders shared trap requests deterministically by label.
+                  /// @param lhs Left request.
+                  /// @param rhs Right request.
+                  /// @return `true` when `lhs` precedes `rhs`.
                   [](const TrapBlockRequest *lhs, const TrapBlockRequest *rhs) {
                       return lhs->label < rhs->label;
                   });

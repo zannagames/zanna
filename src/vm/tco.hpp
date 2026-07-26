@@ -30,6 +30,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares eligibility checking and in-place frame reuse for VM tail calls.
+/// @details Successful optimization preserves exception/resume state, replaces
+///          the active function and cached block/operand views, retains string
+///          arguments, and resumes at the callee entry without growing the
+///          execution stack.
+
 #pragma once
 
 #include <span>
@@ -44,7 +51,7 @@ namespace il::vm {
 ///          reuse the current execution frame for the callee function,
 ///          avoiding stack growth for tail-recursive patterns. The frame's
 ///          register file is resized (using cached size when available),
-///          the block map is rebuilt, and execution resumes at the callee's
+///          the cached block map is selected, and execution resumes at the callee's
 ///          entry block.
 ///
 ///          TCO preserves the current exception handler stack and resume

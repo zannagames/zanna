@@ -39,6 +39,10 @@ using zanna::tui::term::KeyEvent;
 /// @details Stores references to the supplied buffer, view, and theme.  No work
 ///          is performed until the first key event arrives, keeping construction
 ///          cheap so the widget can be instantiated eagerly.
+/// @param buf Borrowed text buffer searched by the widget.
+/// @param view Borrowed text view that receives highlights and cursor updates.
+/// @param theme Borrowed theme used for painting; all three collaborators must
+///        outlive the search bar.
 SearchBar::SearchBar(text::TextBuffer &buf, views::TextView &view, const style::Theme &theme)
     : buf_(buf), view_(view), theme_(theme) {}
 

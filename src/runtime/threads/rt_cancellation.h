@@ -22,6 +22,12 @@
 // Links: src/runtime/threads/rt_cancellation.c (implementation)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Cooperative cancellation-token C ABI with linked-parent propagation.
+/// @details Cancellation is sticky until a token's local flag is reset. Linked
+///          children retain their parent and report cancellation when either
+///          their own flag or any ancestor's flag is set.
 #pragma once
 
 #include <stdint.h>
@@ -30,35 +36,44 @@
 extern "C" {
 #endif
 
-/// @brief Create a new cancellation token (not cancelled).
-/// @return New cancellation token object.
+/// @brief Create an independent token in the non-cancelled state.
+/// @return New runtime-managed token, or null after an allocation trap.
 void *rt_cancellation_new(void);
 
-/// @brief Check if cancellation has been requested.
-/// @param token Cancellation token.
-/// @return 1 if cancelled, 0 otherwise.
+/// @brief Poll a token and its linked ancestor chain.
+/// @param token Cancellation token, or null.
+/// @return 1 when local or inherited cancellation is requested, otherwise 0.
+/// @note A nonnull object of the wrong runtime type raises a trap.
 int8_t rt_cancellation_is_cancelled(void *token);
 
-/// @brief Request cancellation.
-/// @param token Cancellation token.
+/// @brief Atomically request cancellation on a token.
+/// @details Immediate linked children are marked under the parent's monitor;
+///          deeper descendants observe the request through their parent chain.
+/// @param token Cancellation token, or null for a no-op.
 void rt_cancellation_cancel(void *token);
 
-/// @brief Reset a cancellation token (allow reuse).
-/// @param token Cancellation token.
+/// @brief Clear only a token's local cancellation flag for reuse.
+/// @details A linked token remains observably cancelled while any ancestor is
+///          still cancelled. Reset does not alter children or parents.
+/// @param token Cancellation token, or null for a no-op.
 void rt_cancellation_reset(void *token);
 
-/// @brief Create a linked token that cancels when the parent cancels.
-/// @param parent Parent token.
-/// @return New linked token. Cancels if parent is cancelled.
+/// @brief Create a child that inherits cancellation from an optional parent.
+/// @param parent Valid parent token, or null to create an independent token.
+/// @return New runtime-managed token, already cancelled when necessary, or
+///         null after invalid input or allocation failure.
 void *rt_cancellation_linked(void *parent);
 
-/// @brief Check if a linked token's parent has been cancelled.
-/// @param token Linked cancellation token.
-/// @return 1 if parent or self is cancelled, 0 otherwise.
+/// @brief Alias for @ref rt_cancellation_is_cancelled.
+/// @param token Cancellation token, linked or independent, or null.
+/// @return 1 if the token or an ancestor is cancelled, otherwise 0.
 int8_t rt_cancellation_check(void *token);
 
-/// @brief Throw/trap if the token has been cancelled.
-/// @param token Cancellation token.
+/// @brief Raise an interrupt trap at a cooperative cancellation point.
+/// @details Does nothing for null or non-cancelled tokens. Observable
+///          cancellation raises `OperationCancelledException` using
+///          `RT_TRAP_KIND_INTERRUPT`.
+/// @param token Cancellation token, or null.
 void rt_cancellation_throw_if_cancelled(void *token);
 
 #ifdef __cplusplus

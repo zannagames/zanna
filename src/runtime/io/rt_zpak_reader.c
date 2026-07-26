@@ -26,6 +26,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements validated memory-backed and file-backed ZPAK reading.
+ * @details Decodes little-endian headers and tables, rejects unsafe names and
+ * overlapping payloads, maintains reference-counted archive ownership,
+ * serializes shared file positioning, inflates compressed entries, and checks
+ * version 2 payload CRCs before returning caller-owned bytes.
+ */
+
 #include "rt_zpak_reader.h"
 
 #include "rt_crc32.h"
@@ -45,10 +54,14 @@
 #endif
 
 #if RT_PLATFORM_WINDOWS
+/** Seek adapter preserving 64-bit archive offsets on Windows. */
 #define zpak_fseek(fp, off, whence) _fseeki64((fp), (__int64)(off), (whence))
+/** Tell adapter preserving 64-bit archive offsets on Windows. */
 #define zpak_ftell(fp) _ftelli64((fp))
 #else
+/** Seek adapter using the POSIX large-file stream interface. */
 #define zpak_fseek(fp, off, whence) fseeko((fp), (off_t)(off), (whence))
+/** Tell adapter using the POSIX large-file stream interface. */
 #define zpak_ftell(fp) ftello((fp))
 #endif
 
@@ -56,8 +69,11 @@
 // We use the runtime's Bytes-based inflate and raw extraction helpers.
 // Defined in rt_compress.c, rt_bytes.c, and rt_internal.h respectively.
 
+/// @copydoc rt_bytes_from_raw()
 extern void *rt_bytes_from_raw(const uint8_t *data, size_t len);
+/// @copydoc rt_compress_inflate()
 extern void *rt_compress_inflate(void *data);
+/// @copydoc rt_bytes_extract_raw()
 extern uint8_t *rt_bytes_extract_raw(void *bytes, size_t *out_len);
 
 /// @brief Platform-neutral storage for one archive's file-position mutex.
@@ -135,6 +151,7 @@ static void zpak_release_object(void *obj) {
 
 // ─── ZPAK format constants ───────────────────────────────────────────────────
 
+/** Four-byte signature that begins every supported ZPAK archive. */
 static const uint8_t kMagic[4] = {'Z', 'P', 'A', 'K'};
 
 // ─── Little-endian read helpers ─────────────────────────────────────────────

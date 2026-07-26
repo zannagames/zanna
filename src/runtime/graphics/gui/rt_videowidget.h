@@ -25,6 +25,17 @@
 // Links: rt_videoplayer.h, rt_gui.h
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares the GUI VideoWidget playback and scheduler interface.
+ *
+ * @details VideoWidget owns a decoder and retained control subtree, exposes
+ *          transport/configuration/widget proxies, uploads converted frames
+ *          efficiently, publishes independent consumable media-event edges,
+ *          and integrates automatic updates with app frame generations.
+ */
+
 #pragma once
 
 #include "rt_string.h"

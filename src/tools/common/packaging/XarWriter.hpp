@@ -22,6 +22,9 @@
 //===----------------------------------------------------------------------===//
 #pragma once
 
+/// @file
+/// @brief Declares the in-memory XAR writer used for macOS flat packages.
+
 #include <cstddef>
 #include <cstdint>
 #include <set>
@@ -55,12 +58,22 @@ class XarWriter {
                  uint32_t mode = 0644);
 
     /// @brief Convenience: add a file entry from a byte vector.
+    /// @param name Archive-relative file path.
+    /// @param data File bytes to copy.
+    /// @param compress Whether to compress the heap payload.
+    /// @param mode Permission bits.
+    /// @throws std::runtime_error On an unsafe or duplicate path.
     void addFileVec(const std::string &name,
                     const std::vector<uint8_t> &data,
                     bool compress = false,
                     uint32_t mode = 0644);
 
     /// @brief Convenience: add a file entry from string content.
+    /// @param name Archive-relative file path.
+    /// @param content File bytes to copy without transcoding.
+    /// @param compress Whether to compress the heap payload.
+    /// @param mode Permission bits.
+    /// @throws std::runtime_error On an unsafe or duplicate path.
     void addFileString(const std::string &name,
                        const std::string &content,
                        bool compress = false,
@@ -68,9 +81,11 @@ class XarWriter {
 
     /// @brief Serialize all entries into a complete XAR archive.
     /// @return The archive bytes (header + compressed TOC + checksum + heap).
+    /// @throws std::runtime_error On path conflicts, compression, or size failure.
     std::vector<uint8_t> finish() const;
 
     /// @brief Serialize the archive and write it to @p path.
+    /// @param path Native destination path replaced atomically.
     /// @throws std::runtime_error on open or write failure.
     void finishToFile(const std::string &path) const;
 

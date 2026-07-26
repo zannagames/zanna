@@ -20,6 +20,14 @@
 // Links: src/runtime/threads/rt_parallel.c (implementation), src/runtime/threads/rt_threadpool.h
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Declares synchronous data-parallel sequence and integer-range operations.
+/// @details Each operation partitions work across a caller-selected or shared
+///          Threadpool and waits for the full batch before returning. Nested
+///          use from a worker in the same pool falls back to serial execution
+///          to avoid starvation deadlock. Worker traps are captured and raised
+///          on the submitting thread after outstanding tasks drain.
+
 #pragma once
 
 #include "rt_string.h"
@@ -34,49 +42,64 @@ extern "C" {
 //=============================================================================
 
 /// @brief Execute a function for each item in a sequence, in parallel.
-/// @details Distributes work across available CPU cores.
+/// @details Uses the retained shared default pool and returns only after every
+///          callback has finished. Processing order is unspecified; the first
+///          worker trap is re-raised after the batch drains.
 /// @param seq Sequence of items to process.
-/// @param func Function to call for each item (signature: void(*)(void*)).
+/// @param func Borrowed callback with signature `void (*)(void *)`.
 void rt_parallel_foreach(void *seq, void *func);
 
 /// @brief Execute a function for each item with a custom thread pool.
+/// @details Behaves like @ref rt_parallel_foreach while using @p pool when
+///          supplied. The call borrows the pool for the synchronous operation.
 /// @param seq Sequence of items to process.
-/// @param func Function to call for each item.
+/// @param func Borrowed callback with signature `void (*)(void *)`.
 /// @param pool Thread pool to use (or NULL for default).
 void rt_parallel_foreach_pool(void *seq, void *func, void *pool);
 
 /// @brief Transform a sequence in parallel using a map function.
-/// @details Applies func to each item and collects results.
+/// @details Applies @p func through the default pool and preserves input
+///          position in the output regardless of worker completion order.
+///          Runtime-managed callback results are retained for the result
+///          sequence. Worker traps are re-raised after cleanup.
 /// @param seq Sequence of items to transform.
-/// @param func Function to transform each item (signature: void*(*)(void*)).
-/// @return New sequence containing transformed items (same order as input).
+/// @param func Borrowed transform with signature `void *(*)(void *)`.
+/// @return Caller-owned sequence containing transformed items in input order.
 void *rt_parallel_map(void *seq, void *func);
 
 /// @brief Transform a sequence in parallel with a custom thread pool.
+/// @details Behaves like @ref rt_parallel_map while borrowing @p pool for the
+///          synchronous operation when supplied.
 /// @param seq Sequence of items to transform.
-/// @param func Transform function.
+/// @param func Borrowed transform with signature `void *(*)(void *)`.
 /// @param pool Thread pool to use (or NULL for default).
-/// @return New sequence containing transformed items.
+/// @return Caller-owned sequence containing transformed items in input order.
 void *rt_parallel_map_pool(void *seq, void *func, void *pool);
 
 /// @brief Execute multiple functions in parallel and wait for all to complete.
-/// @details Functions are executed concurrently on a thread pool.
-/// @param funcs Sequence of functions (void(*)()).
+/// @details Uses the default pool. Invocation order is unspecified, and the
+///          first callback trap is re-raised after every submitted task drains.
+/// @param funcs Sequence of borrowed callbacks with signature `void (*)(void)`.
 void rt_parallel_invoke(void *funcs);
 
 /// @brief Execute multiple functions in parallel with custom pool.
-/// @param funcs Sequence of functions.
+/// @details Borrows @p pool for the synchronous operation when supplied.
+/// @param funcs Sequence of borrowed callbacks with signature `void (*)(void)`.
 /// @param pool Thread pool to use (or NULL for default).
 void rt_parallel_invoke_pool(void *funcs, void *pool);
 
 /// @brief Parallel for loop over a range of integers.
-/// @details Calls func(i) for each i in [start, end).
+/// @details Calls @p func once for each integer in `[start, end)` through the
+///          default pool and waits for completion. An empty or reversed range
+///          performs no callbacks.
 /// @param start Start of range (inclusive).
 /// @param end End of range (exclusive).
 /// @param func Function to call (signature: void(*)(int64_t)).
 void rt_parallel_for(int64_t start, int64_t end, void *func);
 
 /// @brief Parallel for loop with custom pool.
+/// @details Behaves like @ref rt_parallel_for while borrowing @p pool for the
+///          synchronous operation when supplied.
 /// @param start Start of range (inclusive).
 /// @param end End of range (exclusive).
 /// @param func Function to call.
@@ -86,7 +109,9 @@ void rt_parallel_for_pool(int64_t start, int64_t end, void *func, void *pool);
 /// @brief Reduce a sequence in parallel using a binary combine function.
 /// @details Splits the sequence into chunks, reduces each chunk in parallel from
 ///          that chunk's first element, then applies @p identity exactly once on
-///          the calling thread while combining partial results.
+///          the calling thread while combining partial results. The operation
+///          must be suitable for this grouping; worker completion order does
+///          not reorder positional partial results.
 /// @param seq Sequence of items to reduce.
 /// @param func Binary function combining two items (signature: void*(*)(void*, void*)).
 /// @param identity Identity element for the reduce operation.
@@ -94,6 +119,8 @@ void rt_parallel_for_pool(int64_t start, int64_t end, void *func, void *pool);
 void *rt_parallel_reduce(void *seq, void *func, void *identity);
 
 /// @brief Reduce a sequence in parallel with a custom thread pool.
+/// @details Behaves like @ref rt_parallel_reduce while borrowing @p pool for
+///          the synchronous operation when supplied.
 /// @param seq Sequence of items to reduce.
 /// @param func Binary combine function.
 /// @param identity Identity element.
@@ -102,12 +129,14 @@ void *rt_parallel_reduce(void *seq, void *func, void *identity);
 void *rt_parallel_reduce_pool(void *seq, void *func, void *identity, void *pool);
 
 /// @brief Get the default number of parallel workers.
-/// @return Number of CPU cores, or 4 if detection fails.
+/// @return Positive online CPU count, or 4 if detection fails.
 int64_t rt_parallel_default_workers(void);
 
-/// @brief Create a shared default thread pool.
-/// @details Lazily creates a pool with rt_parallel_default_workers threads.
-/// @return The default shared thread pool.
+/// @brief Get or lazily create the shared default thread pool.
+/// @details A shut-down singleton is replaced on demand. The singleton keeps
+///          its own reference and this function returns an additional reference
+///          that the caller must release.
+/// @return Retained default Threadpool object, or NULL on creation failure.
 void *rt_parallel_default_pool(void);
 
 /// @brief Shut down and drain the shared default thread pool, joining its workers.

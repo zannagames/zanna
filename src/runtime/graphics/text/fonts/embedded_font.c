@@ -33,8 +33,17 @@
 //
 // JetBrains Mono is licensed under the SIL Open Font License 1.1.
 // See https://www.jetbrains.com/lp/mono/ for details.
+/**
+ * @file
+ * @brief Defines the generated JetBrains Mono Regular TTF byte payload.
+ * @details The byte array and size value are generated as a matched pair and
+ * have static storage duration. Editing or regenerating the payload requires
+ * preserving their exact correspondence.
+ */
 #include "embedded_font.h"
+/// @copydoc vg_embedded_font_size
 const unsigned int vg_embedded_font_size = 273900u;
+/// @copydoc vg_embedded_font_data
 const unsigned char vg_embedded_font_data[] = {
     0x00, 0x01, 0x00, 0x00, 0x00, 0x11, 0x01, 0x00, 0x00, 0x04, 0x00, 0x10, 0x47, 0x44, 0x45, 0x46,
     0x14, 0xdc, 0x05, 0x92, 0x00, 0x03, 0xa6, 0x14, 0x00, 0x00, 0x02, 0x2a, 0x47, 0x50, 0x4f, 0x53,

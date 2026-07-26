@@ -199,6 +199,8 @@ typedef struct rt_pool_slab {
 /// @return Non-zero when the pointer's high bits are clear and safe to pack.
 #if !RT_POOL_USE_LOCKED_FREELIST && !RT_POOL_PAC_SAFE
 /// @brief Test whether a pointer fits the experimental 48-bit tagged format.
+/// @param ptr Pointer candidate to encode in the tagged freelist word.
+/// @return Nonzero when the pointer's high bits are clear and safe to pack.
 static inline int ptr_fits_tagged_ptr(void *ptr) {
     return (((uintptr_t)ptr) & ~(uintptr_t)0x0000FFFFFFFFFFFFULL) == 0;
 }

@@ -31,6 +31,16 @@
 //        src/runtime/network/rt_wss_server.c
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_win32_wait.h
+ * @brief Provides exact finite-deadline and thread-join helpers for Win32.
+ * @details The Windows-only inline adapter computes saturating monotonic
+ *          deadlines, converts them into legal non-INFINITE wait slices, and
+ *          consumes thread handles only after precise type, self-join, wait,
+ *          and close handling.
+ */
+
 #pragma once
 
 #include "rt_platform.h"
@@ -48,12 +58,14 @@
 #include <limits.h>
 #include <stdint.h>
 
+/// @brief Largest millisecond timeout Win32 does not interpret as `INFINITE`.
 #define RT_WIN32_MAX_FINITE_WAIT_MS ((DWORD)(INFINITE - 1u))
 
+/// @brief Outcomes from consuming a Win32 thread handle in the join helper.
 typedef enum rt_win32_thread_join_result {
-    RT_WIN32_THREAD_JOIN_FAILED = 0,
-    RT_WIN32_THREAD_JOINED = 1,
-    RT_WIN32_THREAD_JOIN_CURRENT = 2
+    RT_WIN32_THREAD_JOIN_FAILED = 0, ///< Validation, wait, or close failed.
+    RT_WIN32_THREAD_JOINED = 1,      ///< Another thread signaled and its handle closed.
+    RT_WIN32_THREAD_JOIN_CURRENT = 2 ///< Current-thread handle closed without waiting.
 } rt_win32_thread_join_result;
 
 /// @brief Compute a saturating absolute deadline from an explicit tick value.
@@ -66,6 +78,9 @@ static inline ULONGLONG rt_win32_deadline_after_ms(ULONGLONG now, int64_t timeou
 }
 
 /// @brief Compute a deadline using the current monotonic Win32 tick counter.
+/// @param timeout_ms Relative milliseconds; nonpositive values produce the
+///        current tick and positive overflow saturates.
+/// @return Absolute `GetTickCount64`-domain deadline.
 static inline ULONGLONG rt_win32_deadline_from_now_ms(int64_t timeout_ms) {
     return rt_win32_deadline_after_ms(GetTickCount64(), timeout_ms);
 }
@@ -86,6 +101,9 @@ static inline DWORD rt_win32_wait_slice_at(ULONGLONG now, ULONGLONG deadline) {
 }
 
 /// @brief Compute one legal finite wait slice from the current tick value.
+/// @param deadline Absolute `GetTickCount64`-domain deadline.
+/// @return Zero when already expired, otherwise a finite timeout from 1 through
+///         @ref RT_WIN32_MAX_FINITE_WAIT_MS.
 static inline DWORD rt_win32_wait_slice_until(ULONGLONG deadline) {
     return rt_win32_wait_slice_at(GetTickCount64(), deadline);
 }
@@ -95,8 +113,12 @@ static inline DWORD rt_win32_wait_slice_until(ULONGLONG deadline) {
 ///          deadlocking; it is closed and reported distinctly so lifecycle
 ///          code can follow its documented self-stop policy. Every other
 ///          handle must identify a thread, signal successfully, and close.
-/// @param thread Owned real thread handle.
-/// @return A joined/current result on success, or failed with LastError set.
+/// @param thread Owned real thread handle. The caller must not reuse it after
+///        this call; null reports invalid handle.
+/// @return @ref RT_WIN32_THREAD_JOINED after exact signaling and close,
+///         @ref RT_WIN32_THREAD_JOIN_CURRENT when a self handle was closed
+///         without waiting, or @ref RT_WIN32_THREAD_JOIN_FAILED with
+///         `GetLastError()` describing validation/wait/close failure.
 static inline rt_win32_thread_join_result rt_win32_join_thread_handle(HANDLE thread) {
     if (!thread) {
         SetLastError(ERROR_INVALID_HANDLE);

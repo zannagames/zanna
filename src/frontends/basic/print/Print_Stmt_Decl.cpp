@@ -236,6 +236,9 @@ void printMethod(const MethodDecl &stmt, Context &ctx) {
 /// @param ctx Printer context handling nested emission.
 namespace {
 // Specialised print for CLASS fields so we can include STATIC markers.
+/// @brief Prints the optional CLASS field list with STATIC annotations.
+/// @param fields Class field declarations in source order.
+/// @param ctx Printer context receiving the canonical representation.
 void printClassFields(const std::vector<ClassDecl::Field> &fields, Context &ctx) {
     if (fields.empty())
         return;
@@ -251,6 +254,9 @@ void printClassFields(const std::vector<ClassDecl::Field> &fields, Context &ctx)
 }
 } // namespace
 
+/// @brief Prints a complete CLASS declaration and its nested members.
+/// @param stmt Class declaration AST node.
+/// @param ctx Printer context handling fields and nested body emission.
 void printClass(const ClassDecl &stmt, Context &ctx) {
     auto &os = ctx.stream();
     os << "(CLASS " << stmt.name;

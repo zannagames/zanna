@@ -369,7 +369,9 @@ static bool mayAliasMemory(const std::optional<MemoryAccessClass> &lhs,
 static std::optional<AddressValue> deriveTrackedAddressValue(
     const MInstr &mi,
     const std::array<std::optional<AddressValue>, kNumPhysRegs> &trackedAddrs) noexcept {
-    /// Return the tracked address of the physical-register operand at @p opIdx.
+    /// @brief Returns the tracked address of a physical-register operand.
+    /// @param opIdx Operand index to inspect.
+    /// @return Symbolic address, or `std::nullopt` when the operand is not tracked.
     auto regTracked = [&](std::size_t opIdx) -> std::optional<AddressValue> {
         if (opIdx >= mi.ops.size() || mi.ops[opIdx].kind != MOperand::Kind::Reg ||
             !mi.ops[opIdx].reg.isPhys) {
@@ -560,7 +562,10 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
     for (std::size_t i = 0; i < N; ++i)
         nodes[i].instrIdx = i;
 
-    /// Add an edge from predecessor @p p to consumer @p i with latency @p lat.
+    /// @brief Adds an edge from a predecessor to a consumer.
+    /// @param i Consumer instruction index.
+    /// @param p Predecessor instruction index.
+    /// @param lat Dependency latency.
     auto addDep = [&](std::size_t i, std::size_t p, unsigned lat) {
         if (p != i) {
             nodes[i].preds.push_back(p);
@@ -588,7 +593,9 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
         callerSaved.push_back(static_cast<uint32_t>(reg));
 
     // --- Per-dep-type emitters -------------------------------------------------
-    /// Add true dependencies from each physical-register use to its last definition.
+    /// @brief Adds true dependencies from register uses to their last definitions.
+    /// @param i Current instruction index.
+    /// @param mi Current instruction.
     auto emitRegRAW = [&](std::size_t i, const MInstr &mi) {
         for (std::size_t opIdx = 0; opIdx < mi.ops.size(); ++opIdx) {
             const auto roles = ra::operandRoles(mi, opIdx);
@@ -604,7 +611,9 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
         }
     };
 
-    /// Add the NZCV definition-to-use edge for a flag-consuming instruction.
+    /// @brief Adds the NZCV definition-to-use edge for a flag consumer.
+    /// @param i Current instruction index.
+    /// @param mi Current instruction.
     auto emitFlagUse = [&](std::size_t i, const MInstr &mi) {
         if (usesFlags(mi.opc)) {
             if (lastDef[kIdxNZCV] != kNone)
@@ -613,7 +622,9 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
         }
     };
 
-    /// Serialize implicit SP reads and writes while preserving WAR and WAW order.
+    /// @brief Serializes implicit SP reads and writes while preserving WAR and WAW order.
+    /// @param i Current instruction index.
+    /// @param mi Current instruction.
     auto emitStackPointer = [&](std::size_t i, const MInstr &mi) {
         if (usesSP(mi.opc)) {
             if (lastDef[kIdxSP] != kNone)
@@ -630,7 +641,9 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
         }
     };
 
-    /// Add conservative alias dependencies and record the current memory access.
+    /// @brief Adds conservative alias dependencies and records a memory access.
+    /// @param i Current instruction index.
+    /// @param mi Current instruction.
     auto emitMemoryDeps = [&](std::size_t i, const MInstr &mi) {
         const bool memLoad = isLoad(mi.opc);
         const bool memStore = isStore(mi.opc);
@@ -656,8 +669,11 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
             memoryStoreHistory.push_back(entry);
     };
 
-    /// Make a call depend on prior memory effects, live caller-saved definitions,
-    /// and the most recent NZCV definition, then record a full memory barrier.
+    /// @brief Adds call dependencies and records a full memory barrier.
+    /// @details The call depends on prior memory effects, live caller-saved
+    ///          definitions, and the most recent NZCV definition.
+    /// @param i Current instruction index.
+    /// @param mi Current instruction.
     auto emitCallBarrier = [&](std::size_t i, const MInstr &mi) {
         if (!isCall(mi.opc))
             return;
@@ -675,7 +691,9 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
         memoryStoreHistory.push_back(barrier);
     };
 
-    /// Add WAW/WAR edges for explicit definitions and update register state.
+    /// @brief Adds WAW/WAR edges for explicit definitions and updates register state.
+    /// @param i Current instruction index.
+    /// @param mi Current instruction.
     auto emitRegDefs = [&](std::size_t i, const MInstr &mi) {
         for (std::size_t opIdx = 0; opIdx < mi.ops.size(); ++opIdx) {
             const auto [isUse, isDef] = ra::operandRoles(mi, opIdx);
@@ -695,7 +713,9 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
         }
     };
 
-    /// Add WAW/WAR edges for an NZCV definition and update flag state.
+    /// @brief Adds WAW/WAR edges for an NZCV definition and updates flag state.
+    /// @param i Current instruction index.
+    /// @param mi Current instruction.
     auto emitFlagDef = [&](std::size_t i, const MInstr &mi) {
         if (!setsFlags(mi.opc))
             return;
@@ -707,7 +727,9 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
         lastDef[kIdxNZCV] = i;
     };
 
-    /// Model a call as definitions of caller-saved registers and NZCV.
+    /// @brief Models a call as definitions of caller-saved registers and NZCV.
+    /// @param i Current instruction index.
+    /// @param mi Current instruction.
     auto emitCallClobbers = [&](std::size_t i, const MInstr &mi) {
         if (!isCall(mi.opc))
             return;
@@ -766,6 +788,10 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
         std::sort(pl.begin(), pl.end());
         pl.erase(std::unique(pl.begin(),
                              pl.end(),
+                             /// @brief Tests whether two edges share a predecessor.
+                             /// @param a Left predecessor-latency pair.
+                             /// @param b Right predecessor-latency pair.
+                             /// @return `true` when both pairs name the same predecessor.
                              [](const auto &a, const auto &b) { return a.first == b.first; }),
                  pl.end());
         p.clear();

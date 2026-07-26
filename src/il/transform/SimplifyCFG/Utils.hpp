@@ -18,6 +18,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares shared control-flow and value helpers for SimplifyCFG.
+ *
+ * @details The helpers locate terminators, compare and substitute IL values,
+ *          analyze cross-block temporary uses, manage reachability worklists,
+ *          classify side effects and exception-handling structure, and provide
+ *          a small local bit-vector fallback when the project implementation
+ *          is unavailable.
+ */
+
 #pragma once
 
 #include "il/core/BasicBlock.hpp"
@@ -88,6 +99,7 @@ class BitVector {
     }
 
   private:
+    /// @brief Packed storage for the fallback reachability bits.
     std::vector<bool> bits_;
 };
 

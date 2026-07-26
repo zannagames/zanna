@@ -141,6 +141,8 @@ CompilerResult compile(const CompilerInput &input,
                        il::support::SourceManager &sm) {
     CompilerResult result{};
     auto phaseStart = std::chrono::steady_clock::now();
+    /// @brief Prints elapsed time for one compiler phase when timing is enabled.
+    /// @param phase Phase name appended to the timing prefix.
     auto printPhaseTime = [&](const char *phase) {
         if (!options.timeCompile)
             return;
@@ -167,6 +169,8 @@ CompilerResult compile(const CompilerInput &input,
     printPhaseTime("source-manager");
 
     // Debug timing
+    /// @brief Prints a phase marker when debug compilation tracing is enabled.
+    /// @param phase Phase name to print.
     auto debugTime = [](const char *phase) {
         if (std::getenv("ZIA_DEBUG_COMPILE") != nullptr)
             std::cerr << "[zia] " << phase << std::endl;

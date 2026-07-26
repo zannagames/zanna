@@ -15,6 +15,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Defines RAII wrappers for temporary process-wide I/O and environment changes.
+/// @details Platform adapters normalize descriptor and environment operations,
+///          while scoped owners restore prior state and retain the first failure
+///          as human-readable text. Because these mutations affect the entire
+///          process, callers must coordinate concurrent threads externally.
+
 #pragma once
 
 #include "common/Filesystem.hpp"
@@ -43,24 +50,40 @@
 namespace zanna::tools {
 
 #ifdef _WIN32
+/// @brief Duplicate a descriptor using the Windows CRT.
+/// @param fd Descriptor to duplicate.
+/// @return New descriptor, or a negative value on failure.
 inline int scopedDup(int fd) {
     return _dup(fd);
 }
 
+/// @brief Replace one descriptor with a duplicate of another on Windows.
+/// @param oldFd Descriptor whose open file is copied.
+/// @param newFd Descriptor number to replace.
+/// @return Zero on success, or a negative value on failure.
 inline int scopedDup2(int oldFd, int newFd) {
     return _dup2(oldFd, newFd);
 }
 
+/// @brief Close a Windows CRT descriptor.
+/// @param fd Descriptor to close.
+/// @return Zero on success, or a negative value on failure.
 inline int scopedClose(int fd) {
     return _close(fd);
 }
 
+/// @brief Open a UTF-8 path for binary, non-inheritable input on Windows.
+/// @param path Null-terminated UTF-8 path; null is treated as an empty path.
+/// @return Open descriptor, or a negative value on failure.
 inline int scopedOpenRead(const char *path) {
     const std::filesystem::path nativePath =
         zanna::filesystem::pathFromUtf8(path ? std::string_view(path) : std::string_view());
     return _wopen(nativePath.c_str(), _O_RDONLY | _O_BINARY | _O_NOINHERIT);
 }
 
+/// @brief Open or create a UTF-8 path for truncating binary output on Windows.
+/// @param path Null-terminated UTF-8 path; null is treated as an empty path.
+/// @return Open descriptor, or a negative value on failure.
 inline int scopedOpenWriteTruncate(const char *path) {
     const std::filesystem::path nativePath =
         zanna::filesystem::pathFromUtf8(path ? std::string_view(path) : std::string_view());
@@ -69,46 +92,81 @@ inline int scopedOpenWriteTruncate(const char *path) {
                   _S_IREAD | _S_IWRITE);
 }
 
+/// @brief Convert the current C runtime error number to text.
+/// @return Owned description of the current `errno` value.
 inline std::string scopedLastError() {
     return std::strerror(errno);
 }
 
+/// @brief Set a process environment variable through the Windows CRT.
+/// @param name Null-terminated variable name.
+/// @param value Value to assign; null is normalized to an empty string.
+/// @return Zero on success or a CRT error code.
 inline int scopedSetEnv(const char *name, const char *value) {
     return _putenv_s(name, value ? value : "");
 }
 
+/// @brief Remove a process environment variable through the Windows CRT.
+/// @param name Null-terminated variable name.
+/// @return Zero on success or a CRT error code.
 inline int scopedUnsetEnv(const char *name) {
     return _putenv_s(name, "");
 }
 #else
+/// @brief Duplicate a POSIX file descriptor.
+/// @param fd Descriptor to duplicate.
+/// @return New descriptor, or `-1` on failure.
 inline int scopedDup(int fd) {
     return dup(fd);
 }
 
+/// @brief Atomically replace one POSIX descriptor with another.
+/// @param oldFd Descriptor whose open file description is copied.
+/// @param newFd Descriptor number to replace.
+/// @return @p newFd on success, or `-1` on failure.
 inline int scopedDup2(int oldFd, int newFd) {
     return dup2(oldFd, newFd);
 }
 
+/// @brief Close a POSIX file descriptor.
+/// @param fd Descriptor to close.
+/// @return Zero on success, or `-1` on failure.
 inline int scopedClose(int fd) {
     return close(fd);
 }
 
+/// @brief Open a path for read-only input on POSIX.
+/// @param path Null-terminated filesystem path.
+/// @return Open descriptor, or `-1` on failure.
 inline int scopedOpenRead(const char *path) {
     return open(path, O_RDONLY);
 }
 
+/// @brief Open or create a path for truncating output on POSIX.
+/// @param path Null-terminated filesystem path.
+/// @return Open descriptor, or `-1` on failure.
+/// @details New files use mode `0666`, subject to the process umask.
 inline int scopedOpenWriteTruncate(const char *path) {
     return open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
 }
 
+/// @brief Convert the current POSIX error number to text.
+/// @return Owned description of the current `errno` value.
 inline std::string scopedLastError() {
     return std::strerror(errno);
 }
 
+/// @brief Set or replace a POSIX process environment variable.
+/// @param name Null-terminated variable name.
+/// @param value Value to assign; null is normalized to an empty string.
+/// @return Zero on success, or `-1` on failure.
 inline int scopedSetEnv(const char *name, const char *value) {
     return setenv(name, value ? value : "", 1);
 }
 
+/// @brief Remove a POSIX process environment variable.
+/// @param name Null-terminated variable name.
+/// @return Zero on success, or `-1` on failure.
 inline int scopedUnsetEnv(const char *name) {
     return unsetenv(name);
 }
@@ -126,6 +184,9 @@ class ScopedFdRedirect {
     /// @param targetFd Descriptor to replace, for example fileno(stdin).
     /// @param path File to open.
     /// @param writeMode When true, open for truncating output; otherwise open for input.
+    /// @details Construction records failures in @ref errorMessage instead of
+    ///          throwing. A failed redirect closes any temporary descriptors and
+    ///          leaves the original target descriptor in place.
     ScopedFdRedirect(int targetFd, const std::string &path, bool writeMode)
         : targetFd_(targetFd), path_(path), writeMode_(writeMode) {
         savedFd_ = scopedDup(targetFd_);
@@ -154,19 +215,27 @@ class ScopedFdRedirect {
     }
 
     /// @brief Restore the original descriptor if still active.
+    /// @details Performs best-effort restoration through @ref finish; callers
+    ///          that need to report restore failures should call finish explicitly
+    ///          before destruction.
     ~ScopedFdRedirect() {
         (void)finish();
     }
 
+    /// @brief Disallow copying ownership of the saved descriptor.
     ScopedFdRedirect(const ScopedFdRedirect &) = delete;
+    /// @brief Disallow copy assignment of descriptor restoration state.
     ScopedFdRedirect &operator=(const ScopedFdRedirect &) = delete;
 
     /// @brief Return true when redirection succeeded and has not reported restore errors.
+    /// @return True when no construction, flush, or restoration error is recorded.
     [[nodiscard]] bool ok() const {
         return error_.empty();
     }
 
     /// @brief Human-readable error from construction or restoration.
+    /// @return Reference to the retained first error, or an empty string.
+    /// @note The reference remains valid only for this redirect object's lifetime.
     [[nodiscard]] const std::string &errorMessage() const {
         return error_;
     }
@@ -213,6 +282,7 @@ class ScopedFdRedirect {
 class ScopedStdinRedirect : public ScopedFdRedirect {
   public:
     /// @brief Open @p path for reading and make it the process stdin descriptor.
+    /// @param path File whose bytes should replace standard input.
     explicit ScopedStdinRedirect(const std::string &path)
         : ScopedFdRedirect(fileno(stdin), path, false) {}
 };
@@ -223,6 +293,7 @@ class ScopedStdinRedirect : public ScopedFdRedirect {
 class ScopedStdoutRedirect : public ScopedFdRedirect {
   public:
     /// @brief Open @p path for writing and make it the process stdout descriptor.
+    /// @param path File to create or truncate for standard output.
     explicit ScopedStdoutRedirect(const std::string &path)
         : ScopedFdRedirect(fileno(stdout), path, true) {}
 };
@@ -234,6 +305,10 @@ class ScopedStdoutRedirect : public ScopedFdRedirect {
 class ScopedEnvVar {
   public:
     /// @brief Set @p name to @p value, or unset it when @p value is null.
+    /// @param name Environment variable name; null or empty records an error.
+    /// @param value New value, or null to remove the variable temporarily.
+    /// @details Copies the prior value before mutation so restoration does not
+    ///          depend on the environment's storage remaining stable.
     ScopedEnvVar(const char *name, const char *value) : name_(name ? name : "") {
         if (name_.empty()) {
             error_ = "environment variable name must not be empty";
@@ -247,25 +322,34 @@ class ScopedEnvVar {
     }
 
     /// @brief Restore the prior environment state.
+    /// @details Calls @ref restore as a best-effort fallback. Callers that need
+    ///          to surface restoration errors should restore explicitly.
     ~ScopedEnvVar() {
         (void)restore();
     }
 
+    /// @brief Disallow copying ownership of environment restoration state.
     ScopedEnvVar(const ScopedEnvVar &) = delete;
+    /// @brief Disallow copy assignment of environment restoration state.
     ScopedEnvVar &operator=(const ScopedEnvVar &) = delete;
 
     /// @brief Return true when construction and restoration have not failed.
+    /// @return True when no update or restoration error is recorded.
     [[nodiscard]] bool ok() const {
         return error_.empty();
     }
 
     /// @brief Return the first environment update failure, if any.
+    /// @return Reference to retained error text, or an empty string.
+    /// @note The reference remains valid only for this object's lifetime.
     [[nodiscard]] const std::string &errorMessage() const {
         return error_;
     }
 
     /// @brief Restore the environment immediately.
     /// @return True when the environment was restored or no change was active.
+    /// @details Idempotently reinstates the copied value or removes a variable
+    ///          that was absent at construction. The first failure is retained.
     bool restore() {
         if (restored_)
             return error_.empty();

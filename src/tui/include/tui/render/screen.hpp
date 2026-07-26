@@ -5,11 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the screen buffer and cell types for Zanna's TUI
-// rendering system. The ScreenBuffer provides a 2D grid of styled character
-// cells that widgets paint into. The Renderer then diffs the current
-// buffer against a previous snapshot to compute minimal ANSI escape
-// sequences for terminal output.
+/// @file
+/// @brief Declares terminal color, style, cell, and differential screen-buffer types.
+/// @details Widgets paint a current 2D cell grid, while ScreenBuffer retains a
+///          previous snapshot and reports minimal horizontal change spans for
+///          the ANSI renderer.
 //
 // The rendering pipeline works as follows:
 //   1. ScreenBuffer::clear() resets all cells to a background style
@@ -41,13 +41,22 @@ namespace zanna::tui::render {
 ///          Alpha defaults to 255 (fully opaque). Used for both foreground
 ///          and background colors in the Style struct.
 struct RGBA {
-    uint8_t r{0};
-    uint8_t g{0};
-    uint8_t b{0};
-    uint8_t a{255};
+    uint8_t r{0};   ///< Red channel in the inclusive range 0..255.
+    uint8_t g{0};   ///< Green channel in the inclusive range 0..255.
+    uint8_t b{0};   ///< Blue channel in the inclusive range 0..255.
+    uint8_t a{255}; ///< Alpha channel; 255 is fully opaque.
 };
 
+/// @brief Compare two colors channel by channel.
+/// @param a First color.
+/// @param b Second color.
+/// @return true when all RGBA channels match.
 bool operator==(const RGBA &a, const RGBA &b);
+
+/// @brief Test two colors for channel inequality.
+/// @param a First color.
+/// @param b Second color.
+/// @return true when at least one RGBA channel differs.
 bool operator!=(const RGBA &a, const RGBA &b);
 
 /// @brief Bitflags for terminal text attributes applied to cells.
@@ -55,15 +64,15 @@ bool operator!=(const RGBA &a, const RGBA &b);
 ///          simultaneously (e.g., Bold | Italic for bold italic text).
 ///          These map to standard ANSI/VT text attribute codes.
 enum Attr : uint16_t {
-    AttrNone = 0,
-    Bold = 1 << 0,
-    Faint = 1 << 1,
-    Italic = 1 << 2,
-    Underline = 1 << 3,
-    Blink = 1 << 4,
-    Reverse = 1 << 5,
-    Invisible = 1 << 6,
-    Strike = 1 << 7
+    AttrNone = 0,      ///< No text attributes.
+    Bold = 1 << 0,     ///< Increased intensity.
+    Faint = 1 << 1,    ///< Decreased intensity.
+    Italic = 1 << 2,   ///< Italic text.
+    Underline = 1 << 3, ///< Underlined text.
+    Blink = 1 << 4,    ///< Blinking text where supported.
+    Reverse = 1 << 5,  ///< Swapped foreground and background.
+    Invisible = 1 << 6, ///< Concealed glyphs.
+    Strike = 1 << 7    ///< Strikethrough text.
 };
 
 /// @brief Visual style applied to a terminal cell, combining colors and attributes.
@@ -71,12 +80,21 @@ enum Attr : uint16_t {
 ///          Styles are compared for equality during diff computation to minimize
 ///          terminal escape sequence output.
 struct Style {
-    RGBA fg{};
-    RGBA bg{};
-    uint16_t attrs{0};
+    RGBA fg{};        ///< Foreground glyph color.
+    RGBA bg{};        ///< Background cell color.
+    uint16_t attrs{0}; ///< Bitwise combination of @ref Attr values.
 };
 
+/// @brief Compare two terminal styles.
+/// @param a First style.
+/// @param b Second style.
+/// @return true when foreground, background, and attributes match.
 bool operator==(const Style &a, const Style &b);
+
+/// @brief Test two terminal styles for inequality.
+/// @param a First style.
+/// @param b Second style.
+/// @return true when any style component differs.
 bool operator!=(const Style &a, const Style &b);
 
 /// @brief Single character cell in the screen buffer with style and display width.
@@ -85,12 +103,21 @@ bool operator!=(const Style &a, const Style &b);
 ///          how many terminal columns the character occupies (1 for most characters,
 ///          2 for wide CJK characters, 0 for combining marks).
 struct Cell {
-    char32_t ch{U' '};
-    Style style{};
-    uint8_t width{1};
+    char32_t ch{U' '}; ///< Unicode code point displayed in this cell.
+    Style style{};     ///< Colors and attributes applied to the glyph.
+    uint8_t width{1};  ///< Terminal column width of the glyph.
 };
 
+/// @brief Compare two screen cells.
+/// @param a First cell.
+/// @param b Second cell.
+/// @return true when glyph, style, and display width match.
 bool operator==(const Cell &a, const Cell &b);
+
+/// @brief Test two screen cells for inequality.
+/// @param a First cell.
+/// @param b Second cell.
+/// @return true when any cell component differs.
 bool operator!=(const Cell &a, const Cell &b);
 
 /// @brief 2D grid of styled character cells with differential update support.
@@ -104,21 +131,30 @@ class ScreenBuffer {
     /// @details Used by computeDiff() to report regions that need to be redrawn.
     ///          The Renderer iterates these spans to emit targeted ANSI sequences.
     struct DiffSpan {
-        int row{0};
-        int x0{0};
-        int x1{0};
+        int row{0}; ///< Zero-based row containing the changes.
+        int x0{0};  ///< Inclusive first changed column.
+        int x1{0};  ///< Exclusive column after the changed span.
     };
 
     /// @brief Resize buffer to given rows and columns.
+    /// @param rows New nonnegative row count.
+    /// @param cols New nonnegative column count.
     void resize(int rows, int cols);
 
     /// @brief Access cell at position (y, x).
+    /// @param y Zero-based row.
+    /// @param x Zero-based column.
+    /// @return Mutable cell reference; coordinates must be in bounds.
     [[nodiscard]] Cell &at(int y, int x);
 
     /// @brief Const access to cell at position (y, x).
+    /// @param y Zero-based row.
+    /// @param x Zero-based column.
+    /// @return Const cell reference; coordinates must be in bounds.
     [[nodiscard]] const Cell &at(int y, int x) const;
 
     /// @brief Fill all cells with spaces using the given style.
+    /// @param style Style assigned to every cleared cell.
     void clear(const Style &style);
 
     /// @brief Fill a rectangular region with the specified character and style.
@@ -138,10 +174,10 @@ class ScreenBuffer {
     void computeDiff(std::vector<DiffSpan> &outSpans) const;
 
   private:
-    int rows_{0};
-    int cols_{0};
-    std::vector<Cell> cells_{};
-    std::vector<Cell> prev_{};
+    int rows_{0};                 ///< Current grid height.
+    int cols_{0};                 ///< Current grid width.
+    std::vector<Cell> cells_{};   ///< Current frame cells in row-major order.
+    std::vector<Cell> prev_{};    ///< Previous snapshot cells in row-major order.
 };
 
 } // namespace zanna::tui::render

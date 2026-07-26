@@ -210,6 +210,7 @@ static std::string sanitizeLabel(const std::string &name) {
     return sanitized;
 }
 
+/// @copydoc AsmEmitter::emitFunctionHeader()
 void AsmEmitter::emitFunctionHeader(std::ostream &os, const std::string &name) const {
     const bool darwin = !target_->isLinux() && !target_->isWindows();
     os << ".text\n";
@@ -238,6 +239,7 @@ void AsmEmitter::emitFunctionHeader(std::ostream &os, const std::string &name) c
         os << "  bti c\n";
 }
 
+/// @copydoc AsmEmitter::emitPrologue(std::ostream&)
 void AsmEmitter::emitPrologue(std::ostream &os) const {
     if (target_->hasReturnAddressSigning())
         os << "  paciasp\n";
@@ -246,6 +248,7 @@ void AsmEmitter::emitPrologue(std::ostream &os) const {
     os << "  mov x29, sp\n";
 }
 
+/// @copydoc AsmEmitter::emitEpilogue(std::ostream&)
 void AsmEmitter::emitEpilogue(std::ostream &os) const {
     // ldp x29, x30, [sp], #16; ret
     os << "  ldp x29, x30, [sp], #16\n";
@@ -254,6 +257,7 @@ void AsmEmitter::emitEpilogue(std::ostream &os) const {
     os << "  ret\n";
 }
 
+/// @copydoc AsmEmitter::emitPrologue(std::ostream&,const FramePlan&)
 void AsmEmitter::emitPrologue(std::ostream &os, const FramePlan &plan) const {
     // Step emitter for text output — each step corresponds one-to-one with a
     // call in FrameCodegen.hpp::iteratePrologue.
@@ -327,6 +331,7 @@ void AsmEmitter::emitPrologue(std::ostream &os, const FramePlan &plan) const {
                     Steps(os, *this));
 }
 
+/// @copydoc AsmEmitter::emitEpilogue(std::ostream&,const FramePlan&)
 void AsmEmitter::emitEpilogue(std::ostream &os, const FramePlan &plan) const {
     struct Steps {
         std::ostream &os;
@@ -398,10 +403,12 @@ void AsmEmitter::emitEpilogue(std::ostream &os, const FramePlan &plan) const {
                     Steps(os, *this));
 }
 
+/// @copydoc AsmEmitter::emitMovRR()
 void AsmEmitter::emitMovRR(std::ostream &os, PhysReg dst, PhysReg src) const {
     os << "  mov " << rn(dst) << ", " << rn(src) << "\n";
 }
 
+/// @copydoc AsmEmitter::emitMovRI()
 void AsmEmitter::emitMovRI(std::ostream &os, PhysReg dst, long long imm) const {
     // Use movz/movk sequence for wide immediates that can't be encoded directly
     if (needsWideImmSequence(imm)) {
@@ -411,34 +418,42 @@ void AsmEmitter::emitMovRI(std::ostream &os, PhysReg dst, long long imm) const {
     }
 }
 
+/// @copydoc AsmEmitter::emitAddRRR()
 void AsmEmitter::emitAddRRR(std::ostream &os, PhysReg dst, PhysReg lhs, PhysReg rhs) const {
     emit3R(os, "add", dst, lhs, rhs);
 }
 
+/// @copydoc AsmEmitter::emitSubRRR()
 void AsmEmitter::emitSubRRR(std::ostream &os, PhysReg dst, PhysReg lhs, PhysReg rhs) const {
     emit3R(os, "sub", dst, lhs, rhs);
 }
 
+/// @copydoc AsmEmitter::emitMulRRR()
 void AsmEmitter::emitMulRRR(std::ostream &os, PhysReg dst, PhysReg lhs, PhysReg rhs) const {
     emit3R(os, "mul", dst, lhs, rhs);
 }
 
+/// @copydoc AsmEmitter::emitSmulhRRR()
 void AsmEmitter::emitSmulhRRR(std::ostream &os, PhysReg dst, PhysReg lhs, PhysReg rhs) const {
     emit3R(os, "smulh", dst, lhs, rhs);
 }
 
+/// @copydoc AsmEmitter::emitUmulhRRR()
 void AsmEmitter::emitUmulhRRR(std::ostream &os, PhysReg dst, PhysReg lhs, PhysReg rhs) const {
     emit3R(os, "umulh", dst, lhs, rhs);
 }
 
+/// @copydoc AsmEmitter::emitSDivRRR()
 void AsmEmitter::emitSDivRRR(std::ostream &os, PhysReg dst, PhysReg lhs, PhysReg rhs) const {
     emit3R(os, "sdiv", dst, lhs, rhs);
 }
 
+/// @copydoc AsmEmitter::emitUDivRRR()
 void AsmEmitter::emitUDivRRR(std::ostream &os, PhysReg dst, PhysReg lhs, PhysReg rhs) const {
     emit3R(os, "udiv", dst, lhs, rhs);
 }
 
+/// @copydoc AsmEmitter::emitMSubRRRR()
 void AsmEmitter::emitMSubRRRR(
     std::ostream &os, PhysReg dst, PhysReg mul1, PhysReg mul2, PhysReg sub) const {
     // AArch64 multiply-subtract: msub xd, xn, xm, xa => xd = xa - xn*xm
@@ -454,6 +469,7 @@ void AsmEmitter::emitMSubRRRR(
     os << "  cbz " << rn(reg) << ", " << label << "\n";
 }
 
+/// @copydoc AsmEmitter::emitAddRI()
 void AsmEmitter::emitAddRI(std::ostream &os, PhysReg dst, PhysReg lhs, long long imm) const {
     const uint64_t magnitude = absImmUnsigned(imm);
     if (const auto enc = classifyAddSubImmEncoding(magnitude)) {
@@ -474,6 +490,7 @@ void AsmEmitter::emitAddRI(std::ostream &os, PhysReg dst, PhysReg lhs, long long
     emit3R(os, "add", dst, lhs, kScratchGPR);
 }
 
+/// @copydoc AsmEmitter::emitSubRI()
 void AsmEmitter::emitSubRI(std::ostream &os, PhysReg dst, PhysReg lhs, long long imm) const {
     const uint64_t magnitude = absImmUnsigned(imm);
     if (const auto enc = classifyAddSubImmEncoding(magnitude)) {
@@ -494,18 +511,22 @@ void AsmEmitter::emitSubRI(std::ostream &os, PhysReg dst, PhysReg lhs, long long
     emit3R(os, "sub", dst, lhs, kScratchGPR);
 }
 
+/// @copydoc AsmEmitter::emitAndRRR()
 void AsmEmitter::emitAndRRR(std::ostream &os, PhysReg dst, PhysReg lhs, PhysReg rhs) const {
     emit3R(os, "and", dst, lhs, rhs);
 }
 
+/// @copydoc AsmEmitter::emitOrrRRR()
 void AsmEmitter::emitOrrRRR(std::ostream &os, PhysReg dst, PhysReg lhs, PhysReg rhs) const {
     emit3R(os, "orr", dst, lhs, rhs);
 }
 
+/// @copydoc AsmEmitter::emitEorRRR()
 void AsmEmitter::emitEorRRR(std::ostream &os, PhysReg dst, PhysReg lhs, PhysReg rhs) const {
     emit3R(os, "eor", dst, lhs, rhs);
 }
 
+/// @copydoc AsmEmitter::emitAndRI()
 void AsmEmitter::emitAndRI(std::ostream &os, PhysReg dst, PhysReg src, long long imm) const {
     if (binenc::encodeLogicalImmediate(static_cast<uint64_t>(imm)) >= 0) {
         emit2RI(os, "and", dst, src, imm);
@@ -516,6 +537,7 @@ void AsmEmitter::emitAndRI(std::ostream &os, PhysReg dst, PhysReg src, long long
     emit3R(os, "and", dst, src, kScratchGPR);
 }
 
+/// @copydoc AsmEmitter::emitOrrRI()
 void AsmEmitter::emitOrrRI(std::ostream &os, PhysReg dst, PhysReg src, long long imm) const {
     if (binenc::encodeLogicalImmediate(static_cast<uint64_t>(imm)) >= 0) {
         emit2RI(os, "orr", dst, src, imm);
@@ -526,6 +548,7 @@ void AsmEmitter::emitOrrRI(std::ostream &os, PhysReg dst, PhysReg src, long long
     emit3R(os, "orr", dst, src, kScratchGPR);
 }
 
+/// @copydoc AsmEmitter::emitEorRI()
 void AsmEmitter::emitEorRI(std::ostream &os, PhysReg dst, PhysReg src, long long imm) const {
     if (binenc::encodeLogicalImmediate(static_cast<uint64_t>(imm)) >= 0) {
         emit2RI(os, "eor", dst, src, imm);
@@ -536,34 +559,42 @@ void AsmEmitter::emitEorRI(std::ostream &os, PhysReg dst, PhysReg src, long long
     emit3R(os, "eor", dst, src, kScratchGPR);
 }
 
+/// @copydoc AsmEmitter::emitLslRI()
 void AsmEmitter::emitLslRI(std::ostream &os, PhysReg dst, PhysReg lhs, long long sh) const {
     emit2RI(os, "lsl", dst, lhs, sh);
 }
 
+/// @copydoc AsmEmitter::emitLsrRI()
 void AsmEmitter::emitLsrRI(std::ostream &os, PhysReg dst, PhysReg lhs, long long sh) const {
     emit2RI(os, "lsr", dst, lhs, sh);
 }
 
+/// @copydoc AsmEmitter::emitAsrRI()
 void AsmEmitter::emitAsrRI(std::ostream &os, PhysReg dst, PhysReg lhs, long long sh) const {
     emit2RI(os, "asr", dst, lhs, sh);
 }
 
+/// @copydoc AsmEmitter::emitLslvRRR()
 void AsmEmitter::emitLslvRRR(std::ostream &os, PhysReg dst, PhysReg lhs, PhysReg rhs) const {
     emit3R(os, "lslv", dst, lhs, rhs);
 }
 
+/// @copydoc AsmEmitter::emitLsrvRRR()
 void AsmEmitter::emitLsrvRRR(std::ostream &os, PhysReg dst, PhysReg lhs, PhysReg rhs) const {
     emit3R(os, "lsrv", dst, lhs, rhs);
 }
 
+/// @copydoc AsmEmitter::emitAsrvRRR()
 void AsmEmitter::emitAsrvRRR(std::ostream &os, PhysReg dst, PhysReg lhs, PhysReg rhs) const {
     emit3R(os, "asrv", dst, lhs, rhs);
 }
 
+/// @copydoc AsmEmitter::emitCmpRR()
 void AsmEmitter::emitCmpRR(std::ostream &os, PhysReg lhs, PhysReg rhs) const {
     os << "  cmp " << rn(lhs) << ", " << rn(rhs) << "\n";
 }
 
+/// @copydoc AsmEmitter::emitCmpRI()
 void AsmEmitter::emitCmpRI(std::ostream &os, PhysReg lhs, long long imm) const {
     // ARM64 cmp immediate range: 0-4095 (12-bit unsigned)
     // ARM64 cmn immediate range: 0-4095 (equivalent to cmp with negated value)
@@ -577,14 +608,17 @@ void AsmEmitter::emitCmpRI(std::ostream &os, PhysReg lhs, long long imm) const {
     }
 }
 
+/// @copydoc AsmEmitter::emitTstRR()
 void AsmEmitter::emitTstRR(std::ostream &os, PhysReg lhs, PhysReg rhs) const {
     os << "  tst " << rn(lhs) << ", " << rn(rhs) << "\n";
 }
 
+/// @copydoc AsmEmitter::emitCset()
 void AsmEmitter::emitCset(std::ostream &os, PhysReg dst, const char *cond) const {
     os << "  cset " << rn(dst) << ", " << cond << "\n";
 }
 
+/// @copydoc AsmEmitter::emitSubSp()
 void AsmEmitter::emitSubSp(std::ostream &os, long long bytes) const {
     // ARM64 add/sub immediate supports 12-bit unsigned values (0-4095).
     // Prefer the shifted-12 form when possible to avoid thousands of small
@@ -610,6 +644,7 @@ void AsmEmitter::emitSubSp(std::ostream &os, long long bytes) const {
         emit2RI(os, "sub", PhysReg::SP, PhysReg::SP, bytes);
 }
 
+/// @copydoc AsmEmitter::emitAddSp()
 void AsmEmitter::emitAddSp(std::ostream &os, long long bytes) const {
     // ARM64 add/sub immediate supports 12-bit unsigned values (0-4095).
     // Prefer the shifted-12 form when possible to avoid excessive epilogue size.
@@ -661,6 +696,7 @@ static PhysReg chooseGprScratch(PhysReg base, std::optional<PhysReg> avoid = std
     return avoid ? chooseGprScratch({base, *avoid}) : chooseGprScratch({base});
 }
 
+/// @copydoc AsmEmitter::emitStrToSp()
 void AsmEmitter::emitStrToSp(std::ostream &os, PhysReg src, long long offset) const {
     if (offset >= 0 && (offset % 8) == 0 && (offset / 8) <= 4095) {
         os << "  str " << rn(src) << ", [sp, #" << offset << "]\n";
@@ -673,6 +709,7 @@ void AsmEmitter::emitStrToSp(std::ostream &os, PhysReg src, long long offset) co
     os << "  str " << rn(src) << ", [" << rn(scratch) << "]\n";
 }
 
+/// @copydoc AsmEmitter::emitStrFprToSp()
 void AsmEmitter::emitStrFprToSp(std::ostream &os, PhysReg src, long long offset) const {
     if (offset >= 0 && (offset % 8) == 0 && (offset / 8) <= 4095) {
         os << "  str ";
@@ -778,6 +815,7 @@ static void emitNarrowGprAccess(
     os << ", [" << regName(base) << ", #" << offset << "]\n";
 }
 
+/// @copydoc AsmEmitter::emitLdrFromFp()
 void AsmEmitter::emitLdrFromFp(std::ostream &os, PhysReg dst, long long offset) const {
     if (isInSignedImmRange(offset)) {
         os << "  ldr " << rn(dst) << ", [x29, #" << offset << "]\n";
@@ -789,6 +827,7 @@ void AsmEmitter::emitLdrFromFp(std::ostream &os, PhysReg dst, long long offset) 
     }
 }
 
+/// @copydoc AsmEmitter::emitStrToFp()
 void AsmEmitter::emitStrToFp(std::ostream &os, PhysReg src, long long offset) const {
     if (isInSignedImmRange(offset)) {
         os << "  str " << rn(src) << ", [x29, #" << offset << "]\n";
@@ -800,42 +839,49 @@ void AsmEmitter::emitStrToFp(std::ostream &os, PhysReg src, long long offset) co
     }
 }
 
+/// @copydoc AsmEmitter::emitLdr8FromFp()
 void AsmEmitter::emitLdr8FromFp(std::ostream &os, PhysReg dst, long long offset) const {
     long long resolved;
     PhysReg base = resolveBaseOffset(os, PhysReg::X29, offset, resolved);
     emitNarrowGprAccess(os, narrowLoadMnemonic(1), dst, base, resolved);
 }
 
+/// @copydoc AsmEmitter::emitStr8ToFp()
 void AsmEmitter::emitStr8ToFp(std::ostream &os, PhysReg src, long long offset) const {
     long long resolved;
     PhysReg base = resolveBaseOffset(os, PhysReg::X29, offset, resolved, src);
     emitNarrowGprAccess(os, narrowStoreMnemonic(1), src, base, resolved);
 }
 
+/// @copydoc AsmEmitter::emitLdr16FromFp()
 void AsmEmitter::emitLdr16FromFp(std::ostream &os, PhysReg dst, long long offset) const {
     long long resolved;
     PhysReg base = resolveBaseOffset(os, PhysReg::X29, offset, resolved);
     emitNarrowGprAccess(os, narrowLoadMnemonic(2), dst, base, resolved);
 }
 
+/// @copydoc AsmEmitter::emitStr16ToFp()
 void AsmEmitter::emitStr16ToFp(std::ostream &os, PhysReg src, long long offset) const {
     long long resolved;
     PhysReg base = resolveBaseOffset(os, PhysReg::X29, offset, resolved, src);
     emitNarrowGprAccess(os, narrowStoreMnemonic(2), src, base, resolved);
 }
 
+/// @copydoc AsmEmitter::emitLdr32FromFp()
 void AsmEmitter::emitLdr32FromFp(std::ostream &os, PhysReg dst, long long offset) const {
     long long resolved;
     PhysReg base = resolveBaseOffset(os, PhysReg::X29, offset, resolved);
     emitNarrowGprAccess(os, narrowLoadMnemonic(4), dst, base, resolved);
 }
 
+/// @copydoc AsmEmitter::emitStr32ToFp()
 void AsmEmitter::emitStr32ToFp(std::ostream &os, PhysReg src, long long offset) const {
     long long resolved;
     PhysReg base = resolveBaseOffset(os, PhysReg::X29, offset, resolved, src);
     emitNarrowGprAccess(os, narrowStoreMnemonic(4), src, base, resolved);
 }
 
+/// @copydoc AsmEmitter::emitLdrFprFromFp()
 void AsmEmitter::emitLdrFprFromFp(std::ostream &os, PhysReg dst, long long offset) const {
     if (isInSignedImmRange(offset)) {
         os << "  ldr ";
@@ -851,6 +897,7 @@ void AsmEmitter::emitLdrFprFromFp(std::ostream &os, PhysReg dst, long long offse
     }
 }
 
+/// @copydoc AsmEmitter::emitStrFprToFp()
 void AsmEmitter::emitStrFprToFp(std::ostream &os, PhysReg src, long long offset) const {
     if (isInSignedImmRange(offset)) {
         os << "  str ";
@@ -866,6 +913,7 @@ void AsmEmitter::emitStrFprToFp(std::ostream &os, PhysReg src, long long offset)
     }
 }
 
+/// @copydoc AsmEmitter::emitAddFpImm()
 void AsmEmitter::emitAddFpImm(std::ostream &os, PhysReg dst, long long offset) const {
     // Compute dst = x29 + offset (where offset is typically negative for locals)
     // ARM64 add/sub immediate can only handle 12-bit unsigned values,
@@ -891,6 +939,7 @@ void AsmEmitter::emitAddFpImm(std::ostream &os, PhysReg dst, long long offset) c
 /// @param base Original base register.
 /// @param offset Byte offset from base.
 /// @param[out] resolvedOffset Offset to use with the returned base register.
+/// @param avoid Optional live transfer register that scratch selection must not clobber.
 /// @return The register to use as the base in the subsequent load/store.
 PhysReg AsmEmitter::resolveBaseOffset(std::ostream &os,
                                       PhysReg base,
@@ -921,7 +970,7 @@ PhysReg AsmEmitter::resolveBaseOffset(std::ostream &os,
     return *scratch;
 }
 
-/// @brief Load a GPR from [base + offset], using a scratch register for large offsets.
+/// @copydoc AsmEmitter::emitLdrFromBase()
 void AsmEmitter::emitLdrFromBase(std::ostream &os,
                                  PhysReg dst,
                                  PhysReg base,
@@ -931,7 +980,7 @@ void AsmEmitter::emitLdrFromBase(std::ostream &os,
     os << "  ldr " << rn(dst) << ", [" << rn(b) << ", #" << resolved << "]\n";
 }
 
-/// @brief Store a GPR to [base + offset], using a scratch register for large offsets.
+/// @copydoc AsmEmitter::emitStrToBase()
 void AsmEmitter::emitStrToBase(std::ostream &os,
                                PhysReg src,
                                PhysReg base,
@@ -941,6 +990,7 @@ void AsmEmitter::emitStrToBase(std::ostream &os,
     os << "  str " << rn(src) << ", [" << rn(b) << ", #" << resolved << "]\n";
 }
 
+/// @copydoc AsmEmitter::emitLdr8FromBase()
 void AsmEmitter::emitLdr8FromBase(std::ostream &os,
                                   PhysReg dst,
                                   PhysReg base,
@@ -950,6 +1000,7 @@ void AsmEmitter::emitLdr8FromBase(std::ostream &os,
     emitNarrowGprAccess(os, narrowLoadMnemonic(1), dst, b, resolved);
 }
 
+/// @copydoc AsmEmitter::emitStr8ToBase()
 void AsmEmitter::emitStr8ToBase(std::ostream &os,
                                 PhysReg src,
                                 PhysReg base,
@@ -959,6 +1010,7 @@ void AsmEmitter::emitStr8ToBase(std::ostream &os,
     emitNarrowGprAccess(os, narrowStoreMnemonic(1), src, b, resolved);
 }
 
+/// @copydoc AsmEmitter::emitLdr16FromBase()
 void AsmEmitter::emitLdr16FromBase(std::ostream &os,
                                    PhysReg dst,
                                    PhysReg base,
@@ -968,6 +1020,7 @@ void AsmEmitter::emitLdr16FromBase(std::ostream &os,
     emitNarrowGprAccess(os, narrowLoadMnemonic(2), dst, b, resolved);
 }
 
+/// @copydoc AsmEmitter::emitStr16ToBase()
 void AsmEmitter::emitStr16ToBase(std::ostream &os,
                                  PhysReg src,
                                  PhysReg base,
@@ -977,6 +1030,7 @@ void AsmEmitter::emitStr16ToBase(std::ostream &os,
     emitNarrowGprAccess(os, narrowStoreMnemonic(2), src, b, resolved);
 }
 
+/// @copydoc AsmEmitter::emitLdr32FromBase()
 void AsmEmitter::emitLdr32FromBase(std::ostream &os,
                                    PhysReg dst,
                                    PhysReg base,
@@ -986,6 +1040,7 @@ void AsmEmitter::emitLdr32FromBase(std::ostream &os,
     emitNarrowGprAccess(os, narrowLoadMnemonic(4), dst, b, resolved);
 }
 
+/// @copydoc AsmEmitter::emitStr32ToBase()
 void AsmEmitter::emitStr32ToBase(std::ostream &os,
                                  PhysReg src,
                                  PhysReg base,
@@ -995,7 +1050,7 @@ void AsmEmitter::emitStr32ToBase(std::ostream &os,
     emitNarrowGprAccess(os, narrowStoreMnemonic(4), src, b, resolved);
 }
 
-/// @brief Load an FPR from [base + offset], using a scratch register for large offsets.
+/// @copydoc AsmEmitter::emitLdrFprFromBase()
 void AsmEmitter::emitLdrFprFromBase(std::ostream &os,
                                     PhysReg dst,
                                     PhysReg base,
@@ -1007,7 +1062,7 @@ void AsmEmitter::emitLdrFprFromBase(std::ostream &os,
     os << ", [" << rn(b) << ", #" << resolved << "]\n";
 }
 
-/// @brief Store an FPR to [base + offset], using a scratch register for large offsets.
+/// @copydoc AsmEmitter::emitStrFprToBase()
 void AsmEmitter::emitStrFprToBase(std::ostream &os,
                                   PhysReg src,
                                   PhysReg base,
@@ -1060,6 +1115,8 @@ void AsmEmitter::emitMovK(std::ostream &os, PhysReg dst, unsigned imm16, unsigne
 /// @param dst Destination GPR.
 /// @param value 64-bit immediate to materialise.
 void AsmEmitter::emitMovImm64(std::ostream &os, PhysReg dst, unsigned long long value) const {
+    /// @brief Emit one instruction from the decomposed move-wide sequence.
+    /// @param inst Move-wide opcode, immediate lane, and shift.
     forEachMoveWideInst(value, [&](const MoveWideInst &inst) {
         switch (inst.opcode) {
             case MoveWideOpcode::MovZ:
@@ -1080,6 +1137,7 @@ void AsmEmitter::emitMovImm64(std::ostream &os, PhysReg dst, unsigned long long 
     os << "  ret\n";
 }
 
+/// @copydoc AsmEmitter::emitFMovRR()
 void AsmEmitter::emitFMovRR(std::ostream &os, PhysReg dst, PhysReg src) const {
     os << "  fmov ";
     printD(os, dst);
@@ -1088,6 +1146,7 @@ void AsmEmitter::emitFMovRR(std::ostream &os, PhysReg dst, PhysReg src) const {
     os << "\n";
 }
 
+/// @copydoc AsmEmitter::emitFMovRI()
 void AsmEmitter::emitFMovRI(std::ostream &os, PhysReg dst, double imm) const {
     if (binenc::encodeFP8Immediate(imm) >= 0) {
         const auto savedFlags = os.flags();
@@ -1106,6 +1165,7 @@ void AsmEmitter::emitFMovRI(std::ostream &os, PhysReg dst, double imm) const {
     emitFMovGR(os, dst, kScratchGPR2);
 }
 
+/// @copydoc AsmEmitter::emitFMovGR()
 void AsmEmitter::emitFMovGR(std::ostream &os, PhysReg dst, PhysReg src) const {
     // fmov dN, xM - transfer bits from GPR to FPR without conversion
     os << "  fmov ";
@@ -1113,22 +1173,27 @@ void AsmEmitter::emitFMovGR(std::ostream &os, PhysReg dst, PhysReg src) const {
     os << ", " << rn(src) << "\n";
 }
 
+/// @copydoc AsmEmitter::emitFAddRRR()
 void AsmEmitter::emitFAddRRR(std::ostream &os, PhysReg dst, PhysReg lhs, PhysReg rhs) const {
     emit3D(os, "fadd", dst, lhs, rhs);
 }
 
+/// @copydoc AsmEmitter::emitFSubRRR()
 void AsmEmitter::emitFSubRRR(std::ostream &os, PhysReg dst, PhysReg lhs, PhysReg rhs) const {
     emit3D(os, "fsub", dst, lhs, rhs);
 }
 
+/// @copydoc AsmEmitter::emitFMulRRR()
 void AsmEmitter::emitFMulRRR(std::ostream &os, PhysReg dst, PhysReg lhs, PhysReg rhs) const {
     emit3D(os, "fmul", dst, lhs, rhs);
 }
 
+/// @copydoc AsmEmitter::emitFDivRRR()
 void AsmEmitter::emitFDivRRR(std::ostream &os, PhysReg dst, PhysReg lhs, PhysReg rhs) const {
     emit3D(os, "fdiv", dst, lhs, rhs);
 }
 
+/// @copydoc AsmEmitter::emitFCmpRR()
 void AsmEmitter::emitFCmpRR(std::ostream &os, PhysReg lhs, PhysReg rhs) const {
     os << "  fcmp ";
     printD(os, lhs);
@@ -1137,30 +1202,35 @@ void AsmEmitter::emitFCmpRR(std::ostream &os, PhysReg lhs, PhysReg rhs) const {
     os << "\n";
 }
 
+/// @copydoc AsmEmitter::emitSCvtF()
 void AsmEmitter::emitSCvtF(std::ostream &os, PhysReg dstFPR, PhysReg srcGPR) const {
     os << "  scvtf ";
     printD(os, dstFPR);
     os << ", " << rn(srcGPR) << "\n";
 }
 
+/// @copydoc AsmEmitter::emitFCvtZS()
 void AsmEmitter::emitFCvtZS(std::ostream &os, PhysReg dstGPR, PhysReg srcFPR) const {
     os << "  fcvtzs " << rn(dstGPR) << ", ";
     printD(os, srcFPR);
     os << "\n";
 }
 
+/// @copydoc AsmEmitter::emitUCvtF()
 void AsmEmitter::emitUCvtF(std::ostream &os, PhysReg dstFPR, PhysReg srcGPR) const {
     os << "  ucvtf ";
     printD(os, dstFPR);
     os << ", " << rn(srcGPR) << "\n";
 }
 
+/// @copydoc AsmEmitter::emitFCvtZU()
 void AsmEmitter::emitFCvtZU(std::ostream &os, PhysReg dstGPR, PhysReg srcFPR) const {
     os << "  fcvtzu " << rn(dstGPR) << ", ";
     printD(os, srcFPR);
     os << "\n";
 }
 
+/// @copydoc AsmEmitter::emitFRintN()
 void AsmEmitter::emitFRintN(std::ostream &os, PhysReg dstFPR, PhysReg srcFPR) const {
     os << "  frintn ";
     printD(os, dstFPR);
@@ -1169,6 +1239,7 @@ void AsmEmitter::emitFRintN(std::ostream &os, PhysReg dstFPR, PhysReg srcFPR) co
     os << "\n";
 }
 
+/// @copydoc AsmEmitter::emitFunction()
 void AsmEmitter::emitFunction(std::ostream &os, const MFunction &fn) const {
     emitFunctionHeader(os, fn.name);
 
@@ -1215,6 +1286,7 @@ void AsmEmitter::emitFunction(std::ostream &os, const MFunction &fn) const {
     // Note: epilogue is emitted by each Ret instruction, not here
 }
 
+/// @copydoc AsmEmitter::emitBlock()
 void AsmEmitter::emitBlock(std::ostream &os, const MBasicBlock &bb) const {
     if (!bb.name.empty())
         os << sanitizeLabel(bb.name) << ":\n";
@@ -1222,14 +1294,21 @@ void AsmEmitter::emitBlock(std::ostream &os, const MBasicBlock &bb) const {
         emitInstruction(os, mi);
 }
 
+/// @copydoc AsmEmitter::emitInstruction()
 void AsmEmitter::emitInstruction(std::ostream &os, const MInstr &mi) const {
     // Provide single-argument wrappers used by the generated OpcodeDispatch.inc,
     // which was generated without knowledge of the isDarwin parameter.
     // These lambdas shadow the free-function names within this scope.
     const bool kDarwin_ = !target_->isLinux() && !target_->isWindows();
+    /// @brief Map and mangle one data symbol for the active object format.
+    /// @param n Unmangled symbol name.
+    /// @return Target-specific assembly symbol spelling.
     [[maybe_unused]] auto mangleSymbol = [kDarwin_](const std::string &n) -> std::string {
         return mangleSymbolImpl(mapRuntimeSymbol(n), kDarwin_);
     };
+    /// @brief Mangle one call target for the active object format.
+    /// @param n Unmangled call-target name.
+    /// @return Target-specific assembly symbol spelling.
     [[maybe_unused]] auto mangleCallTarget = [kDarwin_](const std::string &n) -> std::string {
         return mangleCallTargetImpl(n, kDarwin_);
     };
@@ -1249,6 +1328,10 @@ void AsmEmitter::emitInstruction(std::ostream &os, const MInstr &mi) const {
     // Fallback handling for opcodes that may be missing from the generated
     // dispatch table due to generator drift. Keep these early and return to
     // avoid duplicate emission when present in the generated switch.
+    /// @brief Extract a physical register from one MIR operand.
+    /// @param op Operand to validate and decode.
+    /// @return Physical register identifier.
+    /// @pre `op` must encode a physical register.
     auto getReg = [](const MOperand &op) -> PhysReg {
         if (op.kind != MOperand::Kind::Reg)
             ZANNA_ICE("expected register operand in AArch64 asm emitter");
@@ -1257,11 +1340,18 @@ void AsmEmitter::emitInstruction(std::ostream &os, const MInstr &mi) const {
                       " reached AArch64 asm emitter (register allocation bug)");
         return static_cast<PhysReg>(op.reg.idOrPhys);
     };
+    /// @brief Extract an immediate value from one MIR operand.
+    /// @param op Operand to validate and decode.
+    /// @return Signed immediate value.
+    /// @pre `op` must encode an immediate.
     auto getImm = [](const MOperand &op) -> long long {
         if (op.kind != MOperand::Kind::Imm)
             ZANNA_ICE("expected immediate operand in AArch64 asm emitter");
         return op.imm;
     };
+    /// @brief Emit target-specific ADRP syntax for one symbol page.
+    /// @param dst Destination register.
+    /// @param label Unmangled symbol label.
     const auto emitAdrPage = [&](PhysReg dst, const std::string &label) {
         const std::string sym = mangleSymbol(label);
         if (target_->isLinux() || target_->isWindows())
@@ -1269,6 +1359,10 @@ void AsmEmitter::emitInstruction(std::ostream &os, const MInstr &mi) const {
         else
             os << "  adrp " << rn(dst) << ", " << sym << "@PAGE\n";
     };
+    /// @brief Emit target-specific page-offset addition syntax.
+    /// @param dst Destination register.
+    /// @param base Register holding the symbol page.
+    /// @param label Unmangled symbol label.
     const auto emitAddPageOff = [&](PhysReg dst, PhysReg base, const std::string &label) {
         const std::string sym = mangleSymbol(label);
         if (target_->isLinux() || target_->isWindows())

@@ -13,6 +13,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares compact source positions and half-open source ranges.
+/// @details These non-owning value types carry SourceManager file identifiers
+///          plus one-based line and column coordinates. Zero components express
+///          unavailable metadata, allowing diagnostics to preserve partial
+///          positions while requiring concrete coordinates for machine edits.
+
 #pragma once
 
 #include <cstdint>
@@ -33,35 +40,37 @@ struct SourceLoc {
     uint32_t column = 0;
 
     /// @brief Check whether the location references a valid file entry.
+    /// @return True when @ref file_id is nonzero.
     [[nodiscard]] bool isValid() const;
 
     /// @brief Determine whether a concrete file identifier is attached.
+    /// @return True when @ref file_id is nonzero.
     [[nodiscard]] bool hasFile() const {
         return file_id != 0;
     }
 
     /// @brief Determine whether a 1-based line number is available.
+    /// @return True when @ref line is nonzero.
     [[nodiscard]] bool hasLine() const {
         return line != 0;
     }
 
     /// @brief Determine whether a 1-based column number is available.
+    /// @return True when @ref column is nonzero.
     [[nodiscard]] bool hasColumn() const {
         return column != 0;
     }
 };
 
 /// @brief Represents a half-open range within a source file.
-/// @invariant When valid, both @ref begin and @ref end originate from the same
-///            file and @ref begin precedes @ref end.
+/// @invariant When valid, both @ref begin and @ref end carry complete coordinates
+///            in the same file and @ref begin precedes or equals @ref end.
 /// @ownership Value type with no owned resources.
 struct SourceRange {
-    /// @brief Starting position of the range; invalid when @ref isValid
-    ///        returns false.
+    /// @brief Inclusive starting position of the half-open range.
     SourceLoc begin{};
 
-    /// @brief One-past-the-end location of the range; invalid when
-    ///        @ref isValid returns false.
+    /// @brief Exclusive ending position, or the same point for an insertion.
     SourceLoc end{};
 
     /// @brief Check whether the range has usable ordered coordinates.
@@ -83,8 +92,8 @@ struct SourceRange {
     /// @return True when both endpoints are in the same file, both carry line and
     ///         column coordinates, and @ref begin strictly precedes @ref end.
     /// @details This is the predicate to use for machine-readable ranges such as
-    ///          JSON diagnostics and fix-it replacements. @ref isValid remains
-    ///          permissive for partially-known human diagnostic locations.
+    ///          JSON diagnostics and fix-it replacements. It deliberately excludes
+    ///          zero-width insertions, which are recognized by @ref isInsertion.
     [[nodiscard]] bool isConcrete() const;
 
     /// @brief Check whether the range denotes a zero-width insertion point.

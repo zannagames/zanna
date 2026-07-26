@@ -45,10 +45,17 @@
 #include <stdint.h>
 
 /// @brief Typed predicate signature guaranteed by the IL runtime registry.
+/// @param value Borrowed sequence element to test.
+/// @return Nonzero when @p value satisfies the predicate; otherwise zero.
 typedef int8_t (*predicate_fn)(void *);
 /// @brief Typed element-transform signature guaranteed by the IL registry.
+/// @param value Borrowed sequence element to transform.
+/// @return Runtime value produced for @p value.
 typedef void *(*transform_fn)(void *);
 /// @brief Typed left-fold signature guaranteed by the IL runtime registry.
+/// @param accumulator Current accumulated runtime value.
+/// @param value Borrowed sequence element to incorporate.
+/// @return Updated accumulator passed to the next reduction step.
 typedef void *(*reducer_fn)(void *, void *);
 
 //=============================================================================

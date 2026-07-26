@@ -173,6 +173,8 @@ const char *vg_label_get_selected_text(const vg_label_t *label, size_t *out_leng
 //=============================================================================
 
 /// @brief Button callback function type
+/// @param button Button whose activation triggered the callback.
+/// @param user_data Opaque pointer registered with the button.
 typedef void (*vg_button_callback_t)(vg_widget_t *button, void *user_data);
 
 /// @brief Button style enumeration
@@ -267,6 +269,9 @@ void vg_button_set_icon_position(vg_button_t *button, int pos);
 //=============================================================================
 
 /// @brief Text input callback for text changes
+/// @param input TextInput widget whose content changed.
+/// @param text Borrowed current NUL-terminated text.
+/// @param user_data Opaque pointer registered with the input.
 typedef void (*vg_text_change_callback_t)(vg_widget_t *input, const char *text, void *user_data);
 
 /// @brief Text input widget structure
@@ -639,6 +644,9 @@ void vg_textinput_tick(vg_textinput_t *input, float dt);
 //=============================================================================
 
 /// @brief Checkbox state change callback
+/// @param checkbox Checkbox widget whose binary checked state changed.
+/// @param checked Current checked state.
+/// @param user_data Opaque pointer registered with the checkbox.
 typedef void (*vg_checkbox_callback_t)(vg_widget_t *checkbox, bool checked, void *user_data);
 
 /// @brief Checkbox widget structure
@@ -708,6 +716,8 @@ void vg_checkbox_set_font(vg_checkbox_t *checkbox, vg_font_t *font, float size);
 void vg_checkbox_set_indeterminate(vg_checkbox_t *checkbox, bool indeterminate);
 
 /// @brief Return true when the checkbox is currently in its indeterminate state.
+/// @param checkbox Checkbox widget to query.
+/// @return True when the tri-state indeterminate marker is active.
 bool vg_checkbox_is_indeterminate(vg_checkbox_t *checkbox);
 
 //=============================================================================
@@ -823,6 +833,9 @@ typedef struct vg_listbox_item {
 } vg_listbox_item_t;
 
 /// @brief ListBox selection callback
+/// @param listbox ListBox widget whose selection changed.
+/// @param item Borrowed selected item, or NULL when selection was cleared.
+/// @param user_data Opaque pointer registered with the ListBox.
 typedef void (*vg_listbox_callback_t)(vg_widget_t *listbox,
                                       vg_listbox_item_t *item,
                                       void *user_data);
@@ -1086,6 +1099,10 @@ void vg_listbox_scroll_to_bottom(vg_listbox_t *listbox);
 //=============================================================================
 
 /// @brief Dropdown selection callback
+/// @param dropdown Dropdown widget whose selection changed.
+/// @param index New zero-based item index, or the widget's no-selection sentinel.
+/// @param text Borrowed selected item text, or NULL when no item is selected.
+/// @param user_data Opaque pointer registered with the dropdown.
 typedef void (*vg_dropdown_callback_t)(vg_widget_t *dropdown,
                                        int index,
                                        const char *text,
@@ -1189,6 +1206,9 @@ typedef enum vg_slider_orientation {
 } vg_slider_orientation_t;
 
 /// @brief Slider value change callback
+/// @param slider Slider widget whose value changed.
+/// @param value Current clamped slider value.
+/// @param user_data Opaque pointer registered with the slider.
 typedef void (*vg_slider_callback_t)(vg_widget_t *slider, float value, void *user_data);
 
 /// @brief Slider widget structure
@@ -1340,6 +1360,9 @@ typedef struct vg_radiogroup {
 } vg_radiogroup_t;
 
 /// @brief RadioButton callback
+/// @param radio RadioButton widget whose selected state changed.
+/// @param selected Current selected state.
+/// @param user_data Opaque pointer registered with the radio button.
 typedef void (*vg_radio_callback_t)(vg_widget_t *radio, bool selected, void *user_data);
 
 /// @brief RadioButton widget structure
@@ -1598,6 +1621,9 @@ void vg_image_set_focusable(vg_image_t *image, bool focusable);
 //=============================================================================
 
 /// @brief Spinner value change callback
+/// @param spinner Spinner widget whose numeric value changed.
+/// @param value Current clamped spinner value.
+/// @param user_data Opaque pointer registered with the spinner.
 typedef void (*vg_spinner_callback_t)(vg_widget_t *spinner, double value, void *user_data);
 
 /// @brief Spinner widget structure
@@ -1717,6 +1743,9 @@ void vg_spinner_set_on_change(vg_spinner_t *spinner,
 //=============================================================================
 
 /// @brief ColorSwatch callback - called when color is selected
+/// @param swatch ColorSwatch widget that was selected.
+/// @param color Current packed ARGB color.
+/// @param user_data Opaque pointer registered with the swatch.
 typedef void (*vg_colorswatch_callback_t)(vg_widget_t *swatch, uint32_t color, void *user_data);
 
 /// @brief ColorSwatch widget structure - displays a single color
@@ -1783,6 +1812,10 @@ void vg_colorswatch_set_size(vg_colorswatch_t *swatch, float size);
 //=============================================================================
 
 /// @brief ColorPalette callback - called when a color is selected from palette
+/// @param palette ColorPalette widget whose selection changed.
+/// @param color Selected packed ARGB color.
+/// @param index Zero-based selected palette index.
+/// @param user_data Opaque pointer registered with the palette.
 typedef void (*vg_colorpalette_callback_t)(vg_widget_t *palette,
                                            uint32_t color,
                                            int index,
@@ -1892,6 +1925,9 @@ void vg_colorpalette_load_standard_16(vg_colorpalette_t *palette);
 //=============================================================================
 
 /// @brief ColorPicker callback - called when color changes
+/// @param picker ColorPicker widget whose value changed.
+/// @param color Current packed ARGB color.
+/// @param user_data Opaque pointer registered with the picker.
 typedef void (*vg_colorpicker_callback_t)(vg_widget_t *picker, uint32_t color, void *user_data);
 
 /// @brief ColorPicker widget structure - full color selection with RGB sliders

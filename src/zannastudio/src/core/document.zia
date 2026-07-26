@@ -143,6 +143,7 @@ class Scene3DWorkspaceState {
     expose Boolean inspectorRequestedVisible;
     expose Boolean compactInspectorShown;
     expose Boolean previewActive;
+    expose List[String] cameraBookmarks;
     expose List[String] undoStack;
     expose List[String] redoStack;
     expose String cleanSerialized;
@@ -180,6 +181,7 @@ class Scene3DWorkspaceState {
         inspectorRequestedVisible = true;
         compactInspectorShown = false;
         previewActive = false;
+        cameraBookmarks = [];
         undoStack = [];
         redoStack = [];
         cleanSerialized = "";

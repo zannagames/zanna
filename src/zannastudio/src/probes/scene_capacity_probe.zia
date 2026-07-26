@@ -1,0 +1,126 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_capacity_probe.zia
+// Purpose: Verify the 3D editor's raised node capacity on a synthetic scene.
+// Key invariants:
+//   - A 2000-node document opens unclipped with every node in the hierarchy.
+//   - Selection, reparenting, and undo stay usable within loose latency
+//     budgets that catch pathological regressions without timing flake.
+//   - The truthful clipping flag engages only past the documented budget.
+// Ownership/Lifetime:
+//   - The probe owns one hidden AppShell, one document, and one editor.
+// Links: zannastudio/src/ui/scene_editor_3d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_capacity_probe;
+
+// ============================================================================
+// MODULE: scene_capacity_probe
+// PURPOSE: Pin the raised MAX_EDITOR_NODES budget with a synthetic scene
+//          built through the runtime serializer, opened as one document.
+//
+// TEACHING-NOTE: Latency assertions are deliberately loose (seconds, not
+//          frames): they exist to catch quadratic blowups, not to bench.
+// ============================================================================
+
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_3d";
+bind "../ui/scene_panels_3d";
+
+bind Clock = Zanna.Time.Clock;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind Terminal = Zanna.Terminal;
+
+final CAPACITY_NODES: Integer = 2000;
+
+func Fail(shell: app_shell.AppShell, reason: String) {
+    if shell != null { shell.Destroy(); }
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func main() {
+    // Build the synthetic document through the runtime serializer so the
+    // editor opens it exactly like a saved scene.
+    var big = SceneGraph.New();
+    var index = 0;
+    while index < CAPACITY_NODES {
+        var node = SceneNode.New();
+        node.Name = "Node " + index;
+        node.SetPosition(index % 50, 0.0, index / 50);
+        big.Add(node);
+        index = index + 1;
+    }
+    var text = big.SaveToText();
+    if text == "" {
+        Terminal.Say("RESULT: fail synthetic scene serialization");
+        return;
+    }
+
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Scene Capacity Probe", 1240, 800);
+    var editor = new scene_editor_3d.SceneEditor3D();
+    scene_panels_3d.Build(editor,shell.workbench.scene3DHost, shell.app);
+    var documents = new document_manager.DocumentManager();
+    var doc = documents.NewScene3DDocument();
+    doc.content = text;
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_3D);
+
+    var openStart = Clock.NowMs();
+    editor.Activate(doc);
+    editor.Pump(doc);
+    shell.Poll();
+    shell.Render();
+    var openMs = Clock.NowMs() - openStart;
+
+    if editor.flatNodes.count() != CAPACITY_NODES
+       or editor.hierarchyClipped {
+        Fail(shell,
+             "the capacity scene did not open unclipped: nodes="
+             + editor.flatNodes.count()
+             + " clipped=" + editor.hierarchyClipped);
+        return;
+    }
+    if openMs > 120000 {
+        Fail(shell, "opening 2000 nodes exceeded its budget: " + openMs);
+        return;
+    }
+
+    // Selection and a structural edit stay usable at this size.
+    var editStart = Clock.NowMs();
+    editor.SelectSceneNodes([1500], 1500);
+    editor.Pump(doc);
+    var reparented = editor.ReparentSelectedNodes(3);
+    editor.Pump(doc);
+    var editMs = Clock.NowMs() - editStart;
+    if reparented == false
+       or editor.undoStack.count() < 1 {
+        Fail(shell, "reparenting inside the capacity scene failed");
+        return;
+    }
+    if editMs > 120000 {
+        Fail(shell, "select+reparent exceeded its budget: " + editMs);
+        return;
+    }
+    var undoStart = Clock.NowMs();
+    if editor.Undo() == false or doc.content != text {
+        Fail(shell, "undo did not restore the capacity scene bytes");
+        return;
+    }
+    var undoMs = Clock.NowMs() - undoStart;
+    if undoMs > 120000 {
+        Fail(shell, "undo exceeded its budget: " + undoMs);
+        return;
+    }
+
+    shell.Destroy();
+    Terminal.Say("RESULT: ok");
+}

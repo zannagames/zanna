@@ -13,6 +13,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares fixed-capacity and chunk-growing bump allocators.
+/// @details Both arenas return aligned storage without individual deallocation.
+///          `Arena` reuses one fixed byte buffer, while `GrowingArena` appends
+///          chunks and tracks non-trivial object destructors for LIFO reset and
+///          destruction. Construction rollback restores consumed capacity.
+
 #pragma once
 
 #include <cstddef>
@@ -76,12 +83,19 @@ class GrowingArena {
     /// @brief Destructor - destroys all tracked objects and frees memory.
     ~GrowingArena();
 
-    /// Non-copyable.
+    /// @brief Copy construction is disabled because allocation ownership is unique.
     GrowingArena(const GrowingArena &) = delete;
+
+    /// @brief Copy assignment is disabled because allocation ownership is unique.
     GrowingArena &operator=(const GrowingArena &) = delete;
 
-    /// Movable.
+    /// @brief Move-construct by transferring chunks and destructor records.
+    /// @param other Arena whose state is transferred.
     GrowingArena(GrowingArena &&other) noexcept;
+
+    /// @brief Move-assign after destroying objects currently owned by this arena.
+    /// @param other Arena whose state is transferred.
+    /// @return Reference to this arena.
     GrowingArena &operator=(GrowingArena &&other) noexcept;
 
     /// @brief Allocate raw memory with specified alignment.
@@ -121,6 +135,8 @@ class GrowingArena {
 
         if constexpr (!std::is_trivially_destructible_v<T>) {
             try {
+                /// @brief Destroy one nontrivial arena object during rewind or reset.
+                /// @param p Pointer to the constructed object.
                 destructors_.push_back({obj, [](void *p) { static_cast<T *>(p)->~T(); }});
             } catch (...) {
                 obj->~T();
@@ -138,9 +154,11 @@ class GrowingArena {
     void reset();
 
     /// @brief Get total bytes allocated across all chunks.
+    /// @return Consumed-byte count, saturated at `SIZE_MAX` on overflow.
     [[nodiscard]] size_t totalAllocated() const noexcept;
 
     /// @brief Get number of chunks allocated.
+    /// @return Number of currently owned allocation chunks.
     [[nodiscard]] size_t chunkCount() const noexcept {
         return chunks_.size();
     }
@@ -152,14 +170,24 @@ class GrowingArena {
         size_t size = 0;                   ///< Total capacity of the chunk in bytes.
         size_t offset = 0;                 ///< Bytes already handed out from the chunk.
 
+        /// @brief Construct an empty chunk without backing storage.
         Chunk() = default;
 
+        /// @brief Allocate a chunk with exactly @p sz bytes of backing storage.
+        /// @param sz Chunk capacity in bytes.
         explicit Chunk(size_t sz) : data(std::make_unique<std::byte[]>(sz)), size(sz), offset(0) {}
 
-        // Move-only
+        /// @brief Copy construction is disabled because chunk storage is uniquely owned.
         Chunk(const Chunk &) = delete;
+
+        /// @brief Copy assignment is disabled because chunk storage is uniquely owned.
         Chunk &operator=(const Chunk &) = delete;
+
+        /// @brief Move-construct by transferring unique backing storage.
         Chunk(Chunk &&) noexcept = default;
+
+        /// @brief Move-assign by transferring unique backing storage.
+        /// @return Reference to this chunk.
         Chunk &operator=(Chunk &&) noexcept = default;
 
         /// @brief Attempt to allocate memory from this chunk.
@@ -183,9 +211,11 @@ class GrowingArena {
     };
 
     /// @brief Allocate a new chunk of at least the given size.
+    /// @param minSize Minimum requested capacity; zero is promoted to one.
     void allocateChunk(size_t minSize);
 
     /// @brief Destroy all tracked objects in reverse order.
+    /// @details Clears the destructor registry after invoking every nothrow thunk.
     void destroyObjects();
 
     /// @brief Capture the current bump-allocation position.

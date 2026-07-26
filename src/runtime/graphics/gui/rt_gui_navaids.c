@@ -27,6 +27,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements Breadcrumb navigation and Minimap overview runtime widgets.
+ *
+ * @details Managed wrappers authenticate backing toolkit widgets, bridge
+ *          copied Breadcrumb labels and click payloads, synchronize Minimap
+ *          editor targets and viewport state, and clear borrowed back-pointers
+ *          when widget-tree ownership retires lower objects before wrappers.
+ */
+
 #include "rt_gui_internal.h"
 #include "rt_platform.h"
 
@@ -36,18 +46,21 @@
 // Phase 8: Breadcrumb Implementation
 //=============================================================================
 
-// Wrapper to track breadcrumb state
+/// @brief Magic value authenticating live Breadcrumb wrapper state.
 #define RT_BREADCRUMB_DATA_MAGIC UINT64_C(0x5254425245414443)
 
+/// @brief Managed Breadcrumb wrapper and edge-triggered click snapshot.
 typedef struct rt_breadcrumb_data {
-    uint64_t magic;
-    vg_breadcrumb_t *breadcrumb;
-    int64_t clicked_index;
-    rt_gui_string_data_t *clicked_data;
-    int64_t was_clicked;
+    uint64_t magic;                 ///< Must equal @ref RT_BREADCRUMB_DATA_MAGIC while live.
+    vg_breadcrumb_t *breadcrumb;    ///< Borrowed backing widget, or NULL after retirement.
+    int64_t clicked_index;          ///< Last captured zero-based segment index.
+    rt_gui_string_data_t *clicked_data; ///< Owned length-aware clicked-item payload.
+    int64_t was_clicked;            ///< Pending edge-triggered click flag.
 } rt_breadcrumb_data_t;
 
+/// @brief Original lower Breadcrumb vtable delegated to by the runtime override.
 static const vg_widget_vtable_t *s_breadcrumb_original_vtable = NULL;
+/// @brief Process-wide Breadcrumb vtable copy with lifetime interception.
 static vg_widget_vtable_t s_breadcrumb_runtime_vtable;
 
 /// @brief Authenticate a Breadcrumb handle via its magic tag (NULL if not).
@@ -463,19 +476,23 @@ int64_t rt_breadcrumb_is_visible(void *crumb) {
 // Phase 8: Minimap Implementation
 //=============================================================================
 
-// Wrapper to track minimap state
+/// @brief Magic value authenticating live Minimap wrapper state.
 #define RT_MINIMAP_DATA_MAGIC UINT64_C(0x52544D494E494D50)
 
+/// @brief Managed Minimap wrapper and per-instance lifetime-intercept vtable.
 typedef struct rt_minimap_data {
-    uint64_t magic;
-    vg_minimap_t *minimap;
-    int64_t width;
-    const vg_widget_vtable_t *original_vtable;
-    vg_widget_vtable_t vtable;
+    uint64_t magic;              ///< Must equal @ref RT_MINIMAP_DATA_MAGIC while live.
+    vg_minimap_t *minimap;       ///< Borrowed backing widget, or NULL after retirement.
+    int64_t width;               ///< Requested logical minimap width.
+    const vg_widget_vtable_t *original_vtable; ///< Lower vtable used for delegation.
+    vg_widget_vtable_t vtable;   ///< Instance copy intercepting backing-widget destruction.
 } rt_minimap_data_t;
 
+/// @brief Global registry authenticating opaque Minimap wrapper handles.
 static rt_minimap_data_t **s_minimap_wrappers = NULL;
+/// @brief Number of live entries in @ref s_minimap_wrappers.
 static size_t s_minimap_wrapper_count = 0;
+/// @brief Allocated Minimap registry capacity.
 static size_t s_minimap_wrapper_cap = 0;
 
 /// @brief Record a wrapper in the global minimap registry (idempotent).

@@ -10,6 +10,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements temporary Zia lowerer source-location scoping.
+/// @details Construction saves and replaces the active location; destruction
+///          restores it so nested lowering operations preserve diagnostic
+///          context without manual cleanup.
+
 #include "frontends/zia/ZiaLocationScope.hpp"
 #include "frontends/zia/Lowerer.hpp"
 

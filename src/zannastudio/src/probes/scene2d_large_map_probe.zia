@@ -41,6 +41,7 @@ bind "../core/document_manager";
 bind "../services/file_utils";
 bind "../ui/app_shell";
 bind "../ui/scene_editor_2d";
+bind "../ui/scene_panels_2d";
 
 bind SceneDocument = Zanna.Game2D.SceneDocument;
 bind Convert = Zanna.Core.Convert;
@@ -79,7 +80,7 @@ func main() {
     shell.Build("Zanna Studio 2D Large Map Probe", 1120, 760);
 
     var editor = new scene_editor_2d.SceneEditor2D();
-    editor.Setup(shell.workbench.scene2DHost, shell.app);
+    scene_panels_2d.Build(editor,shell.workbench.scene2DHost, shell.app);
     var documents = new document_manager.DocumentManager();
     var sceneDoc = documents.NewScene2DDocument();
 

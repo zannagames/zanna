@@ -21,6 +21,16 @@
 //        src/runtime/network/rt_wss_server.c
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_tls_server_internal.h
+ * @brief Declares private TLS server contexts and socket acceptance.
+ * @details A server context owns immutable parsed credentials, ALPN policy,
+ *          timeout configuration, and an optional cancellation probe. Accept
+ *          consumes a valid connected socket once handshake processing begins
+ *          and returns a session that owns the socket on success.
+ */
+
 #pragma once
 
 #include "rt_tls.h"
@@ -50,14 +60,18 @@ typedef struct rt_tls_server_config {
     void *cancel_context;                     ///< Opaque argument for @ref cancel_requested.
 } rt_tls_server_config_t;
 
-/// @brief Initialise @p config with default field values.
+/// @brief Initialize server TLS configuration with safe defaults.
+/// @param config Configuration storage to zero and initialize; NULL is a no-op.
 void rt_tls_server_config_init(rt_tls_server_config_t *config);
 
 /// @brief Parse the cert + key files and build a shared server context.
+/// @param config Certificate, private-key, ALPN, timeout, and cancellation
+///        settings.
 /// @return New context, or NULL on parse/IO failure (cause via @ref rt_tls_server_last_error).
 rt_tls_server_ctx_t *rt_tls_server_ctx_new(const rt_tls_server_config_t *config);
 
-/// @brief Release @p ctx and zero its private-key buffers.
+/// @brief Securely release a server context and its credential material.
+/// @param ctx Context to consume; NULL is a no-op.
 void rt_tls_server_ctx_free(rt_tls_server_ctx_t *ctx);
 
 /// @brief Accept a client TLS handshake on an already-connected @p socket_fd.
@@ -78,7 +92,9 @@ void rt_tls_server_ctx_free(rt_tls_server_ctx_t *ctx);
 ///         for a setup/handshake failure.
 rt_tls_session_t *rt_tls_server_accept_socket(intptr_t socket_fd, const rt_tls_server_ctx_t *ctx);
 
-/// @brief Return the most recent server-side TLS error string for diagnostics.
+/// @brief Return the calling thread's latest server-side TLS diagnostic.
+/// @return Thread-local native text valid until the next server setup or
+///         handshake operation on this thread.
 const char *rt_tls_server_last_error(void);
 
 #ifdef __cplusplus

@@ -355,6 +355,9 @@ Lowerer::RVal Lowerer::lowerMemberAccessExpr(const MemberAccessExpr &expr) {
 // -------------------------------------------------------------------------
 
 /// @brief Context-aware overload of lowerMeExpr(); @p ctx is unused (no caching benefit).
+/// @param expr ME expression delegated to the active lowering state.
+/// @param ctx Explicit OOP context retained for interface symmetry.
+/// @return Lowered implicit-instance value and pointer type.
 Lowerer::RVal Lowerer::lowerMeExpr(const MeExpr &expr, OopLoweringContext &ctx) {
     // ME resolution is simple slot lookup - no class caching benefits.
     (void)ctx;
@@ -364,6 +367,9 @@ Lowerer::RVal Lowerer::lowerMeExpr(const MeExpr &expr, OopLoweringContext &ctx) 
 /// @brief Context-aware overload of lowerMemberAccessExpr() that pre-warms the class-info cache.
 /// @details Pre-caches the base object's class info in @p ctx (accelerating access-control
 ///          checks), then delegates to the single-argument overload.
+/// @param expr Member access whose receiver class is cached and lowered.
+/// @param ctx OOP metadata cache to pre-warm.
+/// @return Lowered member value and IL type.
 Lowerer::RVal Lowerer::lowerMemberAccessExpr(const MemberAccessExpr &expr,
                                              OopLoweringContext &ctx) {
     // Pre-cache class info when base is a known object type.
@@ -379,6 +385,9 @@ Lowerer::RVal Lowerer::lowerMemberAccessExpr(const MemberAccessExpr &expr,
 /// @brief Context-aware overload of resolveMemberField() that pre-warms the class-info cache.
 /// @details Pre-caches the base object's class info in @p ctx for access-control checks, then
 ///          delegates to the single-argument overload.
+/// @param expr Member access whose field is resolved.
+/// @param ctx OOP metadata cache to pre-warm.
+/// @return Resolved field address and type metadata, or `std::nullopt`.
 std::optional<Lowerer::MemberFieldAccess> Lowerer::resolveMemberField(const MemberAccessExpr &expr,
                                                                       OopLoweringContext &ctx) {
     // Pre-cache class info for access control checks.
@@ -393,6 +402,10 @@ std::optional<Lowerer::MemberFieldAccess> Lowerer::resolveMemberField(const Memb
 /// @brief Context-aware overload of resolveImplicitField(); @p ctx is unused.
 /// @details Implicit field resolution uses the active field scope rather than the OOP index, so
 ///          there is nothing to pre-cache; delegates to the two-argument overload.
+/// @param name Unqualified implicit field name.
+/// @param loc Source location used by resolution diagnostics.
+/// @param ctx Explicit OOP context retained for interface symmetry.
+/// @return Resolved field address and type metadata, or `std::nullopt`.
 std::optional<Lowerer::MemberFieldAccess> Lowerer::resolveImplicitField(std::string_view name,
                                                                         il::support::SourceLoc loc,
                                                                         OopLoweringContext &ctx) {

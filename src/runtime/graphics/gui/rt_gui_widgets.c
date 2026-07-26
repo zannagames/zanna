@@ -39,6 +39,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements foundational GUI widget and managed Font runtime bindings.
+ *
+ * @details This unit provides authenticated base-widget operations, container
+ *          and fundamental control construction, text editing and selection,
+ *          images, lists, combo boxes, focus traversal, accessibility updates,
+ *          icon support, and managed Font loading/retirement across retained
+ *          rendering generations.
+ */
+
 #include "rt_gui_accessibility_platform.h"
 #include "rt_gui_font_platform.h"
 #include "rt_gui_internal.h"
@@ -119,6 +130,7 @@ void *rt_gui_widget_checked_for_binding(void *handle, int64_t widget_type) {
 // Font Functions
 //=============================================================================
 
+/// @brief Magic value authenticating live managed public Font wrappers.
 #define RT_GUI_FONT_HANDLE_MAGIC UINT64_C(0x52544755464F4E54)
 
 /// @brief Runtime-managed public Font wrapper around one lower-toolkit font.

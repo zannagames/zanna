@@ -5,9 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tui/include/tui/render/box.hpp
-// Purpose: Provides box/border drawing utilities for rendering bordered
-//          rectangles in the terminal UI.
+/// @file
+/// @brief Declares bordered-rectangle drawing for terminal screen buffers.
+/// @details Provides a stateless utility that renders ASCII borders and
+///          optional styled interior fill into an existing screen buffer.
 // Key invariants: Drawing respects buffer bounds; callers must ensure the
 //                 rectangle fits within the screen buffer.
 // Ownership/Lifetime: Stateless utility functions; no dynamic resources.

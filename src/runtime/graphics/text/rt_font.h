@@ -24,6 +24,13 @@
 //        src/runtime/graphics/3d/render/rt_canvas3d_overlay.c
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares access to Zanna's immutable built-in 8-by-8 bitmap font.
+ * @details Provides fixed glyph dimensions and borrowed lookup of printable
+ * ASCII row bitmaps. Unsupported codepoints resolve to a shared blank glyph,
+ * so callers never receive an out-of-range table pointer.
+ */
 #pragma once
 
 #include <stdint.h>

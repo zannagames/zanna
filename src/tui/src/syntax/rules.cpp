@@ -35,8 +35,8 @@ namespace {
 ///          objects containing string and boolean values.  It operates on an
 ///          in-memory string and keeps track of the current index.
 struct JsonParser {
-    const std::string &s;
-    std::size_t i{0};
+    const std::string &s; ///< Borrowed complete JSON input.
+    std::size_t i{0};     ///< Current byte offset within @c s.
 
     /// @brief Advance past any ASCII whitespace characters.
     /// @details Consumes spaces, tabs, and newlines by incrementing the parser
@@ -51,6 +51,7 @@ struct JsonParser {
     /// @details Skips whitespace, checks the current character, and advances the
     ///          index on success.  Failure leaves the parser untouched so callers
     ///          can signal an error.
+    /// @param c Delimiter byte required at the current token position.
     /// @return True when the expected delimiter is present, false otherwise.
     bool expect(char c) {
         skipWs();
@@ -65,6 +66,7 @@ struct JsonParser {
     /// @details Handles common escape sequences (quotes, backslashes, newline,
     ///          carriage return, and tab).  On malformed input the function
     ///          returns an empty string, allowing callers to propagate failure.
+    /// @return Decoded string bytes, or an empty string for malformed input.
     std::string parseString() {
         skipWs();
         std::string out;
@@ -108,6 +110,7 @@ struct JsonParser {
     /// @details Recognises `true` and `false` tokens, advancing the index when a
     ///          match is found.  Unrecognised input leaves the index unchanged
     ///          and returns false so callers can treat it as an error.
+    /// @return true only for a parsed `true` literal.
     bool parseBool() {
         skipWs();
         if (s.compare(i, 4, "true") == 0) {
@@ -130,6 +133,7 @@ struct JsonParser {
 ///          styles.  The routine validates the expected structure and aborts on
 ///          malformed input.  Successfully parsed rules replace any existing
 ///          configuration.
+/// @param path Filesystem path of the syntax-rule JSON document.
 /// @return True on success; false when the file cannot be opened or parsed.
 bool SyntaxRuleSet::loadFromFile(const std::string &path) {
     std::ifstream in(path);
@@ -238,6 +242,9 @@ bool SyntaxRuleSet::loadFromFile(const std::string &path) {
 ///          has not changed.  Otherwise it runs every compiled regex against the
 ///          line, collects spans, stores them in the cache, and returns the
 ///          stored vector.
+/// @param lineNo Zero-based line number used as the cache key.
+/// @param line Current line bytes used for invalidation and matching.
+/// @return Const reference to cached spans, valid until the cache entry changes.
 const std::vector<Span> &SyntaxRuleSet::spans(std::size_t lineNo, const std::string &line) {
     auto it = cache_.find(lineNo);
     if (it != cache_.end() && it->second.first == line)
@@ -257,6 +264,7 @@ const std::vector<Span> &SyntaxRuleSet::spans(std::size_t lineNo, const std::str
 /// @brief Remove cached highlight spans for the specified line.
 /// @details Deleting the entry forces the next @ref spans call to recompute the
 ///          matches, ensuring stale results do not persist after a line changes.
+/// @param lineNo Zero-based cache key to erase.
 void SyntaxRuleSet::invalidate(std::size_t lineNo) {
     cache_.erase(lineNo);
 }

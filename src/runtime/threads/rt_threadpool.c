@@ -40,6 +40,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the fixed-size `Zanna.Threads.Pool` task executor.
+/// @details A monitor-protected FIFO feeds persistent workers. Submission may
+///          borrow or retain task arguments, waits observe queue-and-active
+///          drain state, and graceful or immediate shutdown elects exactly one
+///          caller to join stolen worker handles. Worker traps are captured and
+///          consumed by the next wait or shutdown observer.
+
 #include "rt_threadpool.h"
 
 #include "rt_gc.h"
@@ -77,6 +85,7 @@ typedef struct pool_task {
 } pool_task;
 
 /// @brief Release a task's owned argument (no-op for borrowed args).
+/// @param task Task whose retained argument should be released and cleared.
 static void pool_task_release_arg(pool_task *task) {
     if (task && task->owns_arg && task->arg) {
         if (rt_obj_release_check0(task->arg))
@@ -115,25 +124,44 @@ typedef struct pool_impl {
 // Forward Declarations
 //=============================================================================
 
+/// @brief Finalize a Pool, stopping workers and releasing queued resources.
+/// @param obj Pool object being finalized.
 static void pool_finalizer(void *obj);
+
+/// @brief Run one persistent worker's dequeue-and-execute loop.
+/// @param arg Pointer to the worker record owned by its Pool.
 static void worker_entry(void *arg);
+
+/// @brief Shut down a resurrected Pool from a detached cleanup thread.
+/// @param arg Retained Pool object transferred to the cleanup thread.
 static void pool_deferred_cleanup_entry(void *arg);
 
 #include "rt_trap.h"
 
+/// @brief Install a non-local recovery destination for runtime traps.
+/// @param buf Jump buffer that receives control when a trap is raised.
 void rt_trap_set_recovery(jmp_buf *buf);
+
+/// @brief Remove the active runtime trap recovery destination.
 void rt_trap_clear_recovery(void);
+
+/// @brief Read the diagnostic associated with the current recovered trap.
+/// @return Borrowed NUL-terminated diagnostic text, or NULL when unavailable.
 const char *rt_trap_get_error(void);
 
 static RT_THREAD_LOCAL pool_impl *g_current_worker_pool = NULL;
 static RT_THREAD_LOCAL pool_worker *g_exiting_worker = NULL;
 
 /// @brief Read whether shutdown has been requested with acquire ordering.
+/// @param pool Pool whose atomic shutdown flag is inspected.
+/// @return One after either shutdown mode has been requested, otherwise zero.
 static int8_t pool_shutdown_requested(const pool_impl *pool) {
     return pool && __atomic_load_n(&pool->shutdown, __ATOMIC_ACQUIRE) ? 1 : 0;
 }
 
 /// @brief Read whether immediate shutdown has been requested with acquire ordering.
+/// @param pool Pool whose immediate-shutdown flag is inspected.
+/// @return One after immediate shutdown has been requested, otherwise zero.
 static int8_t pool_shutdown_now_requested(const pool_impl *pool) {
     return pool && __atomic_load_n(&pool->shutdown_now, __ATOMIC_ACQUIRE) ? 1 : 0;
 }
@@ -205,6 +233,7 @@ static int64_t pool_default_max_pending(void) {
 ///          and finalize. Releases the runtime ref; if the refcount drops
 ///          to zero the object is freed. NULLing the slot prevents any
 ///          subsequent re-release from double-freeing.
+/// @param slot Address of an owned worker-handle slot.
 static void pool_release_thread_handle(void **slot) {
     if (!slot || !*slot)
         return;
@@ -216,6 +245,7 @@ static void pool_release_thread_handle(void **slot) {
 /// @brief Release a retained pool reference; free the impl when the count reaches zero.
 /// @details Used by deferred-cleanup paths that hold a pool ref across
 ///          background work. Safe to call with NULL — no-op in that case.
+/// @param pool Retained Pool reference to release, or NULL.
 static void pool_release_object(pool_impl *pool) {
     if (pool && rt_obj_release_check0(pool))
         rt_obj_free(pool);
@@ -226,6 +256,10 @@ static void pool_release_object(pool_impl *pool) {
 ///          NULL @p pool_obj triggers a trap iff @p trap_on_null is set
 ///          (otherwise returns NULL); wrong-class id always traps. Returns
 ///          the downcast pointer on success.
+/// @param pool_obj Candidate Pool runtime object.
+/// @param what Diagnostic used when NULL must trap.
+/// @param trap_on_null Whether a NULL handle raises a runtime trap.
+/// @return Valid Pool payload, or NULL for tolerated or returning trap paths.
 static pool_impl *pool_require(void *pool_obj, const char *what, int8_t trap_on_null) {
     if (!pool_obj) {
         if (trap_on_null)
@@ -245,6 +279,10 @@ static pool_impl *pool_require(void *pool_obj, const char *what, int8_t trap_on_
 ///          buffer is null-terminated (truncating long messages) so the
 ///          caller can pass it directly to rt_trap. Returns 0 if no
 ///          worker has trapped since the last error-take.
+/// @param pool Locked Pool whose error state is consumed.
+/// @param out Optional destination for the captured diagnostic.
+/// @param out_size Capacity of @p out in bytes.
+/// @return One when accumulated errors were consumed, otherwise zero.
 static int8_t pool_take_error_locked(pool_impl *pool, char *out, size_t out_size) {
     if (!pool || pool->error_count <= 0)
         return 0;
@@ -263,6 +301,10 @@ static int8_t pool_take_error_locked(pool_impl *pool, char *out, size_t out_size
 ///          recently captured message. Used by Wait / Shutdown callers after
 ///          releasing any temporary pool retain so trap unwinding cannot leak
 ///          the self-retain.
+/// @param pool Pool whose monitor and error state are inspected.
+/// @param error Optional destination for the captured diagnostic.
+/// @param error_size Capacity of @p error in bytes.
+/// @return One when accumulated errors were consumed, otherwise zero.
 static int8_t pool_take_error(pool_impl *pool, char *error, size_t error_size) {
     if (error && error_size > 0)
         error[0] = '\0';
@@ -278,6 +320,8 @@ static int8_t pool_take_error(pool_impl *pool, char *error, size_t error_size) {
 ///          without holding the lock. Used by Shutdown's two-phase
 ///          sequence: take handles under the lock, drop the lock, then
 ///          join the handles to avoid blocking submit/wait callers.
+/// @param pool Locked Pool whose handle slots are consumed.
+/// @param handles Zeroed worker-count array receiving the owned handles.
 static void pool_take_worker_handles_locked(pool_impl *pool, void **handles) {
     if (!pool || !handles || !pool->workers)
         return;
@@ -370,6 +414,9 @@ static void pool_publish_shutdown_complete(pool_impl *pool) {
 ///          array, calls rt_thread_join on each, and releases the runtime
 ///          ref. NULL slots are skipped (the take helper may have left
 ///          some empty if the pool was constructed but never started).
+/// @param handles Owned worker-handle array.
+/// @param count Number of entries in @p handles.
+/// @param skip_index Worker index not joined because it is the current exiting thread.
 static void pool_join_worker_handles(void **handles, int64_t count, int64_t skip_index) {
     if (!handles)
         return;
@@ -446,6 +493,8 @@ static int8_t pool_finish_shutdown_join(
 ///          the workers outside the lock without racing a concurrent shutdown that might also
 ///          try to claim them. Returns NULL on a NULL pool, an empty pool, or `calloc` failure;
 ///          callers must `free` the returned array after joining its handles.
+/// @param pool Pool whose worker-handle ownership should be detached.
+/// @return Heap worker-count array containing stolen handles, or NULL.
 static void **pool_detach_worker_handles(pool_impl *pool) {
     if (!pool || pool->worker_count <= 0)
         return NULL;
@@ -469,6 +518,9 @@ static void **pool_detach_worker_handles(pool_impl *pool) {
 ///          protected by the managed-graph barrier, and traversal runs under its exclusive
 ///          side, so the queue is stable without taking the pool monitor. Borrowed arguments,
 ///          worker handles, and the native monitor are not strong managed-graph edges.
+/// @param obj Pool object whose queued owned arguments are enumerated.
+/// @param visitor GC callback invoked for every strong managed argument edge.
+/// @param ctx Opaque traversal context forwarded to @p visitor.
 static void pool_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     pool_impl *pool = (pool_impl *)obj;
     if (!pool || !visitor)
@@ -482,6 +534,8 @@ static void pool_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
 /// @details Queue edge removal is enclosed in the managed-graph mutator scope;
 ///          returned tasks must be released outside the monitor so owned-arg
 ///          finalizers may safely call back into the pool.
+/// @param pool Locked Pool whose queued task chain is detached.
+/// @return Previous queue head, or NULL when no tasks were pending.
 static pool_task *pool_detach_tasks_locked(pool_impl *pool) {
     if (!pool)
         return NULL;
@@ -533,6 +587,7 @@ static void pool_release_task_list(pool_task *tasks) {
 ///          worker, destroys the monitor, and frees the pool struct. Handles
 ///          the at-exit case where a program terminates without an explicit
 ///          `ThreadPool.Shutdown` call.
+/// @param obj Pool object being finalized.
 static void pool_finalizer(void *obj) {
     pool_impl *pool = (pool_impl *)obj;
     if (!pool)
@@ -654,8 +709,12 @@ static void pool_finalizer(void *obj) {
 
 /// @brief Create a thread pool with the given number of worker threads (1–1024).
 /// @details Workers block on a shared work queue until tasks are submitted via
-///          submit(). Tasks execute in FIFO order. The pool must be shut down
-///          explicitly with shutdown() or shutdown_now().
+///          submit(). Tasks are dequeued in FIFO order, though concurrent
+///          completion order is unspecified. The Pool installs GC traversal
+///          and finalization so explicit shutdown is recommended but not
+///          required for eventual worker cleanup.
+/// @param size Requested worker count, clamped to the inclusive range 1–1024.
+/// @return New caller-owned Pool object, or NULL after a reported construction failure.
 void *rt_threadpool_new(int64_t size) {
     // Clamp size to valid range
     if (size < 1)
@@ -770,6 +829,7 @@ void *rt_threadpool_new(int64_t size) {
 ///            - Task memory is `free`'d only after the recovery clear so a trap
 ///              inside the task callback doesn't double-free when the next iteration
 ///              re-enters.
+/// @param arg Pointer to the worker record owned by its Pool.
 static void worker_entry(void *arg) {
     pool_worker *worker = (pool_worker *)arg;
     pool_impl *pool = worker->pool;
@@ -883,6 +943,7 @@ static void worker_entry(void *arg) {
 ///          queued owned arguments, absorbs any already-recorded task trap, and releases the
 ///          resurrection reference. The thread trampoline drops its separate owned-argument
 ///          retain after this function returns, allowing normal finalization at refcount zero.
+/// @param arg Retained Pool object transferred to the cleanup thread.
 static void pool_deferred_cleanup_entry(void *arg) {
     pool_impl *pool = (pool_impl *)arg;
     jmp_buf recovery;
@@ -906,6 +967,7 @@ static void pool_deferred_cleanup_entry(void *arg) {
 /// @param pool_obj Runtime Pool object.
 /// @param callback Function invoked by a worker with @p arg.
 /// @param arg Opaque argument passed to @p callback.
+/// @param owns_arg Whether to retain a managed @p arg until execution or discard.
 /// @return 1 when the task is queued, 0 when inputs are invalid, the pool is
 ///         shutting down, or allocation fails.
 static int8_t threadpool_submit_impl(void *pool_obj,
@@ -999,7 +1061,14 @@ static int8_t threadpool_submit_impl(void *pool_obj,
     return 1;
 }
 
-/// @copydoc rt_threadpool_submit_fn
+/// @brief Submit a typed native callback with a borrowed argument.
+/// @details The callback and argument must remain valid until execution. The
+///          task is rejected without consuming either input when the Pool is
+///          shut down, backpressured, invalid, or unable to allocate a node.
+/// @param pool_obj Pool that receives the task.
+/// @param callback Native worker callback invoked once.
+/// @param arg Borrowed callback context.
+/// @return One when queued, otherwise zero.
 int8_t rt_threadpool_submit_fn(void *pool_obj, rt_threadpool_task_fn callback, void *arg) {
     return threadpool_submit_impl(pool_obj, callback, arg, 0);
 }
@@ -1007,6 +1076,12 @@ int8_t rt_threadpool_submit_fn(void *pool_obj, rt_threadpool_task_fn callback, v
 /// @brief Submit a task whose runtime-managed argument the pool owns
 ///        (VDOC-128): retained on acceptance, released after the callback
 ///        runs OR when the task is discarded by ShutdownNow/finalization.
+/// @details Rejection leaves the caller's ownership unchanged. A retain trap is
+///          propagated after task-node and temporary Pool cleanup.
+/// @param pool_obj Pool that receives the task.
+/// @param callback Native worker callback invoked once.
+/// @param arg Runtime-managed callback context to retain, or NULL.
+/// @return One when queued, otherwise zero.
 int8_t rt_threadpool_submit_owned_fn(void *pool_obj, rt_threadpool_task_fn callback, void *arg) {
     return threadpool_submit_impl(pool_obj, callback, arg, 1);
 }
@@ -1016,11 +1091,22 @@ int8_t rt_threadpool_submit_owned_fn(void *pool_obj, rt_threadpool_task_fn callb
 ///          through the typed implementation. New C code should prefer
 ///          `rt_threadpool_submit_fn` to avoid converting function pointers
 ///          through `void *`.
+/// @param pool_obj Pool that receives the task.
+/// @param callback Opaque ABI representation of `void (*)(void *)`.
+/// @param arg Borrowed callback context.
+/// @return One when queued, otherwise zero.
 int8_t rt_threadpool_submit(void *pool_obj, void *callback, void *arg) {
     return rt_threadpool_submit_fn(pool_obj, pool_task_from_opaque(callback), arg);
 }
 
 /// @brief Owned-argument variant of @ref rt_threadpool_submit (VDOC-128).
+/// @details The opaque callback representation is decoded at the legacy ABI
+///          boundary. Accepted managed arguments are retained until execution
+///          or discard; rejection leaves ownership unchanged.
+/// @param pool_obj Pool that receives the task.
+/// @param callback Opaque ABI representation of `void (*)(void *)`.
+/// @param arg Runtime-managed callback context to retain, or NULL.
+/// @return One when queued, otherwise zero.
 int8_t rt_threadpool_submit_owned(void *pool_obj, void *callback, void *arg) {
     return rt_threadpool_submit_owned_fn(pool_obj, pool_task_from_opaque(callback), arg);
 }
@@ -1029,7 +1115,12 @@ int8_t rt_threadpool_submit_owned(void *pool_obj, void *callback, void *arg) {
 // Public API - Waiting
 //=============================================================================
 
-/// @brief Block until all submitted tasks have completed (queue empty and no active workers).
+/// @brief Block until the Pool queue is empty and every worker is idle.
+/// @details New submissions remain allowed while waiting and can extend the
+///          drain interval. A call from one of this Pool's workers traps to
+///          avoid self-deadlock. After drain, accumulated worker-trap state is
+///          consumed and raised on the waiting thread. NULL is a no-op.
+/// @param pool_obj Pool whose current workload should drain.
 void rt_threadpool_wait(void *pool_obj) {
     if (!pool_obj)
         return;
@@ -1058,7 +1149,15 @@ void rt_threadpool_wait(void *pool_obj) {
         rt_trap(error[0] ? error : "Pool.Wait: task trapped");
 }
 
-/// @brief Wait for all tasks with a timeout. Returns 1 if all completed, 0 on timeout.
+/// @brief Wait up to a deadline for the Pool queue and active workers to drain.
+/// @details Non-positive durations perform an immediate check. Timeout leaves
+///          accumulated worker errors for a later drain observer. A completed
+///          wait consumes and raises worker errors; same-Pool worker calls trap.
+///          A NULL Pool is treated as already drained.
+/// @param pool_obj Pool whose current workload should drain.
+/// @param ms Maximum wait in milliseconds.
+/// @return One after a clean drain, or zero on timeout, invalid input, or after
+///         an error trap returns.
 int8_t rt_threadpool_wait_for(void *pool_obj, int64_t ms) {
     if (!pool_obj)
         return 1;
@@ -1147,7 +1246,12 @@ int8_t rt_threadpool_wait_for(void *pool_obj, int64_t ms) {
 // Public API - Shutdown
 //=============================================================================
 
-/// @brief Gracefully shut down the pool — finish pending tasks, then stop workers.
+/// @brief Gracefully stop accepting tasks, drain queued work, and join all workers.
+/// @details Concurrent or repeated shutdown calls coordinate through a
+///          single-owner join phase and do not double-join handles. The call
+///          blocks until stable shutdown completion, then consumes and raises
+///          accumulated worker errors. Same-Pool worker calls trap; NULL is a no-op.
+/// @param pool_obj Pool to shut down.
 void rt_threadpool_shutdown(void *pool_obj) {
     if (!pool_obj)
         return;
@@ -1193,7 +1297,13 @@ void rt_threadpool_shutdown(void *pool_obj) {
         rt_trap(error[0] ? error : "Pool.Wait: task trapped");
 }
 
-/// @brief Immediately shut down the pool — discard pending tasks and stop workers.
+/// @brief Stop accepting tasks, discard queued work, and join all workers.
+/// @details Running callbacks are not interrupted. Detached queued tasks are
+///          freed and their Pool-owned arguments released outside the monitor.
+///          Concurrent or repeated calls share one join phase. Accumulated
+///          worker errors are consumed after joining. Same-Pool worker calls
+///          trap; NULL is a no-op.
+/// @param pool_obj Pool to shut down immediately.
 void rt_threadpool_shutdown_now(void *pool_obj) {
     if (!pool_obj)
         return;
@@ -1253,7 +1363,9 @@ void rt_threadpool_shutdown_now(void *pool_obj) {
 // Public API - Properties
 //=============================================================================
 
-/// @brief Get the number of worker threads in the pool.
+/// @brief Get a Pool's fixed worker count.
+/// @param pool_obj Pool object to inspect.
+/// @return Configured worker count, or zero for NULL or invalid tolerant input.
 int64_t rt_threadpool_get_size(void *pool_obj) {
     if (!pool_obj)
         return 0;
@@ -1267,7 +1379,11 @@ int64_t rt_threadpool_get_size(void *pool_obj) {
     return size;
 }
 
-/// @brief Get the number of tasks waiting in the queue (not yet started).
+/// @brief Get the number of tasks waiting in a Pool's FIFO.
+/// @details The result is a monitor-protected point-in-time snapshot and
+///          excludes tasks already executing.
+/// @param pool_obj Pool object to inspect.
+/// @return Pending task count, or zero for NULL or invalid tolerant input.
 int64_t rt_threadpool_get_pending(void *pool_obj) {
     if (!pool_obj)
         return 0;
@@ -1285,7 +1401,10 @@ int64_t rt_threadpool_get_pending(void *pool_obj) {
     return count;
 }
 
-/// @brief Get the number of tasks currently being executed by worker threads.
+/// @brief Get the number of callbacks currently executing in a Pool.
+/// @details The result is a monitor-protected point-in-time snapshot.
+/// @param pool_obj Pool object to inspect.
+/// @return Active callback count, or zero for NULL or invalid tolerant input.
 int64_t rt_threadpool_get_active(void *pool_obj) {
     if (!pool_obj)
         return 0;
@@ -1303,7 +1422,11 @@ int64_t rt_threadpool_get_active(void *pool_obj) {
     return count;
 }
 
-/// @brief Check whether the pool has been shut down.
+/// @brief Check whether either Pool shutdown mode has been requested.
+/// @details This reports request state, which may precede completion of worker
+///          draining and joining. NULL or invalid tolerant input reports shut down.
+/// @param pool_obj Pool object to inspect.
+/// @return One after shutdown is requested or for invalid input, otherwise zero.
 int8_t rt_threadpool_get_is_shutdown(void *pool_obj) {
     if (!pool_obj)
         return 1;
@@ -1319,6 +1442,10 @@ int8_t rt_threadpool_get_is_shutdown(void *pool_obj) {
     return shutdown;
 }
 
+/// @brief Return the Pool whose callback is executing on the current thread.
+/// @details The pointer is borrowed and valid only while the worker remains in
+///          its task loop. Non-worker threads return NULL.
+/// @return Borrowed current Pool pointer, or NULL.
 void *rt_threadpool_current_worker_pool(void) {
     return g_current_worker_pool;
 }

@@ -5,9 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the TermIO abstract interface and its concrete
-// implementations (RealTermIO and StringTermIO) for terminal output in
-// Zanna's TUI framework.
+/// @file
+/// @brief Declares real and in-memory terminal output backends.
+/// @details TermIO supplies the renderer's minimal byte-write/flush abstraction;
+///          RealTermIO targets standard output while StringTermIO captures an
+///          owning byte transcript.
 //
 // TermIO provides a minimal write/flush interface that the Renderer uses
 // to emit ANSI escape sequences. RealTermIO writes directly to stdout
@@ -36,6 +38,7 @@ namespace zanna::tui::term {
 ///          The Renderer writes ANSI escape sequences through this interface.
 class TermIO {
   public:
+    /// @brief Destroy an output backend polymorphically.
     virtual ~TermIO() = default;
     /// @brief Write a string of bytes to the terminal output.
     /// @param s Byte sequence to write (typically ANSI escape codes or text).
@@ -49,7 +52,11 @@ class TermIO {
 ///          Flush performs an fsync/fdatasync to ensure bytes are delivered.
 class RealTermIO : public TermIO {
   public:
+    /// @brief Write bytes directly to standard output.
+    /// @param s Byte sequence to emit.
     void write(std::string_view s) override;
+
+    /// @brief Request delivery of bytes written to standard output.
     void flush() override;
 };
 
@@ -59,8 +66,11 @@ class RealTermIO : public TermIO {
 ///          without a real terminal.
 class StringTermIO : public TermIO {
   public:
+    /// @brief Append bytes to the in-memory transcript.
+    /// @param s Byte sequence to append exactly.
     void write(std::string_view s) override;
 
+    /// @brief Complete the flush contract; no action is required for memory storage.
     void flush() override;
 
     /// @brief Access the accumulated output buffer.
@@ -71,7 +81,7 @@ class StringTermIO : public TermIO {
     void clear();
 
   private:
-    std::string buf_;
+    std::string buf_; ///< Accumulated output bytes in write order.
 };
 
 } // namespace zanna::tui::term

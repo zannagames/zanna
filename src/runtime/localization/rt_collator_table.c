@@ -33,6 +33,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements the compact invariant collation classifier and tailorings.
+ * @details Maps supported Latin code points into stable primary, secondary,
+ * and tertiary weights, assigns deterministic fallback weights to other
+ * scripts, and supplies small immutable locale-specific override tables.
+ */
+
 #include "rt_collator.h"
 
 #include <stddef.h>
@@ -53,9 +61,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/** First primary weight reserved for whitespace and structural characters. */
 #define PRI_SPACE 0x0010u
+/** First primary weight in the punctuation band. */
 #define PRI_PUNCT 0x0100u
+/** Primary weight assigned to ASCII digit zero. */
 #define PRI_DIGIT0 0x0200u
+/** Primary weight assigned to base Latin letter a. */
 #define PRI_LETTER0 0x0300u
 
 //===----------------------------------------------------------------------===//
@@ -317,12 +329,14 @@ static int decompose_latin(uint32_t cp, char *base_out, uint16_t *sec_out) {
     return 1;
 }
 
+/** Compact decomposition record for one Latin Extended-A scalar. */
 typedef struct {
-    uint32_t cp;
-    char base;
-    uint16_t secondary;
+    uint32_t cp;      ///< Unicode scalar being decomposed.
+    char base;        ///< Lowercase ASCII base letter defining primary weight.
+    uint16_t secondary; ///< Stable diacritic or variant weight.
 } latin_ext_a_decomp_t;
 
+/** Sorted decomposition records covering the Latin Extended-A block. */
 static const latin_ext_a_decomp_t k_latin_ext_a_decomp[] = {
     {0x0100, 'a', 9},  {0x0101, 'a', 9},  {0x0102, 'a', 10}, {0x0103, 'a', 10}, {0x0104, 'a', 11},
     {0x0105, 'a', 11}, {0x0106, 'c', 2},  {0x0107, 'c', 2},  {0x0108, 'c', 3},  {0x0109, 'c', 3},
@@ -498,6 +512,7 @@ int rt_collator_codepoint_weights(uint32_t cp,
 // Swedish: å (U+00E5/U+00C5), ä (U+00E4/U+00C4), ö (U+00F6/U+00D6) sort after z.
 // We give them primary weights starting at PRI_LETTER0 + 26 (beyond 'z' which
 // is PRI_LETTER0 + 25) so they collate at the end of the alphabet.
+/** Swedish case-paired overrides that place å, ä, and ö after z. */
 static const rt_collator_locale_patch_t g_patches_sv[] = {
     {0x00E5u, PRI_LETTER0 + 26u, 0, 0},
     {0x00C5u, PRI_LETTER0 + 26u, 0, 1},
@@ -511,6 +526,7 @@ static const rt_collator_locale_patch_t g_patches_sv[] = {
 // their base-letter primary with an elevated secondary, and ß uses the
 // special s primary. No locale-specific override is required, so this
 // sentinel table intentionally reports zero entries.
+/** Sentinel storage representing the currently empty German override set. */
 static const rt_collator_locale_patch_t g_patches_de[] = {
     {0, 0, 0, 0}, // Sentinel; count returns 0 below.
 };

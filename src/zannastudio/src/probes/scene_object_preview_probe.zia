@@ -38,6 +38,7 @@ bind "../core/document_manager";
 bind "../services/file_utils";
 bind "../ui/app_shell";
 bind "../ui/scene_editor_2d";
+bind "../ui/scene_panels_2d";
 
 bind Color = Zanna.Graphics.Color;
 bind File = Zanna.IO.File;
@@ -74,7 +75,7 @@ func main() {
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Object Preview Probe", 1120, 760);
     var editor = new scene_editor_2d.SceneEditor2D();
-    editor.Setup(shell.workbench.scene2DHost, shell.app);
+    scene_panels_2d.Build(editor,shell.workbench.scene2DHost, shell.app);
     var documents = new document_manager.DocumentManager();
     var sceneDoc = documents.NewScene2DDocument();
     shell.SelectSurface(file_utils.DOC_KIND_SCENE_2D);

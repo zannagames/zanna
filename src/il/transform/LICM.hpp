@@ -22,6 +22,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares loop-invariant code motion for IL functions.
+ *
+ * @details LICM hoists pure, non-trapping computations whose operands are
+ *          invariant into canonical loop preheaders. Its optional memory mode
+ *          additionally permits loads and readonly operations only when alias
+ *          and ModRef facts prove the loop cannot invalidate them; ownership-
+ *          bearing string loads remain fixed at their dynamic execution sites.
+ */
+
 #pragma once
 
 #include "il/transform/PassRegistry.hpp"
@@ -51,6 +62,7 @@ class LICM : public FunctionPass {
     PreservedAnalyses run(core::Function &function, AnalysisManager &analysis) override;
 
   private:
+    /// @brief Whether the pass may hoist memory-reading operations when proven safe.
     bool allowMemoryHoisting_ = true;
 };
 

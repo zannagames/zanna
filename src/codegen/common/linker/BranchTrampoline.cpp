@@ -276,7 +276,8 @@ bool collectChunkBoundaries(const OutputSection &textSec,
                             std::vector<size_t> &boundaries,
                             std::ostream &err) {
     boundaries.clear();
-    /// Adds an instruction-aligned candidate boundary to the unsorted result.
+    /// @brief Adds an instruction-aligned candidate boundary to the unsorted result.
+    /// @param boundary Candidate text-section byte offset.
     auto addBoundary = [&](size_t boundary) {
         if ((boundary & 0x3u) == 0)
             boundaries.push_back(boundary);
@@ -610,7 +611,10 @@ bool insertBranchTrampolines(std::vector<ObjFile> &objects,
     // stable key so per-slot offsets — and thus the emitted ADRP/ADD immediates
     // and patched imm26 fields — are reproducible across runs.
     for (auto &island : islands) {
-        /// Orders trampoline slots reproducibly by target name and addend.
+        /// @brief Orders trampoline slots reproducibly by target name and addend.
+        /// @param a Left trampoline entry.
+        /// @param b Right trampoline entry.
+        /// @return `true` when `a` precedes `b`.
         std::sort(island.second.begin(),
                   island.second.end(),
                   [](const TrampolineEntry *a, const TrampolineEntry *b) {
@@ -710,7 +714,10 @@ bool insertBranchTrampolines(std::vector<ObjFile> &objects,
                                                 true});
         }
     }
-    /// Restores ascending output-offset order after synthetic chunk insertion.
+    /// @brief Restores ascending output-offset order after synthetic chunk insertion.
+    /// @param a Left input chunk.
+    /// @param b Right input chunk.
+    /// @return `true` when `a` begins before `b`.
     std::stable_sort(textSec.chunks.begin(),
                      textSec.chunks.end(),
                      [](const auto &a, const auto &b) { return a.outputOffset < b.outputOffset; });
@@ -848,7 +855,9 @@ bool insertBranchTrampolines(std::vector<ObjFile> &objects,
             return false;
         }
 
-        /// Finds the deduplicated trampoline selected for this branch record.
+        /// @brief Tests for the deduplicated trampoline selected for this branch record.
+        /// @param entry Candidate trampoline map entry.
+        /// @return `true` when the entry owns the requested synthetic symbol.
         const auto trampIt =
             std::find_if(trampolines.begin(), trampolines.end(), [&](const auto &entry) {
                 return entry.second.symbolName == oob.trampolineSymName;

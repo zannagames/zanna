@@ -14,6 +14,18 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements cost-guided direct-call inlining for IL modules.
+ *
+ * @details The implementation measures candidate legality and cost, validates
+ *          the complete call-site rewrite before mutation, clones and renames
+ *          callee CFG/SSA state, threads escaping caller values through a
+ *          continuation block, and converts returns into branches. Per-block
+ *          depth tracking and module-wide growth accounting bound repeated
+ *          aggressive rounds.
+ */
+
 #include "il/transform/Inline.hpp"
 
 #include "il/analysis/CallGraph.hpp"
@@ -56,16 +68,27 @@ using BlockDepthMap = std::unordered_map<std::string, unsigned>;
 /// @details The record separates hard legality properties from adjustable cost
 ///          inputs so individual call sites can apply constant-argument bonuses.
 struct InlineCost {
+    /// @brief Total instructions in the candidate callee.
     unsigned instrCount = 0;
+    /// @brief Number of basic blocks in the candidate callee.
     unsigned blockCount = 0;
+    /// @brief Direct call-site count reported by the module call graph.
     unsigned callSites = 0;
-    unsigned nestedCalls = 0; // Number of calls within this function
-    unsigned returnCount = 0; // Number of return statements
+    /// @brief Number of direct or indirect calls inside the candidate.
+    unsigned nestedCalls = 0;
+    /// @brief Number of return terminators inside the candidate.
+    unsigned returnCount = 0;
+    /// @brief Whether call-graph analysis found recursive reachability.
     bool recursive = false;
+    /// @brief Whether the body contains exception-handling instructions.
     bool hasEH = false;
+    /// @brief Whether the body allocates function-scoped stack storage.
     bool hasAlloca = false;
+    /// @brief Whether the signature exceeds the current value remapper's type support.
     bool hasNonScalarSignature = false;
+    /// @brief Whether the body has malformed or unsupported control flow.
     bool unsupportedCFG = false;
+    /// @brief Whether at least one valid return terminator was found.
     bool hasReturn = false;
 
     /// @brief Check whether the callee satisfies non-negotiable structural constraints.
@@ -346,7 +369,9 @@ InlineCost evaluateInlineCost(const Function &fn, const zanna::analysis::CallGra
     cost.instrCount = countInstructions(fn);
     cost.blockCount = static_cast<unsigned>(fn.blocks.size());
 
-    /// Return whether a signature type is supported by the current value remapper.
+    /// @brief Determine whether the current value remapper supports a signature type.
+    /// @param type Candidate parameter or return type.
+    /// @return True for void, boolean, integer, and floating scalar types.
     auto isScalarType = [](const Type &type) {
         return type.kind == Type::Kind::I64 || type.kind == Type::Kind::I1 ||
                type.kind == Type::Kind::F64 || type.kind == Type::Kind::Void;
@@ -804,7 +829,9 @@ bool inlineCallSite(Function &caller,
     // This is the key advantage of Phase 1: we see ALL instructions including
     // those in the call block that will be truncated in Phase 2.
     struct EscapedParamInfo {
+        /// @brief Continuation-block parameter created for the escaping value.
         Param param;
+        /// @brief Whether static type resolution populated @ref param.
         bool typeFound{false};
     };
 
@@ -1155,12 +1182,18 @@ PreservedAnalyses Inliner::run(Module &module, AnalysisManager &) {
 
 /// @copydoc registerInlinePass()
 void registerInlinePass(PassRegistry &registry) {
-    /// Run the default-cost inliner over a module.
+    /// @brief Run the default-cost inliner over a module.
+    /// @param module Module to optimize in place.
+    /// @param analysis Pipeline analysis manager forwarded to the pass.
+    /// @return Analyses preserved by the inliner run.
     registry.registerModulePass("inline", [](core::Module &module, AnalysisManager &analysis) {
         Inliner inliner;
         return inliner.run(module, analysis);
     });
-    /// Run the aggressive O2 inliner with expanded budgets and fixpoint rounds.
+    /// @brief Run the aggressive O2 inliner with expanded budgets and fixpoint rounds.
+    /// @param module Module to optimize in place.
+    /// @param analysis Pipeline analysis manager forwarded to the pass.
+    /// @return Analyses preserved by the inliner run.
     registry.registerModulePass("inline-o2", [](core::Module &module, AnalysisManager &analysis) {
         InlineCostConfig config;
         config.instrThreshold = 120;

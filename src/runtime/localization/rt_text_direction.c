@@ -28,6 +28,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements UTF-8 text-direction detection and bidi isolation.
+ * @details Strictly advances through malformed UTF-8, classifies strong and
+ * neutral code points with fixed script ranges, computes aggregate and
+ * first-strong direction, and inserts bounded RTL isolate markers into mixed
+ * text without implementing the full Unicode bidi algorithm.
+ */
+
 #include "rt_text_direction.h"
 
 #include "rt_internal.h"

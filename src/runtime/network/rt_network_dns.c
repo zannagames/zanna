@@ -29,12 +29,22 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements DNS resolution and numeric IP address utilities.
+ * @details Provides forward, family-specific, exhaustive, and reverse lookup,
+ * strict length-delimited IPv4/IPv6 validation, unique interface-address
+ * discovery, and trap-safe release of native resolver and adapter snapshots.
+ */
+
 // Platform feature macros must appear before ANY includes. They are harmless
 // on toolchains that do not consume them, so no raw OS selector is needed here.
 #ifndef _DARWIN_C_SOURCE
+/** Enable Darwin/BSD resolver and interface extensions. */
 #define _DARWIN_C_SOURCE 1
 #endif
 #ifndef _GNU_SOURCE
+/** Enable GNU resolver and interface extensions. */
 #define _GNU_SOURCE 1
 #endif
 

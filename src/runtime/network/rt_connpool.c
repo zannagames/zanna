@@ -22,6 +22,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements synchronized plain-TCP connection pooling.
+ * @details Keys reusable transports by exact immutable endpoints, uses atomic
+ * lease tokens to prevent cross-pool aliasing, probes idle socket health,
+ * expires entries on a monotonic clock, and safely detaches checked-out
+ * transports during clear and finalization.
+ */
+
 #include "rt_connpool.h"
 
 #include "rt_heap.h"
@@ -47,31 +56,37 @@ typedef pthread_mutex_t pool_mutex_t;
 // Internal Structures
 //=============================================================================
 
+/** Compile-time capacity of the fixed ConnectionPool entry array. */
 #define POOL_MAX_ENTRIES 128
+/** Maximum permitted idle age before an entry is evicted. */
 #define POOL_IDLE_TIMEOUT_MS (60LL * 1000LL)
+/** Payload sentinel used with class and size checks to reject forged handles. */
 #define RT_CONNPOOL_MAGIC UINT64_C(0x5A434F4E4E504F4C)
 
+/** One pool-owned TCP reference and its reuse metadata. */
 typedef struct {
-    void *tcp;              // Pool-retained TCP connection object
-    uint64_t endpoint_hash; // Hash of exact host bytes plus remote port
-    int64_t last_used_ms;   // Monotonic ms tick when connection was returned
-    bool in_use;            // Currently checked out
+    void *tcp;              ///< Pool-retained TCP connection object.
+    uint64_t endpoint_hash; ///< Hash of exact host bytes plus remote port.
+    int64_t last_used_ms;   ///< Monotonic tick when the connection was returned.
+    bool in_use;            ///< Whether a caller currently has the entry checked out.
 } pooled_entry_t;
 
+/** Complete managed ConnectionPool payload and native synchronization state. */
 typedef struct {
-    uint64_t magic;
-    uint64_t owner_token;
-    pooled_entry_t entries[POOL_MAX_ENTRIES];
-    int count;
-    int max_size;
-    pool_mutex_t lock;
-    bool lock_initialized;
+    uint64_t magic;                            ///< Initialized payload sentinel.
+    uint64_t owner_token;                      ///< Exclusive TCP lease identity.
+    pooled_entry_t entries[POOL_MAX_ENTRIES]; ///< Fixed tracked-entry storage.
+    int count;                                 ///< Number of active array slots.
+    int max_size;                              ///< Configured active-slot ceiling.
+    pool_mutex_t lock;                         ///< Native bookkeeping mutex.
+    bool lock_initialized;                     ///< Whether @ref lock may be used.
 } rt_connpool_impl;
 
 //=============================================================================
 // Helpers
 //=============================================================================
 
+/** Atomic source of nonzero process-local pool lease identities. */
 static volatile uint64_t g_connpool_owner_sequence = 1;
 
 /// @brief Initialize one platform mutex for a ConnectionPool.

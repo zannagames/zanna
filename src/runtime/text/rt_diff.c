@@ -32,6 +32,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_diff.c
+ * @brief Implements bounded line-oriented text difference and reconstruction.
+ * @details Inputs are split into length-aware lines and compared with a capped
+ *          dynamic-programming longest-common-subsequence table. The module
+ *          emits minimal edit records, compact unified diagnostics, change
+ *          statistics, and context-validating patch reconstruction.
+ */
+
 #include "rt_diff.h"
 #include "rt_internal.h"
 #include "rt_object.h"
@@ -46,16 +55,24 @@
 
 #include "rt_trap.h"
 
+/// Maximum number of cells permitted in the full LCS matrix.
+///
+/// The limit bounds both the quadratic work performed by the line diff and
+/// the aggregate allocation made for its row arrays.
 #define RT_DIFF_MAX_LCS_CELLS (16u * 1024u * 1024u)
 
 // ---------------------------------------------------------------------------
 // Line splitting helper
 // ---------------------------------------------------------------------------
 
+/// Owned, length-aware representation of newline-delimited input text.
+///
+/// Each entry is separately allocated and NUL-terminated for convenience,
+/// while the parallel length array preserves embedded NUL bytes.
 typedef struct {
-    char **lines;
-    size_t *lens;
-    int count;
+    char **lines; ///< Individually allocated line byte strings.
+    size_t *lens; ///< Byte length of each entry in @c lines.
+    int count;    ///< Number of populated entries in both arrays.
 } line_array;
 
 static void free_lines(line_array *la);
@@ -86,14 +103,19 @@ static bool diff_lcs_table_size_ok(int m, int n) {
     return true;
 }
 
-/// @brief Split a NUL-terminated string into a heap-allocated array of line copies.
+/// @brief Split an explicit byte range into a heap-allocated array of line copies.
 /// @details Counts `\n` characters first to size the array, then walks
 ///          again to copy each line (without the terminator) into its
 ///          own malloc'd null-terminated string. The final segment after
 ///          the last `\n` is always emitted, even when empty — that
 ///          way `"a\nb\n"` produces `["a", "b", ""]` and `"a\nb"`
 ///          produces `["a", "b"]`, mirroring how unified-diff tools
-///          treat trailing newlines.
+///          treat trailing newlines. A null pointer or zero length produces
+///          an empty array. Allocation and line-count failures trap and
+///          return an empty, safely releasable aggregate.
+/// @param text Borrowed start of the byte range; may contain embedded NULs.
+/// @param text_len Number of readable bytes at @p text.
+/// @return An owning line array that must be released with `free_lines`.
 static line_array split_lines(const char *text, size_t text_len) {
     line_array la = {NULL, NULL, 0};
     if (!text || text_len == 0)
@@ -150,6 +172,7 @@ static line_array split_lines(const char *text, size_t text_len) {
 /// @details Setting both `lines` and `count` to zero/NULL after free
 ///          makes the helper idempotent — a second call is a no-op
 ///          rather than a double-free.
+/// @param la Non-null line array whose owned storage is to be released.
 static void free_lines(line_array *la) {
     for (int i = 0; i < la->count; i++)
         free(la->lines[i]);
@@ -160,15 +183,34 @@ static void free_lines(line_array *la) {
     la->count = 0;
 }
 
+/// @brief Compare one line from each array for exact byte equality.
+/// @details The stored lengths are checked before `memcmp`, so embedded NUL
+///          bytes participate in the comparison.
+/// @param a Left line array.
+/// @param i Valid line index in @p a.
+/// @param b Right line array.
+/// @param j Valid line index in @p b.
+/// @return Non-zero when the selected lines have identical lengths and bytes.
 static int lines_equal(const line_array *a, int i, const line_array *b, int j) {
     return a->lens[i] == b->lens[j] && memcmp(a->lines[i], b->lines[j], a->lens[i]) == 0;
 }
 
+/// @brief Release a locally owned runtime object reference.
+/// @details Frees the object only when dropping this reference reduces its
+///          runtime reference count to zero. A null pointer is ignored.
+/// @param obj Runtime object reference owned by the current function.
 static void release_local_obj(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
+/// @brief Convert a string-builder failure into the runtime diff trap.
+/// @details Successful operations leave the builder untouched. On failure,
+///          the builder is released before trapping. Callers rely on the
+///          runtime trap being terminating and must not reuse the builder
+///          after an error.
+/// @param sb Builder associated with @p status.
+/// @param status Status returned by the most recent builder operation.
 static void diff_check_sb(rt_string_builder *sb, rt_sb_status_t status) {
     if (status == RT_SB_OK)
         return;
@@ -176,6 +218,11 @@ static void diff_check_sb(rt_string_builder *sb, rt_sb_status_t status) {
     rt_trap("rt_diff: string builder allocation failed");
 }
 
+/// @brief Allocate a runtime string from a byte range or raise a diff trap.
+/// @param bytes Borrowed byte range to copy; follows `rt_string_from_bytes`
+///              rules for an empty range.
+/// @param len Number of bytes to copy.
+/// @return Newly allocated runtime string, or null only if the trap hook returns.
 static rt_string diff_string_from_bytes_or_trap(const char *bytes, size_t len) {
     rt_string result = rt_string_from_bytes(bytes, len);
     if (!result)
@@ -192,11 +239,14 @@ static rt_string diff_string_from_bytes_or_trap(const char *bytes, size_t len) {
 ///          `(m, n)` to `(0, 0)` so `table[i][j]` holds the LCS length
 ///          of the suffixes `a[i..m]` and `b[j..n]`. The traceback in
 ///          `rt_diff_lines` then walks forward from `(0, 0)` greedily,
-///          choosing the direction that preserves the LCS — that's
-///          how it produces a minimal (Myers-equivalent) diff for
-///          short inputs. Note: `O(n*m)` space — fine for source
-///          files (<10K lines × <10K lines) but would be replaced by
-///          Hirschberg's algorithm at scale.
+///          choosing the direction that preserves the LCS. The resulting
+///          insertion/deletion script is minimal, although this is a full
+///          dynamic-programming LCS implementation rather than Myers'
+///          algorithm. The caller has already bounded the `O(m*n)` storage
+///          and work through `diff_lcs_table_size_ok`.
+/// @param a Left line array.
+/// @param b Right line array.
+/// @param table Preallocated `(a->count + 1)` by `(b->count + 1)` matrix.
 static void compute_lcs_table(const line_array *a, const line_array *b, int **table) {
     int m = a->count;
     int n = b->count;
@@ -217,6 +267,18 @@ static void compute_lcs_table(const line_array *a, const line_array *b, int **ta
 // rt_diff_lines
 // ---------------------------------------------------------------------------
 
+/// @brief Compute a minimal line-oriented insertion/deletion script.
+/// @details Splits both inputs at newline bytes, computes a bounded full LCS
+///          matrix, and traces it forward into strings prefixed with `' '`
+///          for an unchanged line, `'+'` for an addition, or `'-'` for a
+///          removal. Every input line appears in document order. Equal-length
+///          traceback alternatives favor an addition before a removal. Null
+///          inputs are treated as empty text. Oversized inputs trap; an LCS
+///          allocation failure returns the already-created empty sequence.
+/// @param a Borrowed original text, or null for empty text.
+/// @param b Borrowed modified text, or null for empty text.
+/// @return Newly allocated, element-owning runtime Seq of newly allocated
+///         prefixed strings; the caller owns the returned reference.
 void *rt_diff_lines(rt_string a, rt_string b) {
     void *result = rt_seq_new();
     rt_seq_set_owns_elements(result, 1);
@@ -335,7 +397,14 @@ static int diff_line_within_context(void *diff, int64_t len, int64_t index, int6
 ///          changed lines plus up to @p context unchanged records around
 ///          those changes. Lines are already prefixed with one of ` `,
 ///          `+`, or `-`. This remains a compact diagnostic format rather
-///          than a patch-applicable unified diff with hunk headers.
+///          than a patch-applicable unified diff with hunk headers. A
+///          negative context selects the default of three records; zero
+///          suppresses unchanged context.
+/// @param a Borrowed original text, or null for empty text.
+/// @param b Borrowed modified text, or null for empty text.
+/// @param context Number of surrounding diff records, or a negative value
+///                to use the default of three.
+/// @return Newly allocated diagnostic diff string owned by the caller.
 rt_string rt_diff_unified(rt_string a, rt_string b, int64_t context) {
     if (context < 0)
         context = 3;
@@ -371,7 +440,13 @@ rt_string rt_diff_unified(rt_string a, rt_string b, int64_t context) {
 // rt_diff_count_changes
 // ---------------------------------------------------------------------------
 
-/// @brief Count the number of added or removed lines between two strings.
+/// @brief Count the number of added and removed records between two strings.
+/// @details Computes the same minimal script as `rt_diff_lines` and counts
+///          each `'+'` and `'-'` record independently; a replacement commonly
+///          contributes two changes.
+/// @param a Borrowed original text, or null for empty text.
+/// @param b Borrowed modified text, or null for empty text.
+/// @return Total number of addition and removal records.
 int64_t rt_diff_count_changes(rt_string a, rt_string b) {
     void *diff = rt_diff_lines(a, b);
     int64_t len = rt_seq_len(diff);
@@ -398,10 +473,18 @@ int64_t rt_diff_count_changes(rt_string a, rt_string b) {
 ///          - ` ` (context) → output the line as-is.
 ///          - `+` (added)   → output the line.
 ///          - `-` (removed) → skip.
-///          Joins lines with `\n`. The `original` parameter is unused
-///          since the diff entries already encode every line — it's
-///          kept in the signature so the API can later switch to a
-///          non-redundant patch format without breaking callers.
+///          Context and removed entries must exactly consume the corresponding
+///          lines of @p original, including explicit byte lengths, and the
+///          complete original must be consumed. A mismatch traps and returns
+///          an empty fallback string if the trap hook returns. Output records
+///          are joined with `\n`; the trailing empty record produced by
+///          `rt_diff_lines` preserves a final newline. Null @p diff produces
+///          a newly allocated empty string.
+/// @param original Borrowed source text against which context and removals
+///                 are validated; null denotes empty text.
+/// @param diff Borrowed Seq of prefixed line strings, normally returned by
+///             `rt_diff_lines`.
+/// @return Newly allocated reconstructed modified text owned by the caller.
 rt_string rt_diff_patch(rt_string original, void *diff) {
     if (!diff)
         return rt_string_from_bytes("", 0);

@@ -38,16 +38,30 @@ namespace il::vm {
 namespace {
 using il::core::Type;
 
+/// @brief Type-erased access operations for one runtime-supported IL kind.
+/// @details Each entry exposes argument storage, result storage, and assignment
+///          operations without repeating a type-kind switch at every bridge
+///          call.
 struct KindAccessors {
+    /// @brief Function type returning a pointer to a slot member.
+    /// @param slot Slot whose typed member is requested.
+    /// @return Erased pointer to the selected member.
     using SlotAccessor = void *(*)(Slot &);
+    /// @brief Function type returning a pointer to a result-buffer member.
+    /// @param buffers Result buffers whose typed member is requested.
+    /// @return Erased pointer to the selected member.
     using ResultAccessor = void *(*)(ResultBuffers &);
+    /// @brief Function type copying a result-buffer member into a slot.
+    /// @param[out] slot Destination slot.
+    /// @param buffers Source result buffers.
     using ResultAssigner = void (*)(Slot &, const ResultBuffers &);
 
-    SlotAccessor slotAccessor = nullptr;
-    ResultAccessor resultAccessor = nullptr;
-    ResultAssigner assignResult = nullptr;
+    SlotAccessor slotAccessor = nullptr; ///< Argument-storage accessor.
+    ResultAccessor resultAccessor = nullptr; ///< Return-storage accessor.
+    ResultAssigner assignResult = nullptr; ///< Return-to-slot assignment.
 };
 
+/// @brief Contiguous set of IL kinds represented by @ref kKindAccessors.
 constexpr std::array<Type::Kind, 10> kSupportedKinds = {
     Type::Kind::Void,
     Type::Kind::I1,
@@ -63,29 +77,55 @@ constexpr std::array<Type::Kind, 10> kSupportedKinds = {
 
 static_assert(kSupportedKinds.size() == 10, "update kind accessors when Type::Kind grows");
 
+/// @brief Represent a void result with no writable return buffer.
+/// @details The supplied result-buffer object is intentionally ignored.
+/// @return Always @c nullptr.
 constexpr void *nullResultBuffer(ResultBuffers &) {
     return nullptr;
 }
 
+/// @brief Ignore assignment for kinds that carry no runtime value.
+/// @details Both the destination slot and source buffers are intentionally
+///          unused.
 constexpr void assignNoop(Slot &, const ResultBuffers &) {}
 
+/// @brief Obtain a type-erased pointer to a selected @ref Slot member.
+/// @tparam Member Pointer to the slot data member exposed to the runtime.
+/// @param slot Slot containing the selected member.
+/// @return Address of the selected member inside @p slot.
 template <auto Member> constexpr void *slotMemberAccessor(Slot &slot) {
     return static_cast<void *>(&(slot.*Member));
 }
 
+/// @brief Obtain a type-erased pointer to a selected result-buffer member.
+/// @tparam Member Pointer to the result data member exposed to the runtime.
+/// @param buffers Result storage containing the selected member.
+/// @return Address of the selected member inside @p buffers.
 template <auto Member> constexpr void *bufferMemberAccessor(ResultBuffers &buffers) {
     return static_cast<void *>(&(buffers.*Member));
 }
 
+/// @brief Copy a selected result-buffer member into a selected slot member.
+/// @tparam SlotMember Pointer to the destination @ref Slot member.
+/// @tparam BufferMember Pointer to the source @ref ResultBuffers member.
+/// @param slot Destination VM slot.
+/// @param buffers Source runtime result storage.
 template <auto SlotMember, auto BufferMember>
 constexpr void assignFromBuffer(Slot &slot, const ResultBuffers &buffers) {
     slot.*SlotMember = buffers.*BufferMember;
 }
 
+/// @brief Build an accessor entry for a non-value-bearing IL kind.
+/// @return Accessors with no argument storage, a null result buffer, and
+///         no-op assignment.
 constexpr KindAccessors makeVoidAccessors() {
     return KindAccessors{nullptr, &nullResultBuffer, &assignNoop};
 }
 
+/// @brief Build an accessor entry for corresponding slot and result members.
+/// @tparam SlotMember Pointer to the VM slot member.
+/// @tparam BufferMember Pointer to the runtime result-buffer member.
+/// @return Fully populated type-erased accessor entry.
 template <auto SlotMember, auto BufferMember> constexpr KindAccessors makeAccessors() {
     return KindAccessors{
         &slotMemberAccessor<SlotMember>,
@@ -94,6 +134,9 @@ template <auto SlotMember, auto BufferMember> constexpr KindAccessors makeAccess
     };
 }
 
+/// @brief Accessor table indexed by the underlying value of @ref Type::Kind.
+/// @details Its immediately invoked initializer builds one accessor entry for
+///          every supported kind and returns the completed table.
 constexpr std::array<KindAccessors, kSupportedKinds.size()> kKindAccessors = [] {
     std::array<KindAccessors, kSupportedKinds.size()> table{};
     table[static_cast<size_t>(Type::Kind::Void)] = makeVoidAccessors();
@@ -109,6 +152,10 @@ constexpr std::array<KindAccessors, kSupportedKinds.size()> kKindAccessors = [] 
     return table;
 }();
 
+/// @brief Select the accessor entry for an IL type kind.
+/// @param kind Supported type kind used as the table index.
+/// @return Immutable accessor entry associated with @p kind.
+/// @pre @p kind must fall within the contiguous supported-kind table.
 const KindAccessors &dispatchFor(Type::Kind kind) {
     const auto index = static_cast<size_t>(kind);
     assert(index < kKindAccessors.size() && "invalid type kind");
@@ -228,6 +275,14 @@ constexpr const char *valueKindToString(il::core::Value::Kind kind) noexcept {
 }
 } // namespace
 
+/// @brief Convert an IL constant scalar to a signed 64-bit VM value.
+/// @details Integer constants are preserved, floating constants use the C++
+///          numeric conversion, and null pointers become zero.  Other value
+///          kinds indicate a caller error and route through the runtime trap
+///          mechanism.
+/// @param value Constant integer, floating-point, or null-pointer value.
+/// @return Converted signed integer, or zero after reporting an invalid kind.
+/// @pre @ref isConstantScalar must hold for @p value.
 int64_t toI64(const il::core::Value &value) {
     using Kind = il::core::Value::Kind;
 
@@ -255,6 +310,14 @@ int64_t toI64(const il::core::Value &value) {
     }
 }
 
+/// @brief Convert an IL constant scalar to a double-precision VM value.
+/// @details Floating constants are preserved, integers are converted
+///          numerically, and null pointers become zero.  Unsupported value kinds
+///          are reported through the runtime trap mechanism.
+/// @param value Constant floating-point, integer, or null-pointer value.
+/// @return Converted floating-point value, or zero after reporting an invalid
+///         kind.
+/// @pre @ref isConstantScalar must hold for @p value.
 double toF64(const il::core::Value &value) {
     using Kind = il::core::Value::Kind;
 
@@ -282,6 +345,11 @@ double toF64(const il::core::Value &value) {
     }
 }
 
+/// @brief Expose a VM slot member as runtime argument storage.
+/// @param slot Slot containing the argument value.
+/// @param kind IL type selecting which slot member is exposed.
+/// @return Pointer to the selected member, or @c nullptr after reporting an
+///         unsupported kind.
 void *slotToArgPointer(Slot &slot, il::core::Type::Kind kind) {
     const auto &entry = dispatchFor(kind);
     if (!entry.slotAccessor) {
@@ -292,6 +360,11 @@ void *slotToArgPointer(Slot &slot, il::core::Type::Kind kind) {
     return entry.slotAccessor(slot);
 }
 
+/// @brief Select writable runtime return storage for an IL type kind.
+/// @param kind Return type whose backing member is requested.
+/// @param buffers Aggregate storage for all supported runtime result forms.
+/// @return Pointer to the selected result member; @c nullptr for void-like
+///         kinds or after reporting an unsupported kind.
 void *resultBufferFor(il::core::Type::Kind kind, ResultBuffers &buffers) {
     const auto &entry = dispatchFor(kind);
     if (!entry.resultAccessor) {
@@ -302,6 +375,10 @@ void *resultBufferFor(il::core::Type::Kind kind, ResultBuffers &buffers) {
     return entry.resultAccessor(buffers);
 }
 
+/// @brief Copy a runtime result buffer into a VM slot.
+/// @param slot Destination slot.
+/// @param kind IL return type selecting the source and destination members.
+/// @param buffers Runtime result storage populated by the external call.
 void assignResult(Slot &slot, il::core::Type::Kind kind, const ResultBuffers &buffers) {
     const auto &entry = dispatchFor(kind);
     if (!entry.assignResult) {
@@ -319,8 +396,9 @@ void assignResult(Slot &slot, il::core::Type::Kind kind, const ResultBuffers &bu
 /// @tparam OutputArray Type providing operator[] and size/capacity.
 /// @param sig Runtime signature describing parameter types.
 /// @param args Argument slots to marshal.
-/// @param powStatus [out] Power function status tracker.
-/// @param output [out] Array to receive marshalled pointers.
+/// @param [in,out] powStatus Power-function status tracker initialized when a
+///        hidden status pointer is required.
+/// @param [out] output Array that receives pointers to argument storage.
 /// @param totalArgs Total number of arguments (params + hidden).
 template <typename OutputArray>
 static void marshalArgumentsCore(const il::runtime::RuntimeSignature &sig,
@@ -354,6 +432,14 @@ static void marshalArgumentsCore(const il::runtime::RuntimeSignature &sig,
     }
 }
 
+/// @brief Marshal runtime arguments into inline storage when capacity permits.
+/// @details Selects the fixed buffer for ordinary signatures and a vector for
+///          argument lists larger than @ref kMaxStackMarshalArgs, recording the
+///          selected representation and total count in @p result.
+/// @param sig Runtime signature describing visible and hidden parameters.
+/// @param args Mutable VM slots backing visible argument pointers.
+/// @param [in,out] powStatus Hidden power-status state when requested.
+/// @param [out] result Marshalled argument container populated by the function.
 void marshalArgumentsInline(const il::runtime::RuntimeSignature &sig,
                             std::span<Slot> args,
                             PowStatus &powStatus,
@@ -373,6 +459,11 @@ void marshalArgumentsInline(const il::runtime::RuntimeSignature &sig,
     }
 }
 
+/// @brief Marshal visible and hidden arguments into an owning pointer vector.
+/// @param sig Runtime signature describing visible and hidden parameters.
+/// @param args Mutable VM slots backing visible argument pointers.
+/// @param [in,out] powStatus Hidden power-status state when requested.
+/// @return Pointer vector ordered according to the runtime ABI signature.
 std::vector<void *> marshalArguments(const il::runtime::RuntimeSignature &sig,
                                      std::span<Slot> args,
                                      PowStatus &powStatus) {
@@ -382,6 +473,16 @@ std::vector<void *> marshalArguments(const il::runtime::RuntimeSignature &sig,
     return rawArgs;
 }
 
+/// @brief Classify a checked-power runtime failure as domain or overflow.
+/// @details Examines the hidden status location first, then treats a non-finite
+///          floating result as overflow.  A negative base with a fractional
+///          exponent is classified as a domain error.
+/// @param desc Runtime descriptor whose trap class and return type are checked.
+/// @param powStatus Hidden status state populated by the power helper.
+/// @param args Original VM argument slots containing base and exponent.
+/// @param buffers Runtime result storage containing the computed value.
+/// @return Triggered trap outcome with kind and message, or a default
+///         non-triggered outcome when no checked-power failure occurred.
 PowTrapOutcome classifyPowTrap(const il::runtime::RuntimeDescriptor &desc,
                                const PowStatus &powStatus,
                                std::span<const Slot> args,
@@ -425,6 +526,10 @@ PowTrapOutcome classifyPowTrap(const il::runtime::RuntimeDescriptor &desc,
     return outcome;
 }
 
+/// @brief Materialize a runtime call result as a new VM slot.
+/// @param signature Runtime signature whose return kind selects the assignment.
+/// @param buffers Result storage populated by the runtime helper.
+/// @return Value-initialized slot containing the selected result member.
 Slot assignCallResult(const il::runtime::RuntimeSignature &signature,
                       const ResultBuffers &buffers) {
     Slot destination{};
@@ -436,11 +541,22 @@ Slot assignCallResult(const il::runtime::RuntimeSignature &signature,
 // Marshalling Validation Helpers
 //===----------------------------------------------------------------------===//
 
+/// @brief Validate an argument count against a runtime descriptor.
+/// @param desc Descriptor providing signature and diagnostic name.
+/// @param argCount Number of visible VM arguments supplied.
+/// @return Successful validation or a descriptive arity error.
 MarshalValidation validateMarshalArity(const il::runtime::RuntimeDescriptor &desc,
                                        std::size_t argCount) {
     return validateMarshalArity(desc.signature, argCount, desc.name);
 }
 
+/// @brief Validate an argument count against an explicit signature.
+/// @details Produces an owning diagnostic that identifies expected and supplied
+///          counts and notes excess operands when present.
+/// @param sig Signature whose visible parameter count is authoritative.
+/// @param argCount Number of visible VM arguments supplied.
+/// @param calleeName Name prefixed to a validation failure.
+/// @return Successful validation or a descriptive arity error.
 MarshalValidation validateMarshalArity(const il::runtime::RuntimeSignature &sig,
                                        std::size_t argCount,
                                        std::string_view calleeName) {
@@ -460,6 +576,11 @@ MarshalValidation validateMarshalArity(const il::runtime::RuntimeSignature &sig,
     return result;
 }
 
+/// @brief Validate runtime-call arity and optionally reject null pointers.
+/// @param desc Descriptor defining visible parameter kinds.
+/// @param args VM arguments to inspect.
+/// @param checkNullPointers Whether pointer-typed arguments must be non-null.
+/// @return Successful validation or the first arity/null-pointer failure.
 MarshalValidation validateMarshalArgs(const il::runtime::RuntimeDescriptor &desc,
                                       std::span<const Slot> args,
                                       bool checkNullPointers) {
@@ -488,6 +609,16 @@ MarshalValidation validateMarshalArgs(const il::runtime::RuntimeDescriptor &desc
     return result;
 }
 
+/// @brief Validate and marshal a runtime call in one operation.
+/// @details Prevents out-of-bounds marshalling by checking the visible argument
+///          count before delegating to @ref marshalArguments.
+/// @param desc Runtime descriptor defining signature and validation rules.
+/// @param args Mutable VM slots backing runtime argument pointers.
+/// @param [in,out] powStatus Hidden power-status state when requested.
+/// @param [out] validation Receives success or the validation diagnostic.
+/// @param checkNullPointers Whether pointer-typed arguments must be non-null.
+/// @return Marshalled pointer vector on success, or an empty vector on
+///         validation failure.
 std::vector<void *> marshalArgumentsValidated(const il::runtime::RuntimeDescriptor &desc,
                                               std::span<Slot> args,
                                               PowStatus &powStatus,

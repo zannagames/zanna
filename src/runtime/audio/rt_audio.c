@@ -174,6 +174,7 @@ static const char *audio_path_cstr(rt_string path) {
 
 /// @brief Find an in-use mix group by name. @return its group id, or -1 if
 ///        no such group (empty/NULL name yields -1). Caller holds the lock.
+/// @param name Canonical NUL-terminated group name to find.
 static int64_t audio_find_group_unlocked(const char *name) {
     audio_groups_init_unlocked();
     if (!name || name[0] == '\0')
@@ -190,6 +191,7 @@ static int64_t audio_find_group_unlocked(const char *name) {
 ///        slot at/after RT_MIXGROUP_NAMED_BASE (volume defaulted to 100).
 /// @return The group id, or -1 if the name is empty or all slots are in use.
 ///         Caller holds the mix-group lock.
+/// @param name Canonical NUL-terminated group name to find or register.
 static int64_t audio_register_group_unlocked(const char *name) {
     audio_groups_init_unlocked();
     int64_t existing = audio_find_group_unlocked(name);
@@ -211,6 +213,8 @@ static int64_t audio_register_group_unlocked(const char *name) {
 
 /// @brief True if @p group is a valid, currently in-use mix-group id.
 ///        Caller holds the mix-group lock.
+/// @param group Candidate zero-based registry identifier.
+/// @return Non-zero when the group slot is in range and active.
 static int8_t audio_group_id_valid_unlocked(int64_t group) {
     audio_groups_init_unlocked();
     return group >= 0 && group < RT_MIXGROUP_MAX_GROUPS && g_group_in_use[group];
@@ -627,6 +631,9 @@ static int ensure_audio_init(void) {
 ///          mapping stays monotonic and clamping-free. An out-of-range group
 ///          index silently maps to `SFX` so a caller-mistyped index can't index
 ///          out of `g_group_volume`.
+/// @param volume Per-voice logical volume in `[0, 100]`.
+/// @param group Candidate mix-group identifier.
+/// @return Logical volume after multiplying by the selected group gain.
 static int64_t apply_group_volume(int64_t volume, int64_t group) {
     if (!audio_group_id_valid_unlocked(group))
         group = RT_MIXGROUP_SFX;
@@ -851,6 +858,7 @@ static void rt_audio_release_crossfade_refs_locked(rt_music_crossfade_state *xf,
 ///          Zero-duration is the degenerate "jump cut" case: fade-out immediately
 ///          drops to 0 and fade-in jumps to `vol_in` so the crossfade completes
 ///          in a single tick. `_locked` suffix: caller must hold the audio mutex.
+/// @param xf Active crossfade slot whose instantaneous pair volumes are recomputed.
 static void rt_audio_reapply_crossfade_locked(rt_music_crossfade_state *xf) {
     if (!xf || !xf->active)
         return;
@@ -2773,6 +2781,9 @@ void rt_music_crossfade_update(int64_t dt_ms) {
 ///             cut) keeps `elapsed = 0` so the reapply branch hits the
 ///             degenerate "fully transition in one tick" path.
 ///          `_locked` suffix: caller must hold the audio mutex.
+/// @param xf Active crossfade slot to advance.
+/// @param dt_ms Positive elapsed time in milliseconds.
+/// @param releases Deferred-release list populated with references finalized by this tick.
 static void rt_audio_update_crossfade_entry_locked(rt_music_crossfade_state *xf,
                                                    int64_t dt_ms,
                                                    rt_deferred_release_list *releases) {
@@ -2976,6 +2987,8 @@ void *rt_sound_load(rt_string path) {
     return NULL;
 }
 
+/// @brief Audio-disabled stub for loading a named sound asset.
+/// @copydetails rt_sound_load_asset
 void *rt_sound_load_asset(rt_string name) {
     if (!name)
         return NULL;
@@ -3005,12 +3018,15 @@ void rt_sound_destroy(void *sound) {
     (void)sound;
 }
 
+/// @brief Audio-disabled handle query; no sound wrapper can exist.
+/// @copydetails rt_sound_is_handle
 int64_t rt_sound_is_handle(void *sound) {
     (void)sound;
     return 0;
 }
 
 /// @brief Audio-disabled stub: no sound can ever play.
+/// @copydetails rt_sound_is_playable
 int64_t rt_sound_is_playable(void *sound) {
     (void)sound;
     return 0;
@@ -3093,6 +3109,7 @@ int64_t rt_voice_is_playing(int64_t voice_id) {
 }
 
 /// @brief Audio-disabled stub for `Voice.set_Pitch`. Silent no-op.
+/// @copydetails rt_voice_set_pitch
 void rt_voice_set_pitch(int64_t voice_id, double pitch) {
     (void)voice_id;
     (void)pitch;
@@ -3100,28 +3117,35 @@ void rt_voice_set_pitch(int64_t voice_id, double pitch) {
 
 /// @brief Audio-disabled stub for `Voice.get_Pitch`.
 /// @return `1.0` (native rate).
+/// @copydetails rt_voice_get_pitch
 double rt_voice_get_pitch(int64_t voice_id) {
     (void)voice_id;
     return 1.0;
 }
 
 /// @brief Audio-disabled stub for `Voice.SetLowpass`. Silent no-op.
+/// @copydetails rt_voice_set_lowpass
 void rt_voice_set_lowpass(int64_t voice_id, double cutoff_hz) {
     (void)voice_id;
     (void)cutoff_hz;
 }
 
 /// @brief Audio-disabled stub for `Voice.SetOcclusion`. Silent no-op.
+/// @copydetails rt_voice_set_occlusion
 void rt_voice_set_occlusion(int64_t voice_id, double amount) {
     (void)voice_id;
     (void)amount;
 }
 
+/// @brief Audio-disabled metering toggle; no voice state exists.
+/// @copydetails rt_voice_enable_metering
 void rt_voice_enable_metering(int64_t voice_id, int8_t enabled) {
     (void)voice_id;
     (void)enabled;
 }
 
+/// @brief Audio-disabled level query; always reports silence.
+/// @copydetails rt_voice_get_level
 double rt_voice_get_level(int64_t voice_id) {
     (void)voice_id;
     return 0.0;
@@ -3129,6 +3153,7 @@ double rt_voice_get_level(int64_t voice_id) {
 
 /// @brief Audio-disabled stub for `Sound.PlayEx2`. Returns `-1` for a null
 ///        sound; otherwise traps so the absence of audio surfaces clearly.
+/// @copydetails rt_sound_play_ex2
 int64_t rt_sound_play_ex2(void *sound, int64_t volume, int64_t pan, double pitch) {
     if (!sound)
         return -1;
@@ -3140,6 +3165,7 @@ int64_t rt_sound_play_ex2(void *sound, int64_t volume, int64_t pan, double pitch
 }
 
 /// @brief Audio-disabled stub for `Audio.SetGroupDucking`. Silent no-op.
+/// @copydetails rt_audio_set_group_ducking
 void rt_audio_set_group_ducking(rt_string trigger_group,
                                 rt_string target_group,
                                 double amount,
@@ -3171,6 +3197,8 @@ void rt_music_destroy(void *music) {
     (void)music;
 }
 
+/// @brief Audio-disabled handle query; no music wrapper can exist.
+/// @copydetails rt_music_is_handle
 int64_t rt_music_is_handle(void *music) {
     (void)music;
     return 0;
@@ -3302,6 +3330,8 @@ int64_t rt_music_get_duration(void *music) {
     return 0;
 }
 
+/// @brief Audio-disabled related-pause stub.
+/// @copydetails rt_music_pause_related
 void rt_music_pause_related(void *music) {
     if (!music)
         return;
@@ -3309,6 +3339,8 @@ void rt_music_pause_related(void *music) {
     rt_audio_unavailable_("Music.Pause: audio support not compiled in");
 }
 
+/// @brief Audio-disabled related-resume stub.
+/// @copydetails rt_music_resume_related
 void rt_music_resume_related(void *music) {
     if (!music)
         return;
@@ -3316,6 +3348,8 @@ void rt_music_resume_related(void *music) {
     rt_audio_unavailable_("Music.Resume: audio support not compiled in");
 }
 
+/// @brief Audio-disabled related-stop stub.
+/// @copydetails rt_music_stop_related
 void rt_music_stop_related(void *music) {
     if (!music)
         return;
@@ -3323,6 +3357,8 @@ void rt_music_stop_related(void *music) {
     rt_audio_unavailable_("Music.Stop: audio support not compiled in");
 }
 
+/// @brief Audio-disabled crossfade-pair volume stub.
+/// @copydetails rt_music_set_crossfade_pair_volume
 void rt_music_set_crossfade_pair_volume(void *music, int64_t volume) {
     if (!music)
         return;
@@ -3388,6 +3424,8 @@ int64_t rt_audio_get_group_volume(int64_t group) {
     return volume;
 }
 
+/// @brief Register a named mix group in audio-disabled builds.
+/// @copydetails rt_audio_register_group
 int64_t rt_audio_register_group(rt_string group_name) {
     char name[32];
     audio_group_copy_name(name, sizeof(name), group_name);
@@ -3397,6 +3435,8 @@ int64_t rt_audio_register_group(rt_string group_name) {
     return id;
 }
 
+/// @brief Find a named mix group in audio-disabled builds.
+/// @copydetails rt_audio_find_group
 int64_t rt_audio_find_group(rt_string group_name) {
     char name[32];
     audio_group_copy_name(name, sizeof(name), group_name);
@@ -3417,17 +3457,23 @@ void *rt_audio_find_group_option(rt_string group_name) {
     return id >= 0 ? rt_option_some_i64(id) : rt_option_none();
 }
 
+/// @brief Update a named mix-group volume in audio-disabled builds.
+/// @copydetails rt_audio_set_group_volume_named
 void rt_audio_set_group_volume_named(rt_string group_name, int64_t volume) {
     int64_t id = rt_audio_register_group(group_name);
     if (id >= 0)
         rt_audio_set_group_volume(id, volume);
 }
 
+/// @brief Query a named mix-group volume in audio-disabled builds.
+/// @copydetails rt_audio_get_group_volume_named
 int64_t rt_audio_get_group_volume_named(rt_string group_name) {
     int64_t id = rt_audio_find_group(group_name);
     return id >= 0 ? rt_audio_get_group_volume(id) : 100;
 }
 
+/// @brief Resolve a mix-group name in audio-disabled builds.
+/// @copydetails rt_audio_group_name
 rt_string rt_audio_group_name(int64_t group_id) {
     audio_state_lock();
     audio_groups_init_unlocked();
@@ -3517,6 +3563,8 @@ int64_t rt_sound_play_loop_in_group(void *sound, int64_t volume, int64_t pan, in
     return -1;
 }
 
+/// @brief Audio-disabled low-pass insertion stub.
+/// @copydetails rt_snd_group_add_lowpass
 int64_t rt_snd_group_add_lowpass(int64_t group, double cutoff_hz, double q) {
     (void)group;
     (void)cutoff_hz;
@@ -3525,6 +3573,8 @@ int64_t rt_snd_group_add_lowpass(int64_t group, double cutoff_hz, double q) {
     return -1;
 }
 
+/// @brief Audio-disabled high-pass insertion stub.
+/// @copydetails rt_snd_group_add_highpass
 int64_t rt_snd_group_add_highpass(int64_t group, double cutoff_hz, double q) {
     (void)group;
     (void)cutoff_hz;
@@ -3533,6 +3583,8 @@ int64_t rt_snd_group_add_highpass(int64_t group, double cutoff_hz, double q) {
     return -1;
 }
 
+/// @brief Audio-disabled peaking-filter insertion stub.
+/// @copydetails rt_snd_group_add_peaking
 int64_t rt_snd_group_add_peaking(int64_t group, double freq_hz, double q, double gain_db) {
     (void)group;
     (void)freq_hz;
@@ -3542,6 +3594,8 @@ int64_t rt_snd_group_add_peaking(int64_t group, double freq_hz, double q, double
     return -1;
 }
 
+/// @brief Audio-disabled delay insertion stub.
+/// @copydetails rt_snd_group_add_delay
 int64_t rt_snd_group_add_delay(int64_t group, double delay_ms, double feedback, double wet) {
     (void)group;
     (void)delay_ms;
@@ -3551,6 +3605,8 @@ int64_t rt_snd_group_add_delay(int64_t group, double delay_ms, double feedback, 
     return -1;
 }
 
+/// @brief Audio-disabled reverb insertion stub.
+/// @copydetails rt_snd_group_add_reverb
 int64_t rt_snd_group_add_reverb(int64_t group, double room_size, double damping, double wet) {
     (void)group;
     (void)room_size;
@@ -3561,6 +3617,7 @@ int64_t rt_snd_group_add_reverb(int64_t group, double room_size, double damping,
 }
 
 /// @brief Audio-disabled stub for `Audio.GroupSetReverb`. Silent no-op.
+/// @copydetails rt_snd_group_set_reverb
 void rt_snd_group_set_reverb(
     int64_t group, int64_t fx_id, double room_size, double damping, double wet) {
     (void)group;
@@ -3571,6 +3628,8 @@ void rt_snd_group_set_reverb(
     rt_audio_unavailable_("Audio.GroupSetReverb: audio support not compiled in");
 }
 
+/// @brief Audio-disabled effect-bypass stub.
+/// @copydetails rt_snd_group_fx_bypass
 void rt_snd_group_fx_bypass(int64_t group, int64_t fx_id, int8_t bypass) {
     (void)group;
     (void)fx_id;
@@ -3578,12 +3637,16 @@ void rt_snd_group_fx_bypass(int64_t group, int64_t fx_id, int8_t bypass) {
     rt_audio_unavailable_("Audio.GroupSetFxBypass: audio support not compiled in");
 }
 
+/// @brief Audio-disabled effect-removal stub.
+/// @copydetails rt_snd_group_remove_fx
 void rt_snd_group_remove_fx(int64_t group, int64_t fx_id) {
     (void)group;
     (void)fx_id;
     rt_audio_unavailable_("Audio.GroupRemoveFx: audio support not compiled in");
 }
 
+/// @brief Audio-disabled effect-chain clearing stub.
+/// @copydetails rt_snd_group_clear_fx
 void rt_snd_group_clear_fx(int64_t group) {
     (void)group;
     rt_audio_unavailable_("Audio.GroupClearFx: audio support not compiled in");

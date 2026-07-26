@@ -279,6 +279,9 @@ class LowererExprVisitor final : public lower::AstVisitor, public ExprVisitor {
                 IlValue selfArg =
                     lowerer_.emitLoad(IlType(IlType::Kind::Ptr), IlValue::temp(*meSym->slotId));
 
+                /// @brief Maps a scanned lowerer type to the corresponding BASIC AST type.
+                /// @param ty Lowerer expression classification.
+                /// @return BASIC AST type used for overload resolution.
                 auto exprTypeToAst = [&](Lowerer::ExprType ty) {
                     switch (ty) {
                         case Lowerer::ExprType::F64:
@@ -410,6 +413,9 @@ class LowererExprVisitor final : public lower::AstVisitor, public ExprVisitor {
         // calls like SetPosition to bind to Zanna.Terminal.SetPosition.
         if (!rtSig && calleeKey.find('.') == std::string::npos && !expr.callee.empty()) {
             // Helper to convert canonical namespace to title-case for runtime lookup
+            /// @brief Converts canonical namespace segments to runtime title-case spelling.
+            /// @param ns Canonical dotted namespace.
+            /// @return Dotted namespace with each segment's first character uppercased.
             auto titleCaseNs = [](const std::string &ns) -> std::string {
                 std::string out;
                 out.reserve(ns.size());

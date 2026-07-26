@@ -1630,6 +1630,9 @@ void rt_gui_test_harness_register_widget(void *harness,
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireHarness(harness));
     try {
         WidgetRecord rec{toStd(id), toStd(type), toStd(name), x, y, w, hgt};
+        /// @brief Match an existing synthetic widget by stable identifier.
+        /// @param wrec Candidate widget record.
+        /// @return `true` when @p wrec has the replacement record's identifier.
         auto it = std::find_if(h->state->widgets.begin(),
                                h->state->widgets.end(),
                                [&](const WidgetRecord &wrec) { return wrec.id == rec.id; });
@@ -1650,6 +1653,9 @@ void *rt_gui_test_harness_find_by_id(void *harness, rt_string id) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireHarness(harness), widgetToMap(nullptr));
     try {
         std::string key = toStd(id);
+        /// @brief Match a synthetic widget by requested identifier.
+        /// @param w Candidate widget record.
+        /// @return `true` when @p w has identifier @c key.
         auto it = std::find_if(h->state->widgets.begin(),
                                h->state->widgets.end(),
                                [&](const WidgetRecord &w) { return w.id == key; });
@@ -1691,6 +1697,9 @@ void *rt_gui_test_harness_find_by_name(void *harness, rt_string name) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireHarness(harness), widgetToMap(nullptr));
     try {
         std::string key = toStd(name);
+        /// @brief Match a synthetic widget by requested name.
+        /// @param w Candidate widget record.
+        /// @return `true` when @p w has name @c key.
         auto it = std::find_if(h->state->widgets.begin(),
                                h->state->widgets.end(),
                                [&](const WidgetRecord &w) { return w.name == key; });
@@ -1716,6 +1725,9 @@ void *rt_gui_test_harness_find_by_type(void *harness, rt_string type) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireHarness(harness), widgetToMap(nullptr));
     try {
         std::string key = toStd(type);
+        /// @brief Match a synthetic widget by requested type.
+        /// @param w Candidate widget record.
+        /// @return `true` when @p w has type @c key.
         auto it = std::find_if(h->state->widgets.begin(),
                                h->state->widgets.end(),
                                [&](const WidgetRecord &w) { return w.type == key; });

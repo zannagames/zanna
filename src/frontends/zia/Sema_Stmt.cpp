@@ -150,6 +150,8 @@ void Sema::analyzeStmt(Stmt *stmt) {
             if (tryStmt->tryBody)
                 analyzeStmt(tryStmt->tryBody.get());
 
+            /// @brief Validates one catch-clause error type name.
+            /// @param typeName Declared catch type, or empty for catch-all.
             auto validateCatchType = [&](const std::string &typeName) {
                 if (typeName.empty())
                     return;
@@ -244,6 +246,9 @@ void Sema::analyzeBlockStmt(BlockStmt *stmt) {
     bool afterTerminator = false;
     bool warnedUnreachable = false;
     int guardNarrowings = 0;
+    /// @brief Persists non-null narrowing implied by a terminating statement.
+    /// @param condition Condition whose null comparison is inspected.
+    /// @param conditionHoldsAfterStmt Whether the condition is true on fallthrough.
     auto persistOptionalNullCheckNarrowing = [&](Expr *condition, bool conditionHoldsAfterStmt) {
         std::string nullCheckVar;
         bool isNotNull = false;
@@ -354,6 +359,9 @@ void Sema::analyzeVarStmt(VarStmt *stmt) {
             bindingTypes.push_back(bindingType ? bindingType : types::unknown());
         }
 
+        /// @brief Defines one destructured tuple loop binding.
+        /// @param name Binding identifier.
+        /// @param type Inferred or annotated binding type.
         auto defineTupleBinding = [&](const std::string &name, TypeRef type) {
             if (currentScope_ && currentScope_->parent()) {
                 Symbol *existing = currentScope_->parent()->lookup(name);

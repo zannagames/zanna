@@ -23,6 +23,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements self-contained raw DEFLATE compression and decompression.
+/// @details Provides bounded LSB-first bit streams, canonical Huffman decoding,
+///          LZ77 matching, stored/fixed block compression, and all RFC 1951 block decoders.
+
 #include "PkgDeflate.hpp"
 
 #include <algorithm>
@@ -69,6 +74,8 @@ struct BitReader {
     int bitsInBuf;
 
     /// @brief Point the reader at `d[0..l)` without copying.
+    /// @param d Borrowed compressed-data buffer.
+    /// @param l Buffer length in bytes.
     void init(const uint8_t *d, size_t l) {
         data = d;
         len = l;
@@ -78,6 +85,8 @@ struct BitReader {
     }
 
     /// @brief Refill the bit buffer until at least `n` bits are available. Returns false at EOF.
+    /// @param n Required number of buffered bits.
+    /// @return Whether at least `n` bits are available.
     bool fill(int n) {
         while (bitsInBuf < n) {
             if (pos >= len)
@@ -89,6 +98,9 @@ struct BitReader {
     }
 
     /// @brief Consume and return the next `n` bits (LSB first). Throws `DeflateError` at EOF.
+    /// @param n Number of low-order bits to consume.
+    /// @return Decoded unsigned value.
+    /// @throws DeflateError If the input ends before `n` bits are available.
     uint32_t read(int n) {
         if (!fill(n))
             throw DeflateError("inflate: unexpected end of data");
@@ -99,6 +111,9 @@ struct BitReader {
     }
 
     /// @brief Return the next `n` bits without consuming them from the buffer.
+    /// @param n Number of low-order bits to inspect.
+    /// @return Decoded unsigned value without advancing the stream.
+    /// @throws DeflateError If the input ends before `n` bits are available.
     uint32_t peek(int n) {
         if (!fill(n))
             throw DeflateError("inflate: unexpected end of data");
@@ -106,6 +121,8 @@ struct BitReader {
     }
 
     /// @brief Discard `n` bits already peeked from the buffer.
+    /// @param n Number of buffered bits to discard.
+    /// @throws DeflateError If fewer than `n` bits are buffered.
     void consume(int n) {
         if (bitsInBuf < n)
             throw DeflateError("inflate: unexpected end of data");
@@ -138,16 +155,23 @@ struct BitWriter {
     uint32_t buffer = 0;
     int bitsInBuf = 0;
 
+    /// @brief Construct an empty writer with no allocated backing storage.
     BitWriter() = default;
 
+    /// @brief Release the writer's caller-inaccessible backing allocation.
     ~BitWriter() {
         std::free(data);
     }
 
+    /// @brief Disable copying because the writer uniquely owns @ref data.
     BitWriter(const BitWriter &) = delete;
+    /// @brief Disable copy assignment because the writer uniquely owns @ref data.
+    /// @return This writer; the operation is unavailable.
     BitWriter &operator=(const BitWriter &) = delete;
 
     /// @brief Allocate the initial backing buffer (minimum 256 bytes). Throws on OOM.
+    /// @param initialCap Requested initial capacity, capped at one MiB.
+    /// @throws DeflateError If size arithmetic overflows or allocation fails.
     void init(size_t initialCap) {
         constexpr size_t kMaxInitialReserve = 1024u * 1024u;
         if (initialCap > std::numeric_limits<size_t>::max() - 256u)
@@ -163,6 +187,8 @@ struct BitWriter {
     }
 
     /// @brief Grow the backing buffer to accommodate at least `need` more bytes.
+    /// @param need Additional writable bytes required.
+    /// @throws DeflateError If capacity arithmetic overflows or allocation fails.
     void ensure(size_t need) {
         if (need > std::numeric_limits<size_t>::max() - len)
             throw DeflateError("deflate: output buffer size overflow");
@@ -185,6 +211,9 @@ struct BitWriter {
     }
 
     /// @brief Write `n` bits of `val` (LSB first) to the output stream, flushing complete bytes.
+    /// @param val Value whose low `n` bits are emitted.
+    /// @param n Number of bits to emit.
+    /// @throws DeflateError If output allocation fails.
     void write(uint32_t val, int n) {
         buffer |= val << bitsInBuf;
         bitsInBuf += n;
@@ -208,6 +237,10 @@ struct BitWriter {
 
     /// @brief Copy `srcLen` raw bytes directly to the output buffer, bypassing bit-packing.
     /// Used for stored-block payload bytes that do not need bit-packing.
+    /// @param src Source byte buffer.
+    /// @param srcLen Number of bytes to append.
+    /// @throws std::runtime_error If a non-empty source is null.
+    /// @throws DeflateError If output growth fails.
     void writeBytes(const uint8_t *src, size_t srcLen) {
         if (srcLen == 0)
             return;
@@ -246,19 +279,27 @@ struct HuffmanTree {
     int tableBits;
     size_t tableSize;
 
+    /// @brief Construct an empty Huffman table with no symbol allocation.
     HuffmanTree() : maxCode(0), symbols(nullptr), tableBits(0), tableSize(0) {}
 
+    /// @brief Release the canonical-symbol lookup table.
     ~HuffmanTree() {
         std::free(symbols);
     }
 
+    /// @brief Disable copying because the tree uniquely owns @ref symbols.
     HuffmanTree(const HuffmanTree &) = delete;
+    /// @brief Disable copy assignment because the tree uniquely owns @ref symbols.
+    /// @return This tree; the operation is unavailable.
     HuffmanTree &operator=(const HuffmanTree &) = delete;
 
     /// @brief Build a flat lookup table from canonical Huffman code lengths.
     /// Each `symbols[]` entry is encoded as `(len << 12) | symbol`. Only codes up to
     /// `tableBits` in length have direct table entries (RFC 1951 caps all codes at 15 bits).
     /// Returns false if the length array is invalid or empty.
+    /// @param lengths Per-symbol code lengths.
+    /// @param numCodes Number of symbols represented by `lengths`.
+    /// @return Whether a non-empty, non-oversubscribed decode table was built.
     bool build(const uint8_t *lengths, int numCodes) {
         int blCount[kMaxBits + 1] = {};
         int nonZero = 0;
@@ -326,6 +367,8 @@ struct HuffmanTree {
 
     /// @brief Decode one symbol from `br` by peeking `tableBits` bits and doing a direct lookup.
     /// Returns -1 if the bit stream is exhausted or the code does not appear in the table.
+    /// @param br Bit reader to consume on success.
+    /// @return Decoded symbol index, or -1 for invalid/truncated input.
     int decode(BitReader &br) const {
         const bool haveFullTable = br.fill(tableBits);
         if (!haveFullTable && br.bitsInBuf == 0)
@@ -375,6 +418,8 @@ static std::once_flag sFixedTreesFlag;
 /// `std::call_once`). The trees are heap-allocated and intentionally never freed — read-only after
 /// initialization.
 static void initFixedTrees() {
+    /// @brief Construct and publish the process-wide fixed Huffman trees.
+    /// @details This callback executes at most once through `std::call_once`.
     std::call_once(sFixedTreesFlag, []() {
         // Literal/length code lengths (RFC 1951 section 3.2.6)
         auto lit = std::make_unique<HuffmanTree>();
@@ -415,6 +460,9 @@ struct OutputBuffer {
     size_t maxOutput;
 
     /// @brief Allocate the initial decompression buffer, capped at `maxOutputBytes`.
+    /// @param initialCap Requested starting capacity.
+    /// @param maxOutputBytes Hard upper bound on decompressed output.
+    /// @throws DeflateError If allocation fails.
     void init(size_t initialCap, size_t maxOutputBytes) {
         maxOutput = maxOutputBytes;
         if (initialCap > maxOutput)
@@ -428,6 +476,8 @@ struct OutputBuffer {
 
     /// @brief Grow the decompression buffer; throws `DeflateError` if the output size limit is
     /// reached.
+    /// @param need Additional output bytes required.
+    /// @throws DeflateError If the limit would be exceeded or allocation fails.
     void ensure(size_t need) {
         if (need > maxOutput || len > maxOutput - need) {
             const size_t maxMB = maxOutput / (1024u * 1024u);
@@ -448,6 +498,8 @@ struct OutputBuffer {
     }
 
     /// @brief Append a single literal byte to the decompressed output buffer.
+    /// @param b Literal byte to append.
+    /// @throws DeflateError If the output limit or allocation prevents growth.
     void putByte(uint8_t b) {
         ensure(1);
         data[len++] = b;
@@ -455,6 +507,9 @@ struct OutputBuffer {
 
     /// @brief Expand an LZ77 back-reference by copying `length` bytes from `distance` bytes back.
     /// Copies byte-by-byte because src and dst may overlap (e.g. RLE runs).
+    /// @param distance Backward distance from the current output end.
+    /// @param length Number of bytes to reproduce.
+    /// @throws DeflateError If the output limit or allocation prevents growth.
     void copyBack(int distance, int length) {
         ensure(length);
         size_t src = len - distance;
@@ -484,6 +539,9 @@ struct OutputBuffer {
 /// @brief Decompress a DEFLATE stored (BTYPE=00) block.
 /// Aligns to the next byte boundary, validates LEN+NLEN one's-complement, then
 /// copies LEN raw bytes from the bit stream to `out`.
+/// @param br Input bit reader positioned after the block header.
+/// @param out Bounded output buffer to extend.
+/// @return `true` when lengths and payload are complete and valid.
 static bool inflateStored(BitReader &br, OutputBuffer &out) {
     br.align();
     if (br.pos + 4 > br.len)
@@ -507,6 +565,11 @@ static bool inflateStored(BitReader &br, OutputBuffer &out) {
 
 /// @brief Decompress a DEFLATE Huffman-coded block (BTYPE=01 or BTYPE=02).
 /// Symbol 256 is end-of-block; symbols 257-285 are length codes followed by a distance code.
+/// @param br Input bit reader positioned at the first symbol.
+/// @param out Bounded output buffer to extend.
+/// @param litTree Literal/length decode table.
+/// @param distTree Distance decode table.
+/// @return `true` when a valid end-of-block symbol is reached.
 static bool inflateHuffman(BitReader &br,
                            OutputBuffer &out,
                            const HuffmanTree &litTree,
@@ -549,6 +612,9 @@ static bool inflateHuffman(BitReader &br,
 /// @brief Decompress a DEFLATE dynamic Huffman block (BTYPE=10).
 /// Reads HLIT/HDIST/HCLEN, builds the code-length tree, decodes literal/length and distance
 /// tables (with repeat codes 16/17/18 per RFC 1951 §3.2.7), then calls `inflateHuffman`.
+/// @param br Input bit reader positioned after the block header.
+/// @param out Bounded output buffer to extend.
+/// @return `true` when the dynamic tables and encoded payload are valid.
 static bool inflateDynamic(BitReader &br, OutputBuffer &out) {
     int hlit = br.read(5) + 257;
     int hdist = br.read(5) + 1;
@@ -636,6 +702,12 @@ static bool inflateDynamic(BitReader &br, OutputBuffer &out) {
 /// @brief Top-level DEFLATE decompression loop: reads BFINAL/BTYPE block headers and
 /// dispatches to `inflateStored`, `inflateHuffman` (fixed), or `inflateDynamic`.
 /// Throws `DeflateError` on malformed input or output size violation.
+/// @param data Borrowed raw DEFLATE bytes.
+/// @param len Compressed input length.
+/// @param maxOutputBytes Maximum allowed decompressed length.
+/// @return Decompressed bytes.
+/// @throws DeflateError If input is malformed/truncated, has trailing data, exceeds
+///         the output limit, or allocation fails.
 static std::vector<uint8_t> inflateData(const uint8_t *data, size_t len, size_t maxOutputBytes) {
     initFixedTrees();
 
@@ -696,14 +768,19 @@ struct LZ77State {
     int *head = nullptr;
     int *prev = nullptr;
 
+    /// @brief Construct an empty match accelerator with no chain storage.
     LZ77State() = default;
 
+    /// @brief Release the hash-head and predecessor arrays.
     ~LZ77State() {
         std::free(head);
         std::free(prev);
     }
 
+    /// @brief Disable copying because the state uniquely owns both arrays.
     LZ77State(const LZ77State &) = delete;
+    /// @brief Disable copy assignment because the state uniquely owns both arrays.
+    /// @return This state; the operation is unavailable.
     LZ77State &operator=(const LZ77State &) = delete;
 
     static constexpr int kHashBits = 15;
@@ -739,6 +816,8 @@ struct LZ77State {
 
     /// @brief Compute a 3-byte rolling hash for `d[0..2]` — collisions are harmless
     /// (just longer chains), but poor distribution reduces compression ratio.
+    /// @param d Address of at least three input bytes.
+    /// @return Hash bucket index.
     static int computeHash(const uint8_t *d) {
         return ((d[0] << 10) ^ (d[1] << 5) ^ d[2]) & kHashMask;
     }
@@ -746,6 +825,12 @@ struct LZ77State {
     /// @brief Walk the hash chain for `data+pos` and return the longest match in the sliding
     /// window. Sets `*matchDist` to the distance of the best match. Returns 0 if no match meets
     /// `kMinMatchLen`. `maxChain` limits chain traversal depth to bound CPU cost.
+    /// @param data Complete uncompressed input.
+    /// @param pos Current input position.
+    /// @param len Total input length.
+    /// @param maxChain Maximum candidate positions to inspect.
+    /// @param matchDist Output destination for the winning backward distance.
+    /// @return Match length from 3 through 258, or zero.
     int findMatch(const uint8_t *data, size_t pos, size_t len, int maxChain, int *matchDist) const {
         if (pos + kMinMatchLen > len)
             return 0;
@@ -788,6 +873,8 @@ struct LZ77State {
 
     /// @brief Insert `pos` into the hash chain for `data[pos..pos+3)`.
     /// Must be called for every byte position the compressor advances past.
+    /// @param data Complete uncompressed input.
+    /// @param pos Position with at least three accessible bytes.
     void updateHash(const uint8_t *data, size_t pos) {
         int hash = computeHash(data + pos);
         prev[pos & kWindowMask] = head[hash];
@@ -797,6 +884,8 @@ struct LZ77State {
 
 /// @brief Map a match length (3–258) to its DEFLATE length code (257–285).
 /// Extra bits from `kLengthExtraBits` encode the residual beyond the base value.
+/// @param length Match length in the DEFLATE-supported range.
+/// @return Literal/length alphabet code.
 static int getLengthCode(int length) {
     for (int i = 0; i < 29; i++) {
         if (i == 28)
@@ -809,6 +898,8 @@ static int getLengthCode(int length) {
 
 /// @brief Map a match distance (1–32768) to its DEFLATE distance code (0–29).
 /// Extra bits from `kDistExtraBits` encode the residual beyond `kDistBase[code]`.
+/// @param dist Backward match distance.
+/// @return Distance alphabet code.
 static int getDistCode(int dist) {
     for (int i = 0; i < 30; i++) {
         if (i == 29 || dist < kDistBase[i + 1])
@@ -818,6 +909,9 @@ static int getDistCode(int dist) {
 }
 
 /// @brief Write bits in reverse order (LSB first as required by DEFLATE)
+/// @param bw Bit writer receiving the code.
+/// @param code Canonical MSB-first Huffman code.
+/// @param len Code length in bits.
 static void writeCode(BitWriter &bw, uint16_t code, int len) {
     uint16_t rev = 0;
     for (int i = 0; i < len; i++) {
@@ -828,6 +922,9 @@ static void writeCode(BitWriter &bw, uint16_t code, int len) {
 }
 
 /// @brief Compress using stored blocks (no compression)
+/// @param bw Bit writer receiving one or more stored blocks.
+/// @param data Borrowed uncompressed input.
+/// @param len Input length.
 static void deflateStored(BitWriter &bw, const uint8_t *data, size_t len) {
     if (len == 0) {
         bw.write(1, 1); // BFINAL = 1
@@ -862,6 +959,11 @@ static void deflateStored(BitWriter &bw, const uint8_t *data, size_t len) {
 }
 
 /// @brief Compress using fixed Huffman codes with LZ77
+/// @param bw Bit writer receiving the final fixed-Huffman block.
+/// @param data Borrowed uncompressed input.
+/// @param len Input length.
+/// @param level Compression level controlling hash-chain search depth.
+/// @throws DeflateError If LZ77 or output allocation fails.
 static void deflateFixed(BitWriter &bw, const uint8_t *data, size_t len, int level) {
     initFixedTrees();
 
@@ -926,6 +1028,11 @@ static void deflateFixed(BitWriter &bw, const uint8_t *data, size_t len, int lev
 
 /// @brief Top-level compression dispatcher. Clamps level to [1, 9], then selects:
 /// stored blocks for tiny/empty inputs or level 1; fixed Huffman+LZ77 for all other cases.
+/// @param data Borrowed uncompressed input.
+/// @param len Input length.
+/// @param level Requested compression level.
+/// @return Raw DEFLATE stream bytes.
+/// @throws DeflateError If size arithmetic or allocation fails.
 static std::vector<uint8_t> deflateData(const uint8_t *data, size_t len, int level) {
     if (level < kMinLevel)
         level = kMinLevel;
@@ -956,16 +1063,30 @@ static std::vector<uint8_t> deflateData(const uint8_t *data, size_t len, int lev
 //=============================================================================
 
 /// @brief Compress `data` using raw DEFLATE at the given level.
+/// @param data Borrowed uncompressed input.
+/// @param len Input length.
+/// @param level Compression level, clamped to the supported 1–9 range.
+/// @return Raw DEFLATE stream bytes.
+/// @throws DeflateError If compression fails.
 std::vector<uint8_t> deflate(const uint8_t *data, size_t len, int level) {
     return deflateData(data, len, level);
 }
 
 /// @brief Decompress a raw DEFLATE stream with the default 256 MB output limit.
+/// @param data Borrowed compressed input.
+/// @param len Compressed input length.
+/// @return Decompressed bytes.
+/// @throws DeflateError If input is invalid/truncated or the output exceeds 256 MiB.
 std::vector<uint8_t> inflate(const uint8_t *data, size_t len) {
     return inflateData(data, len, kInflateMaxOutput);
 }
 
 /// @brief Decompress a raw DEFLATE stream with an explicit output byte limit.
+/// @param data Borrowed compressed input.
+/// @param len Compressed input length.
+/// @param maxOutputBytes Maximum permitted decompressed length.
+/// @return Decompressed bytes.
+/// @throws DeflateError If input is invalid/truncated or the limit is exceeded.
 std::vector<uint8_t> inflate(const uint8_t *data, size_t len, size_t maxOutputBytes) {
     return inflateData(data, len, maxOutputBytes);
 }

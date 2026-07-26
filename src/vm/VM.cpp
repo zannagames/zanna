@@ -46,6 +46,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the VM execution engine, dispatch drivers, interrupt
+///        delivery, lifecycle, profiling, context tracking, and trap routing.
+/// @details The implementation coordinates interchangeable dispatch strategies
+///          with shared frame state and process-level interrupt epochs while
+///          preserving per-VM diagnostics and runtime resource ownership.
+
 #include "vm/VM.hpp"
 #include "il/core/BasicBlock.hpp"
 #include "il/core/Instr.hpp"
@@ -91,19 +98,25 @@ namespace il::vm {
 // independently instead of the first VM clearing a process-global flag for the
 // others.
 
+/// @brief Monotonic epoch incremented for every process-wide interrupt request.
 static std::atomic<uint64_t> s_interruptEpoch{0};
+/// @brief Most recent epoch explicitly cleared by the host.
 static std::atomic<uint64_t> s_interruptClearedEpoch{0};
 
 /// @brief Publish a process-wide interrupt request from normal execution code.
 /// @details This helper uses C++ atomics and is therefore called only outside
 ///          POSIX signal-handler context. POSIX signals set a sig_atomic_t flag
 ///          that is later folded into this epoch by @ref publishPendingSignalInterrupt.
+/// @param reason Runtime shutdown reason published with the request.
 static void publishInterruptRequest(int64_t reason = RT_SHUTDOWN_REASON_INTERRUPT) noexcept {
     rt_shutdown_request(reason);
     s_interruptEpoch.fetch_add(1, std::memory_order_relaxed);
 }
 
 #if defined(_WIN32)
+/// @brief Translate a Windows console control event into a VM interrupt epoch.
+/// @param ctrlType Windows control-event identifier.
+/// @return Always @c TRUE to indicate that the event was handled.
 static BOOL WINAPI windowsCtrlHandler(DWORD ctrlType) {
     int64_t reason = RT_SHUTDOWN_REASON_INTERRUPT;
     if (ctrlType == CTRL_CLOSE_EVENT || ctrlType == CTRL_LOGOFF_EVENT ||
@@ -117,10 +130,12 @@ static BOOL WINAPI windowsCtrlHandler(DWORD ctrlType) {
 static volatile std::sig_atomic_t s_posixInterruptPending = 0;
 static volatile std::sig_atomic_t s_posixTerminatePending = 0;
 
+/// @brief Signal-safe SIGINT handler that marks an interrupt pending.
 static void posixSigintHandler(int /*signum*/) {
     s_posixInterruptPending = 1;
 }
 
+/// @brief Signal-safe SIGTERM handler that marks termination pending.
 static void posixSigtermHandler(int /*signum*/) {
     s_posixTerminatePending = 1;
 }
@@ -141,6 +156,7 @@ static void publishPendingSignalInterrupt() noexcept {
 }
 #endif
 
+/// @brief Runtime shutdown callback that clears the current interrupt epoch.
 static void clearInterruptForShutdownPoll() noexcept {
     VM::clearInterrupt();
 }
@@ -214,7 +230,10 @@ void VM::DispatchDriverDeleter::operator()(DispatchDriver *driver) const {
     delete driver;
 }
 
-// Forward declarations for strategy creation
+/// @brief Create the dispatch strategy selected by @p kind.
+/// @param kind Requested interpreter dispatch mechanism.
+/// @return Owning strategy instance, with unsupported modes falling back to
+///         the portable switch implementation.
 std::unique_ptr<DispatchStrategy> createDispatchStrategy(VM::DispatchKind kind);
 
 namespace detail {
@@ -225,6 +244,9 @@ class FnTableDispatchDriver final : public VM::DispatchDriver {
     std::unique_ptr<DispatchStrategy> strategy;
 
   public:
+    /// @brief Construct a driver using the function-table dispatch strategy.
+    /// @details The driver exclusively owns the strategy used by subsequent
+    ///          calls to @ref run.
     FnTableDispatchDriver() : strategy(createDispatchStrategy(VM::DispatchKind::FnTable)) {}
 
     /// @brief Execute the interpreter using the function-table strategy.
@@ -244,6 +266,9 @@ class SwitchDispatchDriver final : public VM::DispatchDriver {
     std::unique_ptr<DispatchStrategy> strategy;
 
   public:
+    /// @brief Construct a driver using the portable switch dispatch strategy.
+    /// @details The driver exclusively owns the strategy used by subsequent
+    ///          calls to @ref run.
     SwitchDispatchDriver() : strategy(createDispatchStrategy(VM::DispatchKind::Switch)) {}
 
     /// @brief Execute the interpreter using a switch-based dispatch loop.
@@ -530,6 +555,8 @@ void VM::clearInterrupt() noexcept {
     rt_shutdown_clear_pending_only();
 }
 
+/// @brief Consume a process interrupt epoch not yet observed by this VM.
+/// @return @c true exactly once per new, uncleared epoch for this VM instance.
 bool VM::consumePendingInterrupt() noexcept {
 #if !defined(_WIN32)
     publishPendingSignalInterrupt();
@@ -751,6 +778,7 @@ std::unique_ptr<VM::DispatchDriver, VM::DispatchDriverDeleter> VM::makeDispatchD
 /// @brief Check if a trap dispatch signal targets the given state and clear context if so.
 /// @details This is an inline version of the trap dispatch logic that avoids constructing
 ///          VMContext on the hot path. Used by runFunctionLoop for efficiency.
+/// @param vm VM whose current diagnostic context is cleared on a match.
 /// @param signal Trap dispatch signal to check.
 /// @param state Execution state to compare against.
 /// @return True if the signal targeted this state and was handled.
@@ -824,14 +852,13 @@ Slot VM::runFunctionLoop(ExecState &st) {
 }
 
 #if defined(_WIN32)
-/// @brief Pure SEH wrapper — free of C++ objects that require unwinding.
-/// @param fn   Function pointer that performs the actual dispatch.
-/// @param ctx  Opaque context pointer forwarded to @p fn.
-/// @return 0 = not finished, 1 = finished, -1 = hardware exception.
 /// @brief SEH exception filter — only handle true hardware faults.
 /// @details C++ exceptions on MSVC are implemented via SEH with exception code
 ///          0xE06D7363 ("msc" + prefix).  We must let those propagate so that
 ///          TrapDispatchSignal reaches its C++ catch handler.
+/// @param code Windows structured-exception code.
+/// @return @c EXCEPTION_EXECUTE_HANDLER for supported hardware faults;
+///         otherwise @c EXCEPTION_CONTINUE_SEARCH.
 static int sehFilter(unsigned int code) {
     switch (code) {
         case EXCEPTION_ACCESS_VIOLATION:
@@ -845,6 +872,11 @@ static int sehFilter(unsigned int code) {
     }
 }
 
+/// @brief Pure SEH wrapper free of C++ objects that require unwinding.
+/// @param fn Function pointer that performs the actual dispatch.
+/// @param ctx Opaque context pointer forwarded to @p fn.
+/// @return Zero when unfinished, one when finished, or negative one after a
+///         handled hardware exception.
 static int sehRunStep(int (*fn)(void *), void *ctx) {
     int r = 0;
     __try {
@@ -857,6 +889,9 @@ static int sehRunStep(int (*fn)(void *), void *ctx) {
 
 /// @brief Execute one dispatch step, translating Windows hardware exceptions into
 /// Zanna traps.
+/// @param context Shared VM context passed to the dispatch driver.
+/// @param st Execution state advanced by the driver.
+/// @return @c true when dispatch completed the current function.
 bool VM::runDispatchStep(VMContext &context, ExecState &st) {
     struct Args {
         VM *vm;
@@ -864,6 +899,9 @@ bool VM::runDispatchStep(VMContext &context, ExecState &st) {
         ExecState *st;
     } args{this, &context, &st};
 
+    /// @brief Run one dispatch step through the Windows SEH adapter.
+    /// @param p Erased pointer to the local dispatch arguments.
+    /// @return One when the driver completes the function, otherwise zero.
     int result = sehRunStep(
         [](void *p) -> int {
             auto *a = static_cast<Args *>(p);
@@ -885,6 +923,9 @@ bool VM::runDispatchStep(VMContext &context, ExecState &st) {
 #endif
 
 /// @brief Custom deleter implementation for RtContext.
+/// @details Shuts down the shared default pool before cleaning and deleting the
+///          runtime context so worker unbinds remain within its lifetime.
+/// @param ctx Runtime context to destroy; @c nullptr is ignored.
 void VM::RtContextDeleter::operator()(RtContext *ctx) const noexcept {
     if (ctx) {
         // Drain the shared default thread pool before this per-run context is freed. Its worker
@@ -902,6 +943,7 @@ void VM::RtContextDeleter::operator()(RtContext *ctx) const noexcept {
 // Section 4: VM LIFECYCLE AND RESOURCE MANAGEMENT
 //===----------------------------------------------------------------------===//
 
+/// @brief Release heap allocations backing mutable program globals.
 VM::ProgramState::~ProgramState() {
     for (auto &entry : mutableGlobalMap)
         std::free(entry.second);
@@ -1010,6 +1052,8 @@ uint64_t VM::getInstrCount() const {
 }
 
 /// @brief Emit a tail-call event to the trace sink when enabled.
+/// @param from Caller function, which may be @c nullptr.
+/// @param to Tail-called function, which may be @c nullptr.
 void VM::onTailCall(const Function *from, const Function *to) {
 #if !defined(ZANNA_VM_TRACE) || ZANNA_VM_TRACE
     tracer.onTailCall(from, to);
@@ -1020,20 +1064,30 @@ void VM::onTailCall(const Function *from, const Function *to) {
 }
 
 #if ZANNA_VM_OPCOUNTS
+/// @brief Access per-opcode execution counters.
+/// @return Immutable counter array indexed by opcode value.
 const std::array<uint64_t, il::core::kNumOpcodes> &VM::opcodeCounts() const {
     return opCounts_;
 }
 
+/// @brief Reset every per-opcode counter to zero.
 void VM::resetOpcodeCounts() {
     opCounts_.fill(0);
 }
 
+/// @brief Rank the most frequently executed opcodes.
+/// @param n Maximum number of opcode/count pairs to return.
+/// @return Nonzero counters sorted in descending execution-count order.
 std::vector<std::pair<int, uint64_t>> VM::topOpcodes(std::size_t n) const {
     std::vector<std::pair<int, uint64_t>> items;
     items.reserve(opCounts_.size());
     for (std::size_t i = 0; i < opCounts_.size(); ++i)
         if (opCounts_[i] != 0)
             items.emplace_back(static_cast<int>(i), opCounts_[i]);
+    /// @brief Order opcode counters from most to least frequently executed.
+    /// @param a Left-hand opcode/count pair.
+    /// @param b Right-hand opcode/count pair.
+    /// @return `true` when `a` has the larger count.
     std::partial_sort(items.begin(),
                       items.begin() + std::min(n, items.size()),
                       items.end(),
@@ -1073,6 +1127,10 @@ void VM::clearCurrentContext() {
     currentContext.loc = {};
 }
 
+/// @brief Capture the best available context for a newly raised trap.
+/// @details Prefers the active execution stack because fast dispatch may not
+///          refresh @ref currentContext for every instruction.
+/// @return Function, block, instruction index, and source location snapshot.
 VM::TrapContext VM::currentTrapContext() const {
     // Prefer execStack (always current) over currentContext (may be stale
     // when fast-path dispatch skips setCurrentContext).

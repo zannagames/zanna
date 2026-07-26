@@ -5,14 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tools/lsp-common/TextUtils.hpp
-// Purpose: Text scanning utilities for language server hover and cursor ops.
-// Key invariants:
-//   - Pure text manipulation — no compiler or AST dependencies
-//   - Line/column are 1-based (matching compiler convention)
-// Ownership/Lifetime:
-//   - All returned data is fully owned
-// Links: tools/lsp-common/ICompilerBridge.hpp
+/// @file
+/// @brief Declares compiler-independent text scanning used by language-server
+///        hover and cursor operations.
+///
+/// Coordinates are one-based byte positions matching compiler conventions.
+/// Helpers operate directly on source text without AST dependencies, and every
+/// returned string owns its contents.
+///
+/// @see ICompilerBridge.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -24,19 +25,22 @@ namespace zanna::server {
 
 /// @brief Context extracted from cursor position for hover resolution.
 struct HoverContext {
-    std::string identifier; ///< The identifier under the cursor
-    std::string dotPrefix;  ///< Dot-chain prefix (e.g., "shell.app" for "shell.app.run")
-    bool valid{false};      ///< False if cursor is on whitespace/operator
+    std::string identifier; ///< Identifier under the cursor.
+    std::string dotPrefix;  ///< Receiver chain, e.g. @c shell.app for @c shell.app.run.
+    bool valid{false};      ///< False when no identifier intersects the cursor.
 };
 
-/// @brief Check if a character is part of an identifier.
+/// @brief Test whether a source byte belongs to an identifier.
+/// @param c Candidate byte.
+/// @return @c true for alphanumeric bytes or underscore.
 bool isIdentChar(char c);
 
 /// @brief Extract the identifier and dot-chain prefix at a cursor position.
-/// @param source  Full source text.
-/// @param line    1-based line number.
-/// @param col     1-based column number.
-/// @return HoverContext with extracted identifier and optional dot prefix.
+/// @param source Full source text.
+/// @param line One-based line number.
+/// @param col One-based byte column, clamped to line end.
+/// @return Owned context with identifier and optional receiver prefix; @c valid
+///         is false when the coordinates or cursor target are unsuitable.
 HoverContext extractIdentifierAtCursor(const std::string &source, int line, int col);
 
 } // namespace zanna::server

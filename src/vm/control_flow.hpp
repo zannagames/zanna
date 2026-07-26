@@ -13,6 +13,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares switch-dispatch modes and cached backend representations.
+/// @details Switch instructions may use dense, sorted, hashed, or linear
+///          lookup. The cache stores immutable instruction-derived metadata so
+///          repeated execution can reuse the selected representation.
+
 #pragma once
 
 #include <cstdint>
@@ -33,9 +39,11 @@ enum class SwitchMode {
 };
 
 /// @brief Query the global switch dispatch mode override.
+/// @return Current process-wide mode used when constructing switch caches.
 SwitchMode getSwitchMode();
 
 /// @brief Set the global switch dispatch mode override.
+/// @param mode Mode applied to subsequently selected switch backends.
 void setSwitchMode(SwitchMode mode);
 
 /// @brief Dense jump table backing switch dispatch.

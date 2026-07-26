@@ -21,6 +21,14 @@
 //        src/runtime/io/rt_dir_page.cpp
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements directory existence, mutation, navigation, and recursive removal.
+ * @details Converts runtime paths through the shared platform layer, creates
+ * individual or complete directory trees, categorizes filesystem failures,
+ * obtains and changes the process working directory, renames directories, and
+ * recursively deletes only after protected-root and reparse/symlink checks.
+ */
 
 #include "rt_dir.h"
 #include "rt_dir_internal.h"

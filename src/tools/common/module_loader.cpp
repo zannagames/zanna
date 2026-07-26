@@ -8,9 +8,8 @@
 // File: src/tools/common/module_loader.cpp
 // Purpose: Standardise how command-line tools load, verify, and report on IL modules.
 // Key invariants: Load results precisely encode whether the failure came from
-//                 the file system, the parser, or later verification.  When a
-//                 diagnostic is present it always accompanies a parse failure
-//                 entry.
+//                 file handling, parsing, or later verification. File, parse,
+//                 and verifier failures may all retain structured diagnostics.
 // Ownership/Lifetime: The helpers operate on caller-owned modules, streams, and
 //                     diagnostic sinks.  Temporary diagnostics are copied into
 //                     @ref LoadResult so the caller can persist them beyond the
@@ -53,10 +52,10 @@ LoadResult makeSuccess(const std::string &path) {
 
 /// @brief Create a load result describing an I/O failure.
 ///
-/// @details File system failures (missing file, permission error, etc.) are
-///          recorded with the path that could not be opened.  The diagnostic
-///          slot is populated with a basic error message so callers can use
-///          printLoadResult uniformly.
+/// @details File handling failures (missing input, permissions, oversized data,
+///          or failed seeking) are recorded with the affected path. The
+///          diagnostic slot is populated with a basic error message so callers
+///          can use printLoadResult uniformly.
 ///
 /// @param path Path that could not be opened.
 /// @param message Human-readable description of the I/O failure.
@@ -70,8 +69,8 @@ LoadResult makeFileError(const std::string &path, std::string message) {
 ///
 /// @details Copies @p diag into the result so the caller retains access to the
 ///          structured error even after the temporary parser object has been
-///          destroyed.  The copy is inexpensive because diagnostics contain
-///          small, reference-counted payloads.
+///          destroyed. The resulting strings, notes, and fix-its are independently
+///          owned by the returned result.
 ///
 /// @param path Path that was being parsed.
 /// @param diag Diagnostic emitted by the parser that explains the failure.
@@ -91,7 +90,7 @@ LoadResult makeVerifyError(const il::support::Diag &diag) {
 }
 } // namespace
 
-/// @brief Load and optionally verify a textual IL module.
+/// @brief Load a textual IL module with optional immediate diagnostic printing.
 ///
 /// @details The loader performs a full round-trip from disk to in-memory
 ///          module:

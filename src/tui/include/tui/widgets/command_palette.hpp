@@ -5,10 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the CommandPalette widget for Zanna's TUI framework.
-// The command palette provides an incremental search interface over all
-// registered commands in a Keymap, similar to the command palette found
-// in modern code editors (Ctrl+Shift+P / Cmd+Shift+P).
+/// @file
+/// @brief Declares an incremental command-search and execution palette.
+/// @details The focusable widget filters a borrowed keymap as the user types,
+///          paints matching command names, executes the leading match on Enter,
+///          and supports dismissal on Escape.
 //
 // As the user types, the palette filters commands by name, displaying
 // matching results below the query line. Pressing Enter executes the
@@ -47,20 +48,25 @@ class CommandPalette : public ui::Widget {
     CommandPalette(input::Keymap &km, const style::Theme &theme);
 
     /// @brief Paint query and filtered commands.
+    /// @param sb Screen buffer receiving the palette contents.
     void paint(render::ScreenBuffer &sb) override;
 
     /// @brief Handle typing and Enter to execute command.
+    /// @param ev Input event containing navigation, editing, or activation keys.
+    /// @return true when the palette consumed the event.
     bool onEvent(const ui::Event &ev) override;
 
     /// @brief Palette requires focus for typing.
+    /// @return Always true.
     [[nodiscard]] bool wantsFocus() const override;
 
   private:
-    input::Keymap &km_;
-    const style::Theme &theme_;
-    std::string query_{};
-    std::vector<input::CommandId> results_{};
+    input::Keymap &km_;             ///< Borrowed command registry and executor.
+    const style::Theme &theme_;     ///< Borrowed render palette.
+    std::string query_{};           ///< Current incremental search text.
+    std::vector<input::CommandId> results_{}; ///< Matching command ids in display order.
 
+    /// @brief Rebuild @c results_ from the current query and registered commands.
     void update();
 };
 

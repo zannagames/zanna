@@ -44,7 +44,9 @@ bind "../core/project_manager";
 bind "../services/file_utils";
 bind "../ui/app_shell";
 bind "../ui/scene_editor_2d";
+bind "../ui/scene_panels_2d";
 bind "../ui/scene_editor_3d";
+bind "../ui/scene_panels_3d";
 
 bind Convert = Zanna.Core.Convert;
 bind Color = Zanna.Graphics.Color;
@@ -96,7 +98,7 @@ func main() {
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Scene DnD Probe", 1240, 800);
     var editor2d = new scene_editor_2d.SceneEditor2D();
-    editor2d.Setup(shell.workbench.scene2DHost, shell.app);
+    scene_panels_2d.Build(editor2d,shell.workbench.scene2DHost, shell.app);
     var project = new project_manager.ProjectManager();
     if project.OpenFolder(tempDir) == false {
         Fail(shell, null, tempDir, "temp project open");
@@ -266,7 +268,7 @@ func main() {
     shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Scene DnD Probe 3D", 1240, 800);
     var editor3d = new scene_editor_3d.SceneEditor3D();
-    editor3d.Setup(shell.workbench.scene3DHost, shell.app);
+    scene_panels_3d.Build(editor3d,shell.workbench.scene3DHost, shell.app);
     editor3d.SetWorkspaceContext(project);
     var doc3d = documents.NewScene3DDocument();
     shell.SelectSurface(file_utils.DOC_KIND_SCENE_3D);

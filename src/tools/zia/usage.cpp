@@ -15,12 +15,17 @@
 
 namespace zia {
 
+/// @brief Print the Zia compiler and supported IL versions.
+/// @details Writes stable human-readable version information to standard output.
 void printVersion() {
     std::cout << "zia v" << ZANNA_VERSION_STR << "\n";
     std::cout << "Zia Compiler\n";
     std::cout << "IL version: " << ZANNA_IL_VERSION_STR << "\n";
 }
 
+/// @brief Print invocation forms, shared options, and examples for the Zia CLI.
+/// @details Writes user-facing help to standard error and delegates the common
+///          compiler option list to the shared frontend usage formatter.
 void printUsage() {
     std::cerr << "zia v" << ZANNA_VERSION_STR << " - Zia Compiler\n"
               << "\n"

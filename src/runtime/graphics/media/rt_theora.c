@@ -35,6 +35,14 @@
 //        src/runtime/graphics/media/rt_ycbcr.c (planar-to-RGB conversion)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements Theora header parsing and frame entropy decoding.
+ * @details Builds setup quantizers and Huffman trees, maps coded block and
+ * macroblock layouts, decodes packet flags, modes, motion vectors, quantizer
+ * selectors, and coefficients, and coordinates the reconstruction unit while
+ * preserving decoder state on malformed packets.
+ */
 
 #include "rt_theora.h"
 #include "rt_theora_internal.h"
@@ -44,21 +52,29 @@
 #include <stdlib.h>
 #include <string.h>
 
+/** Maximum encoded luma-frame area accepted from an identification header. */
 #define THEORA_MAX_FRAME_PIXELS ((uint64_t)64u * 1024u * 1024u)
+/** Maximum aggregate allocation budget for decoder-owned frame planes. */
 #define THEORA_MAX_FRAME_BUFFER_BYTES ((size_t)768u * 1024u * 1024u)
 
+/** Spec-defined mapping from coefficient scan order to raster coefficient index. */
 const uint8_t theora_zigzag[64] = {0,  1,  8,  16, 9,  2,  3,  10, 17, 24, 32, 25, 18, 11, 4,  5,
                                    12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6,  7,  14, 21, 28,
                                    35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51,
                                    58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63};
 
+/** X offsets for the sixteen-block Hilbert traversal within a superblock. */
 static const uint8_t sb_hilbert_x[16] = {0, 1, 1, 0, 0, 0, 1, 1, 2, 2, 3, 3, 3, 2, 2, 3};
 
+/** Y offsets paired with @ref sb_hilbert_x for superblock traversal. */
 static const uint8_t sb_hilbert_y[16] = {0, 0, 1, 1, 2, 3, 3, 2, 2, 3, 3, 2, 1, 1, 0, 0};
 
+/** X offsets for the four-luma-block Hilbert traversal within a macroblock. */
 static const uint8_t mb_hilbert_x[4] = {0, 0, 1, 1};
+/** Y offsets paired with @ref mb_hilbert_x for macroblock traversal. */
 static const uint8_t mb_hilbert_y[4] = {0, 1, 1, 0};
 
+/** The seven predefined macroblock-mode coding schemes from the Theora specification. */
 static const uint8_t mb_mode_scheme[7][8] = {{3, 4, 2, 0, 1, 5, 6, 7},
                                              {3, 4, 0, 2, 1, 5, 6, 7},
                                              {3, 2, 4, 0, 1, 5, 6, 7},
@@ -68,6 +84,7 @@ static const uint8_t mb_mode_scheme[7][8] = {{3, 4, 2, 0, 1, 5, 6, 7},
                                              {0, 1, 2, 3, 4, 5, 6, 7}};
 
 
+/** DC predictor coefficients indexed by the set of available compatible neighbors. */
 static const theora_dc_weight_t dc_weights[16] = {{{0, 0, 0, 0}, 1},
                                                   {{1, 0, 0, 0}, 1},
                                                   {{0, 1, 0, 0}, 1},

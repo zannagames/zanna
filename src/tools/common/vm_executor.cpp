@@ -47,10 +47,12 @@ namespace {
 /// through an error path.
 class RuntimeArgsScope {
   public:
+    /// @brief Clear host/runtime arguments on entry to one execution.
     RuntimeArgsScope() {
         rt_args_clear();
     }
 
+    /// @brief Clear tool-supplied arguments on every scope exit path.
     ~RuntimeArgsScope() {
         rt_args_clear();
     }

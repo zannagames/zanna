@@ -29,6 +29,14 @@
 //        src/runtime/io/rt_memstream.h (in-memory binary stream)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements a common managed wrapper over BinFile and MemStream.
+ * @details Validates backing types, forwards position and I/O operations,
+ * right-sizes short file reads, distinguishes newly owned from retained
+ * backings, performs transactional wrapper construction, and detaches or
+ * explicitly closes resources according to wrapper provenance.
+ */
 
 #include "rt_stream.h"
 #include "rt_binfile.h"
@@ -47,8 +55,11 @@
 // External trap function (defined in rt_io.c)
 #include "rt_trap.h"
 
+/// @copydoc rt_trap_set_recovery()
 void rt_trap_set_recovery(jmp_buf *buf);
+/// @copydoc rt_trap_clear_recovery()
 void rt_trap_clear_recovery(void);
+/// @copydoc rt_trap_get_error()
 const char *rt_trap_get_error(void);
 
 //=============================================================================

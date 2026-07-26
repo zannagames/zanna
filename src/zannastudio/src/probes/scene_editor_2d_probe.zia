@@ -57,6 +57,7 @@ bind "../ui/scene_clipboard";
 bind "../ui/scene_component_authoring";
 bind "../ui/scene_component_schema";
 bind "../ui/scene_editor_2d";
+bind "../ui/scene_panels_2d";
 bind "../ui/scene_tileset_2d";
 
 bind SceneDocument = Zanna.Game2D.SceneDocument;
@@ -102,7 +103,7 @@ func main() {
     shell.Build("Zanna Studio 2D Scene Editor Probe", 1100, 760);
 
     var editor = new scene_editor_2d.SceneEditor2D();
-    editor.Setup(shell.workbench.scene2DHost, shell.app);
+    scene_panels_2d.Build(editor,shell.workbench.scene2DHost, shell.app);
 
     var documents = new document_manager.DocumentManager();
     var sceneDoc = documents.NewScene2DDocument();

@@ -152,6 +152,7 @@ static std::unordered_map<std::string, std::vector<std::size_t>> buildPredecesso
     for (std::size_t bi = 0; bi < fn.blocks.size(); ++bi) {
         const auto &block = fn.blocks[bi];
         /// @brief Adds the current block index once to a target's predecessor list.
+        /// @param label Target block label.
         const auto addPred = [&](const std::string &label) {
             auto &list = preds[label];
             if (std::find(list.begin(), list.end(), bi) == list.end())
@@ -163,6 +164,8 @@ static std::unordered_map<std::string, std::vector<std::size_t>> buildPredecesso
                 addPred(fn.blocks[bi + 1].name);
         };
         /// @brief Recognizes conditional MIR branch families with label operands.
+        /// @param instr Instruction to classify.
+        /// @return `true` when the opcode is a conditional branch family.
         const auto isConditionalBranch = [](const MInstr &instr) {
             return instr.opc == MOpcode::BCond || instr.opc == MOpcode::Cbz ||
                    instr.opc == MOpcode::Cbnz || instr.opc == MOpcode::Tbz ||
@@ -1186,6 +1189,9 @@ static void runPerBlockRewrites(MFunction &fn, PeepholeStats &stats, const Targe
                 ++stats.identityFMovesRemoved;
             }
         }
+        /// @brief Tests whether an instruction has been marked for removal.
+        /// @param v Removal marker.
+        /// @return The marker value.
         if (std::any_of(toRemove.begin(), toRemove.end(), [](bool v) { return v; }))
             ph::removeMarkedInstructions(instrs, toRemove);
 
@@ -1360,6 +1366,9 @@ PeepholeStats runPostSchedulePeephole(MFunction &fn, const TargetInfo *target) {
                 ++stats.identityFMovesRemoved;
             }
         }
+        /// @brief Tests whether an instruction has been marked for removal.
+        /// @param v Removal marker.
+        /// @return The marker value.
         if (std::any_of(toRemove.begin(), toRemove.end(), [](bool v) { return v; }))
             ph::removeMarkedInstructions(instrs, toRemove);
 
@@ -1394,6 +1403,9 @@ void pruneUnusedCalleeSaved(MFunction &fn) {
     // Prune savedGPRs: remove any callee-saved register not referenced.
     fn.savedGPRs.erase(std::remove_if(fn.savedGPRs.begin(),
                                       fn.savedGPRs.end(),
+                                      /// @brief Tests whether a saved GPR is unused.
+                                      /// @param r Physical register to inspect.
+                                      /// @return `true` when no MIR operand references `r`.
                                       [&](PhysReg r) {
                                           return usedRegs.find(static_cast<uint16_t>(r)) ==
                                                  usedRegs.end();
@@ -1403,6 +1415,9 @@ void pruneUnusedCalleeSaved(MFunction &fn) {
     // Prune savedFPRs: same logic.
     fn.savedFPRs.erase(std::remove_if(fn.savedFPRs.begin(),
                                       fn.savedFPRs.end(),
+                                      /// @brief Tests whether a saved FPR is unused.
+                                      /// @param r Physical register to inspect.
+                                      /// @return `true` when no MIR operand references `r`.
                                       [&](PhysReg r) {
                                           return usedRegs.find(static_cast<uint16_t>(r)) ==
                                                  usedRegs.end();

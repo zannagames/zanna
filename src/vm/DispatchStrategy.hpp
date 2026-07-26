@@ -41,6 +41,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares the pluggable opcode-dispatch strategy interface and shared
+///        VM execution loop.
+/// @details Dispatch strategies isolate opcode-to-handler selection from the
+///          common instruction lifecycle.  Implementations may use a function
+///          table, a switch, or compiler-supported computed-goto threading.
+
 #pragma once
 
 #include "il/core/Opcode.hpp"
@@ -65,6 +72,7 @@ class DispatchStrategy {
     };
 
     /// @brief Get the kind of this strategy.
+    /// @return Enumerator identifying the concrete dispatch mechanism.
     virtual Kind getKind() const = 0;
 
     /// @brief Execute a single instruction using this strategy.
@@ -79,6 +87,8 @@ class DispatchStrategy {
     /// @brief Check if this strategy requires special trap handling.
     /// @details The threaded strategy needs to catch TrapDispatchSignal
     ///          while others can let it propagate.
+    /// @return @c true when the shared loop must install its trap-dispatch
+    ///         catch path; @c false by default.
     virtual bool requiresTrapCatch() const {
         return false;
     }
@@ -87,6 +97,8 @@ class DispatchStrategy {
     /// @details The switch strategy's inline handlers call handleInlineResult,
     ///          which traces and finalizes internally. Other strategies return
     ///          ExecResult and expect the main loop to handle finalization.
+    /// @return @c true when the strategy completes finalization itself;
+    ///         @c false by default.
     virtual bool handlesFinalizationInternally() const {
         return false;
     }
@@ -100,7 +112,8 @@ class DispatchStrategy {
 /// @param context VM context for trap and debug handling
 /// @param state Execution state being driven
 /// @param strategy Dispatch strategy to use for instruction execution
-/// @return True when dispatch terminated normally, false when paused
+/// @return @c true when dispatch terminated normally; @c false when execution
+///         paused without requesting exit.
 bool runSharedDispatchLoop(VM &vm,
                            VMContext &context,
                            VM::ExecState &state,

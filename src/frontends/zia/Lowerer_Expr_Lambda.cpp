@@ -67,6 +67,9 @@ LowerResult Lowerer::lowerLambda(LambdaExpr *expr) {
     // inferred from context (target-typed lambdas), which the AST param nodes
     // lack when the source omitted the annotation.
     TypeRef lambdaFnType = sema_.typeOf(expr);
+    /// @brief Retrieves a context-inferred lambda parameter type.
+    /// @param i Parameter index.
+    /// @return Inferred type, or `unknown` when unavailable.
     auto inferredParamType = [&](size_t i) -> TypeRef {
         if (lambdaFnType && lambdaFnType->kind == TypeKindSem::Function) {
             const auto &fnParams = lambdaFnType->paramTypes();
@@ -379,6 +382,10 @@ LowerResult Lowerer::lowerAs(AsExpr *expr) {
     Type ilTargetType = mapType(targetType);
     TypeRef sourceType = sema_.typeOf(expr->value.get());
 
+    /// @brief Emits a null check and trap for a cast result.
+    /// @param ptr Pointer value to test.
+    /// @param ptrType IL type used to preserve the pointer bits.
+    /// @param labelPrefix Prefix for generated control-flow labels.
     auto emitTrapIfNull = [&](Value ptr, Type ptrType, std::string_view labelPrefix) {
         unsigned ptrSlotId = nextTempId();
         il::core::Instr ptrSlotInstr;
@@ -592,6 +599,8 @@ LowerResult Lowerer::lowerIsExpr(IsExpr *expr) {
     // `obj is T` should return true when obj's runtime type is T or any
     // subclass of T (standard OOP semantics).
     std::vector<int64_t> matchIds;
+    /// @brief Collects a class identifier and all descendant identifiers.
+    /// @param name Registered class name.
     std::function<void(const std::string &)> collectDescendants = [&](const std::string &name) {
         auto cit = classTypes_.find(name);
         if (cit == classTypes_.end())

@@ -32,6 +32,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the C ABI bridge to Zia's authoritative keyword lookup.
+/// @details The strong symbol validates a borrowed identifier range, copies it
+///          into transient C++ storage, and delegates to Lexer so GUI syntax
+///          highlighting cannot drift from the language keyword table.
+
 #include "frontends/zia/Lexer.hpp"
 
 #include <cstdint>

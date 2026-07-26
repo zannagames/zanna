@@ -55,7 +55,7 @@ runnable executable. It performs the classic linker pipeline:
 |--------|----------|-------------|-----------|-----------------|
 | ELF | Linux | x86_64 | 4KB | Supported |
 | ELF | Linux | AArch64 | 4KB | Supported |
-| Mach-O | macOS | x86_64 | 4KB | Not yet supported by the native linker |
+| Mach-O | macOS | x86_64 | 4KB | Not supported — macOS x86-64 is not a Zanna target |
 | Mach-O | macOS | AArch64 (Apple Silicon) | **16KB** | Supported |
 | PE | Windows | x86_64, AArch64 | 4KB | Supported |
 

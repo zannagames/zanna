@@ -28,6 +28,14 @@
 //        src/runtime/audio/rt_audio.c
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements extension-driven decoding of resolved asset bytes.
+ * @details Routes supported image and audio formats to bounded in-memory
+ * decoders, constructs managed Pixels objects from raw RGBA results, and uses
+ * a private temporary directory only for legacy path-based BMP decoding while
+ * recovering traps and cleaning every intermediate resource.
+ */
 
 #ifdef _WIN32
 #ifndef _CRT_RAND_S
@@ -53,6 +61,7 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
+/// @copydoc mkdtemp()
 extern char *mkdtemp(char *);
 #endif
 
@@ -64,29 +73,42 @@ extern char *mkdtemp(char *);
 // ─── External declarations ──────────────────────────────────────────────────
 
 // Image decoders (file-based)
+/// @copydoc rt_pixels_load_png()
 extern void *rt_pixels_load_png(void *path);
+/// @copydoc rt_pixels_load_bmp()
 extern void *rt_pixels_load_bmp(void *path);
+/// @copydoc rt_pixels_load_gif()
 extern void *rt_pixels_load_gif(void *path);
+/// @copydoc rt_pixels_load()
 extern void *rt_pixels_load(void *path);
 
 // Image decoder (buffer-based)
+/// @copydoc rt_jpeg_decode_buffer()
 extern void *rt_jpeg_decode_buffer(const uint8_t *data, size_t len);
+/// @copydoc rt_png_decode_buffer_rgba32()
 extern int rt_png_decode_buffer_rgba32(const uint8_t *data,
                                        size_t len,
                                        uint32_t **out_pixels,
                                        int64_t *out_width,
                                        int64_t *out_height);
+/// @copydoc rt_gif_decode_memory_first_rgba32()
 extern int rt_gif_decode_memory_first_rgba32(
     const uint8_t *data, size_t len, uint32_t **out_pixels, int *out_width, int *out_height);
 
 // Audio decoder (buffer-based)
+/// @copydoc rt_sound_load_mem()
 extern void *rt_sound_load_mem(const void *data, int64_t size);
 
 // Runtime string helpers
+/// @copydoc rt_string_from_bytes()
 extern rt_string rt_string_from_bytes(const char *data, size_t len);
+/// @copydoc rt_trap()
 extern void rt_trap(const char *msg);
+/// @copydoc rt_trap_set_recovery()
 extern void rt_trap_set_recovery(jmp_buf *buf);
+/// @copydoc rt_trap_clear_recovery()
 extern void rt_trap_clear_recovery(void);
+/// @copydoc rt_trap_get_error()
 extern const char *rt_trap_get_error(void);
 
 /// @brief Select a bounded, path-safe suffix for a temporary decode file.

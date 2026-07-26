@@ -5,21 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/tools/windows_installer/WindowsInstallerTheme.cpp
-// Purpose: Implement the native dark Zanna Games installer visual system.
-//
-// Key invariants:
-//   - Website palette values remain expressed as RGB, never COLORREF literals.
-//   - High contrast uses only Windows system colors and retains focus outlines.
-//   - Every GDI object selected into a device context is restored before delete.
-//   - Drawing helpers are noexcept so a paint callback cannot unwind through Win32.
-//
-// Ownership/Lifetime:
-//   - InstallerThemeResources owns long-lived fonts and solid brushes.
-//   - Pens and temporary brushes created while painting are locally released.
-//
-// Links: WindowsInstallerTheme.hpp, WindowsInstallerBrandDialog.cpp,
-//        src/lib/gui/src/core/vg_theme.c
+/// @file WindowsInstallerTheme.cpp
+/// @brief Implements the native dark Zanna Games installer visual system.
+///
+/// Brand values remain RGB rather than @c COLORREF literals, while high-contrast rendering uses
+/// only Windows system colors and retains focus outlines. Painting restores selected GDI objects
+/// before deletion, and noexcept drawing helpers cannot unwind through Win32 callbacks.
+///
+/// InstallerThemeResources owns long-lived fonts and brushes. Painting functions release locally
+/// created pens and temporary brushes before returning.
 //
 //===----------------------------------------------------------------------===//
 
@@ -59,14 +53,29 @@ constexpr InstallerBrandPalette kPalette{
     0xFF6B6B,
 };
 
+/// @brief Convert canonical @c 0xRRGGBB brand data to Windows BGR storage.
+/// @param rgb Canonical RGB value.
+/// @return Equivalent GDI @c COLORREF.
 COLORREF toColorRef(uint32_t rgb) noexcept {
     return RGB((rgb >> 16U) & 0xFFU, (rgb >> 8U) & 0xFFU, rgb & 0xFFU);
 }
 
+/// @brief Scale a 96-DPI pixel metric to the active DPI.
+/// @param value Baseline pixel metric.
+/// @param dpi Normalized destination DPI.
+/// @return Integer metric produced by Win32 proportional scaling.
 int scaled(int value, UINT dpi) noexcept {
     return MulDiv(value, static_cast<int>(dpi), 96);
 }
 
+/// @brief Allocate one ClearType installer font.
+/// @param dpi Normalized destination DPI.
+/// @param points Logical point size.
+/// @param weight Win32 font weight.
+/// @param face Preferred installed family name.
+/// @param pitch Pitch and family flags.
+/// @return Owned GDI font handle.
+/// @throws std::runtime_error If Windows cannot allocate the font.
 HFONT createFont(UINT dpi, int points, int weight, const wchar_t *face, BYTE pitch) {
     HFONT font = CreateFontW(-MulDiv(points, static_cast<int>(dpi), 72),
                              0,
@@ -87,11 +96,17 @@ HFONT createFont(UINT dpi, int points, int weight, const wchar_t *face, BYTE pit
     return font;
 }
 
+/// @brief Mark a font-family enumeration as having found at least one match.
+/// @param data Pointer-sized reference to the caller's Boolean result.
+/// @return Zero to stop enumeration after the first match.
 int CALLBACK noteFontFamily(const LOGFONTW *, const TEXTMETRICW *, DWORD, LPARAM data) {
     *reinterpret_cast<bool *>(data) = true;
     return 0;
 }
 
+/// @brief Determine whether a named font family is available to the desktop.
+/// @param face NUL-terminated family name.
+/// @return @c true when Windows enumerates at least one matching family.
 bool fontFamilyAvailable(const wchar_t *face) noexcept {
     HDC dc = GetDC(nullptr);
     if (!dc)
@@ -108,28 +123,42 @@ bool fontFamilyAvailable(const wchar_t *face) noexcept {
     return found;
 }
 
+/// @brief Convert an eight-bit sRGB channel to linear-light intensity.
+/// @param value Channel value from zero through 255.
+/// @return Linear intensity from zero through one.
 double linearChannel(uint32_t value) noexcept {
     const double channel = static_cast<double>(value) / 255.0;
     return channel <= 0.04045 ? channel / 12.92 : std::pow((channel + 0.055) / 1.055, 2.4);
 }
 
+/// @brief Calculate WCAG relative luminance for a canonical RGB value.
+/// @param rgb Color encoded as @c 0xRRGGBB.
+/// @return Relative luminance from zero through one.
 double relativeLuminance(uint32_t rgb) noexcept {
     return 0.2126 * linearChannel((rgb >> 16U) & 0xFFU) +
            0.7152 * linearChannel((rgb >> 8U) & 0xFFU) + 0.0722 * linearChannel(rgb & 0xFFU);
 }
 
+/// @brief Delete and clear an owned font handle.
+/// @param font Handle slot to release and set to null.
 void deleteFont(HFONT &font) noexcept {
     if (font)
         DeleteObject(font);
     font = nullptr;
 }
 
+/// @brief Delete and clear an owned brush handle.
+/// @param brush Handle slot to release and set to null.
 void deleteBrush(HBRUSH &brush) noexcept {
     if (brush)
         DeleteObject(brush);
     brush = nullptr;
 }
 
+/// @brief Draw decorative circuit traces, nodes, and rings behind the brand mark.
+/// @param dc Destination device context.
+/// @param bounds Brand-panel rectangle.
+/// @param theme Active colors, DPI, and accessibility mode.
 void drawCircuitField(HDC dc, const RECT &bounds, const InstallerThemeResources &theme) noexcept {
     const int width = bounds.right - bounds.left;
     const int height = bounds.bottom - bounds.top;
@@ -181,6 +210,13 @@ void drawCircuitField(HDC dc, const RECT &bounds, const InstallerThemeResources 
     RestoreDC(dc, saved);
 }
 
+/// @brief Draw a single transparent-background text line with borrowed resources.
+/// @param dc Destination device context.
+/// @param bounds Text layout rectangle.
+/// @param text NUL-terminated text.
+/// @param font Borrowed font to select temporarily.
+/// @param color Text color.
+/// @param format Additional @c DrawTextW formatting flags.
 void drawTextLine(HDC dc,
                   const RECT &bounds,
                   const wchar_t *text,
@@ -200,10 +236,16 @@ void drawTextLine(HDC dc,
 
 } // namespace
 
+/// @brief Return the immutable canonical installer palette.
+/// @return Process-lifetime palette expressed as @c 0xRRGGBB values.
 const InstallerBrandPalette &installerBrandPalette() noexcept {
     return kPalette;
 }
 
+/// @brief Calculate the WCAG contrast ratio between two RGB colors.
+/// @param foreground Foreground encoded as @c 0xRRGGBB.
+/// @param background Background encoded as @c 0xRRGGBB.
+/// @return Contrast ratio from 1.0 through 21.0.
 double installerContrastRatio(uint32_t foreground, uint32_t background) noexcept {
     const double foregroundLuminance = relativeLuminance(foreground);
     const double backgroundLuminance = relativeLuminance(background);
@@ -212,6 +254,8 @@ double installerContrastRatio(uint32_t foreground, uint32_t background) noexcept
     return (lighter + 0.05) / (darker + 0.05);
 }
 
+/// @brief Validate every required brand-palette contrast pairing.
+/// @return @c true when body, muted, surface, and accent pairings meet their thresholds.
 bool installerBrandPaletteMeetsContrast() noexcept {
     return installerContrastRatio(kPalette.text, kPalette.background) >= 7.0 &&
            installerContrastRatio(kPalette.textDim, kPalette.background) >= 4.5 &&
@@ -223,6 +267,9 @@ bool installerBrandPaletteMeetsContrast() noexcept {
            installerContrastRatio(kPalette.danger, kPalette.background) >= 4.5;
 }
 
+/// @brief Resolve a semantic accent to its canonical palette color.
+/// @param accent Semantic accent role.
+/// @return Color encoded as @c 0xRRGGBB.
 uint32_t installerAccentRgb(InstallerAccent accent) noexcept {
     switch (accent) {
         case InstallerAccent::Green:
@@ -239,6 +286,8 @@ uint32_t installerAccentRgb(InstallerAccent accent) noexcept {
     return kPalette.teal;
 }
 
+/// @brief Query the current Windows high-contrast setting.
+/// @return @c true when the operating system reports high contrast enabled.
 bool installerHighContrastEnabled() noexcept {
     HIGHCONTRASTW contrast{static_cast<UINT>(sizeof(HIGHCONTRASTW))};
     return SystemParametersInfoW(
@@ -246,6 +295,9 @@ bool installerHighContrastEnabled() noexcept {
            (contrast.dwFlags & HCF_HIGHCONTRASTON) != 0;
 }
 
+/// @brief Allocate the complete font and brush set for one normalized DPI.
+/// @param dpi Native window DPI, normalized before resource allocation.
+/// @throws std::runtime_error If any required GDI resource cannot be created.
 InstallerThemeResources::InstallerThemeResources(UINT dpi)
     : dpi_(normalizeInstallerDpi(dpi)), highContrast_(installerHighContrastEnabled()) {
     try {
@@ -276,6 +328,7 @@ InstallerThemeResources::InstallerThemeResources(UINT dpi)
     }
 }
 
+/// @brief Release every font and brush owned by this theme resource set.
 InstallerThemeResources::~InstallerThemeResources() {
     deleteFont(bodyFont_);
     deleteFont(bodyBoldFont_);
@@ -288,10 +341,15 @@ InstallerThemeResources::~InstallerThemeResources() {
     deleteBrush(inputBrush_);
 }
 
+/// @brief Transfer every GDI handle from another theme resource set.
+/// @param other Resource set to empty.
 InstallerThemeResources::InstallerThemeResources(InstallerThemeResources &&other) noexcept {
     *this = std::move(other);
 }
 
+/// @brief Release current handles and transfer ownership from another resource set.
+/// @param other Resource set to empty.
+/// @return This instance after ownership transfer.
 InstallerThemeResources &InstallerThemeResources::operator=(
     InstallerThemeResources &&other) noexcept {
     if (this == &other)
@@ -320,6 +378,9 @@ InstallerThemeResources &InstallerThemeResources::operator=(
     return *this;
 }
 
+/// @brief Bound untrusted or invalid native DPI values before checked scaling.
+/// @param dpi Candidate DPI.
+/// @return Candidate value in the supported range, otherwise 96.
 UINT normalizeInstallerDpi(UINT dpi) noexcept {
     constexpr UINT kMinimumSupportedDpi = 48U;
     constexpr UINT kMaximumSupportedDpi = 768U;
@@ -328,6 +389,9 @@ UINT normalizeInstallerDpi(UINT dpi) noexcept {
 
 namespace {
 
+/// @brief Compare an existing process-local window class with a requested definition.
+/// @param requested Class identity and callback fields that must match.
+/// @return @c true when Windows reports an equivalent registered class.
 bool installerWindowClassMatches(const WNDCLASSEXW &requested) noexcept {
     WNDCLASSEXW existing{sizeof(existing)};
     if (!GetClassInfoExW(requested.hInstance, requested.lpszClassName, &existing))
@@ -338,6 +402,7 @@ bool installerWindowClassMatches(const WNDCLASSEXW &requested) noexcept {
            existing.cbWndExtra == requested.cbWndExtra;
 }
 
+/// @brief Mutable state shared across child-window DPI enumeration.
 struct ChildScaleContext {
     HWND parent{nullptr};
     UINT oldDpi{96U};
@@ -345,6 +410,10 @@ struct ChildScaleContext {
     bool succeeded{true};
 };
 
+/// @brief Rescale one enumerated child window relative to its parent.
+/// @param child Child window being repositioned.
+/// @param parameter Pointer-sized reference to a ChildScaleContext.
+/// @return @c TRUE to continue enumerating descendants after recording any failure.
 BOOL CALLBACK rescaleInstallerChild(HWND child, LPARAM parameter) {
     auto &context = *reinterpret_cast<ChildScaleContext *>(parameter);
     RECT bounds{};
@@ -378,6 +447,9 @@ BOOL CALLBACK rescaleInstallerChild(HWND child, LPARAM parameter) {
 
 } // namespace
 
+/// @brief Register an installer class or accept an already registered identical class.
+/// @param windowClass Complete requested class definition.
+/// @return Registered atom, one for a verified existing class, or zero on failure.
 ATOM registerVerifiedInstallerWindowClass(const WNDCLASSEXW &windowClass) noexcept {
     if (windowClass.cbSize != sizeof(WNDCLASSEXW) || !windowClass.hInstance ||
         !windowClass.lpszClassName || !windowClass.lpfnWndProc) {
@@ -396,6 +468,11 @@ ATOM registerVerifiedInstallerWindowClass(const WNDCLASSEXW &windowClass) noexce
     return 1;
 }
 
+/// @brief Rescale every descendant window for a per-monitor DPI transition.
+/// @param parent Parent whose child coordinates are relative to its client area.
+/// @param oldDpi DPI represented by current coordinates.
+/// @param newDpi Target DPI.
+/// @return @c true when all descendants were rescaled or no transition was needed.
 bool rescaleInstallerChildWindows(HWND parent, UINT oldDpi, UINT newDpi) noexcept {
     if (!parent)
         return false;
@@ -409,46 +486,70 @@ bool rescaleInstallerChildWindows(HWND parent, UINT oldDpi, UINT newDpi) noexcep
     return context.succeeded;
 }
 
+/// @brief Resolve the primary background for branded or high-contrast rendering.
+/// @return GDI @c COLORREF value.
 COLORREF InstallerThemeResources::backgroundColor() const noexcept {
     return highContrast_ ? GetSysColor(COLOR_WINDOW) : toColorRef(kPalette.background);
 }
 
+/// @brief Resolve the raised shell background for the active accessibility mode.
+/// @return GDI @c COLORREF value.
 COLORREF InstallerThemeResources::raisedColor() const noexcept {
     return highContrast_ ? GetSysColor(COLOR_WINDOW) : toColorRef(kPalette.backgroundRaised);
 }
 
+/// @brief Resolve the interactive surface color for the active accessibility mode.
+/// @return GDI @c COLORREF value.
 COLORREF InstallerThemeResources::surfaceColor() const noexcept {
     return highContrast_ ? GetSysColor(COLOR_BTNFACE) : toColorRef(kPalette.surface);
 }
 
+/// @brief Resolve the editable input background for the active accessibility mode.
+/// @return GDI @c COLORREF value.
 COLORREF InstallerThemeResources::inputColor() const noexcept {
     return highContrast_ ? GetSysColor(COLOR_WINDOW) : toColorRef(kPalette.input);
 }
 
+/// @brief Resolve the standard outline color for the active accessibility mode.
+/// @return GDI @c COLORREF value.
 COLORREF InstallerThemeResources::borderColor() const noexcept {
     return highContrast_ ? GetSysColor(COLOR_WINDOWTEXT) : toColorRef(kPalette.border);
 }
 
+/// @brief Resolve the emphasized outline color for the active accessibility mode.
+/// @return GDI @c COLORREF value.
 COLORREF InstallerThemeResources::borderBrightColor() const noexcept {
     return highContrast_ ? GetSysColor(COLOR_HIGHLIGHT) : toColorRef(kPalette.borderBright);
 }
 
+/// @brief Resolve the primary text color for the active accessibility mode.
+/// @return GDI @c COLORREF value.
 COLORREF InstallerThemeResources::textColor() const noexcept {
     return highContrast_ ? GetSysColor(COLOR_WINDOWTEXT) : toColorRef(kPalette.text);
 }
 
+/// @brief Resolve the secondary text color for the active accessibility mode.
+/// @return GDI @c COLORREF value.
 COLORREF InstallerThemeResources::textDimColor() const noexcept {
     return highContrast_ ? GetSysColor(COLOR_WINDOWTEXT) : toColorRef(kPalette.textDim);
 }
 
+/// @brief Resolve the tertiary or disabled text color for the active accessibility mode.
+/// @return GDI @c COLORREF value.
 COLORREF InstallerThemeResources::textFaintColor() const noexcept {
     return highContrast_ ? GetSysColor(COLOR_GRAYTEXT) : toColorRef(kPalette.textFaint);
 }
 
+/// @brief Resolve a semantic accent for branded or high-contrast rendering.
+/// @param accent Accent role to resolve.
+/// @return GDI @c COLORREF value.
 COLORREF InstallerThemeResources::accentColor(InstallerAccent accent) const noexcept {
     return highContrast_ ? GetSysColor(COLOR_HIGHLIGHT) : toColorRef(installerAccentRgb(accent));
 }
 
+/// @brief Apply supported dark-title-bar and Explorer theme hints to a top-level window.
+/// @param window Installer window to theme.
+/// @param theme Active accessibility mode.
 void applyInstallerWindowTheme(HWND window, const InstallerThemeResources &theme) noexcept {
     if (!window)
         return;
@@ -469,6 +570,9 @@ void applyInstallerWindowTheme(HWND window, const InstallerThemeResources &theme
     }
 }
 
+/// @brief Apply a native theme hint appropriate for an installer child control.
+/// @param control Control to theme.
+/// @param theme Active accessibility mode.
 void applyInstallerControlTheme(HWND control, const InstallerThemeResources &theme) noexcept {
     if (!control)
         return;
@@ -485,6 +589,11 @@ void applyInstallerControlTheme(HWND control, const InstallerThemeResources &the
     SetWindowTheme(control, theme.highContrast() ? L"Explorer" : L"DarkMode_Explorer", nullptr);
 }
 
+/// @brief Paint the installer shell, compile rail, circuit field, and brand typography.
+/// @param dc Destination device context.
+/// @param bounds Full client bounds.
+/// @param brandPanelWidth Optional left brand-panel width, or a nonpositive value to omit it.
+/// @param theme Active brushes, fonts, colors, DPI, and accessibility mode.
 void drawInstallerBackdrop(HDC dc,
                            const RECT &bounds,
                            int brandPanelWidth,
@@ -557,6 +666,10 @@ void drawInstallerBackdrop(HDC dc,
                  DT_CENTER | DT_WORDBREAK);
 }
 
+/// @brief Draw the three-piece vector Z mark.
+/// @param dc Destination device context.
+/// @param bounds Rectangle enclosing the mark.
+/// @param theme Active colors, DPI, and accessibility mode.
 void drawInstallerBrandMark(HDC dc,
                             const RECT &bounds,
                             const InstallerThemeResources &theme) noexcept {
@@ -614,6 +727,10 @@ void drawInstallerBrandMark(HDC dc,
     RestoreDC(dc, saved);
 }
 
+/// @brief Paint an accessible owner-drawn action button and its optional detail line.
+/// @param item Windows owner-draw state, control handle, device context, and bounds.
+/// @param accent Semantic accent used for the leading rail and focus outline.
+/// @param theme Active fonts, colors, DPI, and accessibility mode.
 void drawInstallerActionButton(const DRAWITEMSTRUCT &item,
                                InstallerAccent accent,
                                const InstallerThemeResources &theme) noexcept {
@@ -705,6 +822,12 @@ void drawInstallerActionButton(const DRAWITEMSTRUCT &item,
     RestoreDC(item.hDC, saved);
 }
 
+/// @brief Configure control text and background colors for a @c WM_CTLCOLOR* request.
+/// @param message Control-color message identifying editable or transparent behavior.
+/// @param dc Device context to configure.
+/// @param control Control requesting colors, used to select enabled text color.
+/// @param theme Active colors, brushes, and accessibility mode.
+/// @return Borrowed input or raised brush, or null for an invalid device context.
 HBRUSH colorInstallerControl(UINT message,
                              HDC dc,
                              HWND control,

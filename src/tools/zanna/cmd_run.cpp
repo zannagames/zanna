@@ -5,10 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implements the `zanna run` and `zanna build` subcommands. These provide a
-// unified, frontend-agnostic interface for compiling and executing Zanna
-// projects. The commands delegate to the appropriate frontend (Zia or BASIC)
-// based on language detection by the project loader.
+/// @file
+/// @brief Implements the `zanna run`, `build`, `build-many`, and `check` commands.
+/// @details Provides a frontend-agnostic source-to-IL pipeline for Zia, BASIC,
+///          and mixed projects, followed by verification, VM execution, IL
+///          emission, or native compilation according to the selected mode.
 //
 //===----------------------------------------------------------------------===//
 
@@ -56,12 +57,18 @@ using namespace il::tools::common;
 
 namespace {
 
+/// @brief Terminal operation requested from the shared compile pipeline.
 enum class RunMode { Run, Build, Check };
 
 /// @brief Return an ASCII-lowercased copy of @p value.
 /// @details Project entry extension checks are command-line syntax, so ASCII folding is enough and
 ///          avoids locale-sensitive surprises when users write uppercase `.ZIA` or `.BAS` paths.
+/// @param value Text to fold in place.
+/// @return Lowercase copy of the input using unsigned-character-safe conversion.
 std::string lowerAscii(std::string value) {
+    /// @brief Fold one byte to lowercase without signed-character undefined behavior.
+    /// @param c Byte to normalize.
+    /// @return Lowercase representation converted back to `char`.
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
     });
@@ -73,11 +80,17 @@ std::string lowerAscii(std::string value) {
 ///          need a file to seed frontend compilation. This helper keeps the historical behavior of
 ///          compiling that side while avoiding dependence on insertion order by sorting and then
 ///          preferring conventional `main` filenames.
+/// @param files Candidate source paths for the library-side language.
+/// @param lang Language whose conventional entry filename should be preferred.
+/// @return Deterministic preferred path, or an empty string when @p files is empty.
 std::string selectMixedLibraryEntry(std::vector<std::string> files, ProjectLang lang) {
     if (files.empty())
         return {};
     std::sort(files.begin(), files.end());
     const char *mainName = lang == ProjectLang::Zia ? "main.zia" : "main.bas";
+    /// @brief Match one candidate path to the language's conventional main filename.
+    /// @param path Candidate source path.
+    /// @return `true` when its leaf name equals `mainName`.
     const auto it = std::find_if(files.begin(), files.end(), [&](const std::string &path) {
         return zanna::filesystem::pathFromUtf8(path).filename() == mainName;
     });
@@ -89,10 +102,14 @@ std::string selectMixedLibraryEntry(std::vector<std::string> files, ProjectLang 
 /// blobs are deleted on success and on every early-return failure path.
 class ScopedTempPath {
   public:
+    /// @brief Construct an empty guard that owns no temporary path.
     ScopedTempPath() = default;
 
+    /// @brief Construct a guard that owns @p path.
+    /// @param path UTF-8 temporary path to remove at scope exit.
     explicit ScopedTempPath(std::string path) : path_(std::move(path)) {}
 
+    /// @brief Remove the guarded temporary file, ignoring cleanup errors.
     ~ScopedTempPath() {
         if (!path_.empty()) {
             std::error_code ec;
@@ -104,6 +121,7 @@ class ScopedTempPath {
     ScopedTempPath &operator=(const ScopedTempPath &) = delete;
 
     /// @brief Replace the guarded path, deleting the previous temp file first if one existed.
+    /// @param path UTF-8 temporary path that becomes owned by the guard.
     void reset(std::string path) {
         if (!path_.empty()) {
             std::error_code ec;
@@ -113,6 +131,7 @@ class ScopedTempPath {
     }
 
     /// @brief Return the guarded temp path as a string.
+    /// @return Reference to the owned UTF-8 path, possibly empty.
     const std::string &path() const {
         return path_;
     }
@@ -124,6 +143,11 @@ class ScopedTempPath {
 /// @brief Run the IL verifier on @p module and print any diagnostics.
 /// @details Collects up to 50 diagnostics; prints them (errors always, warnings
 ///          only when @p showWarnings) using the requested format.
+/// @param module IL module to verify.
+/// @param err Stream that receives diagnostics.
+/// @param sm Source manager used to render diagnostic locations.
+/// @param format Text or structured diagnostic output format.
+/// @param showWarnings Whether verifier warnings should be printed.
 /// @return true when the module has no verifier errors.
 bool reportVerifierDiagnostics(il::core::Module &module,
                                std::ostream &err,
@@ -162,6 +186,8 @@ struct RunBuildConfig {
 };
 
 /// @brief Print usage for the `zanna run`, `zanna build`, or `zanna check` subcommand.
+/// @param mode Command mode whose accepted options are described.
+/// @param out Stream that receives the help text.
 void printRunBuildUsage(RunMode mode, std::ostream &out = std::cerr) {
     if (mode == RunMode::Check) {
         out << "Usage: zanna check [target] [options]\n"
@@ -253,10 +279,15 @@ struct CompiledProjectModule {
 /// @details The tool is the composition root: the frontend and the VM each own
 ///          their plain-data shape (no cross-layer include), and this is the
 ///          one place both are visible (ADR 0138).
+/// @param exported Frontend-owned class-layout records, consumed by the conversion.
+/// @return Equivalent VM debugger layout table keyed by class identifier.
 il::vm::DebugClassLayoutTable toVmDebugLayouts(
     il::frontends::zia::DebugClassLayoutExport &&exported) {
     using FrontStore = il::frontends::zia::DebugFieldStore;
     using VmStore = il::vm::DebugFieldStorage;
+    /// @brief Map frontend field-storage metadata to the VM debugger representation.
+    /// @param s Frontend storage classification.
+    /// @return Corresponding VM storage classification.
     auto mapStore = [](FrontStore s) {
         switch (s) {
             case FrontStore::I64:
@@ -303,6 +334,7 @@ il::vm::DebugClassLayoutTable toVmDebugLayouts(
 }
 
 /// @brief Map a build profile name to its default optimization level string.
+/// @param profile Build profile spelling to translate.
 /// @return "O0"/"O1"/"O2" for debug/balanced/release, or nullopt if unrecognized.
 std::optional<std::string> optimizeForBuildProfile(std::string_view profile) {
     if (profile == "debug")
@@ -315,6 +347,7 @@ std::optional<std::string> optimizeForBuildProfile(std::string_view profile) {
 }
 
 /// @brief Map an optimization level string to its numeric value.
+/// @param level Optimization spelling such as `O0`.
 /// @return 0/1/2 for "O0"/"O1"/"O2", or nullopt if unrecognized.
 std::optional<int> optimizeLevelNumber(std::string_view level) {
     if (level == "O0")
@@ -343,6 +376,8 @@ void printCompileTime(const ilc::SharedCliOptions &shared,
 /// @brief Decide whether function-level optimizer passes may run in parallel.
 /// @details Parallelism is disabled when any per-pass verification or dump option
 ///          is active, since those require deterministic, observable ordering.
+/// @param shared Shared CLI options controlling verification and debug dumps.
+/// @return true when no ordering-sensitive option prevents parallel passes.
 bool shouldEnableParallelFunctionPasses(const ilc::SharedCliOptions &shared) {
     return !shared.verifyEachPass && !shared.dumpILPasses && !shared.dumpIL && !shared.dumpILOpt &&
            !shared.dumpAst && !shared.dumpSemaAst && !shared.dumpTokens;
@@ -378,6 +413,9 @@ std::optional<std::string> executionOnlySharedOptionError(RunMode mode, std::str
     if (mode == RunMode::Run)
         return std::nullopt;
     const auto command = mode == RunMode::Build ? "'build'" : "'check'";
+    /// @brief Build the mode-specific diagnostic for an execution-only option.
+    /// @param option Option spelling to mention.
+    /// @return Human-readable validation error.
     const auto errorFor = [&](std::string_view option) {
         return std::string(option) + " is only valid with 'run', not " + command;
     };
@@ -643,7 +681,19 @@ il::support::Expected<RunBuildConfig> parseRunBuildArgs(RunMode mode, int argc, 
     return il::support::Expected<RunBuildConfig>(std::move(config));
 }
 
-/// @brief Verify and execute an IL module.
+/// @brief Verify and execute an IL module using the selected runtime path.
+/// @details Performs final verification when needed, applies stdin redirection,
+///          then dispatches to the debug adapter, tracing VM, profiling VM, or
+///          bytecode executor while preserving program arguments and step limits.
+/// @param module IL module to verify and execute.
+/// @param shared Shared execution, tracing, profiling, and diagnostic options.
+/// @param programArgs Arguments exposed to the executed program.
+/// @param debugVm Whether to force the standard VM debug execution path.
+/// @param debugAdapter Whether to serve the interactive debug-adapter protocol.
+/// @param moduleAlreadyVerified Whether final verifier work may be skipped.
+/// @param sm Source manager used for verifier and trap locations.
+/// @param debugLayouts Optional class-layout metadata consumed by the debug adapter.
+/// @return Program exit status, or one for verification, redirection, or trap failure.
 int verifyAndExecute(il::core::Module &module,
                      const ilc::SharedCliOptions &shared,
                      const std::vector<std::string> &programArgs,
@@ -738,7 +788,13 @@ int verifyAndExecute(il::core::Module &module,
     return vmResult.exitCode;
 }
 
-/// @brief Compile a Zia project and return the module.
+/// @brief Compile a Zia project and return its lowered IL module.
+/// @param project Resolved Zia project configuration.
+/// @param shared Shared compiler, diagnostic, dump, and warning options.
+/// @param sm Source manager populated during compilation.
+/// @param optimizeModule Whether the frontend should run the requested optimizer.
+/// @param captureDebugLayouts Whether debugger class-layout metadata is required.
+/// @return Compiled module and verification/debug-layout state, or a diagnostic.
 il::support::Expected<CompiledProjectModule> compileZiaProject(const ProjectConfig &project,
                                                                const ilc::SharedCliOptions &shared,
                                                                il::support::SourceManager &sm,
@@ -805,7 +861,15 @@ il::support::Expected<CompiledProjectModule> compileZiaProject(const ProjectConf
                                  toVmDebugLayouts(std::move(result.debugClassLayouts))};
 }
 
-/// @brief Compile a BASIC project and return the module.
+/// @brief Compile a BASIC project and return its lowered IL module.
+/// @details Loads the entry source, applies the BASIC compiler options, optionally
+///          runs the canonical IL optimizer pipeline, and verifies optimized output.
+/// @param project Resolved BASIC project configuration.
+/// @param noRuntimeNamespaces Whether runtime namespace binding is disabled.
+/// @param shared Shared compiler, diagnostic, and dump options.
+/// @param sm Source manager populated during loading and compilation.
+/// @param optimizeModule Whether the project optimization pipeline should run.
+/// @return Compiled module and verification state, or a diagnostic.
 il::support::Expected<CompiledProjectModule> compileBasicProject(
     const ProjectConfig &project,
     bool noRuntimeNamespaces,
@@ -906,7 +970,15 @@ il::support::Expected<CompiledProjectModule> compileBasicProject(
     return CompiledProjectModule{std::move(result.module), result.moduleVerified};
 }
 
-/// @brief Compile a mixed-language project (Zia + BASIC) and link the modules.
+/// @brief Compile a mixed-language project and link its Zia and BASIC modules.
+/// @details Compiles the true entry module first, compiles each unique source in
+///          the other language as a library module, generates boolean interop
+///          thunks, links the modules, then optimizes and verifies the result.
+/// @param project Resolved mixed-language project configuration.
+/// @param noRuntimeNamespaces Whether BASIC runtime namespace binding is disabled.
+/// @param shared Shared compiler, optimizer, and diagnostic options.
+/// @param sm Source manager shared by all frontend compilations.
+/// @return Linked and verified module, or the first compile/link diagnostic.
 il::support::Expected<CompiledProjectModule> compileMixedProject(
     const ProjectConfig &project,
     bool noRuntimeNamespaces,
@@ -1015,7 +1087,11 @@ il::support::Expected<CompiledProjectModule> compileMixedProject(
 /// @return Process exit code for the requested command mode.
 int executeRunBuildConfig(RunBuildConfig config);
 
-/// @brief Common implementation for both run and build commands.
+/// @brief Parse and execute a run, build, or check command.
+/// @param mode Requested terminal operation.
+/// @param argc Number of command arguments in @p argv.
+/// @param argv Command arguments excluding the executable and subcommand.
+/// @return Process exit code produced by parsing or command execution.
 int runOrBuild(RunMode mode, int argc, char **argv) {
     const ilc::DiagnosticFormat earlyDiagnosticFormat = ilc::detectDiagnosticFormatFlag(argc, argv);
     auto parsed = parseRunBuildArgs(mode, argc, argv);
@@ -1031,6 +1107,13 @@ int runOrBuild(RunMode mode, int argc, char **argv) {
     return executeRunBuildConfig(std::move(parsed.value()));
 }
 
+/// @brief Execute a fully parsed run, build, or check configuration.
+/// @details Resolves the project, applies command-line policy, compiles the
+///          appropriate frontend combination, and then verifies, emits, builds,
+///          or executes the resulting IL module.
+/// @param config Parsed command configuration, consumed during execution.
+/// @return Zero on success, two for check-mode compile/verifier errors, or one
+///         for other command failures.
 int executeRunBuildConfig(RunBuildConfig config) {
     const RunMode mode = config.mode;
     if (config.helpRequested) {
@@ -1238,6 +1321,10 @@ int executeRunBuildConfig(RunBuildConfig config) {
 
 } // namespace
 
+/// @brief Execute a source project or delegate a direct IL target to the IL runner.
+/// @param argc Number of command arguments in @p argv.
+/// @param argv Command arguments excluding the executable and `run` subcommand.
+/// @return Program exit status or a command failure code.
 int cmdRun(int argc, char **argv) {
     // `zanna run file.il` executes IL directly: delegate to the IL runner so the
     // discoverable run subcommand covers the project's normative intermediate
@@ -1255,6 +1342,10 @@ int cmdRun(int argc, char **argv) {
     return runOrBuild(RunMode::Run, argc, argv);
 }
 
+/// @brief Build IL text or a native executable from a source project.
+/// @param argc Number of command arguments in @p argv.
+/// @param argv Command arguments excluding the executable and `build` subcommand.
+/// @return Zero on success; one on option, compilation, verification, or emission failure.
 int cmdBuild(int argc, char **argv) {
     return runOrBuild(RunMode::Build, argc, argv);
 }
@@ -1367,10 +1458,22 @@ int cmdBuildMany(int argc, char **argv) {
     return failures == 0 ? 0 : 1;
 }
 
+/// @brief Type-check and verify a project without emitting or executing it.
+/// @param argc Number of command arguments in @p argv.
+/// @param argv Command arguments excluding the executable and `check` subcommand.
+/// @return Zero when clean, one for usage/resolution errors, or two for compile errors.
 int cmdCheck(int argc, char **argv) {
     return runOrBuild(RunMode::Check, argc, argv);
 }
 
+/// @brief Build a project's native executable for the package command.
+/// @details Constructs a build-mode configuration without reparsing command-line
+///          arguments and optionally forces the Windows release runtime.
+/// @param target Project file, directory, or manifest path.
+/// @param outputPath Destination native executable path.
+/// @param arch Optional `arm64` or `x64` target architecture.
+/// @param windowsReleaseRuntime Whether Windows builds must use the release runtime.
+/// @return Zero on success; one for invalid inputs or native-build failure.
 int buildProjectToNativeForPackage(const std::string &target,
                                    const std::string &outputPath,
                                    const std::string &arch,

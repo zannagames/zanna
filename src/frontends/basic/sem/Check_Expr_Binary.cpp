@@ -55,22 +55,37 @@ constexpr std::size_t exprRuleCount() noexcept {
 
 // Use shared numeric rules - these aliases preserve the original API while
 // delegating to the centralized implementation in NumericRules.hpp.
+/// @brief Tests whether a semantic type participates in numeric operations.
+/// @param type Type to classify.
+/// @return `true` for integer, floating-point, or unknown numeric-compatible types.
 constexpr bool isNumericType(Type type) noexcept {
     return nr::isNumeric(type);
 }
 
+/// @brief Tests whether a semantic type is integer-valued.
+/// @param type Type to classify.
+/// @return Result of the shared integer classification rule.
 constexpr bool isIntegerType(Type type) noexcept {
     return nr::isInteger(type);
 }
 
+/// @brief Tests whether a semantic type is Boolean-valued.
+/// @param type Type to classify.
+/// @return Result of the shared Boolean classification rule.
 constexpr bool isBooleanType(Type type) noexcept {
     return nr::isBoolean(type);
 }
 
+/// @brief Tests whether a type is accepted by eager word-level logical operators.
+/// @param type Type to classify.
+/// @return `true` for integer, Boolean, or unresolved operands.
 constexpr bool isLogicalWordType(Type type) noexcept {
     return type == Type::Int || type == Type::Bool || type == Type::Unknown;
 }
 
+/// @brief Tests whether a semantic type is string-valued.
+/// @param type Type to classify.
+/// @return Result of the shared string classification rule.
 constexpr bool isStringType(Type type) noexcept {
     return nr::isString(type);
 }
@@ -78,30 +93,58 @@ constexpr bool isStringType(Type type) noexcept {
 // Result type functions using shared numeric rules.
 // These wrap the centralized implementations for use in the rule table.
 
+/// @brief Computes the result type of ordinary numeric arithmetic.
+/// @param lhs Left operand type.
+/// @param rhs Right operand type.
+/// @return Promoted arithmetic result type.
 Type numericResult(Type lhs, Type rhs) noexcept {
     return nr::arithmeticResultType(lhs, rhs);
 }
 
+/// @brief Computes the result type of BASIC division.
+/// @param lhs Left operand type.
+/// @param rhs Right operand type.
+/// @return Division result selected by the shared numeric rules.
 Type divisionResult(Type lhs, Type rhs) noexcept {
     return nr::divisionResultType(lhs, rhs);
 }
 
+/// @brief Computes the result type of addition or string concatenation.
+/// @param lhs Left operand type.
+/// @param rhs Right operand type.
+/// @return Addition result selected by the shared numeric rules.
 Type addResult(Type lhs, Type rhs) noexcept {
     return nr::addResultType(lhs, rhs);
 }
 
+/// @brief Computes the result type of exponentiation.
+/// @param lhs Base operand type.
+/// @param rhs Exponent operand type.
+/// @return Power result selected by the shared numeric rules.
 Type powResult(Type lhs, Type rhs) noexcept {
     return nr::powerResultType(lhs, rhs);
 }
 
+/// @brief Computes the result type of integer-only arithmetic.
+/// @param lhs Left operand type.
+/// @param rhs Right operand type.
+/// @return Integer-operation result selected by the shared numeric rules.
 Type integerResult(Type lhs, Type rhs) noexcept {
     return nr::integerOnlyResultType(lhs, rhs);
 }
 
+/// @brief Computes the result type of a comparison.
+/// @param lhs Left operand type.
+/// @param rhs Right operand type.
+/// @return Boolean or unresolved comparison result type.
 Type booleanResult(Type lhs, Type rhs) noexcept {
     return nr::comparisonResultType(lhs, rhs);
 }
 
+/// @brief Computes the result type of eager logical word operations.
+/// @param lhs Left operand type.
+/// @param rhs Right operand type.
+/// @return Unknown for unresolved operands, Boolean for a Boolean pair, otherwise integer.
 Type eagerLogicalResult(Type lhs, Type rhs) noexcept {
     if (lhs == Type::Unknown || rhs == Type::Unknown)
         return Type::Unknown;
@@ -266,6 +309,12 @@ void validateLogicalOperands(sem::ExprCheckContext &context,
                           formatLogicalOperandMessage(expr.op, lhs, rhs));
 }
 
+/// @brief Validates operands for eager integer/Boolean logical operators.
+/// @param context Expression-checking context providing diagnostics.
+/// @param expr Binary logical expression being validated.
+/// @param lhs Type of the left operand.
+/// @param rhs Type of the right operand.
+/// @param diagId Diagnostic identifier to emit on mismatch.
 void validateEagerLogicalOperands(sem::ExprCheckContext &context,
                                   const BinaryExpr &expr,
                                   Type lhs,
@@ -283,6 +332,9 @@ void validateEagerLogicalOperands(sem::ExprCheckContext &context,
 
 /// @brief Calculate the common numeric type used for implicit promotions.
 /// @details Delegates to the shared numeric rules implementation.
+/// @param lhs Left numeric operand type.
+/// @param rhs Right numeric operand type.
+/// @return Common promoted type.
 SemanticAnalyzer::Type commonNumericType(Type lhs, Type rhs) noexcept {
     return nr::promoteNumeric(lhs, rhs);
 }

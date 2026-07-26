@@ -50,6 +50,8 @@ Constructor: `Zanna.Game2D.SceneDocument.New`
 | <a id="zanna-game2d-scenedocument-layername"></a>`LayerName` | `str(i64)` | `Zanna.Game2D.SceneDocument.LayerName` |
 | <a id="zanna-game2d-scenedocument-setlayername"></a>`SetLayerName` | `void(i64,str)` | `Zanna.Game2D.SceneDocument.SetLayerName` |
 | <a id="zanna-game2d-scenedocument-layervisible"></a>`LayerVisible` | `i1(i64)` | `Zanna.Game2D.SceneDocument.LayerVisible` |
+| <a id="zanna-game2d-scenedocument-layeropacity"></a>`LayerOpacity` | `f64(i64)` | `Zanna.Game2D.SceneDocument.LayerOpacity` |
+| <a id="zanna-game2d-scenedocument-setlayeropacity"></a>`SetLayerOpacity` | `void(i64,f64)` | `Zanna.Game2D.SceneDocument.SetLayerOpacity` |
 | <a id="zanna-game2d-scenedocument-setlayervisible"></a>`SetLayerVisible` | `void(i64,i1)` | `Zanna.Game2D.SceneDocument.SetLayerVisible` |
 | <a id="zanna-game2d-scenedocument-movelayer"></a>`MoveLayer` | `void(i64,i64)` | `Zanna.Game2D.SceneDocument.MoveLayer` |
 | <a id="zanna-game2d-scenedocument-removelayer"></a>`RemoveLayer` | `void(i64)` | `Zanna.Game2D.SceneDocument.RemoveLayer` |
@@ -197,6 +199,8 @@ Constructor: `Zanna.Game2D.SceneDocument.New`
 | `Zanna.Game2D.SceneDocument.LayerName` | `str(obj,i64)` | `rt_game_scene_layer_name` |
 | `Zanna.Game2D.SceneDocument.SetLayerName` | `void(obj,i64,str)` | `rt_game_scene_set_layer_name` |
 | `Zanna.Game2D.SceneDocument.LayerVisible` | `i1(obj,i64)` | `rt_game_scene_layer_visible` |
+| `Zanna.Game2D.SceneDocument.LayerOpacity` | `f64(obj,i64)` | `rt_game_scene_layer_opacity` |
+| `Zanna.Game2D.SceneDocument.SetLayerOpacity` | `void(obj,i64,f64)` | `rt_game_scene_set_layer_opacity` |
 | `Zanna.Game2D.SceneDocument.SetLayerVisible` | `void(obj,i64,i1)` | `rt_game_scene_set_layer_visible` |
 | `Zanna.Game2D.SceneDocument.MoveLayer` | `void(obj,i64,i64)` | `rt_game_scene_move_layer` |
 | `Zanna.Game2D.SceneDocument.RemoveLayer` | `void(obj,i64)` | `rt_game_scene_remove_layer` |

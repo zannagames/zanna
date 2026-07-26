@@ -13,6 +13,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares constant-edge jump threading for SimplifyCFG.
+ *
+ * @details Jump threading uses values supplied on predecessor edges to resolve
+ *          an intermediate conditional branch and retarget the predecessor
+ *          directly to the selected successor with correctly remapped arguments.
+ */
+
 #pragma once
 
 #include "il/transform/SimplifyCFG.hpp"

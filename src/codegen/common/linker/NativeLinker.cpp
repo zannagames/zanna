@@ -128,6 +128,8 @@ class LinkTiming {
     /// @brief Creates a timer whose diagnostics are written to @p err.
     /// @param err Timing output stream retained by reference.
     explicit LinkTiming(std::ostream &err)
+        /// @brief Determines whether linker timing output is enabled.
+        /// @return `true` when `ZANNA_LINKER_STATS` is set to a nonzero value.
         : err_(err), enabled_([]() {
               const char *value = std::getenv("ZANNA_LINKER_STATS");
               return value != nullptr && std::string_view(value) != "0";
@@ -210,6 +212,10 @@ void registerSyntheticSymbols(const ObjFile &obj,
 /// @param rhs Second ASCII string.
 /// @return `true` when equal after per-byte ASCII case folding.
 bool equalsIgnoreAsciiCase(const std::string &lhs, const std::string &rhs) {
+    /// @brief Compares two ASCII bytes after case folding.
+    /// @param a Left byte.
+    /// @param b Right byte.
+    /// @return `true` when the folded bytes are equal.
     return lhs.size() == rhs.size() &&
            std::equal(lhs.begin(), lhs.end(), rhs.begin(), [](unsigned char a, unsigned char b) {
                return std::tolower(a) == std::tolower(b);
@@ -368,6 +374,9 @@ ObjFile makeDsoHandleObject(const ObjFile &userObj) {
 bool usesDebugWindowsRuntime(const std::vector<std::string> &archivePaths) {
     for (const auto &path : archivePaths) {
         std::string lower = path;
+        /// @brief Converts one ASCII byte to lowercase.
+        /// @param c Byte to convert.
+        /// @return Lowercase character value.
         std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
             return static_cast<char>(std::tolower(c));
         });
@@ -584,12 +593,17 @@ ObjFile generateWindowsX64Helpers(const std::unordered_set<std::string> &dynamic
     ObjSection textSec = makeWindowsHelpersTextSec();
     ObjSection dataSec = makeWindowsHelpersDataSec();
 
-    /// Tests both direct and `__imp_` spellings for an unresolved helper.
+    /// @brief Tests both direct and `__imp_` spellings for an unresolved helper.
+    /// @param name Canonical helper symbol name.
+    /// @return `true` when either spelling remains unresolved.
     auto needsHelper = [&](const std::string &name) {
         return dynamicSyms.count(name) || dynamicSyms.count("__imp_" + name);
     };
 
-    /// Appends a complete x64 helper body and publishes its global symbol.
+    /// @brief Appends a complete x64 helper body and publishes its global symbol.
+    /// @param name Published helper name.
+    /// @param bytes Encoded helper body.
+    /// @return Synthetic symbol-table index.
     auto addRetFn = [&](const std::string &name, std::initializer_list<uint8_t> bytes) {
         const size_t off = textSec.data.size();
         textSec.data.insert(textSec.data.end(), bytes.begin(), bytes.end());
@@ -602,7 +616,11 @@ ObjFile generateWindowsX64Helpers(const std::unordered_set<std::string> &dynamic
         return checkedSyntheticSymbolIndex(obj.symbols.size() - 1, name.c_str());
     };
 
-    /// Appends aligned helper data and publishes its global symbol.
+    /// @brief Appends aligned helper data and publishes its global symbol.
+    /// @param name Published data symbol name.
+    /// @param bytes Initial data bytes.
+    /// @param align Required byte alignment.
+    /// @return Synthetic symbol-table index.
     auto addData = [&](const std::string &name, const std::vector<uint8_t> &bytes, uint32_t align) {
         while ((dataSec.data.size() % align) != 0)
             dataSec.data.push_back(0);
@@ -617,7 +635,11 @@ ObjFile generateWindowsX64Helpers(const std::unordered_set<std::string> &dynamic
         return checkedSyntheticSymbolIndex(obj.symbols.size() - 1, name.c_str());
     };
 
-    /// Adds an eight-byte data pointer and an absolute target relocation.
+    /// @brief Adds an eight-byte data pointer and an absolute target relocation.
+    /// @param name Published pointer symbol name.
+    /// @param align Required byte alignment.
+    /// @param targetSymIdx Relocation target symbol index.
+    /// @return Synthetic pointer symbol index.
     auto addAbs64DataRef = [&](const std::string &name, uint32_t align, uint32_t targetSymIdx) {
         while ((dataSec.data.size() % align) != 0)
             dataSec.data.push_back(0);
@@ -639,13 +661,18 @@ ObjFile generateWindowsX64Helpers(const std::unordered_set<std::string> &dynamic
         return checkedSyntheticSymbolIndex(obj.symbols.size() - 1, name.c_str());
     };
 
-    /// Publishes `__imp_name` as a pointer alias to a generated definition.
+    /// @brief Publishes `__imp_name` as a pointer alias to a generated definition.
+    /// @param name Canonical generated definition name.
+    /// @param targetSymIdx Generated definition's symbol index.
     auto addImportAlias = [&](const std::string &name, uint32_t targetSymIdx) {
         if (dynamicSyms.count("__imp_" + name))
             addAbs64DataRef("__imp_" + name, 8, targetSymIdx);
     };
 
-    /// Adds an x64 relative-jump forwarding helper and its target relocation.
+    /// @brief Adds an x64 relative-jump forwarding helper and its target relocation.
+    /// @param name Published forwarding helper name.
+    /// @param target Undefined symbol receiving the jump.
+    /// @return Synthetic helper symbol index.
     auto addJmpFn = [&](const std::string &name, const std::string &target) {
         const size_t off = textSec.data.size();
         textSec.data.insert(textSec.data.end(), {0xE9, 0x00, 0x00, 0x00, 0x00});
@@ -941,12 +968,17 @@ ObjFile generateWindowsArm64Helpers(const std::unordered_set<std::string> &dynam
     ObjSection textSec = makeWindowsHelpersTextSec();
     ObjSection dataSec = makeWindowsHelpersDataSec();
 
-    /// Tests both direct and `__imp_` spellings for an unresolved helper.
+    /// @brief Tests both direct and `__imp_` spellings for an unresolved helper.
+    /// @param name Canonical helper symbol name.
+    /// @return `true` when either spelling remains unresolved.
     auto needsHelper = [&](const std::string &name) {
         return dynamicSyms.count(name) || dynamicSyms.count("__imp_" + name);
     };
 
-    /// Encodes an AArch64 instruction sequence and publishes its global symbol.
+    /// @brief Encodes an AArch64 instruction sequence and publishes its global symbol.
+    /// @param name Published helper name.
+    /// @param insns AArch64 instruction words.
+    /// @return Synthetic symbol-table index.
     auto addTextFn = [&](const std::string &name, const std::vector<uint32_t> &insns) {
         const size_t off = textSec.data.size();
         for (uint32_t insn : insns)
@@ -961,17 +993,26 @@ ObjFile generateWindowsArm64Helpers(const std::unordered_set<std::string> &dynam
         return checkedSyntheticSymbolIndex(obj.symbols.size() - 1, name.c_str());
     };
 
-    /// Adds a helper consisting only of `ret`.
+    /// @brief Adds a helper consisting only of `ret`.
+    /// @param name Published helper name.
+    /// @return Synthetic symbol-table index.
     auto addRetFn = [&](const std::string &name) {
         return addTextFn(name, {0xD65F03C0U}); // ret
     };
 
-    /// Adds a helper returning a small immediate in `x0`.
+    /// @brief Adds a helper returning a small immediate in `x0`.
+    /// @param name Published helper name.
+    /// @param imm Immediate return value.
+    /// @return Synthetic symbol-table index.
     auto addRetImmFn = [&](const std::string &name, uint16_t imm) {
         return addTextFn(name, {0xD2800000U | (static_cast<uint32_t>(imm) << 5), 0xD65F03C0U});
     };
 
-    /// Appends aligned helper data and publishes its global symbol.
+    /// @brief Appends aligned helper data and publishes its global symbol.
+    /// @param name Published data symbol name.
+    /// @param bytes Initial data bytes.
+    /// @param align Required byte alignment.
+    /// @return Synthetic symbol-table index.
     auto addData = [&](const std::string &name, const std::vector<uint8_t> &bytes, uint32_t align) {
         while ((dataSec.data.size() % align) != 0)
             dataSec.data.push_back(0);
@@ -986,7 +1027,11 @@ ObjFile generateWindowsArm64Helpers(const std::unordered_set<std::string> &dynam
         return checkedSyntheticSymbolIndex(obj.symbols.size() - 1, name.c_str());
     };
 
-    /// Adds an eight-byte data pointer and an absolute target relocation.
+    /// @brief Adds an eight-byte data pointer and an absolute target relocation.
+    /// @param name Published pointer symbol name.
+    /// @param align Required byte alignment.
+    /// @param targetSymIdx Relocation target symbol index.
+    /// @return Synthetic pointer symbol index.
     auto addAbs64DataRef = [&](const std::string &name, uint32_t align, uint32_t targetSymIdx) {
         while ((dataSec.data.size() % align) != 0)
             dataSec.data.push_back(0);
@@ -1008,7 +1053,9 @@ ObjFile generateWindowsArm64Helpers(const std::unordered_set<std::string> &dynam
         return checkedSyntheticSymbolIndex(obj.symbols.size() - 1, name.c_str());
     };
 
-    /// Publishes `__imp_name` as a pointer alias to a generated definition.
+    /// @brief Publishes `__imp_name` as a pointer alias to a generated definition.
+    /// @param name Canonical generated definition name.
+    /// @param targetSymIdx Generated definition's symbol index.
     auto addImportAlias = [&](const std::string &name, uint32_t targetSymIdx) {
         if (dynamicSyms.count("__imp_" + name))
             addAbs64DataRef("__imp_" + name, 8, targetSymIdx);
@@ -1505,17 +1552,25 @@ int nativeLink(const NativeLinkerOptions &opts, std::ostream & /*out*/, std::ost
     if (opts.platform == LinkPlatform::Windows) {
         dynamicSyms.erase("__ImageBase");
         const bool haveVmTrapDefault = globalSyms.find("vm_trap_default") != globalSyms.end();
+        /// @brief Tests whether an object contains an allocated TLS section.
+        /// @param obj Object file to inspect.
+        /// @return `true` when any section is allocated TLS data.
         const bool needTlsIndex =
             globalSyms.find("_tls_index") != globalSyms.end() || dynamicSyms.count("_tls_index") ||
             dynamicSyms.count("__imp__tls_index") ||
             std::any_of(allObjects.begin(), allObjects.end(), [](const ObjFile &obj) {
+                /// @brief Tests whether a section is allocated TLS data.
+                /// @param sec Object section to inspect.
+                /// @return `true` when the section is both allocated and TLS.
                 return std::any_of(obj.sections.begin(),
                                    obj.sections.end(),
                                    [](const ObjSection &sec) { return sec.alloc && sec.tls; });
             });
 
         if (opts.arch == LinkArch::X86_64 || opts.arch == LinkArch::AArch64) {
-            /// Tests direct and import-pointer spellings before adding CRT dependencies.
+            /// @brief Tests direct and import-pointer spellings before adding CRT dependencies.
+            /// @param name Canonical dynamic symbol name.
+            /// @return `true` when either spelling remains unresolved.
             auto needsDynamicSym = [&](const std::string &name) {
                 return dynamicSyms.count(name) || dynamicSyms.count("__imp_" + name);
             };
@@ -1707,7 +1762,10 @@ int nativeLink(const NativeLinkerOptions &opts, std::ostream & /*out*/, std::ost
             layout.gotEntries.push_back(std::move(ge));
         }
     }
-    /// Stabilizes loader GOT metadata independently of unordered symbol iteration.
+    /// @brief Stabilizes loader GOT metadata independently of unordered symbol iteration.
+    /// @param a Left GOT entry.
+    /// @param b Right GOT entry.
+    /// @return `true` when `a` has the lexically earlier symbol name.
     std::sort(layout.gotEntries.begin(),
               layout.gotEntries.end(),
               [](const GotEntry &a, const GotEntry &b) { return a.symbolName < b.symbolName; });

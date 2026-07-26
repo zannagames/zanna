@@ -17,11 +17,20 @@
 //     typed callback and unbinds it before publishing completion.
 // Ownership/Lifetime:
 //   - The thread inner object owns the HANDLE and retained construction state
-//     until terminal cleanup; the callback argument is borrowed.
+//     until terminal cleanup. Ordinary callback arguments are borrowed; Owned
+//     start variants retain managed arguments until callback exit.
 //
 // Links: rt_threads_internal.h, rt_threads_posix.c, rt_threads_common.c, rt_threads.h
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements native Thread operations with Win32 synchronization.
+/// @details Thread records use a critical section and condition variable for
+///          repeatable completion observation, inherit the caller's reserved
+///          runtime-context binding, and close each `_beginthreadex` handle
+///          during finalization. Legacy opaque callbacks are decoded only at
+///          the public ABI boundary.
 
 #include "rt_threads_internal.h"
 
@@ -75,6 +84,8 @@ typedef struct RtThread {
 ///        size, and RT_THREAD_MAGIC guard) — distinguishes it from SafeThread
 ///        and stale/foreign pointers before any RtThread deref.
 /// @note Defined once per platform backend branch; both copies are identical.
+/// @param obj Candidate runtime object.
+/// @return Non-zero only for a valid live regular Thread handle.
 int is_regular_thread_handle(void *obj) {
     return rt_obj_is_instance(obj, RT_THREAD_CLASS_ID, sizeof(RtThread)) &&
            thread_handle_magic(obj) == RT_THREAD_MAGIC;
@@ -84,11 +95,13 @@ int is_regular_thread_handle(void *obj) {
 static volatile LONG64 g_next_thread_id_win = 1;
 
 /// @brief Atomically generates the next unique thread ID.
+/// @return Monotonically increasing process-local runtime thread ID.
 static int64_t next_thread_id_win(void) {
     return (int64_t)InterlockedIncrement64(&g_next_thread_id_win) - 1;
 }
 
-/// @brief Finalizer for RtThread objects, called during garbage collection.
+/// @brief Release and clear a Windows Thread's retained callback argument.
+/// @param t Thread record whose owned argument is released.
 static void rt_thread_release_owned_arg_win(RtThread *t) {
     if (!t || !t->owns_arg || !t->arg)
         return;
@@ -98,7 +111,10 @@ static void rt_thread_release_owned_arg_win(RtThread *t) {
     t->owns_arg = 0;
 }
 
-/// @brief Finalizer for RtThread objects, called during garbage collection.
+/// @brief Finalize a Windows Thread record and its native resources.
+/// @details Clears validation state, releases any retained argument, closes
+///          the native thread handle, and destroys the critical section.
+/// @param obj Thread object being finalized.
 static void rt_thread_finalize_win(void *obj) {
     if (!obj)
         return;
@@ -111,7 +127,12 @@ static void rt_thread_finalize_win(void *obj) {
     // CONDITION_VARIABLE doesn't need explicit cleanup on Windows
 }
 
-/// @brief Thread trampoline that sets up context and runs the entry function.
+/// @brief Adopt inherited context, run the callback, and publish completion.
+/// @details The trampoline initializes stack-safety state, releases any owned
+///          argument after callback exit, unbinds or cancels the reserved
+///          context binding, wakes all joiners, and drops the Thread self-reference.
+/// @param p Self-retained `RtThread` record passed to `_beginthreadex`.
+/// @return Zero as the native thread exit status.
 static unsigned __stdcall rt_thread_trampoline_win(void *p) {
     RtThread *t = (RtThread *)p;
     rt_init_stack_safety();
@@ -138,7 +159,10 @@ static unsigned __stdcall rt_thread_trampoline_win(void *p) {
     return 0;
 }
 
-/// @brief Validates a thread pointer and traps if NULL.
+/// @brief Validate and cast a regular Windows Thread handle.
+/// @param thread Candidate runtime Thread object.
+/// @param what Diagnostic used for NULL input.
+/// @return Valid Thread payload, or NULL after a returning trap hook.
 static RtThread *require_thread_win(void *thread, const char *what) {
     if (!thread) {
         rt_trap(what ? what : "Thread: null thread");
@@ -159,6 +183,10 @@ static RtThread *require_thread_win(void *thread, const char *what) {
 /// `retain_arg` is non-zero we GC-retain `arg` so the thread can
 /// access it past the caller's lifetime.
 /// Traps on null entry or `_beginthreadex` failure.
+/// @param entry Typed callback executed once by the native thread.
+/// @param arg Callback argument, or NULL.
+/// @param retain_arg Whether a managed @p arg is retained through callback exit.
+/// @return New caller-owned Thread handle, or NULL after a reported failure.
 static void *rt_thread_start_impl_win(rt_thread_entry_fn entry, void *arg, int8_t retain_arg) {
     if (!entry)
         rt_trap("Thread.Start: null entry");
@@ -231,29 +259,45 @@ static void *rt_thread_start_impl_win(rt_thread_entry_fn entry, void *arg, int8_
     return t;
 }
 
-/// @brief Windows typed `Thread.Start` implementation for native callers.
+/// @brief Start a Windows Thread with a typed callback and borrowed argument.
+/// @param entry Typed callback executed once on the new thread.
+/// @param arg Borrowed callback argument, or NULL.
+/// @return New caller-owned Thread handle, or NULL after a reported failure.
 void *rt_thread_start_fn(rt_thread_entry_fn entry, void *arg) {
     return rt_thread_start_impl_win(entry, arg, 0);
 }
 
-/// @brief Windows typed `Thread.StartOwned` implementation for native callers.
+/// @brief Start a Windows Thread while retaining its managed argument.
+/// @param entry Typed callback executed once on the new thread.
+/// @param arg Managed value retained through callback exit, borrowed unmanaged pointer, or NULL.
+/// @return New caller-owned Thread handle, or NULL after a reported failure.
 void *rt_thread_start_owned_fn(rt_thread_entry_fn entry, void *arg) {
     return rt_thread_start_impl_win(entry, arg, 1);
 }
 
 /// @brief Public: `Thread.Start(entry, arg)` — start a thread without retaining `arg`.
 /// The caller is responsible for keeping `arg` alive until the thread reads it.
+/// @param entry Opaque representation of `void (*)(void *)`.
+/// @param arg Borrowed callback argument, or NULL.
+/// @return New caller-owned Thread handle, or NULL after a reported failure.
 void *rt_thread_start(void *entry, void *arg) {
     return rt_thread_start_fn(thread_entry_from_opaque(entry), arg);
 }
 
 /// @brief Public: start a thread that owns its argument (GC-retains it for the thread's lifetime).
 /// Use this when the caller's reference to `arg` may go out of scope before the thread runs.
+/// @param entry Opaque representation of `void (*)(void *)`.
+/// @param arg Managed value retained through callback exit, borrowed unmanaged pointer, or NULL.
+/// @return New caller-owned Thread handle, or NULL after a reported failure.
 void *rt_thread_start_owned(void *entry, void *arg) {
     return rt_thread_start_owned_fn(thread_entry_from_opaque(entry), arg);
 }
 
-/// @brief Block until `thread` finishes executing. Traps if a thread tries to join itself.
+/// @brief Block until a Thread or SafeThread finishes executing.
+/// @details Completion is repeatably observable. NULL, wrong-class, self-join,
+///          and native condition-wait failures trap. SafeThread handles
+///          delegate to their inner Thread without rethrowing captured callback errors.
+/// @param thread Thread or SafeThread handle to join.
 void rt_thread_join(void *thread) {
     if (is_safe_thread_handle(thread)) {
         rt_thread_safe_join(thread);
@@ -283,7 +327,9 @@ void rt_thread_join(void *thread) {
     thread_release_object(thread);
 }
 
-/// @brief Non-blocking join: returns 1 if the thread already finished, 0 if still running.
+/// @brief Poll a Thread or SafeThread for completion without blocking.
+/// @param thread Thread or SafeThread handle to inspect.
+/// @return One when finished, otherwise zero.
 int8_t rt_thread_try_join(void *thread) {
     if (is_safe_thread_handle(thread)) {
         rt_obj_retain_maybe(thread);
@@ -316,6 +362,9 @@ int8_t rt_thread_try_join(void *thread) {
 
 /// @brief Bounded join — wait at most `ms` milliseconds. Returns 1 on join, 0 on timeout.
 /// `ms < 0` waits forever (delegates to `rt_thread_join`); `ms == 0` is a try-join.
+/// @param thread Thread or SafeThread handle to join.
+/// @param ms Maximum wait in milliseconds; negative means indefinite.
+/// @return One when finished, otherwise zero on timeout or a returning trap path.
 int8_t rt_thread_join_for(void *thread, int64_t ms) {
     if (is_safe_thread_handle(thread)) {
         if (ms < 0) {
@@ -385,7 +434,9 @@ int8_t rt_thread_join_for(void *thread, int64_t ms) {
     return 1;
 }
 
-/// @brief The thread's monotonically-increasing per-process ID (from `next_thread_id_*`).
+/// @brief Get a Thread or SafeThread's process-local runtime ID.
+/// @param thread Thread or SafeThread handle to inspect.
+/// @return Stable positive runtime ID, or zero after a returning trap hook.
 int64_t rt_thread_get_id(void *thread) {
     if (is_safe_thread_handle(thread))
         return rt_thread_safe_get_id(thread);
@@ -400,7 +451,9 @@ int64_t rt_thread_get_id(void *thread) {
     return id;
 }
 
-/// @brief True if the thread is still running; false once its entry function has returned.
+/// @brief Check whether a Thread or SafeThread callback is still running.
+/// @param thread Thread or SafeThread handle to inspect.
+/// @return One before callback completion, otherwise zero.
 int8_t rt_thread_get_is_alive(void *thread) {
     if (is_safe_thread_handle(thread))
         return rt_thread_safe_is_alive(thread);
@@ -415,7 +468,8 @@ int8_t rt_thread_get_is_alive(void *thread) {
     return (int8_t)alive;
 }
 
-/// @brief Sleep the calling thread for `ms` milliseconds (clamped to [0, INT32_MAX]).
+/// @brief Sleep the calling thread for a bounded millisecond duration.
+/// @param ms Requested duration, clamped to `[0, INT32_MAX]`.
 void rt_thread_sleep(int64_t ms) {
     if (ms < 0)
         ms = 0;

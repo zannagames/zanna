@@ -5,9 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the App class, the top-level application driver for
-// Zanna's TUI framework. App orchestrates a widget tree, focus management,
-// input event processing, and screen rendering in a headless-capable loop.
+/// @file
+/// @brief Declares the top-level Zanna TUI application driver.
+/// @details App orchestrates a widget tree, focus management, FIFO input-event
+///          processing, layout, and differential terminal rendering in an
+///          interactive or headless-capable loop.
 //
 // The tick() method implements a simple game-loop style update: pending
 // events are dispatched to the focused widget (or the global keymap),
@@ -87,14 +89,14 @@ class App {
     void resize(int rows, int cols);
 
   private:
-    std::unique_ptr<ui::Widget> root_{};
-    render::ScreenBuffer screen_{};
-    render::Renderer renderer_;
-    std::vector<ui::Event> events_{};
-    int rows_{0};
-    int cols_{0};
-    ui::FocusManager focus_{};
-    input::Keymap *keymap_{nullptr};
+    std::unique_ptr<ui::Widget> root_{}; ///< Owned root of the widget hierarchy.
+    render::ScreenBuffer screen_{};     ///< Mutable cell buffer for the current frame.
+    render::Renderer renderer_;         ///< Differential renderer bound to terminal I/O.
+    std::vector<ui::Event> events_{};   ///< FIFO events awaiting the next tick.
+    int rows_{0};                       ///< Current terminal height in rows.
+    int cols_{0};                       ///< Current terminal width in columns.
+    ui::FocusManager focus_{};          ///< Focus ring and active-widget manager.
+    input::Keymap *keymap_{nullptr};     ///< Optional non-owning global keymap.
 };
 
 } // namespace zanna::tui

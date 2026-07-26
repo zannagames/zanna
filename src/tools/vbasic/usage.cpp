@@ -15,12 +15,17 @@
 
 namespace vbasic {
 
+/// @brief Print the vbasic, Zanna BASIC, and IL version banner.
+/// @details Writes the informational banner to standard output.
 void printVersion() {
     std::cout << "vbasic v" << ZANNA_VERSION_STR << "\n";
     std::cout << "Zanna BASIC Interpreter/Compiler\n";
     std::cout << "IL version: " << ZANNA_IL_VERSION_STR << "\n";
 }
 
+/// @brief Print vbasic synopsis, modes, shared options, and examples.
+/// @details Writes help text to standard error so it accompanies usage failures
+///          without contaminating normal program output.
 void printUsage() {
     std::cerr << "vbasic v" << ZANNA_VERSION_STR << " - Zanna BASIC Interpreter\n"
               << "\n"

@@ -72,6 +72,8 @@ LivenessInfo analyzeCrossBlockLiveness(const il::core::Function &fn,
     // Exclude alloca temps since they don't hold values - they represent stack addresses
     for (std::size_t bi = 0; bi < fn.blocks.size(); ++bi) {
         const auto &bb = fn.blocks[bi];
+        /// @brief Records a temporary used outside its defining block.
+        /// @param v Operand value to inspect.
         auto checkValue = [&](const il::core::Value &v) {
             if (v.kind == il::core::Value::Kind::Temp) {
                 // Skip alloca temps - they don't need cross-block spilling

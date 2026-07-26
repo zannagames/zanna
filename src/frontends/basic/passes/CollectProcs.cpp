@@ -42,6 +42,9 @@ void CollectProcedures(Program &prog) {
     std::vector<std::string> nsStack;
 
     // Helper to set fields on a procedure declaration.
+    /// @brief Removes a trailing BASIC type suffix from a procedure name.
+    /// @param name Procedure identifier.
+    /// @return View without a recognized suffix.
     auto stripSuffix = [](std::string_view name) -> std::string_view {
         if (name.empty())
             return name;
@@ -58,6 +61,8 @@ void CollectProcedures(Program &prog) {
         }
     };
 
+    /// @brief Assigns namespace and canonical qualified-name annotations.
+    /// @param[in,out] decl Procedure declaration to annotate.
     auto assignProcIdentity = [&](auto &decl) {
         decl.namespacePath = nsStack; // copy canonical segments
 
@@ -80,6 +85,8 @@ void CollectProcedures(Program &prog) {
 
     // Recursive DFS over statement lists.
     std::function<void(std::vector<StmtPtr> &)> scan;
+    /// @brief Recursively annotates procedures while maintaining namespace scope.
+    /// @param[in,out] stmts Statement list to scan.
     scan = [&](std::vector<StmtPtr> &stmts) {
         for (auto &stmtPtr : stmts) {
             if (!stmtPtr)

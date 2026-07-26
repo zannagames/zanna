@@ -159,10 +159,14 @@ Lowerer::RVal Lowerer::lowerBoolBranchExpr(Value cond,
         joinLabelBase.empty() ? std::string_view("bool_join") : joinLabelBase;
 
     IlValue result = emitBoolFromBranches(
+        /// @brief Emits the caller-supplied true branch into its result slot.
+        /// @param slot Boolean result storage.
         [&](Value slot) {
             thenBlk = ctx.current();
             emitThen(slot);
         },
+        /// @brief Emits the caller-supplied false branch into its result slot.
+        /// @param slot Boolean result storage.
         [&](Value slot) {
             elseBlk = ctx.current();
             emitElse(slot);

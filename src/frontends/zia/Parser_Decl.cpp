@@ -85,6 +85,10 @@ BindDecl Parser::parseBindDecl() {
     bool isNamespaceBind = false;
     bool targetErrorReported = false;
 
+    /// @brief Parses a string path or dotted namespace bind target.
+    /// @param[out] outPath Receives the parsed target spelling.
+    /// @param[out] outIsNamespaceBind Receives whether the target is a namespace.
+    /// @return `true` when a syntactically valid target was consumed.
     auto parseBindTarget = [&](std::string &outPath, bool &outIsNamespaceBind) -> bool {
         if (check(TokenKind::StringLiteral)) {
             Token pathTok = advance();
@@ -186,6 +190,9 @@ DeclPtr Parser::parseDeclaration() {
         if (!isExported)
             advance(); // consume 'hide'
 
+        /// @brief Applies the parsed top-level visibility to a declaration.
+        /// @param decl Declaration to annotate.
+        /// @return The annotated declaration, or null unchanged.
         auto applyTopLevelVisibility = [&](DeclPtr decl) -> DeclPtr {
             if (!decl)
                 return nullptr;
@@ -961,6 +968,7 @@ DeclPtr Parser::parseFieldDecl() {
 
 /// @brief Parse a method declaration inside a struct, class, or interface body.
 /// @details For interfaces, the method has no body and ends with a semicolon.
+/// @param allowBodylessSignature Whether a semicolon-terminated signature is accepted.
 /// @return The parsed MethodDecl, or nullptr on error.
 DeclPtr Parser::parseMethodDecl(bool allowBodylessSignature) {
     Token funcTok = advance(); // consume 'func'

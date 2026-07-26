@@ -20,6 +20,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares bounded full unrolling of simple counted IL loops.
+ *
+ * @details The pass recognizes innermost single-latch, single-exit loops with
+ *          constant initial value, bound, and step, then clones safe body
+ *          instructions for each exact iteration. Configuration caps both the
+ *          accepted trip count and original body size to control code growth.
+ */
+
 #pragma once
 
 #include "il/transform/PassRegistry.hpp"
@@ -28,10 +38,10 @@ namespace il::transform {
 
 /// @brief Configuration parameters for loop unrolling.
 struct LoopUnrollConfig {
-    /// Maximum trip count for full unrolling (eliminates loop entirely).
+    /// @brief Maximum trip count for full unrolling, which eliminates the loop.
     unsigned fullUnrollThreshold = 8;
 
-    /// Maximum loop body size (instructions) for unrolling consideration.
+    /// @brief Maximum loop-body instruction count considered for unrolling.
     unsigned maxLoopSize = 50;
 };
 
@@ -57,6 +67,7 @@ class LoopUnroll : public FunctionPass {
     PreservedAnalyses run(core::Function &function, AnalysisManager &analysis) override;
 
   private:
+    /// @brief Size and trip-count limits retained by value.
     LoopUnrollConfig config_;
 };
 

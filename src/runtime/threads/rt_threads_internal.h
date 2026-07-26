@@ -26,6 +26,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares the shared internal model for platform Thread backends.
+/// @details This header defines SafeThread state, legacy callback decoding,
+///          live-handle discrimination, retain/cleanup helpers, and bridges
+///          between platform Thread implementations and the common SafeThread
+///          translation unit.
+
 #pragma once
 
 #include "rt_threads.h"
@@ -45,13 +52,21 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Install a non-local recovery destination for runtime traps.
+/// @param buf Jump buffer that receives control when a trap is raised.
 void rt_trap_set_recovery(jmp_buf *buf);
+
+/// @brief Remove the active runtime trap recovery destination.
 void rt_trap_clear_recovery(void);
+
+/// @brief Read the diagnostic associated with the current recovered trap.
+/// @return Borrowed NUL-terminated diagnostic text, or NULL when unavailable.
 const char *rt_trap_get_error(void);
 
 #define RT_THREAD_MAGIC 0x56545244u      /* "VTRD" */
 #define RT_SAFE_THREAD_MAGIC 0x56545346u /* "VTSF" */
 
+/// @brief Runtime payload shared by the SafeThread wrapper and worker callback.
 typedef struct SafeThreadCtx {
     uint32_t magic;
     rt_thread_entry_fn entry;
@@ -84,12 +99,25 @@ static inline rt_thread_entry_fn thread_entry_from_opaque(void *opaque) {
     return entry;
 }
 
-// Cross-TU bridges. is_regular_thread_handle is implemented per-platform; the
-// remaining functions live in rt_threads_common.c (they wrap the public Thread
-// API, so they cannot live in this internal header).
+/// @brief Test whether an object is a live platform-native Thread handle.
+/// @param obj Candidate runtime object.
+/// @return Non-zero only for a valid regular Thread handle.
 int is_regular_thread_handle(void *obj);
+
+/// @brief Take a retained snapshot of a SafeThread's inner Thread handle.
+/// @param ctx SafeThread state to inspect.
+/// @return Retained inner Thread handle, or NULL.
 void *safe_thread_copy_inner_thread(SafeThreadCtx *ctx);
+
+/// @brief Poll and consume a retained inner Thread handle.
+/// @param inner Retained Thread handle, or NULL.
+/// @return One when joined or NULL, otherwise zero.
 int8_t thread_try_join_inner_or_release(void *inner);
+
+/// @brief Timed-join and consume a retained inner Thread handle.
+/// @param inner Retained Thread handle, or NULL.
+/// @param ms Maximum wait in milliseconds.
+/// @return One when joined or NULL, otherwise zero on timeout.
 int8_t thread_join_for_inner_or_release(void *inner, int64_t ms);
 
 /// @brief Read the 4-byte magic number stored at the head of a thread handle.
@@ -99,6 +127,8 @@ int8_t thread_join_for_inner_or_release(void *inner, int64_t ms);
 ///          collide if a stale handle is reinterpreted, while magic alone
 ///          could collide with random heap content. NULL handles return 0
 ///          so the magic comparison fails cleanly without a deref.
+/// @param obj Candidate thread-handle payload.
+/// @return Stored magic word, or zero for NULL.
 static inline uint32_t thread_handle_magic(void *obj) {
     if (!obj)
         return 0;
@@ -109,17 +139,26 @@ static inline uint32_t thread_handle_magic(void *obj) {
 /// @details Used by the SafeThread API entry points to reject NULL,
 ///          stale, wrong-class, or freed-and-reused handles before
 ///          dereferencing. Returns 0 for any of those conditions.
+/// @param obj Candidate runtime object.
+/// @return Non-zero only for a valid live SafeThread handle.
 static inline int is_safe_thread_handle(void *obj) {
     return rt_obj_is_instance(obj, RT_SAFE_THREAD_CLASS_ID, sizeof(SafeThreadCtx)) &&
            thread_handle_magic(obj) == RT_SAFE_THREAD_MAGIC;
 }
 
 /// @brief Release a retained Thread/SafeThread object and free it on last release.
+/// @param obj Runtime Thread-related reference to release, or NULL.
 static inline void thread_release_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
+/// @brief Copy the active trap diagnostic into stable caller storage.
+/// @details Empty diagnostics use @p fallback or a generic Thread failure
+///          message. NULL and zero-capacity destinations are ignored.
+/// @param buffer Destination for the NUL-terminated diagnostic.
+/// @param buffer_size Capacity of @p buffer in bytes.
+/// @param fallback Optional replacement for an empty trap diagnostic.
 static inline void thread_save_trap_error(char *buffer, size_t buffer_size, const char *fallback) {
     if (!buffer || buffer_size == 0)
         return;

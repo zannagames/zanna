@@ -43,6 +43,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements thread-local VM activation and the dispatch-context facade.
+/// @details The helpers in this file centralize runtime-context binding,
+///          operand evaluation, tracing, opcode dispatch, and trap forwarding
+///          for every interpreter strategy.
+
 #include "vm/VMContext.hpp"
 
 #include "il/core/BasicBlock.hpp"

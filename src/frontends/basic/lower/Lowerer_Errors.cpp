@@ -15,6 +15,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements BASIC lowerer diagnostics, source-location access, and
+///        runtime error-control-flow helpers.
+/// @details The methods attach optional semantic/diagnostic services, normalize
+///          channel values, and build failure/continuation blocks while
+///          preserving the active procedure context and source metadata.
+
 #include "frontends/basic/DiagnosticEmitter.hpp"
 #include "frontends/basic/Lowerer.hpp"
 

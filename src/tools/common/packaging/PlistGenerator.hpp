@@ -21,6 +21,9 @@
 //===----------------------------------------------------------------------===//
 #pragma once
 
+/// @file
+/// @brief Declares macOS `Info.plist` and `PkgInfo` generation interfaces.
+
 #include "PackageConfig.hpp"
 
 #include <string>
@@ -29,6 +32,8 @@
 namespace zanna::pkg {
 
 /// @brief Parameters for Info.plist generation.
+/// @details Optional strings may be empty; required fields and file-association
+///          metadata are validated before any XML is returned.
 struct PlistParams {
     std::string executableName;              ///< Binary filename in Contents/MacOS/
     std::string bundleId;                    ///< CFBundleIdentifier (reverse DNS)
@@ -41,8 +46,11 @@ struct PlistParams {
 };
 
 /// @brief Generate an Info.plist XML string.
-/// @param params Plist parameters.
-/// @return Complete Info.plist XML content.
+/// @details Emits required bundle identity keys, Retina support, a default
+///          minimum macOS version, and optional icon/category/document metadata.
+/// @param params Bundle metadata to validate, escape, and encode.
+/// @return Complete PropertyList-1.0 XML content with a trailing newline.
+/// @throws std::runtime_error If a field violates package metadata constraints.
 std::string generatePlist(const PlistParams &params);
 
 /// @brief Generate a PkgInfo file content (always "APPL????").

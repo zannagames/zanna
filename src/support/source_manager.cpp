@@ -354,6 +354,7 @@ void SourceManager::setSource(uint32_t file_id, std::string source) {
 /// @brief Check whether a file identifier is in the registered range.
 /// @param file_id Candidate 1-based file identifier.
 /// @return True when @p file_id maps to stored path metadata.
+/// @pre Caller must hold @ref mutex_.
 bool SourceManager::isRegisteredFileId(uint32_t file_id) const noexcept {
     return file_id != 0 && file_id <= files_.size();
 }
@@ -361,6 +362,7 @@ bool SourceManager::isRegisteredFileId(uint32_t file_id) const noexcept {
 /// @brief Resolve a registered file id to its display path without locking.
 /// @param file_id Candidate 1-based file identifier.
 /// @return Stored display path, or empty for invalid ids.
+/// @pre Caller must hold @ref mutex_.
 std::string_view SourceManager::getPathLocked(uint32_t file_id) const {
     if (!isRegisteredFileId(file_id))
         return {};
@@ -370,6 +372,9 @@ std::string_view SourceManager::getPathLocked(uint32_t file_id) const {
 /// @brief Load or retrieve cached source lines.
 /// @param file_id Registered 1-based file identifier.
 /// @return Shared cached line vector, or null when @p file_id is invalid.
+/// @details Captures the file's cache generation while locked, performs disk I/O
+///          without holding the manager mutex, and publishes the immutable result
+///          only if no concurrent invalidation or replacement superseded it.
 std::shared_ptr<const std::vector<std::string>> SourceManager::ensureLineCache(
     uint32_t file_id) const {
     std::filesystem::path diskPath;
@@ -420,6 +425,7 @@ std::shared_ptr<const std::vector<std::string>> SourceManager::ensureLineCache(
 /// @details Moving the shared line buffer into @ref retiredLineCaches_ keeps
 ///          previously returned string views valid while allowing future lookups
 ///          to reload or replace the active cache.
+/// @pre Caller must hold @ref mutex_.
 void SourceManager::retireLineCacheLocked(uint32_t file_id) const {
     auto it = lineCache_.find(file_id);
     if (it == lineCache_.end())

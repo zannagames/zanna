@@ -12,7 +12,7 @@
 //
 // Key invariants:
 //   - Default placeholder delimiters are "{{" and "}}".
-//   - RenderWith allows custom open/close delimiters for any character pair.
+//   - RenderWith accepts arbitrary nonempty byte strings as delimiters.
 //   - Keys are whitespace-trimmed before lookup: "{{ name }}" == "{{name}}".
 //   - Missing or non-string keys are left as-is in the output.
 //   - Seq-based rendering replaces "{{0}}", "{{1}}" with seq elements by index.
@@ -23,10 +23,19 @@
 //   - Input template and map/seq are borrowed for the duration of the call.
 //
 // Links: src/runtime/text/rt_template.h (public API),
-//        src/runtime/rt_map.h (map used for key→value substitutions),
-//        src/runtime/rt_seq.h (seq used for index→value substitutions)
+//        src/runtime/collections/rt_map.h (keyed substitutions),
+//        src/runtime/collections/rt_seq.h (positional substitutions)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_template.c
+ * @brief Implements lightweight byte-string placeholder rendering.
+ * @details Renderers scan default or custom nonempty delimiters, trim keys,
+ *          substitute raw or boxed runtime Strings from Maps or positional
+ *          sequences, preserve unresolved placeholders, and interpret doubled
+ *          delimiters as escaped literal delimiters.
+ */
 
 #include "rt_template.h"
 
@@ -48,6 +57,8 @@
 #include "rt_trap.h"
 
 /// @brief Safely cast a byte length to int, trapping on overflow.
+/// @param n Byte length to convert.
+/// @return Length as `int`; traps before conversion when greater than `INT_MAX`.
 static int safe_size_to_int(size_t n) {
     if (n > (size_t)INT_MAX)
         rt_trap("Template: string too long");
@@ -58,21 +69,35 @@ static int safe_size_to_int(size_t n) {
 // Helper Functions
 //=============================================================================
 
-/// Skip whitespace and return new position
+/// @brief Advance a byte position past C-library whitespace.
+/// @param s Input byte buffer.
+/// @param pos Initial byte position.
+/// @param len Exclusive buffer length.
+/// @return First position at or after @p pos that is not classified as whitespace.
 static int skip_whitespace(const char *s, int pos, int len) {
     while (pos < len && isspace((unsigned char)s[pos]))
         pos++;
     return pos;
 }
 
-/// Reverse skip whitespace (find end of non-whitespace)
+/// @brief Retreat an exclusive end position over C-library whitespace.
+/// @param s Input byte buffer.
+/// @param start Lower bound that is never crossed.
+/// @param end Initial exclusive end position.
+/// @return Trimmed exclusive end position.
 static int rskip_whitespace(const char *s, int start, int end) {
     while (end > start && isspace((unsigned char)s[end - 1]))
         end--;
     return end;
 }
 
-/// Find substring starting at pos, return position or -1
+/// @brief Find a byte substring at or after a selected position.
+/// @param text Haystack byte buffer.
+/// @param text_len Haystack length.
+/// @param needle Needle byte buffer.
+/// @param needle_len Needle length; zero is rejected.
+/// @param start First candidate offset.
+/// @return First matching byte offset, or `-1`.
 static int find_at(const char *text, int text_len, const char *needle, int needle_len, int start) {
     if (needle_len == 0 || start < 0 || start > text_len || needle_len > text_len - start)
         return -1;
@@ -84,7 +109,10 @@ static int find_at(const char *text, int text_len, const char *needle, int needl
     return -1;
 }
 
-/// Parse integer from string, return -1 if not a valid non-negative integer
+/// @brief Parse a nonnegative decimal sequence index.
+/// @param s Candidate digit bytes.
+/// @param len Number of candidate bytes.
+/// @return Parsed index, or `-1` for empty, nondigit, or overflowing input.
 static int64_t parse_index(const char *s, int len) {
     if (len == 0)
         return -1;
@@ -111,6 +139,14 @@ static int64_t parse_index(const char *s, int len) {
 ///          Operates byte-by-byte (1-byte append in the default branch)
 ///          to keep the doubling logic clean — performance is fine
 ///          because templates are typically rendered once per request.
+/// @param sb Destination string builder.
+/// @param text Literal template span.
+/// @param len Number of bytes in @p text.
+/// @param prefix Opening delimiter bytes.
+/// @param prefix_len Opening delimiter length.
+/// @param suffix Closing delimiter bytes.
+/// @param suffix_len Closing delimiter length.
+/// @return String-builder status from the first failed append, or `RT_SB_OK`.
 static rt_sb_status_t append_literal_unescaped(rt_string_builder *sb,
                                                const char *text,
                                                int len,
@@ -151,7 +187,19 @@ static rt_sb_status_t append_literal_unescaped(rt_string_builder *sb,
 // Core Template Rendering
 //=============================================================================
 
-/// Internal render with configurable delimiters and value lookup
+/// @brief Render a template using map keys or positional Seq indexes.
+/// @details Trims placeholder keys, substitutes only raw or boxed strings, and
+///          preserves empty, missing, null, and non-string placeholders.
+///          Doubled delimiters in literal spans collapse to one delimiter.
+/// @param tmpl Template byte buffer.
+/// @param tmpl_len Template length.
+/// @param values Borrowed Map or Seq selected by @p use_seq.
+/// @param use_seq True for decimal Seq indexes; false for Map keys.
+/// @param prefix Opening delimiter bytes.
+/// @param prefix_len Opening delimiter length.
+/// @param suffix Closing delimiter bytes.
+/// @param suffix_len Closing delimiter length.
+/// @return Caller-owned rendered runtime string.
 static rt_string render_internal(const char *tmpl,
                                  int tmpl_len,
                                  void *values,
@@ -309,6 +357,13 @@ static rt_string render_internal(const char *tmpl,
 //=============================================================================
 
 /// @brief Render a Mustache-style template with {{key}} placeholders replaced from a Map.
+/// @details Keys are trimmed with C-library whitespace rules. Only raw runtime
+///          strings and boxed strings are substituted; other values leave the
+///          original placeholder intact. Doubled delimiters emit literal braces.
+/// @param tmpl Borrowed template byte string.
+/// @param values Borrowed Map with runtime-string keys.
+/// @return Caller-owned rendered string; null arguments trap and return an
+///         empty sentinel if execution resumes.
 rt_string rt_template_render(rt_string tmpl, void *values) {
     if (!tmpl) {
         rt_trap("Template.Render: template is null");
@@ -329,6 +384,12 @@ rt_string rt_template_render(rt_string tmpl, void *values) {
 }
 
 /// @brief Render a template with {{0}}, {{1}} positional placeholders replaced from a Seq.
+/// @details Index text must be a nonnegative decimal integer within the Seq.
+///          Invalid, missing, or non-string elements preserve the placeholder.
+/// @param tmpl Borrowed template byte string.
+/// @param values Borrowed Seq of substitution values.
+/// @return Caller-owned rendered string; null arguments trap and return an
+///         empty sentinel if execution resumes.
 rt_string rt_template_render_seq(rt_string tmpl, void *values) {
     if (!tmpl) {
         rt_trap("Template.RenderSeq: template is null");
@@ -349,6 +410,14 @@ rt_string rt_template_render_seq(rt_string tmpl, void *values) {
 }
 
 /// @brief Render a template with custom delimiters (e.g., "<%" and "%>" instead of "{{" / "}}").
+/// @details Delimiters may be arbitrary nonempty byte strings. Lookup uses Map
+///          keys and otherwise follows `rt_template_render`.
+/// @param tmpl Borrowed template byte string.
+/// @param values Borrowed Map with runtime-string keys.
+/// @param prefix Borrowed nonempty opening delimiter.
+/// @param suffix Borrowed nonempty closing delimiter.
+/// @return Caller-owned rendered string; null/empty delimiters or null required
+///         arguments trap and yield an empty sentinel if execution resumes.
 rt_string rt_template_render_with(rt_string tmpl,
                                   void *values,
                                   rt_string prefix,
@@ -400,6 +469,11 @@ rt_string rt_template_render_with(rt_string tmpl,
 }
 
 /// @brief Check whether a template contains a given placeholder key.
+/// @details Uses default delimiters, ignores escaped opening delimiters, trims
+///          placeholder whitespace, and compares key bytes exactly.
+/// @param tmpl Borrowed template string.
+/// @param key Borrowed nonempty key string.
+/// @return `1` when an unescaped matching placeholder exists, otherwise `0`.
 int8_t rt_template_has(rt_string tmpl, rt_string key) {
     if (!tmpl)
         return 0;
@@ -452,7 +526,11 @@ int8_t rt_template_has(rt_string tmpl, rt_string key) {
     return 0;
 }
 
-/// @brief Extract all unique placeholder key names from a template as a sequence.
+/// @brief Extract all unique placeholder key names into a Bag.
+/// @details Escaped delimiters and empty placeholders are omitted; keys are
+///          whitespace-trimmed.
+/// @param tmpl Borrowed template string; null yields an empty Bag.
+/// @return Caller-owned runtime-managed Bag containing unique default-delimiter keys.
 void *rt_template_keys(rt_string tmpl) {
     void *bag = rt_bag_new();
 
@@ -501,6 +579,8 @@ void *rt_template_keys(rt_string tmpl) {
 /// @brief Escape template delimiters by doubling them ({{ -> {{{{, }} -> }}}})
 ///        so literal braces survive a subsequent Render pass. This is NOT an
 ///        HTML-entity escaper.
+/// @param text Borrowed byte string; null is treated as empty.
+/// @return Caller-owned escaped string.
 rt_string rt_template_escape(rt_string text) {
     if (!text)
         return rt_const_cstr("");

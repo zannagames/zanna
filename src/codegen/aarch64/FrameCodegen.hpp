@@ -110,11 +110,21 @@ void iteratePrologue(const std::vector<PhysReg> &savedGPRs,
         s.subSp(localFrameSize);
     forEachSaveReg(
         savedGPRs,
+        /// @brief Emit one paired GPR save.
+        /// @param a First register.
+        /// @param b Second register.
         [&](PhysReg a, PhysReg b) { s.stpGprPair(a, b); },
+        /// @brief Emit one single GPR save.
+        /// @param a Register to save.
         [&](PhysReg a) { s.strGprSingle(a); });
     forEachSaveReg(
         savedFPRs,
+        /// @brief Emit one paired FPR save.
+        /// @param a First register.
+        /// @param b Second register.
         [&](PhysReg a, PhysReg b) { s.stpFprPair(a, b); },
+        /// @brief Emit one single FPR save.
+        /// @param a Register to save.
         [&](PhysReg a) { s.strFprSingle(a); });
 }
 
@@ -136,11 +146,21 @@ void iterateEpilogue(const std::vector<PhysReg> &savedGPRs,
                      const Steps &s) {
     forEachRestoreReg(
         savedFPRs,
+        /// @brief Emit one paired FPR restore.
+        /// @param a First register.
+        /// @param b Second register.
         [&](PhysReg a, PhysReg b) { s.ldpFprPair(a, b); },
+        /// @brief Emit one single FPR restore.
+        /// @param a Register to restore.
         [&](PhysReg a) { s.ldrFprSingle(a); });
     forEachRestoreReg(
         savedGPRs,
+        /// @brief Emit one paired GPR restore.
+        /// @param a First register.
+        /// @param b Second register.
         [&](PhysReg a, PhysReg b) { s.ldpGprPair(a, b); },
+        /// @brief Emit one single GPR restore.
+        /// @param a Register to restore.
         [&](PhysReg a) { s.ldrGprSingle(a); });
     if (localFrameSize > 0)
         s.addSp(localFrameSize);

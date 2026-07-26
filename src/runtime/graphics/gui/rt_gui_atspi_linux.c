@@ -57,6 +57,9 @@ typedef struct GError {
     char *message;
 } GError;
 
+/// @brief GDBus method-dispatch callback ABI used by the AT-SPI object vtable.
+/// @details Receives the connection, sender, object path, interface and method
+///          names, borrowed parameters, invocation handle, and registered user data.
 typedef void (*rt_gdbus_method_call_t)(GDBusConnection *,
                                        const char *,
                                        const char *,
@@ -65,6 +68,10 @@ typedef void (*rt_gdbus_method_call_t)(GDBusConnection *,
                                        GVariant *,
                                        GDBusMethodInvocation *,
                                        void *);
+/// @brief GDBus property-read callback ABI used by the AT-SPI object vtable.
+/// @details Receives connection and routing metadata, the property name, an
+///          optional error destination, and registered user data.
+/// @return Newly constructed property variant, or NULL when unavailable.
 typedef GVariant *(*rt_gdbus_get_property_t)(GDBusConnection *,
                                              const char *,
                                              const char *,
@@ -72,6 +79,11 @@ typedef GVariant *(*rt_gdbus_get_property_t)(GDBusConnection *,
                                              const char *,
                                              GError **,
                                              void *);
+/// @brief GDBus property-write callback ABI used by the AT-SPI object vtable.
+/// @details Receives connection and routing metadata, the property name and
+///          borrowed replacement variant, an optional error destination, and
+///          registered user data.
+/// @return Nonzero when the replacement was accepted; otherwise zero.
 typedef int (*rt_gdbus_set_property_t)(GDBusConnection *,
                                        const char *,
                                        const char *,

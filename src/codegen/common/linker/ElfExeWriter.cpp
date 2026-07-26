@@ -617,7 +617,10 @@ bool buildDynamicInfo(const LinkLayout &layout,
     for (uint32_t chain : chains)
         encoding::writeLE32(info.hash, chain);
 
-    /// Appends one loader-applied relocation to the synthesized `.rela.dyn`.
+    /// @brief Appends one loader-applied relocation to the synthesized `.rela.dyn`.
+    /// @param offset Relocation virtual address.
+    /// @param symIndex Dynamic symbol-table index.
+    /// @param type Architecture-specific relocation type.
     auto emitRela = [&](uint64_t offset, uint32_t symIndex, uint32_t type) {
         Elf64_Rela rela{};
         rela.r_offset = offset;
@@ -637,7 +640,10 @@ bool buildDynamicInfo(const LinkLayout &layout,
     }
 
     std::vector<BindEntry> bindEntries = layout.bindEntries;
-    /// Orders direct bind relocations reproducibly by location and symbol name.
+    /// @brief Orders direct bind relocations reproducibly by location and symbol name.
+    /// @param a Left bind entry.
+    /// @param b Right bind entry.
+    /// @return `true` when `a` precedes `b`.
     std::sort(bindEntries.begin(), bindEntries.end(), [](const BindEntry &a, const BindEntry &b) {
         if (a.sectionIndex != b.sectionIndex)
             return a.sectionIndex < b.sectionIndex;
@@ -703,7 +709,11 @@ bool buildDynamicInfo(const LinkLayout &layout,
         return false;
     info.rwVaddr = rwBaseSize;
 
-    /// Computes a checked virtual address within the synthesized read-only blob.
+    /// @brief Computes a checked virtual address within the synthesized read-only blob.
+    /// @param off Blob-relative byte offset.
+    /// @param what Diagnostic description of the address.
+    /// @param[out] out Receives the computed virtual address.
+    /// @return `true` when the addition does not overflow.
     auto dynSectionVA = [&](size_t off, const char *what, uint64_t &out) {
         return checkedAddU64(info.roVaddr, off, what, err, out);
     };
@@ -832,6 +842,9 @@ bool writeElfExe(const std::string &path,
     const size_t baseLoadCount = countLoadSegments(layout, loadableIndices);
     const bool hasDynRo = dynInfo.enabled && !dynInfo.roBlob.empty();
     const bool hasDynRw = dynInfo.enabled && !dynInfo.dynamic.empty();
+    /// @brief Tests whether a loadable section contains thread-local storage.
+    /// @param idx Section index in `layout.sections`.
+    /// @return `true` when the indexed section is TLS.
     const bool hasTls = std::any_of(loadableIndices.begin(),
                                     loadableIndices.end(),
                                     [&](size_t idx) { return layout.sections[idx].tls; });

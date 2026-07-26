@@ -55,6 +55,10 @@ inline VM::ExecResult handleAddImpl(VM &vm,
     (void)blocks;
     (void)bb;
     (void)ip;
+    /// @brief Add two integer operands with IL wraparound semantics.
+    /// @param lhs Left operand.
+    /// @param rhs Right operand.
+    /// @return Wrapped sum.
     return il::vm::internal::binaryOp<int64_t>(
         vm, fr, in, [](int64_t lhs, int64_t rhs) { return ops::wrap_add(lhs, rhs); });
 }
@@ -81,6 +85,10 @@ inline VM::ExecResult handleSubImpl(VM &vm,
     (void)blocks;
     (void)bb;
     (void)ip;
+    /// @brief Subtract two integer slot values with IL wraparound semantics.
+    /// @param[out] out Destination slot.
+    /// @param lhsVal Left operand slot.
+    /// @param rhsVal Right operand slot.
     return ops::applyBinary(vm, fr, in, [](Slot &out, const Slot &lhsVal, const Slot &rhsVal) {
         // Plain integer sub wraps on overflow per IL semantics.
         out.i64 = ops::wrap_sub(lhsVal.i64, rhsVal.i64);
@@ -109,6 +117,10 @@ inline VM::ExecResult handleMulImpl(VM &vm,
     (void)blocks;
     (void)bb;
     (void)ip;
+    /// @brief Multiply two integer slot values with IL wraparound semantics.
+    /// @param[out] out Destination slot.
+    /// @param lhsVal Left operand slot.
+    /// @param rhsVal Right operand slot.
     return ops::applyBinary(vm, fr, in, [](Slot &out, const Slot &lhsVal, const Slot &rhsVal) {
         // Plain integer mul wraps on overflow per IL semantics.
         out.i64 = ops::wrap_mul(lhsVal.i64, rhsVal.i64);

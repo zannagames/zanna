@@ -109,6 +109,9 @@ std::optional<il::core::Value> Lowerer::tryFoldNumericConstant(Expr *init) {
     if (!init)
         return std::nullopt;
 
+    /// @brief Looks up a constant by resolved or namespace-qualified name.
+    /// @param name Candidate constant name.
+    /// @return Constant value when registered.
     auto lookupConstant = [&](const std::string &name) -> std::optional<Value> {
         if (auto it = globalConstants_.find(name); it != globalConstants_.end())
             return it->second;
@@ -121,6 +124,9 @@ std::optional<il::core::Value> Lowerer::tryFoldNumericConstant(Expr *init) {
         return std::nullopt;
     };
 
+    /// @brief Recursively folds a supported constant expression.
+    /// @param expr Expression to evaluate.
+    /// @return Folded IL constant, or `std::nullopt` when not constant.
     std::function<std::optional<Value>(Expr *)> fold = [&](Expr *expr) -> std::optional<Value> {
         if (!expr)
             return std::nullopt;
@@ -147,6 +153,9 @@ std::optional<il::core::Value> Lowerer::tryFoldNumericConstant(Expr *init) {
                 }
             }
 
+            /// @brief Reconstructs a dotted identifier/field expression name.
+            /// @param node Expression node to inspect.
+            /// @return Qualified name when the expression is a pure name chain.
             std::function<std::optional<std::string>(Expr *)> buildQualifiedName =
                 [&](Expr *node) -> std::optional<std::string> {
                 if (auto *ident = dynamic_cast<IdentExpr *>(node))
@@ -357,6 +366,8 @@ void Lowerer::registerAllFinalConstants(std::vector<DeclPtr> &declarations) {
     };
 
     std::vector<PendingFinal> pending;
+    /// @brief Recursively collects final declarations awaiting constant folding.
+    /// @param decls Declaration list in the active namespace.
     std::function<void(std::vector<DeclPtr> &)> collectPending = [&](std::vector<DeclPtr> &decls) {
         for (auto &decl : decls) {
             if (decl->kind == DeclKind::GlobalVar) {

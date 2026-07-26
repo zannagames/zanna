@@ -27,6 +27,17 @@
 //        src/runtime/network/rt_network.h (public API)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_network_internal.h
+ * @brief Provides private cross-platform socket types and network helpers.
+ * @details Networking translation units use this header for native error
+ *          classification, checked integer conversions, managed Bytes and
+ *          String access, socket readiness, TCP handle validation, and
+ *          connection-pool lease operations. Platform details remain
+ *          centralized in the socket adapter included here.
+ */
+
 #pragma once
 
 #include "rt_network.h"

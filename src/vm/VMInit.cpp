@@ -17,6 +17,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements VM construction, shared program-state initialization,
+///        frame setup, and reusable execution-buffer management.
+/// @details Initialization validates runtime descriptors, selects configurable
+///          dispatch behavior, materializes module globals and literal caches,
+///          then prepares per-call frames without executing program code.
+
 #include "il/core/BasicBlock.hpp"
 #include "il/core/Function.hpp"
 #include "il/core/Global.hpp"
@@ -51,9 +58,13 @@ using namespace il::core;
 
 namespace il::vm {
 
+/// @brief Register thread and synchronization runtime externals.
 void registerThreadsRuntimeExternals();
+/// @brief Register network runtime externals.
 void registerNetworkRuntimeExternals();
+/// @brief Register 3D game runtime externals.
 void registerGame3DRuntimeExternals();
+/// @brief Register functional-programming runtime externals.
 void registerFunctionalRuntimeExternals();
 
 namespace {
@@ -64,14 +75,18 @@ namespace {
 ///          process sets the locale early so subsequent numeric prints remain
 ///          stable regardless of the host environment.
 struct NumericLocaleInitializer {
+    /// @brief Select the C numeric locale during process initialization.
     NumericLocaleInitializer() {
         std::setlocale(LC_NUMERIC, "C");
     }
 };
 
+/// @brief Process-lifetime instance that installs deterministic numeric formatting.
 [[maybe_unused]] const NumericLocaleInitializer kNumericLocaleInitializer{};
 
+/// @brief Process initializer that installs VM-owned runtime external groups.
 struct ThreadsRuntimeInitializer {
+    /// @brief Register every auxiliary runtime external group.
     ThreadsRuntimeInitializer() {
         registerThreadsRuntimeExternals();
         registerNetworkRuntimeExternals();
@@ -80,6 +95,7 @@ struct ThreadsRuntimeInitializer {
     }
 };
 
+/// @brief Process-lifetime instance that performs auxiliary external registration.
 [[maybe_unused]] const ThreadsRuntimeInitializer kThreadsRuntimeInitializer{};
 
 /// @brief Validate runtime descriptors before VM execution starts.
@@ -98,7 +114,11 @@ void ensureRuntimeDescriptorsValid() {
 ///          the VM's trap mechanism when a VM is active. When no VM is active, the
 ///          handler returns false and the violation falls back to abort behavior.
 struct InvariantTrapHandlerRegistrar {
+    /// @brief Install a callback that routes descriptor invariant failures through an active VM.
     InvariantTrapHandlerRegistrar() {
+        /// @brief Route one runtime-descriptor invariant failure through the active VM.
+        /// @param message Invariant diagnostic text.
+        /// @return `false` when no VM can handle the trap or control unexpectedly returns.
         il::runtime::setInvariantTrapHandler([](const char *message) -> bool {
             // Check if there's an active VM that can handle the trap.
             if (!RuntimeBridge::hasActiveVm())
@@ -116,6 +136,7 @@ struct InvariantTrapHandlerRegistrar {
     }
 };
 
+/// @brief Process-lifetime instance that installs the invariant trap bridge.
 [[maybe_unused]] const InvariantTrapHandlerRegistrar kInvariantTrapHandlerRegistrar{};
 
 /// @brief Check the environment to determine whether verbose VM logging is enabled.
@@ -127,6 +148,8 @@ struct InvariantTrapHandlerRegistrar {
 /// @return @c true when debugging output should be emitted.
 /// @note Inline candidate for better performance in hot paths.
 inline bool isVmDebugLoggingEnabled() noexcept {
+    /// @brief Read the process environment once to initialize VM debug logging.
+    /// @return `true` when `ZANNA_DEBUG_VM` is present and nonempty.
     static const bool enabled = [] {
         if (const char *flag = std::getenv("ZANNA_DEBUG_VM"))
             return flag[0] != '\0';
@@ -156,6 +179,9 @@ constexpr const char *dispatchKindName(VM::DispatchKind kind) noexcept {
     return "Unknown";
 }
 
+/// @brief Determine the storage required for a mutable global of an IL type.
+/// @param kind IL type category to size.
+/// @return Required byte count, or zero for unsupported/non-storable types.
 size_t globalStorageSize(Type::Kind kind) {
     switch (kind) {
         case Type::Kind::I1:
@@ -233,6 +259,13 @@ double parseCheckedFloatInitializer(const Global &global) {
     return parsed;
 }
 
+/// @brief Decode a textual initializer into zeroed mutable-global storage.
+/// @details Integer and floating-point values are range-checked before being
+///          copied. Pointer globals initialize to null; an empty initializer
+///          leaves the caller-provided zeroed storage unchanged.
+/// @param global Global declaration supplying type and initializer text.
+/// @param storage Writable allocation large enough for @p global's type.
+/// @throws std::runtime_error If a numeric initializer is malformed or out of range.
 void initializeGlobalStorage(const Global &global, void *storage) {
     if (global.init.empty())
         return;
@@ -297,6 +330,7 @@ void initializeGlobalStorage(const Global &global, void *storage) {
 /// @param ms  Optional step limit; @c 0 disables the limit.
 /// @param dbg Initial debugger control block describing active breakpoints.
 /// @param script Optional scripted debugger interaction controller.
+/// @param stackBytes Per-frame operand-stack capacity; zero selects the default.
 VM::VM(const Module &m,
        TraceConfig tc,
        uint64_t ms,
@@ -309,6 +343,17 @@ VM::VM(const Module &m,
     init(nullptr);
 }
 
+/// @brief Construct a VM that shares an initialized program state.
+/// @details Creates independent interpreter/debug state while reusing the
+///          supplied runtime context and mutable module globals. The shared
+///          state must have completed initialization and belong to @p m.
+/// @param m Module containing code executed by this VM; must outlive the VM.
+/// @param program Shared runtime context and global storage.
+/// @param tc Trace configuration used to initialize the trace sink.
+/// @param ms Instruction limit, or zero for unlimited execution.
+/// @param dbg Initial breakpoint and watch configuration.
+/// @param script Optional non-owning scripted debugger.
+/// @param stackBytes Per-frame operand-stack capacity; zero selects the default.
 VM::VM(const Module &m,
        std::shared_ptr<ProgramState> program,
        TraceConfig tc,
@@ -322,12 +367,23 @@ VM::VM(const Module &m,
     init(std::move(program));
 }
 
+/// @brief Populate VM configuration, runtime state, and module lookup caches.
+/// @details Applies supported environment overrides, validates runtime
+///          descriptors, attaches or creates ProgramState, initializes globals
+///          and inline string handles, selects a dispatch kind, and reserves
+///          hot-path containers before execution begins.
+/// @param program Existing initialized state to share, or empty to create a new state.
+/// @throws std::runtime_error If descriptors, shared-state ownership, global
+///         types, initializers, or allocations are invalid.
 void VM::init(std::shared_ptr<ProgramState> program) {
     ensureRuntimeDescriptorsValid();
 
     // Runtime overrides via environment -------------------------------------
     if (const char *envCounts = std::getenv("ZANNA_ENABLE_OPCOUNTS")) {
         std::string v{envCounts};
+        /// @brief Fold one opcode-count option byte to lowercase.
+        /// @param c Byte to normalize.
+        /// @return Lowercase representation converted back to `char`.
         std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) {
             return static_cast<char>(std::tolower(c));
         });
@@ -349,6 +405,9 @@ void VM::init(std::shared_ptr<ProgramState> program) {
     zanna::vm::SwitchMode mode = zanna::vm::SwitchMode::Auto;
     if (switchModeEnv != nullptr) {
         std::string rawMode{switchModeEnv};
+        /// @brief Fold one switch-mode option byte to lowercase.
+        /// @param ch Byte to normalize.
+        /// @return Lowercase representation converted back to `char`.
         std::transform(rawMode.begin(), rawMode.end(), rawMode.begin(), [](unsigned char ch) {
             return static_cast<char>(std::tolower(ch));
         });
@@ -374,6 +433,9 @@ void VM::init(std::shared_ptr<ProgramState> program) {
 
     if (const char *dispatchEnv = std::getenv("ZANNA_DISPATCH")) {
         std::string rawDispatch{dispatchEnv};
+        /// @brief Fold one dispatch-mode option byte to lowercase.
+        /// @param ch Byte to normalize.
+        /// @return Lowercase representation converted back to `char`.
         std::transform(rawDispatch.begin(),
                        rawDispatch.end(),
                        rawDispatch.begin(),
@@ -546,6 +608,9 @@ void VM::refreshDebugFlags() {
 // Buffer Pool Management
 //===----------------------------------------------------------------------===//
 
+/// @brief Acquire a stack buffer from the VM-local reuse pool.
+/// @param size Required logical buffer size in bytes.
+/// @return Resized buffer containing @p size bytes.
 std::vector<uint8_t> VM::acquireStackBuffer(size_t size) {
     if (!stackBufferPool_.empty()) {
         auto buf = std::move(stackBufferPool_.back());
@@ -556,6 +621,8 @@ std::vector<uint8_t> VM::acquireStackBuffer(size_t size) {
     return std::vector<uint8_t>(size);
 }
 
+/// @brief Return a completed frame's stack buffer to the bounded reuse pool.
+/// @param buf Buffer whose allocation may be retained for a later frame.
 void VM::releaseStackBuffer(std::vector<uint8_t> &&buf) {
     if (stackBufferPool_.size() < kStackBufferPoolSize) {
         // Clear but keep capacity for reuse
@@ -565,6 +632,9 @@ void VM::releaseStackBuffer(std::vector<uint8_t> &&buf) {
     // Otherwise let buffer be deallocated
 }
 
+/// @brief Acquire a register vector from the VM-local reuse pool.
+/// @param size Required number of register slots.
+/// @return Resized register file containing @p size slots.
 std::vector<Slot> VM::acquireRegFile(size_t size) {
     if (!regFilePool_.empty()) {
         auto regs = std::move(regFilePool_.back());
@@ -575,6 +645,8 @@ std::vector<Slot> VM::acquireRegFile(size_t size) {
     return std::vector<Slot>(size);
 }
 
+/// @brief Return a completed frame's register vector to the bounded reuse pool.
+/// @param regs Register file whose allocation may be retained for reuse.
 void VM::releaseRegFile(std::vector<Slot> &&regs) {
     if (regFilePool_.size() < kRegisterFilePoolSize) {
         regs.clear();
@@ -582,6 +654,8 @@ void VM::releaseRegFile(std::vector<Slot> &&regs) {
     }
 }
 
+/// @brief Release retained strings and recycle a completed frame's large buffers.
+/// @param fr Frame whose register and stack allocations are relinquished.
 void VM::releaseFrameBuffers(Frame &fr) {
     // Release any owned string values before pooling the register file.
     // Each regIsStr[i] == 1 indicates regs[i].str was retained by storeResult.

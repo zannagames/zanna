@@ -23,6 +23,12 @@
 // Links: WindowsPackageBuilder.hpp, [MS-SHLLINK] specification
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares Windows Shell Link (`.lnk`) serialization.
+/// @details The writer constructs the documented MS-SHLLINK structures directly
+///          and returns ownership of the resulting binary bytes to the caller.
+
 #pragma once
 
 #include <cstdint>
@@ -33,12 +39,12 @@ namespace zanna::pkg {
 
 /// @brief Parameters for generating a .lnk shortcut file.
 struct LnkParams {
-    std::string targetPath;  ///< Target executable path (e.g. "C:\\Program Files\\App\\app.exe")
-    std::string workingDir;  ///< Working directory for the target.
-    std::string arguments;   ///< Command-line arguments passed to the target executable.
-    std::string description; ///< Shortcut description/comment.
-    std::string iconPath;    ///< Icon file path (empty = use target).
-    int32_t iconIndex{0};    ///< Icon index within icon file.
+    std::string targetPath;  ///< Target executable path, optionally containing `%VAR%` references.
+    std::string workingDir;  ///< Optional working directory; omitted from the link when empty.
+    std::string arguments;   ///< Optional command-line arguments passed verbatim to the target.
+    std::string description; ///< Shortcut comment; the target path is used when empty.
+    std::string iconPath;    ///< Optional icon resource path; the target icon is used when empty.
+    int32_t iconIndex{0};    ///< Signed icon resource index serialized in the ShellLinkHeader.
 };
 
 /// @brief Generate a Windows .lnk shortcut file.
@@ -56,6 +62,7 @@ struct LnkParams {
 ///
 /// @param params Shortcut parameters.
 /// @return .lnk file bytes.
+/// @throws std::runtime_error If a serialized string exceeds its format limit.
 std::vector<uint8_t> generateLnk(const LnkParams &params);
 
 } // namespace zanna::pkg

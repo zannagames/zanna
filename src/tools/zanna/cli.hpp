@@ -5,11 +5,12 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tools/zanna/cli.hpp
-// Purpose: Declarations for zanna subcommand handlers and usage helper.
-// Key invariants: None.
-// Ownership/Lifetime: N/A.
-// Links: docs/internals/codemap.md
+/// @file cli.hpp
+/// @brief Declares shared Zanna command-line options, diagnostics, and subcommand handlers.
+///
+/// Shared option parsing mutates caller-owned configuration and retains only the most recent
+/// thread-local parse-error message. Command handlers borrow their argument vectors for the
+/// duration of each invocation.
 //
 //===----------------------------------------------------------------------===//
 
@@ -131,6 +132,7 @@ SharedOptionParseResult parseSharedOption(int &index,
 /// @details parseSharedOption() preserves its historical enum return value for
 ///          callers, while this accessor lets subcommands print the specific
 ///          missing-value or invalid-value reason instead of a generic failure.
+/// @return Thread-local error message, empty when the most recent parse succeeded or did not match.
 [[nodiscard]] const std::string &lastSharedOptionError();
 
 /// @brief Return the diagnostic format requested anywhere in @p argv.
@@ -157,18 +159,30 @@ SharedOptionParseResult parseSharedOption(int &index,
                                           std::string_view &value);
 
 /// @brief Print one diagnostic according to the requested format.
+/// @param diag Diagnostic to render.
+/// @param os Destination stream.
+/// @param sm Optional source manager used to resolve source locations.
+/// @param format Text or JSON output encoding.
 void printDiagnostic(const il::support::Diagnostic &diag,
                      std::ostream &os,
                      const il::support::SourceManager *sm,
                      DiagnosticFormat format);
 
 /// @brief Print a list of diagnostics according to the requested format.
+/// @param diagnostics Ordered diagnostics to render.
+/// @param os Destination stream.
+/// @param sm Optional source manager used to resolve source locations.
+/// @param format Text or JSON output encoding.
 void printDiagnostics(const std::vector<il::support::Diagnostic> &diagnostics,
                       std::ostream &os,
                       const il::support::SourceManager *sm,
                       DiagnosticFormat format);
 
 /// @brief Print diagnostics collected by an engine according to the requested format.
+/// @param engine Diagnostic engine whose current snapshot is rendered.
+/// @param os Destination stream.
+/// @param sm Optional source manager used to resolve source locations.
+/// @param format Text or JSON output encoding.
 void printDiagnosticEngine(const il::support::DiagnosticEngine &engine,
                            std::ostream &os,
                            const il::support::SourceManager *sm,
@@ -327,6 +341,9 @@ int cmdInit(int argc, char **argv);
 int cmdPackage(int argc, char **argv);
 
 /// @brief Handle `zanna install-package` subcommand.
+/// @param argc Number of arguments following `install-package`.
+/// @param argv Array of argument strings.
+/// @return Zero on success; nonzero on validation, package, or installation failure.
 int cmdInstallPackage(int argc, char **argv);
 
 /// @brief Handle `zanna repl` subcommand.

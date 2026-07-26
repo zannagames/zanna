@@ -31,6 +31,14 @@
 //        src/runtime/io/rt_file_path.h (mode string conversion)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements high-level whole-file and regular-file runtime operations.
+ * @details Performs bounded complete reads, exact text and Bytes handling,
+ * newline splitting and line serialization, serialized append, identity and
+ * metadata queries, copy/move/delete, permission-preserving durable sidecar
+ * replacement, and strict cross-platform UTF-8 path adaptation.
+ */
 
 #include "rt_bytes.h"
 #include "rt_file.h"
@@ -76,13 +84,18 @@
 #endif
 
 #if RT_PLATFORM_WINDOWS
+/** Platform metadata record with 64-bit file-size support. */
 typedef struct _stat64 rt_fileext_stat_t;
+/** Platform metadata query used for already-open descriptors. */
 #define rt_fileext_fstat _fstat64
 #else
+/** Platform-native POSIX metadata record. */
 typedef struct stat rt_fileext_stat_t;
+/** Platform metadata query used for already-open descriptors. */
 #define rt_fileext_fstat fstat
 #endif
 
+/** Binary-open flag selected from the host CRT, or zero when unnecessary. */
 #if defined(O_BINARY)
 #define RT_FILE_O_BINARY O_BINARY
 #elif defined(_O_BINARY)
@@ -91,12 +104,16 @@ typedef struct stat rt_fileext_stat_t;
 #define RT_FILE_O_BINARY 0
 #endif
 
+/** Conservative fallback used for fixed local path buffers when absent. */
 #ifndef PATH_MAX
 #define PATH_MAX 4096
 #endif
 
+/// @copydoc rt_trap_set_recovery()
 void rt_trap_set_recovery(jmp_buf *buf);
+/// @copydoc rt_trap_clear_recovery()
 void rt_trap_clear_recovery(void);
+/// @copydoc rt_trap_get_error()
 const char *rt_trap_get_error(void);
 
 /// @brief Release one owned reference and destroy the object when its count reaches zero.

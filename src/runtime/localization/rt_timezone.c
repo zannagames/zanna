@@ -21,6 +21,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements deterministic embedded IANA time-zone services.
+ * @details Resolves static zone records, selects inclusive UTC transitions,
+ * converts instants to offset wall time with overflow checks, and emits ISO
+ * or bounded strftime-like representations without consulting host zone data.
+ */
+
 #include "rt_timezone.h"
 
 #include "rt_platform.h"

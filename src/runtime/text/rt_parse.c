@@ -12,7 +12,8 @@
 //          instead of trapping.
 //
 // Key invariants:
-//   - All TryParse* functions return false on invalid input; they never trap.
+//   - TryParse functions report ordinary invalid input with false rather than a
+//     parse trap.
 //   - NULL output pointers cause immediate false return.
 //   - Non-NULL output pointers are always reset before parsing so failed parses
 //     cannot leak a caller's previous value.
@@ -25,13 +26,23 @@
 //     case-insensitively.
 //
 // Ownership/Lifetime:
-//   - All functions are purely computational; no heap allocations or retained
-//     state exist between calls.
+//   - Input strings are borrowed and no parser retains state between calls.
+//   - TryParse, predicate, radix, and default-value helpers do not allocate
+//     runtime objects; Option wrappers return newly allocated Option objects.
 //
 // Links: src/runtime/text/rt_parse.h (public API),
 //        src/runtime/text/rt_scanner.h (lower-level character scanning)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_parse.c
+ * @brief Implements non-trapping strict scalar parsing helpers.
+ * @details The parser accepts complete ASCII-whitespace-delimited integer,
+ *          C-locale floating, Boolean, and arbitrary-radix representations,
+ *          rejects embedded NUL and trailing content, resets output before
+ *          failure, and provides predicates, defaults, and Option wrappers.
+ */
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE 1
@@ -57,25 +68,35 @@
 extern "C" {
 #endif
 
-/// @brief Return true for the fixed ASCII whitespace set, independent of locale.
+/// @brief Test whether a byte belongs to the fixed ASCII whitespace set.
+/// @param ch Byte to classify.
+/// @return Nonzero for space, tab, line feed, carriage return, form feed, or
+///         vertical tab; zero otherwise.
 static inline int is_ascii_space(unsigned char ch) {
     return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\f' || ch == '\v';
 }
 
 /// @brief Advance a pointer past ASCII whitespace characters.
+/// @param s Null-terminated string cursor to advance.
+/// @return Pointer to the first non-whitespace byte or the terminating null.
 static inline const char *skip_whitespace(const char *s) {
     while (*s && is_ascii_space((unsigned char)*s))
         ++s;
     return s;
 }
 
-/// @brief Check if string has only trailing whitespace after cursor.
+/// @brief Check whether a cursor is followed only by ASCII whitespace.
+/// @param s Null-terminated cursor to inspect.
+/// @return Nonzero when skipping whitespace reaches the string terminator.
 static inline int is_end_of_input(const char *s) {
     s = skip_whitespace(s);
     return *s == '\0';
 }
 
-/// @brief Case-insensitive string comparison.
+/// @brief Compare two null-terminated strings case-insensitively in ASCII.
+/// @param a First string.
+/// @param b Second string.
+/// @return Nonzero when both strings contain the same ASCII letters and bytes.
 static inline int str_eq_ci(const char *a, const char *b) {
     while (*a && *b) {
         unsigned char ca = (unsigned char)*a;
@@ -96,6 +117,8 @@ static inline int str_eq_ci(const char *a, const char *b) {
 /// @details Accepts decimal digits (`0-9` → 0-9), lowercase letters (`a-z` → 10-35), and
 ///          uppercase letters (`A-Z` → 10-35). Returns -1 for any other byte so callers
 ///          can detect "non-digit" without ambiguity. Used by `rt_parse_int_radix`.
+/// @param ch Byte to decode.
+/// @return Digit value in `[0, 35]`, or `-1` when @p ch is not an ASCII radix digit.
 static inline int radix_digit_value(unsigned char ch) {
     if (ch >= '0' && ch <= '9')
         return (int)(ch - '0');
@@ -112,6 +135,9 @@ static inline int radix_digit_value(unsigned char ch) {
 ///          accept a string whose declared length exceeds the first NUL — that would
 ///          let a hidden suffix bypass the parser. NULL handles, invalid handles, and
 ///          NUL-containing strings all map to NULL so the caller short-circuits.
+/// @param s Runtime string handle to validate and inspect.
+/// @return Borrowed pointer to the string's null-terminated byte buffer, or
+///         `NULL` for a null, invalid, unbacked, or embedded-null string.
 static const char *string_cstr_without_embedded_nul(rt_string s) {
     if (!s || !rt_string_is_handle((const void *)s) || !s->data)
         return NULL;
@@ -132,6 +158,9 @@ static const char *string_cstr_without_embedded_nul(rt_string s) {
 ///          returns a pointer one byte past the last consumed character — callers use
 ///          this for trailing-suffix validation (`Try*` parsers reject any non-empty
 ///          tail to keep the contract strict).
+/// @param cursor Null-terminated cursor positioned at the potential literal.
+/// @return Pointer immediately after a valid decimal literal, or `NULL` when
+///         the prefix does not satisfy the decimal grammar.
 static const char *scan_decimal_float(const char *cursor) {
     if (!cursor)
         return NULL;
@@ -179,6 +208,10 @@ static const char *scan_decimal_float(const char *cursor) {
 ///          `Infinity`/`-Infinity` form emitted by `Fmt.Num`, a leading `+`, and
 ///          case-insensitive input so Convert.ToString_Double, Fmt.Num, and
 ///          Parse/Convert.ToDouble round-trip through the public APIs.
+/// @param cursor Null-terminated cursor positioned at the potential literal.
+/// @param out_value Destination for the decoded NaN or infinity.
+/// @param out_end Destination for the first byte after the recognized literal.
+/// @return `1` when a complete special-value prefix is recognized, otherwise `0`.
 static int scan_nonfinite_float(const char *cursor, double *out_value, const char **out_end) {
     if (!cursor || !out_value || !out_end)
         return 0;
@@ -218,10 +251,13 @@ static int scan_nonfinite_float(const char *cursor, double *out_value, const cha
     return 0;
 }
 
-/// @brief Parse a string as a 64-bit decimal integer; on success writes to `*out_value` and
-/// returns 1. Strict validation: rejects empty input, non-numeric trailing characters, and
-/// overflow (ERANGE). Leading/trailing whitespace is tolerated. Never traps — designed for
-/// caller-supplied "did the parse succeed?" branching rather than exceptions.
+/// @brief Try to parse a runtime string as a signed 64-bit decimal integer.
+/// @details Leading and trailing ASCII whitespace is allowed. Empty input,
+///          embedded nulls, overflow, and any non-whitespace suffix fail.
+///          @p out_value is reset to zero before input validation.
+/// @param s Borrowed runtime string to parse.
+/// @param out_value Destination for the parsed integer; must be non-null.
+/// @return `1` on success, or `0` on failure.
 int8_t rt_parse_try_int(rt_string s, int64_t *out_value) {
     if (!out_value)
         return 0;
@@ -252,11 +288,16 @@ int8_t rt_parse_try_int(rt_string s, int64_t *out_value) {
     return 1;
 }
 
-/// @brief Parse a string as a double-precision float. **Locale-isolated:** temporarily switches
-/// the LC_NUMERIC locale to "C" so the decimal separator is always `.` regardless of the user's
-/// system locale (avoids the classic French/German `1,5` parse failure). Accepts explicit
-/// NaN/Inf spellings, while decimal overflow and non-finite decimal results fail. On Win32 uses
-/// `_strtod_l` (per-call locale); on POSIX uses `uselocale` thread-local.
+/// @brief Try to parse a runtime string as a double-precision number.
+/// @details Decimal syntax is checked before conversion and always uses `.` as
+///          the decimal point. Conversion runs in a C numeric locale without
+///          changing the process-global locale. Case-insensitive `NaN`, `Inf`,
+///          and `Infinity` spellings accept an optional sign; a decimal
+///          conversion that becomes non-finite fails. @p out_value is reset to
+///          zero before input validation.
+/// @param s Borrowed runtime string to parse.
+/// @param out_value Destination for the parsed number; must be non-null.
+/// @return `1` on success, or `0` on invalid input or locale setup failure.
 int8_t rt_parse_try_num(rt_string s, double *out_value) {
     if (!out_value)
         return 0;
@@ -320,9 +361,14 @@ int8_t rt_parse_try_num(rt_string s, double *out_value) {
     return 1;
 }
 
-/// @brief Parse a string as a boolean. Accepts case-insensitively: true/yes/1/on → true,
-/// false/no/0/off → false. Anything else fails. Tolerates leading/trailing whitespace; multiple
-/// words are rejected (so "true today" doesn't parse as true).
+/// @brief Try to parse a runtime string as a Boolean.
+/// @details Accepts `true`, `yes`, `1`, and `on` as true, and `false`, `no`,
+///          `0`, and `off` as false, all case-insensitively. Leading and
+///          trailing ASCII whitespace is allowed; embedded nulls, extra words,
+///          and all other tokens fail. @p out_value is reset to zero first.
+/// @param s Borrowed runtime string to parse.
+/// @param out_value Destination for normalized zero or one; must be non-null.
+/// @return `1` on success, or `0` on failure.
 int8_t rt_parse_try_bool(rt_string s, int8_t *out_value) {
     if (!out_value)
         return 0;
@@ -366,7 +412,12 @@ int8_t rt_parse_try_bool(rt_string s, int8_t *out_value) {
     return 0;
 }
 
-/// @brief Parse-or-default convenience for integers. Equivalent to `try_int(s, &x) ? x : default`.
+/// @brief Parse a decimal integer or return a caller-selected fallback.
+/// @details Applies the same strict syntax and whitespace rules as
+///          `rt_parse_try_int`.
+/// @param s Borrowed runtime string to parse.
+/// @param default_value Value returned when parsing fails.
+/// @return Parsed signed integer, or @p default_value.
 int64_t rt_parse_int_or(rt_string s, int64_t default_value) {
     int64_t result;
     if (rt_parse_try_int(s, &result))
@@ -375,6 +426,11 @@ int64_t rt_parse_int_or(rt_string s, int64_t default_value) {
 }
 
 /// @brief Parse-or-default convenience for doubles.
+/// @details Applies the same decimal, non-finite, whitespace, and locale rules
+///          as `rt_parse_try_num`.
+/// @param s Borrowed runtime string to parse.
+/// @param default_value Value returned when parsing fails.
+/// @return Parsed number, or @p default_value.
 double rt_parse_num_or(rt_string s, double default_value) {
     double result;
     if (rt_parse_try_num(s, &result))
@@ -383,6 +439,11 @@ double rt_parse_num_or(rt_string s, double default_value) {
 }
 
 /// @brief Parse-or-default convenience for booleans.
+/// @details Applies the same accepted tokens and whitespace rules as
+///          `rt_parse_try_bool`.
+/// @param s Borrowed runtime string to parse.
+/// @param default_value Value returned when parsing fails.
+/// @return Parsed normalized Boolean, or @p default_value unchanged.
 int8_t rt_parse_bool_or(rt_string s, int8_t default_value) {
     int8_t result;
     if (rt_parse_try_bool(s, &result))
@@ -392,12 +453,16 @@ int8_t rt_parse_bool_or(rt_string s, int8_t default_value) {
 
 /// @brief Returns 1 if `s` parses as a valid integer (no value extracted). Equivalent to a
 /// `try_int` call that discards the result — handy for input validation gates.
+/// @param s Borrowed runtime string to validate.
+/// @return `1` when @p s satisfies `rt_parse_try_int`, otherwise `0`.
 int8_t rt_parse_is_int(rt_string s) {
     int64_t dummy;
     return rt_parse_try_int(s, &dummy);
 }
 
 /// @brief Returns 1 if `s` parses as a valid double (locale-isolated, like `try_num`).
+/// @param s Borrowed runtime string to validate.
+/// @return `1` when @p s satisfies `rt_parse_try_num`, otherwise `0`.
 int8_t rt_parse_is_num(rt_string s) {
     double dummy;
     return rt_parse_try_num(s, &dummy);
@@ -409,6 +474,13 @@ int8_t rt_parse_is_num(rt_string s) {
 /// case-insensitively. Decimal input may use a leading '+' or '-' so decimal
 /// Fmt.IntRadix output round-trips; non-decimal input rejects signs and parses
 /// the full unsigned 64-bit bit pattern before casting it back to int64_t.
+/// Leading and trailing ASCII whitespace is accepted, but radix prefixes and
+/// embedded null bytes are rejected.
+/// @param s Borrowed runtime string to parse.
+/// @param radix Numeric base in the inclusive range `[2, 36]`.
+/// @param default_value Value returned for invalid radix, syntax, or overflow.
+/// @return Parsed signed integer or non-decimal 64-bit bit pattern, or
+///         @p default_value on failure.
 int64_t rt_parse_int_radix(rt_string s, int64_t radix, int64_t default_value) {
     // Validate radix range
     if (radix < 2 || radix > 36)
@@ -473,6 +545,12 @@ int64_t rt_parse_int_radix(rt_string s, int64_t radix, int64_t default_value) {
     return result;
 }
 
+/// @brief Parse a number and box the result in an Option.
+/// @details Uses `rt_parse_try_num`; failure produces `None`, while success
+///          produces a newly allocated `Some(f64)`. Option construction may
+///          trap if allocation fails.
+/// @param s Borrowed runtime string to parse.
+/// @return Caller-owned `Some(f64)` on success or caller-owned `None` on failure.
 void *rt_parse_double_option(rt_string s) {
     double value = 0.0;
     if (!rt_parse_try_num(s, &value))
@@ -480,6 +558,12 @@ void *rt_parse_double_option(rt_string s) {
     return rt_option_some_f64(value);
 }
 
+/// @brief Parse a decimal integer and box the result in an Option.
+/// @details Uses `rt_parse_try_int`; failure produces `None`, while success
+///          produces a newly allocated `Some(i64)`. Option construction may
+///          trap if allocation fails.
+/// @param s Borrowed runtime string to parse.
+/// @return Caller-owned `Some(i64)` on success or caller-owned `None` on failure.
 void *rt_parse_int64_option(rt_string s) {
     int64_t value = 0;
     if (!rt_parse_try_int(s, &value))
@@ -487,6 +571,12 @@ void *rt_parse_int64_option(rt_string s) {
     return rt_option_some_i64(value);
 }
 
+/// @brief Parse a Boolean and box the normalized result in an Option.
+/// @details Uses `rt_parse_try_bool`; failure produces `None`, while success
+///          produces a newly allocated integer-backed `Some(i1)`. Option
+///          construction may trap if allocation fails.
+/// @param s Borrowed runtime string to parse.
+/// @return Caller-owned `Some(i1)` on success or caller-owned `None` on failure.
 void *rt_parse_bool_option(rt_string s) {
     int8_t value = 0;
     if (!rt_parse_try_bool(s, &value))

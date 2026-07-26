@@ -164,12 +164,20 @@ LowerResult Lowerer::lowerIdent(IdentExpr *expr) {
         resolvedName = expr->name;
 
     auto semaType = sema_.typeOf(expr);
+    /// @brief Prefers a concrete semantic identifier type over a fallback.
+    /// @param fallback Type inferred from storage or declaration metadata.
+    /// @return Concrete semantic type when available.
     auto resolveIdentType = [&](TypeRef fallback) -> TypeRef {
         if (semaType && semaType->kind != TypeKindSem::Unknown &&
             semaType->kind != TypeKindSem::Any)
             return semaType;
         return fallback;
     };
+    /// @brief Adapts a stored identifier value to its semantic use type.
+    /// @param storedValue IL value loaded or retrieved from storage.
+    /// @param storageType Declared storage type.
+    /// @param useType Semantic type required at this expression.
+    /// @return Lowered value, unwrapping an optional when required.
     auto lowerStoredValue =
         [&](Value storedValue, TypeRef storageType, TypeRef useType) -> LowerResult {
         if (storageType && storageType->kind == TypeKindSem::Optional && useType &&

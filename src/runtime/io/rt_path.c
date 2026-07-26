@@ -31,6 +31,14 @@
 //        src/runtime/io/rt_file_ext.c (file-level read/write/copy helpers)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements cross-platform lexical path manipulation.
+ * @details Handles platform separator rules, drive and UNC roots, joining,
+ * directory/name/stem/extension slicing, extension replacement, absolute
+ * conversion, dot-component normalization, and non-following link inspection
+ * while returning independent managed strings.
+ */
 
 #include "rt_path.h"
 #include "rt_file_path.h"
@@ -49,8 +57,11 @@
 #ifdef _WIN32
 #include <direct.h>
 #include <windows.h>
+/** @name Native Windows path separators
+ * @{ */
 #define PATH_SEP '\\'
 #define PATH_SEP_STR "\\"
+/** @} */
 
 /// @brief Inspect one validated native path for a Windows reparse point.
 /// @param cpath Null-terminated validated UTF-8 path.
@@ -67,8 +78,11 @@ static int rt_path_is_link_cstr(const char *cpath) {
 #else
 #include <sys/stat.h>
 #include <unistd.h>
+/** @name Native POSIX path separators
+ * @{ */
 #define PATH_SEP '/'
 #define PATH_SEP_STR "/"
+/** @} */
 
 /// @brief Inspect one validated native path without following its final component.
 /// @param cpath Null-terminated validated native path.

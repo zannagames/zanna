@@ -13,6 +13,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares the narrow privileged-access façade used by VM opcode
+///        handlers and runtime callback bridges.
+/// @details @ref VMAccess centralizes friend access to execution stacks, frame
+///          evaluation, debug state, memory classification, shared program
+///          state, and internal caches without exposing those VM members
+///          publicly.
+
 #pragma once
 
 #include "il/core/Function.hpp"
@@ -25,7 +33,9 @@
 #include <vector>
 
 namespace il::vm::detail {
+/// @brief Controlled static access to VM internals required by handler code.
 struct VMAccess {
+    /// @brief Execution-state type shared with the VM implementation.
     using ExecState = VM::ExecState;
 
     /// @brief Retrieve the currently active execution state from the VM stack.
@@ -52,13 +62,15 @@ struct VMAccess {
     }
 
     /// @brief Fast-path check for active memory watches.
-    /// @return True when memory watches are installed.
+    /// @param vm Virtual machine whose debug flags are queried.
+    /// @return @c true when memory watches are installed.
     static inline bool hasMemWatchesActive(const VM &vm) noexcept {
         return vm.memWatchActive_;
     }
 
     /// @brief Fast-path check for active variable watches.
-    /// @return True when variable watches are installed.
+    /// @param vm Virtual machine whose debug flags are queried.
+    /// @return @c true when variable watches are installed.
     static inline bool hasVarWatchesActive(const VM &vm) noexcept {
         return vm.varWatchActive_;
     }
@@ -111,6 +123,10 @@ struct VMAccess {
             return info;
 
         const auto address = reinterpret_cast<std::uintptr_t>(ptr);
+        /// @brief Test whether the requested access is wholly contained in one region.
+        /// @param basePtr First byte of the candidate memory region.
+        /// @param length Candidate region size in bytes.
+        /// @return `true` when `[address, address + bytes)` lies within the region.
         auto containsRange = [&](const void *basePtr, size_t length) noexcept {
             if (!basePtr || length == 0)
                 return false;
@@ -206,22 +222,29 @@ struct VMAccess {
     }
 
     /// @brief Access the last trap state for diagnostic reporting.
+    /// @param vm Virtual machine whose most recent trap is requested.
+    /// @return Read-only reference to VM-owned trap state.
     static inline const VM::TrapState &lastTrapState(const VM &vm) {
         return vm.lastTrap;
     }
 
     /// @brief Read-only access to the execution stack for backtrace construction.
+    /// @param vm Virtual machine whose active execution states are requested.
+    /// @return VM-owned stack of non-owning execution-state pointers.
     static inline const std::vector<ExecState *> &execStack(const VM &vm) {
         return vm.execStack;
     }
 
     /// @brief Refresh debug fast-path flags after configuration changes.
+    /// @param vm Virtual machine whose cached debug flags are recomputed.
     static inline void refreshDebugFlags(VM &vm) {
         vm.refreshDebugFlags();
     }
 
     /// @brief Access the precomputed register count cache.
     /// @details Used by TCO to reuse cached maxSsaId values instead of rescanning.
+    /// @param vm Virtual machine that owns the cache.
+    /// @return Mutable map from function pointers to maximum SSA identifiers.
     static inline std::unordered_map<const il::core::Function *, size_t> &regCountCache(VM &vm) {
         return vm.regCountCache_;
     }
@@ -229,6 +252,8 @@ struct VMAccess {
     /// @brief Access the VM-level switch dispatch cache.
     /// @details The cache persists across function calls; entries are deterministic
     ///          (keyed by stable @c const @c Instr* and computed from case values).
+    /// @param vm Virtual machine that owns the switch cache.
+    /// @return Mutable reference to the VM-owned switch cache.
     static inline zanna::vm::SwitchCache &switchCache(VM &vm) {
         return vm.switchCache_;
     }
@@ -236,6 +261,11 @@ struct VMAccess {
     /// @brief Obtain the pre-resolved operand cache for a specific block.
     /// @details Delegates to @c VM::getOrBuildBlockCache, which lazily builds
     ///          the cache for the entire function on first access.
+    /// @param vm Virtual machine that owns the operand cache.
+    /// @param fn Function containing @p bb.
+    /// @param bb Block whose resolved operands are requested.
+    /// @return Cached block data, or @c nullptr when either pointer is null or
+    ///         @p bb is not found in @p fn.
     static inline const BlockExecCache *blockExecCache(VM &vm,
                                                        const il::core::Function *fn,
                                                        const il::core::BasicBlock *bb) {
@@ -254,6 +284,9 @@ struct VMAccess {
 
     /// @brief Obtain (or lazily build) the block label map for a function.
     /// @details Delegates to @c VM::getOrBuildBlockMap.
+    /// @param vm Virtual machine that owns the cache.
+    /// @param fn Function whose block labels are indexed.
+    /// @return Immutable cached mapping from block labels to block pointers.
     static inline const VM::BlockMap &getOrBuildBlockMap(VM &vm, const il::core::Function &fn) {
         return vm.getOrBuildBlockMap(fn);
     }

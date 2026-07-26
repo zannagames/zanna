@@ -86,7 +86,7 @@ static bool blockMayTransferControl(const MFunction &fn, std::size_t blockIndex)
     return blockIndex + 1 < fn.blocks.size();
 }
 
-/// Run per-block rewrite passes (strength reduction, identity elimination,
+/// @brief Runs per-block rewrite passes (strength reduction, identity elimination,
 /// move folding, DCE). Returns the number of transformations applied.
 /// @param fn Function whose blocks are rewritten in place.
 /// @param stats Cumulative transformation counters.

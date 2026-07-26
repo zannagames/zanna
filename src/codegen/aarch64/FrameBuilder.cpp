@@ -110,6 +110,7 @@ void validateStackObjectSpec(const char *what, int sizeBytes, int alignBytes) {
 
 } // namespace
 
+/// @copydoc FrameBuilder::addLocal()
 void FrameBuilder::addLocal(unsigned tempId, int sizeBytes, int alignBytes) {
     validateStackObjectSpec("local", sizeBytes, alignBytes);
     // If already present, ignore.
@@ -121,10 +122,12 @@ void FrameBuilder::addLocal(unsigned tempId, int sizeBytes, int alignBytes) {
     fn_->frame.locals.push_back(MFunction::StackLocal{tempId, sizeBytes, alignBytes, off});
 }
 
+/// @copydoc FrameBuilder::localOffset()
 int FrameBuilder::localOffset(unsigned tempId) const {
     return fn_->frame.getLocalOffset(tempId);
 }
 
+/// @copydoc FrameBuilder::tryLocalOffset()
 std::optional<int> FrameBuilder::tryLocalOffset(unsigned tempId) const {
     for (const auto &local : fn_->frame.locals) {
         if (local.tempId == tempId)
@@ -133,6 +136,7 @@ std::optional<int> FrameBuilder::tryLocalOffset(unsigned tempId) const {
     return std::nullopt;
 }
 
+/// @copydoc FrameBuilder::ensureSpill()
 int FrameBuilder::ensureSpill(uint32_t vreg, int sizeBytes, int alignBytes) {
     validateStackObjectSpec("spill", sizeBytes, alignBytes);
     if (const auto *slot = findLatestSpillSlot(vreg))
@@ -142,6 +146,7 @@ int FrameBuilder::ensureSpill(uint32_t vreg, int sizeBytes, int alignBytes) {
     return off;
 }
 
+/// @copydoc FrameBuilder::ensureSpillWithReuse()
 int FrameBuilder::ensureSpillWithReuse(uint32_t vreg,
                                        unsigned lastUseInstrIdx,
                                        unsigned currentInstrIdx,
@@ -192,12 +197,14 @@ int FrameBuilder::ensureSpillWithReuse(uint32_t vreg,
     return off;
 }
 
+/// @copydoc FrameBuilder::setMaxOutgoingBytes()
 void FrameBuilder::setMaxOutgoingBytes(int bytes) {
     if (bytes < 0)
         throw std::invalid_argument("AArch64 frame outgoing argument area must be non-negative");
     fn_->frame.maxOutgoingBytes = std::max(fn_->frame.maxOutgoingBytes, bytes);
 }
 
+/// @copydoc FrameBuilder::finalize()
 void FrameBuilder::finalize() {
     // Account for any previously assigned locals/spills on the function as well as
     // slots assigned via this builder instance.
@@ -215,11 +222,13 @@ void FrameBuilder::finalize() {
     fn_->localFrameSize = usedBytes; // bridge for current emitter plan field
 }
 
+/// @copydoc FrameBuilder::assignAlignedSlot()
 int FrameBuilder::assignAlignedSlot(int sizeBytes, int alignBytes) {
     validateStackObjectSpec("slot", sizeBytes, alignBytes);
     return slotCursor_.allocate(sizeBytes, alignBytes).offset;
 }
 
+/// @copydoc FrameBuilder::findLatestSpillSlot(uint32_t)
 MFunction::SpillSlot *FrameBuilder::findLatestSpillSlot(uint32_t vreg) noexcept {
     for (auto it = fn_->frame.spills.rbegin(); it != fn_->frame.spills.rend(); ++it) {
         if (it->vreg == vreg)
@@ -228,6 +237,7 @@ MFunction::SpillSlot *FrameBuilder::findLatestSpillSlot(uint32_t vreg) noexcept 
     return nullptr;
 }
 
+/// @copydoc FrameBuilder::findLatestSpillSlot(uint32_t) const
 const MFunction::SpillSlot *FrameBuilder::findLatestSpillSlot(uint32_t vreg) const noexcept {
     for (auto it = fn_->frame.spills.rbegin(); it != fn_->frame.spills.rend(); ++it) {
         if (it->vreg == vreg)
@@ -236,6 +246,7 @@ const MFunction::SpillSlot *FrameBuilder::findLatestSpillSlot(uint32_t vreg) con
     return nullptr;
 }
 
+/// @copydoc FrameBuilder::findSlotLifetime(int)
 FrameBuilder::SlotLifetime *FrameBuilder::findSlotLifetime(int offset) noexcept {
     for (auto &lifetime : slotLifetimes_) {
         if (lifetime.offset == offset)
@@ -244,6 +255,7 @@ FrameBuilder::SlotLifetime *FrameBuilder::findSlotLifetime(int offset) noexcept 
     return nullptr;
 }
 
+/// @copydoc FrameBuilder::findSlotLifetime(int) const
 const FrameBuilder::SlotLifetime *FrameBuilder::findSlotLifetime(int offset) const noexcept {
     for (const auto &lifetime : slotLifetimes_) {
         if (lifetime.offset == offset)

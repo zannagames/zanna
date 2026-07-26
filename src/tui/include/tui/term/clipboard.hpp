@@ -5,9 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the Clipboard abstract interface and its concrete
-// implementations (Osc52Clipboard and MockClipboard) for clipboard
-// operations in Zanna's TUI framework.
+/// @file
+/// @brief Declares terminal and in-memory clipboard abstractions for Zanna TUI.
+/// @details Provides a transport-neutral copy/paste interface, an OSC 52 writer
+///          backed by borrowed terminal I/O, and an owning mock implementation.
 //
 // Osc52Clipboard uses the OSC 52 terminal escape sequence to copy text
 // to the system clipboard via the terminal emulator. This works over
@@ -41,6 +42,7 @@ class TermIO;
 ///          clipboard access mechanisms.
 class Clipboard {
   public:
+    /// @brief Destroy a clipboard implementation polymorphically.
     virtual ~Clipboard() = default;
     /// @brief Copy text to the system clipboard.
     /// @param text The text to place on the clipboard.
@@ -61,11 +63,18 @@ class Osc52Clipboard : public Clipboard {
     /// @brief Construct an OSC 52 clipboard bound to a terminal I/O sink.
     /// @param io Terminal I/O used to emit the OSC 52 escape sequence. Must outlive this object.
     explicit Osc52Clipboard(TermIO &io);
+
+    /// @brief Base64-encode and emit text using an OSC 52 sequence.
+    /// @param text UTF-8 text to place on the terminal clipboard.
+    /// @return true after the sequence is written successfully.
     bool copy(std::string_view text) override;
+
+    /// @brief Return clipboard input for this write-only OSC 52 implementation.
+    /// @return An empty string because OSC 52 paste is not implemented.
     std::string paste() override;
 
   private:
-    TermIO &io_;
+    TermIO &io_; ///< Borrowed terminal sink for OSC sequence output.
 };
 
 /// @brief In-memory clipboard implementation for testing.
@@ -74,7 +83,13 @@ class Osc52Clipboard : public Clipboard {
 ///          clipboard operations in headless tests.
 class MockClipboard : public Clipboard {
   public:
+    /// @brief Replace the in-memory clipboard contents.
+    /// @param text Text copied into owned storage.
+    /// @return true.
     bool copy(std::string_view text) override;
+
+    /// @brief Read the current in-memory clipboard contents.
+    /// @return Owning copy of the stored text.
     std::string paste() override;
 
     /// @brief Access the last text that was copied to this mock clipboard.
@@ -85,7 +100,7 @@ class MockClipboard : public Clipboard {
     void clear();
 
   private:
-    std::string last_{};
+    std::string last_{}; ///< Most recently copied text.
 };
 
 } // namespace zanna::tui::term

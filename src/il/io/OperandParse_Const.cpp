@@ -66,6 +66,9 @@ bool equalsIgnoreCase(std::string_view value, std::string_view literal) {
 std::optional<std::string_view> consumeToken(zanna::parse::Cursor &cur) {
     cur.skipWs();
     const std::size_t begin = cur.offset();
+    /// @brief Tests whether a character remains part of the current token.
+    /// @param ch Character to inspect.
+    /// @return `true` until whitespace is reached.
     const std::string_view token =
         cur.consumeWhile([](char ch) { return !std::isspace(static_cast<unsigned char>(ch)); });
     if (token.empty())
@@ -141,6 +144,9 @@ ParseResult parseNumericLiteral(const std::string &token, Context &ctx) {
     const bool hasExponent = (!isHexLiteral) && (token.find('e') != std::string::npos ||
                                                  token.find('E') != std::string::npos);
 
+    /// @brief Parses a floating literal and preserves historical diagnostics.
+    /// @param literal Literal spelling.
+    /// @return Successful float value or syntax-error result.
     auto handleFloat = [&](const std::string &literal) -> ParseResult {
         double value = 0.0;
         if (::il::io::parseFloatLiteral(literal, value)) {

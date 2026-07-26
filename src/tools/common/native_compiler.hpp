@@ -13,6 +13,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares shared architecture dispatch and temporary-file support for native builds.
+/// @details Frontend tools use this API to feed textual or in-memory IL into the
+///          AArch64 and x86-64 codegen pipelines with common optimization,
+///          asset, linker, runtime, timing, and stack-size options.
+
 #pragma once
 
 #include "il/core/Module.hpp"
@@ -23,10 +29,13 @@
 namespace zanna::tools {
 
 /// @brief Target architecture for native code generation.
+/// @details The value chooses a backend independently from the host operating
+///          system; platform-specific ABI selection still follows the host build.
 enum class TargetArch { ARM64, X64 };
 
 /// @brief Detect the host architecture at compile time.
-/// @return ARM64 on Apple Silicon / AArch64, X64 otherwise.
+/// @return ARM64 for recognized AArch64 build macros; X64 as the fallback.
+/// @note The fallback assumes supported non-AArch64 builds target x86-64.
 constexpr TargetArch detectHostArch() {
 #if defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
     return TargetArch::ARM64;
@@ -37,7 +46,8 @@ constexpr TargetArch detectHostArch() {
 
 /// @brief Check if an output path implies native binary output.
 /// @param path The output path to inspect.
-/// @return true for extensionless executable paths or ".exe" case-insensitively.
+/// @return False only for a `.il` suffix matched case-insensitively; true for
+///         every other extension or an extensionless path.
 bool isNativeOutputPath(const std::string &path);
 
 /// @brief Compile an IL file on disk to a native binary.
@@ -57,6 +67,8 @@ bool isNativeOutputPath(const std::string &path);
 /// @param fastLink When true, selects the faster (less optimized) link path.
 /// @param windowsDebugRuntime Optional override selecting the Windows debug CRT; std::nullopt
 /// leaves the platform default in effect (ignored on non-Windows targets).
+/// @param stackSize Requested executable stack size in bytes, or zero for the
+///        platform/linker default.
 /// @return 0 on success, non-zero on failure.
 int compileToNative(const std::string &ilPath,
                     const std::string &outputPath,
@@ -73,9 +85,9 @@ int compileToNative(const std::string &ilPath,
 /// @brief Compile an already-built IL module to a native binary without reparsing IL text.
 ///
 /// @details Mirrors @ref compileToNative but accepts an in-memory module, avoiding
-///          a serialize/reparse round-trip. A synthetic temporary IL path is
-///          generated purely to satisfy the pipeline's @c input_il_path option and
-///          to provide a stable name for diagnostics; no IL text is written for it.
+///          a serialize/reparse round-trip. @p debugSourcePath, or the synthetic
+///          label `<in-memory>` when empty, satisfies the pipeline's
+///          @c input_il_path option; no temporary IL text is written.
 ///          The module is moved into the selected backend pipeline.
 ///
 /// @param module IL module to compile; consumed (moved) by the pipeline.
@@ -91,6 +103,8 @@ int compileToNative(const std::string &ilPath,
 /// @param fastLink When true, selects the faster (less optimized) link path.
 /// @param windowsDebugRuntime Optional override selecting the Windows debug CRT; std::nullopt
 /// leaves the platform default in effect (ignored on non-Windows targets).
+/// @param stackSize Requested executable stack size in bytes, or zero for the
+///        platform/linker default.
 /// @return 0 on success, non-zero on failure.
 int compileModuleToNative(il::core::Module module,
                           const std::string &debugSourcePath,
@@ -106,16 +120,24 @@ int compileModuleToNative(il::core::Module module,
                           std::optional<bool> windowsDebugRuntime = std::nullopt,
                           std::size_t stackSize = 0);
 
-/// @brief Generate a unique temporary file path for IL serialization.
-/// @return A path in the system temp directory with a .il extension.
+/// @brief Generate and reserve a unique temporary file for IL serialization.
+/// @return Path to an empty file in the system temp directory with a `.il` extension.
+/// @throws std::runtime_error When the temp directory cannot be located or a
+///         unique file cannot be reserved.
 std::string generateTempIlPath();
 
 /// @brief Generate and reserve a unique temporary file path.
-/// @return A path in the system temp directory; the file is created exclusively.
+/// @param prefix Leading filename component.
+/// @param extension Suffix including any desired leading dot.
+/// @return Path in the system temp directory; an empty file is created exclusively.
+/// @throws std::runtime_error When the directory lookup or exclusive creation fails.
+/// @note The caller owns cleanup of the reserved file.
 std::string generateTempFilePath(const char *prefix, const char *extension);
 
-/// @brief Generate a unique temporary file path for asset blob.
-/// @return A path in the system temp directory with a .zpak extension.
+/// @brief Generate and reserve a unique temporary file for an asset blob.
+/// @return Path to an empty file in the system temp directory with a `.zpak` extension.
+/// @throws std::runtime_error When the temp directory cannot be located or a
+///         unique file cannot be reserved.
 std::string generateTempAssetPath();
 
 } // namespace zanna::tools

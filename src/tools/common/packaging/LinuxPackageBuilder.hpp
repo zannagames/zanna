@@ -15,12 +15,18 @@
 //   - md5sums file contains hex digest + two-space + path for every data file.
 //
 // Ownership/Lifetime:
-//   - Builder is single-use: call build() once.
+//   - Free functions consume caller-provided paths and write one requested artifact.
 //
 // Links: ArWriter.hpp, TarWriter.hpp, PkgGzip.hpp, PkgMD5.hpp,
 //        DesktopEntryGenerator.hpp, PackageConfig.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares Linux application and toolchain package construction entry points.
+/// @details Supports dependency-free DEB, tarball, and self-extracting bundle
+///          assembly, plus RPM construction/signing through standard host tools.
+
 #pragma once
 
 #include "PackageConfig.hpp"
@@ -32,13 +38,13 @@ namespace zanna::pkg {
 
 /// @brief Parameters for building a Linux .deb or .tar.gz package.
 struct LinuxBuildParams {
-    std::string projectName;    ///< Project name (lowercase, no spaces)
-    std::string version;        ///< Version string (e.g. "1.2.0")
-    std::string executablePath; ///< Path to the compiled native binary
-    std::string projectRoot;    ///< Absolute path to project root directory
-    PackageConfig pkgConfig;    ///< Package configuration from manifest
-    std::string outputPath;     ///< Output file path
-    std::string archStr;        ///< Architecture string: "amd64" or "arm64"
+    std::string projectName;    ///< Project name used to derive package and executable names.
+    std::string version;        ///< Package version, defaulted to `0.0.0` when allowed and empty.
+    std::string executablePath; ///< Path to the compiled native application binary.
+    std::string projectRoot;    ///< Absolute project root used to resolve configured assets.
+    PackageConfig pkgConfig;    ///< Manifest-derived package metadata and integration settings.
+    std::string outputPath;     ///< Destination artifact path.
+    std::string archStr;        ///< Format-specific architecture (`amd64`/`arm64` or `x64`/`arm64`).
 };
 
 /// @brief Build a Debian .deb package.
@@ -81,9 +87,9 @@ void signLinuxPackage(const std::string &packagePath, const std::string &gpgKeyI
 
 /// @brief Parameters for building Linux toolchain packages from a staged install tree.
 struct LinuxToolchainBuildParams {
-    ToolchainInstallManifest manifest; ///< Staged files and metadata to package.
-    std::string outputPath;            ///< Output package file path.
-    std::string packageName{"zanna"};  ///< Package/base name (default "zanna").
+    ToolchainInstallManifest manifest; ///< Validated staged file inventory and release metadata.
+    std::string outputPath;            ///< Destination artifact path.
+    std::string packageName{"zanna"};  ///< Package/base name, normalized by the selected format.
 };
 
 /// @brief Build a Debian toolchain package from a staged install manifest.

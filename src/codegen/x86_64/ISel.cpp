@@ -1121,6 +1121,7 @@ void ISel::lowerSelect(MFunction &func) const {
 ///          into disp(base, index, scale) addressing to reduce instruction count.
 ///          Optimized to use O(1) map lookups instead of O(n) linear scans for
 ///          MOVrr definitions.
+/// \param func Machine function whose blocks are rewritten in place.
 void ISel::foldSibAddressing(MFunction &func) const {
     (void)target_;
 
@@ -1470,6 +1471,7 @@ void ISel::lowerMulToLea(MFunction &func) const {
 ///          shifted temp to have no other use, distinct registers where the
 ///          rewrite would otherwise read a clobbered value, and no consumer of
 ///          the ADDrr's flag write (LEA does not set flags).
+/// \param func Machine function whose eligible value chains are rewritten.
 void ISel::synthesizeValueLea(MFunction &func) const {
     (void)target_;
     /// Recognize virtual GPR descriptors accepted by value-LEA patterns.
@@ -1602,6 +1604,7 @@ void ISel::synthesizeValueLea(MFunction &func) const {
 /// \details For each block, finds LEA-def'd virtual registers with a single use
 ///          as a base in a memory operand and replaces the user with the LEA's
 ///          addressing mode, erasing the defining LEA.
+/// \param func Machine function whose LEA definitions and memory users are inspected.
 void ISel::foldLeaIntoMem(MFunction &func) const {
     (void)target_;
     for (auto &block : func.blocks) {
@@ -1672,6 +1675,7 @@ void ISel::foldLeaIntoMem(MFunction &func) const {
 /// @brief Verify that no select pseudo-instructions survived ISel.
 /// @details Lowering emits explicit SELECT_GPR/SELECT_XMM pseudos. They must be
 ///          replaced before allocation and emission.
+/// @param func Selected machine function to validate without modification.
 void ISel::validateSelectLowering(const MFunction &func) const {
     for (const auto &block : func.blocks) {
         for (const auto &instr : block.instructions) {

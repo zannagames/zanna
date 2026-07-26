@@ -11,8 +11,9 @@
 //
 // Key invariants:
 //   - RT_THREAD_LOCAL expands to the correct TLS keyword for each compiler/platform.
-//   - RT_ATOMIC_* macros use C11 _Atomic on GCC/Clang and MSVC intrinsics on Windows.
-//   - RT_WEAK uses __attribute__((weak)) on ELF targets and is empty on Mach-O/MSVC.
+//   - RT atomic helpers use GCC/Clang __atomic builtins or MSVC Interlocked
+//     intrinsics and architecture barriers.
+//   - RT_WEAK uses the weak attribute on GCC-like compilers and is empty on MSVC.
 //   - Platform detection macros (RT_PLATFORM_WINDOWS etc.) are mutually exclusive.
 //   - Compiler-specific diagnostics are hidden behind RT_* adapter macros.
 //
@@ -23,6 +24,16 @@
 // Links: src/runtime/core/ (included by most runtime .c files)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_platform.h
+ * @brief Defines portable compiler, platform, TLS, atomic, and linkage adapters.
+ * @details The preprocessor layer centralizes operating-system and compiler
+ *          detection, thread-local storage, weak linkage, diagnostics, atomic
+ *          operations, barriers, and other low-level portability primitives
+ *          without introducing runtime-owned state.
+ */
+
 #pragma once
 
 #include <stddef.h>
@@ -489,6 +500,9 @@ static inline int rt_atomic_compare_exchange_ptr(
 ///          `Interlocked*64`. All runtime call sites provide naturally aligned 8-byte
 ///          `double` storage; this helper centralizes the representation cast and keeps the
 ///          load/store helpers themselves free of repeated type-punning.
+/// @param ptr Naturally aligned mutable double storage.
+/// @return Aliased pointer to the same storage using the representation type
+///         required by the MSVC 64-bit interlocked intrinsics.
 static inline volatile long long *rt_atomic_f64_bits_ptr(volatile double *ptr) {
     return (volatile long long *)(volatile void *)ptr;
 }
@@ -1017,6 +1031,8 @@ typedef long long ssize_t;
 
 /// @brief Return milliseconds since Unix epoch (Windows implementation).
 /// @details Converts Windows FILETIME (100-ns ticks since 1601) to Unix epoch ms.
+/// @return Current system wall-clock time as whole milliseconds since
+///         1970-01-01T00:00:00Z.
 static inline int64_t rt_windows_time_ms(void) {
     FILETIME ft;
     GetSystemTimeAsFileTime(&ft);
@@ -1028,6 +1044,8 @@ static inline int64_t rt_windows_time_ms(void) {
 }
 
 /// @brief Return microseconds since Unix epoch (Windows implementation).
+/// @return Current system wall-clock time as whole microseconds since
+///         1970-01-01T00:00:00Z.
 static inline int64_t rt_windows_time_us(void) {
     FILETIME ft;
     GetSystemTimeAsFileTime(&ft);
@@ -1036,7 +1054,9 @@ static inline int64_t rt_windows_time_us(void) {
     return (int64_t)(time / 10);
 }
 
-/// @brief Sleep for @p ms milliseconds (Windows implementation).
+/// @brief Sleep for a positive millisecond interval on Windows.
+/// @param ms Signed interval; nonpositive values are ignored and positive
+///        values narrow to the `DWORD` accepted by `Sleep`.
 static inline void rt_windows_sleep_ms(int64_t ms) {
     if (ms > 0)
         Sleep((DWORD)ms);
@@ -1123,10 +1143,17 @@ extern "C" {
 void rt_set_main_thread(void);
 
 /// @brief Check whether the calling thread is the main thread.
-/// @return Non-zero if called from the main thread, zero otherwise.
+/// @details Lazily captures a designated thread if initialization has not
+///          already recorded one, then performs the platform-appropriate ID comparison.
+/// @return Non-zero if called from the designated main thread, zero otherwise.
 int8_t rt_is_main_thread(void);
 
 /// @brief Internal assertion helper — do not call directly.
+/// @details Raises an invalid-operation trap with source context when invoked
+///          from a non-main thread.
+/// @param file Borrowed source filename inserted into the diagnostic; @c NULL
+///        is rendered as `"<unknown>"`.
+/// @param line Source line included in trap metadata and diagnostic text.
 /// @see RT_ASSERT_MAIN_THREAD
 void rt_assert_main_thread_(const char *file, int line);
 

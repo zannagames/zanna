@@ -420,6 +420,9 @@ Operand EmitCommon::materialiseGpr(Operand operand) {
 /// @details See header for the contract. Centralises the imm32-bounds check so
 ///          load and store lowering stay in lockstep; previously this sequence
 ///          was copy-pasted at both call sites.
+/// @param baseOp Input base-register operand to preserve or materialize.
+/// @param[in,out] disp Signed byte displacement; reset to zero when folded into the base.
+/// @return Effective base operand for the resulting memory reference.
 Operand EmitCommon::materialiseDisplacement(const Operand &baseOp, int64_t &disp) {
     if (fitsImm32(disp))
         return clone(baseOp);
@@ -492,6 +495,8 @@ void EmitCommon::emitBinary(
         }
     }
 
+    /// @brief Tests whether the right operand can use the immediate opcode form.
+    /// @return `true` when an immediate form exists and its value is encodable.
     const bool canUseImm = [&]() {
         if (opcRI == opcRR) {
             return false;
@@ -664,7 +669,9 @@ void EmitCommon::emitSelect(const ILInstr &instr) {
     const Operand falseVal = builder().makeOperandForValue(instr.ops[2], destReg.cls);
 
     if (destReg.cls == RegClass::GPR) {
-        /// Preserve legal register/immediate arms and materialize other GPR values.
+        /// @brief Preserves legal register/immediate arms and materializes other GPR values.
+        /// @param operand Select arm to legalize.
+        /// @return Register or immediate operand suitable for integer selection.
         auto materialiseGprSelectValue = [&](Operand operand) -> Operand {
             if (std::holds_alternative<OpReg>(operand) || std::holds_alternative<OpImm>(operand)) {
                 return operand;
@@ -965,6 +972,8 @@ void EmitCommon::emitDivRem(const ILInstr &instr, std::string_view opcode) {
 
     divisor = materialiseGpr(divisor);
 
+    /// @brief Selects the machine pseudo corresponding to the requested div/rem opcode.
+    /// @return Checked or unchecked signed/unsigned division or remainder pseudo.
     const MOpcode pseudo = [&]() {
         if (opcode == "sdiv") {
             return MOpcode::DIVS64rr;
@@ -1059,7 +1068,9 @@ void EmitCommon::emitFCmpNanSafe(const ILInstr &instr, std::string_view suffix) 
 
     const VReg destReg = builder().ensureVReg(instr.resultId, instr.resultKind);
     const Operand dest = makeVRegOperand(destReg.cls, destReg.id);
-    /// Emit SETcc followed by zero-extension to a canonical integer boolean.
+    /// @brief Emits SETcc followed by zero-extension to a canonical integer boolean.
+    /// @param code Machine condition-code encoding.
+    /// @param target Boolean destination operand.
     auto emitSetccBool = [&](int code, const Operand &target) {
         builder().append(MInstr::make(MOpcode::SETcc,
                                       std::vector<Operand>{makeImmOperand(code), clone(target)}));

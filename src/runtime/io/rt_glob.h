@@ -28,6 +28,13 @@
 //        src/runtime/core/rt_string.h (runtime strings)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares byte-oriented glob matching and filesystem enumeration.
+ * @details Supports component-local wildcards, separator-crossing double
+ * stars, single-byte wildcards, bracket classes, direct entry/file searches,
+ * and symlink-safe bounded recursive file traversal with owning Seq results.
+ */
 #pragma once
 
 #include "rt_string.h"

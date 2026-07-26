@@ -32,6 +32,17 @@
 // src/runtime/core/rt_string.h
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_tls.h
+ * @brief Declares the low-level managed TLS 1.3 transport API.
+ * @details The interface configures verified client connections, exposes
+ *          handshake and record I/O, reports negotiated protocol and peer
+ *          identity, and closes session-owned sockets. Buffers remain owned by
+ *          callers, while successful session construction transfers transport
+ *          ownership to the returned managed handle.
+ */
+
 #pragma once
 
 #include "rt_string.h"
@@ -135,6 +146,7 @@ int rt_tls_set_io_timeout(rt_tls_session_t *session, int timeout_ms);
 /// @details Sends a bounded `close_notify` exchange when connected, securely
 ///          wipes secrets, closes the native socket, and releases one managed
 ///          reference. NULL and invalid/stale handles are safe no-ops.
+/// @param session Session reference to consume; NULL, invalid, and stale handles are ignored.
 void rt_tls_close(rt_tls_session_t *session);
 
 /// @brief Get the last diagnostic stored on a low-level session.
@@ -176,7 +188,10 @@ int rt_tls_has_buffered_data(rt_tls_session_t *session);
 // Zanna API wrappers (Zanna.Crypto.Tls)
 //=========================================================================
 
-/// @brief Connect to host:port with TLS, default timeout.
+/// @brief Connect to a host with verified TLS and the default timeout.
+/// @param host Runtime String used for TCP, SNI, and certificate identity.
+/// @param port Destination port in 1..65535.
+/// @return Caller-owned managed Tls wrapper, or NULL after a returning trap.
 void *rt_zanna_tls_connect(rt_string host, int64_t port);
 
 /// @brief Connect to host:port with TLS and return a Zanna.Result.
@@ -188,7 +203,12 @@ void *rt_zanna_tls_connect(rt_string host, int64_t port);
 /// @return Opaque Zanna.Result object containing a TLS handle or error string.
 void *rt_zanna_tls_connect_result(rt_string host, int64_t port);
 
-/// @brief Connect to host:port with TLS, custom timeout.
+/// @brief Connect to a host with verified TLS and a custom timeout.
+/// @param host Runtime String used for TCP, SNI, and certificate identity.
+/// @param port Destination port in 1..65535.
+/// @param timeout_ms Per-address/per-I/O timeout; nonpositive selects the
+///        runtime default.
+/// @return Caller-owned managed Tls wrapper, or NULL after a returning trap.
 void *rt_zanna_tls_connect_for(rt_string host, int64_t port, int64_t timeout_ms);
 
 /// @brief Connect to host:port with TLS and a custom timeout as a Zanna.Result.
@@ -200,7 +220,14 @@ void *rt_zanna_tls_connect_for(rt_string host, int64_t port, int64_t timeout_ms)
 /// @return Opaque Zanna.Result object containing a TLS handle or error string.
 void *rt_zanna_tls_connect_for_result(rt_string host, int64_t port, int64_t timeout_ms);
 
-/// @brief Connect with explicit CA bundle, ALPN list, verification policy, and timeout.
+/// @brief Connect with explicit trust, ALPN, verification, and timeout options.
+/// @param host TLS host used for TCP, SNI, and certificate identity.
+/// @param port Destination port in 1..65535.
+/// @param ca_file Optional CA bundle path; NULL or empty uses system trust.
+/// @param alpn Optional comma-separated protocol preference list.
+/// @param verify_cert Nonzero to enforce chain and hostname verification.
+/// @param timeout_ms Per-address/per-I/O timeout; nonpositive selects default.
+/// @return Caller-owned managed Tls wrapper, or NULL after a returning trap.
 void *rt_zanna_tls_connect_options(rt_string host,
                                    int64_t port,
                                    rt_string ca_file,
@@ -226,37 +253,63 @@ void *rt_zanna_tls_connect_options_result(rt_string host,
                                           int8_t verify_cert,
                                           int64_t timeout_ms);
 
-/// @brief Get connected hostname.
+/// @brief Copy the hostname configured on a managed Tls wrapper.
+/// @param obj Valid managed Tls receiver.
+/// @return Caller-owned hostname String, or an empty String when unavailable.
 rt_string rt_zanna_tls_host(void *obj);
 
-/// @brief Get connected port.
+/// @brief Read the destination port of a managed Tls wrapper.
+/// @param obj Valid managed Tls receiver.
+/// @return Destination port, or zero when unavailable.
 int64_t rt_zanna_tls_port(void *obj);
 
 /// @brief Get negotiated ALPN protocol, or empty string when none was selected.
+/// @param obj Valid managed Tls receiver.
+/// @return Caller-owned protocol String, possibly empty.
 rt_string rt_zanna_tls_negotiated_alpn(void *obj);
 
-/// @brief Check if connection is open.
+/// @brief Check whether a managed TLS connection remains locally open.
+/// @param obj Valid managed Tls receiver.
+/// @return One while open; otherwise zero.
 int8_t rt_zanna_tls_is_open(void *obj);
 
-/// @brief Send Bytes data over TLS.
+/// @brief Send an exact managed Bytes payload over TLS.
+/// @param obj Valid open managed Tls receiver.
+/// @param data Managed Bytes payload.
+/// @return Number of plaintext bytes accepted, or a negative TLS status.
 int64_t rt_zanna_tls_send(void *obj, void *data);
 
-/// @brief Send String data over TLS.
+/// @brief Send the exact bytes of a runtime String over TLS.
+/// @param obj Valid open managed Tls receiver.
+/// @param text Runtime String payload.
+/// @return Number of plaintext bytes accepted, or a negative TLS status.
 int64_t rt_zanna_tls_send_str(void *obj, rt_string text);
 
-/// @brief Receive up to max_bytes as Bytes.
+/// @brief Receive decrypted data into a new managed Bytes object.
+/// @param obj Valid open managed Tls receiver.
+/// @param max_bytes Positive receive bound.
+/// @return Caller-owned Bytes containing up to @p max_bytes, or NULL after a
+///         returning trap.
 void *rt_zanna_tls_recv(void *obj, int64_t max_bytes);
 
-/// @brief Receive up to max_bytes as String.
+/// @brief Receive decrypted data into a new runtime String.
+/// @param obj Valid open managed Tls receiver.
+/// @param max_bytes Positive receive bound.
+/// @return Caller-owned String containing up to @p max_bytes.
 rt_string rt_zanna_tls_recv_str(void *obj, int64_t max_bytes);
 
-/// @brief Read a line (up to \n) from the TLS connection.
+/// @brief Read one decrypted line through and including newline.
+/// @param obj Valid open managed Tls receiver.
+/// @return Caller-owned line String, or the final partial/empty line at EOF.
 rt_string rt_zanna_tls_recv_line(void *obj);
 
-/// @brief Close the TLS connection.
+/// @brief Close the managed TLS connection idempotently.
+/// @param obj Managed Tls receiver; NULL is a no-op.
 void rt_zanna_tls_close(void *obj);
 
-/// @brief Get last error message.
+/// @brief Copy the low-level session's latest diagnostic.
+/// @param obj Managed Tls receiver.
+/// @return Caller-owned diagnostic String.
 rt_string rt_zanna_tls_error(void *obj);
 
 //=========================================================================
@@ -264,17 +317,29 @@ rt_string rt_zanna_tls_error(void *obj);
 //=========================================================================
 
 /// @brief Match a hostname pattern against a target hostname (RFC 6125).
+/// @param pattern Certificate DNS pattern, optionally with a leftmost wildcard.
+/// @param hostname Target DNS hostname.
 /// @return 1 if match, 0 otherwise.
 int tls_match_hostname(const char *pattern, const char *hostname);
 
 /// @brief Extract SubjectAltName DNS names from a certificate DER.
+/// @param der Complete certificate DER bytes.
+/// @param der_len Number of bytes in @p der.
+/// @param san_out Caller array receiving NUL-terminated DNS names.
+/// @param max_names Capacity of @p san_out.
 /// @return Number of names found.
 int tls_extract_san_names(const uint8_t *der, size_t der_len, char san_out[][256], int max_names);
 
 /// @brief Return whether a certificate contains a SubjectAltName extension.
+/// @param der Complete certificate DER bytes.
+/// @param der_len Number of bytes in @p der.
+/// @return One when the extension is present; otherwise zero.
 int tls_cert_has_san_extension(const uint8_t *der, size_t der_len);
 
 /// @brief Extract CommonName from a certificate DER Subject.
+/// @param der Complete certificate DER bytes.
+/// @param der_len Number of bytes in @p der.
+/// @param cn_out Destination 256-byte NUL-terminated name buffer.
 /// @return 1 if found, 0 otherwise.
 int tls_extract_cn(const uint8_t *der, size_t der_len, char cn_out[256]);
 

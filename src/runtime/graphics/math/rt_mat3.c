@@ -50,6 +50,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements immutable row-major 3×3 matrix mathematics.
+ *
+ * @details Mat3 stores nine inline doubles in GC-managed objects, validates
+ *          current and legacy payload layouts, constructs affine 2D
+ *          transformations, composes matrices using column-vector semantics,
+ *          transforms points and directions, and implements determinant-based
+ *          inversion with singularity checks.
+ */
+
 #include "rt_mat3.h"
 
 #include "rt_heap.h"
@@ -70,6 +81,10 @@ typedef struct mat3_impl {
     double m[9]; ///< Elements in row-major order: [row0][row1][row2]
 } mat3_impl;
 
+/// @brief Access one row-major matrix element.
+/// @param mat Pointer to a @ref mat3_impl.
+/// @param r Zero-based row.
+/// @param c Zero-based column.
 #define M(mat, r, c) ((mat)->m[(r) * 3 + (c)])
 
 /// @brief Return whether @p m is a Mat3-compatible heap payload.

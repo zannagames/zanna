@@ -27,6 +27,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_tls_api.c
+ * @brief Implements language-facing wrappers around the TLS session API.
+ * @details These entry points validate managed Tls receivers and runtime
+ *          Strings or Bytes, translate them to low-level session calls, expose
+ *          connection metadata, and convert recoverable outcomes to managed
+ *          Results. Each wrapper object owns its session and copied host text.
+ */
+
 #include "rt_tls.h"
 #include "rt_tls_internal.h"
 
@@ -59,7 +68,8 @@ typedef struct rt_zanna_tls {
     int64_t port;
 } rt_zanna_tls_t;
 
-/// @brief Finalizer for TLS objects.
+/// @brief Finalize a managed TLS wrapper and its owned session.
+/// @param obj Managed wrapper allocation being finalized, or NULL.
 static void rt_zanna_tls_finalize(void *obj) {
     if (!obj)
         return;
@@ -74,7 +84,8 @@ static void rt_zanna_tls_finalize(void *obj) {
     }
 }
 
-/// @brief Release a temporary TLS object after another owner has retained it.
+/// @brief Release a temporary managed object after ownership transfer.
+/// @param obj Caller-owned runtime object, or NULL.
 static void rt_zanna_tls_release_temp_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
@@ -341,6 +352,16 @@ static void *rt_zanna_tls_object_from_session(rt_tls_session_t *session,
     return (void *)tls;
 }
 
+/// @brief Validate options, connect a low-level TLS session, and box it.
+/// @param host Runtime hostname used for TCP, SNI, and identity.
+/// @param port Destination port in 1..65535.
+/// @param timeout_ms Timeout in milliseconds; negative normalizes to zero
+///        and the low-level layer applies its default.
+/// @param ca_file Optional CA bundle path.
+/// @param alpn Optional comma-separated ALPN preference list.
+/// @param verify_cert Nonzero to enforce chain and hostname policy.
+/// @return Caller-owned managed TLS wrapper, or NULL on validation,
+///         connection, handshake, or allocation failure.
 static void *rt_zanna_tls_connect_impl(rt_string host,
                                        int64_t port,
                                        int64_t timeout_ms,
@@ -472,7 +493,9 @@ void *rt_zanna_tls_connect_options_result(rt_string host,
     return rt_zanna_tls_connect_to_result(conn, "Tls.ConnectOptions failed");
 }
 
-/// @brief Get the hostname of the TLS connection.
+/// @brief Copy the host stored on a managed TLS connection.
+/// @param obj Managed TLS receiver; NULL yields an empty String.
+/// @return Caller-owned host String.
 rt_string rt_zanna_tls_host(void *obj) {
     if (!obj)
         return rt_string_from_bytes("", 0);
@@ -483,7 +506,9 @@ rt_string rt_zanna_tls_host(void *obj) {
     return rt_string_from_bytes(h, strlen(h));
 }
 
-/// @brief Get the port of the TLS connection.
+/// @brief Read the destination port stored on a managed TLS connection.
+/// @param obj Managed TLS receiver; NULL yields zero.
+/// @return Destination port, or zero for NULL/invalid receivers.
 int64_t rt_zanna_tls_port(void *obj) {
     if (!obj)
         return 0;
@@ -498,6 +523,8 @@ int64_t rt_zanna_tls_port(void *obj) {
 ///          or when the peer did not select any advertised protocol.
 ///          Useful for HTTPS callers that need to know whether the
 ///          connection is HTTP/2 vs HTTP/1.1.
+/// @param obj Managed TLS receiver; NULL yields an empty String.
+/// @return Caller-owned negotiated protocol String, possibly empty.
 rt_string rt_zanna_tls_negotiated_alpn(void *obj) {
     if (!obj)
         return rt_string_from_bytes("", 0);
@@ -510,7 +537,9 @@ rt_string rt_zanna_tls_negotiated_alpn(void *obj) {
     return rt_string_from_bytes(alpn ? alpn : "", alpn ? strlen(alpn) : 0);
 }
 
-/// @brief Check if the TLS connection is open.
+/// @brief Check whether the boxed low-level TLS session is connected.
+/// @param obj Managed TLS receiver; NULL yields zero.
+/// @return One only in @c TLS_STATE_CONNECTED; otherwise zero.
 int8_t rt_zanna_tls_is_open(void *obj) {
     if (!obj)
         return 0;
@@ -658,6 +687,9 @@ static rt_string rt_zanna_tls_string_from_owned_line(char *line, size_t len) {
 /// @brief Read through LF, strip a preceding CR, and return the completed line.
 /// @details Returns empty when EOF/error occurs before LF or a nonterminated line
 ///          grows beyond 64 KiB; partial bytes are discarded.
+/// @param obj Managed TLS receiver; NULL yields an empty String.
+/// @return Caller-owned line without CRLF, or an empty String on EOF, error, or
+///         limit failure.
 rt_string rt_zanna_tls_recv_line(void *obj) {
     if (!obj)
         return rt_string_from_bytes("", 0);
@@ -720,6 +752,7 @@ rt_string rt_zanna_tls_recv_line(void *obj) {
 }
 
 /// @brief Send close_notify, perform the bounded peer-alert drain, and close.
+/// @param obj Managed TLS receiver; NULL is a no-op.
 void rt_zanna_tls_close(void *obj) {
     if (!obj)
         return;
@@ -733,7 +766,9 @@ void rt_zanna_tls_close(void *obj) {
     }
 }
 
-/// @brief Get the last error message.
+/// @brief Copy the latest diagnostic from the boxed TLS session.
+/// @param obj Managed TLS receiver; NULL reports `null object`.
+/// @return Caller-owned diagnostic String.
 rt_string rt_zanna_tls_error(void *obj) {
     const char *msg;
     if (!obj) {

@@ -5,20 +5,12 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implements the `zanna front basic` subcommand. The driver parses BASIC source,
-// optionally emits IL, or executes the compiled program inside the VM. Argument
-// parsing, source loading, compilation, verification, and execution are staged
-// into helpers so other tools can reuse the same behaviour.
-//
-//===----------------------------------------------------------------------===//
-
-/// @file
+/// @file cmd_front_basic.cpp
 /// @brief Command-line entry point for the BASIC frontend of `zanna`.
-/// @details Documents the supporting helpers used to parse arguments, load
-///          BASIC source files, and either emit IL or execute the program
-///          through the virtual machine.  The implementation keeps side effects
-///          (like diagnostic printing and VM execution) in well-contained
-///          functions so higher-level tooling can reuse them.
+///
+/// Argument parsing, source loading, compilation, verification, optimization, IL emission, and VM
+/// execution are staged into reusable helpers. Diagnostic printing and process-level execution
+/// side effects remain at explicit boundaries.
 
 #include "cli.hpp"
 #include "frontends/basic/BasicCompiler.hpp"
@@ -49,6 +41,11 @@ namespace {
 /// @brief Run the IL verifier on @p module and print any diagnostics.
 /// @details Collects up to 50 diagnostics; prints them (errors always, warnings
 ///          only when @p showWarnings) using the requested format.
+/// @param module Module to verify.
+/// @param err Destination diagnostic stream.
+/// @param sm Source manager used to resolve locations.
+/// @param format Text or JSON output encoding.
+/// @param showWarnings Whether verifier warnings are printed alongside errors.
 /// @return true when the module has no verifier errors.
 bool reportVerifierDiagnostics(il::core::Module &module,
                                std::ostream &err,
@@ -374,6 +371,10 @@ int runFrontBasic(const FrontBasicConfig &config,
 ///   3. Delegate to @ref runFrontBasic to either emit IL or execute the program.
 /// Any failure at these stages results in a non-zero exit status with diagnostics
 /// already printed to stderr, matching the behaviour expected by ilc callers.
+/// @param argc Number of BASIC frontend arguments.
+/// @param argv Argument vector.
+/// @param sm Caller-owned source manager used for loading and diagnostics.
+/// @return Zero on successful help, compilation, emission, or execution; otherwise nonzero.
 int cmdFrontBasicWithSourceManager(int argc, char **argv, il::support::SourceManager &sm) {
     const auto earlyFormat = ilc::detectDiagnosticFormatFlag(argc, argv);
     auto parsed = parseFrontBasicArgs(argc, argv);
@@ -409,6 +410,9 @@ int cmdFrontBasicWithSourceManager(int argc, char **argv, il::support::SourceMan
 ///          Keeping this entry point tiny allows tests to exercise the driver
 ///          with injected source managers while production builds use the
 ///          default implementation.
+/// @param argc Number of BASIC frontend arguments.
+/// @param argv Argument vector.
+/// @return Forwarded BASIC frontend exit status.
 int cmdFrontBasic(int argc, char **argv) {
     SourceManager sm;
     return cmdFrontBasicWithSourceManager(argc, argv, sm);

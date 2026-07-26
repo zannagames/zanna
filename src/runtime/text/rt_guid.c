@@ -29,6 +29,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_guid.c
+ * @brief Implements RFC 9562 UUID version-four generation and conversion.
+ * @details The module draws 128 cryptographically random bits, sets canonical
+ *          version and variant fields, formats lowercase hyphenated text,
+ *          validates UUID syntax, and converts between standard textual form
+ *          and exact 16-byte managed representations.
+ */
+
 #include "rt_guid.h"
 
 #include "rt_bytes.h"
@@ -43,7 +52,9 @@
 #include <string.h>
 
 /// @brief Fill buffer with cryptographically random bytes.
-/// @param buf Destination buffer.
+/// @details Delegates directly to the shared runtime crypto source. Entropy
+///          failures trap rather than substituting predictable bytes.
+/// @param buf Writable destination buffer.
 /// @param len Number of bytes to fill.
 static void get_random_bytes(uint8_t *buf, size_t len) {
     rt_crypto_random_bytes(buf, len);

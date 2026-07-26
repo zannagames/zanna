@@ -280,6 +280,9 @@ Lowerer::ArrayAccess Lowerer::lowerArrayAccess(const ArrayExpr &expr, ArrayAcces
             }
         }
     }
+    /// @brief Computes a row-major index using the best available extent metadata.
+    /// @param idxVals Lowered per-dimension indices.
+    /// @return Flattened array index, or zero after emitting a diagnostic trap.
     auto computeFlatIndex = [&](const std::vector<Value> &idxVals) -> Value {
         if (idxVals.size() == 1)
             return idxVals[0];
@@ -414,8 +417,14 @@ Lowerer::ArrayAccess Lowerer::lowerArrayAccess(const ArrayExpr &expr, ArrayAcces
     return ArrayAccess{base, index};
 }
 
+/// @copydoc Lowerer::emitRowMajorFlatIndex(const std::vector<Value> &,
+///                                         const std::vector<long long> &)
 Value Lowerer::emitRowMajorFlatIndex(const std::vector<Value> &idxVals,
                                      const std::vector<long long> &extents) {
+    /// @brief Multiplies non-negative constants without signed overflow.
+    /// @param lhs Left factor.
+    /// @param rhs Right factor.
+    /// @return Product, or `std::nullopt` for invalid or overflowing factors.
     auto checkedMulConst = [&](long long lhs, long long rhs) -> std::optional<long long> {
         if (lhs < 0 || rhs < 0)
             return std::nullopt;
@@ -695,6 +704,9 @@ std::string Lowerer::getStringLabel(const std::string &s) {
 
     // Set up the emitter callback if not already configured
     if (!stringTable_.size()) {
+        /// @brief Materializes a newly interned string as a module global.
+        /// @param label Stable string-table label.
+        /// @param content String bytes to emit.
         stringTable_.setEmitter([this](const std::string &label, const std::string &content) {
             builder->addGlobalStr(label, content);
         });

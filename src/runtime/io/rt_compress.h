@@ -24,6 +24,14 @@
 // Links: src/runtime/io/rt_compress.c (implementation), src/runtime/core/rt_string.h
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares dependency-free raw DEFLATE, zlib, and GZIP operations.
+ * @details Exposes managed Bytes and string convenience APIs together with
+ * allocation-free or malloc-returning native helpers for bounded decoder
+ * integrations. Inputs are borrowed and every successful managed result is
+ * newly owned by the caller.
+ */
 #pragma once
 
 #include "rt_string.h"

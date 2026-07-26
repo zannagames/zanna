@@ -24,6 +24,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares project asset archive compilation and object-file embedding.
+/// @details Asset directives are resolved beneath the project root and serialized
+///          in ZPAK format either as an in-memory blob or standalone pack files.
+///          The API owns returned bytes and paths while borrowing configuration
+///          and error-output references for each call.
+
 #pragma once
 
 #include <cstdint>
@@ -38,31 +45,34 @@ struct ProjectConfig;
 namespace zanna::asset {
 
 /// @brief Result of asset compilation.
+/// @details The three pack metadata vectors are positionally aligned: each path
+///          has the expected size and SHA-256 hash at the same index.
 struct AssetBundle {
-    /// ZPAK-format blob to embed in .rodata. Empty if no embed directives.
+    /// @brief ZPAK-format blob to embed in `.rodata`, or empty when none is produced.
     std::vector<uint8_t> embeddedBlob;
 
-    /// Paths to generated .zpak pack files on disk.
+    /// @brief Paths to generated `.zpak` pack files on disk.
     std::vector<std::string> packFilePaths;
 
-    /// Expected byte sizes for @ref packFilePaths entries.
+    /// @brief Expected byte sizes for @ref packFilePaths entries.
     /// @details Cache validation uses these sizes with @ref packFileHashes to
     ///          detect truncated or externally modified pack files before
     ///          reusing a cached bundle.
     std::vector<std::uintmax_t> packFileSizes;
 
-    /// Expected SHA-256 hashes for @ref packFilePaths entries.
+    /// @brief Expected SHA-256 hashes for @ref packFilePaths entries.
     std::vector<std::string> packFileHashes;
 };
 
 /// @brief Compile assets declared in a project configuration.
 ///
-/// 1. Resolves all `embed` entries → builds ZPAK blob for .rodata.
-/// 2. Resolves all `pack` groups → writes .zpak files to outputDir.
-///
-/// @param config    Project configuration with embedAssets and packGroups.
-/// @param outputDir Directory for .zpak output files.
-/// @param err       Set to error message on failure.
+/// @details Resolves every `embed` entry into one in-memory ZPAK blob and writes
+///          each nonempty `pack` group as a standalone archive. Source paths
+///          must remain within the project root; a bounded process cache may
+///          reuse unchanged inputs and validated output packs.
+/// @param config Project configuration containing embed and pack directives.
+/// @param outputDir Directory for generated `.zpak` files.
+/// @param err Receives the failure reason; otherwise left unchanged.
 /// @return AssetBundle on success, nullopt on failure.
 std::optional<AssetBundle> compileAssets(const il::tools::common::ProjectConfig &config,
                                          const std::string &outputDir,
@@ -70,16 +80,15 @@ std::optional<AssetBundle> compileAssets(const il::tools::common::ProjectConfig 
 
 /// @brief Write a .o file containing the embedded blob as rodata symbols.
 ///
-/// Uses Zanna's own ObjectFileWriter to produce a native .o file with:
+/// @details Uses Zanna's own ObjectFileWriter to produce a native object with:
 ///   zanna_asset_blob      → the ZPAK data bytes (.rodata)
 ///   zanna_asset_blob_size → uint64 size value (.rodata)
 ///
-/// No external compiler is needed — fully self-contained.
-///
-/// @param blob     ZPAK-format blob data.
-/// @param outPath  Path for the output .o file.
-/// @param err      Set on failure.
-/// @return true on success.
+/// No external compiler or assembler is invoked.
+/// @param blob ZPAK-format blob data.
+/// @param outPath Path for the output native object file.
+/// @param err Receives the failure reason; otherwise left unchanged.
+/// @return True on success; false when no host writer exists or writing fails.
 bool writeAssetBlobObject(const std::vector<uint8_t> &blob,
                           const std::string &outPath,
                           std::string &err);

@@ -14,11 +14,17 @@
 //   - finish() always emits a TRAILER!!! record and pads to 512 bytes.
 //
 // Ownership/Lifetime:
-//   - Single-use accumulator; entries are copied in and owned by the writer.
+//   - Entries are copied in, owned by the writer, and remain after serialization.
 //
 // Links: CpioWriter.hpp, PkgUtils.hpp (path sanitization)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements safe path normalization and `070707` CPIO serialization.
+/// @details Files, directories, and internal relative symlinks are converted to
+///          fixed-width octal records in insertion order, followed by the
+///          portable trailer record and block padding required by package tools.
 
 #include "CpioWriter.hpp"
 
@@ -94,6 +100,7 @@ std::string normalizeCpioSymlinkTarget(const std::string &linkPath, std::string 
 /// @param value Value to encode.
 /// @param width Exact field width in octal digits.
 /// @param path Entry path used for error context.
+/// @throws std::runtime_error When the requested width or value is unrepresentable.
 void appendOctalField(std::vector<uint8_t> &out,
                       uint64_t value,
                       size_t width,
@@ -158,6 +165,13 @@ void appendEntry(std::vector<uint8_t> &out,
 
 } // namespace
 
+/// @brief Add a normalized directory record unless that path already exists.
+/// @param path Archive-relative directory path; `"."` denotes the archive root.
+/// @param mode Permission bits combined with the directory type field.
+/// @param mtime Unix modification timestamp.
+/// @details Duplicate directory paths are idempotent and leave the first record
+///          unchanged. Successful insertion copies all metadata into the writer.
+/// @throws std::runtime_error When path sanitization fails.
 void CpioWriter::addDirectory(const std::string &path, uint32_t mode, uint32_t mtime) {
     const std::string clean = normalizeCpioPath(path, true);
     if (!seenPaths_.insert(clean).second)
@@ -170,6 +184,13 @@ void CpioWriter::addDirectory(const std::string &path, uint32_t mode, uint32_t m
     entries_.push_back(std::move(entry));
 }
 
+/// @brief Add a normalized regular-file record with copied payload bytes.
+/// @param path Archive-relative path other than the root.
+/// @param data Payload pointer, nullable only for zero @p size.
+/// @param size Number of payload bytes to copy.
+/// @param mode Permission bits combined with the regular-file type field.
+/// @param mtime Unix modification timestamp.
+/// @throws std::runtime_error For unsafe/root paths, duplicates, or null data.
 void CpioWriter::addFile(
     const std::string &path, const uint8_t *data, size_t size, uint32_t mode, uint32_t mtime) {
     const std::string clean = normalizeCpioPath(path, false);
@@ -190,6 +211,11 @@ void CpioWriter::addFile(
     entries_.push_back(std::move(entry));
 }
 
+/// @brief Add a regular file from a byte vector.
+/// @param path Archive-relative file path.
+/// @param data Payload vector copied into writer storage.
+/// @param mode File permission bits.
+/// @param mtime Unix modification timestamp.
 void CpioWriter::addFileVec(const std::string &path,
                             const std::vector<uint8_t> &data,
                             uint32_t mode,
@@ -197,6 +223,11 @@ void CpioWriter::addFileVec(const std::string &path,
     addFile(path, data.data(), data.size(), mode, mtime);
 }
 
+/// @brief Add a regular file from string bytes.
+/// @param path Archive-relative file path.
+/// @param content Payload string copied without a terminator.
+/// @param mode File permission bits.
+/// @param mtime Unix modification timestamp.
 void CpioWriter::addFileString(const std::string &path,
                                const std::string &content,
                                uint32_t mode,
@@ -204,6 +235,13 @@ void CpioWriter::addFileString(const std::string &path,
     addFile(path, reinterpret_cast<const uint8_t *>(content.data()), content.size(), mode, mtime);
 }
 
+/// @brief Add a symbolic link whose resolution remains inside the archive root.
+/// @param path Archive-relative link path other than the root.
+/// @param target Relative link target stored as the record payload.
+/// @param mtime Unix modification timestamp.
+/// @details Normalizes backslashes in the target and fixes link permissions at
+///          `0777`, combined with the symlink type bits.
+/// @throws std::runtime_error For unsafe/root paths, duplicates, or escaping targets.
 void CpioWriter::addSymlink(const std::string &path, const std::string &target, uint32_t mtime) {
     const std::string clean = normalizeCpioPath(path, false);
     if (clean == ".")
@@ -219,6 +257,11 @@ void CpioWriter::addSymlink(const std::string &path, const std::string &target, 
     entries_.push_back(std::move(entry));
 }
 
+/// @brief Serialize accumulated entries as a complete portable-ASCII CPIO archive.
+/// @return Archive bytes ending in `TRAILER!!!` and zero-padded to 512 bytes.
+/// @details Emits records in insertion order and leaves writer state unchanged,
+///          allowing deterministic repeated serialization.
+/// @throws std::runtime_error When an entry cannot fit a fixed-width format field.
 std::vector<uint8_t> CpioWriter::finish() const {
     std::vector<uint8_t> out;
     out.reserve(entries_.size() * 128u);

@@ -36,6 +36,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements immutable row-major 4×4 matrix mathematics.
+ *
+ * @details Mat4 uses thread-local recycled managed payloads, constructs
+ *          affine, projection, and view matrices, performs column-vector
+ *          composition and homogeneous point transformation, and implements
+ *          determinant/cofactor inversion with explicit singularity handling.
+ */
+
 #include "rt_mat4.h"
 
 #include "rt_object.h"
@@ -48,9 +58,12 @@
 //=============================================================================
 // Thread-local free-list pool (mirrors Vec3 pool pattern)
 //=============================================================================
+/// @brief Maximum number of reclaimed Mat4 payloads retained per thread.
 #define MAT4_POOL_CAPACITY 32
 
+/// @brief Thread-local LIFO storage for reusable Mat4 payloads.
 static _Thread_local void *mat4_pool_buf_[MAT4_POOL_CAPACITY];
+/// @brief Number of populated entries in @ref mat4_pool_buf_.
 static _Thread_local int mat4_pool_top_ = 0;
 
 /// @brief GC finalizer / pool-return hook for Mat4 objects.
@@ -81,6 +94,10 @@ typedef struct mat4_impl {
     double m[16]; ///< Elements in row-major order
 } mat4_impl;
 
+/// @brief Access one row-major matrix element.
+/// @param mat Pointer to a @ref mat4_impl.
+/// @param r Zero-based row.
+/// @param c Zero-based column.
 #define M(mat, r, c) ((mat)->m[(r) * 4 + (c)])
 
 /// @brief Acquire storage for a Mat4 from the current thread's pool or the GC heap.

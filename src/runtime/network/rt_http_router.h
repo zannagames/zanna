@@ -18,6 +18,15 @@
 // Links: rt_http_server.h (consumer), rt_network.h
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares synchronized HTTP route registration and matching.
+ * @details Defines stable managed identities, method-specific and generic
+ * route registration, first-match lookup with named and wildcard captures,
+ * route counts, and owned RouteMatch parameter and pattern access.
+ */
+
 #pragma once
 
 #include "rt_string.h"

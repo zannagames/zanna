@@ -23,12 +23,26 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements reentrant object monitors with POSIX synchronization.
+/// @details Per-object monitor state is stored in a striped global table.
+///          Contending threads and condition waiters use FIFO queues with
+///          per-waiter condition variables, preserving recursion depth across
+///          Wait/reacquire cycles. Timed waits use monotonic deadlines where
+///          the platform supports them.
+
 #include "rt_monitor_internal.h"
 
 #if !defined(_WIN32)
 
 #include <pthread.h>
 #if defined(__APPLE__)
+/// @brief Wait on a condition variable for a relative interval on macOS.
+/// @param cond Condition variable to wait on.
+/// @param mutex Locked mutex atomically released during the wait.
+/// @param rel_time Relative timeout measured from the start of the wait.
+/// @return Zero after a signal, `ETIMEDOUT` on expiry, or another pthread
+///         error code.
 extern int pthread_cond_timedwait_relative_np(pthread_cond_t *cond,
                                               pthread_mutex_t *mutex,
                                               const struct timespec *rel_time);
@@ -109,6 +123,8 @@ typedef struct RtMonitorEntry {
     RtMonitor monitor;           ///< The monitor state.
 } RtMonitorEntry;
 
+/// @brief Mark every waiter in a detached queue as canceled and wake it.
+/// @param w Head of the detached waiter chain, or NULL.
 static void monitor_cancel_queue(RtMonitorWaiter *w);
 
 #define RT_MONITOR_BUCKETS 4096u
@@ -165,6 +181,8 @@ static pthread_mutex_t *monitor_table_lock_bucket(size_t bucket) {
 // ---------------------------------------------------------------------------
 
 /// @brief Hash a pointer to a monitor-table bucket index (Knuth golden-ratio mix).
+/// @param p Object address used as the monitor key.
+/// @return Bucket index in `[0, RT_MONITOR_BUCKETS)`.
 static size_t hash_ptr(void *p) {
     uintptr_t x = (uintptr_t)p;
     x >>= 4;
@@ -175,6 +193,9 @@ static size_t hash_ptr(void *p) {
 
 /// @brief Locate (or lazily allocate) the monitor for `obj` (POSIX path).
 /// @see Win32 `get_monitor_for` for the design rationale.
+/// @param obj Non-NULL object address used as the table key.
+/// @return Existing or newly allocated monitor, or NULL after a reported
+///         allocation, initialization, or table-lock failure.
 static RtMonitor *get_monitor_for(void *obj) {
     size_t idx = hash_ptr(obj);
 
@@ -215,6 +236,7 @@ static RtMonitor *get_monitor_for(void *obj) {
 ///
 /// Called from the GC finalizer of any object that has had a
 /// monitor attached. Idempotent: silently no-ops if no entry exists.
+/// @param obj Object address whose active monitor entry should be retired or removed.
 void rt_monitor_forget(void *obj) {
     if (!obj)
         return;
@@ -258,16 +280,14 @@ void rt_monitor_forget(void *obj) {
     free(node);
 }
 
-/// @brief Free a retired monitor table entry once no thread is still waiting on it.
+/// @brief Free a retired monitor-table entry once it is idle.
 /// @details Monitor entries enter the "retired" state when the owning
 ///          object is finalized but a thread is still inside Wait/Enter
 ///          (potentially blocked on the underlying primitive). The
-///          retired entry is kept alive until ref/wait counts drain to
-///          zero, at which point this helper unlinks it from the bucket
-///          chain, destroys the OS-level mutex/condvar, and frees the
-///          node memory. Two near-identical implementations exist
-///          (Windows CS-based and POSIX pthread-based) to match the
-///          per-platform synchronization primitive.
+///          retired entry is kept until ownership and both waiter queues are
+///          empty, then unlinked under its table stripe and destroyed.
+/// @param obj Object address used to locate the retired table entry.
+/// @param monitor Expected monitor payload, preventing removal of a replacement entry.
 static void monitor_cleanup_retired_if_idle(void *obj, RtMonitor *monitor) {
     if (!obj || !monitor)
         return;
@@ -304,11 +324,17 @@ static void monitor_cleanup_retired_if_idle(void *obj, RtMonitor *monitor) {
 }
 
 /// @brief True if pthread `self` currently owns the monitor (POSIX equality).
+/// @param m Monitor whose owner state is inspected.
+/// @param self Calling thread identifier.
+/// @return Non-zero when @p self is the recorded owner.
 static int monitor_is_owner(const RtMonitor *m, pthread_t self) {
     return m->owner_valid && pthread_equal(m->owner, self);
 }
 
 /// @brief Pop the FIFO acquisition queue head, hand it the lock, signal its condvar (POSIX).
+/// @details The waiter's saved recursion depth becomes the monitor recursion count.
+///          The caller must hold @p m's state mutex.
+/// @param m Monitor whose next acquisition waiter is granted ownership.
 static void monitor_grant_next_waiter(RtMonitor *m) {
     RtMonitorWaiter *w = m->acq_head;
     if (!w)
@@ -326,6 +352,8 @@ static void monitor_grant_next_waiter(RtMonitor *m) {
 }
 
 /// @brief POSIX FIFO append for the acquisition queue.
+/// @param m Locked monitor receiving the waiter.
+/// @param w Waiter node to append.
 static void monitor_enqueue_acq(RtMonitor *m, RtMonitorWaiter *w) {
     w->next = NULL;
     if (m->acq_tail) {
@@ -338,6 +366,8 @@ static void monitor_enqueue_acq(RtMonitor *m, RtMonitorWaiter *w) {
 }
 
 /// @brief POSIX queue removal — splice `w` out of the acquisition queue.
+/// @param m Locked monitor whose acquisition queue is searched.
+/// @param w Waiter node to remove if present.
 static void monitor_remove_acq(RtMonitor *m, RtMonitorWaiter *w) {
     RtMonitorWaiter *prev = NULL;
     RtMonitorWaiter *cur = m->acq_head;
@@ -358,6 +388,8 @@ static void monitor_remove_acq(RtMonitor *m, RtMonitorWaiter *w) {
 }
 
 /// @brief POSIX FIFO append for the condition-wait queue.
+/// @param m Locked monitor receiving the waiter.
+/// @param w Waiter node to append.
 static void monitor_enqueue_wait(RtMonitor *m, RtMonitorWaiter *w) {
     w->next = NULL;
     if (m->wait_tail) {
@@ -370,6 +402,8 @@ static void monitor_enqueue_wait(RtMonitor *m, RtMonitorWaiter *w) {
 }
 
 /// @brief POSIX queue removal — splice `w` out of the wait queue.
+/// @param m Locked monitor whose condition-wait queue is searched.
+/// @param w Waiter node to remove if present.
 static void monitor_remove_wait(RtMonitor *m, RtMonitorWaiter *w) {
     RtMonitorWaiter *prev = NULL;
     RtMonitorWaiter *cur = m->wait_head;
@@ -391,9 +425,12 @@ static void monitor_remove_wait(RtMonitor *m, RtMonitorWaiter *w) {
 
 /// @brief Wake and detach every waiter in a monitor's acquire/wait queue with
 ///        a cancellation result (used when the monitor is destroyed or the
-///        queue is torn down) so no thread is left blocked. Walks the whole
-///        chain, freeing each waiter node.
+///        queue is torn down) so no thread is left blocked.
+/// @details Waiter nodes are owned by blocked thread stacks and are not freed
+///          here. The caller holds the monitor mutex while changing their
+///          states and signaling their private condition variables.
 /// @note Defined once per platform backend branch; both copies are identical.
+/// @param w Head of the detached waiter chain, or NULL.
 static void monitor_cancel_queue(RtMonitorWaiter *w) {
     while (w) {
         RtMonitorWaiter *next = w->next;
@@ -415,6 +452,8 @@ typedef struct {
 ///          monotonic, so we report uses_monotonic=1 even though
 ///          condattr_setclock isn't available). Other POSIX platforms
 ///          fall back to CLOCK_REALTIME if condattr_setclock fails.
+/// @param cond Uninitialized waiter condition variable.
+/// @param uses_monotonic Optional output set when its deadlines use a monotonic clock.
 /// @return 0 on success, errno-style error code otherwise.
 static int monitor_cond_init(pthread_cond_t *cond, int8_t *uses_monotonic) {
     if (uses_monotonic)
@@ -454,6 +493,8 @@ static int monitor_cond_init(pthread_cond_t *cond, int8_t *uses_monotonic) {
 ///          back to `CLOCK_REALTIME` silently. A stack-allocated `timespec` is
 ///          zero-initialized so a `clock_gettime` failure returns a sensible
 ///          "epoch" value rather than uninitialized stack garbage.
+/// @param use_monotonic Whether to prefer `CLOCK_MONOTONIC`.
+/// @return Current timestamp from the selected available clock.
 static struct timespec monitor_now_clock(int8_t use_monotonic) {
     struct timespec ts;
     memset(&ts, 0, sizeof(ts));
@@ -477,6 +518,9 @@ static struct timespec monitor_now_clock(int8_t use_monotonic) {
 ///          `pthread_cond_timedwait` doesn't see a malformed timespec. Negative
 ///          or zero `ms` returns the current time so a "no timeout" caller still
 ///          gets a valid struct.
+/// @param ms Wait duration in milliseconds.
+/// @param use_monotonic Whether to base the deadline on a monotonic clock.
+/// @return Saturating absolute deadline on the selected clock.
 static monitor_deadline_t monitor_deadline_ms_from_now(int64_t ms, int8_t use_monotonic) {
     monitor_deadline_t d;
     d.deadline = monitor_now_clock(use_monotonic);
@@ -509,6 +553,10 @@ static monitor_deadline_t monitor_deadline_ms_from_now(int64_t ms, int8_t use_mo
 ///          timeout for pthread_cond_timedwait_relative_np. Returns 0 if
 ///          the deadline has lapsed; saturates at INT64_MAX for very
 ///          large remaining intervals.
+/// @param deadline Absolute deadline to compare with the selected clock.
+/// @param use_monotonic Whether to read the current monotonic rather than realtime clock.
+/// @return Remaining whole milliseconds, zero after expiry, or `INT64_MAX`
+///         when the interval cannot be represented.
 static int64_t monitor_remaining_ms(monitor_deadline_t deadline, int8_t use_monotonic) {
     struct timespec now = monitor_now_clock(use_monotonic);
     int64_t sec = (int64_t)deadline.deadline.tv_sec - (int64_t)now.tv_sec;
@@ -532,6 +580,11 @@ static int64_t monitor_remaining_ms(monitor_deadline_t deadline, int8_t use_mono
 ///          deadline has lapsed. On Linux/POSIX, calls the standard
 ///          pthread_cond_timedwait with the absolute timespec stored in
 ///          the deadline. Caller must hold the monitor mutex.
+/// @param cond Per-waiter condition variable.
+/// @param mutex Locked monitor mutex released atomically during the wait.
+/// @param deadline Absolute timeout on the condition variable's clock.
+/// @param use_monotonic Whether @p deadline uses a monotonic clock.
+/// @return Zero after a signal, `ETIMEDOUT` on expiry, or another pthread error code.
 static int monitor_cond_timedwait_deadline(pthread_cond_t *cond,
                                            pthread_mutex_t *mutex,
                                            monitor_deadline_t deadline,
@@ -555,6 +608,11 @@ static int monitor_cond_timedwait_deadline(pthread_cond_t *cond,
 /// Uses pthread mutex + per-waiter condvar. Identical fast-paths
 /// (re-entry, uncontended) and identical FIFO-fairness contract;
 /// see the Win32 version for the design rationale.
+/// @param m Locked monitor to acquire recursively or enqueue against.
+/// @param self Calling thread identifier.
+/// @param timeout_ms Maximum wait in milliseconds when @p timed is non-zero.
+/// @param timed Whether the acquisition uses the supplied deadline.
+/// @return One after ownership is acquired, or zero after timeout or a reported failure.
 static int monitor_enter_blocking(RtMonitor *m, pthread_t self, int64_t timeout_ms, int timed) {
     if (!m) {
         rt_trap("rt_monitor: null monitor");
@@ -761,7 +819,15 @@ int8_t rt_monitor_try_enter(void *obj) {
     return 0;
 }
 
-/// @brief Try to acquire the monitor lock with a timeout. Returns 1 if acquired, 0 on timeout.
+/// @brief Try to acquire an object's reentrant monitor within a timeout.
+/// @details An unowned monitor or recursive entry succeeds immediately.
+///          Otherwise the caller joins the FIFO acquisition queue and waits
+///          against one absolute deadline. Negative durations are treated as
+///          zero. The object is retained for the duration of a pending enter
+///          and remains retained while the resulting ownership is held.
+/// @param obj Object whose monitor should be acquired.
+/// @param ms Maximum wait in milliseconds.
+/// @return One after acquisition, or zero on timeout or recoverable setup failure.
 int8_t rt_monitor_try_enter_for(void *obj, int64_t ms) {
     if (!obj)
         rt_trap("Monitor.Enter: null object");
@@ -1028,7 +1094,16 @@ void rt_monitor_wait(void *obj) {
         rt_trap("Monitor.Wait: condition destroy failed");
 }
 
-/// @brief Wait with a timeout. Returns 1 if woken by Pause, 0 on timeout.
+/// @brief Release an owned monitor and wait for notification up to a deadline.
+/// @details The current recursion depth is saved, ownership is fully released,
+///          and the thread joins the condition-wait queue. Notification moves
+///          it to the FIFO acquisition queue. Timeout also moves it there, so
+///          the original recursion depth is reacquired before return. Native
+///          wait, destruction, ownership, and retirement failures trap.
+/// @param obj Object whose monitor must be owned by the calling thread.
+/// @param ms Maximum notification wait in milliseconds; negatives become zero.
+/// @return One when notified and reacquired, or zero after timeout or a native
+///         wait/destruction failure handled by a returning trap hook.
 int8_t rt_monitor_wait_for(void *obj, int64_t ms) {
     if (!obj)
         rt_trap("Monitor.Wait: not owner");

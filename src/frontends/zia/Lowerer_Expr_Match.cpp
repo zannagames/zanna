@@ -81,6 +81,9 @@ void Lowerer::emitPatternTest(const MatchArm::Pattern &pattern,
                 return;
             }
             if (scrutinee.type && scrutinee.type->kind == TypeKindSem::Optional) {
+                /// @brief Compares an optional pointer representation with the literal.
+                /// @param op Integer comparison opcode.
+                /// @return Boolean comparison result.
                 auto emitPtrCompare = [&](Opcode op) -> Value {
                     unsigned ptrSlotId = nextTempId();
                     il::core::Instr ptrSlotInstr;
@@ -212,6 +215,9 @@ void Lowerer::emitPatternTest(const MatchArm::Pattern &pattern,
 
         case MatchArm::Pattern::Kind::Constructor: {
             if (scrutinee.type && scrutinee.type->kind == TypeKindSem::Optional) {
+                /// @brief Compares an optional pointer representation for a constructor pattern.
+                /// @param op Integer comparison opcode.
+                /// @return Boolean comparison result.
                 auto emitPtrCompare = [&](Opcode op) -> Value {
                     unsigned ptrSlotId = nextTempId();
                     il::core::Instr ptrSlotInstr;
@@ -529,6 +535,10 @@ LowerResult Lowerer::lowerMatchExpr(MatchExpr *expr) {
     if (hasResult)
         createSlot(resultSlot, ilResultType);
 
+    /// @brief Coerces one match-arm result to the overall match type.
+    /// @param bodyResult Lowered arm result.
+    /// @param bodyExpr Arm expression supplying semantic type metadata.
+    /// @return Value suitable for the shared match result slot.
     auto coerceArmResult = [&](LowerResult bodyResult, Expr *bodyExpr) -> Value {
         if (!resultType || resultType->kind == TypeKindSem::Unknown ||
             resultType->kind == TypeKindSem::Error) {

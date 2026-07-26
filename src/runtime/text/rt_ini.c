@@ -16,16 +16,26 @@
 //   - Comment lines (starting with ';' or '#') are discarded during parsing.
 //   - Leading and trailing whitespace is stripped from keys and values.
 //   - Duplicate keys in the same section keep the last value seen.
-//   - Formatting writes sections in insertion order, keys in insertion order.
+//   - Formatting follows the implementation-defined order returned by Map.Keys,
+//     except that the implicit root section is always emitted first.
 //
 // Ownership/Lifetime:
-//   - The parsed INI object is heap-allocated and managed by the runtime GC.
+//   - The parsed INI object is a reference-counted Map owned by the caller.
 //   - Section and key strings stored internally are fresh copies owned by the object.
 //
 // Links: src/runtime/text/rt_ini.h (public API),
 //        src/runtime/rt_map.h (used internally to store section/key/value data)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_ini.c
+ * @brief Implements case-sensitive INI parsing, formatting, and mutation.
+ * @details Lines are split across common newline forms, comments and blanks
+ *          are discarded, names and values are trimmed, and section Maps are
+ *          assembled beneath a root Map with last-value-wins semantics.
+ *          Formatting emits the implicit root first and preserves Map snapshots.
+ */
 
 #include "rt_ini.h"
 
@@ -43,8 +53,11 @@
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Trim leading and trailing whitespace from a substring.
-/// Returns pointer to first non-space, sets *out_len to trimmed length.
+/// @brief Trim leading and trailing `isspace` bytes from a bounded range.
+/// @param start Start of the readable byte range.
+/// @param len Number of bytes in the range.
+/// @param out_len Non-null output receiving the trimmed byte length.
+/// @return Pointer to the first retained byte, possibly the original range end.
 static const char *ini_trim(const char *start, size_t len, size_t *out_len) {
     const char *end = start + len;
     while (start < end && isspace((unsigned char)*start))
@@ -55,6 +68,10 @@ static const char *ini_trim(const char *start, size_t len, size_t *out_len) {
     return start;
 }
 
+/// @brief Release one locally owned runtime-object reference.
+/// @details Frees the object if the released reference was its last one. Null
+///          pointers are ignored.
+/// @param obj Runtime object reference owned by the current scope.
 static void release_local_obj(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
@@ -63,6 +80,8 @@ static void release_local_obj(void *obj) {
 /// @brief Compute the byte length of an `rt_string`, NULL-safe.
 /// @details Runtime strings are length-prefixed; embedded NUL bytes are
 ///          preserved when parsing/formatting.
+/// @param s Borrowed runtime string.
+/// @return Non-negative byte length, or zero for null/empty input.
 static size_t str_len(rt_string s) {
     if (!s)
         return 0;
@@ -70,6 +89,10 @@ static size_t str_len(rt_string s) {
     return len > 0 ? (size_t)len : 0;
 }
 
+/// @brief Copy a byte range into a runtime string or raise an INI trap.
+/// @param bytes Borrowed byte range accepted by `rt_string_from_bytes`.
+/// @param len Number of bytes to copy.
+/// @return Newly allocated runtime string, or null only if the trap hook returns.
 static rt_string ini_string_from_bytes_or_trap(const char *bytes, size_t len) {
     rt_string result = rt_string_from_bytes(bytes, len);
     if (!result)
@@ -77,6 +100,11 @@ static rt_string ini_string_from_bytes_or_trap(const char *bytes, size_t len) {
     return result;
 }
 
+/// @brief Convert a string-builder error into the common INI runtime trap.
+/// @details A failed builder is released before trapping. Callers rely on the
+///          trap being terminating and must not reuse it after failure.
+/// @param sb Builder associated with @p status.
+/// @param status Result of the most recent builder operation.
 static void ini_check_sb(rt_string_builder *sb, rt_sb_status_t status) {
     if (status == RT_SB_OK)
         return;
@@ -84,6 +112,11 @@ static void ini_check_sb(rt_string_builder *sb, rt_sb_status_t status) {
     rt_trap("Ini: string builder allocation failed");
 }
 
+/// @brief Append all bytes of a runtime string to a builder.
+/// @details Null strings and inaccessible null buffers append nothing.
+///          Embedded NUL bytes are preserved through the explicit length.
+/// @param sb Initialized destination builder.
+/// @param s Borrowed runtime string to append.
 static void append_rt_string(rt_string_builder *sb, rt_string s) {
     if (!s)
         return;
@@ -98,6 +131,14 @@ static void append_rt_string(rt_string_builder *sb, rt_string s) {
 
 /// @brief Parse INI-format text into a nested Map: top-level keys are section names, values are
 /// inner Maps of key→value strings. Keys outside any section go under the empty-string section.
+/// @details Splits on CR, LF, or CRLF; trims entire lines, section names, keys,
+///          and values; and ignores blank lines plus lines whose first
+///          non-space byte is `;` or `#`. Values split at the first `=` and
+///          remain unquoted and unescaped. Later duplicate keys replace earlier
+///          values. Malformed lines and section headers without `]` are skipped.
+///          A default-section Map is created lazily only when needed.
+/// @param text Borrowed INI bytes; null and empty input produce an empty Map.
+/// @return Newly allocated root Map owning all nested section Maps and strings.
 void *rt_ini_parse(rt_string text) {
     void *root = rt_map_new();
     if (!text)
@@ -201,8 +242,12 @@ void *rt_ini_parse(rt_string text) {
 ///             `[name]`, then its `key = value` entries.
 ///          3. Values are written verbatim — no quoting, no escaping.
 ///          The blank line before each section is what gives the
-///          rendered file its conventional INI look. Insertion order
-///          within a section is preserved by the underlying Map.
+///          rendered file its conventional INI look. Named sections and
+///          their keys follow the implementation-defined snapshots returned
+///          by `rt_map_keys`.
+/// @param ini_map Borrowed Map of section-name strings to key/value Maps; null
+///                is formatted as empty text.
+/// @return Newly allocated formatted INI string owned by the caller.
 rt_string rt_ini_format(void *ini_map) {
     if (!ini_map)
         return rt_string_from_bytes("", 0);
@@ -269,7 +314,15 @@ rt_string rt_ini_format(void *ini_map) {
 // Get / Set / Remove
 // ---------------------------------------------------------------------------
 
-/// @brief Get a value from the ini.
+/// @brief Get a retained value from a parsed INI Map.
+/// @details Missing arguments, sections, and keys all return a newly allocated
+///          empty string, making absence indistinguishable from an explicitly
+///          empty value. A found string is retained before return.
+/// @param ini_map Borrowed root INI Map.
+/// @param section Borrowed section name, including `""` for the default section.
+/// @param key Borrowed key name.
+/// @return Caller-owned reference to the stored value, or a caller-owned empty
+///         string when the lookup cannot be completed.
 rt_string rt_ini_get(void *ini_map, rt_string section, rt_string key) {
     if (!ini_map || !section || !key)
         return rt_string_from_bytes("", 0);
@@ -287,7 +340,13 @@ rt_string rt_ini_get(void *ini_map, rt_string section, rt_string key) {
     return val;
 }
 
-/// @brief Set a value in the ini.
+/// @brief Set a value, creating its section Map when necessary.
+/// @details The runtime Map retains the supplied key and value according to its
+///          normal ownership rules. A null root, section, or key is ignored.
+/// @param ini_map Borrowed mutable root INI Map.
+/// @param section Borrowed section name.
+/// @param key Borrowed key name.
+/// @param value Borrowed runtime string value to store.
 void rt_ini_set(void *ini_map, rt_string section, rt_string key, rt_string value) {
     if (!ini_map || !section || !key)
         return;
@@ -302,6 +361,9 @@ void rt_ini_set(void *ini_map, rt_string section, rt_string key, rt_string value
 }
 
 /// @brief Check whether a named section exists in the parsed INI map.
+/// @param ini_map Borrowed root INI Map.
+/// @param section Borrowed section name.
+/// @return `1` when the section key exists, or `0` for absent/null input.
 int8_t rt_ini_has_section(void *ini_map, rt_string section) {
     if (!ini_map || !section)
         return 0;
@@ -309,13 +371,23 @@ int8_t rt_ini_has_section(void *ini_map, rt_string section) {
 }
 
 /// @brief Return a Seq of all section names (top-level keys) in the parsed INI tree.
+/// @details Ordering follows `rt_map_keys` and is implementation-defined. Null
+///          input returns a newly allocated empty Seq.
+/// @param ini_map Borrowed root INI Map.
+/// @return Newly allocated Seq containing copies of all section-name strings.
 void *rt_ini_sections(void *ini_map) {
     if (!ini_map)
         return rt_seq_new();
     return rt_map_keys(ini_map);
 }
 
-/// @brief Remove an entry from the ini.
+/// @brief Remove one key from a named INI section.
+/// @details The section itself remains present even when its last key is
+///          removed. Null inputs and missing sections report no removal.
+/// @param ini_map Borrowed mutable root INI Map.
+/// @param section Borrowed section name.
+/// @param key Borrowed key to remove.
+/// @return `1` when an entry was removed, otherwise `0`.
 int8_t rt_ini_remove(void *ini_map, rt_string section, rt_string key) {
     if (!ini_map || !section || !key)
         return 0;

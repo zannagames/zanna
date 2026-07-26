@@ -5,9 +5,9 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the TextBuffer class, the central text management
-// abstraction for Zanna's TUI editor. TextBuffer orchestrates three
-// underlying data structures:
+/// @file
+/// @brief Declares the central editable text-buffer abstraction for Zanna TUI.
+/// @details TextBuffer atomically coordinates three owned data structures:
 //   - PieceTable: efficient insert/erase operations on the text content
 //   - LineIndex: tracks line boundaries for fast line-number lookups
 //   - EditHistory: supports transactional undo/redo of edit operations
@@ -59,23 +59,32 @@ class TextBuffer {
     class LineView {
       public:
         /// @brief Callback accepting contiguous line segments.
+        /// @param segment Borrowed UTF-8 bytes from one contiguous piece.
+        /// @return `true` to continue visiting later segments.
         using SegmentVisitor = tui::FunctionRef<bool(std::string_view)>;
 
+        /// @brief Construct a borrowed logical-line view into a piece table.
+        /// @param table Piece table that must outlive this view.
+        /// @param offset Starting logical byte offset.
+        /// @param length Line length excluding a trailing newline.
         LineView(const PieceTable &table, std::size_t offset, std::size_t length);
 
         /// @brief Starting byte offset of the line.
+        /// @return Logical byte offset stored by this view.
         [[nodiscard]] std::size_t offset() const;
 
         /// @brief Length in bytes excluding trailing newline.
+        /// @return Logical byte length stored by this view.
         [[nodiscard]] std::size_t length() const;
 
         /// @brief Iterate contiguous string_view segments composing the line.
+        /// @param fn Non-owning visitor; returning false stops iteration.
         void forEachSegment(SegmentVisitor fn) const;
 
       private:
-        const PieceTable &table_;
-        std::size_t offset_{};
-        std::size_t length_{};
+        const PieceTable &table_; ///< Borrowed underlying piece table.
+        std::size_t offset_{};    ///< Starting logical byte offset.
+        std::size_t length_{};    ///< Logical byte length excluding newline.
     };
 
     /// @brief Replace the entire buffer content with new text.
@@ -133,25 +142,43 @@ class TextBuffer {
     [[nodiscard]] std::string getLine(std::size_t lineNo) const;
 
     /// @brief Visit each indexed line with a lightweight view.
+    /// @param lineNo Zero-based line number.
+    /// @param line Borrowed segmented view of that line.
+    /// @return `true` to continue visiting later lines.
     using LineVisitor = tui::FunctionRef<bool(std::size_t, const LineView &)>;
+
+    /// @brief Visit each indexed line in ascending line-number order.
+    /// @param fn Non-owning visitor receiving the zero-based line and view;
+    ///        returning false stops iteration.
     void forEachLine(LineVisitor fn) const;
 
     /// @brief Number of indexed lines tracked by the line index.
+    /// @return At least one, including for an empty buffer.
     [[nodiscard]] std::size_t lineCount() const;
 
     /// @brief Starting byte offset for a line; returns buffer size when out of range.
+    /// @param lineNo Zero-based line number.
+    /// @return Logical start offset or size() when out of range.
     [[nodiscard]] std::size_t lineStart(std::size_t lineNo) const;
 
     /// @brief Exclusive ending byte offset excluding trailing newline; clamps to buffer size.
+    /// @param lineNo Zero-based line number.
+    /// @return Logical exclusive end offset, never greater than size().
     [[nodiscard]] std::size_t lineEnd(std::size_t lineNo) const;
 
     /// @brief Retrieve starting offset for a line, clamped to buffer end.
+    /// @param lineNo Zero-based line number.
+    /// @return Logical start offset clamped to size().
     [[nodiscard]] std::size_t lineOffset(std::size_t lineNo) const;
 
     /// @brief Retrieve byte length of a line excluding trailing newline.
+    /// @param lineNo Zero-based line number.
+    /// @return Line length, or zero when the line is out of range.
     [[nodiscard]] std::size_t lineLength(std::size_t lineNo) const;
 
     /// @brief Retrieve line metadata and segment iterator for a line.
+    /// @param lineNo Zero-based line number.
+    /// @return Borrowed view; an out-of-range line produces an empty view at buffer end.
     [[nodiscard]] LineView lineView(std::size_t lineNo) const;
 
     /// @brief Materialize the entire buffer content as a contiguous string.
@@ -165,8 +192,8 @@ class TextBuffer {
     [[nodiscard]] std::size_t size() const;
 
   private:
-    PieceTable table_{};
-    LineIndex line_index_{};
-    EditHistory history_{};
+    PieceTable table_{};     ///< Authoritative logical text storage.
+    LineIndex line_index_{}; ///< Incremental newline-derived line offsets.
+    EditHistory history_{};  ///< Transactional undo and redo records.
 };
 } // namespace zanna::tui::text

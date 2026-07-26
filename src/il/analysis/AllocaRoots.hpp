@@ -18,6 +18,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Defines header-only discovery and escape analysis for alloca-derived pointers.
+/// @details The worklist propagates root allocation identities through GEP
+///          definitions and branch arguments, resolves unique roots safely in
+///          cyclic graphs, and identifies stack addresses that cannot escape.
+
 #pragma once
 
 #include "il/core/Function.hpp"
@@ -79,6 +85,8 @@ inline AllocaRootMap computeAllocaRoots(
     std::vector<unsigned> worklist;
     worklist.reserve(defs.size());
 
+    /// @brief Seeds an alloca temporary as its own root.
+    /// @param id Alloca temporary identifier.
     auto seedRoot = [&](unsigned id) {
         if (roots[id].insert(id).second)
             worklist.push_back(id);
@@ -120,6 +128,10 @@ inline AllocaRootMap computeAllocaRoots(
         }
     }
 
+    /// @brief Merges one temporary's root set into another.
+    /// @param dst Destination temporary identifier.
+    /// @param src Source temporary identifier.
+    /// @return `true` when the destination root set changed.
     auto mergeRootsFromTemp = [&](unsigned dst, unsigned src) {
         auto srcIt = roots.find(src);
         if (srcIt == roots.end())

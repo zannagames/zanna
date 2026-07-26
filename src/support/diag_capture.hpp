@@ -7,13 +7,21 @@
 //
 // File: support/diag_capture.hpp
 // Purpose: Provide a capture-only diagnostic sink to bridge legacy bool plus ostream APIs.
-// Key invariants: Text accumulated in the capture is printed verbatim and, on
-//                 failure, converted into a single error Diag with no location.
+// Key invariants: Captured lines can be normalized into multiple structured
+//                 diagnostics; the legacy single-Diag bridge retains later
+//                 messages as notes on the primary error.
 // Ownership/Lifetime: DiagCapture is a value type that owns its buffered text; it
 //                     borrows the caller's output stream only for the call.
 // Links: docs/internals/architecture.md
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares deferred diagnostic capture and legacy-result adaptation.
+/// @details `DiagCapture` owns text emitted by bool-plus-ostream APIs and can
+///          normalize it into one or many structured diagnostics. The templated
+///          bridge invokes legacy work and returns `Expected<void>` without
+///          consuming the reusable capture buffer.
 
 #pragma once
 

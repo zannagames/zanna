@@ -20,6 +20,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares reduction of eligible sibling self-recursion to one recursive call.
+ *
+ * @details The pass recognizes a narrowly defined pair of self-calls whose
+ *          results are immediately combined by associative integer addition.
+ *          It retains one recursive call, carries the first result through an
+ *          accumulator block parameter, and loops over the second subproblem
+ *          until the original signed base case reaches a new exit block.
+ */
+
 #pragma once
 
 #include "il/transform/PassRegistry.hpp"

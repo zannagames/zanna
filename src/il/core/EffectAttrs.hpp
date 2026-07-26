@@ -10,6 +10,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares semantic side-effect attributes shared by IL call targets.
+ *
+ * @details These independently represented guarantees describe exception and
+ *          memory behavior for functions and external declarations. Analysis
+ *          and optimization code may rely only on flags explicitly set by the
+ *          producer or validated by the verifier.
+ */
+
 #pragma once
 
 namespace il::core {

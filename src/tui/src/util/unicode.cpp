@@ -30,11 +30,15 @@
 
 namespace zanna::tui::util {
 namespace {
+/// @brief Inclusive interval of Unicode code points sharing a width class.
 struct Range {
-    char32_t first;
-    char32_t last;
+    char32_t first; ///< First code point included in the interval.
+    char32_t last;  ///< Last code point included in the interval.
 };
 
+/// @brief Unicode intervals treated as occupying two terminal columns.
+/// @details The table covers the East Asian wide and full-width blocks used by
+///          @ref char_width for allocation-free width classification.
 constexpr Range wide_ranges[] = {{0x1100, 0x115F},
                                  {0x2329, 0x232A},
                                  {0x2E80, 0xA4CF},

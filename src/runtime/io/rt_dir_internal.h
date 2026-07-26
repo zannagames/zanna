@@ -27,6 +27,14 @@
 //        src/runtime/io/rt_dir.h
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Defines private platform helpers shared by directory runtime units.
+ * @details Provides separator and root parsing, allocation-safe child joining,
+ * categorized traps, strict UTF-8/UTF-16 adaptation, extended Windows paths,
+ * bounded native enumeration helpers, and POSIX path predicates as
+ * translation-unit-local inline functions.
+ */
 
 #pragma once
 

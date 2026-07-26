@@ -689,6 +689,7 @@ std::optional<std::size_t> lookupStringLiteralByteLen(
 
 } // namespace
 
+/// @copydoc emitConstStrGlobalToX0()
 void emitConstStrGlobalToX0(
     const std::string &sym,
     const std::unordered_map<std::string, std::size_t> *stringLiteralByteLengths,
@@ -718,6 +719,7 @@ void emitConstStrGlobalToX0(
     out.instrs.push_back(MInstr{MOpcode::Bl, {MOperand::labelOp("rt_const_cstr")}});
 }
 
+/// @copydoc emitConstStrGlobalToVReg()
 uint16_t emitConstStrGlobalToVReg(
     const std::string &sym,
     const std::unordered_map<std::string, std::size_t> *stringLiteralByteLengths,
@@ -919,6 +921,9 @@ static bool materializeFromProducer(
     const std::unordered_map<std::string, std::size_t> *stringLiteralByteLengths) {
     using Opcode = il::core::Opcode;
 
+    /// @brief Tests whether an instruction produces the requested temporary.
+    /// @param I Candidate instruction.
+    /// @return `true` when `I` defines `v`.
     auto prodIt =
         std::find_if(bb.instructions.begin(), bb.instructions.end(), [&](const il::core::Instr &I) {
             return I.result && *I.result == v.id;
@@ -926,6 +931,11 @@ static bool materializeFromProducer(
     if (prodIt == bb.instructions.end())
         return false;
 
+    /// @brief Materializes two operands and emits a three-register instruction.
+    /// @param opc Machine opcode to emit.
+    /// @param a First source value.
+    /// @param b Second source value.
+    /// @return `true` when both operands can be materialized for the opcode.
     auto emitRRR = [&](MOpcode opc, const il::core::Value &a, const il::core::Value &b) -> bool {
         uint16_t va = 0, vb = 0;
         RegClass ca = RegClass::GPR, cb = RegClass::GPR;
@@ -949,6 +959,11 @@ static bool materializeFromProducer(
                                      MOperand::vregOp(outCls, vb)}});
         return true;
     };
+    /// @brief Materializes an operand and emits a register-immediate instruction.
+    /// @param opc Machine opcode to emit.
+    /// @param a Register source value.
+    /// @param imm Immediate source value.
+    /// @return `true` when the register operand can be materialized.
     auto emitRImm = [&](MOpcode opc, const il::core::Value &a, long long imm) -> bool {
         uint16_t va = 0;
         RegClass ca = RegClass::GPR;
@@ -974,6 +989,9 @@ static bool materializeFromProducer(
                                                                        : MOpcode::SubRI,
                 (opc == MOpcode::AddOvfRI) ? MOpcode::AddOvfRRR : MOpcode::AddRRR,
                 (opc == MOpcode::SubOvfRI) ? MOpcode::SubOvfRRR : MOpcode::SubRRR,
+                /// @brief Materializes a legalized arithmetic immediate in a temporary register.
+                /// @param materializedImm Immediate value selected by the legalizer.
+                /// @return Operand naming the temporary register that contains the value.
                 [&](long long materializedImm) {
                     const uint16_t tmp = allocateNextVReg(nextVRegId);
                     out.instrs.push_back(MInstr{
@@ -1112,6 +1130,9 @@ static bool materializeFromProducer(
                             MOpcode::SubRI,
                             MOpcode::AddRRR,
                             MOpcode::SubRRR,
+                            /// @brief Materializes a legalized address offset in a temporary register.
+                            /// @param materializedImm Offset selected by the immediate legalizer.
+                            /// @return Operand naming the temporary register that contains the offset.
                             [&](long long materializedImm) {
                                 const uint16_t tmp = allocateNextVReg(nextVRegId);
                                 out.instrs.push_back(MInstr{MOpcode::MovRI,
@@ -1205,6 +1226,11 @@ static bool materializeFromProducer(
                         return false;
                     off = prod.operands[1].i64;
                 }
+                /// @brief Resolves a recursively derived address to a frame-relative offset.
+                /// @param self Recursive callback reference.
+                /// @param addr Address value to resolve.
+                /// @param offset Accumulator updated with each resolved displacement.
+                /// @return `true` when the address is rooted in a frame local.
                 auto resolveFrameAddressInBlock =
                     [&](auto &&self, const il::core::Value &addr, long long &offset) -> bool {
                     if (addr.kind != il::core::Value::Kind::Temp)
@@ -1213,6 +1239,9 @@ static bool materializeFromProducer(
                         offset += localOffset;
                         return true;
                     }
+                    /// @brief Tests whether an instruction produces the current address value.
+                    /// @param I Candidate instruction.
+                    /// @return `true` when `I` defines `addr`.
                     const auto prodAddrIt = std::find_if(
                         bb.instructions.begin(),
                         bb.instructions.end(),
@@ -1286,6 +1315,19 @@ static bool materializeFromProducer(
 ///
 ///          The decomposition is purely organisational; each sub-helper
 ///          captures one logical category of value source.
+/// @param v IL value to materialize.
+/// @param bb Current IL block used for parameter and producer lookup.
+/// @param ti Target ABI register description.
+/// @param fb Frame layout used for stack-resident locals.
+/// @param out Machine block that receives emitted materialization instructions.
+/// @param tempVReg Mapping from IL temporary identifiers to virtual registers.
+/// @param tempRegClass Mapping from IL temporary identifiers to register classes.
+/// @param nextVRegId In/out counter used to allocate fresh virtual registers.
+/// @param[out] outVReg Receives the virtual register containing @p v.
+/// @param[out] outCls Receives the register class of @p outVReg.
+/// @param stringLiteralByteLengths Optional literal-symbol byte-length metadata.
+/// @return True when a supported materialization path emitted or reused a
+///         virtual register; false when @p v cannot be materialized here.
 bool materializeValueToVReg(
     const il::core::Value &v,
     const il::core::BasicBlock &bb,
@@ -1346,6 +1388,7 @@ bool materializeValueToVReg(
 // Call Lowering
 //===----------------------------------------------------------------------===//
 
+/// @copydoc lowerCallWithArgs()
 bool lowerCallWithArgs(
     const il::core::Instr &callI,
     const il::core::BasicBlock &bb,
@@ -1573,6 +1616,7 @@ static bool lowerDivisionChk0(const il::core::Instr &ins,
     return true;
 }
 
+/// @copydoc lowerSRemChk0()
 bool lowerSRemChk0(const il::core::Instr &ins,
                    const il::core::BasicBlock &bb,
                    LoweringContext &ctx,
@@ -1580,6 +1624,7 @@ bool lowerSRemChk0(const il::core::Instr &ins,
     return lowerDivisionChk0(ins, bb, ctx, out, /*isSigned=*/true, /*isRemainder=*/true);
 }
 
+/// @copydoc lowerSDivChk0()
 bool lowerSDivChk0(const il::core::Instr &ins,
                    const il::core::BasicBlock &bb,
                    LoweringContext &ctx,
@@ -1587,6 +1632,7 @@ bool lowerSDivChk0(const il::core::Instr &ins,
     return lowerDivisionChk0(ins, bb, ctx, out, /*isSigned=*/true, /*isRemainder=*/false);
 }
 
+/// @copydoc lowerUDivChk0()
 bool lowerUDivChk0(const il::core::Instr &ins,
                    const il::core::BasicBlock &bb,
                    LoweringContext &ctx,
@@ -1594,6 +1640,7 @@ bool lowerUDivChk0(const il::core::Instr &ins,
     return lowerDivisionChk0(ins, bb, ctx, out, /*isSigned=*/false, /*isRemainder=*/false);
 }
 
+/// @copydoc lowerURemChk0()
 bool lowerURemChk0(const il::core::Instr &ins,
                    const il::core::BasicBlock &bb,
                    LoweringContext &ctx,
@@ -1688,6 +1735,7 @@ static uint16_t signExtendVRegToWidth(uint16_t src,
     return dst;
 }
 
+/// @copydoc lowerIdxChk()
 bool lowerIdxChk(const il::core::Instr &ins,
                  const il::core::BasicBlock &bb,
                  LoweringContext &ctx,
@@ -1801,6 +1849,7 @@ bool lowerIdxChk(const il::core::Instr &ins,
 // Ternary select
 //===----------------------------------------------------------------------===//
 
+/// @copydoc lowerSelect()
 bool lowerSelect(const il::core::Instr &ins,
                  const il::core::BasicBlock &bb,
                  LoweringContext &ctx,
@@ -1865,6 +1914,7 @@ bool lowerSelect(const il::core::Instr &ins,
 // Signed Remainder (srem) - no zero-check
 //===----------------------------------------------------------------------===//
 
+/// @copydoc lowerSRem()
 bool lowerSRem(const il::core::Instr &ins,
                const il::core::BasicBlock &bb,
                LoweringContext &ctx,
@@ -1921,6 +1971,7 @@ bool lowerSRem(const il::core::Instr &ins,
 // Unsigned Remainder (urem) - no zero-check
 //===----------------------------------------------------------------------===//
 
+/// @copydoc lowerURem()
 bool lowerURem(const il::core::Instr &ins,
                const il::core::BasicBlock &bb,
                LoweringContext &ctx,
@@ -1977,6 +2028,7 @@ bool lowerURem(const il::core::Instr &ins,
 // FP Arithmetic (fadd, fsub, fmul, fdiv)
 //===----------------------------------------------------------------------===//
 
+/// @copydoc lowerFpArithmetic()
 bool lowerFpArithmetic(const il::core::Instr &ins,
                        const il::core::BasicBlock &bb,
                        LoweringContext &ctx,
@@ -2046,6 +2098,7 @@ bool lowerFpArithmetic(const il::core::Instr &ins,
 // FP Comparisons
 //===----------------------------------------------------------------------===//
 
+/// @copydoc lowerFpCompare()
 bool lowerFpCompare(const il::core::Instr &ins,
                     const il::core::BasicBlock &bb,
                     LoweringContext &ctx,
@@ -2100,6 +2153,7 @@ bool lowerFpCompare(const il::core::Instr &ins,
 // sitofp (signed int to float)
 //===----------------------------------------------------------------------===//
 
+/// @copydoc lowerSitofp()
 bool lowerSitofp(const il::core::Instr &ins,
                  const il::core::BasicBlock &bb,
                  LoweringContext &ctx,
@@ -2135,6 +2189,7 @@ bool lowerSitofp(const il::core::Instr &ins,
 // fptosi (float to signed int)
 //===----------------------------------------------------------------------===//
 
+/// @copydoc lowerFptosi()
 bool lowerFptosi(const il::core::Instr &ins,
                  const il::core::BasicBlock &bb,
                  LoweringContext &ctx,
@@ -2317,6 +2372,7 @@ bool lowerFptosi(const il::core::Instr &ins,
 // Memory Operations — Store
 //===----------------------------------------------------------------------===//
 
+/// @copydoc lowerStore()
 bool lowerStore(const il::core::Instr &ins,
                 const il::core::BasicBlock &bb,
                 LoweringContext &ctx,
@@ -2389,6 +2445,7 @@ bool lowerStore(const il::core::Instr &ins,
 // Memory Operations — Load
 //===----------------------------------------------------------------------===//
 
+/// @copydoc lowerLoad()
 bool lowerLoad(const il::core::Instr &ins,
                const il::core::BasicBlock &bb,
                LoweringContext &ctx,
@@ -2457,6 +2514,7 @@ bool lowerLoad(const il::core::Instr &ins,
 // Memory Operations — GEP
 //===----------------------------------------------------------------------===//
 
+/// @copydoc lowerGEP()
 bool lowerGEP(const il::core::Instr &ins,
               const il::core::BasicBlock &bb,
               LoweringContext &ctx,
@@ -2488,6 +2546,9 @@ bool lowerGEP(const il::core::Instr &ins,
                 MOpcode::SubRI,
                 MOpcode::AddRRR,
                 MOpcode::SubRRR,
+                /// @brief Materializes a legalized GEP offset in a temporary register.
+                /// @param materializedImm Offset selected by the immediate legalizer.
+                /// @return Operand naming the temporary register that contains the offset.
                 [&](long long materializedImm) {
                     const uint16_t tmp = allocateNextVReg(ctx.nextVRegId);
                     out.instrs.push_back(MInstr{
@@ -2513,6 +2574,7 @@ bool lowerGEP(const il::core::Instr &ins,
 // Call & Return — Call
 //===----------------------------------------------------------------------===//
 
+/// @copydoc lowerCall()
 bool lowerCall(const il::core::Instr &ins,
                const il::core::BasicBlock &bb,
                LoweringContext &ctx,
@@ -2565,6 +2627,7 @@ bool lowerCall(const il::core::Instr &ins,
 // Call & Return — CallIndirect
 //===----------------------------------------------------------------------===//
 
+/// @copydoc lowerCallIndirect()
 bool lowerCallIndirect(const il::core::Instr &ins,
                        const il::core::BasicBlock &bb,
                        LoweringContext &ctx,
@@ -2610,6 +2673,7 @@ bool lowerCallIndirect(const il::core::Instr &ins,
 // Call & Return — Ret
 //===----------------------------------------------------------------------===//
 
+/// @copydoc lowerRet()
 bool lowerRet(const il::core::Instr &ins,
               const il::core::BasicBlock &bb,
               LoweringContext &ctx,
@@ -2622,6 +2686,9 @@ bool lowerRet(const il::core::Instr &ins,
         bool ok = materializeValueToVReg(ins.operands[0], bb, ctx, out, v, cls);
         if (!ok && ins.operands[0].kind == il::core::Value::Kind::Temp) {
             const unsigned rid = ins.operands[0].id;
+            /// @brief Tests whether an instruction produces the return temporary.
+            /// @param I Candidate instruction.
+            /// @return `true` when `I` defines `rid`.
             auto it = std::find_if(
                 bb.instructions.begin(), bb.instructions.end(), [&](const il::core::Instr &I) {
                     return I.result && *I.result == rid;

@@ -13,7 +13,7 @@ and source code organization.
 > Status
 >
 > - AArch64: Validated end-to-end on Apple Silicon across all demo games. Register coalescer, post-RA scheduler, peephole optimizer.
-> - x86_64: Implemented with System V (Linux/macOS) and Windows x64 ABI support. Validated on Windows with all codegen tests passing.
+> - x86_64: Implemented with System V (Linux) and Windows x64 ABI support. Validated on Windows with all codegen tests passing. macOS x86-64 is not a supported target — macOS support is Apple Silicon/ARM64 only.
 
 ---
 
@@ -50,7 +50,7 @@ Source → Frontend → IL → Backend → Assembly → Executable
 | Feature           | Description                                              |
 |-------------------|----------------------------------------------------------|
 | **Target**        | x86-64 (AMD64) and AArch64 (ARM64) architectures         |
-| **ABI**           | System V AMD64 (Linux/macOS) and Windows x64             |
+| **ABI**           | System V AMD64 (Linux) and Windows x64                   |
 | **Output**        | Text assembly, native relocatable objects, and executables |
 | **Strategy**      | SSA-based with linear scan register allocation           |
 | **Pipeline**      | Multi-pass: Lowering → Selection → Allocation → Emission |
@@ -538,7 +538,7 @@ enum class RegClass {
 };
 ```
 
-**SysV AMD64 ABI (Linux/macOS):**
+**SysV AMD64 ABI (Linux):**
 
 - **Caller-saved GPR**: `RAX`, `RDI`, `RSI`, `RDX`, `RCX`, `R8`-`R11` (9 registers)
 - **Callee-saved GPR**: `RBX`, `R12`-`R15`, `RBP` (6 registers, allocated with save/restore)
@@ -792,12 +792,13 @@ class RoDataPool {
 
 ## Calling Convention
 
-The backend supports both **System V AMD64** (Linux/macOS) and **Windows x64** calling conventions.
-The appropriate ABI is selected automatically based on the host platform.
+The backend supports both **System V AMD64** (Linux) and **Windows x64** calling conventions.
+The appropriate ABI is selected automatically based on the host platform. macOS x86-64 is not a
+supported target; on macOS the backend targets AArch64 only.
 
 ### System V AMD64 ABI
 
-Used on Linux, macOS, and other Unix-like systems:
+Used on Linux and other Unix-like x86-64 systems:
 
 **Integer/Pointer Arguments:**
 

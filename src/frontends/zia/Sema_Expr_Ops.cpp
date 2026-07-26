@@ -121,6 +121,8 @@ TypeRef Sema::analyzeBinary(BinaryExpr *expr) {
                 exprTypes_[fieldExpr] = leftType;
             }
 
+            /// @brief Records the assignment type of a write-only property target.
+            /// @param targetType Setter parameter type.
             auto recordWriteOnlyTargetType = [&](TypeRef targetType) {
                 leftType = targetType ? targetType : types::unknown();
                 exprTypes_[fieldExpr] = leftType;

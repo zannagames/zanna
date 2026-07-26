@@ -80,6 +80,7 @@ bind "scene_hierarchy_search";
 bind "scene_history";
 bind "inspector_rows";
 bind "scene_layout_2d";
+bind "scene_pane_docking";
 bind "scene_camera_lighting_2d";
 bind "property_rows";
 bind "scene_property_inspector_2d";
@@ -251,7 +252,7 @@ class CanvasPoint2D {
 
 /// @brief Persistent visual editor for one active 2D scene document.
 class SceneEditor2D {
-    hide GUI.App guiApp;
+    expose GUI.App guiApp;
     expose GUI.VBox root;
     expose GUI.Flex toolbar;
     expose GUI.Flex viewToolbar;
@@ -283,6 +284,11 @@ class SceneEditor2D {
     expose GUI.Label toolbarStatus;
     expose GUI.Label viewStatusLabel;
     expose GUI.SplitPane hierarchySplit;
+    expose GUI.VBox objectPaneBox;
+    expose scene_pane_docking.PaneDock hierarchyDock;
+    expose scene_pane_docking.PaneDock inspectorDock;
+    expose scene_pane_docking.PaneDock paletteDock;
+    expose GUI.VBox paletteStripBox;
     expose GUI.SplitPane bodySplit;
     expose GUI.SplitPane canvasSplit;
     expose GUI.Label objectFieldsLabel;
@@ -311,6 +317,14 @@ class SceneEditor2D {
     expose GUI.Button layerUpButton;
     expose GUI.Button layerDownButton;
     expose GUI.Checkbox layerVisibleCheck;
+    expose GUI.Spinner layerOpacitySpinner;
+    expose GUI.Checkbox layerLockCheck;
+    expose GUI.Checkbox layerSoloCheck;
+    hide Integer layerOpacityRevision;
+    hide Integer layerLockRevision;
+    hide Integer layerSoloRevision;
+    hide List[Integer] lockedLayers;
+    expose Integer soloLayer;
     expose GUI.TextInput layerNameInput;
     expose GUI.TextInput layerAssetInput;
     expose GUI.Button chooseLayerAssetButton;
@@ -502,6 +516,11 @@ class SceneEditor2D {
         toolbarStatus = null;
         viewStatusLabel = null;
         hierarchySplit = null;
+        objectPaneBox = null;
+        hierarchyDock = new scene_pane_docking.PaneDock();
+        inspectorDock = new scene_pane_docking.PaneDock();
+        paletteDock = new scene_pane_docking.PaneDock();
+        paletteStripBox = null;
         bodySplit = null;
         canvasSplit = null;
         objectFieldsLabel = null;
@@ -529,6 +548,14 @@ class SceneEditor2D {
         layerUpButton = null;
         layerDownButton = null;
         layerVisibleCheck = null;
+        layerOpacitySpinner = null;
+        layerLockCheck = null;
+        layerSoloCheck = null;
+        layerOpacityRevision = 0;
+        layerLockRevision = 0;
+        layerSoloRevision = 0;
+        lockedLayers = [];
+        soloLayer = -1;
         layerNameInput = null;
         layerAssetInput = null;
         chooseLayerAssetButton = null;
@@ -692,457 +719,6 @@ class SceneEditor2D {
     }
 
     /// @brief Build the visual editor into WorkbenchShell.scene2DHost.
-    expose func Setup(host: GUI.VBox, app: GUI.App) {
-        guiApp = app;
-        root = GUI.VBox.New();
-        root.SetSpacing(0.0);
-        root.SetPadding(0.0);
-        root.SetFlex(1.0);
-        root.SetName("scene-editor-2d");
-        root.SetAccessibleName("2D scene editor");
-        host.AddChild(root);
-
-        toolbar = GUI.Flex.New();
-        toolbar.SetDirection(GUI.FlexDirection.Row);
-        toolbar.SetWrap(GUI.FlexWrap.Wrap);
-        toolbar.SetAlign(GUI.Align.Center);
-        toolbar.SetGap(4.0);
-        toolbar.SetPadding(4.0);
-        root.AddChild(toolbar);
-
-        newSceneButton = GUI.Button.New(toolbar, "New Scene");
-        newSceneButton.SetTooltip(
-            "Replace this document using the inspector dimensions (undoable)");
-        importButton = GUI.Button.New(toolbar, "Import Tiled...");
-        importButton.SetTooltip("Import a Tiled JSON or TMX map into this document");
-        selectButton = GUI.Button.New(toolbar, "Select");
-        selectButton.SetTooltip(
-            "Select and drag objects; Arrow keys nudge one pixel and "
-            + "Shift+Arrow nudges one tile");
-        paintButton = GUI.Button.New(toolbar, "Paint");
-        paintButton.SetTooltip(
-            "Freehand paint the selected tile; Escape cancels a captured stroke");
-        eraseButton = GUI.Button.New(toolbar, "Erase");
-        eraseButton.SetTooltip(
-            "Freehand clear tiles; Escape cancels a captured stroke");
-        rectangleButton = GUI.Button.New(toolbar, "Rectangle");
-        rectangleButton.SetTooltip(
-            "Drag an inclusive rectangle using the selected tile; tile 0 clears");
-        lineButton = GUI.Button.New(toolbar, "Line");
-        lineButton.SetTooltip(
-            "Drag a straight tile line using the selected tile; tile 0 clears");
-        ellipseButton = GUI.Button.New(toolbar, "Ellipse");
-        ellipseButton.SetTooltip(
-            "Drag an ellipse outline using the selected tile; tile 0 clears");
-        fillButton = GUI.Button.New(toolbar, "Fill");
-        fillButton.SetTooltip(
-            "Replace the clicked four-connected active-layer region");
-        pickerButton = GUI.Button.New(toolbar, "Pick");
-        previewButton = GUI.Button.New(toolbar, "Preview");
-        previewButton.SetTooltip(
-            "Play authored tile animations and framing overlays without "
-            + "changing the scene");
-        runSceneButton = GUI.Button.New(toolbar, "Run Scene");
-        runSceneButton.SetTooltip(
-            "Run the owning project with this saved scene's path appended");
-        pickerButton.SetTooltip(
-            "Sample one active-layer tile and return to Paint");
-        objectButton = GUI.Button.New(toolbar, "Object");
-        toolbarStatus = GUI.Label.New(toolbar, "Open or create a 2D scene");
-        toolbarStatus.SetMinSize(0.0, 0.0);
-        toolbarStatus.SetPreferredSize(96.0, 0.0);
-        toolbarStatus.SetEllipsis(true);
-        toolbarStatus.SetMaxLines(1);
-        toolbarStatus.SetFlex(1.0);
-
-        viewToolbar = GUI.Flex.New();
-        viewToolbar.SetDirection(GUI.FlexDirection.Row);
-        viewToolbar.SetWrap(GUI.FlexWrap.Wrap);
-        viewToolbar.SetAlign(GUI.Align.Center);
-        viewToolbar.SetGap(4.0);
-        viewToolbar.SetPadding(4.0);
-        root.AddChild(viewToolbar);
-        GUI.Label.New(viewToolbar, "Tile");
-        tileSpinner = GUI.Spinner.New(viewToolbar);
-        tileSpinner.SetAccessibleName("Selected tile ID");
-        tileSpinner.SetRange(0.0, 1000000.0);
-        tileSpinner.SetStep(1.0);
-        tileSpinner.SetDecimals(0);
-        tileSpinner.SetValue(1.0);
-        tileSpinner.SetPreferredSize(88.0, 0.0);
-        GUI.Label.New(viewToolbar, "Zoom");
-        zoomOutButton = GUI.Button.New(viewToolbar, "-");
-        zoomOutButton.SetTooltip("Zoom out");
-        zoomInButton = GUI.Button.New(viewToolbar, "+");
-        zoomInButton.SetTooltip("Zoom in");
-        fitButton = GUI.Button.New(viewToolbar, "Fit");
-        fitButton.SetTooltip("Fit the complete scene in the current viewport");
-        actualSizeButton = GUI.Button.New(viewToolbar, "1:1");
-        actualSizeButton.SetTooltip(
-            "Show artwork at its native tile resolution (100% zoom)");
-        gridButton = GUI.Button.New(viewToolbar, "Grid: on");
-        gridButton.SetTooltip("Toggle the tile grid overlay");
-        inspectorButton = GUI.Button.New(viewToolbar, "Hide Inspector");
-        inspectorButton.SetStyle(2);
-        inspectorButton.SetTooltip(
-            "Hide the scene inspector and give the canvas the full width");
-        viewStatusLabel = GUI.Label.New(viewToolbar, "");
-        viewStatusLabel.SetMinSize(0.0, 0.0);
-        viewStatusLabel.SetPreferredSize(96.0, 0.0);
-        viewStatusLabel.SetEllipsis(true);
-        viewStatusLabel.SetMaxLines(1);
-        viewStatusLabel.SetFlex(1.0);
-        UpdateModeButtons();
-
-        // Three-pane workbench: Objects | Canvas+Palette | Inspector. The
-        // outer split owns the object hierarchy pane; the inner split keeps
-        // its historical name so persisted fractions and probes stay stable,
-        // and a vertical split gives the tile palette a real strip under the
-        // canvas instead of an inspector slot.
-        hierarchySplit = GUI.SplitPane.New(root, 1);
-        hierarchySplit.SetFlex(1.0);
-        hierarchySplit.SetPosition(0.20);
-        hierarchySplit.SetMinFirst(220.0);
-        hierarchySplit.SetMinSecond(520.0);
-
-        var objectPane = GUI.VBox.New();
-        objectPane.SetSpacing(6.0);
-        objectPane.SetPadding(8.0);
-        objectPane.SetFlex(1.0);
-        hierarchySplit.First.AddChild(objectPane);
-
-        bodySplit = GUI.SplitPane.New(hierarchySplit.Second, 1);
-        bodySplit.SetFlex(1.0);
-        bodySplit.SetPosition(0.66);
-        bodySplit.SetMinFirst(280.0);
-        bodySplit.SetMinSecond(300.0);
-
-        canvasSplit = GUI.SplitPane.New(bodySplit.First, 0);
-        canvasSplit.SetFlex(1.0);
-        canvasSplit.SetPosition(0.72);
-        canvasSplit.SetMinFirst(220.0);
-        canvasSplit.SetMinSecond(140.0);
-
-        canvasScroll = GUI.ScrollView.New(canvasSplit.First);
-        canvasScroll.SetFlex(1.0);
-        // The stage carries the full-scene logical extent for the scrollbars
-        // while the image renders only the visible window. Start alignment
-        // lets per-frame image margins pin the window under the viewport.
-        canvasStage = GUI.VBox.New();
-        canvasStage.SetAlign(GUI.Align.Start);
-        canvasStage.SetJustify(GUI.Justify.Start);
-        canvasScroll.AddChild(canvasStage);
-        canvasImage = GUI.Image.New(canvasStage);
-        canvasImage.SetScaleMode(0);
-        canvasImage.SetFilter(0);
-        canvasImage.SetName("scene-2d-canvas");
-        canvasImage.SetAccessibleName("2D scene canvas");
-        // The canvas is a real focusable surface: clicking it takes keyboard
-        // focus, so arrow nudges, Delete, Duplicate, and Escape belong to
-        // the canvas the user is actually working in.
-        canvasImage.SetFocusable(true);
-        // Assets dragged from the project browser drop onto the canvas to
-        // create sprite objects at the drop cell (Phase 1.2).
-        canvasImage.SetDropTarget(true);
-        canvasImage.SetAcceptedDropTypes("zanna/asset");
-        canvasImage.SetTooltip(
-            "Paint or erase freehand, drag Rectangle, click Fill or Pick; "
-            + "Escape cancels captured tile gestures. In Select mode click or "
-            + "drag a box, Shift adds, Control/Command toggles, and object "
-            + "drags move the selection. The wheel zooms around the pointer "
-            + "and middle-drag pans.");
-
-        var paletteStrip = GUI.VBox.New();
-        paletteStrip.SetSpacing(4.0);
-        paletteStrip.SetPadding(6.0);
-        paletteStrip.SetFlex(1.0);
-        canvasSplit.Second.AddChild(paletteStrip);
-
-        inspectorScroll = GUI.ScrollView.New(bodySplit.Second);
-        inspectorScroll.SetFlex(1.0);
-        var inspector = GUI.VBox.New();
-        inspector.SetSpacing(6.0);
-        inspector.SetPadding(8.0);
-        inspectorScroll.AddChild(inspector);
-
-        // Object | Scene inspector tabs: object fields and component groups
-        // live on the Object tab; scene-wide groups (setup, imports, scene
-        // properties, camera/lighting, layers, tile behavior) on the Scene
-        // tab. Selection changes auto-follow, and a manual choice holds
-        // until the next selection change.
-        var inspectorTabRow = GUI.HBox.New();
-        inspectorTabRow.SetSpacing(4.0);
-        inspector.AddChild(inspectorTabRow);
-        objectTabButton = GUI.Button.New(inspectorTabRow, "Object");
-        objectTabButton.SetTooltip("Inspect the selected objects");
-        sceneTabButton = GUI.Button.New(inspectorTabRow, "Scene");
-        sceneTabButton.SetTooltip(
-            "Author scene setup, imports, properties, camera/lighting, "
-            + "layers, and tile behavior");
-        objectTabHost = GUI.VBox.New();
-        objectTabHost.SetSpacing(6.0);
-        inspector.AddChild(objectTabHost);
-        sceneTabHost = GUI.VBox.New();
-        sceneTabHost.SetSpacing(6.0);
-        inspector.AddChild(sceneTabHost);
-
-        GUI.Label.New(sceneTabHost, "New scene setup");
-        var sceneSizeRow = GUI.HBox.New();
-        sceneSizeRow.SetSpacing(4.0);
-        sceneTabHost.AddChild(sceneSizeRow);
-        GUI.Label.New(sceneSizeRow, "W");
-        sceneWidthSpinner = GUI.Spinner.New(sceneSizeRow);
-        ConfigureSceneSpinner(sceneWidthSpinner, DEFAULT_SCENE_WIDTH, 256);
-        GUI.Label.New(sceneSizeRow, "H");
-        sceneHeightSpinner = GUI.Spinner.New(sceneSizeRow);
-        ConfigureSceneSpinner(sceneHeightSpinner, DEFAULT_SCENE_HEIGHT, 256);
-        var tileSizeRow = GUI.HBox.New();
-        tileSizeRow.SetSpacing(4.0);
-        sceneTabHost.AddChild(tileSizeRow);
-        GUI.Label.New(tileSizeRow, "Tile size");
-        sceneTileSizeSpinner = GUI.Spinner.New(tileSizeRow);
-        ConfigureSceneSpinner(sceneTileSizeSpinner, DEFAULT_TILE_SIZE, 512);
-        var importGroup = GUI.GroupBox.New(sceneTabHost, "Project map imports");
-        tiledAssetBrowser.Setup(
-            importGroup,
-            "Import Project Tiled Map...",
-            ".tmj,.json,.tmx",
-            "Import Map");
-
-        sceneInfoLabel = GUI.Label.New(sceneTabHost, "No scene loaded");
-        sceneInfoLabel.SetWordWrap(true);
-
-        sceneProperties.Setup(sceneTabHost);
-        cameraLighting.Setup(sceneTabHost);
-
-        GUI.Label.New(sceneTabHost, "Layers");
-        layerList = GUI.ListBox.New(sceneTabHost);
-        layerList.SetAccessibleName("Scene layers");
-        layerList.SetPreferredSize(0.0, 132.0);
-        var layerButtons = GUI.HBox.New();
-        layerButtons.SetSpacing(4.0);
-        sceneTabHost.AddChild(layerButtons);
-        addLayerButton = GUI.Button.New(layerButtons, "Add");
-        removeLayerButton = GUI.Button.New(layerButtons, "Remove");
-        layerUpButton = GUI.Button.New(layerButtons, "Up");
-        layerDownButton = GUI.Button.New(layerButtons, "Down");
-        layerVisibleCheck = GUI.Checkbox.New(sceneTabHost, "Layer visible");
-        layerNameInput = GUI.TextInput.New(sceneTabHost);
-        layerNameInput.SetPlaceholder("Layer name");
-        layerAssetInput = GUI.TextInput.New(sceneTabHost);
-        layerAssetInput.SetPlaceholder("Layer asset path");
-        chooseLayerAssetButton =
-            GUI.Button.New(sceneTabHost, "Choose Layer Image...");
-        chooseLayerAssetButton.SetTooltip(
-            "Reference a PNG, JPEG, BMP, or GIF tileset for this layer");
-
-        // The tile palette lives in the strip under the canvas where painting
-        // happens; per-tile behavior authoring stays on the Scene tab.
-        tilesetInspector.Setup(paletteStrip, guiApp);
-        tileBehavior.Setup(sceneTabHost);
-
-        GUI.Label.New(objectPane, "Objects");
-        var hierarchySearchRow = GUI.HBox.New();
-        hierarchySearchRow.SetSpacing(4.0);
-        objectPane.AddChild(hierarchySearchRow);
-        hierarchySearchInput = GUI.TextInput.New(hierarchySearchRow);
-        hierarchySearchInput.SetFlex(1.0);
-        hierarchySearchInput.SetPlaceholder("Find object id or type");
-        hierarchySearchInput.SetAccessibleName(
-            "Find 2D scene object by id or type");
-        hierarchySearchInput.SetTooltip(
-            "Keep the hierarchy intact and jump between matching visible rows");
-        hierarchySearchPreviousButton =
-            GUI.Button.New(hierarchySearchRow, "Prev");
-        hierarchySearchPreviousButton.SetAccessibleName(
-            "Previous matching 2D scene object");
-        hierarchySearchPreviousButton.SetTooltip(
-            "Select and reveal the previous matching object");
-        hierarchySearchNextButton =
-            GUI.Button.New(hierarchySearchRow, "Next");
-        hierarchySearchNextButton.SetAccessibleName(
-            "Next matching 2D scene object");
-        hierarchySearchNextButton.SetTooltip(
-            "Select and reveal the next matching object");
-        hierarchySearchStatus = GUI.Label.New(
-            objectPane, "Find by object id or type");
-        hierarchySearchStatus.SetWordWrap(true);
-        objectTree = GUI.TreeView.New(objectPane);
-        objectTree.SetAccessibleName("Scene object hierarchy");
-        // The dedicated pane gives the tree the full remaining height
-        // instead of a fixed inspector slot.
-        objectTree.SetFlex(1.0);
-        objectTree.SetMultiSelect(true);
-        objectTree.SetDragDropMode(2);
-        objectTree.SetTooltip(
-            "Expand object groups; Ctrl/Command-click or Shift-click selects "
-            + "several rows; drag before, into, or after another row");
-        objectHierarchyStatus = GUI.Label.New(objectPane, "");
-        objectHierarchyStatus.SetWordWrap(true);
-        var objectParentRow = GUI.HBox.New();
-        objectParentRow.SetSpacing(4.0);
-        objectPane.AddChild(objectParentRow);
-        GUI.Label.New(objectParentRow, "Parent");
-        objectParentDropdown = GUI.Dropdown.New(objectParentRow);
-        objectParentDropdown.SetFlex(1.0);
-        objectParentDropdown.SetAccessibleName(
-            "Selected 2D object parent target");
-        objectParentDropdown.SetTooltip(
-            "Choose a cycle-safe parent; absolute object positions stay unchanged");
-        reparentObjectButton =
-            GUI.Button.New(objectParentRow, "Reparent");
-        reparentObjectButton.SetTooltip(
-            "Move selected object subtrees beneath this parent as one undoable edit");
-        // Creation, duplication, removal, and ordering act on the hierarchy
-        // and live in its pane; identity and position editing stay with the
-        // inspector's selected-object fields.
-        var objectButtons = GUI.HBox.New();
-        objectButtons.SetSpacing(4.0);
-        objectPane.AddChild(objectButtons);
-        addObjectButton = GUI.Button.New(objectButtons, "Add Root");
-        addObjectButton.SetTooltip(
-            "Create a new root object at the selected canvas cell");
-        addChildObjectButton =
-            GUI.Button.New(objectButtons, "Add Child");
-        addChildObjectButton.SetTooltip(
-            "Create one child beneath the selected object in a single undo step");
-        // Wrapping row: four ordering buttons exceed the narrow hierarchy
-        // pane, so they wrap instead of bleeding into the canvas pane.
-        var objectOrderButtons = GUI.Flex.New();
-        objectOrderButtons.SetDirection(GUI.FlexDirection.Row);
-        objectOrderButtons.SetWrap(GUI.FlexWrap.Wrap);
-        objectOrderButtons.SetAlign(GUI.Align.Center);
-        objectOrderButtons.SetGap(4.0);
-        objectPane.AddChild(objectOrderButtons);
-        duplicateObjectButton = GUI.Button.New(objectOrderButtons, "Duplicate");
-        duplicateObjectButton.SetTooltip(
-            "Duplicate the selected object and all of its typed properties");
-        removeObjectButton = GUI.Button.New(objectOrderButtons, "Remove");
-        objectUpButton = GUI.Button.New(objectOrderButtons, "Up");
-        objectUpButton.SetTooltip(
-            "Move the selected object subtree before its previous sibling");
-        objectDownButton = GUI.Button.New(objectOrderButtons, "Down");
-        objectDownButton.SetTooltip(
-            "Move the selected object subtree after its next sibling");
-
-        objectFieldsLabel = GUI.Label.New(objectTabHost, "Selected object");
-        objectTypeInput = GUI.TextInput.New(objectTabHost);
-        objectTypeInput.SetPlaceholder("Object type");
-        objectIdInput = GUI.TextInput.New(objectTabHost);
-        objectIdInput.SetPlaceholder("Object id");
-        objectPositionRow = GUI.HBox.New();
-        objectPositionRow.SetSpacing(4.0);
-        objectTabHost.AddChild(objectPositionRow);
-        GUI.Label.New(objectPositionRow, "X");
-        objectXSpinner = GUI.Spinner.New(objectPositionRow);
-        objectXSpinner.SetRange(-1000000.0, 1000000.0);
-        objectXSpinner.SetStep(1.0);
-        objectXSpinner.SetDecimals(0);
-        GUI.Label.New(objectPositionRow, "Y");
-        objectYSpinner = GUI.Spinner.New(objectPositionRow);
-        objectYSpinner.SetRange(-1000000.0, 1000000.0);
-        objectYSpinner.SetStep(1.0);
-        objectYSpinner.SetDecimals(0);
-        applyObjectButton = GUI.Button.New(objectPositionRow, "Apply");
-        objectTransformRow = inspector_rows.NewWrapRow();
-        objectTabHost.AddChild(objectTransformRow);
-        GUI.Label.New(objectTransformRow, "Rot");
-        objectRotationSpinner = GUI.Spinner.New(objectTransformRow);
-        objectRotationSpinner.SetRange(0.0, 359.9);
-        objectRotationSpinner.SetStep(1.0);
-        objectRotationSpinner.SetDecimals(1);
-        objectRotationSpinner.SetTooltip(
-            "Rotation in degrees about the object pivot");
-        GUI.Label.New(objectTransformRow, "SX");
-        objectScaleXSpinner = GUI.Spinner.New(objectTransformRow);
-        objectScaleXSpinner.SetRange(-10000.0, 10000.0);
-        objectScaleXSpinner.SetStep(0.1);
-        objectScaleXSpinner.SetDecimals(2);
-        objectScaleXSpinner.SetTooltip("Horizontal scale factor");
-        GUI.Label.New(objectTransformRow, "SY");
-        objectScaleYSpinner = GUI.Spinner.New(objectTransformRow);
-        objectScaleYSpinner.SetRange(-10000.0, 10000.0);
-        objectScaleYSpinner.SetStep(0.1);
-        objectScaleYSpinner.SetDecimals(2);
-        objectScaleYSpinner.SetTooltip("Vertical scale factor");
-        objectFlipXCheck = GUI.Checkbox.New(objectTransformRow, "Flip X");
-        objectFlipXCheck.SetTooltip(
-            "Mirror horizontally about the pivot (one undoable edit)");
-        objectFlipYCheck = GUI.Checkbox.New(objectTransformRow, "Flip Y");
-        objectFlipYCheck.SetTooltip(
-            "Mirror vertically about the pivot (one undoable edit)");
-        GUI.Label.New(objectTransformRow, "PX");
-        objectPivotXSpinner = GUI.Spinner.New(objectTransformRow);
-        objectPivotXSpinner.SetRange(0.0, 1.0);
-        objectPivotXSpinner.SetStep(0.05);
-        objectPivotXSpinner.SetDecimals(2);
-        objectPivotXSpinner.SetTooltip(
-            "Normalized horizontal pivot within the sprite");
-        GUI.Label.New(objectTransformRow, "PY");
-        objectPivotYSpinner = GUI.Spinner.New(objectTransformRow);
-        objectPivotYSpinner.SetRange(0.0, 1.0);
-        objectPivotYSpinner.SetStep(0.05);
-        objectPivotYSpinner.SetDecimals(2);
-        objectPivotYSpinner.SetTooltip(
-            "Normalized vertical pivot within the sprite");
-        GUI.Label.New(objectTransformRow, "Tint");
-        objectTintInput = GUI.TextInput.New(objectTransformRow);
-        objectTintInput.SetPlaceholder("RRGGBBAA");
-        objectTintInput.SetTooltip(
-            "RGBA multiply tint in hex; FFFFFFFF means no tint. "
-            + "Enter commits one undoable edit.");
-        objectArrangeRow = GUI.HBox.New();
-        objectArrangeRow.SetSpacing(4.0);
-        objectTabHost.AddChild(objectArrangeRow);
-        objectArrangeDropdown = GUI.Dropdown.New(objectArrangeRow);
-        objectArrangeDropdown.AddItem(
-            scene_layout_2d.OperationLabel(ARRANGE_ALIGN_X));
-        objectArrangeDropdown.AddItem(
-            scene_layout_2d.OperationLabel(ARRANGE_ALIGN_Y));
-        objectArrangeDropdown.AddItem(
-            scene_layout_2d.OperationLabel(ARRANGE_DISTRIBUTE_X));
-        objectArrangeDropdown.AddItem(
-            scene_layout_2d.OperationLabel(ARRANGE_DISTRIBUTE_Y));
-        objectArrangeDropdown.SetSelected(ARRANGE_ALIGN_X);
-        objectArrangeDropdown.SetFlex(1.0);
-        objectArrangeDropdown.SetTooltip(
-            "Align to the primary object or distribute authored point positions");
-        arrangeObjectButton = GUI.Button.New(objectArrangeRow, "Arrange");
-        arrangeObjectButton.SetTooltip(
-            "Apply one undoable layout operation to the selected objects");
-
-        objectPropertyLabel =
-            GUI.Label.New(objectTabHost, "Object properties");
-        objectProperties = new property_rows.PropertyRows();
-        objectProperties.Setup(
-            objectTabHost,
-            ["String", "Integer", "Float", "Boolean", "Null"],
-            "New property",
-            "object property");
-        // Batch mode keeps one explicit remove-by-key affordance beside the
-        // shared draft row; single-object rows remove through their own ×.
-        removeObjectPropertyButton =
-            GUI.Button.New(objectTabHost, "Remove");
-        removeObjectPropertyButton.SetTooltip(
-            "Remove this property from the current selection");
-        removeObjectPropertyButton.SetVisible(false);
-
-        componentPalette.Setup(
-            objectTabHost,
-            "Project components",
-            "2D object component template");
-        componentAssetHost =
-            GUI.GroupBox.New(objectTabHost, "Component asset field");
-        componentAssetBrowser.Setup(
-            componentAssetHost,
-            "Browse Asset Field...",
-            file_utils.AssetKindExtensions("any"),
-            "Use In Field Draft");
-
-        detailLabel = GUI.Label.New(inspector, "");
-        detailLabel.SetWordWrap(true);
-        SetEditorControlsEnabled(false);
-    }
 
     /// @brief Borrow Studio's multi-root project index for non-modal assets.
     expose func SetWorkspaceContext(
@@ -1219,6 +795,9 @@ class SceneEditor2D {
         changed = PumpObjectTransformDraft() or changed;
         changed = PumpObjectFlipControls() or changed;
         changed = PumpObjectTintInput() or changed;
+        if hierarchyDock.Pump() { renderDirty = true; }
+        if inspectorDock.Pump() { renderDirty = true; }
+        if paletteDock.Pump() { renderDirty = true; }
         if newSceneButton.WasClicked() {
             changed = ReplaceScene(
                 Convert.NumToInt(sceneWidthSpinner.Value),
@@ -1770,6 +1349,7 @@ class SceneEditor2D {
                                    endX: Integer,
                                    endY: Integer,
                                    tile: Integer) -> Boolean {
+        if RefuseLockedLayer(layer) { return false; }
         if scene == null or layer < 0 or layer >= scene.LayerCount()
            or startX < 0 or startY < 0 or endX < 0 or endY < 0
            or startX >= scene.Width or endX >= scene.Width
@@ -1838,6 +1418,7 @@ class SceneEditor2D {
                                    tile: Integer) -> Integer {
         if scene == null or layer < 0 or layer >= scene.LayerCount()
            or x < 0 or y < 0 or x >= scene.Width or y >= scene.Height {
+        if RefuseLockedLayer(layer) { return -1; }
             return 0;
         }
         var nextTile = tile;
@@ -4959,7 +4540,7 @@ class SceneEditor2D {
         UpdateModeButtons();
     }
 
-    hide func UpdateModeButtons() {
+    expose func UpdateModeButtons() {
         if selectButton == null { return; }
         selectButton.SetEnabled(editorControlsEnabled);
         paintButton.SetEnabled(editorControlsEnabled);
@@ -4998,7 +4579,7 @@ class SceneEditor2D {
         }
     }
 
-    hide func SetEditorControlsEnabled(enabled: Boolean) {
+    expose func SetEditorControlsEnabled(enabled: Boolean) {
         if selectButton == null { return; }
         editorControlsEnabled = enabled;
         UpdateModeButtons();
@@ -5844,6 +5425,12 @@ class SceneEditor2D {
            or activeLayer >= scene.LayerCount() {
             layerVisibleCheck.SetChecked(false);
             layerVisibleRevision = layerVisibleCheck.GetRevision();
+            layerOpacitySpinner.SetValue(1.0);
+            layerOpacityRevision = layerOpacitySpinner.GetRevision();
+            layerLockCheck.SetChecked(false);
+            layerLockRevision = layerLockCheck.GetRevision();
+            layerSoloCheck.SetChecked(false);
+            layerSoloRevision = layerSoloCheck.GetRevision();
             layerNameInput.SetText("");
             layerAssetInput.SetText("");
             RefreshTilesetPalette();
@@ -5851,6 +5438,12 @@ class SceneEditor2D {
         }
         layerVisibleCheck.SetChecked(scene.LayerVisible(activeLayer));
         layerVisibleRevision = layerVisibleCheck.GetRevision();
+        layerOpacitySpinner.SetValue(scene.LayerOpacity(activeLayer));
+        layerOpacityRevision = layerOpacitySpinner.GetRevision();
+        layerLockCheck.SetChecked(LayerLocked(activeLayer));
+        layerLockRevision = layerLockCheck.GetRevision();
+        layerSoloCheck.SetChecked(soloLayer == activeLayer);
+        layerSoloRevision = layerSoloCheck.GetRevision();
         layerNameInput.SetText(scene.LayerName(activeLayer));
         layerAssetInput.SetText(scene.LayerAsset(activeLayer));
         RefreshTilesetPalette();
@@ -6293,6 +5886,35 @@ class SceneEditor2D {
         }
     }
 
+    /// @brief Whether one layer is workspace-locked against tile edits.
+    expose func LayerLocked(layer: Integer) -> Boolean {
+        var index = 0;
+        while index < lockedLayers.count() {
+            if lockedLayers.get(index) == layer { return true; }
+            index = index + 1;
+        }
+        return false;
+    }
+
+    /// @brief Refuse an edit on a locked layer with a visible reason.
+    hide func RefuseLockedLayer(layer: Integer) -> Boolean {
+        if LayerLocked(layer) == false { return false; }
+        detailLabel.SetText(
+            "Layer " + (layer + 1) + " is locked; unlock it to edit tiles.");
+        return true;
+    }
+
+    /// @brief Reset workspace lock/solo when layer identity shifts.
+    /// @details Lock and solo key by index, so structural layer changes
+    ///          (add/remove/move) clear them rather than misapply them.
+    hide func ResetLayerWorkspaceState() {
+        if lockedLayers.count() == 0 and soloLayer < 0 { return; }
+        lockedLayers = [];
+        soloLayer = -1;
+        RefreshLayerFields();
+        renderDirty = true;
+    }
+
     hide func PumpLayerControls() -> Boolean {
         if scene == null { return false; }
         var changed = false;
@@ -6308,6 +5930,7 @@ class SceneEditor2D {
             var added = scene.AddLayer("Layer " + (scene.LayerCount() + 1));
             if added >= 0 {
                 activeLayer = added;
+                ResetLayerWorkspaceState();
                 changed = CommitScene("Added layer");
                 ReloadTilesets();
                 RefreshInspector();
@@ -6320,6 +5943,7 @@ class SceneEditor2D {
                 if activeLayer >= scene.LayerCount() {
                     activeLayer = scene.LayerCount() - 1;
                 }
+                ResetLayerWorkspaceState();
                 changed = CommitScene("Removed layer") or changed;
                 ReloadTilesets();
                 RefreshInspector();
@@ -6328,6 +5952,7 @@ class SceneEditor2D {
         if layerUpButton.WasClicked() and activeLayer > 0 {
             scene.MoveLayer(activeLayer, activeLayer - 1);
             activeLayer = activeLayer - 1;
+            ResetLayerWorkspaceState();
             changed = CommitScene("Moved layer up") or changed;
             ReloadTilesets();
             RefreshInspector();
@@ -6336,6 +5961,7 @@ class SceneEditor2D {
            and activeLayer + 1 < scene.LayerCount() {
             scene.MoveLayer(activeLayer, activeLayer + 1);
             activeLayer = activeLayer + 1;
+            ResetLayerWorkspaceState();
             changed = CommitScene("Moved layer down") or changed;
             ReloadTilesets();
             RefreshInspector();
@@ -6350,6 +5976,49 @@ class SceneEditor2D {
             scene.SetLayerVisible(activeLayer, layerVisibleCheck.IsChecked());
             changed = CommitScene("Updated layer visibility") or changed;
             RefreshInspector();
+        }
+        var nextOpacityRevision = layerOpacitySpinner.GetRevision();
+        if nextOpacityRevision != layerOpacityRevision {
+            layerOpacityRevision = nextOpacityRevision;
+            var nextOpacity = layerOpacitySpinner.Value;
+            if NumberDiffers(
+                   nextOpacity, scene.LayerOpacity(activeLayer)) {
+                scene.SetLayerOpacity(activeLayer, nextOpacity);
+                changed = CommitScene("Updated layer opacity") or changed;
+                renderDirty = true;
+                RefreshInspector();
+            }
+        }
+        var nextLockRevision = layerLockCheck.GetRevision();
+        if nextLockRevision != layerLockRevision {
+            layerLockRevision = nextLockRevision;
+            var wantLocked = layerLockCheck.IsChecked();
+            if wantLocked != LayerLocked(activeLayer) {
+                if wantLocked {
+                    lockedLayers.add(activeLayer);
+                } else {
+                    var kept: List[Integer] = [];
+                    var lockIndex = 0;
+                    while lockIndex < lockedLayers.count() {
+                        if lockedLayers.get(lockIndex) != activeLayer {
+                            kept.add(lockedLayers.get(lockIndex));
+                        }
+                        lockIndex = lockIndex + 1;
+                    }
+                    lockedLayers = kept;
+                }
+            }
+        }
+        var nextSoloRevision = layerSoloCheck.GetRevision();
+        if nextSoloRevision != layerSoloRevision {
+            layerSoloRevision = nextSoloRevision;
+            var wantSolo = layerSoloCheck.IsChecked();
+            var nextSolo = -1;
+            if wantSolo { nextSolo = activeLayer; }
+            if nextSolo != soloLayer {
+                soloLayer = nextSolo;
+                renderDirty = true;
+            }
         }
         if chooseLayerAssetButton.WasClicked() {
             var baseDir = "";
@@ -6385,7 +6054,7 @@ class SceneEditor2D {
     }
 
     /// @brief Configure one integer spinner used for new-scene dimensions.
-    hide func ConfigureSceneSpinner(spinner: GUI.Spinner,
+    expose func ConfigureSceneSpinner(spinner: GUI.Spinner,
                                     value: Integer,
                                     maximum: Integer) {
         spinner.SetRange(1.0, maximum);
@@ -6887,6 +6556,7 @@ class SceneEditor2D {
            or activeLayer >= scene.LayerCount() {
             return false;
         }
+        if RefuseLockedLayer(activeLayer) { return false; }
         var nextTile = tile;
         if nextTile < 0 { nextTile = 0; }
         var cells = ShapeCells(shape, startX, startY, endX, endY);
@@ -7752,6 +7422,7 @@ class SceneEditor2D {
     /// @brief Clear the region tiles on the active layer as one edit.
     expose func DeleteTileRegion() -> Boolean {
         if HasTileRegion() == false { return false; }
+        if RefuseLockedLayer(activeLayer) { return false; }
         var changedCells = 0;
         var y = tileRegionMinY;
         while y <= tileRegionMaxY {
@@ -7798,6 +7469,7 @@ class SceneEditor2D {
            or activeLayer < 0 or activeLayer >= scene.LayerCount() {
             return false;
         }
+        if RefuseLockedLayer(activeLayer) { return false; }
         var payload = scene_clipboard.DecodeTileBlock(
             GUI.ClipboardText.GetText());
         if payload.valid == false {
@@ -8101,6 +7773,7 @@ class SceneEditor2D {
 
     /// @brief Mutate one cell inside the current uncommitted paint stroke.
     hide func ApplyStrokeCell(cellX: Integer, cellY: Integer) -> Boolean {
+        if RefuseLockedLayer(activeLayer) { return false; }
         if mode == MODE_PAINT and stampActive
            and stampWidth > 0 and stampHeight > 0 {
             return ApplyStampAt(cellX, cellY);
@@ -8548,7 +8221,10 @@ class SceneEditor2D {
 
         var layer = 0;
         while layer < scene.LayerCount() {
-            if scene.LayerVisible(layer) {
+            var layerShown = scene.LayerVisible(layer)
+                and (soloLayer < 0 or soloLayer == layer);
+            var layerOpacity = scene.LayerOpacity(layer);
+            if layerShown and layerOpacity > 0.001 {
                 var y = firstRow;
                 while y <= lastRow {
                     var x = firstColumn;
@@ -8558,13 +8234,14 @@ class SceneEditor2D {
                         if tile > 0 {
                             var drawX = x * displayCellSize - viewOriginX;
                             var drawY = y * displayCellSize - viewOriginY;
-                            var drewAsset = tilesets.DrawTile(
+                            var drewAsset = tilesets.DrawTileWithOpacity(
                                 framePixels,
                                 layer,
                                 tile,
                                 drawX,
                                 drawY,
-                                displayCellSize);
+                                displayCellSize,
+                                layerOpacity);
                             if drewAsset == false {
                                 framePixels.DrawBox(
                                     drawX + 1,

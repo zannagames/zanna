@@ -15,6 +15,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares diagnostic-preserving IL parse and verification adapters.
+ *
+ * @details These versioned entry points wrap the legacy parse and verifier
+ *          operations in `Expected<void>`, returning structured diagnostic
+ *          payloads instead of requiring callers to interpret boolean failure
+ *          alone. Parsing mutates the caller-owned module; verification only
+ *          borrows its input.
+ */
+
 #pragma once
 
 #include <istream>

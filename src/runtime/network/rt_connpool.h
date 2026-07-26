@@ -18,6 +18,15 @@
 // Links: rt_network.h (TCP)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares the managed plain-TCP ConnectionPool API.
+ * @details Defines validated pool identity, bounded construction, exact
+ * endpoint acquisition, exclusive connection return, safe clearing, and
+ * synchronized tracked and idle entry counts.
+ */
+
 #pragma once
 
 #include "rt_string.h"

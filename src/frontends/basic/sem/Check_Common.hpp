@@ -46,6 +46,10 @@ class ControlCheckContext {
     ControlCheckContext(const ControlCheckContext &) = delete;
     ControlCheckContext &operator=(const ControlCheckContext &) = delete;
 
+    /// @brief Restore semantic-control stacks to their entry depths.
+    /// @details Recovery truncates any loop or FOR-variable state left behind
+    ///          by malformed control flow so diagnostics can be returned
+    ///          without leaking checker state into later statements.
     ~ControlCheckContext() {
         // Malformed control flow — a stray NEXT, an unterminated FOR, or a reserved
         // keyword used as an identifier that parses as NEXT/LOOP — can leave the
@@ -300,6 +304,8 @@ class ControlCheckContext {
     }
 
     /// @brief Set or refine a variable type while preserving procedure-scope rollback.
+    /// @param name Variable name whose semantic type is updated.
+    /// @param type New semantic type to record.
     void setVarType(const std::string &name, SemanticAnalyzer::Type type) {
         auto itType = analyzer_->varTypes_.find(name);
         if (analyzer_->activeProcScope_) {

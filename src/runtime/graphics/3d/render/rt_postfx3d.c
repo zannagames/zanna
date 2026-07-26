@@ -238,6 +238,10 @@ extern int64_t rt_parallel_default_workers(void);
 #define POSTFX3D_MAX_BANDS 8
 #define POSTFX3D_MIN_ROWS_PER_BAND 32
 
+/// @brief Process one inclusive-exclusive horizontal post-processing band.
+/// @param ctx Borrowed pass-specific callback context.
+/// @param y0 First destination row to process.
+/// @param y1 One-past-last destination row to process.
 typedef void (*postfx_band_fn)(void *ctx, int32_t y0, int32_t y1);
 
 typedef struct {

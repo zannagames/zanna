@@ -170,10 +170,16 @@ void LivenessAnalysis::buildCFG(const MFunction &func) {
         }
     }
 
+    /// @brief Exposes a block's instruction sequence to the CFG extractor.
+    /// @param block Machine basic block.
+    /// @return Block instruction vector.
     succs_ = zanna::codegen::ra::extractSuccessors(
         func.blocks,
         blockIndex_,
         [](const MBasicBlock &block) -> const std::vector<MInstr> & { return block.instructions; },
+        /// @brief Classifies one instruction's control-flow behavior.
+        /// @param instr Machine instruction to classify.
+        /// @return Control-flow classification used by CFG extraction.
         [](const MInstr &instr) { return classifyControlFlow(instr); });
 }
 

@@ -17,6 +17,15 @@
 // Links: rt_http_server.h (shared callback API), rt_tls_server_internal.h
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares the managed TLS-backed HTTP/1.1 and HTTP/2 server.
+ * @details Defines credential-bound construction, synchronized route and
+ * handler registration, restartable TLS listener lifecycle, and shared
+ * ServerReq/ServerRes handler contracts.
+ */
+
 #pragma once
 
 #include "rt_http_server.h"

@@ -5,16 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tools/lsp-common/McpHandler.cpp
-// Purpose: Implementation of the MCP protocol handler.
-// Key invariants:
-//   - initialize must be called before tools/list or tools/call
-//   - tools/call validates tool name and argument presence
-//   - All text results are returned as MCP content arrays
-//   - Tool names are prefixed with config_.toolPrefix (e.g., "zia/", "basic/")
-// Ownership/Lifetime:
-//   - All returned JSON is fully owned
-// Links: tools/lsp-common/McpHandler.hpp, tools/lsp-common/ICompilerBridge.hpp
+/// @file
+/// @brief Implements MCP lifecycle handling, tool schemas, argument validation,
+///        and compiler-bridge tool dispatch.
+///
+/// Tool methods are available only after initialization, use the configured
+/// language prefix, and return MCP text content plus structured JSON when the
+/// result has a stable machine-readable shape. All results own their storage.
+///
+/// @see McpHandler.hpp
+/// @see ICompilerBridge.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -30,6 +30,9 @@ namespace {
 // message string describing the first problem found.
 
 /// @brief Require @p value to be a JSON object.
+/// @param value Candidate JSON value.
+/// @param fieldName Human-readable field label used in the error message.
+/// @return Empty optional on success, otherwise a validation error.
 std::optional<std::string> requireObject(const JsonValue &value, const char *fieldName) {
     if (value.type() != JsonType::Object)
         return std::string(fieldName) + " must be an object";
@@ -37,6 +40,9 @@ std::optional<std::string> requireObject(const JsonValue &value, const char *fie
 }
 
 /// @brief Require @p obj to contain a String member named @p fieldName.
+/// @param obj Arguments object to inspect.
+/// @param fieldName Required string member name.
+/// @return Empty optional on success, otherwise a missing-or-invalid error.
 std::optional<std::string> requireString(const JsonValue &obj, const char *fieldName) {
     const auto *value = obj.get(fieldName);
     if (!value || value->type() != JsonType::String)
@@ -81,6 +87,9 @@ std::optional<std::string> requireNonEmptyString(const JsonValue &obj, const cha
 }
 
 /// @brief Allow @p fieldName to be absent, but if present it must be a String.
+/// @param obj Arguments object to inspect.
+/// @param fieldName Optional string member name.
+/// @return Empty optional when absent or valid, otherwise a validation error.
 std::optional<std::string> requireOptionalString(const JsonValue &obj, const char *fieldName) {
     const auto *value = obj.get(fieldName);
     if (value && value->type() != JsonType::String)
@@ -89,6 +98,9 @@ std::optional<std::string> requireOptionalString(const JsonValue &obj, const cha
 }
 
 /// @brief Allow @p fieldName to be absent, but if present it must be a Bool.
+/// @param obj Arguments object to inspect.
+/// @param fieldName Optional Boolean member name.
+/// @return Empty optional when absent or valid, otherwise a validation error.
 std::optional<std::string> requireOptionalBool(const JsonValue &obj, const char *fieldName) {
     const auto *value = obj.get(fieldName);
     if (value && value->type() != JsonType::Bool)
@@ -98,6 +110,8 @@ std::optional<std::string> requireOptionalBool(const JsonValue &obj, const char 
 
 /// @brief Validate the args common to source-taking tools: object with a "source"
 ///        string and an optional "path" string.
+/// @param args Candidate tool arguments.
+/// @return Empty optional when valid, otherwise the first validation error.
 std::optional<std::string> validateCommonSourceArgs(const JsonValue &args) {
     if (auto err = requireObject(args, "arguments"))
         return err;
@@ -108,6 +122,8 @@ std::optional<std::string> validateCommonSourceArgs(const JsonValue &args) {
 
 /// @brief Validate position-taking tool args: the common source args plus integer
 ///        "line" and "col" members.
+/// @param args Candidate tool arguments.
+/// @return Empty optional when valid, otherwise the first validation error.
 std::optional<std::string> validatePositionArgs(const JsonValue &args) {
     if (auto err = validateCommonSourceArgs(args))
         return err;
@@ -121,6 +137,8 @@ std::optional<std::string> validatePositionArgs(const JsonValue &args) {
 ///          request method name. Dispatch uses this helper to avoid returning
 ///          `id: null` responses for notification-shaped initialize, ping, and
 ///          tool calls.
+/// @param method Incoming MCP method name.
+/// @return @c true when the method normally expects a response.
 bool isRequestMethod(const std::string &method) {
     return method == "initialize" || method == "tools/list" || method == "tools/call" ||
            method == "ping";
@@ -128,11 +146,17 @@ bool isRequestMethod(const std::string &method) {
 
 } // namespace
 
+/// @brief Construct an MCP handler for one language server.
+/// @param bridge Compiler adapter borrowed for the handler lifetime.
+/// @param config Language and naming settings copied into the handler.
 McpHandler::McpHandler(ICompilerBridge &bridge, const ServerConfig &config)
     : bridge_(bridge), config_(config) {}
 
 // --- Request dispatch ---
 
+/// @brief Dispatch one parsed JSON-RPC message through the MCP lifecycle.
+/// @param req Request or notification to process.
+/// @return Serialized response for requests, or an empty string for notifications.
 std::string McpHandler::handleRequest(const JsonRpcRequest &req) {
     if (req.isNotification() && isRequestMethod(req.method))
         return {};
@@ -167,6 +191,9 @@ std::string McpHandler::handleRequest(const JsonRpcRequest &req) {
 
 // --- Lifecycle ---
 
+/// @brief Negotiate the supported MCP protocol and tool capability.
+/// @param req Initialize request whose identifier is echoed.
+/// @return Response with protocol version, capabilities, and server information.
 std::string McpHandler::handleInitialize(const JsonRpcRequest &req) {
     initializeResponded_ = true;
     auto result = JsonValue::object({
@@ -181,6 +208,9 @@ std::string McpHandler::handleInitialize(const JsonRpcRequest &req) {
 
 // --- tools/list ---
 
+/// @brief Return all configured MCP compiler-tool definitions.
+/// @param req Tools-list request whose identifier is echoed.
+/// @return Response containing JSON Schema definitions for each tool.
 std::string McpHandler::handleToolsList(const JsonRpcRequest &req) {
     auto result = JsonValue::object({{"tools", buildToolDefinitions()}});
     return buildResponse(req.id, result);
@@ -188,12 +218,20 @@ std::string McpHandler::handleToolsList(const JsonRpcRequest &req) {
 
 // --- Tool schema helpers ---
 
-/// Build a JSON Schema property definition: {type, description}
+/// @brief Build a JSON Schema property definition.
+/// @param type JSON Schema type name.
+/// @param desc Human-readable property description.
+/// @return Object containing @c type and @c description.
 static JsonValue schemaProp(const char *type, const char *desc) {
     return JsonValue::object({{"type", JsonValue(type)}, {"description", JsonValue(desc)}});
 }
 
-/// Build a complete tool definition object.
+/// @brief Build a complete MCP tool definition object.
+/// @param name Fully prefixed tool name.
+/// @param desc Human-readable tool description.
+/// @param properties Input-schema properties moved into the result.
+/// @param required Required property names moved into schema order.
+/// @return Tool object with a closed object input schema.
 static JsonValue toolDef(const std::string &name,
                          const std::string &desc,
                          JsonValue::ObjectType properties,
@@ -223,6 +261,8 @@ static JsonValue toolDef(const std::string &name,
     });
 }
 
+/// @brief Build the configured language server's MCP tool catalog.
+/// @return Ordered array of compiler, inspection, and runtime-query schemas.
 JsonValue McpHandler::buildToolDefinitions() const {
     JsonValue::ArrayType tools;
     const std::string &prefix = config_.toolPrefix;
@@ -340,6 +380,8 @@ JsonValue McpHandler::buildToolDefinitions() const {
 // --- tools/call dispatch ---
 
 /// @brief Build an MCP text content response.
+/// @param text Text payload to copy.
+/// @return One-element MCP content array containing a text block.
 static JsonValue textContent(const std::string &text) {
     return JsonValue::array({JsonValue::object({
         {"type", JsonValue("text")},
@@ -347,6 +389,10 @@ static JsonValue textContent(const std::string &text) {
     })});
 }
 
+/// @brief Validate and dispatch an MCP @c tools/call request.
+/// @param req Request containing a configured tool name and arguments object.
+/// @return Tool response with text and optional structured content, or a
+///         JSON-RPC error for invalid arguments or an unknown tool.
 std::string McpHandler::handleToolsCall(const JsonRpcRequest &req) {
     if (auto err = requireObject(req.params, "params"))
         return buildError(req.id, kInvalidParams, *err);
@@ -442,6 +488,8 @@ std::string McpHandler::handleToolsCall(const JsonRpcRequest &req) {
 /// @details The shape is stable for machine consumers: endLine/endColumn are 0
 ///          when no concrete range is known, and notes/fixits are always
 ///          present (possibly empty arrays).
+/// @param d Compiler diagnostic to serialize.
+/// @return Structured diagnostic with location, metadata, notes, and fix-its.
 static JsonValue diagnosticToJson(const DiagnosticInfo &d) {
     JsonValue::ArrayType noteArr;
     noteArr.reserve(d.notes.size());
@@ -482,6 +530,9 @@ static JsonValue diagnosticToJson(const DiagnosticInfo &d) {
     });
 }
 
+/// @brief Run the bridge's source-check operation.
+/// @param args Validated source and optional path arguments.
+/// @return Text and structured diagnostic payloads.
 McpHandler::ToolCallResult McpHandler::callCheck(const JsonValue &args) {
     std::string source = args["source"].asString();
     std::string path = args.has("path") ? args["path"].asString() : "untitled" + config_.defaultExt;
@@ -498,6 +549,9 @@ McpHandler::ToolCallResult McpHandler::callCheck(const JsonValue &args) {
     return {textContent(structured.toCompactString()), std::move(structured)};
 }
 
+/// @brief Compile source and report success plus diagnostics.
+/// @param args Validated source and optional path arguments.
+/// @return Text and structured compilation-result payloads.
 McpHandler::ToolCallResult McpHandler::callCompile(const JsonValue &args) {
     std::string source = args["source"].asString();
     std::string path = args.has("path") ? args["path"].asString() : "untitled" + config_.defaultExt;
@@ -516,6 +570,9 @@ McpHandler::ToolCallResult McpHandler::callCompile(const JsonValue &args) {
     return {textContent(obj.toCompactString()), std::move(obj)};
 }
 
+/// @brief Query bridge completions at a validated source position.
+/// @param args Source, optional path, and one-based line/column arguments.
+/// @return Text and structured completion-list payloads.
 McpHandler::ToolCallResult McpHandler::callCompletions(const JsonValue &args) {
     std::string source = args["source"].asString();
     int line = static_cast<int>(args["line"].asInt());
@@ -540,6 +597,9 @@ McpHandler::ToolCallResult McpHandler::callCompletions(const JsonValue &args) {
     return {textContent(structured.toCompactString()), std::move(structured)};
 }
 
+/// @brief Query bridge hover text at a validated source position.
+/// @param args Source, optional path, and one-based line/column arguments.
+/// @return Text content containing hover information or a no-information marker.
 McpHandler::ToolCallResult McpHandler::callHover(const JsonValue &args) {
     std::string source = args["source"].asString();
     int line = static_cast<int>(args["line"].asInt());
@@ -550,6 +610,9 @@ McpHandler::ToolCallResult McpHandler::callHover(const JsonValue &args) {
     return {textContent(result.empty() ? "(no type information)" : result), std::nullopt};
 }
 
+/// @brief Enumerate top-level symbols in source text.
+/// @param args Validated source and optional path arguments.
+/// @return Text and structured symbol-list payloads.
 McpHandler::ToolCallResult McpHandler::callSymbols(const JsonValue &args) {
     std::string source = args["source"].asString();
     std::string path = args.has("path") ? args["path"].asString() : "untitled" + config_.defaultExt;
@@ -572,6 +635,9 @@ McpHandler::ToolCallResult McpHandler::callSymbols(const JsonValue &args) {
     return {textContent(structured.toCompactString()), std::move(structured)};
 }
 
+/// @brief Produce the bridge's intermediate-language dump.
+/// @param args Source, optional path, and optional optimization flag.
+/// @return Text-only MCP content containing the IL dump.
 McpHandler::ToolCallResult McpHandler::callDumpIL(const JsonValue &args) {
     std::string source = args["source"].asString();
     std::string path = args.has("path") ? args["path"].asString() : "untitled" + config_.defaultExt;
@@ -580,6 +646,9 @@ McpHandler::ToolCallResult McpHandler::callDumpIL(const JsonValue &args) {
     return {textContent(bridge_.dumpIL(source, path, optimized)), std::nullopt};
 }
 
+/// @brief Produce the bridge's abstract-syntax-tree dump.
+/// @param args Validated source and optional path arguments.
+/// @return Text-only MCP content containing the AST dump.
 McpHandler::ToolCallResult McpHandler::callDumpAst(const JsonValue &args) {
     std::string source = args["source"].asString();
     std::string path = args.has("path") ? args["path"].asString() : "untitled" + config_.defaultExt;
@@ -587,6 +656,9 @@ McpHandler::ToolCallResult McpHandler::callDumpAst(const JsonValue &args) {
     return {textContent(bridge_.dumpAst(source, path)), std::nullopt};
 }
 
+/// @brief Produce the bridge's lexical-token dump.
+/// @param args Validated source and optional path arguments.
+/// @return Text-only MCP content containing the token dump.
 McpHandler::ToolCallResult McpHandler::callDumpTokens(const JsonValue &args) {
     std::string source = args["source"].asString();
     std::string path = args.has("path") ? args["path"].asString() : "untitled" + config_.defaultExt;
@@ -594,6 +666,9 @@ McpHandler::ToolCallResult McpHandler::callDumpTokens(const JsonValue &args) {
     return {textContent(bridge_.dumpTokens(source, path)), std::nullopt};
 }
 
+/// @brief List registered runtime classes and their member counts.
+/// @param args Validated empty arguments object; its contents are unused.
+/// @return Text and structured runtime-class payloads.
 McpHandler::ToolCallResult McpHandler::callRuntimeClasses(const JsonValue & /*args*/) {
     auto classes = bridge_.runtimeClasses();
 
@@ -615,6 +690,9 @@ McpHandler::ToolCallResult McpHandler::callRuntimeClasses(const JsonValue & /*ar
     return {textContent(structured.toCompactString()), std::move(structured)};
 }
 
+/// @brief List members of one registered runtime class.
+/// @param args Validated object containing @c className.
+/// @return Text and structured runtime-member payloads.
 McpHandler::ToolCallResult McpHandler::callRuntimeMembers(const JsonValue &args) {
     std::string className = args["className"].asString();
     auto members = bridge_.runtimeMembers(className);
@@ -633,6 +711,9 @@ McpHandler::ToolCallResult McpHandler::callRuntimeMembers(const JsonValue &args)
     return {textContent(structured.toCompactString()), std::move(structured)};
 }
 
+/// @brief Search registered runtime APIs by keyword.
+/// @param args Validated object containing a nonempty @c keyword.
+/// @return Text and structured runtime-search payloads.
 McpHandler::ToolCallResult McpHandler::callRuntimeSearch(const JsonValue &args) {
     std::string keyword = args["keyword"].asString();
     auto results = bridge_.runtimeSearch(keyword);

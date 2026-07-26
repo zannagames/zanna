@@ -20,6 +20,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares external callable signatures represented in an IL module.
+ *
+ * @details An `Extern` owns the textual signature and semantic effect promises
+ *          used to type-check and optimize foreign calls. Its optional interned
+ *          name accelerates module lookup but remains a sidecar to the
+ *          canonical owned string.
+ */
+
 #pragma once
 
 #include "il/core/EffectAttrs.hpp"

@@ -15,6 +15,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares diagnostic-oriented expected values and text/JSON printers.
+/// @details This header provides a compact success-or-diagnostic abstraction
+///          used by tools that cannot yet rely on `std::expected`, together
+///          with the canonical helpers for constructing and rendering support
+///          diagnostics. Stored values and errors are owned; output streams and
+///          optional source managers are borrowed only for each printing call.
+
 #pragma once
 
 #include "support/diagnostics.hpp"
@@ -79,17 +87,20 @@ template <class T> class [[nodiscard]] Expected {
     }
 
     /// @brief Allow use in boolean contexts to test success.
+    /// @return True when a success value is present.
     explicit operator bool() const noexcept {
         return hasValue();
     }
 
     /// @brief Access the stored value; requires hasValue().
+    /// @return Mutable reference to the stored success payload.
     T &value() & {
         assert(value_.has_value());
         return value_.value();
     }
 
     /// @brief Access the stored value; requires hasValue().
+    /// @return Const reference to the stored success payload.
     const T &value() const & {
         assert(value_.has_value());
         return value_.value();
@@ -105,6 +116,7 @@ template <class T> class [[nodiscard]] Expected {
     }
 
     /// @brief Access the diagnostic describing the failure.
+    /// @return Const reference to the stored failure diagnostic.
     const Diag &error() const & {
         assert(error_.has_value());
         return error_.value();
@@ -136,12 +148,15 @@ template <> class [[nodiscard]] Expected<void> {
     Expected(Diag diag);
 
     /// @brief Check whether the Expected represents success.
+    /// @return True when no error diagnostic is stored.
     [[nodiscard]] bool hasValue() const noexcept;
 
     /// @brief Allow use in boolean contexts to test success.
+    /// @return True when no error diagnostic is stored.
     explicit operator bool() const noexcept;
 
     /// @brief Access the diagnostic describing the failure.
+    /// @return Const reference to the stored failure diagnostic.
     const Diag &error() const &;
 
     /// @brief Move-access the diagnostic describing the failure.
@@ -154,6 +169,8 @@ template <> class [[nodiscard]] Expected<void> {
 
 namespace detail {
 /// @brief Convert diagnostic severity to lowercase string.
+/// @param severity Severity value to translate.
+/// @return Null-terminated lowercase severity name, or `"unknown"`.
 const char *diagSeverityToString(Severity severity);
 } // namespace detail
 

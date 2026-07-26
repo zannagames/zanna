@@ -29,6 +29,15 @@
 // Links: src/runtime/network/rt_crypto.c (implementation)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares caller-buffer cryptographic primitives for runtime TLS.
+ * @details Defines incremental and one-shot SHA-2, HMAC and HKDF derivation,
+ * ChaCha20-Poly1305 and AES-GCM authenticated encryption, X25519 agreement,
+ * constant-time comparison, secure wiping, and strong random generation.
+ */
+
 #pragma once
 
 #include <stddef.h>

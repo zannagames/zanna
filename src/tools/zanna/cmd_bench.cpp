@@ -5,16 +5,12 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implements the `ilc bench` subcommand that benchmarks IL programs using
-// different VM dispatch strategies. Outputs parse-friendly metrics including
-// instruction count, wall-clock time, and instructions per second.
-//
-//===----------------------------------------------------------------------===//
-
-/// @file
-/// @brief Entry point for the `ilc bench` subcommand.
-/// @details Provides CLI parsing for benchmark configuration, runs IL programs
-///          with each dispatch strategy, and reports performance metrics.
+/// @file cmd_bench.cpp
+/// @brief Implements the @c zanna bench subcommand across VM dispatch strategies.
+///
+/// The command parses a bounded benchmark configuration, loads and verifies each IL module, runs
+/// selected standard and bytecode VM strategies, and reports instruction count, elapsed time, and
+/// throughput in parse-friendly text or JSON. A default step watchdog prevents accidental hangs.
 
 #include "bytecode/BytecodeCompiler.hpp"
 #include "bytecode/BytecodeVM.hpp"
@@ -94,10 +90,12 @@ struct BenchResult {
 ///          behavior or carrying over between VM implementations.
 class RuntimeArgsScope {
   public:
+    /// @brief Clear ambient runtime argv state before a benchmark iteration.
     RuntimeArgsScope() {
         rt_args_clear();
     }
 
+    /// @brief Clear runtime argv again so no iteration leaks process state.
     ~RuntimeArgsScope() {
         rt_args_clear();
     }
@@ -107,6 +105,7 @@ class RuntimeArgsScope {
 };
 
 /// @brief Print usage information for the bench subcommand.
+/// @param out Destination stream; defaults to standard error.
 void benchUsage(std::ostream &out = std::cerr) {
     out << "Usage: zanna bench <file.il> [file2.il ...] [options]\n"
         << "Options:\n"
@@ -132,6 +131,8 @@ void benchUsage(std::ostream &out = std::cerr) {
 /// @details The default selection runs the standard VM strategies. Once a specific strategy flag
 /// is parsed, all strategies are cleared and subsequent specific flags add to that set. `--all`
 /// resets this mode so a later specific flag can intentionally narrow the selection again.
+/// @param config Mutable strategy selection.
+/// @param strategySpecified Whether a specific strategy flag has already reset defaults.
 void beginExplicitStrategySelection(BenchConfig &config, bool &strategySpecified) {
     if (strategySpecified)
         return;
@@ -265,6 +266,10 @@ bool parseBenchArgs(int argc, char **argv, BenchConfig &config) {
 /// @brief Parse bench args, distinguishing a help request from a parse error.
 /// @details Scans for --help/-h first (returning Help), otherwise delegates to
 ///          parseBenchArgs and maps its bool result to Ok/Error.
+/// @param argc Number of benchmark arguments.
+/// @param argv Argument vector.
+/// @param config Output configuration on successful parsing.
+/// @return Help, error, or successful parse outcome.
 BenchParseResult parseBenchArgsChecked(int argc, char **argv, BenchConfig &config) {
     for (int i = 0; i < argc; ++i) {
         std::string_view arg = argv[i];
@@ -325,6 +330,7 @@ BenchResult runBenchmarkIteration(const core::Module &mod,
 /// @param mod Module to execute.
 /// @param bcModule Pre-compiled bytecode module.
 /// @param strategy Dispatch strategy name ("bc-switch" or "bc-threaded").
+/// @param maxSteps Maximum bytecode instruction count; zero means unlimited.
 /// @return Benchmark result.
 BenchResult runBytecodeBenchmarkIteration(const core::Module &mod,
                                           const zanna::bytecode::BytecodeModule &bcModule,
@@ -372,6 +378,8 @@ BenchResult runBytecodeBenchmarkIteration(const core::Module &mod,
 }
 
 /// @brief Compute median of a vector of doubles.
+/// @param values Samples copied for in-place sorting.
+/// @return Middle sample, mean of the middle pair, or zero for no samples.
 double computeMedian(std::vector<double> values) {
     if (values.empty())
         return 0.0;
@@ -383,6 +391,8 @@ double computeMedian(std::vector<double> values) {
 }
 
 /// @brief Return the benchmark strategy names selected by @p config.
+/// @param config Strategy-selection flags.
+/// @return Ordered standard and bytecode strategy names.
 std::vector<std::string> selectedBenchStrategies(const BenchConfig &config) {
     std::vector<std::string> strategies;
     if (config.runTable)
@@ -612,6 +622,8 @@ bool benchmarkFile(const std::string &file,
 /// @details Text output is meant to be parseable even when file paths or error
 ///          messages contain whitespace, quotes, or control characters. This
 ///          helper returns a double-quoted token with common C escapes.
+/// @param input Raw field contents.
+/// @return Double-quoted escaped token.
 std::string quoteBenchField(std::string_view input) {
     std::string out = "\"";
     for (char c : input) {
@@ -648,6 +660,7 @@ std::string quoteBenchField(std::string_view input) {
 }
 
 /// @brief Print benchmark results in a parse-friendly text format.
+/// @param results Ordered per-file, per-strategy results.
 void printTextResults(const std::vector<BenchResult> &results) {
     for (const auto &r : results) {
         if (!r.success) {
@@ -665,7 +678,11 @@ void printTextResults(const std::vector<BenchResult> &results) {
 }
 
 /// @brief Print results in JSON format.
+/// @param results Ordered per-file, per-strategy results.
 void printJsonResults(const std::vector<BenchResult> &results) {
+    /// @brief Escape one string for inclusion in a JSON string literal.
+    /// @param input Unescaped UTF-8 text.
+    /// @return Text with JSON control characters and delimiters escaped.
     auto escapeJson = [](std::string_view input) {
         std::string out;
         out.reserve(input.size() + 8);

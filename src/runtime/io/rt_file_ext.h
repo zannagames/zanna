@@ -31,6 +31,14 @@
 //        src/runtime/core/rt_string.h (runtime string representation)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares high-level whole-file, metadata, and mutation operations.
+ * @details Exposes non-trapping regular-file predicates and metadata queries
+ * plus trapping text, Bytes, line, append, copy, move, delete, and timestamp
+ * operations. Whole-file writes use durable adjacent staging and atomic
+ * replacement.
+ */
 #pragma once
 
 #include "rt_string.h"

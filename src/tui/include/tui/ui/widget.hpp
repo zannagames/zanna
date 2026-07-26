@@ -5,10 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the Widget base class and the Rect layout primitive for
-// Zanna's TUI framework. Widget is the abstract base for all visual elements
-// in the widget tree, defining the interface for layout, painting, input
-// handling, and focus participation.
+/// @file
+/// @brief Declares the base TUI widget contract and rectangle layout primitive.
+/// @details Widget defines layout, paint, input, and focus hooks for visual tree
+///          nodes, following a parent-driven layout-before-paint lifecycle.
 //
 // The widget lifecycle follows a layout-then-paint pattern: the parent calls
 // layout() to assign the widget's rectangle, then paint() to render content
@@ -41,10 +41,10 @@ namespace zanna::tui::ui {
 ///          coordinates. Used by the layout system to assign screen regions
 ///          to widgets.
 struct Rect {
-    int x{0};
-    int y{0};
-    int w{0};
-    int h{0};
+    int x{0}; ///< Zero-based left column.
+    int y{0}; ///< Zero-based top row.
+    int w{0}; ///< Width in terminal columns.
+    int h{0}; ///< Height in terminal rows.
 };
 
 /// @brief Abstract base class for all visual elements in the TUI widget tree.
@@ -55,30 +55,37 @@ struct Rect {
 ///          order by the App's render loop.
 class Widget {
   public:
+    /// @brief Destroy a widget polymorphically.
     virtual ~Widget() = default;
 
     /// @brief Set widget bounds and layout children.
+    /// @param r Rectangle assigned by the parent layout.
     virtual void layout(const Rect &r);
 
     /// @brief Paint widget contents into a screen buffer.
+    /// @param sb Mutable render target covering the application screen.
     virtual void paint(render::ScreenBuffer &sb);
 
     /// @brief Handle an input event.
+    /// @param ev Routed event to inspect.
     /// @return True if the event was consumed.
     virtual bool onEvent(const Event &ev);
 
     /// @brief Whether this widget can receive focus.
+    /// @return true for focus-ring participation; false by default.
     [[nodiscard]] virtual bool wantsFocus() const;
 
     /// @brief Notifies widget when it gains or loses input focus.
     /// Default implementation is a no-op.
+    /// @param focused true after gaining focus; false after losing it.
     virtual void onFocusChanged(bool focused);
 
     /// @brief Retrieve widget rectangle.
+    /// @return Rectangle stored by the most recent layout call.
     [[nodiscard]] Rect rect() const;
 
   protected:
-    Rect rect_{};
+    Rect rect_{}; ///< Bounds assigned by the most recent layout pass.
 };
 
 } // namespace zanna::tui::ui

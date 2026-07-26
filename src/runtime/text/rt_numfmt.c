@@ -6,27 +6,39 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/text/rt_numfmt.c
-// Purpose: Implements numeric formatting utilities for the Zanna.Text.NumFmt
-//          class. Provides FormatInt (integer with thousands separators),
-//          FormatFloat (float with configurable decimal places), FormatPercent,
-//          FormatCurrency, FormatScientific, and FormatOrdinal.
+// Purpose: Implements the invariant number-formatting operations exposed by
+//          Zanna.Text.InvariantNumberFormat: fixed-decimal, grouped-integer,
+//          currency, percentage, ordinal, English-word, byte-size, and
+//          zero-padded representations.
 //
 // Key invariants:
-//   - Thousands separator defaults to ',' and decimal separator to '.'.
-//   - FormatPercent multiplies by 100 and appends the '%' symbol.
-//   - FormatCurrency prepends the currency symbol and applies thousands grouping.
-//   - FormatScientific uses standard IEEE notation (e.g. 1.23e+04).
-//   - FormatOrdinal appends "st", "nd", "rd", or "th" per English rules.
-//   - All functions handle negative values and zero correctly.
+//   - Fixed-decimal, currency, and percentage output uses a period as the
+//     decimal separator; currency grouping uses commas.
+//   - Thousands grouping accepts an arbitrary byte string and defaults to a
+//     comma when the supplied separator is null or empty.
+//   - Percentage formatting multiplies by 100 and appends '%'.
+//   - Ordinal and word formatting follow English conventions.
+//   - Signed 64-bit magnitudes, including INT64_MIN, are handled without
+//     overflowing a signed negation.
 //
 // Ownership/Lifetime:
 //   - All returned rt_string values are fresh allocations owned by the caller.
 //   - No state is retained between calls.
 //
 // Links: src/runtime/text/rt_numfmt.h (public API),
-//        src/runtime/rt_string_builder.h (used to accumulate formatted output)
+//        src/runtime/text/rt_numfmt_internal.h (shared grouping helper),
+//        src/runtime/core/rt_string_builder.h (formatted-output accumulation)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_numfmt.c
+ * @brief Implements invariant numeric display formatting.
+ * @details Stateless routines format fixed decimals, grouped integers,
+ *          currency, percentages, English ordinals and words, byte sizes, and
+ *          zero-padded signed integers. Locale-independent conversion and
+ *          unsigned-magnitude helpers preserve the complete int64_t range.
+ */
 
 #include "rt_numfmt.h"
 #include "rt_format.h"
@@ -40,19 +52,34 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Convert a string-builder failure into a runtime trap.
+/// @details Successful statuses return normally. Any other status is treated
+///          as an unrecoverable formatting failure and traps with @p op.
+/// @param status Status returned by a string-builder operation.
+/// @param op Null-terminated trap message identifying the failed operation.
 static void numfmt_check_sb(rt_sb_status_t status, const char *op) {
     if (status != RT_SB_OK)
         rt_trap(op);
 }
 
+/// @brief Compute the unsigned magnitude of a signed 64-bit integer.
+/// @details The two-step negative conversion avoids evaluating `-INT64_MIN`
+///          in signed arithmetic.
+/// @param n Value whose magnitude is required.
+/// @return Absolute magnitude of @p n represented as a `uint64_t`.
 static uint64_t abs_i64_magnitude(int64_t n) {
     if (n >= 0)
         return (uint64_t)n;
     return (uint64_t)(-(n + 1)) + 1;
 }
-
-
-
+/// @brief Render a finite floating-point value with a fixed fractional width.
+/// @details Formatting uses the runtime's C-locale helper so the decimal point
+///          is independent of the embedding process's `LC_NUMERIC` setting.
+///          The caller chooses the precision and handles non-finite values.
+/// @param value Finite value to format.
+/// @param decimals Number of digits to emit after the decimal point.
+/// @return Newly allocated formatted string, or a newly allocated empty string
+///         if conversion fails or exceeds the fixed conversion buffer.
 static rt_string numfmt_fixed(double value, int decimals) {
     // C-locale conversion: InvariantNumberFormat output must not inherit the
     // embedding process's LC_NUMERIC decimal separator (VDOC-041). A fixed
@@ -64,6 +91,14 @@ static rt_string numfmt_fixed(double value, int decimals) {
     return rt_string_from_bytes(buf, (size_t)written);
 }
 
+/// @brief Render a finite percentage value and append a percent sign.
+/// @details A zero @p decimals value emits no fractional digits; every nonzero
+///          value emits exactly one. Formatting uses the runtime's C-locale
+///          conversion helper.
+/// @param value Already-scaled finite percentage value.
+/// @param decimals Zero for integer output, or nonzero for one fractional digit.
+/// @return Newly allocated percentage string, or a newly allocated empty string
+///         if conversion fails or exceeds the fixed conversion buffer.
 static rt_string numfmt_percent_fixed(double value, int decimals) {
     char buf[512];
     int written = decimals == 0
@@ -74,6 +109,13 @@ static rt_string numfmt_percent_fixed(double value, int decimals) {
     return rt_string_from_bytes(buf, (size_t)written);
 }
 
+/// @brief Format a non-finite floating-point value using stable English tokens.
+/// @details NaN becomes `"NaN"` and infinities become `"Infinity"` or
+///          `"-Infinity"`. A nonempty @p suffix is appended verbatim.
+/// @param value Value to inspect.
+/// @param suffix Optional null-terminated suffix, such as `"%"`.
+/// @return A newly allocated special-value string when @p value is non-finite,
+///         or `NULL` when it is finite.
 static rt_string numfmt_nonfinite(double value, const char *suffix) {
     const char *base = NULL;
     if (isnan(value))
@@ -100,11 +142,13 @@ static rt_string numfmt_nonfinite(double value, const char *suffix) {
 // ---------------------------------------------------------------------------
 
 /// @brief Format `n` with exactly `decimals` digits after the decimal point.
-/// @details Clamps `decimals` into [0, 20] to keep the printf format
-///          sane, then delegates to `snprintf("%.*f")` which handles
-///          the rounding (banker's-round on most C runtimes — close
-///          enough to half-up that the output matches user
-///          expectations for currency-style display).
+/// @details Clamps @p decimals to `[0, 20]`, emits a C-locale decimal point,
+///          and delegates rounding to the platform's `printf` implementation.
+///          Non-finite inputs produce `"NaN"`, `"Infinity"`, or
+///          `"-Infinity"` without a fractional suffix.
+/// @param n Floating-point value to format.
+/// @param decimals Requested number of fractional digits.
+/// @return Newly allocated fixed-decimal string owned by the caller.
 rt_string rt_numfmt_decimals(double n, int64_t decimals) {
     if (decimals < 0)
         decimals = 0;
@@ -123,15 +167,13 @@ rt_string rt_numfmt_decimals(double n, int64_t decimals) {
 // ---------------------------------------------------------------------------
 
 /// @brief Format an integer with `sep` inserted every three digits from the right.
-/// @details `sep` defaults to `","` if NULL or empty. Steps:
-///          1. Stringify the absolute value via `snprintf` (handles
-///             `INT64_MIN` via the `INT64_MAX + 1` cast — direct
-///             negation would overflow).
-///          2. Emit a leading minus if needed, then the leading
-///             group (1, 2, or 3 digits depending on length mod 3).
-///          3. Loop: append separator + 3-digit group until
-///             exhausted.
-///          Examples: `1234567 → "1,234,567"`, `-12345 → "-12,345"`.
+/// @details @p sep defaults to `","` when it is null, has no backing C
+///          string, or is empty. Otherwise all separator bytes are preserved,
+///          including embedded null bytes. The sign is emitted before the
+///          grouped magnitude, and `INT64_MIN` is supported.
+/// @param n Integer to format.
+/// @param sep Runtime string inserted between three-digit groups.
+/// @return Newly allocated grouped string owned by the caller.
 rt_string rt_numfmt_thousands(int64_t n, rt_string sep) {
     const char *sep_bytes = ",";
     size_t sep_len = 1;
@@ -172,9 +214,20 @@ rt_string rt_numfmt_thousands(int64_t n, rt_string sep) {
 }
 
 // ---------------------------------------------------------------------------
-// Shared helper: group digits with locale-specific separator (see
-// rt_numfmt_internal.h for the full contract).
+// Shared helper: group digits with a caller-selected separator (see
+// rt_numfmt_internal.h for the public internal contract).
 // ---------------------------------------------------------------------------
+/// @brief Append decimal digits grouped from the right.
+/// @details When grouping is disabled by a null or empty separator, a
+///          nonpositive group size, or a group size at least as large as the
+///          input, the digit bytes are appended unchanged. String-builder
+///          failures trap through the runtime.
+/// @param sb Destination string builder.
+/// @param digits Decimal digit buffer to append.
+/// @param dlen Number of bytes in @p digits.
+/// @param sep Separator byte buffer, or `NULL` to disable grouping.
+/// @param sep_len Number of bytes in @p sep.
+/// @param group_size Number of digits per group, counted from the right.
 void rt_numfmt_group_digits(rt_string_builder *sb,
                             const char *digits,
                             int dlen,
@@ -215,11 +268,14 @@ void rt_numfmt_group_digits(rt_string_builder *sb,
 // ---------------------------------------------------------------------------
 
 /// @brief Format `n` as a currency value: `[symbol]X,XXX.XX` (always 2 decimals).
-/// @details Defaults symbol to `"$"` if NULL. Layout:
-///          `[-][symbol][int with thousand separators].[2 decimals]`.
-///          Always emits exactly 2 decimal places (so `5.0 → "$5.00"`).
-///          Hard-codes `,` as the thousands separator — locale-aware
-///          formatting is intentionally out of scope.
+/// @details A null symbol, or one without a backing C string, defaults to
+///          `"$"`; an explicitly empty symbol is honored. Finite values use
+///          the layout `[-][symbol][comma-grouped integer].[two digits]` with
+///          C-locale rounding. Non-finite values omit the currency symbol and
+///          produce only their stable English token.
+/// @param n Monetary value to format.
+/// @param symbol Runtime string to place immediately before the magnitude.
+/// @return Newly allocated currency string owned by the caller.
 rt_string rt_numfmt_currency(double n, rt_string symbol) {
     rt_string special = numfmt_nonfinite(n, NULL);
     if (special)
@@ -289,11 +345,13 @@ rt_string rt_numfmt_currency(double n, rt_string symbol) {
 // ---------------------------------------------------------------------------
 
 /// @brief Format `n` as a percentage (multiplies by 100, appends `%`).
-/// @details Uses 1 decimal of precision unless the rounded value
-///          would have a `.0` fractional part, in which case the
-///          decimal is omitted for cleaner output.
-///          Examples: `0.5 → "50%"`, `0.123 → "12.3%"`,
-///          `0.345 → "34.5%"`, `0.5 → "50%"` (not `"50.0%"`).
+/// @details The scaled value is rounded to one decimal place with `round`,
+///          then a trailing `.0` is removed. Thus `0.5` becomes `"50%"`
+///          and `0.123` becomes `"12.3%"`. Non-finite input, including
+///          overflow while scaling, produces a stable English token followed
+///          by `%`.
+/// @param n Ratio to multiply by 100 and format.
+/// @return Newly allocated percentage string owned by the caller.
 rt_string rt_numfmt_percent(double n) {
     double pct = n * 100.0;
 
@@ -335,6 +393,8 @@ rt_string rt_numfmt_percent(double n) {
 ///            not "11st").
 ///          - Otherwise: 1 → `st`, 2 → `nd`, 3 → `rd`, anything else → `th`.
 ///          Sign is preserved on the number portion (so `-1 → "-1st"`).
+/// @param n Integer to format, including any signed 64-bit value.
+/// @return Newly allocated English ordinal string owned by the caller.
 rt_string rt_numfmt_ordinal(int64_t n) {
     const char *suffix;
     uint64_t abs_n = abs_i64_magnitude(n);
@@ -365,11 +425,13 @@ rt_string rt_numfmt_ordinal(int64_t n) {
 // rt_numfmt_to_words
 // ---------------------------------------------------------------------------
 
+/// English names for the integers from zero through nineteen.
 static const char *const ones[] = {"",        "one",     "two",       "three",    "four",
                                    "five",    "six",     "seven",     "eight",    "nine",
                                    "ten",     "eleven",  "twelve",    "thirteen", "fourteen",
                                    "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"};
 
+/// English decade names indexed by the tens digit.
 static const char *const tens[] = {
     "", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"};
 
@@ -382,6 +444,9 @@ static const char *const tens[] = {
 ///          `has_prev` is set to 1 on first emission so callers can
 ///          insert a space before subsequent chunks (used by
 ///          `rt_numfmt_to_words` to separate scale words).
+/// @param sb Destination string builder.
+/// @param n Chunk value in the inclusive range `[0, 999]`.
+/// @param has_prev In/out flag indicating whether an earlier chunk was emitted.
 static void append_chunk(rt_string_builder *sb, int64_t n, int *has_prev) {
     if (n == 0)
         return;
@@ -419,7 +484,13 @@ static void append_chunk(rt_string_builder *sb, int64_t n, int *has_prev) {
     *has_prev = 1;
 }
 
-/// @brief Convert an integer to its English word representation (e.g., 42 -> "forty-two").
+/// @brief Convert a signed integer to US English words.
+/// @details Handles the complete `int64_t` range by decomposing the unsigned
+///          magnitude into three-digit groups through quintillions. Negative
+///          values begin with `"negative"`. Hundreds omit `"and"`, while
+///          compound tens use a hyphen.
+/// @param n Integer to convert.
+/// @return Newly allocated English word string owned by the caller.
 rt_string rt_numfmt_to_words(int64_t n) {
     if (n == 0)
         return rt_string_from_bytes("zero", 4);
@@ -479,11 +550,13 @@ rt_string rt_numfmt_to_words(int64_t n) {
 
 /// @brief Format a byte count with a human-readable unit suffix (`B`, `KB`, `MB`, ...).
 /// @details Steps the value down by factors of 1024 (binary, not
-///          decimal) until it sits in `[0, 1024)`, then formats with
-///          one decimal of precision and the matching unit. Capped
-///          at exabytes (`EB`) — values above that just stay in EB.
-///          Negative byte counts emit a leading `-` and use the
-///          absolute value for unit selection.
+///          decimal) and caps the unit at exabytes (`EB`). Bytes are emitted
+///          as integers; larger units use one fractional digit at magnitudes
+///          of at least ten and two below ten. Fractional punctuation follows
+///          the process numeric locale because this operation uses `snprintf`
+///          directly.
+/// @param bytes Signed byte count to format.
+/// @return Newly allocated size string owned by the caller.
 rt_string rt_numfmt_bytes(int64_t bytes) {
     static const char *const units[] = {"B", "KB", "MB", "GB", "TB", "PB", "EB"};
     uint64_t magnitude = abs_i64_magnitude(bytes);
@@ -526,7 +599,11 @@ rt_string rt_numfmt_bytes(int64_t bytes) {
 /// @details `width` is clamped to `[1, 64]`. For positive values,
 ///          uses printf's `%0*lld` directly. For negatives, the
 ///          width budget includes the leading `-` so `pad(-5, 4)`
-///          produces `"-005"` (4 chars total, not 5).
+///          produces `"-005"` (4 chars total, not 5). Values wider than the
+///          requested minimum are never truncated.
+/// @param n Integer to format.
+/// @param width Requested minimum character width, including any sign.
+/// @return Newly allocated zero-padded string owned by the caller.
 rt_string rt_numfmt_pad(int64_t n, int64_t width) {
     if (width < 1)
         width = 1;

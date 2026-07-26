@@ -220,6 +220,9 @@ inline void emitOverlap(ArmContext &ctx, const CaseArm &arm) {
 inline bool checkIntervalCollision(ArmContext &ctx,
                                    const CaseArm &arm,
                                    const RelInterval &interval) {
+    /// @brief Tests whether a prior explicit range overlaps the new interval.
+    /// @param seen Previously recorded inclusive range.
+    /// @return `true` when the ranges overlap.
     const auto collidesRange =
         std::any_of(ctx.seenRanges.begin(), ctx.seenRanges.end(), [&](const auto &seen) {
             return intervalsOverlap(interval, makeRangeInterval(seen.first, seen.second));
@@ -229,6 +232,9 @@ inline bool checkIntervalCollision(ArmContext &ctx,
         return true;
     }
 
+    /// @brief Tests whether a prior scalar label lies in the new interval.
+    /// @param label Previously recorded label.
+    /// @return `true` when `interval` contains `label`.
     const auto collidesLabel =
         std::any_of(ctx.seenLabels.begin(), ctx.seenLabels.end(), [&](int32_t label) {
             return intervalContains(interval, label);
@@ -238,6 +244,9 @@ inline bool checkIntervalCollision(ArmContext &ctx,
         return true;
     }
 
+    /// @brief Tests whether a prior relational interval overlaps the new interval.
+    /// @param seen Previously recorded relational interval.
+    /// @return `true` when the intervals overlap.
     const auto collidesRel =
         std::any_of(ctx.seenRelIntervals.begin(),
                     ctx.seenRelIntervals.end(),

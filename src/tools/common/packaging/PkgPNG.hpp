@@ -22,6 +22,12 @@
 // Links: src/runtime/graphics/rt_pixels.c (original), PkgDeflate.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares PNG decoding, RGBA encoding, and bilinear image resizing.
+/// @details Decoded and transformed images own row-major RGBA storage; input
+///          memory is borrowed only for the duration of each call.
+
 #pragma once
 
 #include <cstddef>
@@ -33,6 +39,7 @@
 namespace zanna::pkg {
 
 /// @brief Error thrown on PNG read/write failure.
+/// @details Covers I/O, structural, checksum, decompression, dimension, and pixel-layout errors.
 class PNGError : public std::runtime_error {
   public:
     using std::runtime_error::runtime_error;
@@ -45,6 +52,9 @@ struct PkgImage {
     std::vector<uint8_t> pixels; ///< RGBA, 4 bytes per pixel, row-major.
 
     /// @brief Get a mutable pointer to the RGBA pixel at (x, y).
+    /// @param x Zero-based column.
+    /// @param y Zero-based row.
+    /// @return Pointer to the pixel's red channel.
     /// @note No bounds checking; (x, y) must lie within width/height.
     uint8_t *at(uint32_t x, uint32_t y) {
         const size_t index = (static_cast<size_t>(y) * static_cast<size_t>(width) +
@@ -54,6 +64,9 @@ struct PkgImage {
     }
 
     /// @brief Get a const pointer to the RGBA pixel at (x, y).
+    /// @param x Zero-based column.
+    /// @param y Zero-based row.
+    /// @return Const pointer to the pixel's red channel.
     /// @note No bounds checking; (x, y) must lie within width/height.
     const uint8_t *at(uint32_t x, uint32_t y) const {
         const size_t index = (static_cast<size_t>(y) * static_cast<size_t>(width) +
@@ -85,6 +98,7 @@ void pngWrite(const std::string &path, const PkgImage &img);
 /// @brief Encode a PkgImage as PNG to a byte vector.
 /// @param img Image to encode.
 /// @return PNG file bytes.
+/// @throws PNGError If dimensions or pixel storage are invalid.
 std::vector<uint8_t> pngEncode(const PkgImage &img);
 
 /// @brief Resize an image using bilinear interpolation.
@@ -92,6 +106,7 @@ std::vector<uint8_t> pngEncode(const PkgImage &img);
 /// @param newWidth Target width.
 /// @param newHeight Target height.
 /// @return Resized image.
+/// @throws PNGError If source storage or output dimensions are invalid.
 PkgImage imageResize(const PkgImage &src, uint32_t newWidth, uint32_t newHeight);
 
 } // namespace zanna::pkg

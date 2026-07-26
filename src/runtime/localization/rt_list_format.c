@@ -28,6 +28,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements locale-aware CLDR-style list formatting.
+ * @details Retains a locale-data snapshot, expands pair placeholders with
+ * checked string-builder operations, right-folds lists through pair, end,
+ * middle, and start templates, and preserves element-reference ownership.
+ */
+
 #include "rt_list_format.h"
 
 #include "rt_heap.h"
@@ -48,9 +56,10 @@
 // Instance struct
 //===----------------------------------------------------------------------===//
 
+/** GC payload retaining one ListFormat's Locale and template snapshot. */
 typedef struct rt_list_format_inst {
-    void *locale;
-    const rt_locale_data_t *data;
+    void *locale;                 ///< Retained Locale handle, if supplied.
+    const rt_locale_data_t *data; ///< Retained immutable list-pattern data.
 } rt_list_format_inst_t;
 
 /// @brief Unchecked cast of an opaque handle to the ListFormat instance.

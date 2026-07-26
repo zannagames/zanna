@@ -5,19 +5,12 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/tools/zanna/cmd_codegen_x64.cpp
-// Purpose: Provide a thin CLI adapter around the x86-64 code-generation pipeline.
-// Key invariants: Command-line parsing emits deterministic diagnostics and defers heavy lifting
-//                 to CodegenPipeline. Ownership/Lifetime: Arguments are borrowed for the duration
-//                 of parsing; compilation artefacts are produced by the pipeline implementation.
-// Links: src/codegen/x86_64/CodegenPipeline.hpp
-//
-//===----------------------------------------------------------------------===//
-
-/// @file
+/// @file cmd_codegen_x64.cpp
 /// @brief Implements the `ilc codegen x64` command-line entry point.
-/// @details Parses argv-style arguments into pipeline options before delegating to the
-///          reusable pipeline implementation.
+///
+/// Parsing produces deterministic diagnostics, borrows arguments only for the call, validates ABI
+/// and target-platform combinations, and delegates artifact ownership and heavy lifting to the
+/// reusable x86-64 pipeline.
 
 #include "cmd_codegen_x64.hpp"
 
@@ -60,6 +53,10 @@ struct ParseOutcome {
 };
 
 /// @brief Parse @p text as a base-10 int within [minValue, maxValue].
+/// @param text Candidate decimal spelling.
+/// @param minValue Inclusive lower bound.
+/// @param maxValue Inclusive upper bound.
+/// @param out Receives the parsed value only on success.
 /// @return true on a full, in-range parse; false otherwise (out left unset).
 bool parseIntInRange(std::string_view text, int minValue, int maxValue, int &out) {
     int value = 0;
@@ -73,6 +70,8 @@ bool parseIntInRange(std::string_view text, int minValue, int maxValue, int &out
 }
 
 /// @brief Parse @p text as a base-10 size_t value.
+/// @param text Candidate decimal spelling.
+/// @param out Receives the parsed size only on success.
 /// @return true on a full, in-range parse; false otherwise.
 bool parseSize(std::string_view text, std::size_t &out) {
     unsigned long long value = 0;
@@ -90,6 +89,9 @@ bool parseSize(std::string_view text, std::size_t &out) {
 /// @brief Validate that the requested x64 ABI and target platform are compatible.
 /// @details SysV is valid for Linux/Darwin, Win64 is valid for Windows, and Host remains an
 /// automatic selection unless paired with an explicitly incompatible platform by later parsing.
+/// @param opts Parsed pipeline options to validate.
+/// @param diag Destination for deterministic usage diagnostics.
+/// @return @c true when the ABI/platform pair is supported.
 bool validateTargetCombination(const zanna::codegen::x64::CodegenPipeline::Options &opts,
                                std::ostream &diag) {
     using ABI = zanna::codegen::x64::CodegenOptions::TargetABI;
@@ -360,6 +362,7 @@ int cmd_codegen_x64(int argc, char **argv) {
 /// @details Present for symmetry with other command registration helpers.  The
 ///          current driver wires subcommands manually so the function is a
 ///          no-op.
+/// @param cli Reserved structured CLI object.
 void register_codegen_x64_commands(CLI &cli) {
     (void)cli;
 }

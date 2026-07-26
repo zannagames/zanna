@@ -19,6 +19,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements strict multipart/form-data construction and parsing.
+ * @details Generates unbiased random boundaries, owns copied text and file
+ * parts, performs overflow-checked CRLF serialization, validates bounded
+ * inbound headers and delimiters, and converts atomic parse failures into
+ * traps or managed Result values.
+ */
+
 #include "rt_multipart.h"
 
 #include "rt_bytes.h"
@@ -41,23 +50,28 @@
 // Internal Structures
 //=============================================================================
 
+/** Initial number of part slots allocated for a builder or parser. */
 #define MULTIPART_INITIAL_PART_CAPACITY 16
+/** Maximum encoded body bytes accepted by the strict parser. */
 #define MULTIPART_MAX_PARSED_BODY_BYTES (64u * 1024u * 1024u)
+/** Maximum aggregate header-section bytes accepted for one part. */
 #define MULTIPART_MAX_HEADER_BYTES (64u * 1024u)
 
+/** One owned text or file part in a Multipart object. */
 typedef struct {
-    char *name;
+    char *name;     ///< Owned field name.
     char *filename; // NULL for text fields
-    uint8_t *data;
-    size_t data_len;
-    int is_file;
+    uint8_t *data;  ///< Owned exact payload bytes.
+    size_t data_len; ///< Number of bytes in @ref data.
+    int is_file;     ///< Nonzero for a file part.
 } multipart_part_t;
 
+/** Complete managed Multipart payload with boundary and append-only parts. */
 typedef struct {
-    char boundary[64];
-    multipart_part_t *parts;
-    int part_count;
-    int part_capacity;
+    char boundary[64];       ///< NUL-terminated validated delimiter token.
+    multipart_part_t *parts; ///< Owned growable part array.
+    int part_count;          ///< Number of initialized parts.
+    int part_capacity;       ///< Allocated entries in @ref parts.
 } rt_multipart_impl;
 
 //=============================================================================

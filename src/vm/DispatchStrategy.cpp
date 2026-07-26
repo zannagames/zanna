@@ -42,6 +42,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file DispatchStrategy.cpp
+ * @brief Implements the shared VM dispatch loop and dispatch strategies.
+ * @details The common loop manages instruction selection, tracing, debug
+ *          hooks, trap routing, finalization, and exit state. Concrete
+ *          function-table, switch, and computed-goto strategies map opcodes to
+ *          synchronized handlers, and the factory selects an available mode.
+ */
+
 #include "vm/DispatchStrategy.hpp"
 #include "il/core/BasicBlock.hpp"
 #include "il/core/Instr.hpp"
@@ -63,6 +72,14 @@ namespace il::vm {
 ///
 /// Note: The VMContext parameter is kept for handleTrapDispatch but could be
 /// removed if trap handling were refactored to use VM directly.
+/// @param vm Virtual machine whose instruction lifecycle is driven.
+/// @param context Active VM context retained for the dispatch-loop interface.
+/// @param state Mutable execution state for the current frame.
+/// @param strategy Opcode-dispatch implementation used for each instruction.
+/// @return @c true when execution requested exit; @c false when instruction
+///         selection paused without an exit request.
+/// @throws VM::TrapDispatchSignal Re-throws a signal targeting a different
+///         execution state.
 bool runSharedDispatchLoop(VM &vm,
                            VMContext &context,
                            VM::ExecState &state,
@@ -149,10 +166,17 @@ namespace detail {
 /// @brief Function table dispatch strategy.
 class FnTableStrategy final : public DispatchStrategy {
   public:
+    /// @brief Identify this implementation as function-table dispatch.
+    /// @return @ref Kind::FnTable.
     Kind getKind() const override {
         return Kind::FnTable;
     }
 
+    /// @brief Execute an instruction through the VM opcode-handler table.
+    /// @param vm Virtual machine providing the generated handler table.
+    /// @param state Mutable frame, block, and instruction-position state.
+    /// @param instr Instruction whose opcode selects the handler.
+    /// @return Execution result produced by the selected opcode handler.
     VM::ExecResult executeInstruction(VM &vm,
                                       VM::ExecState &state,
                                       const il::core::Instr &instr) override {
@@ -182,16 +206,27 @@ class FnTableStrategy final : public DispatchStrategy {
 /// @brief Switch-based dispatch strategy.
 class SwitchStrategy final : public DispatchStrategy {
   public:
+    /// @brief Identify this implementation as switch dispatch.
+    /// @return @ref Kind::Switch.
     Kind getKind() const override {
         return Kind::Switch;
     }
 
     /// @brief Returns @c true because the switch-based dispatcher calls
     ///        finalizeInstruction() inside each generated case block.
+    /// @return Always @c true.
     bool handlesFinalizationInternally() const override {
         return true;
     }
 
+    /// @brief Execute an instruction through the generated switch dispatcher.
+    /// @details Converts a pending exit into an execution result after the
+    ///          inline handler has performed tracing and finalization.
+    /// @param vm Virtual machine providing the switch dispatcher.
+    /// @param state Mutable execution state updated by the inline handler.
+    /// @param instr Instruction dispatched by opcode.
+    /// @return A returned result when the handler requested exit; otherwise an
+    ///         empty result indicating continued execution.
     VM::ExecResult executeInstruction(VM &vm,
                                       VM::ExecState &state,
                                       const il::core::Instr &instr) override {
@@ -244,6 +279,8 @@ class SwitchStrategy final : public DispatchStrategy {
 ///       This class exists for the strategy interface but isn't used directly.
 class ThreadedStrategy final : public DispatchStrategy {
   public:
+    /// @brief Identify this implementation as threaded dispatch.
+    /// @return @ref Kind::Threaded.
     Kind getKind() const override {
         return Kind::Threaded;
     }
@@ -251,10 +288,19 @@ class ThreadedStrategy final : public DispatchStrategy {
     /// @brief Returns @c true because the threaded dispatcher's computed-goto loop
     ///        can throw exceptions from within trapping opcodes, requiring the
     ///        shared dispatch loop to install a @c try/catch guard.
+    /// @return Always @c true.
     bool requiresTrapCatch() const override {
         return true;
     }
 
+    /// @brief Execute one instruction through the compatibility table path.
+    /// @details The actual computed-goto loop lives in the threaded driver;
+    ///          this interface fallback delegates an isolated instruction to
+    ///          the normal opcode handler table.
+    /// @param vm Virtual machine providing opcode handlers.
+    /// @param state Mutable frame, block, and instruction-position state.
+    /// @param instr Instruction whose opcode selects the fallback handler.
+    /// @return Execution result produced by the selected opcode handler.
     VM::ExecResult executeInstruction(VM &vm,
                                       VM::ExecState &state,
                                       const il::core::Instr &instr) override {
@@ -274,6 +320,11 @@ class ThreadedStrategy final : public DispatchStrategy {
 //===----------------------------------------------------------------------===//
 
 /// @brief Create a dispatch strategy for the given kind.
+/// @details When computed-goto threading is unavailable, a request for threaded
+///          dispatch yields the portable switch strategy.  Unrecognized enum
+///          values also fall back to switch dispatch.
+/// @param kind Requested VM dispatch mechanism.
+/// @return Owning pointer to a newly allocated strategy implementation.
 std::unique_ptr<DispatchStrategy> createDispatchStrategy(VM::DispatchKind kind) {
     switch (kind) {
         case VM::DispatchKind::FnTable:

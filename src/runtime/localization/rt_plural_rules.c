@@ -34,6 +34,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements CLDR cardinal and ordinal plural-category evaluation.
+ * @details Captures locale rule chains, derives exact integer or bounded
+ * real-number operands, evaluates AST expressions and ranges with short
+ * circuiting, and returns canonical category strings and distinct category
+ * lists under explicit managed ownership.
+ */
+
 #include "rt_plural_rules.h"
 
 #include "rt_heap.h"

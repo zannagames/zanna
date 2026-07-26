@@ -5,10 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the TextView class, the primary text editing view for
-// Zanna's TUI. TextView displays the contents of a TextBuffer with cursor
-// navigation, text selection, scrolling, optional line numbers, syntax
-// highlighting, and match highlighting.
+/// @file
+/// @brief Declares the primary editable text view for Zanna TUI.
+/// @details TextView renders a borrowed TextBuffer with cursor navigation,
+///          selection, scrolling, optional line numbers, syntax spans, and
+///          arbitrary highlighted byte ranges.
 //
 // TextView is a Widget subclass that binds to a TextBuffer (non-owning
 // reference) and a Theme. It handles keyboard events for cursor movement
@@ -110,28 +111,55 @@ class TextView : public ui::Widget {
     void setSyntax(syntax::SyntaxRuleSet *syntax);
 
   private:
-    text::TextBuffer &buf_;
-    const style::Theme &theme_;
-    bool show_line_numbers_{};
-    syntax::SyntaxRuleSet *syntax_{nullptr};
+    text::TextBuffer &buf_;             ///< Borrowed editable document.
+    const style::Theme &theme_;         ///< Borrowed render palette.
+    bool show_line_numbers_{};          ///< Whether to reserve and paint a line gutter.
+    syntax::SyntaxRuleSet *syntax_{nullptr}; ///< Optional borrowed syntax rules.
 
-    std::size_t cursor_row_{0};
-    std::size_t cursor_col_{0};
-    std::size_t target_col_{0};
-    std::size_t top_row_{0};
+    std::size_t cursor_row_{0}; ///< Zero-based logical cursor line.
+    std::size_t cursor_col_{0}; ///< Zero-based display-cell cursor column.
+    std::size_t target_col_{0}; ///< Preferred column preserved across vertical movement.
+    std::size_t top_row_{0};    ///< First logical line visible in the viewport.
 
-    std::size_t sel_start_{0};
-    std::size_t sel_end_{0};
-    std::size_t cursor_offset_{0};
+    std::size_t sel_start_{0};    ///< First selection byte boundary.
+    std::size_t sel_end_{0};      ///< Second selection byte boundary.
+    std::size_t cursor_offset_{0}; ///< Logical cursor byte offset.
 
-    std::vector<std::pair<std::size_t, std::size_t>> highlights_{};
+    std::vector<std::pair<std::size_t, std::size_t>> highlights_{}; ///< Extra byte ranges.
 
     // helpers
+    /// @brief Decode one UTF-8 scalar beginning at a byte offset.
+    /// @param s UTF-8 text containing the character.
+    /// @param off Starting byte offset.
+    /// @return Code point and number of consumed bytes.
     static std::pair<char32_t, std::size_t> decodeChar(std::string_view s, std::size_t off);
+
+    /// @brief Measure a UTF-8 line in terminal display cells.
+    /// @param line Line bytes excluding a newline.
+    /// @return Sum of decoded Unicode display widths.
     static std::size_t lineWidth(std::string_view line);
+
+    /// @brief Convert a display-cell column into a UTF-8 byte offset.
+    /// @param line Line bytes excluding a newline.
+    /// @param col Target display column.
+    /// @return Nearest byte boundary at or before/after the requested column.
     static std::size_t columnToOffset(std::string_view line, std::size_t col);
+
+    /// @brief Convert a logical row and display column to a buffer byte offset.
+    /// @param row Zero-based logical line.
+    /// @param col Zero-based display column.
+    /// @return Clamped logical byte offset.
     std::size_t offsetFromRowCol(std::size_t row, std::size_t col) const;
+
+    /// @brief Return the number of logical lines in the bound buffer.
+    /// @return At least one.
     std::size_t totalLines() const;
+
+    /// @brief Update the cursor, selection, preferred column, and viewport.
+    /// @param row Requested logical row.
+    /// @param col Requested display column.
+    /// @param shift Whether to extend the active selection.
+    /// @param updateTarget Whether to replace the preferred vertical-movement column.
     void setCursor(std::size_t row, std::size_t col, bool shift, bool updateTarget);
 };
 

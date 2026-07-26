@@ -13,6 +13,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares thread-local VM binding and the controlled context facade
+///        shared by interpreter dispatch strategies.
+/// @details ActiveVMGuard manages nested runtime bindings, while VMContext
+///          forwards evaluation, tracing, dispatch, and trap operations to a
+///          non-owned VM instance.
+
 #pragma once
 
 #include "vm/VM.hpp"
@@ -72,7 +79,9 @@ struct ActiveVMGuard {
      */
     ~ActiveVMGuard();
 
+    /// @brief Active-VM guards cannot be copied.
     ActiveVMGuard(const ActiveVMGuard &) = delete;
+    /// @brief Active-VM guards cannot be copy-assigned.
     ActiveVMGuard &operator=(const ActiveVMGuard &) = delete;
 
   private:
@@ -113,11 +122,12 @@ class VMContext {
     /// @brief Executes a single instruction step in the VM.
     ///
     /// Fetches and executes one IL instruction, advancing the instruction
-    /// pointer. Returns the result slot for instructions that produce values,
-    /// or nullopt for void-result instructions (stores, branches, etc.).
+    /// pointer. A slot is returned only when dispatch reaches a function result
+    /// or pause boundary; ordinary instructions return @c std::nullopt so the
+    /// enclosing driver continues.
     ///
     /// @param state The current execution state (frame stack, IP, etc.).
-    /// @return The result value if the instruction produces one, nullopt otherwise.
+    /// @return Completed function result or pause sentinel, otherwise @c std::nullopt.
     std::optional<Slot> stepOnce(VM::ExecState &state) const;
 
     /// @brief Handles trap dispatch when an exception or error is raised.
@@ -143,9 +153,8 @@ class VMContext {
 
     /// @brief Processes the result of inline instruction execution.
     ///
-    /// After an instruction produces a result, this method stores it in the
-    /// appropriate frame slot and advances the instruction pointer. Handles
-    /// both value-producing and void instructions.
+    /// Applies the same jump, return, and loop-exit bookkeeping used by the
+    /// regular dispatch path.
     ///
     /// @param state The execution state to update.
     /// @param exec The result from instruction execution.
@@ -188,10 +197,10 @@ class VMContext {
                                  const il::core::BasicBlock *&bb,
                                  size_t &ip) const;
 
-    /// @brief Clears the runtime's current context binding.
+    /// @brief Clear the VM's recorded diagnostic instruction context.
     ///
-    /// Called during VM cleanup to ensure the C runtime's per-thread context
-    /// pointer doesn't reference a deallocated VM.
+    /// Prevents a later trap from reporting stale function, block, or source
+    /// information after control has been redirected.
     void clearCurrentContext() const;
 
     /// @brief Returns the trace sink for execution tracing output.
@@ -209,12 +218,14 @@ class VMContext {
   private:
     VM *vmInstance = nullptr; ///< Bound VM instance.
   public:
+    /// @brief Lightweight feature configuration consumed by dispatch macros.
     struct Config {
-        bool enableOpcodeCounts = true;
+        bool enableOpcodeCounts = true; ///< Whether pre-dispatch hooks increment counters.
     } config; ///< Lightweight runtime config snapshot used by macros.
 };
 
 /// @brief Return the active VM associated with the current thread.
+/// @return Non-owning active VM pointer, or @c nullptr outside an active guard.
 VM *activeVMInstance();
 
 } // namespace il::vm

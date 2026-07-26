@@ -330,6 +330,9 @@ Expected<Param> parseBlockParam(const std::string &paramText,
         // This is the entry block - check if this param shadows a function param
         auto it = st.tempIds.find(nm);
         if (it != st.tempIds.end()) {
+            /// @brief Tests whether a function parameter owns the reused temporary ID.
+            /// @param param Candidate function parameter.
+            /// @return `true` when its ID matches the entry-block parameter.
             const auto fnParamIt =
                 std::find_if(st.curFn->params.begin(),
                              st.curFn->params.end(),

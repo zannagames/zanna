@@ -368,6 +368,7 @@ void Lowerer::lowerTryCatch(const TryCatchStmt &stmt) {
 /// fallthrough pops the handler and runs cleanup. Exception flow enters the
 /// synthetic handler, runs the same cleanup, then resumes the original exception
 /// token so outer handlers still observe the failure.
+/// @param stmt USING statement whose resource, body, and cleanup are lowered.
 void Lowerer::lowerUsingStmt(const UsingStmt &stmt) {
     ProcedureContext &ctx = context();
     Function *func = ctx.function();
@@ -422,6 +423,8 @@ void Lowerer::lowerUsingStmt(const UsingStmt &stmt) {
     handler.instructions.push_back(entry);
     const std::string handlerLabel = handler.label;
 
+    /// @brief Invokes user cleanup and releases a USING resource.
+    /// @param loadedObj Loaded object pointer to destroy and free.
     auto emitResourceDestroy = [&](Value loadedObj) {
         if (!className.empty()) {
             OopLoweringContext oopCtx(*this, oopIndex_);
@@ -443,6 +446,7 @@ void Lowerer::lowerUsingStmt(const UsingStmt &stmt) {
         emitCall("rt_obj_free", {loadedObj});
     };
 
+    /// @brief Emits normal-path reference release and conditional resource destruction.
     auto emitUsingCleanup = [&]() {
         if (!ctx.current() || ctx.current()->terminated)
             return;
@@ -492,11 +496,15 @@ void Lowerer::lowerUsingStmt(const UsingStmt &stmt) {
         emitStore(Type(Type::Kind::Ptr), storage->pointer, Value::null());
     };
 
+    /// @brief Builds the standard error and resume-token handler parameters.
+    /// @return Fresh parameter vector for an exception handler block.
     auto makeHandlerParams = []() {
         return std::vector<il::core::Param>{{"err", Type(Type::Kind::Error)},
                                             {"tok", Type(Type::Kind::ResumeTok)}};
     };
 
+    /// @brief Appends an exception-handler entry marker to a block.
+    /// @param block Handler block to update.
     auto appendEhEntry = [&](BasicBlock &block) {
         Instr entryInstr;
         entryInstr.op = Opcode::EhEntry;
@@ -505,6 +513,9 @@ void Lowerer::lowerUsingStmt(const UsingStmt &stmt) {
         block.instructions.push_back(std::move(entryInstr));
     };
 
+    /// @brief Emits a branch carrying handler values.
+    /// @param target Destination block.
+    /// @param args Branch arguments transferred to the destination parameters.
     auto emitBrWithArgs = [&](BasicBlock *target, std::vector<Value> args) {
         BasicBlock *block = ctx.current();
         if (!block || !target)
@@ -518,6 +529,12 @@ void Lowerer::lowerUsingStmt(const UsingStmt &stmt) {
         block->terminated = true;
     };
 
+    /// @brief Emits a conditional branch carrying values on both edges.
+    /// @param cond Boolean branch condition.
+    /// @param trueTarget Destination for the true edge.
+    /// @param trueArgs Arguments carried on the true edge.
+    /// @param falseTarget Destination for the false edge.
+    /// @param falseArgs Arguments carried on the false edge.
     auto emitCBrWithArgs = [&](Value cond,
                                BasicBlock *trueTarget,
                                std::vector<Value> trueArgs,
@@ -537,6 +554,7 @@ void Lowerer::lowerUsingStmt(const UsingStmt &stmt) {
         block->terminated = true;
     };
 
+    /// @brief Emits exception-path USING cleanup while preserving handler values.
     auto emitUsingHandlerCleanup = [&]() {
         BasicBlock *handlerBlock = ctx.current();
         if (!handlerBlock || handlerBlock->terminated || handlerBlock->params.size() < 2)

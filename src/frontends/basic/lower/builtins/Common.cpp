@@ -74,6 +74,9 @@ constexpr std::array<TypeKind, 6> kTypeKinds = {
 
 constexpr std::size_t kTypeCount = kTypeKinds.size();
 
+/// @brief Maps a coercion-supported IL kind to its matrix row or column.
+/// @param kind IL kind to locate.
+/// @return Zero-based matrix index, or `-1` when the kind is unsupported.
 constexpr int typeIndex(TypeKind kind) noexcept {
     for (int i = 0; i < static_cast<int>(kTypeCount); ++i) {
         if (kTypeKinds[static_cast<std::size_t>(i)] == kind)
@@ -82,6 +85,9 @@ constexpr int typeIndex(TypeKind kind) noexcept {
     return -1;
 }
 
+/// @brief Tests whether an IL kind belongs to the integer coercion family.
+/// @param kind IL kind to classify.
+/// @return `true` for Boolean and signed integer widths.
 constexpr bool isIntegral(TypeKind kind) noexcept {
     switch (kind) {
         case TypeKind::I1:
@@ -94,6 +100,9 @@ constexpr bool isIntegral(TypeKind kind) noexcept {
     }
 }
 
+/// @brief Returns the scalar bit width used by an integral IL kind.
+/// @param kind IL kind to inspect.
+/// @return Width in bits, or zero for non-integral kinds.
 constexpr int bitWidth(TypeKind kind) noexcept {
     switch (kind) {
         case TypeKind::I1:
@@ -130,6 +139,9 @@ constexpr std::array<std::array<CoerceRule, kTypeCount>, kTypeCount> kCoerce = {
     {{F, F, F, F, F, E}},
 }};
 
+/// @brief Converts a coercion rule to a stable diagnostic name.
+/// @param rule Coercion rule to describe.
+/// @return Static rule name.
 static const char *ruleName(CoerceRule rule) noexcept {
     switch (rule) {
         case CoerceRule::Exact:
@@ -146,6 +158,10 @@ static const char *ruleName(CoerceRule rule) noexcept {
     return "Unknown";
 }
 
+/// @brief Tests whether the builtin coercion matrix permits a conversion.
+/// @param from Source IL kind.
+/// @param to Destination IL kind.
+/// @return `true` when both kinds are represented and the matrix rule is not forbidden.
 static bool canCoerce(TypeKind from, TypeKind to) noexcept {
     const int fromIdx = typeIndex(from);
     const int toIdx = typeIndex(to);
@@ -160,15 +176,23 @@ static thread_local TypeKind gActiveCoerceFrom = TypeKind::I64;
 struct CoerceScope {
     TypeKind prev;
 
+    /// @brief Installs a source kind for nested coercion helpers.
+    /// @param from Source kind to expose until this scope is destroyed.
     explicit CoerceScope(TypeKind from) noexcept : prev(gActiveCoerceFrom) {
         gActiveCoerceFrom = from;
     }
 
+    /// @brief Restores the source kind that was active before construction.
     ~CoerceScope() {
         gActiveCoerceFrom = prev;
     }
 };
 
+/// @brief Narrows an I64 value to the requested integral representation.
+/// @param value I64 value to narrow.
+/// @param to Destination integral kind.
+/// @param emit Emitter receiving the checked narrowing instruction.
+/// @return Original I64 value or the emitted narrowed value.
 static Value narrowFromI64(Value value, TypeKind to, Emitter &emit) {
     const int targetBits = bitWidth(to);
     if (targetBits <= 0 || targetBits == 64)
@@ -178,6 +202,11 @@ static Value narrowFromI64(Value value, TypeKind to, Emitter &emit) {
     return emit.emitUnary(Opcode::CastSiNarrowChk, IlType(to), value);
 }
 
+/// @brief Extends an integral value to the canonical I64 coercion representation.
+/// @param value Source integral value.
+/// @param from Source integral kind.
+/// @param emit Emitter receiving masking and extension instructions.
+/// @return Original I64 value or an emitted sign/zero-extended value.
 static Value signExtendToI64(Value value, TypeKind from, Emitter &emit) {
     const int fromBits = bitWidth(from);
     if (fromBits <= 0 || fromBits == 64)
@@ -193,6 +222,12 @@ static Value signExtendToI64(Value value, TypeKind from, Emitter &emit) {
     return emit.emitBinary(Opcode::AShr, IlType(TypeKind::I64), shl, Value::constInt(shift));
 }
 
+/// @brief Applies one selected coercion rule to a lowered builtin argument.
+/// @param rule Matrix rule selected for the source and destination kinds.
+/// @param v Lowered source value.
+/// @param to Destination IL kind.
+/// @param emit Emitter receiving conversion instructions.
+/// @return Converted value, or @p v for exact, deferred, and forbidden cases.
 static Value applyCoerceRule(CoerceRule rule, const Value &v, TypeKind to, Emitter &emit) {
     const TypeKind from = gActiveCoerceFrom;
     switch (rule) {
@@ -222,6 +257,12 @@ static Value applyCoerceRule(CoerceRule rule, const Value &v, TypeKind to, Emitt
     }
 }
 
+/// @brief Emits the standard diagnostic for a failed builtin argument coercion.
+/// @param lowerer Active lowerer providing the diagnostic emitter.
+/// @param loc Source location attributed to the argument.
+/// @param from Source IL kind.
+/// @param to Requested destination IL kind.
+/// @param rule Rule whose application failed.
 static void emitCoerceDiagnostic(
     Lowerer &lowerer, il::support::SourceLoc loc, TypeKind from, TypeKind to, CoerceRule rule) {
     if (auto *diag = lowerer.diagnosticEmitter()) {
@@ -236,12 +277,19 @@ static void emitCoerceDiagnostic(
     }
 }
 
+/// @brief Constructs the concrete IL type corresponding to a builtin type kind.
+/// @param ctx Lowering context supplying the configured Boolean type.
+/// @param kind Kind to convert.
+/// @return Concrete IL type, including context-sensitive Boolean representation.
 static IlType typeForKind(BuiltinLowerContext &ctx, TypeKind kind) {
     if (kind == TypeKind::I1)
         return ctx.boolType();
     return IlType(kind);
 }
 
+/// @brief Creates a deterministic zero-like lowering result for an IL type.
+/// @param type Result type to preserve.
+/// @return Zero, false, null, or empty-string value paired with @p type.
 static Lowerer::RVal makeTypedZero(IlType type) {
     switch (type.kind) {
         case IlKind::F64:
@@ -260,6 +308,12 @@ static Lowerer::RVal makeTypedZero(IlType type) {
     }
 }
 
+/// @brief Coerces one cached builtin argument to a requested IL kind.
+/// @param ctx Active builtin lowering context.
+/// @param[in,out] slot Lowered value and type updated on success.
+/// @param to Requested destination kind.
+/// @param loc Source location for a conversion diagnostic.
+/// @return `true` on exact or successful conversion; `false` when forbidden.
 static bool applyBuiltinCoercion(BuiltinLowerContext &ctx,
                                  Lowerer::RVal &slot,
                                  TypeKind to,
@@ -543,6 +597,7 @@ IlType BuiltinLowerContext::resolveResultType() {
     return resolveResultType(rule_->result);
 }
 
+/// @copydoc BuiltinLowerContext::fallbackResultType()
 IlType BuiltinLowerContext::fallbackResultType() const {
     if (!rule_)
         return IlType(IlKind::I64);
@@ -762,7 +817,13 @@ BuiltinLowerContext::BranchPair BuiltinLowerContext::createGuardBlocks(const cha
     lowerer_->builder->addBlock(*func, contLabel);
     lowerer_->builder->addBlock(*func, trapLabel);
 
+    /// @brief Resolves a newly created block by label.
+    /// @param label Exact block label.
+    /// @return Pointer to the matching block.
     const auto findBlock = [&](const std::string &label) {
+        /// @brief Tests whether a block has the requested label.
+        /// @param bb Candidate block.
+        /// @return `true` when `bb.label` equals `label`.
         auto it = std::find_if(func->blocks.begin(),
                                func->blocks.end(),
                                [&](const il::core::BasicBlock &bb) { return bb.label == label; });
@@ -770,6 +831,9 @@ BuiltinLowerContext::BranchPair BuiltinLowerContext::createGuardBlocks(const cha
         return &*it;
     };
 
+    /// @brief Tests whether a block is the saved origin.
+    /// @param bb Candidate block.
+    /// @return `true` when `bb.label` equals `originLabel`.
     auto originIt =
         std::find_if(func->blocks.begin(), func->blocks.end(), [&](const il::core::BasicBlock &bb) {
             return bb.label == originLabel;
@@ -806,7 +870,13 @@ BuiltinLowerContext::ValBlocks BuiltinLowerContext::createValBlocks() {
     lowerer_->builder->addBlock(*func, nanLabel);
     lowerer_->builder->addBlock(*func, overflowLabel);
 
+    /// @brief Resolves a newly created VAL block by label.
+    /// @param label Exact block label.
+    /// @return Pointer to the matching block.
     const auto findBlock = [&](const std::string &label) {
+        /// @brief Tests whether a block has the requested label.
+        /// @param bb Candidate block.
+        /// @return `true` when `bb.label` equals `label`.
         auto it = std::find_if(func->blocks.begin(),
                                func->blocks.end(),
                                [&](const il::core::BasicBlock &bb) { return bb.label == label; });
@@ -814,6 +884,9 @@ BuiltinLowerContext::ValBlocks BuiltinLowerContext::createValBlocks() {
         return &*it;
     };
 
+    /// @brief Tests whether a block is the saved VAL-lowering origin.
+    /// @param bb Candidate block.
+    /// @return `true` when `bb.label` equals `originLabel`.
     auto originIt =
         std::find_if(func->blocks.begin(), func->blocks.end(), [&](const il::core::BasicBlock &bb) {
             return bb.label == originLabel;

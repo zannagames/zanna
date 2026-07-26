@@ -14,6 +14,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares provenance-guided specialization of runtime ownership calls.
+ *
+ * @details The function pass uses live runtime signature metadata and
+ *          dominance to prove when a value is a heap object rather than a
+ *          string-like tagged handle. Generic retain/release calls can then be
+ *          replaced with known-object helpers that skip dynamic discrimination.
+ */
+
 #pragma once
 
 #include "il/transform/PassRegistry.hpp"

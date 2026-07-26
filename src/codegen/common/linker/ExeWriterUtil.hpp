@@ -157,7 +157,7 @@ inline void padTo(std::vector<uint8_t> &buf, size_t targetSize) {
 
 } // namespace encoding
 
-/// Resolve the "main" or "_main" entry point symbol from the layout.
+/// @brief Resolves the `main` or `_main` entry-point symbol from the layout.
 /// @param layout Link layout containing the resolved global symbol table.
 /// @return The resolved virtual address, or 0 if not found.
 inline uint64_t resolveMainAddress(const LinkLayout &layout) {

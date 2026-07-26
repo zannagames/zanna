@@ -5,15 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tools/vbasic-server/BasicCompilerBridge.cpp
-// Purpose: Implementation of the BASIC compiler bridge for the language server.
-// Key invariants:
-//   - Each analysis call creates a fresh SourceManager
-//   - BasicCompletionEngine persists for LRU cache benefits
-//   - Hover uses shared TextUtils for cursor extraction
-// Ownership/Lifetime:
-//   - All returned data is fully owned
-// Links: tools/vbasic-server/BasicCompilerBridge.hpp
+/// @file
+/// @brief Implements the protocol-neutral BASIC compiler bridge used by Zanna's
+///        language-server frontends.
+///
+/// Analysis and dump requests create isolated compiler/source-manager state.
+/// Completion alone shares a long-lived cache protected by a mutex. Hover
+/// cursor extraction uses the common text utilities, and every returned result
+/// owns its data.
+///
+/// @see BasicCompilerBridge.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -48,6 +49,8 @@ namespace zanna::server {
 using namespace il::frontends::basic;
 
 /// @brief Uppercase a string to match BASIC's case-folded identifier convention.
+/// @param s Identifier or qualified name to fold.
+/// @return Uppercase copy using unsigned-byte-safe character classification.
 static std::string toUpperStr(const std::string &s) {
     std::string upper;
     upper.reserve(s.size());
@@ -59,6 +62,8 @@ static std::string toUpperStr(const std::string &s) {
 /// @brief Remove BASIC's single-character type suffix from an identifier spelling.
 /// @details Semantic symbols are case-folded and may be stored without `%`, `&`, `!`, `#`, or `$`
 /// suffixes, while lexer tokens preserve the original spelling.
+/// @param text Identifier spelling to normalize in place.
+/// @return Identifier without one recognized trailing type suffix.
 static std::string stripBasicTypeSuffix(std::string text) {
     if (!text.empty()) {
         const char suffix = text.back();
@@ -72,6 +77,8 @@ static std::string stripBasicTypeSuffix(std::string text) {
 /// @details BASIC identifiers should not contain markdown delimiters, but this
 ///          defensive sanitizer keeps unexpected control characters or backticks
 ///          from breaking the hover document layout.
+/// @param text Text destined for a fenced Markdown code block.
+/// @return Copy with control bytes, DEL, and backticks replaced by spaces.
 static std::string sanitizeBasicHoverCode(std::string text) {
     for (char &c : text) {
         const unsigned char uc = static_cast<unsigned char>(c);
@@ -82,6 +89,8 @@ static std::string sanitizeBasicHoverCode(std::string text) {
 }
 
 /// @brief Combine authored runtime class documentation for BASIC tooling.
+/// @param qualifiedName Fully qualified runtime class name.
+/// @return Summary and details separated by a blank line, or empty when unknown.
 static std::string runtimeClassDocumentation(std::string_view qualifiedName) {
     const auto *runtimeClass = il::runtime::findRuntimeClassByQName(qualifiedName);
     if (!runtimeClass)
@@ -100,6 +109,9 @@ static std::string runtimeClassDocumentation(std::string_view qualifiedName) {
 /// helper lexes the source once, prefers identifiers immediately following declaration leaders
 /// such as DIM, CONST, SUB, FUNCTION, and CLASS, and then falls back to each identifier's first
 /// source position so LSP document symbols always have a concrete range.
+/// @param source Complete BASIC source text.
+/// @param fileId Source-manager file identifier assigned to the text.
+/// @return Case-folded symbol spellings mapped to preferred declaration locations.
 static std::unordered_map<std::string, il::support::SourceLoc> indexBasicIdentifierLocations(
     const std::string &source, uint32_t fileId) {
     std::unordered_map<std::string, il::support::SourceLoc> locations;
@@ -108,6 +120,8 @@ static std::unordered_map<std::string, il::support::SourceLoc> indexBasicIdentif
     enum class DeclarationMode { None, SingleIdentifier, VariableList };
     DeclarationMode declarationMode = DeclarationMode::None;
     bool skippingTypeClause = false;
+    /// @brief Record a BASIC declaration under its literal and suffix-free spellings.
+    /// @param tok Identifier token providing spelling and source location.
     auto rememberDeclaration = [&](const Token &tok) {
         const std::string key = toUpperStr(tok.lexeme);
         locations.emplace(key, tok.loc);
@@ -168,6 +182,9 @@ static std::unordered_map<std::string, il::support::SourceLoc> indexBasicIdentif
 /// @brief Find the best known source location for a BASIC semantic symbol name.
 /// @details Qualified names are resolved by exact uppercase spelling first and by their final
 /// component second, matching how class members and nested class names are commonly displayed.
+/// @param locations Case-folded location index.
+/// @param name Semantic symbol name, possibly qualified or type-suffixed.
+/// @return Indexed source location, or a zero-initialized location when absent.
 static il::support::SourceLoc findBasicSymbolLocation(
     const std::unordered_map<std::string, il::support::SourceLoc> &locations,
     const std::string &name) {
@@ -189,6 +206,9 @@ static il::support::SourceLoc findBasicSymbolLocation(
 /// @details LSP ranges are one-based in bridge data and cannot use zero line or
 ///          column values. Falling back to 1:1 is preferable to sending an
 ///          invalid range when semantic data lacks a precise declaration span.
+/// @param loc Candidate semantic or lexer location.
+/// @param fileId Source-manager file identifier for the current document.
+/// @return @p loc when complete, otherwise the current document's 1:1 position.
 static il::support::SourceLoc validBasicSymbolLocation(il::support::SourceLoc loc,
                                                        uint32_t fileId) {
     if (loc.line != 0 && loc.column != 0)
@@ -236,13 +256,20 @@ static void appendEscapedTokenText(std::string &out, const std::string &text) {
 
 // --- Constructor / Destructor ---
 
+/// @brief Construct the bridge and its persistent completion cache.
 BasicCompilerBridge::BasicCompilerBridge()
     : completionEngine_(std::make_unique<BasicCompletionEngine>()) {}
 
+/// @brief Destroy the completion engine through its complete implementation type.
 BasicCompilerBridge::~BasicCompilerBridge() = default;
 
 // --- Analysis ---
 
+/// @brief Parse and semantically analyze BASIC source.
+/// @param source Complete source buffer.
+/// @param path Virtual or filesystem path used in source locations.
+/// @return Owned normalized diagnostics, including a bridge error if analysis
+///         unexpectedly produces no result.
 std::vector<DiagnosticInfo> BasicCompilerBridge::check(const std::string &source,
                                                        const std::string &path) {
     il::support::SourceManager sm;
@@ -259,6 +286,10 @@ std::vector<DiagnosticInfo> BasicCompilerBridge::check(const std::string &source
     return extractDiagnostics(result->diagnostics, &sm);
 }
 
+/// @brief Compile BASIC source through the normal frontend pipeline.
+/// @param source Complete source buffer.
+/// @param path Virtual or filesystem path used in diagnostics.
+/// @return Success flag and owned normalized diagnostics.
 CompileResult BasicCompilerBridge::compile(const std::string &source, const std::string &path) {
     il::support::SourceManager sm;
     BasicCompilerInput input{.source = source, .path = path};
@@ -270,6 +301,12 @@ CompileResult BasicCompilerBridge::compile(const std::string &source, const std:
 
 // --- IDE Features ---
 
+/// @brief Query cached BASIC completions at a compiler-coordinate position.
+/// @param source Complete source buffer.
+/// @param line One-based cursor line.
+/// @param col One-based cursor byte column.
+/// @param path Virtual or filesystem path used by the completion engine.
+/// @return Owned protocol-neutral completion items.
 std::vector<CompletionInfo> BasicCompilerBridge::completions(const std::string &source,
                                                              int line,
                                                              int col,
@@ -289,6 +326,13 @@ std::vector<CompletionInfo> BasicCompilerBridge::completions(const std::string &
     return result;
 }
 
+/// @brief Build Markdown hover information for a BASIC symbol.
+/// @param source Complete source buffer.
+/// @param line One-based cursor line.
+/// @param col One-based cursor byte column.
+/// @param path Virtual or filesystem path used for analysis.
+/// @return Fenced declaration and optional runtime documentation, or empty text
+///         when no variable, procedure, or class resolves.
 std::string BasicCompilerBridge::hover(const std::string &source,
                                        int line,
                                        int col,
@@ -433,6 +477,10 @@ std::string BasicCompilerBridge::hover(const std::string &source,
     return "";
 }
 
+/// @brief Enumerate variables, procedures, and classes from BASIC semantic analysis.
+/// @param source Complete source buffer.
+/// @param path Virtual or filesystem path attached to returned locations.
+/// @return Owned symbols with lexer-derived declaration coordinates when available.
 std::vector<SymbolInfo> BasicCompilerBridge::symbols(const std::string &source,
                                                      const std::string &path) {
     il::support::SourceManager sm;
@@ -509,6 +557,11 @@ std::vector<SymbolInfo> BasicCompilerBridge::symbols(const std::string &source,
 
 // --- Dump ---
 
+/// @brief Compile BASIC source and serialize its IL module.
+/// @param source Complete source buffer.
+/// @param path Virtual or filesystem path used during compilation.
+/// @param optimized Whether to run the verified O1 IL pipeline before serialization.
+/// @return Serialized IL, or human-readable compilation/optimization failure text.
 std::string BasicCompilerBridge::dumpIL(const std::string &source,
                                         const std::string &path,
                                         bool optimized) {
@@ -532,6 +585,10 @@ std::string BasicCompilerBridge::dumpIL(const std::string &source,
     return il::io::Serializer::toString(result.module);
 }
 
+/// @brief Parse BASIC source and dump its abstract syntax tree.
+/// @param source Complete source buffer.
+/// @param path Virtual or filesystem path used during parsing.
+/// @return Printer output, or a no-AST marker when parsing produces no tree.
 std::string BasicCompilerBridge::dumpAst(const std::string &source, const std::string &path) {
     il::support::SourceManager sm;
     BasicCompilerInput input{.source = source, .path = path};
@@ -543,6 +600,10 @@ std::string BasicCompilerBridge::dumpAst(const std::string &source, const std::s
     return printer.dump(*result->ast);
 }
 
+/// @brief Lex BASIC source into a stable line-oriented token dump.
+/// @param source Complete source buffer.
+/// @param path Virtual or filesystem path used to allocate the file ID.
+/// @return One line per non-EOF token with location, kind, and escaped spelling.
 std::string BasicCompilerBridge::dumpTokens(const std::string &source, const std::string &path) {
     il::support::SourceManager sm;
     uint32_t fileId = sm.addFile(path);

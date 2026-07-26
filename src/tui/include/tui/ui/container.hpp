@@ -5,10 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the Container base class and the VStack/HStack layout
-// containers for Zanna's TUI. Container provides a common base for widgets
-// that manage a collection of child widgets, handling ownership, painting
-// delegation, and layout orchestration.
+/// @file
+/// @brief Declares owning widget containers and equal-size stack layouts.
+/// @details Container centralizes child ownership, paint delegation, and
+///          two-phase layout; VStack and HStack divide available space along
+///          the vertical or horizontal axis.
 //
 // VStack arranges children vertically (top to bottom), dividing the
 // available height equally among children. HStack does the same
@@ -61,7 +62,7 @@ class Container : public Widget {
     /// @details Called by layout() after the container's own rect_ is set.
     ///          Subclasses must implement this to assign rectangles to each child.
     virtual void layoutChildren() = 0;
-    std::vector<std::unique_ptr<Widget>> children_{};
+    std::vector<std::unique_ptr<Widget>> children_{}; ///< Owned children in paint order.
 };
 
 /// @brief Vertical stack container that arranges children top-to-bottom.
@@ -69,6 +70,7 @@ class Container : public Widget {
 ///          Each child receives the full container width.
 class VStack : public Container {
   protected:
+    /// @brief Assign equal-height top-to-bottom rectangles to all children.
     void layoutChildren() override;
 };
 
@@ -77,6 +79,7 @@ class VStack : public Container {
 ///          Each child receives the full container height.
 class HStack : public Container {
   protected:
+    /// @brief Assign equal-width left-to-right rectangles to all children.
     void layoutChildren() override;
 };
 

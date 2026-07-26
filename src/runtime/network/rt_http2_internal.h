@@ -26,12 +26,22 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Defines shared HTTP/2 buffer and HPACK implementation contracts.
+ * @details Centralizes bounded growable storage, newest-first dynamic table
+ * ownership and accounting, header validation and copying, and the encode/
+ * decode boundary between the frame and compression translation units.
+ */
+
 #pragma once
 
 #include <stdint.h>
 #include <stddef.h>
 
+/** Implementation ceiling for one HPACK dynamic table. */
 #define H2_MAX_DYNAMIC_TABLE_SIZE (64u * 1024u)
+/** Fixed node capacity of the process-global HPACK Huffman decoding trie. */
 #define H2_MAX_HUFF_NODES 8192
 
 /// @brief Growable owned byte buffer shared by framing and HPACK code.

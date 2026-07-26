@@ -522,6 +522,9 @@ ExprPtr Parser::parseBlockExpression() {
     std::vector<StmtPtr> statements;
     ExprPtr value;
 
+    /// @brief Tests whether a token begins a statement-only block item.
+    /// @param kind Lookahead token kind.
+    /// @return `true` when the token selects statement parsing.
     auto startsBlockStatement = [](TokenKind kind) {
         switch (kind) {
             case TokenKind::KwVar:

@@ -28,6 +28,14 @@
 //        src/runtime/io/rt_linereader.h (complementary text file reader)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements managed buffered text output with configurable newlines.
+ * @details Opens UTF-8 paths in binary truncate or append mode, validates
+ * opaque handles and runtime strings, writes exact byte spans, replaces the
+ * retained newline transactionally, recovers constructor allocation traps,
+ * and closes streams and references explicitly or during finalization.
+ */
 
 #include "rt_linewriter.h"
 
@@ -59,8 +67,11 @@ typedef struct rt_linewriter_impl {
     rt_string newline; ///< Newline string.
 } rt_linewriter_impl;
 
+/// @copydoc rt_trap_set_recovery()
 void rt_trap_set_recovery(jmp_buf *buf);
+/// @copydoc rt_trap_clear_recovery()
 void rt_trap_clear_recovery(void);
+/// @copydoc rt_trap_get_error()
 const char *rt_trap_get_error(void);
 
 /// @brief Validate and unwrap an opaque LineWriter receiver.

@@ -48,6 +48,8 @@
 /// @brief Hook executed immediately before each instruction dispatch.
 /// @details Override this macro to inject profiling or instrumentation. The
 ///          default definition is a no-op.
+/// @param ST Active execution-state expression.
+/// @param OPCODE Opcode expression for the instruction about to execute.
 #ifndef ZANNA_VM_DISPATCH_BEFORE
 #define ZANNA_VM_DISPATCH_BEFORE(ST, OPCODE)                                                       \
     do {                                                                                           \
@@ -60,6 +62,9 @@
 /// @brief Hook executed immediately after each instruction dispatch.
 /// @details The default implementation performs periodic polling when enabled
 ///          via the runtime config. Override to inject custom instrumentation.
+/// @param ST Active execution-state expression updated by polling.
+/// @param OPCODE Opcode expression for the instruction just executed; unused
+///               by the default hook.
 #ifndef ZANNA_VM_DISPATCH_AFTER
 #define ZANNA_VM_DISPATCH_AFTER(ST, OPCODE)                                                        \
     do {                                                                                           \
@@ -106,6 +111,9 @@
 
 #if ZANNA_VM_OPCOUNTS
 #undef ZANNA_VM_DISPATCH_BEFORE
+/// @brief Count an opcode before dispatch when runtime counting is enabled.
+/// @param ST Active execution-state expression containing the counter array.
+/// @param OPCODE Opcode expression converted to the counter-array index.
 #define ZANNA_VM_DISPATCH_BEFORE(ST, OPCODE)                                                       \
     do {                                                                                           \
         if ((ST).config.enableOpcodeCounts) {                                                      \

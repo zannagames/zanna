@@ -22,9 +22,20 @@
 //   - json_parser borrows the input buffer; it owns no heap state.
 //
 // Links: src/runtime/text/rt_json.h (public API),
-//        src/runtime/text/rt_json_parse.c, rt_json_format.c, rt_json_validate.c
+//        src/runtime/text/rt_json_parse.c (allocating parser),
+//        src/runtime/text/rt_json_format.c (depth-limited serializer),
+//        src/runtime/text/rt_json_validate.c (non-allocating validator)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_json_internal.h
+ * @brief Defines shared JSON cursor, diagnostic, UTF-8, and depth helpers.
+ * @details Static inline primitives initialize and advance a borrowed flat
+ *          input range, track line and column diagnostics, skip JSON
+ *          whitespace, validate UTF-8 scalar encodings, and enforce the common
+ *          nesting bound used by parsing, validation, and formatting.
+ */
 
 #pragma once
 
@@ -36,26 +47,27 @@
 // Parser limits
 //=============================================================================
 
-/* S-16: Maximum nesting depth before aborting (stack overflow / DoS guard).
- * Shared by the parser (rt_json_parse.c) and the formatter's cycle/depth
- * guard (rt_json_format.c). */
+/// Maximum nested container depth accepted by JSON parsers and formatters.
+/// @details This denial-of-service guard bounds recursive C stack use and the
+///          serializer's active-container stack.
 #define JSON_MAX_DEPTH 200
 
 //=============================================================================
 // Parser State
 //=============================================================================
 
+/// Shared cursor and diagnostic state for JSON parsing and validation.
 typedef struct {
-    const char *input;
-    size_t len;
-    size_t pos;
-    int depth;          // Current nesting depth
-    int depth_exceeded; // S-16: set when depth limit hit (unwinds without trap)
-    int trap_errors;
-    int has_error;
-    char error_message[160];
-    int64_t error_line;
-    int64_t error_column;
+    const char *input;       ///< Borrowed start of the JSON byte range.
+    size_t len;              ///< Total number of input bytes.
+    size_t pos;              ///< Current byte offset.
+    int depth;               ///< Current recursive container depth.
+    int depth_exceeded;      ///< Set when `JSON_MAX_DEPTH` is reached.
+    int trap_errors;         ///< Whether parser diagnostics call `rt_trap`.
+    int has_error;           ///< Sticky parse-error flag.
+    char error_message[160]; ///< NUL-terminated diagnostic detail.
+    int64_t error_line;      ///< One-based line, or zero when unavailable.
+    int64_t error_column;    ///< One-based column, or zero when unavailable.
 } json_parser;
 
 // ---------------------------------------------------------------------------
@@ -65,6 +77,11 @@ typedef struct {
 // ---------------------------------------------------------------------------
 
 /// @brief Initialise a parser onto fresh input. depth=0, no errors.
+/// @details The input range is borrowed, diagnostics are cleared, and trapping
+///          is enabled by default.
+/// @param p Writable parser state.
+/// @param input Borrowed input byte range.
+/// @param len Number of readable bytes at @p input.
 static inline void parser_init(json_parser *p, const char *input, size_t len) {
     p->input = input;
     p->len = len;
@@ -79,6 +96,10 @@ static inline void parser_init(json_parser *p, const char *input, size_t len) {
 }
 
 /// @brief True if the cursor has consumed all input bytes.
+/// @details An error state is treated as EOF so cursor loops terminate during
+///          unwinding.
+/// @param p Borrowed parser state.
+/// @return `true` when an error is set or the cursor reached the input end.
 static inline bool parser_eof(json_parser *p) {
     if (p->has_error)
         return true;
@@ -86,6 +107,8 @@ static inline bool parser_eof(json_parser *p) {
 }
 
 /// @brief Look at the byte under the cursor; returns `\0` at EOF.
+/// @param p Borrowed parser state.
+/// @return Current byte without advancing, or NUL at EOF/error.
 static inline char parser_peek(json_parser *p) {
     if (p->has_error)
         return '\0';
@@ -95,6 +118,8 @@ static inline char parser_peek(json_parser *p) {
 }
 
 /// @brief Consume and return the byte under the cursor.
+/// @param p Mutable parser state.
+/// @return Current byte while advancing one position, or NUL at EOF/error.
 static inline char parser_consume(json_parser *p) {
     if (p->has_error)
         return '\0';
@@ -103,7 +128,6 @@ static inline char parser_consume(json_parser *p) {
     return p->input[p->pos++];
 }
 
-/// @brief Skip JSON whitespace (space, tab, newline, CR — RFC 8259 §2).
 /// @brief Validate one raw (unescaped) UTF-8 sequence beginning at `lead`.
 /// @details Shared by the parser, validator, and tokenizer so IsValid/Parse
 ///          agree byte-for-byte on what constitutes interoperable JSON text.
@@ -155,6 +179,10 @@ static inline int json_raw_utf8_sequence_valid(unsigned char lead,
     return 1;
 }
 
+/// @brief Skip JSON whitespace bytes defined by RFC 8259 section 2.
+/// @details Advances over space, horizontal tab, line feed, and carriage
+///          return, stopping at the first other byte or parser error.
+/// @param p Mutable parser state.
 static inline void parser_skip_whitespace(json_parser *p) {
     while (!parser_eof(p)) {
         char c = parser_peek(p);

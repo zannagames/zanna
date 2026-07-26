@@ -13,6 +13,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares mutable state shared by the textual IL parser.
+ *
+ * @details `ParserState` binds parser components to a caller-owned module and
+ *          centralizes active function/block context, SSA identifiers,
+ *          declaration indexes, unresolved branch bookkeeping, source
+ *          locations, and cumulative resource accounting. The state owns only
+ *          parser-side containers; referenced IL entities belong to the module.
+ */
+
 #pragma once
 
 #include "il/core/fwd.hpp"
@@ -57,9 +68,11 @@ struct ParserState {
     /// @brief Cumulative instruction count used for parser resource limits.
     std::size_t totalInstructions = 0;
 
-    /// @brief Module declaration indexes used for constant-time collision checks.
+    /// @brief Function-name index used for constant-time declaration collision checks.
     std::unordered_set<std::string> functionNames;
+    /// @brief External-declaration name index used for collision checks.
     std::unordered_set<std::string> externNames;
+    /// @brief Global name index used for collision checks.
     std::unordered_set<std::string> globalNames;
 
     /// @brief Source location tracked via `.loc` directives.

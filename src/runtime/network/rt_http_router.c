@@ -18,6 +18,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements synchronized HTTP route parsing and matching.
+ * @details Transactionally parses literal, named-parameter, and terminal
+ * wildcard segments, preserves first-registration match order, extracts
+ * captures after releasing the shared lock, and publishes managed RouteMatch
+ * results with trap-safe ownership.
+ */
+
 #include "rt_http_router.h"
 
 #include "rt_internal.h"
@@ -36,6 +45,7 @@
 
 #if RT_PLATFORM_WINDOWS
 #ifndef WIN32_LEAN_AND_MEAN
+/** Restrict the Windows SDK surface to core declarations. */
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
@@ -49,21 +59,26 @@
 // Internal Structures
 //=============================================================================
 
+/** Initial number of route pointers allocated for a new router. */
 #define INITIAL_ROUTE_CAPACITY 16
+/** Initial parsed-segment capacity for one route pattern. */
 #define INITIAL_ROUTE_SEGMENT_CAPACITY 8
 
+/** Classification of one parsed route-pattern segment. */
 typedef enum {
     SEG_LITERAL, // Exact match: "users"
     SEG_PARAM,   // Parameter capture: ":id"
     SEG_WILDCARD // Wildcard capture: "*path"
 } segment_type_t;
 
+/** One owned literal or capture segment in a parsed route. */
 typedef struct {
     segment_type_t type;
     char *value; // Literal text, or param name (without : or *)
     size_t value_len;
 } segment_t;
 
+/** One immutable registered method and parsed pattern. */
 typedef struct {
     char *method; // "GET", "POST", etc.
     size_t method_len;
@@ -74,6 +89,7 @@ typedef struct {
     int capture_count;
 } route_t;
 
+/** Managed router payload and platform reader-writer lock. */
 typedef struct {
     route_t **routes;
     int route_count;
@@ -81,6 +97,7 @@ typedef struct {
     void *rw_lock; ///< Platform rwlock (SRWLOCK / pthread_rwlock_t)
 } rt_http_router_impl;
 
+/** Managed result of one route match and its captured parameter Map. */
 typedef struct {
     int route_index;
     char *pattern;
@@ -92,8 +109,11 @@ typedef struct {
 /// @param obj RouteMatch payload being finalized.
 static void rt_route_match_finalize(void *obj);
 
+/// @copydoc rt_trap_set_recovery()
 void rt_trap_set_recovery(jmp_buf *buf);
+/// @copydoc rt_trap_clear_recovery()
 void rt_trap_clear_recovery(void);
+/// @copydoc rt_trap_get_error()
 const char *rt_trap_get_error(void);
 
 /// @brief Validate and expose the complete byte span of a runtime string.

@@ -51,12 +51,35 @@
 // paused frame. Forward-declared (rather than pulling the collection headers into
 // this VM TU) to keep the debug surface minimal; signatures mirror the runtime.
 extern "C" {
+/// @brief Return the number of elements in a runtime List.
+/// @param list Runtime list handle.
+/// @return Element count, or the runtime's invalid-handle sentinel.
 int64_t rt_list_len(void *list);
+/// @brief Read a List element without transferring ownership.
+/// @param list Runtime list handle.
+/// @param index Zero-based element index.
+/// @return Borrowed element handle.
 void *rt_list_get(void *list, int64_t index);
+/// @brief Return the number of elements in a runtime Seq.
+/// @param obj Runtime sequence handle.
+/// @return Element count, or the runtime's invalid-handle sentinel.
 int64_t rt_seq_len(void *obj);
+/// @brief Read a Seq element without transferring ownership.
+/// @param obj Runtime sequence handle.
+/// @param idx Zero-based element index.
+/// @return Borrowed element handle.
 void *rt_seq_get(void *obj, int64_t idx);
+/// @brief Return the number of entries in a runtime Map.
+/// @param obj Runtime map handle.
+/// @return Entry count, or the runtime's invalid-handle sentinel.
 int64_t rt_map_len(void *obj);
+/// @brief Materialize a newly owned sequence containing the map's keys.
+/// @param map Runtime map handle.
+/// @return Owned key sequence, or @c nullptr on failure.
 void *rt_map_keys_to_seq(void *map);
+/// @brief Materialize a newly owned sequence containing the map's values.
+/// @param map Runtime map handle.
+/// @return Owned value sequence, or @c nullptr on failure.
 void *rt_map_values_to_seq(void *map);
 }
 
@@ -64,10 +87,18 @@ using namespace il::core;
 
 namespace il::vm {
 
+/// @brief Request an interactive debugger pause on a VM.
+/// @param vm VM that should stop at its next debug boundary.
 void requestDebugPause(VM &vm) {
     vm.requestDebugPause();
 }
 
+/// @brief Replace the active stepping state with a debugger action.
+/// @details Clears prior budgets and frame-depth modes, then configures
+///          continue, counted step, step-over, or step-out behavior relative
+///          to the current execution-stack depth.
+/// @param action Action selected by the script or interactive frontend.
+/// @param currentDepth Active execution-stack depth at the stop.
 void VM::applyDebugAction(DebugAction action, size_t currentDepth) {
     stepBudget = 0;
     debugStepMode_ = DebugStepMode::None;
@@ -94,6 +125,8 @@ void VM::applyDebugAction(DebugAction action, size_t currentDepth) {
 namespace {
 
 /// @brief Format a double compactly for variable display.
+/// @param d Floating-point value to render.
+/// @return Locale-dependent compact decimal representation.
 std::string formatDouble(double d) {
     char buf[32];
     std::snprintf(buf, sizeof(buf), "%g", d);
@@ -102,6 +135,8 @@ std::string formatDouble(double d) {
 
 /// @brief Render an rt_string as a quoted, truncated display value. Only called
 ///        when the register is known to hold a valid owned string.
+/// @param s Valid runtime string handle, or @c nullptr for an empty display.
+/// @return Quoted value with control characters sanitized and long content truncated.
 std::string quoteRtString(rt_string s) {
     std::string out = "\"";
     if (s) {
@@ -187,6 +222,11 @@ bool formatPointerValue(void *value,
 /// @details Bounds-checks @p ptr against the frame's fixed-size operand stack so a
 ///          stale or non-alloca pointer cannot fault. Only fixed-size scalars are
 ///          loaded; aggregate/string pointees are left to the caller.
+/// @param fr Frame whose operand stack may contain @p ptr.
+/// @param ptr Candidate address of an alloca-backed scalar.
+/// @param kind Static pointee type used to select the read width and formatter.
+/// @param [out] local Debugger value populated after a successful read.
+/// @param [out] managedOut Optional destination for a managed pointer value.
 /// @return True when a value was read and formatted.
 bool loadScalarFromAlloca(const Frame &fr,
                           void *ptr,
@@ -272,6 +312,10 @@ bool loadScalarFromAlloca(const Frame &fr,
 }
 
 /// @brief Format a scalar register value held directly in an SSA value.
+/// @param fr Frame supplying the register and string-ownership metadata.
+/// @param id Register index to display.
+/// @param kind Static IL type controlling interpretation of the slot.
+/// @param [out] local Debugger value populated from the register.
 void formatRegScalar(const Frame &fr, size_t id, Type::Kind kind, DebugLocalInfo &local) {
     const Slot &slot = fr.regs[id];
     switch (kind) {
@@ -316,12 +360,16 @@ constexpr int64_t kMaxEagerMapPairs = 2000;
 ///          released immediately.
 class VmDebugVarStore : public DebugVarExpander {
   public:
+    /// @brief Construct a variable expander for one paused VM snapshot.
     /// @param layouts Class-layout sidecar for object expansion, or null/empty
     ///        when the host installed none (objects then stay leaves).
     explicit VmDebugVarStore(const DebugClassLayoutTable *layouts) : layouts_(layouts) {}
 
     /// @brief If @p v is an expandable container, register it and populate the
-    ///        display fields for a top-level local; return true. Leaves return false.
+    ///        display fields for a top-level local.
+    /// @param v Managed runtime value to classify.
+    /// @param [out] local Top-level local record updated on successful classification.
+    /// @return @c true for a registered container or object; @c false for a leaf.
     bool classify(void *v, DebugLocalInfo &local) {
         Kind k;
         int64_t n = 0;
@@ -340,10 +388,20 @@ class VmDebugVarStore : public DebugVarExpander {
         return true;
     }
 
+    /// @brief Query whether this stop snapshot registered any expandable values.
+    /// @return @c true when no variable references have been allocated.
     bool empty() const {
         return entries_.empty();
     }
 
+    /// @brief Materialize a page of immediate children for a variable reference.
+    /// @details Map children are copied from the eager snapshot, objects are
+    ///          read through compiler-provided layouts, and List/Seq elements
+    ///          are inspected without invoking user code.
+    /// @param ref One-based variable reference returned by this store.
+    /// @param start Zero-based first child index; negative values clamp to zero.
+    /// @param count Maximum number of children to return.
+    /// @return Available children in ascending index or field order.
     std::vector<DebugLocalInfo> expand(int64_t ref, int64_t start, int64_t count) override {
         std::vector<DebugLocalInfo> out;
         if (ref < 1 || static_cast<size_t>(ref) > entries_.size() || count <= 0)
@@ -391,16 +449,21 @@ class VmDebugVarStore : public DebugVarExpander {
     }
 
   private:
+    /// @brief Expandable runtime-value category.
     enum class Kind { List, Seq, Map, Object };
 
+    /// @brief Stored expansion metadata associated with one variable reference.
     struct Entry {
-        Kind kind = Kind::List;
-        void *handle = nullptr; // frame-owned list/seq/object handle (Map: unused)
-        int64_t count = 0;
-        const DebugClassLayout *layout = nullptr; // Object only, sidecar-owned
-        std::vector<DebugLocalInfo> mapChildren;  // Map only, pre-materialized
+        Kind kind = Kind::List; ///< Backend category used during expansion.
+        void *handle = nullptr; ///< Frame-owned List, Seq, or object; unused for maps.
+        int64_t count = 0; ///< Available element or field count.
+        const DebugClassLayout *layout = nullptr; ///< Sidecar-owned object layout.
+        std::vector<DebugLocalInfo> mapChildren; ///< Eagerly materialized map entries.
     };
 
+    /// @brief Return the debugger type label for a collection category.
+    /// @param k Collection category to name.
+    /// @return Static display name; non-List/Seq categories map to "Map".
     static const char *kindName(Kind k) {
         switch (k) {
             case Kind::List:
@@ -412,16 +475,31 @@ class VmDebugVarStore : public DebugVarExpander {
         }
     }
 
+    /// @brief Build a compact collection summary containing its size.
+    /// @param k Collection category to name.
+    /// @param n Reported runtime size; negative values are displayed as zero.
+    /// @return Display text such as @c "List(3)".
     static std::string summaryOf(Kind k, int64_t n) {
         return std::string(kindName(k)) + "(" + std::to_string(n < 0 ? 0 : n) + ")";
     }
 
+    /// @brief Determine the child count exposed for a registered value.
+    /// @param ref One-based reference of the registered entry.
+    /// @param k Entry category.
+    /// @param n Runtime-provided collection or field count.
+    /// @return Materialized map child count or nonnegative @p n.
     int64_t childCountOf(int64_t ref, Kind k, int64_t n) const {
         if (k == Kind::Map)
             return static_cast<int64_t>(entries_[static_cast<size_t>(ref) - 1].mapChildren.size());
         return n < 0 ? 0 : n;
     }
 
+    /// @brief Classify a managed runtime value as an expandable collection or object.
+    /// @param v Managed value to inspect.
+    /// @param [out] k Detected expansion category.
+    /// @param [out] n Detected element or field count.
+    /// @param [out] layout Matching class layout for objects, otherwise @c nullptr.
+    /// @return @c true when @p v has a supported expansion representation.
     bool detect(void *v, Kind &k, int64_t &n, const DebugClassLayout *&layout) const {
         layout = nullptr;
         if (rt_obj_is_instance(v, RT_LIST_CLASS_ID, 0)) {
@@ -457,6 +535,12 @@ class VmDebugVarStore : public DebugVarExpander {
         return false;
     }
 
+    /// @brief Allocate a one-based variable reference for an expandable value.
+    /// @param v Frame-owned runtime handle.
+    /// @param k Expansion category.
+    /// @param n Runtime-provided element or field count.
+    /// @param layout Sidecar-owned layout for objects, otherwise @c nullptr.
+    /// @return Newly assigned one-based variable reference.
     int64_t registerContainer(void *v, Kind k, int64_t n, const DebugClassLayout *layout) {
         Entry e;
         e.kind = k;
@@ -469,6 +553,9 @@ class VmDebugVarStore : public DebugVarExpander {
         return static_cast<int64_t>(entries_.size()); // 1-based ref
     }
 
+    /// @brief Snapshot a bounded number of map key/value pairs as debugger leaves.
+    /// @param map Runtime map handle to enumerate.
+    /// @param [out] e Entry receiving materialized children.
     void materializeMap(void *map, Entry &e) {
         void *keys = rt_map_keys_to_seq(map);
         void *vals = rt_map_values_to_seq(map);
@@ -496,6 +583,8 @@ class VmDebugVarStore : public DebugVarExpander {
 
     /// @brief Strip one pair of surrounding quotes so a string key reads cleanly
     ///        as a child name.
+    /// @param s Candidate quoted display value.
+    /// @return Unquoted content when both quotes are present, otherwise @p s.
     static std::string unquote(const std::string &s) {
         if (s.size() >= 2 && s.front() == '"' && s.back() == '"')
             return s.substr(1, s.size() - 2);
@@ -504,6 +593,9 @@ class VmDebugVarStore : public DebugVarExpander {
 
     /// @brief Fill @p out from a runtime value without ever invoking user code.
     ///        Containers are registered for expansion when @p allowRegister is true.
+    /// @param v Runtime value to inspect.
+    /// @param [out] out Debugger record populated with type, summary, and optional reference.
+    /// @param allowRegister Whether nested expandable values receive variable references.
     void describeValue(void *v, DebugLocalInfo &out, bool allowRegister) {
         if (!v) {
             out.type = "ptr";
@@ -576,6 +668,10 @@ class VmDebugVarStore : public DebugVarExpander {
     ///        Managed fields recurse through describeValue so nested objects and
     ///        collections stay expandable; weak slots resolve via rt_weak_load
     ///        (non-retaining, may be null after collection).
+    /// @param base Runtime object whose field storage is read.
+    /// @param field Compiler-provided field offset and storage description.
+    /// @param [out] out Debugger record populated from the field.
+    /// @param allowRegister Whether expandable field values receive references.
     void describeField(void *base,
                        const DebugFieldLayout &field,
                        DebugLocalInfo &out,
@@ -666,6 +762,9 @@ class VmDebugVarStore : public DebugVarExpander {
     /// @brief Compact `{a=1, b="x", ...}` summary of an object's leading fields
     ///        for the Variables panel row, truncated to stay scannable. Fields
     ///        are described without registration so previews never mint varRefs.
+    /// @param base Runtime object whose leading fields are summarized.
+    /// @param layout Compiler-provided layout for @p base.
+    /// @return Bounded object preview suitable for one debugger row.
     std::string objectPreview(void *base, const DebugClassLayout &layout) {
         constexpr size_t kMaxPreviewFields = 3;
         constexpr size_t kMaxPreviewLen = 80;
@@ -689,15 +788,17 @@ class VmDebugVarStore : public DebugVarExpander {
         return out;
     }
 
-    const DebugClassLayoutTable *layouts_ = nullptr;
+    const DebugClassLayoutTable *layouts_ = nullptr; ///< Non-owning class-layout sidecar.
     int previewDepth_ = 0; ///< Recursion guard for nested object previews.
-    std::vector<Entry> entries_;
+    std::vector<Entry> entries_; ///< One entry per one-based variable reference.
 };
 
 /// @brief Collect source-named locals of @p fr (skipping SSA temporaries),
 ///        loading mutable variables through their frame-stack allocas and showing
 ///        immutable SSA values directly. Dedups by source name, preferring the
 ///        alloca-backed (current) value. All memory reads are bounds-checked.
+/// @param fr Frame whose source-visible values are collected.
+/// @param [out] out Ordered debugger-local records.
 /// @param outPtrs Parallel to @p out: the managed runtime handle for each local
 ///        that is one (else null), so the caller can offer structured expansion.
 void collectFrameLocals(const Frame &fr,
@@ -712,6 +813,9 @@ void collectFrameLocals(const Frame &fr,
     std::vector<Type::Kind> kinds(count, Type::Kind::Void);
     std::vector<Type::Kind> allocaPointee(count, Type::Kind::Void);
     std::vector<char> isAlloca(count, 0);
+    /// @brief Record a static type kind for a valid SSA value identifier.
+    /// @param id Value identifier to update.
+    /// @param k Type kind assigned to the value.
     auto setKind = [&](unsigned id, Type::Kind k) {
         if (id < count)
             kinds[id] = k;
@@ -741,6 +845,11 @@ void collectFrameLocals(const Frame &fr,
     };
 
     std::vector<OrderedLocal> ordered;
+    /// @brief Insert or authoritatively replace one source-visible debugger local.
+    /// @param name Display name used for ordered de-duplication.
+    /// @param info Formatted local metadata.
+    /// @param managed Managed runtime handle, or `nullptr`.
+    /// @param authoritative Whether an existing entry may be replaced.
     auto upsert = [&](std::string name, DebugLocalInfo info, void *managed, bool authoritative) {
         for (auto &e : ordered) {
             if (e.name == name) {
@@ -792,6 +901,13 @@ void collectFrameLocals(const Frame &fr,
 
 } // namespace
 
+/// @brief Capture an interactive debugger stop snapshot.
+/// @details Resolves the stop location, builds a most-recent-first backtrace,
+///          collects source-visible locals from the top frame, and attaches a
+///          one-stop variable expander for supported containers and objects.
+/// @param reason Frontend-neutral reason for the pause.
+/// @param loc Source location at the pause boundary.
+/// @return Self-contained stop information passed to a debugger frontend.
 DebugStopInfo VM::buildStopInfo(std::string_view reason, const il::support::SourceLoc &loc) const {
     DebugStopInfo info;
     info.reason = std::string(reason);
@@ -829,6 +945,15 @@ DebugStopInfo VM::buildStopInfo(std::string_view reason, const il::support::Sour
     return info;
 }
 
+/// @brief Hand a pause to the interactive frontend or scripted debugger.
+/// @details Interactive frontends receive a rich stop snapshot and choose the
+///          next action. Without a frontend, the method prints a legacy break
+///          notification, returns a pause sentinel when no scripted action
+///          remains, or applies the next queued action.
+/// @param st Execution state stopped at the current debug boundary.
+/// @param reason Frontend-neutral stop reason.
+/// @return Pause sentinel when execution must return to the host, otherwise
+///         @c std::nullopt after a next action is installed.
 std::optional<Slot> VM::pauseOrAdvanceDebugScript(ExecState &st, std::string_view reason) {
     if (frontend_) {
         il::support::SourceLoc loc{};

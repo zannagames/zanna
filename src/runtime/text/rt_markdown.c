@@ -17,7 +17,8 @@
 //   - ExtractHeadings returns a Seq<String> of heading text.
 //   - ToHtml converts headings, bold, italic, links, code, and lists; does not
 //     implement the full CommonMark spec.
-//   - ToText removes **, *, _, `, and link syntax leaving plain text.
+//   - ToText removes matched emphasis/code delimiters and link destinations;
+//     unmatched markers and intraword underscores remain literal.
 //   - Empty input returns empty strings/sequences; whitespace-only input is
 //     kept as content (e.g. ToHtml(" ") emits a paragraph containing a space).
 //
@@ -29,6 +30,15 @@
 //        src/runtime/text/rt_html.h (HTML generation for ToHtml output)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_markdown.c
+ * @brief Implements a safe line-oriented Markdown subset.
+ * @details The renderer recognizes selected headings, emphasis, code, links,
+ *          lists, fences, and horizontal rules, escapes user content, and
+ *          rewrites unsafe URL schemes. Companion scanners produce plain text,
+ *          copied link destinations, and ATX heading snapshots.
+ */
 
 #include "rt_markdown.h"
 
@@ -100,6 +110,9 @@ static char markdown_decode_entity_char(const char *s, int64_t len, int64_t *con
 ///          simple HTML entity obfuscation before matching. Matched schemes
 ///          get rewritten to `#` so the link is rendered but inert.
 ///          (Tracking ID: S-13.)
+/// @param url Borrowed URL byte range.
+/// @param len Number of bytes in @p url.
+/// @return `true` for normalized `javascript:`, `data:`, or `vbscript:`.
 static bool url_scheme_is_blocked(const char *url, int64_t len) {
     static const struct {
         const char *scheme;
@@ -154,6 +167,11 @@ static bool url_scheme_is_blocked(const char *url, int64_t len) {
 
 // --- Helper: append escaped HTML ---
 
+/// @brief Convert a string-builder error into the common Markdown trap.
+/// @details A failed builder is freed before trapping. Callers rely on the
+///          runtime trap being terminating and must not reuse it after failure.
+/// @param sb Builder associated with @p status.
+/// @param status Most recent builder-operation result.
 static void markdown_check_sb(rt_string_builder *sb, rt_sb_status_t status) {
     if (status == RT_SB_OK)
         return;
@@ -161,6 +179,10 @@ static void markdown_check_sb(rt_string_builder *sb, rt_sb_status_t status) {
     rt_trap("Markdown: string builder allocation failed");
 }
 
+/// @brief Copy a byte range to a runtime string or raise a Markdown trap.
+/// @param bytes Borrowed byte range accepted by `rt_string_from_bytes`.
+/// @param len Number of bytes to copy.
+/// @return Newly allocated runtime string, or null only if the trap hook returns.
 static rt_string markdown_string_from_bytes_or_trap(const char *bytes, size_t len) {
     rt_string result = rt_string_from_bytes(bytes, len);
     if (!result)
@@ -174,6 +196,8 @@ static rt_string markdown_string_from_bytes_or_trap(const char *bytes, size_t le
 ///          is intentionally not escaped because it never causes
 ///          problems inside double-quoted attributes (the only
 ///          context we emit user content into here).
+/// @param sb Initialized destination builder.
+/// @param c Source byte to escape and append.
 static void append_escaped(rt_string_builder *sb, char c) {
     switch (c) {
         case '<':
@@ -194,6 +218,12 @@ static void append_escaped(rt_string_builder *sb, char c) {
     }
 }
 
+/// @brief Recognize an ATX heading marker at the exact start of a line.
+/// @details Accepts one through six `#` bytes followed by one literal space.
+///          Leading indentation and seven or more markers are not headings.
+/// @param line First byte of the line.
+/// @param eol One-past-the-end line pointer.
+/// @return Heading level from 1 through 6, or zero when not recognized.
 static int markdown_heading_level(const char *line, const char *eol) {
     int level = 0;
     const char *p = line;
@@ -220,6 +250,9 @@ static int markdown_heading_level(const char *line, const char *eol) {
 ///          attacker-controlled `<`/`>`/`&` can't break out into raw
 ///          HTML. Unmatched closing markers (e.g. `*foo` with no
 ///          closing `*`) just emit the leading marker as a literal.
+/// @param sb Initialized destination builder.
+/// @param line Borrowed inline-content byte range.
+/// @param len Number of bytes at @p line.
 static void process_inline(rt_string_builder *sb, const char *line, int64_t len) {
     int64_t i = 0;
     while (i < len) {
@@ -326,6 +359,9 @@ static void process_inline(rt_string_builder *sb, const char *line, int64_t len)
 ///        marker (-, *, _) separated only by spaces. Checked before list-item
 ///        recognition so `* * *` and `- - -` render as <hr>, not list items
 ///        (VDOC-049).
+/// @param p First byte of the line.
+/// @param line_len Number of bytes in the line.
+/// @return Non-zero for a recognized horizontal-rule line.
 static int markdown_line_is_hr(const char *p, int64_t line_len) {
     if (line_len < 3)
         return 0;
@@ -343,6 +379,14 @@ static int markdown_line_is_hr(const char *p, int64_t line_len) {
 }
 
 /// @brief Convert Markdown text to HTML.
+/// @details Implements a deliberately small line-oriented subset: ATX
+///          headings, horizontal rules, `-`/`*` unordered lists, fenced code,
+///          one paragraph per other non-empty line, plus inline bold, italic,
+///          code, and links. Literal content is HTML-escaped and unsafe URL
+///          schemes are rewritten to `#`. Blank lines close lists but emit no
+///          markup. This is not a CommonMark parser.
+/// @param md Borrowed Markdown source; null is treated as empty.
+/// @return Newly allocated HTML string owned by the caller.
 rt_string rt_markdown_to_html(rt_string md) {
     if (!md)
         return rt_string_from_bytes("", 0);
@@ -467,6 +511,13 @@ rt_string rt_markdown_to_html(rt_string md) {
 }
 
 /// @brief Convert Markdown text to plain text (strip all formatting).
+/// @details Removes recognized heading prefixes, matched `*`, `_`, and
+///          backtick spans, and Markdown link destinations while preserving
+///          link labels. Unmatched markers and intraword underscores remain
+///          literal. Line boundaries are preserved; list markers and code-fence
+///          markers are not treated specially.
+/// @param md Borrowed Markdown source; null is treated as empty.
+/// @return Newly allocated plain-text string owned by the caller.
 rt_string rt_markdown_to_text(rt_string md) {
     if (!md)
         return rt_string_from_bytes("", 0);
@@ -576,6 +627,13 @@ rt_string rt_markdown_to_text(rt_string md) {
     return result;
 }
 
+/// @brief Extract link destinations from simple inline Markdown links.
+/// @details Recognizes non-nested `[label](url)` byte patterns, copies only the
+///          URL, and rewrites blocked script-capable schemes to `"#"`. Images,
+///          reference links, escaped delimiters, and nested parentheses are not
+///          implemented.
+/// @param md Borrowed Markdown source; null is treated as empty.
+/// @return Newly allocated element-owning Seq of copied URL strings.
 void *rt_markdown_extract_links(rt_string md) {
     void *seq = rt_seq_new();
     rt_seq_set_owns_elements(seq, 1);
@@ -618,6 +676,12 @@ void *rt_markdown_extract_links(rt_string md) {
     return seq;
 }
 
+/// @brief Extract raw text following recognized ATX heading markers.
+/// @details A heading must start at column zero with one through six `#` bytes
+///          followed by a literal space. Returned content retains inline
+///          Markdown markers and trims only a CR from CRLF line endings.
+/// @param md Borrowed Markdown source; null is treated as empty.
+/// @return Newly allocated element-owning Seq of copied heading strings.
 void *rt_markdown_extract_headings(rt_string md) {
     void *seq = rt_seq_new();
     rt_seq_set_owns_elements(seq, 1);

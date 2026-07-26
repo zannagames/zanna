@@ -5,9 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the Keymap class and supporting types for Zanna's TUI
-// command binding system. Keymap maps key chords (key + modifiers) to named
-// commands, supporting both global bindings and per-widget bindings.
+/// @file
+/// @brief Declares the Zanna TUI command registry and key-binding system.
+/// @details Maps key chords to named callbacks at global and per-widget scopes,
+///          with focused-widget bindings taking priority during dispatch.
 //
 // Commands are registered with a unique string identifier, a display name,
 // and a callback. Key chords are then bound to command identifiers at either
@@ -41,6 +42,7 @@
 
 namespace zanna::tui::input {
 
+/// @brief Stable string identifier used to register and bind a command.
 using CommandId = std::string;
 
 /// @brief Combination of a key code, modifier flags, and optional codepoint defining
@@ -49,14 +51,21 @@ using CommandId = std::string;
 ///          fields match. The codepoint field is used for character-based shortcuts
 ///          (e.g., Ctrl+S where codepoint = 's').
 struct KeyChord {
-    term::KeyEvent::Code code{term::KeyEvent::Code::Unknown};
-    unsigned mods{0};
-    uint32_t codepoint{0};
+    term::KeyEvent::Code code{term::KeyEvent::Code::Unknown}; ///< Physical/logical key code.
+    unsigned mods{0};       ///< Bitset of active modifier keys.
+    uint32_t codepoint{0};  ///< Unicode scalar for character shortcuts, or zero.
 
+    /// @brief Compare every component of two key chords.
+    /// @param other Chord to compare.
+    /// @return true when code, modifiers, and codepoint are identical.
     bool operator==(const KeyChord &other) const;
 };
 
+/// @brief Hash functor permitting KeyChord values in unordered containers.
 struct KeyChordHash {
+    /// @brief Combine the key code, modifiers, and codepoint into a hash value.
+    /// @param kc Key chord to hash.
+    /// @return Hash compatible with @ref KeyChord::operator==.
     std::size_t operator()(const KeyChord &kc) const;
 };
 
@@ -65,9 +74,9 @@ struct KeyChordHash {
 ///          lookup, the name is displayed in the command palette, and the action
 ///          callback is invoked when the command is triggered.
 struct Command {
-    CommandId id{};
-    std::string name{};
-    std::function<void()> action{};
+    CommandId id{};                 ///< Programmatic command identifier.
+    std::string name{};             ///< Human-readable palette label.
+    std::function<void()> action{}; ///< Callback invoked when dispatched.
 };
 
 /// @brief Two-level key binding system supporting global and per-widget command dispatch.
@@ -108,19 +117,25 @@ class Keymap {
     /// @return True if a command was found and executed; false otherwise.
     bool handle(ui::Widget *w, const term::KeyEvent &key) const;
 
-    /// @brief Execute command by identifier.
+    /// @brief Execute a registered command by identifier.
+    /// @param id Command identifier to look up.
+    /// @return true when the command exists and its callback was invoked.
     bool execute(const CommandId &id) const;
 
-    /// @brief Access registered commands.
+    /// @brief Access registered commands in registration/index order.
+    /// @return Const reference valid until the keymap is modified or destroyed.
     [[nodiscard]] const std::vector<Command> &commands() const;
 
-    /// @brief Find command by id.
+    /// @brief Find a registered command by identifier.
+    /// @param id Command identifier to search for.
+    /// @return Pointer to the command, or nullptr when absent.
     [[nodiscard]] const Command *find(const CommandId &id) const;
 
   private:
-    std::vector<Command> commands_{};
-    std::unordered_map<CommandId, std::size_t> index_{};
-    std::unordered_map<KeyChord, CommandId, KeyChordHash> global_{};
+    std::vector<Command> commands_{}; ///< Owned registered command records.
+    std::unordered_map<CommandId, std::size_t> index_{}; ///< Command id-to-vector index.
+    std::unordered_map<KeyChord, CommandId, KeyChordHash> global_{}; ///< Global bindings.
+    /// @brief Per-widget bindings keyed by non-owning widget pointers.
     std::unordered_map<ui::Widget *, std::unordered_map<KeyChord, CommandId, KeyChordHash>>
         widget_{};
 };

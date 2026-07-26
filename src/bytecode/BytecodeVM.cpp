@@ -550,6 +550,10 @@ void BytecodeVM::copyExecutionEnvironmentFrom(const BytecodeVM &other) {
 /// @return `true` only when every module-level and function-level invariant holds.
 bool BytecodeVM::validateModuleForLoad(const BytecodeModule *module,
                                        ModuleValidationFailure &failure) const {
+    /// @brief Store the first module-validation failure.
+    /// @param kind Trap classification for the failure.
+    /// @param message Explanatory diagnostic.
+    /// @return Always `false`.
     auto fail = [&failure](TrapKind kind, std::string message) {
         failure.kind = kind;
         failure.message = std::move(message);
@@ -643,6 +647,9 @@ bool BytecodeVM::validateFunctionForLoad(const BytecodeModule &module,
                                          const BytecodeFunction &func,
                                          size_t functionIndex,
                                          ModuleValidationFailure &failure) const {
+    /// @brief Store one invalid-bytecode diagnostic for the current function.
+    /// @param message Function-specific validation failure.
+    /// @return Always `false`.
     auto fail = [&failure, &func](std::string message) {
         failure.kind = TrapKind::InvalidOpcode;
         failure.message = "Invalid bytecode function @" + func.name + ": " + std::move(message);
@@ -689,6 +696,11 @@ bool BytecodeVM::validateFunctionForLoad(const BytecodeModule &module,
 
     std::vector<TargetCheck> targets;
 
+    /// @brief Resolve a signed relative bytecode target without overflow.
+    /// @param basePc Base program counter.
+    /// @param offset Signed relative displacement.
+    /// @param[out] target Receives the absolute target on success.
+    /// @return `true` when the absolute target fits in `uint32_t`.
     auto relativeTarget = [](uint32_t basePc, int32_t offset, uint32_t &target) {
         const int64_t absolute = static_cast<int64_t>(basePc) + static_cast<int64_t>(offset);
         if (absolute < 0 || absolute > std::numeric_limits<uint32_t>::max())
@@ -696,9 +708,17 @@ bool BytecodeVM::validateFunctionForLoad(const BytecodeModule &module,
         target = static_cast<uint32_t>(absolute);
         return true;
     };
+    /// @brief Queue one absolute control-flow target for boundary validation.
+    /// @param target Absolute bytecode program counter.
+    /// @param site Static instruction-site description.
     auto addTarget = [&](uint32_t target, const char *site) {
         targets.push_back(TargetCheck{target, site});
     };
+    /// @brief Resolve and queue one relative control-flow target.
+    /// @param basePc Base program counter.
+    /// @param offset Signed relative displacement.
+    /// @param site Static instruction-site description.
+    /// @return `false` when the target overflows the bytecode PC width.
     auto addRelativeTarget = [&](uint32_t basePc, int32_t offset, const char *site) {
         uint32_t target = 0;
         if (!relativeTarget(basePc, offset, target))
@@ -706,11 +726,19 @@ bool BytecodeVM::validateFunctionForLoad(const BytecodeModule &module,
         addTarget(target, site);
         return true;
     };
+    /// @brief Validate one local-variable index.
+    /// @param idx Local index to inspect.
+    /// @param site Static instruction-site description.
+    /// @return `true` when `idx` lies within the function's local table.
     auto requireLocal = [&](uint32_t idx, const char *site) {
         if (idx >= func.numLocals)
             return fail(std::string(site) + " local index out of range");
         return true;
     };
+    /// @brief Validate one encoded integer-width argument.
+    /// @param encoded Encoded width value.
+    /// @param site Static instruction-site description.
+    /// @return `true` when the width argument is supported.
     auto requireWidthArg = [&](uint8_t encoded, const char *site) {
         if (!detail::isValidWidthArg(encoded))
             return fail(std::string(site) + " width argument out of range");
@@ -3588,10 +3616,14 @@ void BytecodeVM::enterCallFrame(const BytecodeFunction *func, const char *site) 
     fp_ = &callStack_.back();
 }
 
-/// @param func The function to call. Arguments must be pre-pushed on the stack.
-///
-/// Creates a new call frame with the function's parameters taken from the
-/// operand stack. Non-parameter locals are zero-initialized.
+/// @brief Enter a bytecode function using arguments already on the operand stack.
+/// @details Validates the maximum call depth and exact arity before delegating
+///          frame construction to the shared entry helper. The new frame takes
+///          its parameter values from the operand stack, establishes their
+///          String ownership, and zero-initializes all non-parameter locals.
+///          Failure records a VM trap without publishing a partial frame.
+/// @param func Borrowed function to call; its arguments must already be pushed
+///        in declaration order.
 void BytecodeVM::call(const BytecodeFunction *func) {
     // Check stack overflow
     if (callStack_.size() >= kMaxCallDepth) {
@@ -5193,6 +5225,7 @@ static void unified_game3d_run_handler(void **args, void *result) {
         validateGame3DUpdateSignature(*updateFn, "Game3D.World3D.run");
         UnifiedGame3DCallbackScope scope{
             stdVm, nullptr, updateFn, nullptr, nullptr, nullptr, nullptr};
+        /// @brief Run the standard VM update callback through the unified trampoline.
         invokeUnifiedGame3DLoop(scope, [&]() {
             rt_game3d_world_run(world, reinterpret_cast<void *>(&unified_game3d_update_trampoline));
         });
@@ -5207,6 +5240,7 @@ static void unified_game3d_run_handler(void **args, void *result) {
         validateBytecodeGame3DUpdateSignature(*updateFn, "Game3D.World3D.run");
         UnifiedGame3DCallbackScope scope{
             nullptr, bcVm, nullptr, nullptr, updateFn, nullptr, nullptr};
+        /// @brief Run the bytecode VM update callback through the unified trampoline.
         invokeUnifiedGame3DLoop(scope, [&]() {
             rt_game3d_world_run(world, reinterpret_cast<void *>(&unified_game3d_update_trampoline));
         });
@@ -5238,6 +5272,7 @@ static void unified_game3d_run_with_overlay_handler(void **args, void *result) {
         validateGame3DOverlaySignature(*overlayFn, "Game3D.World3D.runWithOverlay");
         UnifiedGame3DCallbackScope scope{
             stdVm, nullptr, updateFn, overlayFn, nullptr, nullptr, nullptr};
+        /// @brief Run standard VM update and overlay callbacks through unified trampolines.
         invokeUnifiedGame3DLoop(scope, [&]() {
             rt_game3d_world_run_with_overlay(
                 world,
@@ -5258,6 +5293,7 @@ static void unified_game3d_run_with_overlay_handler(void **args, void *result) {
         validateBytecodeGame3DOverlaySignature(*overlayFn, "Game3D.World3D.runWithOverlay");
         UnifiedGame3DCallbackScope scope{
             nullptr, bcVm, nullptr, nullptr, updateFn, overlayFn, nullptr};
+        /// @brief Run bytecode VM update and overlay callbacks through unified trampolines.
         invokeUnifiedGame3DLoop(scope, [&]() {
             rt_game3d_world_run_with_overlay(
                 world,
@@ -5289,6 +5325,7 @@ static void unified_game3d_run_fixed_handler(void **args, void *result) {
         validateGame3DUpdateSignature(*updateFn, "Game3D.World3D.runFixed");
         UnifiedGame3DCallbackScope scope{
             stdVm, nullptr, updateFn, nullptr, nullptr, nullptr, nullptr};
+        /// @brief Run the standard VM fixed-step callback through the unified trampoline.
         invokeUnifiedGame3DLoop(scope, [&]() {
             rt_game3d_world_run_fixed(
                 world, step, reinterpret_cast<void *>(&unified_game3d_update_trampoline));
@@ -5304,6 +5341,7 @@ static void unified_game3d_run_fixed_handler(void **args, void *result) {
         validateBytecodeGame3DUpdateSignature(*updateFn, "Game3D.World3D.runFixed");
         UnifiedGame3DCallbackScope scope{
             nullptr, bcVm, nullptr, nullptr, updateFn, nullptr, nullptr};
+        /// @brief Run the bytecode VM fixed-step callback through the unified trampoline.
         invokeUnifiedGame3DLoop(scope, [&]() {
             rt_game3d_world_run_fixed(
                 world, step, reinterpret_cast<void *>(&unified_game3d_update_trampoline));
@@ -5337,6 +5375,7 @@ static void unified_game3d_run_fixed_with_overlay_handler(void **args, void *res
         validateGame3DOverlaySignature(*overlayFn, "Game3D.World3D.runFixedWithOverlay");
         UnifiedGame3DCallbackScope scope{
             stdVm, nullptr, updateFn, overlayFn, nullptr, nullptr, nullptr};
+        /// @brief Run standard VM fixed-step callbacks through unified trampolines.
         invokeUnifiedGame3DLoop(scope, [&]() {
             rt_game3d_world_run_fixed_with_overlay(
                 world,
@@ -5358,6 +5397,7 @@ static void unified_game3d_run_fixed_with_overlay_handler(void **args, void *res
         validateBytecodeGame3DOverlaySignature(*overlayFn, "Game3D.World3D.runFixedWithOverlay");
         UnifiedGame3DCallbackScope scope{
             nullptr, bcVm, nullptr, nullptr, updateFn, overlayFn, nullptr};
+        /// @brief Run bytecode VM fixed-step callbacks through unified trampolines.
         invokeUnifiedGame3DLoop(scope, [&]() {
             rt_game3d_world_run_fixed_with_overlay(
                 world,
@@ -5391,6 +5431,7 @@ static void unified_game3d_run_frames_handler(void **args, void *result) {
         validateGame3DUpdateSignature(*updateFn, "Game3D.World3D.runFrames");
         UnifiedGame3DCallbackScope scope{
             stdVm, nullptr, updateFn, nullptr, nullptr, nullptr, nullptr};
+        /// @brief Run the standard VM bounded-frame callback through the unified trampoline.
         invokeUnifiedGame3DLoop(scope, [&]() {
             rt_game3d_world_run_frames(
                 world, frames, step, reinterpret_cast<void *>(&unified_game3d_update_trampoline));
@@ -5406,6 +5447,7 @@ static void unified_game3d_run_frames_handler(void **args, void *result) {
         validateBytecodeGame3DUpdateSignature(*updateFn, "Game3D.World3D.runFrames");
         UnifiedGame3DCallbackScope scope{
             nullptr, bcVm, nullptr, nullptr, updateFn, nullptr, nullptr};
+        /// @brief Run the bytecode VM bounded-frame callback through the unified trampoline.
         invokeUnifiedGame3DLoop(scope, [&]() {
             rt_game3d_world_run_frames(
                 world, frames, step, reinterpret_cast<void *>(&unified_game3d_update_trampoline));
@@ -5434,6 +5476,7 @@ static void unified_game3d_draw_overlay_handler(void **args, void *result) {
         validateGame3DOverlaySignature(*overlayFn, "Game3D.World3D.drawOverlay");
         UnifiedGame3DCallbackScope scope{
             stdVm, nullptr, nullptr, overlayFn, nullptr, nullptr, nullptr};
+        /// @brief Draw one standard VM overlay through the unified trampoline.
         invokeUnifiedGame3DLoop(scope, [&]() {
             rt_game3d_world_draw_overlay(
                 world, reinterpret_cast<void *>(&unified_game3d_overlay_trampoline));
@@ -5449,6 +5492,7 @@ static void unified_game3d_draw_overlay_handler(void **args, void *result) {
         validateBytecodeGame3DOverlaySignature(*overlayFn, "Game3D.World3D.drawOverlay");
         UnifiedGame3DCallbackScope scope{
             nullptr, bcVm, nullptr, nullptr, nullptr, overlayFn, nullptr};
+        /// @brief Draw one bytecode VM overlay through the unified trampoline.
         invokeUnifiedGame3DLoop(scope, [&]() {
             rt_game3d_world_draw_overlay(
                 world, reinterpret_cast<void *>(&unified_game3d_overlay_trampoline));
@@ -7484,12 +7528,15 @@ static void unified_result_or_else_handler(void **args, void *result) {
 ///          @ref BytecodeVM::exec invoke it before bytecode can call a runtime
 ///          API with an interpreted callback.
 void registerUnifiedVmRuntimeHandlers() {
+    /// @brief Capture prior handlers and install all unified runtime bridges exactly once.
     std::call_once(gUnifiedRuntimeHandlersOnce, []() {
         using il::runtime::signatures::make_signature;
         using il::runtime::signatures::SigParam;
 
-        /// Preserve an existing non-self handler so the unified shim can chain
-        /// calls made outside an interpreted VM.
+        /// @brief Preserve an existing non-self handler for calls outside an interpreted VM.
+        /// @param name Runtime external name to inspect.
+        /// @param currentFn Unified handler being installed.
+        /// @param[out] outHandler Receives the previously registered handler when distinct.
         auto capturePriorHandler =
             [](std::string_view name, void *currentFn, UnifiedRuntimeHandler &outHandler) {
                 if (const il::vm::ExternDesc *existing = il::vm::RuntimeBridge::findExtern(name)) {
@@ -7920,9 +7967,11 @@ void registerUnifiedVmRuntimeHandlers() {
     }
 }
 
-/// Static initializer to register the unified callback-taking handlers.
-/// This overrides the standard VM handlers when BytecodeVM is linked.
+/// @brief Registers unified callback-taking handlers during static initialization.
+/// @details Construction replaces the standard VM registrations with bytecode
+///          bridge handlers before the containing library begins serving calls.
 struct UnifiedThreadHandlerRegistrar {
+    /// @brief Install every unified VM runtime handler in the shared registry.
     UnifiedThreadHandlerRegistrar() {
         registerUnifiedVmRuntimeHandlers();
     }

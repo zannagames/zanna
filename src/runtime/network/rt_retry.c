@@ -18,6 +18,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_retry.c
+ * @brief Implements fixed and exponential managed retry policies.
+ * @details Retry attempts are reserved atomically, allowing concurrent callers
+ *          to consume distinct slots. Delay calculation normalizes invalid
+ *          configuration, avoids signed overflow, caps exponential growth,
+ *          and derives bounded per-attempt jitter from immutable policy state.
+ */
+
 #include "rt_retry.h"
 
 #include "rt_internal.h"

@@ -32,7 +32,7 @@ StringInterner::StringInterner(uint32_t maxSymbols) noexcept : maxSymbols_(maxSy
 /// @brief Copy-construct an interner, rebuilding the lookup table for the clone.
 /// @param other Source interner whose stored strings should be duplicated.
 /// @details Copies the owned string storage and limit before invoking
-///          @ref rebuildMap so the new instance lazily reconstructs the handle
+///          @ref rebuildMap so the new instance immediately reconstructs the handle
 ///          lookup table.  The map is rebuilt rather than copied directly to
 ///          keep string_view keys pointing at the newly owned storage.
 StringInterner::StringInterner(const StringInterner &other) : maxSymbols_(0) {
@@ -60,8 +60,9 @@ StringInterner &StringInterner::operator=(const StringInterner &other) {
 /// @brief Move-construct an interner and rebuild view-backed lookup keys.
 /// @param other Source interner whose storage is transferred.
 /// @details The storage deque is moved first, then @ref rebuildMap recreates every
-///          string_view key so it points into this object's storage. The moved-from
-///          instance is cleared to leave it valid and cheap to destroy.
+///          string_view key so it points into this object's storage. The source
+///          remains valid but otherwise has the standard unspecified moved-from
+///          state; its stale lookup map is explicitly cleared.
 StringInterner::StringInterner(StringInterner &&other) : maxSymbols_(0) {
     std::lock_guard lock(other.mutex_);
     storage_ = std::move(other.storage_);
@@ -155,11 +156,22 @@ std::optional<std::string_view> StringInterner::lookupOptional(Symbol sym) const
     return std::string_view{storage_[sym.id - 1]};
 }
 
+/// @brief Return the number of unique strings currently interned.
+/// @return Size of the owned canonical string storage.
+/// @details Acquires the interner mutex so the snapshot is safe relative to
+///          concurrent interning and rollback operations.
 size_t StringInterner::size() const {
     std::lock_guard lock(mutex_);
     return storage_.size();
 }
 
+/// @brief Roll the interner back to an earlier symbol count.
+/// @param symbolCount Number of lowest-numbered symbols to retain.
+/// @details Removes the storage and lookup entries for the newest symbols until
+///          the requested count is reached. Existing lower identifiers preserve
+///          their text; a count above the current size leaves the interner intact.
+/// @warning String views and symbols in the removed suffix no longer identify
+///          their former strings and must be discarded by the caller.
 void StringInterner::truncate(size_t symbolCount) {
     std::lock_guard lock(mutex_);
     while (storage_.size() > symbolCount) {

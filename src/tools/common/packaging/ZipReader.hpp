@@ -22,6 +22,9 @@
 //===----------------------------------------------------------------------===//
 #pragma once
 
+/// @file
+/// @brief Declares a non-owning, read-only classic ZIP parser and extractor.
+
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
@@ -58,25 +61,30 @@ class ZipReader {
     ZipReader(const uint8_t *data, size_t len);
 
     /// @brief List all entries in the archive.
+    /// @return Immutable central-directory entries in archive order.
     const std::vector<ZipEntry> &entries() const {
         return entries_;
     }
 
     /// @brief Find an entry by name.
+    /// @param name Exact case-sensitive entry name.
     /// @return Pointer to entry, or nullptr if not found.
     const ZipEntry *find(const std::string &name) const;
 
     /// @brief Extract a single entry to a byte vector.
+    /// @param entry Descriptor obtained from this reader.
+    /// @return Uncompressed caller-owned bytes.
     /// @throws ZipReadError on decompression failure or CRC mismatch.
     std::vector<uint8_t> extract(const ZipEntry &entry) const;
 
   private:
-    const uint8_t *data_;
-    size_t len_;
-    std::vector<ZipEntry> entries_;
+    const uint8_t *data_;           ///< Non-owning archive buffer.
+    size_t len_;                    ///< Archive buffer length.
+    std::vector<ZipEntry> entries_; ///< Validated central-directory inventory.
 
     /// @brief Scan the end-of-central-directory record to locate and parse
     ///        all central directory entries, populating entries_.
+    /// @throws ZipReadError On unsupported features or inconsistent records.
     void parseCentralDirectory();
 };
 

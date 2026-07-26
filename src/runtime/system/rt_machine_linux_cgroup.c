@@ -20,6 +20,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_machine_linux_cgroup.c
+ * @brief Resolves current-process Linux cgroup controller directories.
+ * @details The resolver parses bounded procfs membership and mountinfo records,
+ *          decodes octal path escapes, confirms memberships lie beneath mount
+ *          roots, and publishes complete unified or v1 controller paths only
+ *          after successful composition.
+ */
+
 #include "rt_machine_linux_cgroup.h"
 
 #include "rt_platform.h"
@@ -29,6 +38,9 @@
 
 #if RT_PLATFORM_LINUX
 
+/// @brief Raw per-controller membership paths parsed from proc/self/cgroup.
+/// @details Each fixed buffer remains empty when the process has no usable
+///          membership record for that hierarchy.
 typedef struct rt_machine_cgroup_memberships {
     char unified[RT_MACHINE_CGROUP_PATH_CAPACITY];
     char cpu[RT_MACHINE_CGROUP_PATH_CAPACITY];
@@ -36,6 +48,12 @@ typedef struct rt_machine_cgroup_memberships {
     char memory[RT_MACHINE_CGROUP_PATH_CAPACITY];
 } rt_machine_cgroup_memberships_t;
 
+/// @brief Copy a complete C string into a fixed cgroup path buffer.
+/// @param out Destination buffer.
+/// @param capacity Writable size of @p out, including the terminator.
+/// @param value Borrowed NUL-terminated source string.
+/// @return 1 when the entire value was copied, otherwise 0 without publishing a
+///         truncated string.
 static int cgroup_copy(char *out, size_t capacity, const char *value) {
     size_t length = value ? strlen(value) : 0;
     if (!out || capacity == 0 || !value || length >= capacity)
@@ -44,6 +62,10 @@ static int cgroup_copy(char *out, size_t capacity, const char *value) {
     return 1;
 }
 
+/// @brief Search a comma-separated controller or option list.
+/// @param list Borrowed comma-separated token list; may be NULL.
+/// @param requested Non-NULL token to match exactly.
+/// @return 1 when @p requested appears as a complete token, otherwise 0.
 static int cgroup_has_token(const char *list, const char *requested) {
     size_t requested_length = strlen(requested);
     const char *cursor = list;
@@ -57,6 +79,14 @@ static int cgroup_has_token(const char *list, const char *requested) {
     return 0;
 }
 
+/// @brief Decode one absolute path field from Linux mountinfo.
+/// @details Converts three-digit procfs octal escapes, rejects an encoded NUL,
+///          requires an absolute nonempty result, and never publishes an
+///          overlong path.
+/// @param encoded Borrowed mountinfo path field; may be NULL.
+/// @param out Destination buffer.
+/// @param capacity Writable size of @p out, including the terminator.
+/// @return 1 when a complete absolute path was decoded, otherwise 0.
 static int cgroup_decode_mount_path(const char *encoded, char *out, size_t capacity) {
     size_t used = 0;
     for (size_t index = 0; encoded && encoded[index] != '\0'; ++index) {
@@ -81,6 +111,17 @@ static int cgroup_decode_mount_path(const char *encoded, char *out, size_t capac
     return 1;
 }
 
+/// @brief Map a process membership path through one cgroup mount.
+/// @details Verifies that @p membership lies at or below @p mount_root, removes
+///          that root prefix, and appends the suffix to @p mount_point while
+///          inserting or suppressing one separator as needed.
+/// @param mount_root Decoded absolute hierarchy root advertised by mountinfo.
+/// @param mount_point Decoded absolute filesystem mount point.
+/// @param membership Absolute membership path from proc/self/cgroup.
+/// @param out Destination resolved controller-directory buffer.
+/// @param capacity Writable size of @p out, including the terminator.
+/// @return 1 when the membership is within the mount root and the complete
+///         resolved path fits, otherwise 0.
 static int cgroup_join_membership(const char *mount_root,
                                   const char *mount_point,
                                   const char *membership,
@@ -109,6 +150,14 @@ static int cgroup_join_membership(const char *mount_root,
     return 1;
 }
 
+/// @brief Parse relevant controller memberships from a proc cgroup file.
+/// @details Recognizes the empty-controller v2 hierarchy and the v1 cpu,
+///          cpuset, and memory controller tokens. Malformed or overlong records
+///          are skipped; successful records replace the corresponding buffer.
+/// @param path NUL-terminated path to a proc/self/cgroup-format file.
+/// @param memberships Caller-initialized destination membership buffers.
+/// @return 1 when the file was opened and consumed, even if it contained no
+///         relevant record; 0 when the file cannot be opened.
 static int cgroup_read_memberships(const char *path,
                                    rt_machine_cgroup_memberships_t *memberships) {
     FILE *file = fopen(path, "r");
@@ -146,6 +195,16 @@ static int cgroup_read_memberships(const char *path,
     return 1;
 }
 
+/// @brief Resolve this process's active cgroup v2 and v1 controller directories.
+/// @details Combines proc membership records with decoded mountinfo roots and
+///          mount points. V1 cpu, cpuset, and memory mounts are matched against
+///          their super-option tokens independently. Malformed and overlong
+///          records are ignored without emitting partial paths.
+/// @param mountinfo_path NUL-terminated path to a proc mountinfo-format file.
+/// @param membership_path NUL-terminated path to a proc cgroup-format file.
+/// @param out Destination cleared before Linux parsing and populated with each
+///        successfully resolved controller directory.
+/// @return 1 when at least one controller directory is resolved, otherwise 0.
 int zanna_machine_linux_resolve_cgroups(const char *mountinfo_path,
                                         const char *membership_path,
                                         rt_machine_linux_cgroup_paths_t *out) {
@@ -223,6 +282,11 @@ int zanna_machine_linux_resolve_cgroups(const char *mountinfo_path,
 
 #else
 
+/// @brief Provide the unavailable cgroup resolver on non-Linux targets.
+/// @param mountinfo_path Ignored mountinfo path.
+/// @param membership_path Ignored membership path.
+/// @param out Ignored destination; its contents are left unchanged.
+/// @return Always 0 because Linux cgroup metadata is unavailable.
 int zanna_machine_linux_resolve_cgroups(const char *mountinfo_path,
                                         const char *membership_path,
                                         rt_machine_linux_cgroup_paths_t *out) {

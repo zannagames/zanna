@@ -51,6 +51,8 @@ namespace {
 /// their IL operands remain owned by the VM. Release helpers consume the exact
 /// argument they receive, which means an owned temp register must be dismissed
 /// after the call.
+/// @param name Runtime function name to classify.
+/// @return @c true when the callee consumes its exact string argument reference.
 bool consumesCallerOwnedStringArg(std::string_view name) {
     return name == "rt_str_release" || name == "rt_str_release_maybe" ||
            name == "rt_memory_release_str" || name == "Zanna.String.ReleaseMaybe" ||
@@ -67,7 +69,7 @@ bool consumesCallerOwnedStringArg(std::string_view name) {
 ///          unwind to the caller.  Branch metadata parameters are ignored for
 ///          this opcode; they are present to satisfy the handler signature.
 ///
-/// @param vm Active virtual machine instance (unused).
+/// @param vm Active virtual machine used to evaluate an optional result operand.
 /// @param fr Frame owning the registers and temporary storage for the call.
 /// @param in IL instruction describing the return operation.
 /// @param blocks Map of block labels to basic block pointers (unused).
@@ -112,8 +114,8 @@ VM::ExecResult handleRet(VM &vm,
 /// @param fr Active frame whose registers supply arguments and receive results.
 /// @param in Instruction describing the call site and callee symbol.
 /// @param blocks Map of block labels to block pointers (unused).
-/// @param bb Pointer to the current basic block (unused for calls).
-/// @param ip Instruction pointer within the block (unused for calls).
+/// @param bb Pointer to the current block, used for TCO and diagnostics.
+/// @param ip Instruction pointer used to inspect a following return for TCO.
 /// @return Result structure with @ref VM::ExecResult::returned left false.
 VM::ExecResult handleCall(VM &vm,
                           Frame &fr,
@@ -175,19 +177,24 @@ VM::ExecResult handleCall(VM &vm,
         // Uses a static hash map for O(1) lookup instead of sequential string
         // comparisons.
 
+        /// @brief Identifier for runtime calls supported by the direct fast path.
         enum class FastPathId : uint8_t {
-            InkeyStr,
-            TermLocate,
-            TermColor,
-            TermCls,
-            TimerMs,
-            SleepMs,
-            Keypressed,
-            TermAltScreen,
-            TermCursorVisible
+            InkeyStr,          ///< Read a pending key as a runtime string.
+            TermLocate,        ///< Move the terminal cursor.
+            TermColor,         ///< Set terminal foreground/background colors.
+            TermCls,           ///< Clear the terminal.
+            TimerMs,           ///< Read the millisecond timer.
+            SleepMs,           ///< Sleep for a millisecond duration.
+            Keypressed,        ///< Query whether keyboard input is pending.
+            TermAltScreen,     ///< Toggle the alternate terminal screen.
+            TermCursorVisible ///< Toggle terminal cursor visibility.
         };
 
+        /// @brief Hash transparent string-view keys in the runtime fast-path table.
         struct SvHash {
+            /// @brief Hash a runtime function name.
+            /// @param sv Function name to hash.
+            /// @return Hash value compatible with string-view equality.
             size_t operator()(std::string_view sv) const {
                 return std::hash<std::string_view>{}(sv);
             }
@@ -207,6 +214,9 @@ VM::ExecResult handleCall(VM &vm,
 
         auto fpIt = kFastPathMap.find(std::string_view(in.callee));
         if (fpIt != kFastPathMap.end()) {
+            /// @brief Raise a stable argument-count trap for a runtime fast path.
+            /// @param expected Required argument count.
+            /// @return Returned execution result after recording the trap.
             auto trapFastPathArity = [&](size_t expected) -> VM::ExecResult {
                 RuntimeBridge::trap(TrapKind::DomainError,
                                     il::vm::detail::formatArgumentCountError(
@@ -276,9 +286,10 @@ VM::ExecResult handleCall(VM &vm,
 
         // Build bindings and original values lazily only for runtime calls
         // Use SmallVector to avoid heap allocation for typical argument counts
+        /// @brief Writable caller locations associated with a marshalled argument.
         struct ArgBinding {
-            Slot *reg = nullptr;
-            uint8_t *stackPtr = nullptr;
+            Slot *reg = nullptr;       ///< Register to synchronize after a mutable call.
+            uint8_t *stackPtr = nullptr; ///< Frame-stack address to synchronize.
         };
 
         il::support::SmallVector<ArgBinding, 8> bindings;
@@ -358,6 +369,8 @@ VM::ExecResult handleCall(VM &vm,
                 const ArgBinding &binding = bindings[index];
                 const bool releaseTempStr = (kind == il::core::Type::Kind::Str);
 
+                /// @brief Copy the current out-argument value into one bound register.
+                /// @param destination Destination slot, or `nullptr` when unbound.
                 auto assignRegister = [&](Slot *destination) {
                     if (!destination)
                         return;
@@ -374,6 +387,9 @@ VM::ExecResult handleCall(VM &vm,
                 assignRegister(binding.reg);
 
                 if (binding.stackPtr && !(forcedOutCopy && argUnchanged)) {
+                    /// @brief Return the ABI copy width for one IL value kind.
+                    /// @param k Value kind to classify.
+                    /// @return Number of bytes copied to stack-backed argument storage.
                     auto copyWidthForKind = [](il::core::Type::Kind k) -> size_t {
                         switch (k) {
                             case il::core::Type::Kind::I1:
@@ -442,6 +458,13 @@ VM::ExecResult handleCall(VM &vm,
 ///          pointer is provided, the pointer must reference an IL function
 ///          instance and the VM invokes it directly. Remaining operands (if
 ///          any) are treated as arguments.
+/// @param vm Virtual machine used for lookup, operand evaluation, and invocation.
+/// @param fr Active frame supplying operands and receiving the result.
+/// @param in Indirect-call instruction; operand zero identifies the callee.
+/// @param blocks Block map required by the common handler signature; unused.
+/// @param bb Current block pointer used for trap diagnostics.
+/// @param ip Current instruction index; unused by indirect calls.
+/// @return Normal continuation result, or a returned result after an invalid callee trap.
 VM::ExecResult handleCallIndirect(VM &vm,
                                   Frame &fr,
                                   const il::core::Instr &in,

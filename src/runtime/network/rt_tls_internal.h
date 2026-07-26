@@ -18,6 +18,16 @@
 //        rt_smtp.c (cancellation-aware TLS owner)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_tls_internal.h
+ * @brief Defines private TLS protocol state shared across runtime modules.
+ * @details The header fixes the managed session layout, handshake states,
+ *          record traffic keys, bounded buffers, parsed peer-certificate
+ *          storage, cancellation hooks, and internal DER or credential helper
+ *          declarations used by the TLS engine and verification adapters.
+ */
+
 #pragma once
 
 #include "rt_crypto.h"
@@ -83,6 +93,9 @@ struct rt_tls_session {
     uint8_t legacy_session_id[32];
     size_t legacy_session_id_len;
     const struct rt_tls_server_ctx *server_ctx;
+    /// @brief Optional cooperative-cancellation probe for bounded server I/O.
+    /// @param context Opaque state stored in @ref io_cancel_context.
+    /// @return Nonzero when the current server operation should stop.
     int (*io_cancel_requested)(void *context);
     void *io_cancel_context;
     int64_t io_deadline_us;
@@ -154,42 +167,110 @@ static inline const uint8_t *tls_session_server_cert_der(const rt_tls_session_t 
 
 /// @brief Parse the TLS 1.3 Certificate handshake message and store the
 ///        first (end-entity) certificate DER bytes in the session certificate buffer.
+/// @param session Client session receiving owned leaf and chain storage.
+/// @param data Certificate handshake body.
+/// @param len Number of body bytes.
+/// @return @ref RT_TLS_OK or a negative handshake/memory status.
 int tls_parse_certificate_msg(rt_tls_session_t *session, const uint8_t *data, size_t len);
 
 /// @brief Verify that session->hostname matches the certificate DER.
+/// @param session Client session with hostname and parsed leaf certificate.
+/// @return @ref RT_TLS_OK on match; otherwise a negative handshake status.
 int tls_verify_hostname(rt_tls_session_t *session);
 
 /// @brief Verify certificate chain against the OS trust store.
+/// @param session Client session with parsed peer certificate chain.
+/// @return @ref RT_TLS_OK for a trusted valid chain; otherwise a negative
+///         certificate status.
 int tls_verify_chain(rt_tls_session_t *session);
 
 /// @brief Verify the CertificateVerify handshake message signature.
+/// @param session Client session with leaf key and saved transcript hash.
+/// @param data CertificateVerify body.
+/// @param len Number of body bytes.
+/// @return @ref RT_TLS_OK for a valid proof; otherwise a negative handshake
+///         status.
 int tls_verify_cert_verify(rt_tls_session_t *session, const uint8_t *data, size_t len);
 
 #ifdef __cplusplus
 }
 #endif
 
-// Certificate / DER parsing helpers (split across rt_tls.c + rt_tls_certs.c).
+/// @brief Decode one definite-length DER TLV header.
+/// @param buf DER bytes beginning at a TLV.
+/// @param buf_len Available bytes.
+/// @param tag Destination tag octet.
+/// @param val_len Destination content length.
+/// @param hdr_len Destination header length.
+/// @return Zero on success; -1 for malformed or truncated DER.
 int tls_der_read_tlv(
     const uint8_t *buf, size_t buf_len, uint8_t *tag, size_t *val_len, size_t *hdr_len);
+/// @brief Compare DER OID value bytes.
+/// @param buf Candidate OID value.
+/// @param buf_len Candidate byte count.
+/// @param oid Expected OID value.
+/// @param oid_len Expected byte count.
+/// @return One for exact equality; otherwise zero.
 int tls_oid_matches(const uint8_t *buf, size_t buf_len, const uint8_t *oid, size_t oid_len);
+/// @brief Read a bounded UTF-8-path text file.
+/// @param path Nonempty UTF-8 filesystem path.
+/// @param len_out Optional destination for bytes excluding NUL.
+/// @return Caller-owned NUL-terminated buffer, or NULL on failure.
 char *tls_read_text_file(const char *path, size_t *len_out);
+/// @brief Detect the supported public-key type in a leaf certificate.
+/// @param cert_der Complete X.509 certificate DER.
+/// @param cert_len Number of certificate bytes.
+/// @return One of the @c TLS_SERVER_KEY_* values.
 int tls_extract_cert_key_type(const uint8_t *cert_der, size_t cert_len);
 
-// PEM/key parsers shared between rt_tls.c (server config) and rt_tls_certs.c.
+/// @brief Decode PEM Base64 body text into DER.
+/// @param pem_b64 Base64 text bytes.
+/// @param b64_len Number of input bytes.
+/// @param out_der Destination DER buffer.
+/// @param max_der Destination capacity.
+/// @return Decoded byte count, or zero for invalid input/overflow.
 size_t tls_pem_base64_decode(const char *pem_b64, size_t b64_len, uint8_t *out_der, size_t max_der);
+/// @brief Locate one delimited PEM block.
+/// @param pem NUL-terminated PEM document suffix.
+/// @param begin_marker Begin delimiter.
+/// @param end_marker End delimiter.
+/// @param body_out Destination borrowed body pointer.
+/// @param body_len_out Destination body length.
+/// @param next_out Optional destination for the remaining suffix.
+/// @return One when a complete block is found; otherwise zero.
 int tls_find_pem_block(const char *pem,
                        const char *begin_marker,
                        const char *end_marker,
                        const char **body_out,
                        size_t *body_len_out,
                        const char **next_out);
+/// @brief Extract a P-256 scalar from SEC 1 ECPrivateKey DER.
+/// @param der Complete SEC 1 DER bytes.
+/// @param der_len Number of DER bytes.
+/// @param out_priv Destination 32-byte scalar.
+/// @return One on success; otherwise zero.
 int tls_parse_sec1_ec_private_key(const uint8_t *der, size_t der_len, uint8_t out_priv[32]);
+/// @brief Extract a P-256 scalar from PKCS#8 PrivateKeyInfo DER.
+/// @param der Complete PKCS#8 DER bytes.
+/// @param der_len Number of DER bytes.
+/// @param out_priv Destination 32-byte scalar.
+/// @return One on success; otherwise zero.
 int tls_parse_pkcs8_ec_private_key(const uint8_t *der, size_t der_len, uint8_t out_priv[32]);
+/// @brief Extract an uncompressed P-256 public point from a certificate.
+/// @param cert_der Complete certificate DER.
+/// @param cert_len Number of certificate bytes.
+/// @param x_out Destination 32-byte x coordinate.
+/// @param y_out Destination 32-byte y coordinate.
+/// @return One on success; otherwise zero.
 int tls_extract_cert_ec_pubkey(const uint8_t *cert_der,
                                size_t cert_len,
                                uint8_t x_out[32],
                                uint8_t y_out[32]);
+/// @brief Extract RSA public components from a certificate.
+/// @param cert_der Complete certificate DER.
+/// @param cert_len Number of certificate bytes.
+/// @param out Initialized RSA key receiving owned public components.
+/// @return One on success; otherwise zero.
 int tls_extract_cert_rsa_pubkey(const uint8_t *cert_der, size_t cert_len, rt_rsa_key_t *out);
 
 // Server key/signature type (shared: cert detection in rt_tls_certs.c sets it,

@@ -5,8 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares Unicode utility functions for Zanna's TUI framework,
-// providing character width calculation and UTF-8 to UTF-32 conversion.
+/// @file
+/// @brief Declares Unicode display-width and UTF-8 decoding utilities.
+/// @details Provides allocation-free code-point width classification and an
+///          owning UTF-32 decoder that substitutes U+FFFD for malformed input.
 //
 // char_width() determines how many terminal columns a Unicode code point
 // occupies, following the Unicode East Asian Width property:

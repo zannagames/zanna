@@ -25,6 +25,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements portable opcode dispatch as an exhaustive C++ switch.
+/// @details Each known case traces the instruction and invokes the matching
+///          inline wrapper; unknown values are routed to the unimplemented
+///          opcode trap.
+/// @param state Active execution state updated by the selected handler.
+/// @param instr Current instruction used for tracing and case selection.
 void VM::dispatchOpcodeSwitch(ExecState &state, const il::core::Instr &instr) {
     switch (instr.op) {
         case il::core::Opcode::Add: {

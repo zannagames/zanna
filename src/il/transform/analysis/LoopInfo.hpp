@@ -19,6 +19,16 @@
 // Links: il/core/fwd.hpp, il/analysis/Dominators.hpp, il/analysis/CFG.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares natural-loop discovery metadata for IL functions.
+ *
+ * @details Loop summaries retain stable block labels for headers, members,
+ *          latches, exits, and nesting relationships. A transparent hash
+ *          supports allocation-free lookup by compatible string-like keys.
+ */
+
 #pragma once
 
 #include "il/core/fwd.hpp"
@@ -37,8 +47,10 @@ namespace il::transform {
 ///          outside the loop (@c to). Exit edges are identified during loop
 ///          discovery by checking whether successor blocks belong to the loop body.
 struct LoopExit {
-    std::string from; ///< Block label inside the loop that branches out.
-    std::string to;   ///< Block label outside the loop that receives control.
+    /// @brief Block label inside the loop that branches out.
+    std::string from;
+    /// @brief Block label outside the loop that receives control.
+    std::string to;
 };
 
 /// @brief Hash functor for heterogeneous string lookup (C++20).
@@ -57,17 +69,17 @@ struct LoopStringHash {
 
 /// @brief Summary of a single natural loop discovered in a function.
 struct Loop {
-    /// Label identifying the loop header.
+    /// @brief Label identifying the loop header.
     std::string headerLabel;
-    /// Labels of blocks that participate in the loop, including the header.
+    /// @brief Labels of blocks that participate in the loop, including the header.
     std::vector<std::string> blockLabels;
-    /// Labels of latch blocks (predecessors that branch back to the header).
+    /// @brief Labels of latch blocks that branch back to the header.
     std::vector<std::string> latchLabels;
-    /// Labels of exit edges (from -> to) leaving the loop body.
+    /// @brief Exit edges leaving the loop body.
     std::vector<LoopExit> exits;
-    /// Child loop headers nested immediately inside this loop.
+    /// @brief Child loop headers nested immediately inside this loop.
     std::vector<std::string> childHeaders;
-    /// Parent loop header if nested, empty otherwise.
+    /// @brief Parent loop header when nested, or an empty string otherwise.
     std::string parentHeader;
 
     /// @brief Determine whether @p label belongs to the loop body.
@@ -76,6 +88,7 @@ struct Loop {
     [[nodiscard]] bool contains(std::string_view label) const;
 
   private:
+    /// @brief Membership cache rebuilt from @ref blockLabels by finalize().
     std::unordered_set<std::string, LoopStringHash, std::equal_to<>> members_;
 
     friend class LoopInfo;
@@ -108,7 +121,9 @@ class LoopInfo {
 
   private:
     friend LoopInfo computeLoopInfo(il::core::Module &module, il::core::Function &function);
+    /// @brief Owned loop summaries in discovery order.
     std::vector<Loop> loops_;
+    /// @brief Maps header labels to indices in @ref loops_.
     std::unordered_map<std::string, std::size_t, LoopStringHash, std::equal_to<>> headerIndex_;
 };
 

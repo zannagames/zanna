@@ -19,6 +19,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares sparse conditional constant propagation over IL SSA.
+ *
+ * @details SCCP jointly discovers executable CFG edges and constant SSA values
+ *          using a bottom/constant/overdefined lattice. Block parameters merge
+ *          only values from executable predecessor edges, allowing the rewrite
+ *          phase to substitute constants, fold branches, and discard dead
+ *          regions conservatively.
+ */
+
 #pragma once
 
 #include "il/core/fwd.hpp"

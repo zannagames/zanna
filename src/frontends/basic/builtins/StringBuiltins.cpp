@@ -164,6 +164,8 @@ Value lowerStr(LowerCtx &ctx, ArrayRef<Value> args) {
     const char *runtime = nullptr;
     RuntimeFeature feature = RuntimeFeature::StrFromDouble;
 
+    /// @brief Narrows the first argument to a selected BASIC integer kind.
+    /// @param target Destination integer kind.
     auto narrowInteger = [&](Type::Kind target) { ctx.narrowInt(0, Type(target), argLoc); };
 
     switch (numericType) {
@@ -358,6 +360,8 @@ const std::array<BuiltinSpec, 13> kStringBuiltins = {{{"LEN", 1, 1, &lowerLen},
 const BuiltinSpec *findBuiltin(StringRef name) {
     // Build the lookup map once on first call using a function-local static.
     // The map stores string_view -> pointer mappings from the static table.
+    /// @brief Builds the process-lifetime string-builtin lookup map.
+    /// @return Heap-owned map retained for process lifetime.
     static const auto &map = *[] {
         auto *m = new std::unordered_map<std::string_view, const BuiltinSpec *>();
         m->reserve(kStringBuiltins.size());

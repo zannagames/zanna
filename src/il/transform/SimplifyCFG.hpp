@@ -25,6 +25,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares fixed-point structural simplification of IL control-flow graphs.
+ *
+ * @details `SimplifyCFG` coordinates branch/switch folding, jump threading,
+ *          forwarding-block removal, single-predecessor merging, unreachable
+ *          cleanup, and block-parameter canonicalization. Exception-sensitive
+ *          shapes remain protected, while optional aggressive mode enables the
+ *          transformations with broader CFG reach.
+ */
+
 #pragma once
 
 #include "il/core/BasicBlock.hpp"
@@ -45,13 +56,20 @@ class AnalysisManager;
 struct SimplifyCFG {
     /// @brief Aggregated statistics from a pass invocation.
     struct Stats {
-        size_t cbrToBr = 0;            ///< Number of conditional branches simplified.
-        size_t emptyBlocksRemoved = 0; ///< Count of empty blocks eliminated.
-        size_t predsMerged = 0;        ///< Predecessor edge merges performed.
-        size_t paramsShrunk = 0;       ///< Block parameter reductions.
-        size_t blocksMerged = 0;       ///< Adjacent block merges.
-        size_t unreachableRemoved = 0; ///< Unreachable block removals.
-        size_t switchToBr = 0;         ///< Switches rewritten to unconditional branches.
+        /// @brief Number of conditional branches simplified.
+        size_t cbrToBr = 0;
+        /// @brief Count of empty blocks eliminated.
+        size_t emptyBlocksRemoved = 0;
+        /// @brief Predecessor edge merges performed.
+        size_t predsMerged = 0;
+        /// @brief Block parameter reductions.
+        size_t paramsShrunk = 0;
+        /// @brief Adjacent block merges.
+        size_t blocksMerged = 0;
+        /// @brief Unreachable block removals.
+        size_t unreachableRemoved = 0;
+        /// @brief Switches rewritten to unconditional branches.
+        size_t switchToBr = 0;
     };
 
     /// @brief Per-run context shared across helper routines.
@@ -64,9 +82,12 @@ struct SimplifyCFG {
                                const il::core::Module *module,
                                Stats &stats);
 
-        il::core::Function &function;   ///< Function currently being simplified.
-        const il::core::Module *module; ///< Parent module, may be null.
-        Stats &stats;                   ///< Mutable statistics for the run.
+        /// @brief Function currently being simplified.
+        il::core::Function &function;
+        /// @brief Borrowed parent module, or nullptr when unavailable.
+        const il::core::Module *module;
+        /// @brief Mutable statistics accumulator for the run.
+        Stats &stats;
 
         /// @brief Check if debug logging is enabled for this pass context.
         /// @return True if debug messages should be emitted.
@@ -84,7 +105,8 @@ struct SimplifyCFG {
         bool isEHSensitive(const il::core::BasicBlock &block) const;
 
       private:
-        bool debugLoggingEnabled_ = false; ///< Cached debug logging flag.
+        /// @brief Cached debug-logging policy for inexpensive repeated checks.
+        bool debugLoggingEnabled_ = false;
     };
 
     /// @brief Create a CFG simplifier.
@@ -110,9 +132,12 @@ struct SimplifyCFG {
     bool run(il::core::Function &F, Stats *outStats = nullptr);
 
   private:
-    bool aggressive;                             ///< Controls heuristic aggressiveness.
-    const il::core::Module *module_ = nullptr;   ///< Parent module used for verification.
-    AnalysisManager *analysisManager_ = nullptr; ///< Analysis manager invalidated on change.
+    /// @brief Whether switch folding and jump threading are enabled.
+    bool aggressive;
+    /// @brief Borrowed parent module used by pass-wide context, or nullptr.
+    const il::core::Module *module_ = nullptr;
+    /// @brief Borrowed analysis manager invalidated after CFG changes, or nullptr.
+    AnalysisManager *analysisManager_ = nullptr;
 };
 
 } // namespace il::transform

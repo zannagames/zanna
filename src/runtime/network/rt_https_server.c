@@ -1,7 +1,9 @@
 //===----------------------------------------------------------------------===//
 
 #if !defined(_WIN32)
+/** Enable Darwin extensions required by the POSIX HTTPS adapter. */
 #define _DARWIN_C_SOURCE 1
+/** Enable GNU/POSIX extensions required by the HTTPS implementation. */
 #define _GNU_SOURCE 1
 #endif
 //
@@ -24,6 +26,15 @@
 // Links: rt_https_server.h (API), rt_http_router.h (routing), rt_tls.c
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Implements the threaded TLS-backed HTTP/1.1 and HTTP/2 server.
+ * @details Owns credential and TLS context setup, protocol negotiation,
+ * listener and worker lifecycles, synchronized route/handler bindings,
+ * active-session interruption, and managed request/response dispatch shared
+ * with the plain HTTP server.
+ */
 
 #include "rt_https_server.h"
 #include "rt_http2.h"
@@ -52,34 +63,49 @@
 #include <string.h>
 
 #ifdef _WIN32
+/** Restrict the Windows SDK surface to core declarations. */
 #define WIN32_LEAN_AND_MEAN
 #include <process.h>
 #include <windows.h>
+/** Windows compatibility alias for case-insensitive string comparison. */
 #define strcasecmp _stricmp
+/** Windows compatibility alias for bounded case-insensitive comparison. */
 #define strncasecmp _strnicmp
 typedef CRITICAL_SECTION https_server_mutex_t;
+/** Initialize a Windows HttpsServer mutex. */
 #define HTTPS_SERVER_MUTEX_INIT(m) (InitializeCriticalSection(m), 1)
+/** Acquire a Windows HttpsServer mutex. */
 #define HTTPS_SERVER_MUTEX_LOCK(m) EnterCriticalSection(m)
+/** Release a Windows HttpsServer mutex. */
 #define HTTPS_SERVER_MUTEX_UNLOCK(m) LeaveCriticalSection(m)
+/** Destroy a Windows HttpsServer mutex. */
 #define HTTPS_SERVER_MUTEX_DESTROY(m) DeleteCriticalSection(m)
 #else
 #include <pthread.h>
 #include <strings.h>
 #include <unistd.h>
 typedef pthread_mutex_t https_server_mutex_t;
+/** Initialize a POSIX HttpsServer mutex and report success. */
 #define HTTPS_SERVER_MUTEX_INIT(m) (pthread_mutex_init(m, NULL) == 0)
+/** Acquire a POSIX HttpsServer mutex. */
 #define HTTPS_SERVER_MUTEX_LOCK(m) pthread_mutex_lock(m)
+/** Release a POSIX HttpsServer mutex. */
 #define HTTPS_SERVER_MUTEX_UNLOCK(m) pthread_mutex_unlock(m)
+/** Destroy a POSIX HttpsServer mutex. */
 #define HTTPS_SERVER_MUTEX_DESTROY(m) pthread_mutex_destroy(m)
 #endif
 
 #include "rt_trap.h"
+/// @copydoc rt_trap_net()
 extern void rt_trap_net(const char *msg, int err_code);
+/// @copydoc rt_trap_get_net_code()
 extern int rt_trap_get_net_code(void);
 
 #if defined(__GNUC__) || defined(__clang__)
+/** Marks helpers unused by the selected negotiated-protocol path. */
 #define HTTPS_MAYBE_UNUSED __attribute__((unused))
 #else
+/** Empty unused-helper annotation for compilers without GNU attributes. */
 #define HTTPS_MAYBE_UNUSED
 #endif
 
@@ -87,10 +113,15 @@ extern int rt_trap_get_net_code(void);
 // Internal Structures
 //=============================================================================
 
+/** Maximum request-line or individual header-line bytes. */
 #define HTTP_REQ_MAX_LINE 8192
+/** Maximum header fields accepted in one HTTP/1 request. */
 #define HTTP_REQ_MAX_HEADERS 100
+/** Maximum decoded HTTP/1 request body bytes. */
 #define HTTP_REQ_MAX_BODY (16 * 1024 * 1024) // 16 MB
+/** Maximum encoded body storage including chunk-framing overhead. */
 #define HTTP_REQ_MAX_ENCODED_BODY (HTTP_REQ_MAX_BODY + 65536)
+/** Maximum concurrently tracked TLS sessions for stop interruption. */
 #define HTTPS_SERVER_MAX_ACTIVE_CONNS 4096
 
 /// @brief Compute the internal worker-pool size for HTTPS server instances.
@@ -108,6 +139,7 @@ static int64_t https_server_default_worker_count(void) {
     return cores;
 }
 
+/** Parsed request snapshot transferred into a managed ServerReq payload. */
 typedef struct {
     char *method;
     char *path;
@@ -120,6 +152,7 @@ typedef struct {
     void *params;  // Map (from router)
 } server_req_t;
 
+/** Mutable response builder state stored in a managed ServerRes payload. */
 typedef struct {
     int status_code;
     void *headers; // Map
@@ -128,10 +161,12 @@ typedef struct {
     bool sent;
 } server_res_t;
 
+/** Route-index metadata connecting router matches to handler tags. */
 typedef struct {
     char *tag;
 } route_entry_t;
 
+/** Native or VM handler dispatch tuple owned by the HTTPS server. */
 typedef struct {
     char *tag;
     rt_http_server_handler_dispatch_fn dispatch;
@@ -139,6 +174,7 @@ typedef struct {
     rt_http_server_handler_cleanup_fn cleanup;
 } handler_binding_t;
 
+/** Complete private TLS, lifecycle, routing, worker, and connection state. */
 typedef struct {
     void *router;     // HttpRouter
     void *tcp_server; // TcpServer
@@ -172,13 +208,21 @@ typedef struct {
     bool lifecycle_lock_initialized;
 } rt_http_server_impl;
 
+/// @copydoc free_server_req()
 static void free_server_req(server_req_t *req);
+/// @copydoc free_server_res()
 static void free_server_res(server_res_t *res);
+/// @copydoc build_route_response()
 static void build_route_response(rt_http_server_impl *server, server_req_t *req, server_res_t *res);
+/// @copydoc free_route_entries()
 static void free_route_entries(rt_http_server_impl *server);
+/// @copydoc free_handler_bindings()
 static void free_handler_bindings(rt_http_server_impl *server);
+/// @copydoc contains_crlf()
 static int contains_crlf(const char *text);
+/// @copydoc is_server_managed_header_name()
 static int is_server_managed_header_name(const char *name);
+/// @copydoc response_forces_close()
 static int response_forces_close(const server_res_t *res);
 
 /// @brief Acquire the mutex protecting HTTPS running state and active sessions.
@@ -358,6 +402,7 @@ static void https_server_interrupt_conn(void *conn) {
 #endif
 }
 
+/** Result classification for bounded chunked-transfer decoding. */
 typedef enum {
     CHUNK_PARSE_OK = 0,
     CHUNK_PARSE_INCOMPLETE = 1,

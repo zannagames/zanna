@@ -5,8 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tui/include/tui/util/color.hpp
-// Purpose: Provides color parsing utilities for the TUI library.
+/// @file
+/// @brief Declares hexadecimal RGB parsing for TUI render colors.
+/// @details Provides a stateless conversion from optional-`#` RRGGBB text to
+///          fully opaque RGBA values.
 // Key invariants: Parses hex RGB triplets into RGBA structs.
 // Ownership/Lifetime: Stateless utility functions.
 // Links: docs/internals/architecture.md

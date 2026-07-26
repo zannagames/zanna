@@ -5,8 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tools/zia-server/CompilerBridge.cpp
-// Purpose: Implementation of the protocol-agnostic Zia compiler facade.
+/// @file
+/// @brief Implements the protocol-agnostic Zia compiler and editor-service facade.
+/// @details Adapts frontend analysis and the runtime-backed project index into
+///          owned diagnostic, completion, navigation, hover, symbol, semantic
+///          token, and compiler-dump records for LSP and MCP transports.
 // Key invariants:
 //   - Each analysis call creates a fresh SourceManager (no cross-call state)
 //   - CompletionEngine persists for LRU cache benefits
@@ -64,6 +67,8 @@ namespace fs = std::filesystem;
 // --- Helpers ---
 
 /// @brief Map a Zia semantic Symbol::Kind to the server's SymbolInfo kind string.
+/// @param k Semantic symbol category.
+/// @return Stable lowercase protocol-facing symbol kind.
 static std::string symbolKindStr(Symbol::Kind k) {
     switch (k) {
         case Symbol::Kind::Variable:
@@ -122,12 +127,16 @@ static void appendEscapedTokenText(std::string &out, const std::string &text) {
 /// @brief RAII wrapper for runtime strings allocated for editor-service calls.
 class RuntimeString {
   public:
+    /// @brief Allocate a runtime string containing @p text.
+    /// @param text UTF-8 bytes copied into the runtime string.
+    /// @throws std::runtime_error if the runtime allocation fails.
     explicit RuntimeString(std::string_view text)
         : value_(rt_string_from_bytes(text.data(), text.size())) {
         if (!value_)
             throw std::runtime_error("failed to allocate runtime string");
     }
 
+    /// @brief Release the owned runtime string reference.
     ~RuntimeString() {
         rt_string_unref(value_);
     }
@@ -135,6 +144,8 @@ class RuntimeString {
     RuntimeString(const RuntimeString &) = delete;
     RuntimeString &operator=(const RuntimeString &) = delete;
 
+    /// @brief Access the borrowed runtime string handle.
+    /// @return Runtime handle valid for this wrapper's lifetime.
     [[nodiscard]] rt_string get() const {
         return value_;
     }
@@ -143,12 +154,19 @@ class RuntimeString {
     rt_string value_{nullptr};
 };
 
+/// @brief Copy a nullable runtime string into an owning standard string.
+/// @param value Borrowed runtime string handle, possibly null.
+/// @return UTF-8 contents, or an empty string for a null handle.
 static std::string rtStringToStd(rt_string value) {
     const char *cstr = value ? rt_string_cstr(value) : "";
     const size_t len = value ? static_cast<size_t>(rt_str_len(value)) : 0;
     return std::string(cstr ? cstr : "", len);
 }
 
+/// @brief Read a string-valued field from a runtime map.
+/// @param map Borrowed runtime map object, possibly null.
+/// @param name Field name to query.
+/// @return Owning field value, or an empty string when unavailable.
 static std::string mapString(void *map, const char *name) {
     if (!map)
         return {};
@@ -159,6 +177,11 @@ static std::string mapString(void *map, const char *name) {
     return out;
 }
 
+/// @brief Read an integer-valued field from a runtime map.
+/// @param map Borrowed runtime map object, possibly null.
+/// @param name Field name to query.
+/// @param fallback Value returned when the map or field has no integer.
+/// @return Stored integer or @p fallback.
 static int64_t mapInt(void *map, const char *name, int64_t fallback = 0) {
     if (!map)
         return fallback;
@@ -166,6 +189,11 @@ static int64_t mapInt(void *map, const char *name, int64_t fallback = 0) {
     return rt_map_get_int_or(map, key.get(), fallback);
 }
 
+/// @brief Read a Boolean-valued field from a runtime map.
+/// @param map Borrowed runtime map object, possibly null.
+/// @param name Field name to query.
+/// @param fallback Value returned when the map or field has no Boolean.
+/// @return Stored Boolean or @p fallback.
 static bool mapBool(void *map, const char *name, bool fallback = false) {
     if (!map)
         return fallback;
@@ -173,6 +201,10 @@ static bool mapBool(void *map, const char *name, bool fallback = false) {
     return rt_map_get_bool_or(map, key.get(), fallback ? 1 : 0) != 0;
 }
 
+/// @brief Read an object-valued field from a runtime map.
+/// @param map Borrowed runtime map object, possibly null.
+/// @param name Field name to query.
+/// @return Borrowed object pointer, or null when unavailable.
 static void *mapObject(void *map, const char *name) {
     if (!map)
         return nullptr;
@@ -180,11 +212,16 @@ static void *mapObject(void *map, const char *name) {
     return rt_map_get(map, key.get());
 }
 
+/// @brief Release and free a runtime object when its reference count reaches zero.
+/// @param obj Runtime object pointer, possibly null.
 static void releaseRuntimeObject(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
+/// @brief Clamp a signed runtime coordinate into the source-coordinate domain.
+/// @param value Runtime-provided line or column value.
+/// @return Zero for nonpositive input, UINT32_MAX on overflow, or the converted value.
 static uint32_t toSourceCoord(int64_t value) {
     if (value <= 0)
         return 0;
@@ -193,10 +230,20 @@ static uint32_t toSourceCoord(int64_t value) {
     return static_cast<uint32_t>(value);
 }
 
+/// @brief Convert a one-based editor column to the runtime's zero-based column.
+/// @param col One-based column, with nonpositive values treated as zero.
+/// @return Nonnegative zero-based column.
 static int zeroBasedColumnForRuntime(int col) {
     return col > 0 ? col - 1 : 0;
 }
 
+/// @brief Decode a source range from named fields in a runtime map.
+/// @param map Borrowed runtime map containing location fields.
+/// @param lineKey Key for the start line.
+/// @param columnKey Key for the start column.
+/// @param endLineKey Key for the end line.
+/// @param endColumnKey Key for the end column.
+/// @return Owning protocol source-range record.
 static SourceRangeInfo rangeFromMap(void *map,
                                     const char *lineKey,
                                     const char *columnKey,
@@ -211,6 +258,10 @@ static SourceRangeInfo rangeFromMap(void *map,
     return range;
 }
 
+/// @brief Decode a navigation location from a runtime map.
+/// @param map Borrowed runtime map containing location metadata.
+/// @param forceDefinition Whether to mark the result as a definition unconditionally.
+/// @return Owning protocol location record.
 static LocationInfo locationFromMap(void *map, bool forceDefinition) {
     LocationInfo location;
     location.range = rangeFromMap(map, "line", "column", "endLine", "endColumn");
@@ -220,12 +271,18 @@ static LocationInfo locationFromMap(void *map, bool forceDefinition) {
     return location;
 }
 
+/// @brief Decode an optional definition result from a runtime map.
+/// @param map Borrowed runtime result map.
+/// @return Definition location when the runtime reports `found`, otherwise nullopt.
 static std::optional<LocationInfo> definitionFromRuntimeMap(void *map) {
     if (!map || !mapBool(map, "found"))
         return std::nullopt;
     return locationFromMap(map, true);
 }
 
+/// @brief Decode a runtime sequence of reference maps.
+/// @param seq Borrowed runtime sequence, possibly null.
+/// @return Owning reference-location records in runtime order.
 static std::vector<LocationInfo> referencesFromRuntimeSeq(void *seq) {
     std::vector<LocationInfo> out;
     const int64_t count = seq ? rt_seq_len(seq) : 0;
@@ -237,6 +294,9 @@ static std::vector<LocationInfo> referencesFromRuntimeSeq(void *seq) {
     return out;
 }
 
+/// @brief Decode a rename response and its text edits from a runtime map.
+/// @param map Borrowed runtime rename-result map.
+/// @return Owning rename result with normalized edit ranges.
 static RenameResult renameFromRuntimeMap(void *map) {
     RenameResult result;
     result.success = mapBool(map, "success");
@@ -254,6 +314,9 @@ static RenameResult renameFromRuntimeMap(void *map) {
     return result;
 }
 
+/// @brief Decode one signature parameter from a runtime map.
+/// @param map Borrowed parameter record.
+/// @return Protocol parameter label and documentation.
 static SignatureParameterInfo parameterFromRuntimeMap(void *map) {
     SignatureParameterInfo parameter;
     std::string name = mapString(map, "name");
@@ -263,6 +326,9 @@ static SignatureParameterInfo parameterFromRuntimeMap(void *map) {
     return parameter;
 }
 
+/// @brief Decode one callable signature from a runtime map.
+/// @param map Borrowed signature record.
+/// @return Protocol signature with all decoded parameters.
 static SignatureInfo signatureFromRuntimeMap(void *map) {
     SignatureInfo signature;
     signature.label = mapString(map, "display");
@@ -275,6 +341,9 @@ static SignatureInfo signatureFromRuntimeMap(void *map) {
     return signature;
 }
 
+/// @brief Decode signature-help state and overloads from a runtime map.
+/// @param map Borrowed runtime signature-help result.
+/// @return Owning signature-help response.
 static SignatureHelpInfo signatureHelpFromRuntimeMap(void *map) {
     SignatureHelpInfo result;
     result.available = mapBool(map, "available");
@@ -303,10 +372,21 @@ static SignatureHelpInfo signatureHelpFromRuntimeMap(void *map) {
     return result;
 }
 
+/// @brief Test whether ASCII text contains a query without regard to case.
+/// @param text Candidate text to search.
+/// @param needle Query substring; an empty query matches every string.
+/// @return true when @p needle occurs in @p text under ASCII case folding.
 static bool containsCaseInsensitive(std::string_view text, std::string_view needle) {
     if (needle.empty())
         return true;
+    /// @brief Fold one byte to lowercase for case-insensitive comparison.
+    /// @param c Byte to normalize.
+    /// @return Lowercase representation converted back to `char`.
     auto lower = [](unsigned char c) { return static_cast<char>(std::tolower(c)); };
+    /// @brief Compare one candidate byte with one query byte without regard to case.
+    /// @param a Candidate text byte.
+    /// @param b Query text byte.
+    /// @return `true` when the folded bytes are equal.
     auto it =
         std::search(text.begin(), text.end(), needle.begin(), needle.end(), [&](char a, char b) {
             return lower(a) == lower(b);
@@ -315,6 +395,8 @@ static bool containsCaseInsensitive(std::string_view text, std::string_view need
 }
 
 /// @brief Map a semantic symbol kind to an LSP semantic-token type.
+/// @param kind Semantic symbol category.
+/// @return Closest protocol semantic-token category.
 static SemanticTokenType semanticTypeForSymbolKind(Symbol::Kind kind) {
     switch (kind) {
         case Symbol::Kind::Function:
@@ -335,6 +417,10 @@ static SemanticTokenType semanticTypeForSymbolKind(Symbol::Kind kind) {
 }
 
 /// @brief Classify a token using semantic symbol data when available.
+/// @param token Lexer token to classify.
+/// @param previous Previous non-error token kind, used to recognize declarations.
+/// @param semanticNames Known semantic classifications keyed by identifier spelling.
+/// @return Protocol semantic-token category for @p token.
 static SemanticTokenType semanticTypeForToken(
     const Token &token,
     TokenKind previous,
@@ -372,6 +458,8 @@ static SemanticTokenType semanticTypeForToken(
 }
 
 /// @brief Build semantic token classification data from a successful Zia analysis.
+/// @param analysis Frontend analysis containing semantic symbols and type names.
+/// @return Identifier-to-token-category lookup map.
 static std::unordered_map<std::string, SemanticTokenType> buildSemanticNameMap(
     const AnalysisResult &analysis) {
     std::unordered_map<std::string, SemanticTokenType> names;
@@ -389,6 +477,9 @@ static std::unordered_map<std::string, SemanticTokenType> buildSemanticNameMap(
 ///          This lexer pass records the identifier immediately following class,
 ///          struct, type, enum, and interface keywords so document symbols use
 ///          declaration locations instead of an arbitrary text search match.
+/// @param source Complete Zia document text.
+/// @param fileId Source-manager file identifier assigned to @p source.
+/// @return Declaration locations keyed by declared type name.
 static std::unordered_map<std::string, il::support::SourceLoc> indexZiaTypeDeclarationLocations(
     const std::string &source, uint32_t fileId) {
     std::unordered_map<std::string, il::support::SourceLoc> out;
@@ -412,6 +503,8 @@ static std::unordered_map<std::string, il::support::SourceLoc> indexZiaTypeDecla
 }
 
 /// @brief Read a workspace `.zia` source file if it is small enough for symbols.
+/// @param path Native filesystem path to inspect.
+/// @return File contents when readable and at most one MiB; otherwise nullopt.
 static std::optional<std::string> readWorkspaceSourceFile(const fs::path &path) {
     constexpr std::streamoff kMaxWorkspaceSymbolFileBytes =
         static_cast<std::streamoff>(1024ULL * 1024ULL);
@@ -437,6 +530,8 @@ static std::optional<std::string> readWorkspaceSourceFile(const fs::path &path) 
 ///          the compiler bridge, so open documents define the search roots. This
 ///          avoids scanning arbitrary process current directories while still
 ///          finding nearby project files for normal editor sessions.
+/// @param openDocuments Current in-memory documents keyed by path or editor URI.
+/// @return Open documents plus bounded neighboring `.zia` files, without duplicates.
 static std::vector<std::pair<std::string, std::string>> collectWorkspaceZiaSources(
     const std::unordered_map<std::string, std::string> &openDocuments) {
     constexpr std::size_t kMaxWorkspaceSymbolFiles = 256;
@@ -491,12 +586,16 @@ static std::vector<std::pair<std::string, std::string>> collectWorkspaceZiaSourc
 
 // --- Constructor / Destructor ---
 
+/// @brief Construct the bridge, completion cache, and runtime project index.
+/// @details The runtime index is marked unusable when allocation fails, allowing
+///          independent compiler features to remain available.
 CompilerBridge::CompilerBridge() : completionEngine_(std::make_unique<CompletionEngine>()) {
     RuntimeString root(".");
     projectIndex_ = rt_zia_project_index_new(root.get());
     projectIndexUsable_ = projectIndex_ != nullptr;
 }
 
+/// @brief Destroy the runtime project index under the project-state lock.
 CompilerBridge::~CompilerBridge() {
     std::lock_guard<std::mutex> lock(projectMutex_);
     if (projectIndex_) {
@@ -508,6 +607,10 @@ CompilerBridge::~CompilerBridge() {
 
 // --- Analysis ---
 
+/// @brief Parse and semantically analyze a Zia document.
+/// @param source Complete in-memory document text.
+/// @param path Logical path used for source locations.
+/// @return Owned diagnostics emitted by parsing and semantic analysis.
 std::vector<DiagnosticInfo> CompilerBridge::check(const std::string &source,
                                                   const std::string &path) {
     il::support::SourceManager sm;
@@ -526,6 +629,10 @@ std::vector<DiagnosticInfo> CompilerBridge::check(const std::string &source,
     return extractDiagnostics(result->diagnostics, &sm);
 }
 
+/// @brief Compile a Zia document through IL lowering and verification.
+/// @param source Complete in-memory document text.
+/// @param path Logical path used for source locations.
+/// @return Success flag and owned compiler diagnostics.
 CompileResult CompilerBridge::compile(const std::string &source, const std::string &path) {
     il::support::SourceManager sm;
     CompilerInput input{.source = source, .path = path};
@@ -535,6 +642,9 @@ CompileResult CompilerBridge::compile(const std::string &source, const std::stri
     return {result.succeeded(), extractDiagnostics(result.diagnostics, &sm)};
 }
 
+/// @brief Add or replace an open document in the workspace project index.
+/// @param path Document path or editor URI used as the index key.
+/// @param source Complete current document text.
 void CompilerBridge::updateDocument(const std::string &path, const std::string &source) {
     std::lock_guard<std::mutex> lock(projectMutex_);
     openDocuments_[path] = source;
@@ -549,6 +659,8 @@ void CompilerBridge::updateDocument(const std::string &path, const std::string &
         projectIndexUsable_ = true;
 }
 
+/// @brief Remove an open document from workspace state and the runtime index.
+/// @param path Document path or editor URI to remove.
 void CompilerBridge::removeDocument(const std::string &path) {
     std::lock_guard<std::mutex> lock(projectMutex_);
     const bool wasOpen = openDocuments_.erase(path) != 0;
@@ -563,27 +675,39 @@ void CompilerBridge::removeDocument(const std::string &path) {
         projectIndexUsable_ = true;
 }
 
+/// @brief Report whether a runtime project index exists for definition lookup.
+/// @return true when navigation requests can be submitted to an index object.
 bool CompilerBridge::supportsDefinition() const {
     std::lock_guard<std::mutex> lock(projectMutex_);
     return projectIndex_ != nullptr;
 }
 
+/// @brief Report whether reference lookup is exposed.
+/// @return The same availability state as definition lookup.
 bool CompilerBridge::supportsReferences() const {
     return supportsDefinition();
 }
 
+/// @brief Report whether semantic rename is exposed.
+/// @return The same availability state as definition lookup.
 bool CompilerBridge::supportsRename() const {
     return supportsDefinition();
 }
 
+/// @brief Report whether signature help is implemented.
+/// @return Always true for this bridge.
 bool CompilerBridge::supportsSignatureHelp() const {
     return true;
 }
 
+/// @brief Report whether workspace symbol search is implemented.
+/// @return Always true for this bridge.
 bool CompilerBridge::supportsWorkspaceSymbols() const {
     return true;
 }
 
+/// @brief Report whether semantic token classification is implemented.
+/// @return Always true for this bridge.
 bool CompilerBridge::supportsSemanticTokens() const {
     return true;
 }
@@ -604,6 +728,8 @@ struct HoverResult {
 };
 
 /// @brief Return combined authored documentation for a runtime class.
+/// @param qualifiedName Fully qualified runtime class name.
+/// @return Summary and details separated by a blank line, or an empty string.
 static std::string runtimeClassDocumentation(std::string_view qualifiedName) {
     const auto *runtimeClass = il::runtime::findRuntimeClassByQName(qualifiedName);
     if (!runtimeClass)
@@ -618,6 +744,9 @@ static std::string runtimeClassDocumentation(std::string_view qualifiedName) {
 }
 
 /// @brief Populate hover metadata for a catalogued runtime class.
+/// @param result Output hover record overwritten on a successful lookup.
+/// @param qualifiedName Fully qualified runtime class name.
+/// @return true when the runtime class exists and @p result was populated.
 static bool populateRuntimeClassHover(HoverResult &result, std::string_view qualifiedName) {
     const auto *runtimeClass = il::runtime::findRuntimeClassByQName(qualifiedName);
     if (!runtimeClass)
@@ -631,6 +760,9 @@ static bool populateRuntimeClassHover(HoverResult &result, std::string_view qual
 }
 
 /// @brief Build a human-readable function signature from AST param names + semantic types.
+/// @param params Declared parameters supplying source-level names.
+/// @param funcType Semantic function type supplying parameter and return types.
+/// @return Display signature in `(name: type) -> return` form.
 static std::string buildSignatureFromDecl(const std::vector<Param> &params,
                                           const TypeRef &funcType) {
     auto paramTys = funcType ? funcType->paramTypes() : std::vector<TypeRef>{};
@@ -652,6 +784,8 @@ static std::string buildSignatureFromDecl(const std::vector<Param> &params,
 }
 
 /// @brief Build a function signature from just the ZannaType (no param names).
+/// @param funcType Semantic function type to render.
+/// @return Display signature, or an empty string for a non-function type.
 static std::string buildSignatureFromType(const TypeRef &funcType) {
     if (!funcType || funcType->kind != TypeKindSem::Function)
         return "";
@@ -670,6 +804,12 @@ static std::string buildSignatureFromType(const TypeRef &funcType) {
 }
 
 /// @brief Resolve a hover target using Sema APIs.
+/// @param ar Parsed and analyzed document, including the AST.
+/// @param sema Semantic model used for symbol and member lookup.
+/// @param ctx Identifier and dotted-prefix context at the cursor.
+/// @param line One-based cursor line.
+/// @param col One-based cursor column.
+/// @return Resolved hover record; an empty name indicates no target.
 static HoverResult resolveHoverTarget(
     const AnalysisResult &ar, const Sema &sema, const HoverContext &ctx, int line, int col) {
     HoverResult result;
@@ -881,6 +1021,8 @@ static HoverResult resolveHoverTarget(
 ///          still user-visible markdown. Escaping backticks and replacing control characters keeps
 ///          a malformed or adversarial symbol spelling from closing a fence or corrupting the LSP
 ///          hover payload.
+/// @param text Identifier, type, or signature text to sanitize.
+/// @return Markdown-safe code text without raw control characters or backticks.
 static std::string escapeMarkdownCodeText(std::string_view text) {
     std::string out;
     out.reserve(text.size());
@@ -897,6 +1039,8 @@ static std::string escapeMarkdownCodeText(std::string_view text) {
 }
 
 /// @brief Format hover info as rich markdown.
+/// @param info Resolved semantic hover record.
+/// @return Zia code fence, contextual annotations, and authored documentation.
 static std::string formatHoverMarkdown(const HoverResult &info) {
     std::string md;
 
@@ -958,6 +1102,12 @@ static std::string formatHoverMarkdown(const HoverResult &info) {
 
 // --- IDE Features ---
 
+/// @brief Find the definition of the symbol at a document position.
+/// @param source Complete current document text.
+/// @param line One-based cursor line.
+/// @param col One-based cursor column.
+/// @param path Document path or editor URI.
+/// @return Definition location, or nullopt when the index is unavailable or no target exists.
 std::optional<LocationInfo> CompilerBridge::definition(const std::string &source,
                                                        int line,
                                                        int col,
@@ -979,6 +1129,12 @@ std::optional<LocationInfo> CompilerBridge::definition(const std::string &source
     return result;
 }
 
+/// @brief Find semantic references to the symbol at a document position.
+/// @param source Complete current document text.
+/// @param line One-based cursor line.
+/// @param col One-based cursor column.
+/// @param path Document path or editor URI.
+/// @return Reference locations, or an empty vector when unavailable or unmatched.
 std::vector<LocationInfo> CompilerBridge::references(const std::string &source,
                                                      int line,
                                                      int col,
@@ -1000,6 +1156,13 @@ std::vector<LocationInfo> CompilerBridge::references(const std::string &source,
     return result;
 }
 
+/// @brief Compute workspace text edits for renaming a symbol.
+/// @param source Complete current document text.
+/// @param line One-based cursor line.
+/// @param col One-based cursor column.
+/// @param path Document path or editor URI.
+/// @param newName Replacement identifier spelling.
+/// @return Rename status, failure reason, and all semantic edits.
 RenameResult CompilerBridge::rename(const std::string &source,
                                     int line,
                                     int col,
@@ -1032,6 +1195,12 @@ RenameResult CompilerBridge::rename(const std::string &source,
     return result;
 }
 
+/// @brief Resolve callable overload and active-parameter information at a cursor.
+/// @param source Complete current document text.
+/// @param line One-based cursor line.
+/// @param col One-based cursor column.
+/// @param path Document path or editor URI.
+/// @return Signature-help response decoded from the runtime editor service.
 SignatureHelpInfo CompilerBridge::signatureHelp(const std::string &source,
                                                 int line,
                                                 int col,
@@ -1045,6 +1214,11 @@ SignatureHelpInfo CompilerBridge::signatureHelp(const std::string &source,
     return result;
 }
 
+/// @brief Search cached document symbols across the inferred workspace.
+/// @details Rebuilds the cache from open documents and bounded neighboring Zia
+///          files after document changes, then applies a case-insensitive filter.
+/// @param query Symbol-name substring; an empty query returns all cached symbols.
+/// @return Deterministically ordered matching symbol records.
 std::vector<SymbolInfo> CompilerBridge::workspaceSymbols(const std::string &query) {
     std::vector<SymbolInfo> cachedSymbols;
     std::unordered_map<std::string, std::string> openDocs;
@@ -1070,6 +1244,10 @@ std::vector<SymbolInfo> CompilerBridge::workspaceSymbols(const std::string &quer
                 rebuilt.push_back(std::move(symbol));
             }
         }
+        /// @brief Order workspace symbols deterministically by name, file, line, and column.
+        /// @param lhs Left-hand symbol.
+        /// @param rhs Right-hand symbol.
+        /// @return `true` when `lhs` precedes `rhs`.
         std::sort(rebuilt.begin(), rebuilt.end(), [](const SymbolInfo &lhs, const SymbolInfo &rhs) {
             if (lhs.name != rhs.name)
                 return lhs.name < rhs.name;
@@ -1096,6 +1274,10 @@ std::vector<SymbolInfo> CompilerBridge::workspaceSymbols(const std::string &quer
     return out;
 }
 
+/// @brief Classify lexical tokens for semantic highlighting.
+/// @param source Complete current document text.
+/// @param path Document path or editor URI used for analysis locations.
+/// @return Source-ordered semantic token spans.
 std::vector<SemanticTokenInfo> CompilerBridge::semanticTokens(const std::string &source,
                                                               const std::string &path) {
     il::support::DiagnosticEngine diag;
@@ -1130,6 +1312,12 @@ std::vector<SemanticTokenInfo> CompilerBridge::semanticTokens(const std::string 
     return out;
 }
 
+/// @brief Compute completion candidates at a document position.
+/// @param source Complete current document text.
+/// @param line One-based cursor line.
+/// @param col One-based cursor column.
+/// @param path Document path or editor URI.
+/// @return Owning protocol completion records in engine order.
 std::vector<CompletionInfo> CompilerBridge::completions(const std::string &source,
                                                         int line,
                                                         int col,
@@ -1149,6 +1337,12 @@ std::vector<CompletionInfo> CompilerBridge::completions(const std::string &sourc
     return result;
 }
 
+/// @brief Produce rich Markdown hover information at a document position.
+/// @param source Complete current document text.
+/// @param line One-based cursor line.
+/// @param col One-based cursor column.
+/// @param path Document path or editor URI.
+/// @return Markdown hover payload, or an empty string when no symbol resolves.
 std::string CompilerBridge::hover(const std::string &source,
                                   int line,
                                   int col,
@@ -1172,6 +1366,10 @@ std::string CompilerBridge::hover(const std::string &source,
     return formatHoverMarkdown(hoverResult);
 }
 
+/// @brief Enumerate global and type declarations owned by one document.
+/// @param source Complete current document text.
+/// @param path Document path or editor URI.
+/// @return Document-owned symbols with declaration coordinates.
 std::vector<SymbolInfo> CompilerBridge::symbols(const std::string &source,
                                                 const std::string &path) {
     il::support::SourceManager sm;
@@ -1213,6 +1411,11 @@ std::vector<SymbolInfo> CompilerBridge::symbols(const std::string &source,
 
 // --- Dump ---
 
+/// @brief Compile a document and serialize its generated IL.
+/// @param source Complete Zia source text.
+/// @param path Logical source path used for diagnostics.
+/// @param optimized Whether to request the O1 frontend optimization pipeline.
+/// @return Serialized IL, or a human-readable compilation-failure summary.
 std::string CompilerBridge::dumpIL(const std::string &source,
                                    const std::string &path,
                                    bool optimized) {
@@ -1233,6 +1436,10 @@ std::string CompilerBridge::dumpIL(const std::string &source,
     return il::io::Serializer::toString(result.module);
 }
 
+/// @brief Parse and semantically analyze a document, then dump its AST.
+/// @param source Complete Zia source text.
+/// @param path Logical source path used for locations.
+/// @return Printer-formatted AST or a no-AST sentinel string.
 std::string CompilerBridge::dumpAst(const std::string &source, const std::string &path) {
     il::support::SourceManager sm;
     CompilerInput input{.source = source, .path = path};
@@ -1246,6 +1453,10 @@ std::string CompilerBridge::dumpAst(const std::string &source, const std::string
     return printer.dump(*result->ast);
 }
 
+/// @brief Lex a document into a line-oriented escaped token dump.
+/// @param source Complete Zia source text.
+/// @param path Logical source path used for token locations.
+/// @return One line per non-EOF token with location, kind, and optional spelling.
 std::string CompilerBridge::dumpTokens(const std::string &source, const std::string &path) {
     il::support::DiagnosticEngine diag;
     il::support::SourceManager sm;

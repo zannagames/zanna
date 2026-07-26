@@ -30,6 +30,13 @@
 //        src/runtime/text/rt_json_stream.h (JSON token parser)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares managed cross-platform JSON save-data persistence.
+ * @details Exposes a typed string-key store, mutation and query operations,
+ * transactional load, durable atomic save, computed save-file paths, and
+ * validated per-application data-directory discovery.
+ */
 #pragma once
 
 #include "rt_string.h"

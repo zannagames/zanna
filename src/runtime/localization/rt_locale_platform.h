@@ -30,6 +30,15 @@
 //        src/runtime/localization/rt_locale_manager.c (sole consumer).
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares the allocation-free host-locale detection adapter.
+ * @details Defines a single non-trapping, bounded-buffer contract implemented
+ * by exactly one platform source and consumed by LocaleManager before final
+ * BCP-47 canonicalization.
+ */
+
 #pragma once
 
 #include <stddef.h>

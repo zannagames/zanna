@@ -19,14 +19,23 @@
 //   - Each algorithm has a Bytes-returning API and a lowercase-hex String API.
 //
 // Ownership/Lifetime:
-//   - The returned rt_string key is a fresh allocation owned by the caller.
-//   - Input password and salt strings are borrowed for the duration of the call.
+//   - Returned Bytes and rt_string keys are fresh allocations owned by callers.
+//   - Input password strings and salt Bytes objects are borrowed for the call.
 //
 // Links: src/runtime/text/rt_keyderive.h (public API),
 //        src/runtime/text/rt_hash.h (SHA256 used as PRF base),
 //        src/runtime/text/rt_password.h (higher-level password hashing)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_keyderive.c
+ * @brief Implements bounded PBKDF2-HMAC-SHA256 and scrypt derivation.
+ * @details Public wrappers validate password and salt objects, enforce
+ *          iteration, work, memory, and output-length policy, invoke raw
+ *          derivation over borrowed byte spans, scrub temporary key material,
+ *          and return caller-owned Bytes or lowercase hexadecimal Strings.
+ */
 
 #include "rt_keyderive.h"
 #include "rt_keyderive_internal.h"
@@ -51,6 +60,10 @@
 ///          zero-length string is still accepted and represented by a stable
 ///          empty buffer. The returned pointer is borrowed; caller must not
 ///          free it.
+/// @param password Borrowed runtime password string.
+/// @param len Non-null output receiving the password byte length.
+/// @param ok Optional output set to one only for valid input.
+/// @return Borrowed password bytes, or a stable empty buffer after a trap.
 static const uint8_t *pbkdf2_string_bytes(rt_string password, size_t *len, int *ok) {
     if (ok)
         *ok = 0;
@@ -98,6 +111,7 @@ static const uint8_t *pbkdf2_string_bytes(rt_string password, size_t *len, int *
 /// @param salt Bytes object containing salt bytes.
 /// @param len Receives salt length on success; set to zero on failure.
 /// @param context Prefix used in trap messages, e.g. "PBKDF2" or "scrypt".
+/// @param ok Optional output set to one only for a valid non-empty salt.
 /// @return Borrowed salt byte pointer, or a stable empty pointer after reporting a trap.
 static const uint8_t *keyderive_salt_bytes(void *salt, size_t *len, const char *context, int *ok) {
     if (len)
@@ -147,6 +161,8 @@ static const uint8_t *keyderive_salt_bytes(void *salt, size_t *len, const char *
 ///          every transient buffer (`U`, `T`, `salt || INT(i)`, the
 ///          fully-derived key once it's been copied to a Bytes
 ///          object) before functions return.
+/// @param ptr Writable sensitive-memory range.
+/// @param len Number of bytes to overwrite with zero.
 static void keyderive_secure_zero(void *ptr, size_t len) {
     volatile uint8_t *p = (volatile uint8_t *)ptr;
     while (len-- > 0)
@@ -277,6 +293,8 @@ void rt_keyderive_pbkdf2_sha256_raw(const uint8_t *password,
 /// @details scrypt's Salsa20/8 core operates on 32-bit words in
 ///          little-endian order regardless of host byte order; this helper
 ///          enforces that.
+/// @param p Borrowed readable four-byte range.
+/// @return Decoded host-order 32-bit value.
 static uint32_t load32_le(const uint8_t *p) {
     return ((uint32_t)p[0]) | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
            ((uint32_t)p[3] << 24);
@@ -285,6 +303,8 @@ static uint32_t load32_le(const uint8_t *p) {
 /// @brief Store a 32-bit unsigned int into @p p in little-endian byte order.
 /// @details Inverse of load32_le. Used to write the Salsa20/8 output back
 ///          into the caller's byte-oriented block.
+/// @param p Writable four-byte destination.
+/// @param v Host-order value to encode.
 static void store32_le(uint8_t *p, uint32_t v) {
     p[0] = (uint8_t)v;
     p[1] = (uint8_t)(v >> 8);
@@ -292,6 +312,7 @@ static void store32_le(uint8_t *p, uint32_t v) {
     p[3] = (uint8_t)(v >> 24);
 }
 
+/// Rotate a 32-bit Salsa word left by a compile-time round distance.
 #define SALSA_ROTL32(x, n) (((x) << (n)) | ((x) >> (32 - (n))))
 
 /// @brief In-place Salsa20/8 core (8 rounds = 4 iterations of the column-and-row pair).
@@ -300,6 +321,7 @@ static void store32_le(uint8_t *p, uint32_t v) {
 ///          through 4 column-row pairs and finalizes by adding the
 ///          original input back (the standard Salsa20 ARX construction).
 ///          All temporary state is zeroed before return.
+/// @param block Writable 64-byte block transformed in place.
 static void salsa20_8(uint8_t block[64]) {
     uint32_t x[16];
     uint32_t orig[16];
@@ -360,6 +382,9 @@ static void salsa20_8(uint8_t block[64]) {
 ///          Salsa20/8 chained with the previous output, then de-interleaves
 ///          even and odd indexes to produce the output ordering. @p tmp
 ///          must be at least block_len bytes — used as scratch.
+/// @param block Writable `128 * r`-byte input/output block.
+/// @param tmp Writable scratch range of at least `128 * r` bytes.
+/// @param r Positive scrypt block-size parameter.
 static void scrypt_blockmix(uint8_t *block, uint8_t *tmp, uint32_t r) {
     uint8_t x[64];
     size_t blocks = (size_t)2 * r;
@@ -384,6 +409,9 @@ static void scrypt_blockmix(uint8_t *block, uint8_t *tmp, uint32_t r) {
 /// @details Reads the last 64-byte sub-block of @p block and returns its
 ///          low 64 bits in little-endian order. Used by ROMix to derive
 ///          the random index `j = Integerify(X) mod N`.
+/// @param block Borrowed `128 * r`-byte mixed block.
+/// @param r Positive scrypt block-size parameter.
+/// @return Low 64 bits of the final sub-block in host order.
 static uint64_t scrypt_integerify(const uint8_t *block, uint32_t r) {
     const uint8_t *last = block + ((size_t)2 * r - 1) * 64;
     return ((uint64_t)load32_le(last + 4) << 32) | (uint64_t)load32_le(last);
@@ -398,6 +426,9 @@ static uint64_t scrypt_integerify(const uint8_t *block, uint32_t r) {
 ///          Memory cap is enforced via RT_SCRYPT_MAX_MEMORY; the malloc
 ///          may itself OOM, in which case we trap with a clean error.
 ///          All sensitive scratch is zeroed before return.
+/// @param block Writable `128 * r`-byte block transformed in place.
+/// @param n Power-of-two ROMix iteration count.
+/// @param r Positive scrypt block-size parameter.
 static void scrypt_romix(uint8_t *block, uint64_t n, uint32_t r) {
     size_t block_len = (size_t)128 * r;
     if (n > SIZE_MAX / block_len) {
@@ -447,6 +478,11 @@ static void scrypt_romix(uint8_t *block, uint64_t n, uint32_t r) {
 ///          otherwise. Public wrappers expose this via
 ///          rt_keyderive_scrypt_params_supported so callers can check
 ///          before committing memory.
+/// @param n ROMix work factor, required to be a supported power of two.
+/// @param r Block-size parameter.
+/// @param p Parallelization parameter.
+/// @param out_len Requested derived-key length in bytes.
+/// @return `1` when all arithmetic and runtime policy checks pass, otherwise `0`.
 static int scrypt_params_valid(uint64_t n, uint32_t r, uint32_t p, size_t out_len) {
     if (n < 2 || (n & (n - 1)) != 0)
         return 0;
@@ -473,6 +509,10 @@ static int scrypt_params_valid(uint64_t n, uint32_t r, uint32_t p, size_t out_le
 ///          parameter set (typically loaded from configuration or an
 ///          encoded password string) without committing the memory the
 ///          full derivation would consume.
+/// @param n ROMix work factor.
+/// @param r Block-size parameter.
+/// @param p Parallelization parameter.
+/// @param out_len Requested derived-key length in bytes.
 /// @return Nonzero if the parameters are valid, 0 if any check fails.
 int rt_keyderive_scrypt_params_supported(uint64_t n, uint32_t r, uint32_t p, size_t out_len) {
     return scrypt_params_valid(n, r, p, out_len);
@@ -486,10 +526,15 @@ int rt_keyderive_scrypt_params_supported(uint64_t n, uint32_t r, uint32_t p, siz
 ///          Traps on invalid buffers, invalid parameter sets (per
 ///          scrypt_params_valid), or allocation failure. Sensitive scratch
 ///          is zeroed before return.
-/// @param password,password_len Caller-borrowed password bytes.
-/// @param salt,salt_len         Caller-borrowed salt bytes.
-/// @param n,r,p                 scrypt cost parameters.
-/// @param out,out_len           Output buffer; out_len bytes written on success.
+/// @param password Borrowed password bytes; may be null only when length is zero.
+/// @param password_len Number of password bytes.
+/// @param salt Borrowed salt bytes; may be null only when length is zero.
+/// @param salt_len Number of salt bytes.
+/// @param n Power-of-two ROMix work factor.
+/// @param r Block-size parameter.
+/// @param p Parallelization parameter.
+/// @param out Writable derived-key buffer.
+/// @param out_len Number of output bytes to produce.
 void rt_keyderive_scrypt_sha256_raw(const uint8_t *password,
                                     size_t password_len,
                                     const uint8_t *salt,
@@ -656,6 +701,13 @@ rt_string rt_keyderive_pbkdf2_sha256_str(rt_string password,
 ///          caller learns about misconfiguration immediately rather than
 ///          getting silent clamping. On success, fills @p n / @p r / @p p
 ///          with the validated native-typed values.
+/// @param n64 Signed public ROMix work factor.
+/// @param r64 Signed public block-size parameter.
+/// @param p64 Signed public parallelization parameter.
+/// @param key_len Requested output length in bytes.
+/// @param n Non-null output receiving validated @p n64.
+/// @param r Non-null output receiving validated @p r64.
+/// @param p Non-null output receiving validated @p p64.
 /// @return 1 when parameters were valid, 0 after a recoverable validation trap.
 static int validate_public_scrypt_params(
     int64_t n64, int64_t r64, int64_t p64, int64_t key_len, uint64_t *n, uint32_t *r, uint32_t *p) {
@@ -737,8 +789,16 @@ void *rt_keyderive_scrypt_sha256(
 ///          bytes hex-encoded as an rt_string for portability (e.g.
 ///          embedding in JSON config or comparing as a string). All
 ///          parameter rules (positive cost values, salt non-empty,
-///          key_len in 1..1024) are identical.
-/// @return Lowercase-hex rt_string of the derived key bytes.
+///          key_len in 1..1024) are identical. Approved crypto mode disables
+///          scrypt and traps.
+/// @param password Borrowed non-null password string; empty is permitted.
+/// @param salt Borrowed non-empty Bytes salt.
+/// @param n64 Power-of-two ROMix work factor.
+/// @param r64 Positive block-size parameter.
+/// @param p64 Positive parallelization parameter.
+/// @param key_len Output length in bytes from 1 through 1024.
+/// @return Newly allocated lowercase hexadecimal key owned by the caller, or
+///         an empty fallback string after a trapped error.
 rt_string rt_keyderive_scrypt_sha256_str(
     rt_string password, void *salt, int64_t n64, int64_t r64, int64_t p64, int64_t key_len) {
     if (!rt_crypto_module_service_allowed(RT_CRYPTO_SERVICE_SCRYPT)) {

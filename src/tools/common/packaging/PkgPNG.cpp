@@ -24,6 +24,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements bounded PNG decoding, RGBA encoding, and bilinear resizing.
+/// @details Validates chunk order/checksums and zlib framing, supports the five
+///          filters and Adam7, and normalizes decoded pixels to owned RGBA storage.
+
 #include "PkgPNG.hpp"
 #include "PkgDeflate.hpp"
 #include "PkgUtils.hpp"
@@ -52,12 +57,16 @@ static const uint8_t kPNGSignature[8] = {137, 80, 78, 71, 13, 10, 26, 10};
 
 /// @brief Read a big-endian uint32_t from an arbitrary (possibly unaligned) byte pointer.
 /// PNG uses network byte order (big-endian) for all multi-byte fields.
+/// @param p Address of at least four readable bytes.
+/// @return Decoded 32-bit value.
 static uint32_t readBE32(const uint8_t *p) {
     return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
            (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
 }
 
 /// @brief Write a big-endian uint32_t to an arbitrary (possibly unaligned) byte pointer.
+/// @param p Address of at least four writable bytes.
+/// @param v Value to encode.
 static void writeBE32(uint8_t *p, uint32_t v) {
     p[0] = static_cast<uint8_t>((v >> 24) & 0xFF);
     p[1] = static_cast<uint8_t>((v >> 16) & 0xFF);
@@ -66,11 +75,18 @@ static void writeBE32(uint8_t *p, uint32_t v) {
 }
 
 /// @brief PNG CRC-32 over type + data bytes
+/// @param data Chunk type followed by chunk payload bytes.
+/// @param len Number of bytes included in the checksum.
+/// @return PNG CRC-32 value.
 static uint32_t pngCRC(const uint8_t *data, size_t len) {
     return rt_crc32_compute(data, len);
 }
 
 /// @brief Paeth predictor (RFC 2083)
+/// @param a Reconstructed byte immediately to the left.
+/// @param b Reconstructed byte immediately above.
+/// @param c Reconstructed byte diagonally above-left.
+/// @return Neighbor closest to the linear predictor `a + b - c`.
 static uint8_t paethPredict(uint8_t a, uint8_t b, uint8_t c) {
     int p = static_cast<int>(a) + static_cast<int>(b) - static_cast<int>(c);
     int pa = p > static_cast<int>(a) ? p - static_cast<int>(a) : static_cast<int>(a) - p;
@@ -84,6 +100,9 @@ static uint8_t paethPredict(uint8_t a, uint8_t b, uint8_t c) {
 }
 
 /// @brief Compute Adler-32 checksum
+/// @param data Input bytes.
+/// @param len Input length.
+/// @return Adler-32 checksum used by zlib framing.
 static uint32_t adler32(const uint8_t *data, size_t len) {
     uint32_t a = 1, b = 0;
     for (size_t i = 0; i < len; i++) {
@@ -98,10 +117,21 @@ static constexpr size_t kMaxDecodedPngBytes = 256u * 1024u * 1024u;
 /// @brief Return the exact decompressed scanline byte count for an 8-bit PNG image.
 /// @details Includes each scanline's leading filter byte. Handles both non-interlaced and Adam7
 /// interlaced layouts and rejects any size that would exceed the package image cap.
+/// @param width Image width in pixels.
+/// @param height Image height in pixels.
+/// @param channels Decoded source channels per pixel.
+/// @param interlaceMethod Zero for sequential rows or one for Adam7 passes.
+/// @return Exact raw zlib payload length expected after decompression.
+/// @throws PNGError If dimensions overflow or exceed the 256 MiB image cap.
 static size_t expectedPngRawBytes(uint32_t width,
                                   uint32_t height,
                                   int channels,
                                   uint8_t interlaceMethod) {
+    /// @brief Compute one filtered PNG row's checked byte count.
+    /// @param rowWidth Row width in pixels.
+    /// @param rowChannels Decoded channels per pixel.
+    /// @return Pixel bytes plus the leading filter byte.
+    /// @throws PNGError If the row exceeds the decoded-image budget.
     auto checkedRowBytes = [](uint32_t rowWidth, int rowChannels) -> size_t {
         const size_t pixelBytes = static_cast<size_t>(rowWidth) * static_cast<size_t>(rowChannels);
         if (pixelBytes > kMaxDecodedPngBytes - 1)
@@ -146,6 +176,11 @@ static size_t expectedPngRawBytes(uint32_t width,
 /// scanlines with all five PNG filter types, handles both non-interlaced and
 /// Adam7-interlaced images, and converts any supported color type (grayscale,
 /// palette, RGB, grayscale-alpha, RGBA) to a packed RGBA output buffer.
+/// @param data Borrowed complete PNG file bytes.
+/// @param len Input length.
+/// @return Decoded dimensions and owned row-major RGBA pixels.
+/// @throws PNGError If framing, chunks, checksums, zlib data, filters, palette,
+///         transparency, dimensions, or pixel data are invalid.
 PkgImage pngReadMemory(const uint8_t *data, size_t len) {
     if (!data)
         throw PNGError("PNG: null input buffer");
@@ -309,6 +344,13 @@ PkgImage pngReadMemory(const uint8_t *data, size_t len) {
         throw PNGError("PNG: image data is too large");
     std::vector<uint8_t> img(stride * height);
 
+    /// @brief Reverse one PNG scanline filter into decoded pixel bytes.
+    /// @param filter PNG filter method numbered zero through four.
+    /// @param src Filtered source bytes for the row.
+    /// @param dst Destination row receiving reconstructed bytes.
+    /// @param prev Previous decoded row, or `nullptr` for the first row.
+    /// @param rowBytes Number of bytes to reconstruct.
+    /// @throws PNGError If `filter` is not a supported PNG filter method.
     auto unfilterRow = [&](uint8_t filter,
                            const uint8_t *src,
                            uint8_t *dst,
@@ -452,6 +494,9 @@ PkgImage pngReadMemory(const uint8_t *data, size_t len) {
 
 /// @brief Load a PNG file from disk and decode it via pngReadMemory.
 /// Rethrows PNGError as-is; wraps other I/O exceptions in a PNGError.
+/// @param path Input filesystem path.
+/// @return Decoded dimensions and owned RGBA pixels.
+/// @throws PNGError If file reading or PNG decoding fails.
 PkgImage pngRead(const std::string &path) {
     try {
         auto data = readFile(path);
@@ -468,6 +513,11 @@ PkgImage pngRead(const std::string &path) {
 //=============================================================================
 
 /// @brief Write a PNG chunk to a buffer.
+/// @param buf Destination PNG buffer.
+/// @param type Four-byte ASCII chunk type.
+/// @param data Optional chunk payload.
+/// @param len Payload length.
+/// @throws PNGError If `len` exceeds the 32-bit chunk length field.
 static void writeChunk(std::vector<uint8_t> &buf,
                        const char *type,
                        const uint8_t *data,
@@ -498,6 +548,10 @@ static void writeChunk(std::vector<uint8_t> &buf,
 /// @brief Encode a PkgImage as a PNG byte stream. Always writes RGBA (color_type=6) with
 /// filter=None on every scanline, then wraps the DEFLATE output in a zlib envelope
 /// (CMF=0x78, FLG=0x01, Adler-32) and emits IHDR/IDAT/IEND chunks.
+/// @param img Source dimensions and row-major RGBA pixels.
+/// @return Complete PNG file bytes.
+/// @throws PNGError If dimensions or pixel storage are invalid or exceed limits.
+/// @throws DeflateError If IDAT compression fails.
 std::vector<uint8_t> pngEncode(const PkgImage &img) {
     if (img.width == 0 || img.height == 0)
         throw PNGError("PNG: empty image");
@@ -559,6 +613,9 @@ std::vector<uint8_t> pngEncode(const PkgImage &img) {
 
 /// @brief Encode img as PNG via pngEncode and write the result to a file.
 /// Throws PNGError if the file cannot be created or the write fails.
+/// @param path Destination filesystem path.
+/// @param img Source dimensions and RGBA pixels.
+/// @throws PNGError If encoding or the atomic write fails.
 void pngWrite(const std::string &path, const PkgImage &img) {
     try {
         writeFileAtomic(path, pngEncode(img));
@@ -576,6 +633,11 @@ void pngWrite(const std::string &path, const PkgImage &img) {
 /// source pixels (top-left, top-right, bottom-left, bottom-right), with
 /// 8-bit fractional coordinates scaled by 256 to avoid floating-point math.
 /// Edge pixels clamp rather than wrap.
+/// @param src Source dimensions and row-major RGBA pixels.
+/// @param newWidth Requested output width; zero is normalized to one.
+/// @param newHeight Requested output height; zero is normalized to one.
+/// @return Resized owned RGBA image, or transparent pixels for an empty source.
+/// @throws PNGError If source storage is inconsistent or output dimensions exceed limits.
 PkgImage imageResize(const PkgImage &src, uint32_t newWidth, uint32_t newHeight) {
     if (newWidth == 0)
         newWidth = 1;

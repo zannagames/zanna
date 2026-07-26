@@ -21,6 +21,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_smtp.c
+ * @brief Implements a strict, cancellation-aware SMTP client with optional TLS.
+ * @details Each serialized send performs bounded SMTP reply parsing, EHLO,
+ *          optional implicit TLS or STARTTLS, optional AUTH LOGIN, envelope
+ *          submission, and streamed MIME DATA. Native synchronization exposes
+ *          active transport state to Close so blocking work can be cancelled
+ *          without leaking sockets, sessions, or credential material.
+ */
+
 // Feature-test macros must appear before every system header. They are benign
 // on non-POSIX toolchains and avoid raw OS-condition checks in this module.
 #ifndef _DARWIN_C_SOURCE
@@ -237,8 +247,11 @@ static void smtp_free_secret(char *secret) {
 static void smtp_close_transport(rt_smtp_impl *s);
 static void smtp_release_managed(void *object);
 
-/// @brief GC finalizer: tear down TLS session (if any), close + release the TCP socket, and free
-/// all heap-owned strings (host, credentials, last error).
+/// @brief Finalize an SMTP client and all native resources it owns.
+/// @details Detaches and closes TLS/TCP transport state, releases the host and
+///          diagnostic, securely erases credentials, and destroys each
+///          initialized mutex.
+/// @param obj SMTP client allocation being finalized, or NULL.
 static void rt_smtp_finalize(void *obj) {
     if (!obj)
         return;
@@ -284,6 +297,9 @@ static void set_error(rt_smtp_impl *s, const char *msg) {
 }
 
 /// @brief Drop the cached last-error so a successful call doesn't leak a stale prior failure.
+/// @details The pointer is detached under the state mutex and released after
+///          unlocking.
+/// @param s Initialized SMTP client; NULL is a no-op.
 static void clear_error(rt_smtp_impl *s) {
     if (!s)
         return;
@@ -295,8 +311,12 @@ static void clear_error(rt_smtp_impl *s) {
     free(old_error);
 }
 
-/// @brief Tear down whichever transport is active (TLS or plain TCP). Idempotent and ordering-safe:
-/// closes TLS first because a STARTTLS upgrade may have already detached the underlying socket.
+/// @brief Tear down whichever SMTP transport is currently published.
+/// @details TLS and TCP owners are atomically detached with read-ahead state
+///          reset, then closed outside the mutex. TLS is closed first because a
+///          STARTTLS session may already own the detached socket. The operation
+///          is idempotent.
+/// @param s SMTP client whose transport is consumed; NULL is a no-op.
 static void smtp_close_transport(rt_smtp_impl *s) {
     if (!s)
         return;
@@ -454,6 +474,9 @@ static int smtp_set_transport_timeouts(rt_smtp_impl *s, int timeout_ms) {
 /// @brief Loop-write bytes through TLS or the published plain socket.
 /// @details Short native timeouts are retried within one logical deadline and
 ///          cancellation is checked between every slice.
+/// @param s Active SMTP client with a published transport.
+/// @param data Byte span to transmit.
+/// @param len Number of bytes to send.
 /// @return Zero on cancellation, timeout, partial write, or error; one on success.
 static int smtp_transport_send_all(rt_smtp_impl *s, const void *data, size_t len) {
     if (smtp_operation_cancelled(s))
@@ -501,6 +524,11 @@ static int smtp_transport_send_all(rt_smtp_impl *s, const void *data, size_t len
 /// @brief Read native bytes directly from the active TLS or TCP transport.
 /// @details The plain path bypasses managed Bytes allocation. Both paths retry
 ///          short native timeout slices within the logical operation deadline.
+/// @param s Active SMTP client with a published transport.
+/// @param buffer Destination byte buffer.
+/// @param len Maximum bytes to read.
+/// @return Positive byte count, zero for closure or absent transport, or -1 on
+///         cancellation, timeout, or transport failure.
 static long smtp_transport_read(rt_smtp_impl *s, void *buffer, size_t len) {
     int64_t deadline_us = smtp_io_deadline_us();
     if (smtp_io_should_stop(s, deadline_us))
@@ -621,6 +649,9 @@ static int smtp_validate_mailbox_path(const char *value, size_t len) {
     return 1;
 }
 
+/// @brief Validate a fixed NUL-terminated value for SMTP command/header use.
+/// @param value Nonempty candidate string.
+/// @return One when the value contains no CR, LF, or DEL bytes; otherwise zero.
 static int smtp_header_value_is_command_safe(const char *value) {
     if (!value || !*value)
         return 0;
@@ -753,12 +784,14 @@ static int smtp_output_append_body(rt_smtp_impl *s,
     return smtp_output_append(s, output, ".\r\n", 3u) && smtp_output_flush(s, output);
 }
 
-/// @brief Send an SMTP command (or just read, if `cmd == NULL`) and return the response code.
-/// Handles **multi-line responses** (lines beginning `XXX-` are intermediate; the final line
-/// uses `XXX `, no dash). When `expected_code > 0`, mismatching codes are turned into a
-/// formatted error in `last_error` and the call returns -1.
+/// @brief Observe one validated line of a complete SMTP response.
+/// @param line Borrowed NUL-terminated response line without CRLF.
+/// @param ctx Opaque callback context supplied to the command reader.
 typedef void (*smtp_line_callback_t)(const char *line, void *ctx);
 
+/// @brief Parse the status code and continuation separator of an SMTP reply.
+/// @param line NUL-terminated reply line without CRLF.
+/// @return Status in 100..599 for a syntactically valid line; otherwise -1.
 static int smtp_parse_response_code(const char *line) {
     if (!line || strlen(line) < 4)
         return -1;
@@ -842,6 +875,11 @@ static int smtp_command_ex(rt_smtp_impl *s,
     return code;
 }
 
+/// @brief Send an SMTP command and consume its reply without a line callback.
+/// @param s Live active-operation client.
+/// @param cmd Command including CRLF, or NULL to read a pending reply.
+/// @param expected_code Required reply code, or zero to accept any valid code.
+/// @return Reply code, or -1 with LastError populated.
 static int smtp_command(rt_smtp_impl *s, const char *cmd, int expected_code) {
     return smtp_command_ex(s, cmd, expected_code, NULL, NULL);
 }
@@ -898,6 +936,11 @@ static int smtp_send_base64_line(rt_smtp_impl *s, const char *plain, int expecte
     return response;
 }
 
+/// @brief Accumulate supported SMTP extensions from one validated EHLO line.
+/// @details Recognizes exact STARTTLS and AUTH LOGIN tokens using
+///          locale-independent ASCII case folding.
+/// @param line Reply line including its three-digit status prefix.
+/// @param ctx Mutable @ref smtp_caps_t accumulator.
 static void smtp_parse_ehlo_caps_line(const char *line, void *ctx) {
     smtp_caps_t *caps = (smtp_caps_t *)ctx;
     const char *value = line;
@@ -1099,10 +1142,15 @@ static int smtp_host_is_valid(const char *host,
     return 1;
 }
 
-/// @brief Construct an SMTP client targeting `(host, port)`. Port 465 implicitly enables TLS;
-/// other ports default to plain TCP (call `rt_smtp_set_tls(true)` to upgrade via STARTTLS).
-/// Validates host and port (1–65535) up front and traps via `rt_trap` on bad inputs / OOM.
-/// Returns a GC-managed handle wired to `rt_smtp_finalize`.
+/// @brief Construct a managed SMTP client for a validated host and port.
+/// @details Bracketed IPv6 is normalized to its literal contents. Port 465
+///          enables implicit TLS; other ports default to plaintext until
+///          STARTTLS is enabled. Both mutexes and copied host storage are built
+///          transactionally before the object is returned.
+/// @param host DNS name, numeric address, or bracketed IPv6 literal without
+///        embedded NUL.
+/// @param port Destination port in 1..65535.
+/// @return Caller-owned managed SMTP client, or NULL after a returning trap.
 void *rt_smtp_new(rt_string host, int64_t port) {
     const char *host_bytes = NULL;
     size_t host_len = 0;
@@ -1151,8 +1199,13 @@ void *rt_smtp_new(rt_string host, int64_t port) {
     return (void *)s;
 }
 
-/// @brief Cache username + password for AUTH LOGIN. Strings are duplicated so the caller can
-/// release the originals immediately. Setting either to NULL disables authentication.
+/// @brief Transactionally replace credentials used for AUTH LOGIN.
+/// @details Both values must be present or both NULL. Valid credentials are
+///          NUL-free and at most 16 KiB, copied before the serialized exchange,
+///          and securely erased when superseded. Two NULLs disable AUTH.
+/// @param obj SMTP client receiver; NULL is a no-op.
+/// @param username Username String, or NULL with @p password.
+/// @param password Password String, or NULL with @p username.
 void rt_smtp_set_auth(void *obj, rt_string username, rt_string password) {
     if (!obj)
         return;
@@ -1197,8 +1250,13 @@ void rt_smtp_set_auth(void *obj, rt_string username, rt_string password) {
     smtp_free_secret(old_password);
 }
 
-/// @brief Toggle TLS opportunistically. With `enable=1` and a non-465 port, the next send will
-/// issue STARTTLS after EHLO. With `enable=0`, the connection stays plain (insecure for auth!).
+/// @brief Configure encrypted transport for subsequent sends.
+/// @details Nonzero selects implicit TLS on port 465 or required STARTTLS on
+///          other ports. Zero selects plaintext, but configured credentials
+///          are still never transmitted without encryption. The update waits
+///          for any active send.
+/// @param obj SMTP client receiver; NULL is a no-op.
+/// @param enable Nonzero to enable TLS; zero to disable it.
 void rt_smtp_set_tls(void *obj, int8_t enable) {
     if (!obj)
         return;
@@ -1303,6 +1361,9 @@ static int smtp_upgrade_published_tcp_to_tls(rt_smtp_impl *s) {
 ///      (235). Each credential is encoded in bounded native storage that is
 ///      securely wiped before release.
 /// All steps populate `last_error` on failure and return -1; success returns 0.
+/// @param s Active serialized SMTP client with immutable configuration.
+/// @return Zero after a complete greeting, upgrade, and authentication;
+///         otherwise -1 with LastError populated.
 static int smtp_connect_and_handshake(rt_smtp_impl *s) {
     smtp_caps_t caps = {0, 0};
     smtp_close_transport(s);
@@ -1629,6 +1690,11 @@ static void *smtp_send_result_common(void *obj,
 /// @brief Send one plain UTF-8 message on a fresh serialized SMTP session.
 /// @details The transport is always closed after the attempt. Concurrent sends
 ///          wait in call order, and a concurrent Close interrupts active I/O.
+/// @param obj SMTP client receiver; NULL yields zero.
+/// @param from Validated sender mailbox String.
+/// @param to Validated recipient mailbox String.
+/// @param subject Optional subject; NULL means empty.
+/// @param body Optional plain-text body; NULL means empty.
 /// @return One after the server accepts DATA; zero for protocol/network failure.
 int8_t rt_smtp_send(void *obj, rt_string from, rt_string to, rt_string subject, rt_string body) {
     return smtp_send_common(
@@ -1651,6 +1717,11 @@ void *rt_smtp_send_result(
 /// @brief Send one HTML UTF-8 message on a fresh serialized SMTP session.
 /// @details Header injection and body framing receive the same treatment as
 ///          plain text. HTML escaping remains the caller's responsibility.
+/// @param obj SMTP client receiver; NULL yields zero.
+/// @param from Validated sender mailbox String.
+/// @param to Validated recipient mailbox String.
+/// @param subject Optional subject; NULL means empty.
+/// @param html_body Optional HTML body; NULL means empty.
 /// @return One after the server accepts DATA; zero for protocol/network failure.
 int8_t rt_smtp_send_html(
     void *obj, rt_string from, rt_string to, rt_string subject, rt_string html_body) {

@@ -24,6 +24,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements app-scheduled GUI video playback and transport controls.
+ *
+ * @details Managed wrappers own VideoPlayer instances and reusable RGBA
+ *          conversion storage, coordinate manual and automatic updates by app
+ *          generation, atomically upload decoded frames, drive controls and
+ *          fullscreen state, and expose independent saturating media-event
+ *          counters plus diagnostics.
+ */
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_videowidget.h"
@@ -39,86 +50,151 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @copydoc rt_obj_new_i64()
 extern void *rt_obj_new_i64(int64_t class_id, int64_t byte_size);
+/// @copydoc rt_obj_set_finalizer()
 extern void rt_obj_set_finalizer(void *obj, void (*fn)(void *));
+/// @copydoc rt_obj_release_check0()
 extern int rt_obj_release_check0(void *obj);
+/// @copydoc rt_obj_free()
 extern void rt_obj_free(void *obj);
 
 /* GUI parent validation shim implemented by rt_gui_widgets.c. Kept as a
  * single external dependency so isolated VideoWidget contract tests can stub
  * the runtime GUI layer without linking all widget/app objects. */
+/// @copydoc rt_gui_widget_parent_container_checked()
 extern void *rt_gui_widget_parent_container_checked(void *handle);
+/// @copydoc rt_gui_widget_owner_app()
 extern void *rt_gui_widget_owner_app(void *handle);
+/// @copydoc rt_gui_app_frame_generation_for_owner()
 extern uint64_t rt_gui_app_frame_generation_for_owner(void *app);
+/// @copydoc rt_gui_image_try_set_rgba_bytes()
 extern int rt_gui_image_try_set_rgba_bytes(void *image,
                                            const uint8_t *rgba,
                                            int64_t width,
                                            int64_t height);
 
-/* VideoPlayer functions */
+/// @copydoc rt_videoplayer_open()
 extern void *rt_videoplayer_open(rt_string path);
+/// @copydoc rt_videoplayer_play()
 extern void rt_videoplayer_play(void *vp);
+/// @copydoc rt_videoplayer_pause()
 extern void rt_videoplayer_pause(void *vp);
+/// @copydoc rt_videoplayer_stop()
 extern void rt_videoplayer_stop(void *vp);
+/// @copydoc rt_videoplayer_update()
 extern void rt_videoplayer_update(void *vp, double dt);
+/// @copydoc rt_videoplayer_seek()
 extern void rt_videoplayer_seek(void *vp, double seconds);
+/// @copydoc rt_videoplayer_set_volume()
 extern void rt_videoplayer_set_volume(void *vp, double vol);
+/// @copydoc rt_videoplayer_get_width()
 extern int64_t rt_videoplayer_get_width(void *vp);
+/// @copydoc rt_videoplayer_get_height()
 extern int64_t rt_videoplayer_get_height(void *vp);
+/// @copydoc rt_videoplayer_get_duration()
 extern double rt_videoplayer_get_duration(void *vp);
+/// @copydoc rt_videoplayer_get_position()
 extern double rt_videoplayer_get_position(void *vp);
+/// @copydoc rt_videoplayer_get_is_playing()
 extern int64_t rt_videoplayer_get_is_playing(void *vp);
+/// @copydoc rt_videoplayer_get_frame()
 extern void *rt_videoplayer_get_frame(void *vp);
 
+/// @brief Managed VideoWidget controller, retained subtree, and playback state.
 typedef struct {
+    /// @brief Live-wrapper authentication value.
     uint64_t magic;
+    /// @brief Reserved runtime virtual-table slot.
     void *vptr;
     /* Owned components */
+    /// @brief Owned VideoPlayer.
     void *player;          /* rt_videoplayer */
+    /// @brief Retained root VBox attached to the parent.
     void *root_widget;     /* VBox container attached to parent */
+    /// @brief Image widget displaying decoded frames.
     void *image_widget;    /* vg_image_t for video display */
+    /// @brief HBox containing transport controls.
     void *controls_widget; /* HBox container for transport controls */
+    /// @brief Borrowed Play button in the owned subtree.
     void *play_button;
+    /// @brief Borrowed Pause button in the owned subtree.
     void *pause_button;
+    /// @brief Borrowed Stop button in the owned subtree.
     void *stop_button;
+    /// @brief Borrowed normalized timeline slider.
     void *position_slider;
+    /// @brief Borrowed owning GUI application.
     void *owner_app; /* borrowed rt_gui_app_t */
+    /// @brief Owned reusable frame-conversion buffer.
     uint8_t *rgba_scratch;
+    /// @brief Allocated bytes in @ref rgba_scratch.
     size_t rgba_scratch_capacity;
+    /// @brief Borrowed most recently uploaded frame identity.
     const void *last_frame;
+    /// @brief Borrowed stable current diagnostic literal.
     const char *error; /* borrowed stable diagnostic literal */
     /* Config */
+    /// @brief Requested transport-control visibility.
     int8_t show_controls;
+    /// @brief Whether natural end restarts playback.
     int8_t looping;
+    /// @brief Whether the app scheduler drives updates.
     int8_t auto_update;
+    /// @brief Whether controls hide during playback idle time.
     int8_t controls_auto_hide;
+    /// @brief Current transient automatic-hide state.
     int8_t controls_hidden_by_auto;
+    /// @brief Current playing-without-frame state.
     int8_t buffering;
+    /// @brief Whether the natural end is currently latched.
     int8_t at_end;
+    /// @brief Whether the current failure episode emitted an edge.
     int8_t failure_latched;
+    /// @brief Manual update awaiting generation reconciliation.
     int8_t manual_update_pending;
+    /// @brief Normalized audio gain.
     double volume;
+    /// @brief Last timeline value synchronized with playback.
     double slider_last_value;
+    /// @brief Continuous playback time since control activity.
     double controls_idle_seconds;
+    /// @brief Position associated with @ref last_frame.
     double last_uploaded_position;
     /* Cached dimensions */
+    /// @brief Cached decoded frame width.
     int32_t video_width;
+    /// @brief Cached decoded frame height.
     int32_t video_height;
+    /// @brief Saturating non-consuming state revision.
     uint64_t revision;
+    /// @brief Unconsumed successful-load edges.
     uint64_t loaded_edges;
+    /// @brief Unconsumed frame-failure edges.
     uint64_t failed_edges;
+    /// @brief Unconsumed buffering-transition edges.
     uint64_t buffering_changed_edges;
+    /// @brief Unconsumed natural-end edges.
     uint64_t ended_edges;
+    /// @brief Unconsumed user-seek edges.
     uint64_t seeked_edges;
+    /// @brief Last app generation processed automatically.
     uint64_t last_auto_generation;
 } rt_videowidget;
 
+/// @brief Release controller resources and optionally destroy its retained subtree.
+/// @param w Candidate VideoWidget wrapper.
+/// @param destroy_widget_tree Nonzero to destroy the root widget hierarchy.
 static void videowidget_dispose(rt_videowidget *w, int destroy_widget_tree);
 
+/// @brief Magic value authenticating live VideoWidget wrappers.
 #define RT_VIDEOWIDGET_MAGIC UINT64_C(0x5254564944454F57)
 
+/// @brief Global registry authenticating opaque VideoWidget handles.
 static rt_videowidget **s_videowidget_wrappers = NULL;
+/// @brief Number of live registered VideoWidget wrappers.
 static size_t s_videowidget_wrapper_count = 0;
+/// @brief Allocated wrapper-registry capacity.
 static size_t s_videowidget_wrapper_cap = 0;
 
 /// @brief Record a wrapper in the global VideoWidget registry (idempotent).

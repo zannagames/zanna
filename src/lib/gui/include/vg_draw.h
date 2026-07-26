@@ -58,8 +58,10 @@ extern "C" {
 ///          exactly once (no double-blend seams). A radius <= 0 degenerates to
 ///          a plain filled rectangle. The radius is clamped to min(w,h)/2.
 /// @param win    Target window.
-/// @param x,y    Top-left corner.
-/// @param w,h    Size in pixels.
+/// @param x Left coordinate of the rectangle.
+/// @param y Top coordinate of the rectangle.
+/// @param w Rectangle width in pixels.
+/// @param h Rectangle height in pixels.
 /// @param radius Corner radius in pixels.
 /// @param rgb    Fill colour (0x00RRGGBB).
 void vg_draw_round_rect_fill(vgfx_window_t win, float x, float y, float w, float h, float radius,
@@ -70,7 +72,10 @@ void vg_draw_round_rect_fill(vgfx_window_t win, float x, float y, float w, float
 ///          matches vg_draw_round_rect_fill. Straight edges are crisp; corners
 ///          are anti-aliased rings. A radius <= 0 strokes a plain rectangle.
 /// @param win      Target window.
-/// @param x,y,w,h  Rectangle bounds.
+/// @param x Left coordinate of the rectangle.
+/// @param y Top coordinate of the rectangle.
+/// @param w Rectangle width in pixels.
+/// @param h Rectangle height in pixels.
 /// @param radius   Corner radius in pixels.
 /// @param stroke_w Stroke width in pixels (clamped to >= 1).
 /// @param rgb      Stroke colour (0x00RRGGBB).
@@ -79,14 +84,16 @@ void vg_draw_round_rect_stroke(vgfx_window_t win, float x, float y, float w, flo
 
 /// @brief Fill an anti-aliased disc (solid circle).
 /// @param win   Target window.
-/// @param cx,cy Centre (may be fractional for smooth positioning).
+/// @param cx Horizontal center coordinate.
+/// @param cy Vertical center coordinate; fractional values enable smooth positioning.
 /// @param r     Radius in pixels.
 /// @param rgb   Fill colour (0x00RRGGBB).
 void vg_draw_disc_fill(vgfx_window_t win, float cx, float cy, float r, uint32_t rgb);
 
 /// @brief Stroke an anti-aliased circle outline.
 /// @param win      Target window.
-/// @param cx,cy    Centre.
+/// @param cx Horizontal center coordinate.
+/// @param cy Vertical center coordinate.
 /// @param r        Radius in pixels (outer edge of the stroke).
 /// @param stroke_w Stroke width in pixels (clamped to >= 1).
 /// @param rgb      Stroke colour (0x00RRGGBB).
@@ -95,8 +102,10 @@ void vg_draw_circle_stroke(vgfx_window_t win, float cx, float cy, float r, float
 
 /// @brief Draw an anti-aliased line segment with round caps.
 /// @param win      Target window.
-/// @param x0,y0    Start point.
-/// @param x1,y1    End point.
+/// @param x0 Start-point X coordinate.
+/// @param y0 Start-point Y coordinate.
+/// @param x1 End-point X coordinate.
+/// @param y1 End-point Y coordinate.
 /// @param stroke_w Line thickness in pixels (clamped to >= 1).
 /// @param rgb      Line colour (0x00RRGGBB).
 void vg_draw_line_aa(vgfx_window_t win, float x0, float y0, float x1, float y1, float stroke_w,
@@ -113,10 +122,14 @@ void vg_draw_line_aa(vgfx_window_t win, float x0, float y0, float x1, float y1, 
 ///          (w, h, radius, blur) so repeated frames and position-only moves are
 ///          cheap. Call this BEFORE painting the surface it sits under.
 /// @param win        Target window.
-/// @param x,y,w,h    Bounds of the surface casting the shadow.
+/// @param x Left coordinate of the casting surface.
+/// @param y Top coordinate of the casting surface.
+/// @param w Casting-surface width.
+/// @param h Casting-surface height.
 /// @param radius     Corner radius of the silhouette.
 /// @param blur       Blur radius in pixels (<= 0 draws nothing).
-/// @param dx,dy      Shadow offset in pixels.
+/// @param dx Horizontal shadow offset in pixels.
+/// @param dy Vertical shadow offset in pixels.
 /// @param alpha      Peak shadow opacity (0-255).
 /// @param shadow_rgb Shadow colour (0x00RRGGBB), usually near-black.
 void vg_draw_round_rect_shadow(vgfx_window_t win, float x, float y, float w, float h, float radius,
@@ -127,7 +140,10 @@ void vg_draw_round_rect_shadow(vgfx_window_t win, float x, float y, float w, flo
 ///          for the subtle "raised" sheen on buttons and cards; pass two close
 ///          colours for a refined effect (see vg_gradient_theme strength).
 /// @param win        Target window.
-/// @param x,y,w,h    Rectangle bounds.
+/// @param x Left coordinate of the rectangle.
+/// @param y Top coordinate of the rectangle.
+/// @param w Rectangle width.
+/// @param h Rectangle height.
 /// @param radius     Corner radius in pixels.
 /// @param top_rgb    Colour at the top edge (0x00RRGGBB).
 /// @param bottom_rgb Colour at the bottom edge (0x00RRGGBB).
@@ -137,7 +153,8 @@ void vg_draw_round_rect_gradient_v(vgfx_window_t win, float x, float y, float w,
 /// @brief Draw a 1px inner highlight along the top edge between the corners.
 /// @details The classic "light from above" cue. Pass a lightened surface colour.
 /// @param win    Target window.
-/// @param x,y    Top-left of the surface.
+/// @param x Left coordinate of the surface.
+/// @param y Top coordinate of the surface.
 /// @param w      Surface width.
 /// @param radius Corner radius (the highlight spans between the corner arcs).
 /// @param rgb    Highlight colour (0x00RRGGBB).

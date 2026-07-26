@@ -14,6 +14,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares configurable resource budgets for textual IL parsing.
+ *
+ * @details The limits bound physical input size and the amount of IR one parse
+ *          may create, protecting callers from unbounded allocation or work on
+ *          untrusted text. Defaults accommodate generated compiler output;
+ *          callers can copy the value and tighten individual dimensions.
+ */
+
 #pragma once
 
 #include <cstddef>
@@ -26,23 +36,23 @@ namespace il::io {
 ///          diagnostic. Callers may copy and adjust this value to tighten
 ///          budgets for untrusted input.
 struct ParserLimits {
-    /// Maximum bytes retained from a single physical input line.
+    /// @brief Maximum bytes retained from a single physical input line.
     std::size_t maxLineBytes{1U << 20};
-    /// Maximum number of physical lines consumed from the stream.
+    /// @brief Maximum number of physical lines consumed from the stream.
     std::size_t maxLines{1'000'000};
-    /// Maximum total function definitions in the destination module.
+    /// @brief Maximum total function definitions in the destination module.
     std::size_t maxFunctions{100'000};
-    /// Maximum total external declarations in the destination module.
+    /// @brief Maximum total external declarations in the destination module.
     std::size_t maxExterns{100'000};
-    /// Maximum total global declarations in the destination module.
+    /// @brief Maximum total global declarations in the destination module.
     std::size_t maxGlobals{100'000};
-    /// Maximum total basic blocks across all functions.
+    /// @brief Maximum total basic blocks across all functions.
     std::size_t maxBlocks{1'000'000};
-    /// Maximum total instructions across all basic blocks.
+    /// @brief Maximum total instructions across all basic blocks.
     std::size_t maxInstructions{10'000'000};
-    /// Maximum comma-separated value operands accepted by one instruction.
+    /// @brief Maximum comma-separated value operands accepted by one instruction.
     std::size_t maxValuesPerInstruction{65'535};
-    /// Maximum distinct temporary identifiers permitted in one function.
+    /// @brief Maximum distinct temporary identifiers permitted in one function.
     std::size_t maxTempsPerFunction{10'000'000};
 };
 

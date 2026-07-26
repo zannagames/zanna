@@ -27,6 +27,14 @@
 //        src/runtime/io/rt_dir_internal.h
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares cross-platform directory mutation and enumeration APIs.
+ * @details Exposes existence, creation, recursive and empty removal,
+ * immediate-child listings, bounded resumable pages, current-directory
+ * control, and renaming. Returned collections and strings are fresh managed
+ * objects and filesystem failures follow each function's stated trap policy.
+ */
 #pragma once
 
 #include "rt_string.h"

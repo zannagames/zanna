@@ -269,6 +269,9 @@ ExprPtr Parser::parseAssignment() {
 
     // Compound assignment operators: +=, -=, *=, /=, %=
     // Desugar: a += b  ->  a = a + b
+    /// @brief Maps a compound-assignment token to its binary operation.
+    /// @param tk Compound-assignment token kind.
+    /// @return Corresponding binary operator.
     auto compoundOp = [&](TokenKind tk) -> BinaryOp {
         switch (tk) {
             case TokenKind::PlusEqual:

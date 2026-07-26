@@ -29,6 +29,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_xml.c
+ * @brief Implements XML document parsing, formatting, and node navigation.
+ * @details The parser constructs managed element, text, comment, and CDATA
+ *          nodes with owned attribute Maps and child sequences, records
+ *          thread-local syntax diagnostics, and supports compact or pretty
+ *          serialization plus tag, attribute, child, and text operations.
+ */
+
 #include "rt_xml.h"
 
 #include "rt_map.h"
@@ -57,6 +66,7 @@
 static _Thread_local char xml_last_error[256] = {0};
 
 /// @brief Release a temporary runtime object after another owner has retained it.
+/// @param obj Runtime-managed object reference; null is ignored.
 static void xml_release_temp_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
@@ -143,6 +153,7 @@ static int xml_optional_string_view(rt_string text, const char **out_cstr, size_
 /// Subsequent calls overwrite. The error survives until `clear_error`
 /// or the next failed parse on this thread, and is exposed via
 /// `rt_xml_error()`.
+/// @param msg Required null-terminated diagnostic text.
 static void set_error(const char *msg) {
     strncpy(xml_last_error, msg, sizeof(xml_last_error) - 1);
     xml_last_error[sizeof(xml_last_error) - 1] = '\0';
@@ -207,6 +218,7 @@ static int xml_traversal_stack_push(void ***stack_io,
 }
 
 /// @brief Return true if the thread-local error buffer is currently non-empty.
+/// @return Whether the current thread has a recorded XML error.
 static bool has_error(void) {
     return xml_last_error[0] != '\0';
 }
@@ -275,6 +287,7 @@ static bool xml_node_stack_push(xml_node_stack *stack, void *node, const char *a
 /// this node. Children are owned by their parent, so dropping the root
 /// cleans up the entire document.
 /// `parent` is a weak pointer and is intentionally not released.
+/// @param obj XML node being finalized; null is ignored.
 static void xml_node_finalizer(void *obj) {
     xml_node *node = (xml_node *)obj;
     if (!node)
@@ -383,6 +396,9 @@ typedef struct {
 // messages, and `depth` enforces a maximum nesting depth (S-17).
 
 /// @brief Initialize parser state at the beginning of `input`.
+/// @param p Parser state to initialize.
+/// @param input Borrowed XML byte buffer.
+/// @param len Number of input bytes.
 static void parser_init(xml_parser *p, const char *input, size_t len) {
     p->input = input;
     p->len = len;
@@ -393,11 +409,15 @@ static void parser_init(xml_parser *p, const char *input, size_t len) {
 }
 
 /// @brief True if the cursor is past the end of the input buffer.
+/// @param p Parser state to inspect.
+/// @return `true` when the byte cursor reached the input length.
 static bool parser_eof(xml_parser *p) {
     return p->pos >= p->len;
 }
 
 /// @brief Return the byte at the cursor without consuming it; '\\0' at EOF.
+/// @param p Parser state to inspect.
+/// @return Current byte, or the null sentinel at end-of-input.
 static char parser_peek(xml_parser *p) {
     if (p->pos >= p->len)
         return '\0';
@@ -408,6 +428,8 @@ static char parser_peek(xml_parser *p) {
 ///
 /// Returns '\\0' at EOF without advancing. Used by every consuming
 /// helper so the line/column stay accurate for error messages.
+/// @param p Parser state to advance.
+/// @return Consumed byte, or the null sentinel at end-of-input.
 static char parser_advance(xml_parser *p) {
     if (p->pos >= p->len)
         return '\0';
@@ -422,6 +444,7 @@ static char parser_advance(xml_parser *p) {
 }
 
 /// @brief Advance past any whitespace at the cursor.
+/// @param p Parser state to advance using C-library whitespace classification.
 static void parser_skip_ws(xml_parser *p) {
     while (!parser_eof(p) && isspace((unsigned char)parser_peek(p)))
         parser_advance(p);
@@ -432,6 +455,9 @@ static void parser_skip_ws(xml_parser *p) {
 /// Returns true and advances past `str` on match, false and leaves the
 /// cursor untouched otherwise. The piece-by-piece advance keeps the
 /// line/col counters in sync.
+/// @param p Parser state to inspect and conditionally advance.
+/// @param str Required null-terminated literal.
+/// @return `true` on a consumed match, otherwise `false`.
 static bool parser_match(xml_parser *p, const char *str) {
     size_t len = strlen(str);
     if (p->pos + len > p->len)
@@ -444,6 +470,9 @@ static bool parser_match(xml_parser *p, const char *str) {
 }
 
 /// @brief Like `parser_match` but does not consume on success.
+/// @param p Parser state to inspect.
+/// @param str Required null-terminated literal.
+/// @return `true` when @p str begins at the cursor.
 static bool parser_lookahead(xml_parser *p, const char *str) {
     size_t len = strlen(str);
     if (p->pos + len > p->len)
@@ -460,21 +489,26 @@ static bool parser_lookahead(xml_parser *p, const char *str) {
 /// ASCII names follow XML's letter / underscore / colon rule; non-ASCII bytes
 /// are accepted as part of UTF-8 names so documents using Unicode element and
 /// attribute names are not rejected by the byte-oriented parser.
+/// @param c Candidate first byte.
+/// @return Whether @p c is accepted at the start of a name.
 static bool is_name_start_char(char c) {
     unsigned char ch = (unsigned char)c;
     return ch >= 0x80 || isalpha(ch) || c == '_' || c == ':';
 }
 
 /// @brief Whether `c` may continue an XML name.
+/// @param c Candidate continuation byte.
+/// @return Whether @p c is accepted after the first name byte.
 static bool is_name_char(char c) {
     unsigned char ch = (unsigned char)c;
     return ch >= 0x80 || isalnum(ch) || c == '_' || c == ':' || c == '-' || c == '.';
 }
 
-/// @brief Return true if the null-terminated string `s` is a valid XML 1.0 name.
-///        ASCII syntax is checked byte-for-byte; UTF-8 non-ASCII bytes are allowed.
-
 /// @brief Return true if `name` (an `rt_string`) is a valid XML 1.0 element or attribute name.
+/// @details Scans the complete runtime byte length, so embedded null bytes are
+///          rejected. Non-ASCII UTF-8 bytes are accepted bytewise.
+/// @param name Borrowed runtime string to validate.
+/// @return Whether @p name satisfies the engine's XML-name rules.
 static bool is_valid_xml_name(rt_string name) {
     int64_t len = name ? rt_str_len(name) : 0;
     if (!name || len <= 0)
@@ -494,6 +528,10 @@ static bool is_valid_xml_name(rt_string name) {
 }
 
 /// @brief Return true if `needle` appears anywhere within the `len`-byte buffer `s`.
+/// @param s Haystack byte buffer.
+/// @param len Number of haystack bytes.
+/// @param needle Required nonempty null-terminated needle.
+/// @return Whether the needle occurs in the byte span.
 static bool contains_bytes_n(const char *s, size_t len, const char *needle) {
     if (!s || !needle)
         return false;
@@ -509,6 +547,9 @@ static bool contains_bytes_n(const char *s, size_t len, const char *needle) {
 
 /// @brief Return true if `s` contains any byte that is illegal in XML 1.0 character data.
 ///        Legal control characters are TAB (0x09), LF (0x0A), and CR (0x0D).
+/// @param s Byte buffer, or null only when @p len is zero.
+/// @param len Number of bytes to inspect.
+/// @return Whether an illegal C0 control byte is present.
 bool contains_invalid_xml_chars(const char *s, size_t len) {
     if (!s && len > 0)
         return true;
@@ -522,6 +563,8 @@ bool contains_invalid_xml_chars(const char *s, size_t len) {
 
 /// @brief Return true if every byte in `text` is a legal XML 1.0 character.
 ///        NULL is treated as an empty string (valid).
+/// @param text Borrowed runtime string, or null.
+/// @return Whether the byte content passes the XML character check.
 static bool is_valid_xml_string(rt_string text) {
     if (!text)
         return true;
@@ -533,6 +576,8 @@ static bool is_valid_xml_string(rt_string text) {
 
 /// @brief Return true if `codepoint` is a legal XML 1.0 character (per XML 1.0 §2.2).
 ///        Rejects surrogates (0xD800–0xDFFF) and the non-characters 0xFFFE and 0xFFFF.
+/// @param codepoint Unicode scalar candidate.
+/// @return Whether XML 1.0 permits the codepoint.
 static bool is_valid_xml_char(uint32_t codepoint) {
     return codepoint == 0x9 || codepoint == 0xA || codepoint == 0xD ||
            (codepoint >= 0x20 && codepoint <= 0xD7FF) ||
@@ -545,6 +590,8 @@ static bool is_valid_xml_char(uint32_t codepoint) {
 /// Reads from `pos` up to the first non-name byte. Returns NULL (and
 /// leaves the cursor untouched) if the first byte isn't a valid name
 /// start. The returned string is caller-owned.
+/// @param p Parser state positioned at a potential name.
+/// @return Newly allocated name string, or null without consuming when invalid.
 static rt_string parse_name(xml_parser *p) {
     size_t start = p->pos;
 
@@ -680,7 +727,11 @@ int decode_entity(const char *str, size_t len, char *out, size_t *consumed) {
 /// Accepts either single or double quotes (the opening quote determines
 /// the closing). Two-pass: first measures the decoded length so we can
 /// allocate exactly, then re-reads to fill the buffer. Returns NULL on
-/// allocation failure or unquoted input.
+/// allocation failure, unquoted input, malformed entities, forbidden
+/// characters, or an unterminated value. Parse failures set the thread-local
+/// XML error except for allocation failure and a missing opening quote.
+/// @param p Parser positioned at the opening quote.
+/// @return Newly allocated decoded value, or null on failure.
 static rt_string parse_attr_value(xml_parser *p) {
     char quote = parser_peek(p);
     if (quote != '"' && quote != '\'')
@@ -771,7 +822,11 @@ static rt_string parse_attr_value(xml_parser *p) {
 ///
 /// Same two-pass approach as `parse_attr_value`. Returns NULL when the
 /// segment is empty (the caller treats that as "no text node here").
-/// Whitespace-only text is filtered out one level up in `parse_node`.
+/// Whitespace-only content is preserved. Predefined and numeric entity
+/// references are decoded; malformed entities and forbidden XML control
+/// characters set the thread-local error.
+/// @param p Parser positioned at the first character-data byte.
+/// @return Newly allocated decoded text, or null for an empty segment or failure.
 static rt_string parse_text_content(xml_parser *p) {
     size_t start = p->pos;
 
@@ -848,7 +903,10 @@ static void *parse_node(xml_parser *p);
 /// @brief Parse a comment node `<!-- ... -->`.
 ///
 /// The body is captured verbatim (no entity decoding inside comments
-/// per XML 1.0). Reports an error if the closing `-->` is missing.
+/// per XML 1.0). Rejects a missing terminator, an internal `--`, a body
+/// ending in `-`, and forbidden XML control characters.
+/// @param p Parser positioned at the opening `<!--`.
+/// @return Newly allocated comment node, or null on mismatch or failure.
 static void *parse_comment(xml_parser *p) {
     if (!parser_match(p, "<!--"))
         return NULL;
@@ -890,7 +948,10 @@ static void *parse_comment(xml_parser *p) {
 ///
 /// CDATA preserves the body byte-for-byte (no entity decoding) — useful
 /// for embedding raw markup or scripts. Reports an error if the
-/// closing `]]>` is missing.
+/// closing `]]>` is missing or the body contains a forbidden XML control
+/// character.
+/// @param p Parser positioned at the opening `<![CDATA[`.
+/// @return Newly allocated CDATA node, or null on mismatch or failure.
 static void *parse_cdata(xml_parser *p) {
     if (!parser_match(p, "<![CDATA["))
         return NULL;
@@ -924,6 +985,8 @@ static void *parse_cdata(xml_parser *p) {
 /// We don't model PIs as nodes — they're typically just `<?xml ... ?>`
 /// declarations or stylesheet hints, neither of which the public API
 /// exposes. Returns false (after setting the error) on missing `?>`.
+/// @param p Parser positioned at the opening `<?`.
+/// @return `true` after consuming a complete instruction; otherwise `false`.
 static bool skip_processing_instruction(xml_parser *p) {
     if (!parser_match(p, "<?"))
         return false;
@@ -942,8 +1005,11 @@ static bool skip_processing_instruction(xml_parser *p) {
 /// @brief Skip past a DOCTYPE declaration `<!DOCTYPE ... >`.
 ///
 /// We don't validate against DTDs, so the contents are discarded.
-/// Tracks `<` / `>` nesting (using a depth counter) so internal
-/// subsets like `<!DOCTYPE foo [ ... ]>` are skipped correctly.
+/// Tracks the square-bracket depth and quoted spans so the terminating `>`
+/// of declarations with internal subsets is identified correctly. An
+/// unterminated declaration sets the thread-local XML error.
+/// @param p Parser positioned at a possible `<!DOCTYPE` declaration.
+/// @return `true` after consuming a complete declaration; otherwise `false`.
 static bool skip_doctype(xml_parser *p) {
     if (!parser_lookahead(p, "<!DOCTYPE"))
         return false;
@@ -994,6 +1060,8 @@ static bool skip_doctype(xml_parser *p) {
 /// blocks pathological recursion attacks). Verifies that the closing
 /// `</tag>` matches the opening tag and reports a precise mismatch
 /// error otherwise. Self-closing `<tag/>` is supported.
+/// @param p Parser positioned at the element's opening `<`.
+/// @return Newly allocated element subtree, or null with an error on failure.
 static void *parse_element(xml_parser *p) {
     /* S-17: Reject excessively nested documents */
     if (p->depth >= XML_MAX_DEPTH) {
@@ -1183,12 +1251,14 @@ static void *parse_element(xml_parser *p) {
 
 /// @brief Dispatch to the appropriate parse routine based on the cursor.
 ///
-/// Skips whitespace, then peeks at the upcoming bytes to decide:
-/// comment, CDATA, processing instruction, DOCTYPE (skipped recursively),
-/// element, or text. Whitespace-only text nodes are preserved because
-/// they are part of XML character data. Returns NULL at EOF or when the
-/// current segment produces no node; a real parse error is signalled
-/// via `xml_last_error[0] != 0`.
+/// Peeks at the upcoming bytes to decide between comment, CDATA, processing
+/// instruction, DOCTYPE, element, and text. Instructions and declarations are
+/// consumed without producing nodes, then dispatch resumes recursively.
+/// Whitespace-only text nodes are preserved because they are XML character
+/// data. Returns NULL at EOF or on failure; a real parse error is signalled via
+/// `xml_last_error[0] != 0`.
+/// @param p Parser positioned at the next top-level or child construct.
+/// @return Newly allocated node, or null at EOF, after skipped markup, or on error.
 static void *parse_node(xml_parser *p) {
     if (parser_eof(p))
         return NULL;
@@ -1374,7 +1444,9 @@ rt_string rt_xml_error(void) {
     return rt_string_from_bytes(xml_last_error, strlen(xml_last_error));
 }
 
-/// @brief Return 1 if `node` is a live Zanna.Data.Xml node handle; 0 otherwise.
+/// @brief Test whether an opaque object is a live XML node handle.
+/// @param node Candidate runtime object; null is permitted.
+/// @return 1 for a `Zanna.Data.Xml` node of the expected size, otherwise 0.
 int8_t rt_xml_is_node(void *node) {
     return rt_obj_is_instance(node, RT_XML_NODE_CLASS_ID, sizeof(xml_node)) ? 1 : 0;
 }
@@ -1532,6 +1604,8 @@ void *rt_xml_cdata(rt_string content) {
 ///
 /// Values match the `rt_xml_node_type_t` enum (1=element, 2=text,
 /// 3=comment, 4=cdata, 5=document). Returns 0 for NULL.
+/// @param node XML node to inspect.
+/// @return Node-kind value, or 0 when @p node is not an XML node.
 int64_t rt_xml_node_type(void *node) {
     if (!rt_xml_is_node(node))
         return 0;
@@ -1543,6 +1617,8 @@ int64_t rt_xml_node_type(void *node) {
 ///
 /// Returns "" for non-element nodes (text, comment, CDATA, document).
 /// The returned string is retained and owned by the caller.
+/// @param node XML node to inspect.
+/// @return Owned tag string, or an owned empty string when unavailable.
 rt_string rt_xml_tag(void *node) {
     if (!rt_xml_is_node(node))
         return rt_str_empty();
@@ -1557,6 +1633,8 @@ rt_string rt_xml_tag(void *node) {
 ///
 /// Populated for text, comment, and CDATA nodes; "" for elements and
 /// documents (use `TextContent` to recursively gather descendant text).
+/// @param node XML node to inspect.
+/// @return Owned content string, or an owned empty string when unavailable.
 rt_string rt_xml_content(void *node) {
     if (!rt_xml_is_node(node))
         return rt_str_empty();
@@ -1571,8 +1649,11 @@ rt_string rt_xml_content(void *node) {
 ///
 /// Optimization O-04: building one growing builder is O(n) total versus
 /// the O(n²) you'd get with naive `result = result + child.text` chains.
-/// Recurses through element and document nodes; everything else is a
-/// no-op. Borrowed references throughout — children are owned by parents.
+/// Iteratively traverses element and document nodes in document order;
+/// comments and other node kinds contribute no content. Borrowed references
+/// are used throughout because children remain owned by their parents.
+/// @param node Root of the subtree to traverse.
+/// @param sb Initialized destination builder.
 /// @return 1 when collection completed, 0 when a builder append failed.
 static int collect_text_content(void *node, rt_string_builder *sb) {
     if (!rt_xml_is_node(node))
@@ -1621,9 +1702,11 @@ static int collect_text_content(void *node, rt_string_builder *sb) {
 /// @brief `XmlNode.TextContent` — concatenated text of this node and descendants.
 ///
 /// For text/CDATA nodes returns the content directly. For element /
-/// document nodes, recursively concatenates every descendant text +
+/// document nodes, iteratively concatenates every descendant text +
 /// CDATA into a single string via the builder helper. Returns "" for
 /// nodes with no textual content.
+/// @param node XML node whose textual value is requested.
+/// @return Owned concatenated string; empty for invalid or nontextual nodes.
 rt_string rt_xml_text_content(void *node) {
     if (!rt_xml_is_node(node))
         return rt_str_empty();
@@ -1667,6 +1750,9 @@ rt_string rt_xml_text_content(void *node) {
 /// nodes or unknown attributes; the empty-string return is
 /// indistinguishable from an explicitly empty attribute, so use
 /// `HasAttr` if you need to disambiguate.
+/// @param node Element node to query.
+/// @param name Case-sensitive attribute name.
+/// @return Owned attribute value, or an owned empty string when absent.
 rt_string rt_xml_attr(void *node, rt_string name) {
     if (!rt_xml_is_node(node) || !name)
         return rt_str_empty();
@@ -1687,6 +1773,9 @@ rt_string rt_xml_attr(void *node, rt_string name) {
 ///
 /// Distinguishes "attribute exists with empty value" from "attribute
 /// absent". Returns 0 for non-element nodes.
+/// @param node Element node to query.
+/// @param name Case-sensitive attribute name.
+/// @return 1 when the attribute exists, otherwise 0.
 int8_t rt_xml_has_attr(void *node, rt_string name) {
     if (!rt_xml_is_node(node) || !name)
         return 0;
@@ -1700,8 +1789,12 @@ int8_t rt_xml_has_attr(void *node, rt_string name) {
 
 /// @brief `XmlNode.SetAttr(name, value)` — set / overwrite an attribute.
 ///
-/// Silently no-ops on non-element nodes or NULL inputs. Existing
-/// values for the same name are replaced.
+/// Silently no-ops on non-element nodes or a null name. A null value is
+/// stored as an empty string. Invalid names or forbidden value characters
+/// set the thread-local XML error; existing values are replaced.
+/// @param node Element node to mutate.
+/// @param name Valid XML attribute name.
+/// @param value Attribute value, or null to store an empty value.
 void rt_xml_set_attr(void *node, rt_string name, rt_string value) {
     clear_error();
     if (!rt_xml_is_node(node) || !name)
@@ -1727,6 +1820,9 @@ void rt_xml_set_attr(void *node, rt_string name, rt_string value) {
 
 /// @brief `XmlNode.RemoveAttr(name)` — drop an attribute.
 ///
+/// Non-element nodes, null names, and absent attributes are harmless no-ops.
+/// @param node Element node to mutate.
+/// @param name Case-sensitive attribute name.
 /// @return 1 if the attribute was present and removed, 0 otherwise.
 int8_t rt_xml_remove_attr(void *node, rt_string name) {
     if (!rt_xml_is_node(node) || !name)
@@ -1744,6 +1840,8 @@ int8_t rt_xml_remove_attr(void *node, rt_string name) {
 /// Returns an owned `seq<str>`, always — empty for non-element or
 /// attribute-less nodes. Order is the underlying map's iteration
 /// order (effectively insertion order).
+/// @param node Element node to inspect.
+/// @return Owned sequence containing owned attribute-name strings.
 void *rt_xml_attr_names(void *node) {
     if (!rt_xml_is_node(node))
         return rt_seq_new();
@@ -1764,6 +1862,9 @@ void *rt_xml_attr_names(void *node) {
 /// Returns a *copy* of the internal seq so the caller can iterate or
 /// mutate it without affecting the parent. The result seq retains the
 /// children it contains; release the seq when finished.
+/// @param node XML node whose direct children are requested.
+/// @return Owned child sequence, empty for invalid or childless nodes, or null
+///         when the sequence itself cannot be allocated.
 void *rt_xml_children(void *node) {
     void *copy = rt_seq_new();
     if (!copy) {
@@ -1788,7 +1889,9 @@ void *rt_xml_children(void *node) {
     return copy;
 }
 
-/// @brief `XmlNode.ChildCount` — number of direct children.
+/// @brief Return the number of direct children of an XML node.
+/// @param node XML node to inspect.
+/// @return Direct-child count, or zero for invalid or childless nodes.
 int64_t rt_xml_child_count(void *node) {
     if (!rt_xml_is_node(node))
         return 0;
@@ -1804,6 +1907,9 @@ int64_t rt_xml_child_count(void *node) {
 ///
 /// Returns NULL for negative or out-of-range indices. The reference
 /// is borrowed: the parent retains ownership, do not release.
+/// @param node XML node to inspect.
+/// @param index Zero-based child index.
+/// @return Borrowed child node, or null when the index or receiver is invalid.
 void *rt_xml_child_at(void *node, int64_t index) {
     if (!rt_xml_is_node(node) || index < 0)
         return NULL;
@@ -1820,6 +1926,9 @@ void *rt_xml_child_at(void *node, int64_t index) {
 /// Linear scan over the children seq, returning the first element
 /// whose tag matches exactly. Returns NULL if no match. Borrowed
 /// reference (do not release).
+/// @param node XML node whose direct children are searched.
+/// @param tag Case-sensitive element tag.
+/// @return Borrowed first matching element, or null when absent.
 void *rt_xml_child(void *node, rt_string tag) {
     if (!rt_xml_is_node(node) || !tag)
         return NULL;
@@ -1851,6 +1960,9 @@ void *rt_xml_child(void *node, rt_string tag) {
 /// Like `Child(tag)` but returns *all* matches in document order. Only
 /// looks one level deep — for recursive search use `FindAll`. The
 /// result seq retains the returned child nodes.
+/// @param node XML node whose direct children are searched.
+/// @param tag Case-sensitive element tag.
+/// @return Owned sequence of matching elements, empty when none match.
 void *rt_xml_children_by_tag(void *node, rt_string tag) {
     void *result = rt_seq_new();
     rt_seq_set_owns_elements(result, 1);
@@ -1883,7 +1995,12 @@ void *rt_xml_children_by_tag(void *node, rt_string tag) {
 /// @brief `XmlNode.Append(child)` — add `child` to the end of `node.children`.
 ///
 /// Sets the child's `parent` weak pointer and retains the child for
-/// the parent, so callers may release their local reference afterward.
+/// the parent, so callers may release their local reference afterward. A
+/// document child, an ancestor that would introduce a cycle, or a child owned
+/// by another parent is rejected with an XML error. Re-appending a child
+/// already owned by @p node is a no-op.
+/// @param node Parent node with a child sequence.
+/// @param child Detached non-document XML node to append.
 void rt_xml_append(void *node, void *child) {
     clear_error();
     if (!rt_xml_is_node(node) || !rt_xml_is_node(child) || node == child)
@@ -1919,7 +2036,11 @@ void rt_xml_append(void *node, void *child) {
 /// @brief `XmlNode.Insert(index, child)` — splice `child` at position `index`.
 ///
 /// Indices past the end clamp to "end of list" (effectively `Append`).
-/// Negative indices are rejected (silent no-op).
+/// Negative indices are rejected as a silent no-op. The same document,
+/// cycle, and existing-parent restrictions as @ref rt_xml_append apply.
+/// @param node Parent node with a child sequence.
+/// @param index Zero-based insertion index.
+/// @param child Detached non-document XML node to insert.
 void rt_xml_insert(void *node, int64_t index, void *child) {
     clear_error();
     if (!rt_xml_is_node(node) || !rt_xml_is_node(child) || node == child || index < 0)
@@ -1960,6 +2081,9 @@ void rt_xml_insert(void *node, int64_t index, void *child) {
 /// Returns 0 if `child` isn't found in `node.children`. On success,
 /// clears the child's `parent` pointer and releases the parent's
 /// reference (the child is freed if there are no other holders).
+/// @param node Parent node to mutate.
+/// @param child Direct child to locate by object identity.
+/// @return 1 after removal, or 0 when the inputs are invalid or no match exists.
 int8_t rt_xml_remove(void *node, void *child) {
     if (!rt_xml_is_node(node) || !rt_xml_is_node(child))
         return 0;
@@ -1988,6 +2112,8 @@ int8_t rt_xml_remove(void *node, void *child) {
 /// Silent no-op for out-of-range or negative indices. Same ownership
 /// transfer as `Remove`: the parent's reference is released after the
 /// child has been pulled out of the seq.
+/// @param node Parent node to mutate.
+/// @param index Zero-based child index.
 void rt_xml_remove_at(void *node, int64_t index) {
     if (!rt_xml_is_node(node) || index < 0)
         return;
@@ -2016,7 +2142,10 @@ void rt_xml_remove_at(void *node, int64_t index) {
 /// Drains the element's existing children, then (if `text` is non-empty)
 /// appends a single text node. Useful for `<tag>some-value</tag>`-style
 /// updates where the element should hold only its text. No-op for
-/// non-element receivers.
+/// non-element receivers. Forbidden XML control characters leave the existing
+/// children untouched and set the thread-local XML error.
+/// @param node Element whose children are replaced.
+/// @param text New textual content; null or empty leaves the element childless.
 void rt_xml_set_text(void *node, rt_string text) {
     clear_error();
     if (!rt_xml_is_node(node))
@@ -2064,6 +2193,8 @@ void rt_xml_set_text(void *node, rt_string text) {
 /// Returns NULL for detached nodes and the document root. Bumps the
 /// parent's refcount before returning so it survives at least until
 /// the caller releases it.
+/// @param node XML node whose parent is requested.
+/// @return Retained parent node, or null when detached or invalid.
 void *rt_xml_parent(void *node) {
     if (!rt_xml_is_node(node))
         return NULL;
@@ -2079,9 +2210,11 @@ void *rt_xml_parent(void *node) {
 /// @brief `XmlDocument.Root` — first element child of the document.
 ///
 /// XML 1.0 mandates a single root element; this helper finds it
-/// while skipping any leading processing instructions / comments.
-/// Returns NULL if the document is non-document or has no element
-/// children. Borrowed reference (do not release).
+/// while skipping comment nodes. If passed a descendant, the helper first
+/// climbs to its topmost ancestor; a topmost element is returned directly.
+/// The result is a borrowed reference owned by its tree.
+/// @param doc Document or descendant node whose tree root is requested.
+/// @return Borrowed document element, or null if the tree has none.
 void *rt_xml_root(void *doc) {
     if (!rt_xml_is_node(doc))
         return NULL;
@@ -2112,6 +2245,9 @@ void *rt_xml_root(void *doc) {
 /// Each match is retained before being pushed so the result seq holds
 /// strong refs (callers can outlive the source tree). Children are pushed in
 /// reverse order so the LIFO stack still emits document-order results.
+/// @param node Root of the subtree to traverse.
+/// @param tag Null-terminated case-sensitive tag to match.
+/// @param result Owning result sequence that receives matches.
 static void find_all_iterative(void *node, const char *tag, void *result) {
     if (!rt_xml_is_node(node))
         return;
@@ -2141,14 +2277,18 @@ static void find_all_iterative(void *node, const char *tag, void *result) {
     xml_node_stack_dispose(&stack);
 }
 
-/// @brief Advance `path` past any leading '/' separators and return the new position.
+/// @brief Advance a path pointer past any leading slash separators.
+/// @param path Null-terminated path pointer, or null.
+/// @return First non-slash position, the terminating null byte, or null.
 static const char *skip_path_separators(const char *path) {
     while (path && *path == '/')
         path++;
     return path;
 }
 
-/// @brief Return a pointer to the first '/' or NUL after the current path segment in `path`.
+/// @brief Locate the end of the current slash-delimited path segment.
+/// @param path Nonnull pointer to the segment's first byte.
+/// @return Pointer to the following slash or terminating null byte.
 static const char *path_segment_end(const char *path) {
     const char *p = path;
     while (*p && *p != '/')
@@ -2156,7 +2296,11 @@ static const char *path_segment_end(const char *path) {
     return p;
 }
 
-/// @brief Return true if `node` is an element whose tag equals the `seg_len`-byte string `seg`.
+/// @brief Compare an element tag with a non-null-terminated path segment.
+/// @param node Candidate XML node.
+/// @param seg First byte of the requested segment.
+/// @param seg_len Segment length in bytes.
+/// @return `true` only for an element with an exactly equal tag.
 static bool element_tag_matches_segment(xml_node *node, const char *seg, size_t seg_len) {
     if (!node || node->type != XML_NODE_ELEMENT || !node->tag)
         return false;
@@ -2167,6 +2311,12 @@ static bool element_tag_matches_segment(xml_node *node, const char *seg, size_t 
 /// @brief Recursive helper for slash-path FindAll: walks `path` one segment at a time,
 ///        pushing matching nodes into `result`. Handles both the "this node is the match"
 ///        and "descend into children" cases.
+/// @details Leading and repeated separators are ignored. Traversal is limited
+///          to @c XML_MAX_DEPTH; exceeding the limit sets an XML error and traps.
+/// @param node Current subtree node.
+/// @param path Remaining null-terminated slash path.
+/// @param result Owning result sequence that receives matches.
+/// @param depth Number of path levels traversed so far.
 static void find_path_all_recursive(void *node, const char *path, void *result, int depth) {
     if (!rt_xml_is_node(node))
         return;
@@ -2219,8 +2369,11 @@ static void find_path_all_recursive(void *node, const char *path, void *result, 
 ///
 /// Walks the entire subtree (including the receiver itself) collecting
 /// every element whose tag equals `tag`. Returns an owned seq of
-/// retained node references — safe to keep after the source tree is
-/// dropped.
+/// retained node references. A tag containing `/` is treated as a simple
+/// slash-separated element path instead of a single literal tag.
+/// @param node Root of the subtree to search.
+/// @param tag Case-sensitive tag or slash-separated path.
+/// @return Owned sequence of matching nodes, empty for invalid input or no matches.
 void *rt_xml_find_all(void *node, rt_string tag) {
     void *result = rt_seq_new();
     rt_seq_set_owns_elements(result, 1);
@@ -2239,6 +2392,9 @@ void *rt_xml_find_all(void *node, rt_string tag) {
 ///
 /// Pre-order traversal, returns the first hit. Retains the returned node so the
 /// caller owns it. Children are pushed in reverse order to preserve document order.
+/// @param node Root of the subtree to search.
+/// @param tag Null-terminated case-sensitive tag to match.
+/// @return Retained first matching element, or null when absent or traversal fails.
 static void *find_first_iterative(void *node, const char *tag) {
     if (!rt_xml_is_node(node))
         return NULL;
@@ -2275,7 +2431,11 @@ static void *find_first_iterative(void *node, const char *tag) {
 /// @brief `XmlNode.Find(tag)` — first descendant element matching `tag`.
 ///
 /// DFS pre-order; returns the receiver itself if it matches. Returns
-/// NULL when no match is found. The returned node is retained.
+/// NULL when no match is found. A tag containing `/` selects the first
+/// result of the simple path search. The returned node is retained.
+/// @param node Root of the subtree to search.
+/// @param tag Case-sensitive tag or slash-separated path.
+/// @return Retained first matching node, or null when absent or invalid.
 void *rt_xml_find(void *node, rt_string tag) {
     if (!rt_xml_is_node(node) || !tag)
         return NULL;

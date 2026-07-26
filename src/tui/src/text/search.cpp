@@ -35,13 +35,18 @@ constexpr size_t kMaxSearchSize = 1 << 20; // 1MB cap
 /// @brief Locate every match for @p query within @p buf.
 /// @details The helper implements two strategies:
 ///          1. Literal scans use @c std::string::find in a loop, advancing by the
-///             match length to detect overlapping occurrences correctly when the
-///             pattern is empty.
+///             match length so successive results do not overlap.
 ///          2. Regex searches compile @p query into @c std::regex and iterate the
 ///             match results.  Compilation happens inside a @c try/@c catch block
 ///             so malformed expressions simply yield no matches.
 ///          In both cases the buffer is truncated to @ref kMaxSearchSize bytes to
 ///          prevent unbounded work when the user searches enormous files.
+/// @param buf Text buffer whose contents are searched.
+/// @param query Literal text or regular-expression pattern to match.
+/// @param useRegex When true, interpret @p query as a regular expression;
+///        otherwise compare it literally.
+/// @return Matches in ascending byte-offset order, or an empty vector when the
+///         query is empty, invalid, or absent from the scanned prefix.
 std::vector<Match> findAll(const TextBuffer &buf, std::string_view query, bool useRegex) {
     std::vector<Match> hits;
     if (query.empty()) {
@@ -80,6 +85,14 @@ std::vector<Match> findAll(const TextBuffer &buf, std::string_view query, bool u
 ///          caller receives coordinates relative to the full buffer.  Failures to
 ///          compile or execute the regular expression result in @c std::nullopt
 ///          rather than throwing, allowing the UI to keep running.
+/// @param buf Text buffer whose contents are searched.
+/// @param query Literal text or regular-expression pattern to match.
+/// @param from Byte offset at which the search begins; offsets beyond the
+///        scanned text behave as an end-of-buffer search.
+/// @param useRegex When true, interpret @p query as a regular expression;
+///        otherwise compare it literally.
+/// @return The first match at or after @p from, or @c std::nullopt when no match
+///         exists or the regular expression is invalid.
 std::optional<Match> findNext(const TextBuffer &buf,
                               std::string_view query,
                               size_t from,

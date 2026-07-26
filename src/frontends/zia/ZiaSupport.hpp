@@ -22,6 +22,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Defines allocation-conscious naming, safe index conversion, and
+///        always-on invariant checks shared by the Zia frontend.
+/// @details The header is stateless and keeps release builds from silently
+///          accepting negative-index wrapping or violated lowering invariants.
+
 #pragma once
 
 #include <charconv>

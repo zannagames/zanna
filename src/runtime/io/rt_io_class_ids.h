@@ -25,6 +25,13 @@
 //        src/runtime/io/rt_savedata.h, src/runtime/io/rt_watcher.h
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Defines stable runtime class identifiers for opaque I/O payloads.
+ * @details These negative tags distinguish managed binary files, streams,
+ * wrappers, archives, save data, watchers, and binary buffers across module
+ * boundaries without exposing their private object layouts.
+ */
 #pragma once
 
 #include <stdint.h>

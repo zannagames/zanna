@@ -5,20 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/tools/windows_installer/WindowsInstallerCleanupPolicy.cpp
-// Purpose: Validate exact paths accepted by the detached Windows installer
-//          cleanup helper without invoking the filesystem.
-//
-// Key invariants:
-//   - Namespace parsing is explicit; arbitrary NT device paths are never
-//     accepted through a broad "\\?\" prefix check.
-//   - Every accepted path names an object below a drive or UNC share root.
-//   - Components have one stable Win32 interpretation.
-//
-// Ownership/Lifetime:
-//   - The implementation allocates no storage and retains no input views.
-//
-// Links: WindowsInstallerCleanupPolicy.hpp, WindowsInstallerCleanup.cpp
+/// @file
+/// @brief Implements allocation-free validation for exact paths accepted by the
+///        detached Windows installer cleanup helper.
+///
+/// Namespace parsing explicitly accepts drive and UNC forms while rejecting
+/// arbitrary NT device paths. Every accepted target lies below a root and every
+/// component has one stable Win32 interpretation.
+///
+/// @see WindowsInstallerCleanupPolicy.hpp
+/// @see WindowsInstallerCleanup.cpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -29,18 +25,31 @@
 namespace zanna::installer::cleanup {
 namespace {
 
+/// @brief Test whether a path character is a Windows directory separator.
+/// @param ch Candidate UTF-16 code unit.
+/// @return @c true for slash or backslash.
 constexpr bool isSeparator(wchar_t ch) noexcept {
     return ch == L'\\' || ch == L'/';
 }
 
+/// @brief Test whether a code unit is an ASCII drive-letter character.
+/// @param ch Candidate UTF-16 code unit.
+/// @return @c true for ASCII A-Z or a-z.
 constexpr bool isAsciiAlpha(wchar_t ch) noexcept {
     return (ch >= L'A' && ch <= L'Z') || (ch >= L'a' && ch <= L'z');
 }
 
+/// @brief Fold an ASCII lowercase code unit to uppercase.
+/// @param ch Candidate UTF-16 code unit.
+/// @return Uppercase ASCII equivalent, or @p ch unchanged.
 constexpr wchar_t asciiUpper(wchar_t ch) noexcept {
     return ch >= L'a' && ch <= L'z' ? static_cast<wchar_t>(ch - (L'a' - L'A')) : ch;
 }
 
+/// @brief Compare a path prefix case-insensitively with normalized separators.
+/// @param text Candidate complete path.
+/// @param prefix Prefix to match.
+/// @return @c true when every prefix code unit matches under ASCII folding.
 bool startsWithInsensitive(std::wstring_view text, std::wstring_view prefix) noexcept {
     if (text.size() < prefix.size())
         return false;
@@ -53,9 +62,15 @@ bool startsWithInsensitive(std::wstring_view text, std::wstring_view prefix) noe
     return true;
 }
 
+/// @brief Test whether a component's base spelling names a Win32 device.
+/// @param component Single path component, possibly with an extension.
+/// @return @c true for reserved names such as CON, NUL, COM1, or LPT1.
 bool isReservedDeviceBase(std::wstring_view component) noexcept {
     const size_t dot = component.find(L'.');
     const std::wstring_view base = component.substr(0, dot);
+    /// @brief Compare the component base with one uppercase reserved device name.
+    /// @param expected Uppercase device name to compare.
+    /// @return `true` when `base` equals `expected` under ASCII case folding.
     auto equals = [base](std::wstring_view expected) noexcept {
         if (base.size() != expected.size())
             return false;
@@ -84,6 +99,10 @@ bool isReservedDeviceBase(std::wstring_view component) noexcept {
     return false;
 }
 
+/// @brief Validate one unambiguous cleanup-path component.
+/// @param component Component text without separators.
+/// @return @c true when nonempty, nontraversing, free of forbidden characters,
+///         stable under Win32 normalization, and not a reserved device.
 bool isSafeComponent(std::wstring_view component) noexcept {
     if (component.empty() || component == L"." || component == L"..")
         return false;
@@ -98,6 +117,11 @@ bool isSafeComponent(std::wstring_view component) noexcept {
     return !isReservedDeviceBase(component);
 }
 
+/// @brief Consume and validate a UNC server/share root.
+/// @param path Complete UNC path.
+/// @param start Offset of the server component.
+/// @param cursor Receives the offset immediately after the share separator.
+/// @return @c true when both server and share are safe nonempty components.
 bool consumeUncRoot(std::wstring_view path, size_t start, size_t &cursor) noexcept {
     cursor = start;
     for (unsigned rootPart = 0; rootPart < 2; ++rootPart) {
@@ -117,6 +141,10 @@ bool consumeUncRoot(std::wstring_view path, size_t start, size_t &cursor) noexce
 
 } // namespace
 
+/// @brief Validate an absolute drive or UNC cleanup target.
+/// @param path Candidate normal or extended-length Windows path.
+/// @return @c true only when the path is bounded, NUL-free, lies beneath a
+///         recognized root, and contains safe nonempty child components.
 bool isSafeAbsolutePath(std::wstring_view path) noexcept {
     if (path.size() < 4 || path.size() >= 32760 || path.find(L'\0') != std::wstring_view::npos)
         return false;
@@ -154,6 +182,11 @@ bool isSafeAbsolutePath(std::wstring_view path) noexcept {
     return true;
 }
 
+/// @brief Compare Windows path spellings without filesystem access.
+/// @param left First validated path.
+/// @param right Second validated path.
+/// @return @c true when lengths match and every code unit matches after ASCII
+///         case folding and slash normalization.
 bool pathsEqual(std::wstring_view left, std::wstring_view right) noexcept {
     if (left.size() != right.size())
         return false;

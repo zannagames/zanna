@@ -55,7 +55,8 @@ using il::tools::basic::loadBasicSource;
 ///
 /// @param argc Argument count supplied by the C runtime.
 /// @param argv Argument vector containing UTF-8 encoded strings.
-/// @return Zero on success; one when argument validation or file loading fails.
+/// @return Zero on success; one when command-line conversion, file loading, or
+///         parsing fails.
 int main(int argc, char **argv) {
     zanna::tools::Utf8CommandLine commandLine(argc, argv);
     if (!commandLine.applyOrReport(argc, argv))

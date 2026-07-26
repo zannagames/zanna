@@ -20,6 +20,13 @@
 // Links: CpioWriter.cpp, MacOSPackageBuilder.cpp, PkgVerify.cpp (reader side)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares a validated portable-ASCII CPIO archive writer.
+/// @details The writer owns normalized filesystem entries for macOS package
+///          payloads and serializes the historical `070707` format with a
+///          mandatory trailer and 512-byte final padding.
+
 #pragma once
 
 #include <cstddef>
@@ -34,12 +41,17 @@ namespace zanna::pkg {
 /// @details Entries are accumulated by the addXxx() methods and serialized by
 ///          finish(). Paths are sanitized and de-duplicated on insertion so the
 ///          resulting archive cannot contain traversal or duplicate entries.
+///          Repeated calls to finish are supported and do not consume entries.
+/// @ownership Copies all paths, link targets, and file payload bytes.
 class CpioWriter {
   public:
     /// @brief Add a directory entry (idempotent for an already-added path).
     /// @param path Archive-relative directory path.
     /// @param mode Permission bits (octal); the directory type bit is added.
     /// @param mtime Modification time (Unix timestamp).
+    /// @details Normalizes the path and silently ignores a directory already
+    ///          present under the same normalized archive name.
+    /// @throws std::runtime_error When path sanitization rejects the input.
     void addDirectory(const std::string &path, uint32_t mode = 0755, uint32_t mtime = 0);
 
     /// @brief Add a regular file entry from a raw byte buffer.
@@ -49,6 +61,8 @@ class CpioWriter {
     /// @param mode Permission bits (octal); the regular-file type bit is added.
     /// @param mtime Modification time (Unix timestamp).
     /// @throws std::runtime_error on a root path, duplicate path, or null data.
+    /// @note On validation failure after name insertion, the normalized path may
+    ///       remain reserved by this writer.
     void addFile(const std::string &path,
                  const uint8_t *data,
                  size_t size,
@@ -56,12 +70,22 @@ class CpioWriter {
                  uint32_t mtime = 0);
 
     /// @brief Convenience: add a regular file entry from a byte vector.
+    /// @param path Archive-relative file path.
+    /// @param data Payload bytes to copy.
+    /// @param mode Permission bits; the regular-file type bit is added.
+    /// @param mtime Unix modification timestamp.
+    /// @details Delegates validation and copying to @ref addFile.
     void addFileVec(const std::string &path,
                     const std::vector<uint8_t> &data,
                     uint32_t mode = 0644,
                     uint32_t mtime = 0);
 
     /// @brief Convenience: add a regular file entry from string content.
+    /// @param path Archive-relative file path.
+    /// @param content String bytes to copy as the payload.
+    /// @param mode Permission bits; the regular-file type bit is added.
+    /// @param mtime Unix modification timestamp.
+    /// @details Delegates validation and copying to @ref addFile.
     void addFileString(const std::string &path,
                        const std::string &content,
                        uint32_t mode = 0644,
@@ -72,15 +96,20 @@ class CpioWriter {
     /// @param target Link target (validated as a safe relative path).
     /// @param mtime Modification time (Unix timestamp).
     /// @throws std::runtime_error on a root path, duplicate path, or unsafe target.
+    /// @note On target-validation failure, the normalized link path may remain
+    ///       reserved by this writer.
     void addSymlink(const std::string &path, const std::string &target, uint32_t mtime = 0);
 
     /// @brief Serialize all entries into a complete CPIO archive.
     /// @return The archive bytes, including the TRAILER!!! record and 512-byte
     ///         padding.
+    /// @throws std::runtime_error When an entry exceeds an octal field limit.
+    /// @note Does not modify or consume accumulated entries.
     std::vector<uint8_t> finish() const;
 
   private:
     /// @brief The kind of filesystem object an entry represents.
+    /// @details Selects serialized type bits, link counts, and payload source.
     enum class EntryKind { Directory, File, Symlink };
 
     /// @brief One pending CPIO entry captured until finish() serializes it.

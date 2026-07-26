@@ -26,6 +26,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements dependency-free serialization of Windows Shell Link files.
+/// @details Emits little-endian ShellLinkHeader, LinkInfo, Unicode StringData,
+///          optional environment expansion data, and the terminal block.
+
 #include "LnkWriter.hpp"
 #include "PkgUtils.hpp"
 
@@ -38,12 +43,16 @@ namespace zanna::pkg {
 namespace {
 
 /// @brief Append a 16-bit little-endian value to `buf`.
+/// @param buf Destination byte buffer.
+/// @param val Value to serialize.
 void appendLE16(std::vector<uint8_t> &buf, uint16_t val) {
     buf.push_back(static_cast<uint8_t>(val & 0xFF));
     buf.push_back(static_cast<uint8_t>((val >> 8) & 0xFF));
 }
 
 /// @brief Append a 32-bit little-endian value to `buf`.
+/// @param buf Destination byte buffer.
+/// @param val Value to serialize.
 void appendLE32(std::vector<uint8_t> &buf, uint32_t val) {
     buf.push_back(static_cast<uint8_t>(val & 0xFF));
     buf.push_back(static_cast<uint8_t>((val >> 8) & 0xFF));
@@ -52,6 +61,9 @@ void appendLE32(std::vector<uint8_t> &buf, uint32_t val) {
 }
 
 /// @brief Append a UTF-16LE StringData entry: charCount(2) + UTF-16LE chars.
+/// @param buf Destination Shell Link buffer.
+/// @param str UTF-8 text to transcode.
+/// @throws std::runtime_error If the UTF-16 code-unit count exceeds 65535.
 void appendStringData(std::vector<uint8_t> &buf, const std::string &str) {
     const auto units = utf8ToUtf16CodeUnits(str);
     if (units.size() > std::numeric_limits<uint16_t>::max())
@@ -66,6 +78,8 @@ void appendStringData(std::vector<uint8_t> &buf, const std::string &str) {
 
 /// @brief Convert `str` to a NUL-terminated ANSI byte sequence for LinkInfo's `LocalBasePath`
 /// field. Non-printable or high-byte characters are replaced with `'?'`.
+/// @param str UTF-8 path used to construct a compatibility fallback.
+/// @return NUL-terminated printable-ASCII byte sequence.
 std::vector<uint8_t> ansiPathFallback(const std::string &str) {
     std::vector<uint8_t> out;
     out.reserve(str.size() + 1);
@@ -77,6 +91,8 @@ std::vector<uint8_t> ansiPathFallback(const std::string &str) {
 
 /// @brief Return true if `str` contains a Windows environment variable reference (`%VAR%`).
 /// Used to decide whether to emit an `EnvironmentVariableDataBlock` in the .lnk file.
+/// @param str Candidate target path.
+/// @return Whether at least two percent delimiters occur.
 bool containsEnvironmentVariableReference(const std::string &str) {
     const std::size_t first = str.find('%');
     if (first == std::string::npos)
@@ -86,6 +102,9 @@ bool containsEnvironmentVariableReference(const std::string &str) {
 
 /// @brief Append a MAX_PATH (260-byte) zero-padded ANSI path for the `EnvironmentVariableDataBlock`
 /// `TargetAnsi` field. Throws if `str` is 260 characters or longer.
+/// @param buf Destination ExtraData buffer.
+/// @param str Target path to encode with an ANSI fallback.
+/// @throws std::runtime_error If the source has 260 or more bytes.
 void appendFixedAnsiPath(std::vector<uint8_t> &buf, const std::string &str) {
     if (str.size() >= 260)
         throw std::runtime_error("lnk: environment target path is too long");
@@ -98,6 +117,9 @@ void appendFixedAnsiPath(std::vector<uint8_t> &buf, const std::string &str) {
 /// @brief Append a MAX_PATH (520-byte = 260 UTF-16 chars) zero-padded UTF-16LE path for the
 /// `EnvironmentVariableDataBlock` `TargetUnicode` field. Throws if `str` encodes to 260+ code
 /// units.
+/// @param buf Destination ExtraData buffer.
+/// @param str UTF-8 target path to transcode.
+/// @throws std::runtime_error If the target uses 260 or more UTF-16 code units.
 void appendFixedUtf16Path(std::vector<uint8_t> &buf, const std::string &str) {
     const auto units = utf8ToUtf16CodeUnits(str);
     if (units.size() >= 260)
@@ -117,6 +139,10 @@ void appendFixedUtf16Path(std::vector<uint8_t> &buf, const std::string &str) {
 /// StringData entries (NAME_STRING, RELATIVE_PATH, optional WORKING_DIR,
 /// COMMAND_LINE_ARGUMENTS, and ICON_LOCATION),
 /// and an optional EnvironmentVariableDataBlock when the target contains `%VAR%` references.
+/// @param params Target, presentation, argument, working-directory, and icon settings.
+/// @return Complete binary Shell Link file bytes.
+/// @throws std::runtime_error If a StringData or environment-target field exceeds
+///         the size representable by its on-disk structure.
 std::vector<uint8_t> generateLnk(const LnkParams &params) {
     std::vector<uint8_t> buf;
     buf.reserve(512);

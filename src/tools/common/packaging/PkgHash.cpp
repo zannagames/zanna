@@ -10,6 +10,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements self-contained SHA-1 and SHA-256 digest helpers.
+/// @details Processes borrowed inputs in 64-byte blocks, applies standard
+///          Merkle–Damgård padding, and exposes binary or lowercase hexadecimal output.
+
 #include "PkgHash.hpp"
 
 #include <array>
@@ -24,22 +29,32 @@ namespace zanna::pkg {
 namespace {
 
 /// @brief Rotate a 32-bit value left by @p bits (SHA-1 round operation).
+/// @param value Word to rotate.
+/// @param bits Rotation count.
+/// @return Rotated word.
 uint32_t rol32(uint32_t value, unsigned bits) {
     return (value << bits) | (value >> (32u - bits));
 }
 
 /// @brief Rotate a 32-bit value right by @p bits (SHA-256 round operation).
+/// @param value Word to rotate.
+/// @param bits Rotation count.
+/// @return Rotated word.
 uint32_t ror32(uint32_t value, unsigned bits) {
     return (value >> bits) | (value << (32u - bits));
 }
 
 /// @brief Read four bytes at @p p as a big-endian 32-bit word.
+/// @param p Address of at least four readable bytes.
+/// @return Decoded word.
 uint32_t readBE32(const uint8_t *p) {
     return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
            (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
 }
 
 /// @brief Store @p value at @p p as a big-endian 32-bit word.
+/// @param p Address of at least four writable bytes.
+/// @param value Word to encode.
 void writeBE32(uint8_t *p, uint32_t value) {
     p[0] = static_cast<uint8_t>((value >> 24) & 0xffu);
     p[1] = static_cast<uint8_t>((value >> 16) & 0xffu);
@@ -51,12 +66,19 @@ void writeBE32(uint8_t *p, uint32_t value) {
 /// @details The hashing APIs allow a null data pointer only for empty inputs. This guard turns
 ///          accidental non-empty null buffers into deterministic exceptions instead of undefined
 ///          pointer arithmetic or reads in the block-processing loops.
+/// @param data Borrowed input pointer.
+/// @param len Input length.
+/// @param algorithm Algorithm name used in the diagnostic.
+/// @throws std::runtime_error If `data` is null for a non-empty input.
 void validateDigestInput(const uint8_t *data, size_t len, const char *algorithm) {
     if (len != 0 && data == nullptr)
         throw std::runtime_error(std::string(algorithm) + ": null input buffer for non-empty hash");
 }
 
 /// @brief Render a fixed-size digest array as a lowercase hex string.
+/// @tparam N Digest size in bytes.
+/// @param digest Binary digest.
+/// @return Exactly `2 * N` lowercase hexadecimal characters.
 template <size_t N> std::string hexDigest(const std::array<uint8_t, N> &digest) {
     std::ostringstream os;
     os << std::hex << std::setfill('0');
@@ -82,6 +104,10 @@ void appendShaPadding(std::vector<uint8_t> &tail, uint64_t bitLen) {
 } // namespace
 
 /// @brief SHA-1 implementation: hash full 64-byte blocks, then the padded tail.
+/// @param data Borrowed input bytes, optionally null when `len` is zero.
+/// @param len Input length.
+/// @return 20-byte SHA-1 digest.
+/// @throws std::runtime_error If a non-empty input pointer is null.
 std::array<uint8_t, 20> sha1Bytes(const uint8_t *data, size_t len) {
     validateDigestInput(data, len, "SHA-1");
     uint32_t h0 = 0x67452301u;
@@ -90,6 +116,8 @@ std::array<uint8_t, 20> sha1Bytes(const uint8_t *data, size_t len) {
     uint32_t h3 = 0x10325476u;
     uint32_t h4 = 0xc3d2e1f0u;
 
+    /// @brief Expand and compress one 64-byte SHA-1 message block.
+    /// @param block Complete message block in big-endian byte order.
     auto processBlock = [&](const uint8_t block[64]) {
         uint32_t w[80] = {};
         for (size_t i = 0; i < 16; ++i)
@@ -154,11 +182,20 @@ std::array<uint8_t, 20> sha1Bytes(const uint8_t *data, size_t len) {
     return out;
 }
 
+/// @brief Compute SHA-1 and encode it as lowercase hexadecimal.
+/// @param data Borrowed input bytes, optionally null when `len` is zero.
+/// @param len Input length.
+/// @return 40-character digest string.
+/// @throws std::runtime_error If a non-empty input pointer is null.
 std::string sha1Hex(const uint8_t *data, size_t len) {
     return hexDigest(sha1Bytes(data, len));
 }
 
 /// @brief SHA-256 implementation: hash full 64-byte blocks, then the padded tail.
+/// @param data Borrowed input bytes, optionally null when `len` is zero.
+/// @param len Input length.
+/// @return 32-byte SHA-256 digest.
+/// @throws std::runtime_error If a non-empty input pointer is null.
 std::array<uint8_t, 32> sha256Bytes(const uint8_t *data, size_t len) {
     validateDigestInput(data, len, "SHA-256");
     static constexpr std::array<uint32_t, 64> k = {
@@ -182,6 +219,8 @@ std::array<uint8_t, 32> sha256Bytes(const uint8_t *data, size_t len) {
                      0x1f83d9abu,
                      0x5be0cd19u};
 
+    /// @brief Expand and compress one 64-byte SHA-256 message block.
+    /// @param block Complete message block in big-endian byte order.
     auto processBlock = [&](const uint8_t block[64]) {
         uint32_t w[64] = {};
         for (size_t i = 0; i < 16; ++i)
@@ -238,6 +277,11 @@ std::array<uint8_t, 32> sha256Bytes(const uint8_t *data, size_t len) {
     return out;
 }
 
+/// @brief Compute SHA-256 and encode it as lowercase hexadecimal.
+/// @param data Borrowed input bytes, optionally null when `len` is zero.
+/// @param len Input length.
+/// @return 64-character digest string.
+/// @throws std::runtime_error If a non-empty input pointer is null.
 std::string sha256Hex(const uint8_t *data, size_t len) {
     return hexDigest(sha256Bytes(data, len));
 }

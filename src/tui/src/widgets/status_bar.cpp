@@ -28,18 +28,22 @@ namespace zanna::tui::widgets {
 /// @details Stores references to the immutable theme while taking ownership of
 ///          the text strings.  The constructor does not perform any rendering;
 ///          paint operations occur later via @ref paint.
+/// @param left Initial left-aligned message, moved into the widget.
+/// @param right Initial right-aligned message, moved into the widget.
+/// @param theme Borrowed theme that must outlive the status bar.
 StatusBar::StatusBar(std::string left, std::string right, const style::Theme &theme)
     : left_(std::move(left)), right_(std::move(right)), theme_(theme) {}
 
 /// @brief Replace the left-hand message displayed by the status bar.
-/// @details The string is copied into the widget's storage so the caller may
-///          discard or reuse the argument immediately.
+/// @details The by-value argument is moved into widget storage.
+/// @param left New left-aligned message.
 void StatusBar::setLeft(std::string left) {
     left_ = std::move(left);
 }
 
 /// @brief Replace the right-hand message displayed by the status bar.
 /// @details Mirrors @ref setLeft while targeting the right-aligned segment.
+/// @param right New right-aligned message.
 void StatusBar::setRight(std::string right) {
     right_ = std::move(right);
 }
@@ -49,6 +53,7 @@ void StatusBar::setRight(std::string right) {
 ///          widget's origin, and paints the right string aligned to the widget's
 ///          far edge.  Strings longer than the available space are clipped to
 ///          avoid wrapping artefacts.
+/// @param sb Screen buffer that receives the cleared row and both messages.
 void StatusBar::paint(render::ScreenBuffer &sb) {
     const auto &st = theme_.style(style::Role::Normal);
     int y = rect_.y + rect_.h - 1;

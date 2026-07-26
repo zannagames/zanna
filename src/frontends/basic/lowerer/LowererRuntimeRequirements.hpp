@@ -18,6 +18,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares idempotent Lowerer requests for BASIC runtime helpers.
+/// @details This class-body fragment records only the runtime symbols needed by
+///          emitted array, file, module-variable, string, timing, and trap
+///          operations so module declarations remain demand-driven.
+
 // ═══ Runtime Requirement Declarations ═══
 
 /// @brief Require the generic runtime trap helper.

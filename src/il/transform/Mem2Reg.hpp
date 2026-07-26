@@ -21,6 +21,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares scalar replacement and memory-to-register promotion for IL.
+ *
+ * @details The pass first splits small constant-layout aggregate allocas into
+ *          scalar fields, then promotes non-escaping primitive allocations
+ *          with sealed SSA construction and block parameters at joins. It can
+ *          accumulate removal statistics and optionally process independent
+ *          functions in parallel under explicit caller control.
+ */
+
 #pragma once
 
 #include "il/core/Module.hpp"

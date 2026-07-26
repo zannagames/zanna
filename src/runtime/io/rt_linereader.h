@@ -27,6 +27,13 @@
 // Links: src/runtime/io/rt_linereader.c (implementation), src/runtime/core/rt_string.h
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares the managed buffered text LineReader API.
+ * @details Exposes binary-mode opening, line reads with uniform terminator
+ * stripping, raw byte read and peek, remaining-content reads, sticky EOF
+ * observation, and explicit close for validated opaque reader handles.
+ */
 #pragma once
 
 #include "rt_string.h"

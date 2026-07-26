@@ -140,6 +140,8 @@ bool isDerivedFromNonEscapingAlloca(const DefMap &defs,
 ///          non-aliasing when @p allowLoadHoist is true.  Pure calls (no memory
 ///          effects) are always hoistable; readonly calls are hoistable under
 ///          the same alias conditions as loads.
+/// @param function Function containing @p instr and its call context.
+/// @param module Module used to resolve direct callee effects.
 /// @param instr Instruction to test.
 /// @param allowLoadHoist Whether loads/readonly calls may be hoisted.
 /// @param callHoist Output: set to the call hoisting classification when the

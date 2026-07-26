@@ -16,8 +16,8 @@
 //   - Gate acquisition is FIFO-fair across waiters; cancelled waiters are
 //     removed from the queue without disturbing later arrivals.
 //   - Barrier releases all parties simultaneously and resets per generation;
-//     a barrier marked "broken" rejects every subsequent participant with a
-//     trap rather than letting them block forever.
+//     finalization wakes blocked participants so they trap rather than remain
+//     stranded on detached state.
 //   - RwLock provides writer-preference: queued writers block new readers so
 //     a steady stream of readers cannot starve a waiting writer.
 //   - All public entry points downcast their handle through a templated
@@ -88,6 +88,8 @@ struct GateWaiter {
 /// @brief Shared gate state implementing a FIFO semaphore.
 /// @details Tracks permit count and a queue of waiters to ensure fairness.
 struct GateState {
+    /// @brief Construct gate state with the requested number of permits.
+    /// @param initial_permits Initial available-permit count.
     explicit GateState(int64_t initial_permits) : permits(initial_permits) {}
 
     std::mutex mu;
@@ -104,6 +106,13 @@ struct RtGate {
     GateState *state = nullptr;
 };
 
+/// @brief Allocate raw storage and placement-construct primitive state.
+/// @details Constructor exceptions are contained and converted to NULL after
+///          releasing the raw allocation.
+/// @tparam T State type to construct.
+/// @tparam Args Constructor argument types.
+/// @param args Arguments forwarded to `T`'s constructor.
+/// @return Constructed state pointer, or nullptr on allocation or construction failure.
 template <typename T, typename... Args> static T *allocateState(Args &&...args) {
     void *mem = std::malloc(sizeof(T));
     if (!mem)
@@ -116,6 +125,9 @@ template <typename T, typename... Args> static T *allocateState(Args &&...args) 
     }
 }
 
+/// @brief Destroy primitive state and release its malloc-backed storage.
+/// @tparam T Concrete state type.
+/// @param state State pointer to consume, or nullptr.
 template <typename T> static void destroyState(T *state) {
     if (!state)
         return;
@@ -137,32 +149,26 @@ static bool gate_detached_and_idle_locked(const GateState &state) {
 // Shared Validation Helper
 //===----------------------------------------------------------------------===//
 
-/// @brief Validate a threading primitive object and return its typed wrapper.
-/// @details Generic validation for all threading primitives (Gate, Barrier, RwLock).
-///          Traps with descriptive messages if the object or its internal state is null.
-/// @tparam T The typed wrapper type (RtGate, RtBarrier, RtRwLock).
-/// @param obj Opaque object pointer passed from the runtime.
-/// @param typeName Name of the type for error messages (e.g., "Gate").
-/// @param what Custom error message, or nullptr to use default.
-/// @return Valid typed pointer, or nullptr if validation fails.
+/// @brief Release a retained runtime primitive object.
+/// @details A NULL pointer is ignored; an object whose reference count reaches
+///          zero is finalized and freed through the runtime heap.
+/// @param obj Runtime object reference to release, or nullptr.
 static void releaseRuntimeObject(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
-/// @brief Validate-and-cast an opaque object pointer to its concrete impl type, trapping on
-/// mismatch.
-/// @details Generic helper used by every public Gate / Barrier / RwLock
-///          entry point. Traps on NULL with @p what (or a generic
-///          "<typeName>: null object" if @p what is NULL); traps on
-///          wrong-class with "<typeName>: invalid object". Returns
-///          static_cast<T*>(obj) on success.
-/// @tparam T  Target pointer type for the downcast.
-/// @param obj      Opaque object pointer.
-/// @param classId  Required runtime class id; 0 disables the class check.
-/// @param typeName Class name used in default trap messages.
-/// @param what     Optional caller-supplied trap message override.
 template <typename T>
+/// @brief Validate and cast an opaque primitive object to its concrete wrapper.
+/// @details Every Gate, Barrier, and RwLock entry point uses this helper. NULL
+///          traps with @p what or a generated type diagnostic; a class mismatch
+///          or detached internal state traps as an invalid object.
+/// @tparam T Target runtime-wrapper type.
+/// @param obj Opaque runtime object pointer.
+/// @param classId Required runtime class ID, or zero to disable the class check.
+/// @param typeName Type name used in generated diagnostics.
+/// @param what Optional caller-specific NULL diagnostic.
+/// @return Valid typed wrapper, or nullptr after a returning trap hook.
 static T *requireObject(void *obj, int64_t classId, const char *typeName, const char *what) {
     if (!obj) {
         if (what) {
@@ -190,7 +196,9 @@ static T *requireObject(void *obj, int64_t classId, const char *typeName, const 
     return typed;
 }
 
-/// @brief Build a steady-clock deadline without overflowing the time_point range.
+/// @brief Build a saturating steady-clock deadline.
+/// @param ms Relative delay in milliseconds; non-positive values select now.
+/// @return `now + ms` when representable, otherwise the maximum steady-clock time point.
 static std::chrono::steady_clock::time_point steadyDeadlineFromNow(int64_t ms) {
     const auto now = std::chrono::steady_clock::now();
     if (ms <= 0)
@@ -207,6 +215,11 @@ static std::chrono::steady_clock::time_point steadyDeadlineFromNow(int64_t ms) {
 ///          `_Cnd_timedwait_for_unchecked` while the matching debug DLL does not export it.
 ///          On Windows, avoid `std::condition_variable::wait_until` so native demo binaries
 ///          that use Gate.TryEnterFor can still load under the installed debug runtime.
+/// @param state Locked gate state whose closing flag is observed.
+/// @param waiter Stack waiter whose granted or canceled state ends the wait.
+/// @param lock Owning unique lock, temporarily released by the Windows polling path.
+/// @param deadline Absolute steady-clock deadline.
+/// @return True after a signal/state transition, or false when the deadline expires first.
 static bool waitGateUntil(GateState &state,
                           GateWaiter &waiter,
                           std::unique_lock<std::mutex> &lock,
@@ -238,8 +251,10 @@ static RtGate *require_gate(void *gate, const char *what) {
     return requireObject<RtGate>(gate, RT_GATE_CLASS_ID, "Gate", what);
 }
 
-/// @brief Finalizer invoked when a gate object is collected.
-/// @details Releases the heap-allocated GateState and clears the pointer.
+/// @brief Finalize a gate object and detach its shared state.
+/// @details Marks the state closing, cancels every stack-owned waiter, and
+///          clears the runtime wrapper. State is destroyed immediately only
+///          when no waiter remains; otherwise the last departing waiter frees it.
 /// @param obj Runtime object pointer to finalize.
 static void gate_finalizer(void *obj) {
     auto *gate = static_cast<RtGate *>(obj);
@@ -271,6 +286,8 @@ static void gate_finalizer(void *obj) {
 /// @brief Shared barrier state for coordinating fixed parties.
 /// @details Tracks arrival count and generation so the barrier can be reused.
 struct BarrierState {
+    /// @brief Construct reusable barrier state for a fixed party count.
+    /// @param parties_ Number of arrivals required per generation.
     explicit BarrierState(int64_t parties_) : parties(parties_) {}
 
     std::mutex mu;
@@ -307,8 +324,10 @@ static RtBarrier *require_barrier(void *barrier, const char *what) {
     return requireObject<RtBarrier>(barrier, RT_BARRIER_CLASS_ID, "Barrier", what);
 }
 
-/// @brief Finalizer invoked when a barrier object is collected.
-/// @details Releases the heap-allocated BarrierState and clears the pointer.
+/// @brief Finalize a barrier object and detach its shared state.
+/// @details Marks the state closing, advances its generation, and wakes all
+///          blocked arrivers. The last departing arriver destroys state when
+///          immediate destruction is unsafe.
 /// @param obj Runtime object pointer to finalize.
 static void barrier_finalizer(void *obj) {
     auto *barrier = static_cast<RtBarrier *>(obj);
@@ -388,8 +407,10 @@ static RtRwLock *require_rwlock(void *lock, const char *what) {
     return requireObject<RtRwLock>(lock, RT_RWLOCK_CLASS_ID, "RwLock", what);
 }
 
-/// @brief Finalizer invoked when a reader-writer lock object is collected.
-/// @details Releases the heap-allocated RwLockState and clears the pointer.
+/// @brief Finalize a reader-writer lock and detach its shared state.
+/// @details Marks the state closing, wakes readers, cancels queued writers,
+///          and clears the wrapper. Active holders or waiters defer destruction
+///          until the last participant exits.
 /// @param obj Runtime object pointer to finalize.
 static void rwlock_finalizer(void *obj) {
     auto *rw = static_cast<RtRwLock *>(obj);

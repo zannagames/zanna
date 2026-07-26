@@ -5,17 +5,12 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implements the `ilc il-opt` subcommand. The driver loads a module, configures
-// a pass manager, and emits optimized IL according to user-selected pipelines.
-// The helpers registered here showcase how to compose transformation passes from
-// the public API.
-//
-//===----------------------------------------------------------------------===//
-
-/// @file
+/// @file cmd_il_opt.cpp
 /// @brief Implements the optimisation pipeline entry point for `ilc`.
-/// @details The routine demonstrates how to configure the pass manager and wire
-///          transformation passes together using the public API.
+///
+/// The driver loads and verifies a module, resolves registered or explicit pass pipelines,
+/// configures pass instrumentation and optional bisection, emits statistics, and atomically writes
+/// canonical optimized IL.
 
 #include "cli.hpp"
 #include "il/transform/ConstFold.hpp"
@@ -46,6 +41,8 @@ struct ModuleSize {
 };
 
 /// @brief Count the total basic blocks and instructions in @p module.
+/// @param module Module whose functions and blocks are traversed.
+/// @return Aggregate block and instruction counts.
 ModuleSize computeModuleSize(const core::Module &module) {
     ModuleSize size{};
     for (const auto &fn : module.functions) {
@@ -114,6 +111,9 @@ int cmdILOpt(int argc, char **argv) {
     bool passStats = false;
     bool bisectPipeline = false;
     std::string pipelineName;
+    /// @brief Trim ASCII whitespace from both ends of a pass-list token.
+    /// @param token Token view to trim.
+    /// @return Subview spanning the non-whitespace content.
     auto trimToken = [](std::string_view token) {
         while (!token.empty() && std::isspace(static_cast<unsigned char>(token.front())))
             token.remove_prefix(1);
@@ -121,6 +121,9 @@ int cmdILOpt(int argc, char **argv) {
             token.remove_suffix(1);
         return token;
     };
+    /// @brief Parse a comma-separated explicit optimization-pass list.
+    /// @param passes Pass-list text to split and validate.
+    /// @return `true` when every token is nonempty.
     auto parsePassList = [&](std::string_view passes) -> bool {
         size_t pos = 0;
         passesExplicit = true;
@@ -195,6 +198,9 @@ int cmdILOpt(int argc, char **argv) {
         pm.setVerifyBetweenPasses(true);
 
     transform::PassManager::Pipeline selectedPipeline;
+    /// @brief Look up a registered optimization pipeline by name.
+    /// @param name Pipeline name to resolve.
+    /// @return Pointer to the registered pipeline, or `nullptr` when absent.
     auto resolvePipeline =
         [&](const std::string &name) -> const transform::PassManager::Pipeline * {
         return pm.getPipeline(name);
@@ -204,6 +210,9 @@ int cmdILOpt(int argc, char **argv) {
         const auto *pipeline = resolvePipeline(pipelineName);
         if (!pipeline) {
             std::string upper = pipelineName;
+            /// @brief Fold one pipeline-name byte to uppercase for fallback lookup.
+            /// @param c Byte to normalize.
+            /// @return Uppercase representation converted back to `char`.
             std::transform(upper.begin(), upper.end(), upper.begin(), [](unsigned char c) {
                 return static_cast<char>(std::toupper(c));
             });
@@ -257,6 +266,9 @@ int cmdILOpt(int argc, char **argv) {
 
     zanna::passes::Mem2RegStats mem2regStatsData;
     if (mem2regStats) {
+        /// @brief Runs mem2reg while accumulating command-line statistics.
+        /// @param module Module to transform.
+        /// @return No preserved analyses after transformation.
         pm.registerModulePass("mem2reg",
                               [&mem2regStatsData](core::Module &module,
                                                    transform::AnalysisManager &) {

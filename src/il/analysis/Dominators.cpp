@@ -114,8 +114,15 @@ DomTree computeDominatorTree(const CFGContext &ctx, il::core::Function &F) {
             // Intersect two dominance paths by advancing along the dominator
             // chain using block visit indexes until the nearest common
             // ancestor is located.
+            /// @brief Finds the nearest common node on two dominator chains.
+            /// @param b1 First block.
+            /// @param b2 Second block.
+            /// @return Common dominator, or null when a chain is incomplete.
             auto intersect = [&](il::core::Block *b1,
                                  il::core::Block *b2) -> il::core::Block * {
+                /// @brief Looks up a block's reverse-postorder index.
+                /// @param block Block to query.
+                /// @return Index, or `std::nullopt` when absent.
                 auto blockIndex = [&](il::core::Block *block) -> std::optional<std::size_t> {
                     auto it = index.find(block);
                     if (it == index.end())
@@ -242,6 +249,8 @@ PostDomTree computePostDominatorTree(const CFGContext &ctx, il::core::Function &
     std::unordered_set<il::core::Block *> visited;
     visited.reserve(F.blocks.size());
 
+    /// @brief Performs iterative DFS over predecessor edges from one root.
+    /// @param start Exit or otherwise unvisited start block.
     auto dfs = [&](il::core::Block *start) {
         struct Frame {
             il::core::Block *block;
@@ -292,6 +301,9 @@ PostDomTree computePostDominatorTree(const CFGContext &ctx, il::core::Function &
     for (std::size_t i = 0; i < rpo_rev.size(); ++i)
         index[rpo_rev[i]] = i + 1;
 
+    /// @brief Returns a block's reversed-CFG RPO index.
+    /// @param b Block, or null for the virtual exit.
+    /// @return RPO index, zero for the virtual exit, or the maximum when absent.
     auto getIdx = [&](il::core::Block *b) -> std::size_t {
         if (!b)
             return 0; // virtual exit
@@ -316,6 +328,10 @@ PostDomTree computePostDominatorTree(const CFGContext &ctx, il::core::Function &
     // its successors' immediate post-dominators (successors in the original CFG
     // = predecessors in the reversed CFG).
     // -------------------------------------------------------------------------
+    /// @brief Finds the common node on two post-dominator chains.
+    /// @param b1 First block.
+    /// @param b2 Second block.
+    /// @return Common post-dominator, or `std::nullopt` for an incomplete chain.
     auto intersect = [&](il::core::Block *b1,
                          il::core::Block *b2) -> std::optional<il::core::Block *> {
         while (b1 != b2) {

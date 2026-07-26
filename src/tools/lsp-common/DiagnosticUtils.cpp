@@ -17,6 +17,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements conversion from compiler diagnostics to server value types.
+
 #include "tools/lsp-common/DiagnosticUtils.hpp"
 
 #include "support/diagnostics.hpp"
@@ -25,12 +28,19 @@
 namespace zanna::server {
 
 /// @brief Resolve a file id to its registered path, or empty when unknown.
+/// @param sm Optional source manager owning file registrations.
+/// @param fileId One-based source file id; zero denotes no file.
+/// @return Registered path copied into owned storage, or empty when unavailable.
 static std::string resolvePath(const il::support::SourceManager *sm, uint32_t fileId) {
     if (!sm || fileId == 0)
         return {};
     return std::string(sm->getPath(fileId));
 }
 
+/// @brief Convert all engine diagnostics into fully owning server records.
+/// @param diag Diagnostic engine to traverse in emission order.
+/// @param sm Optional source manager for primary and note file paths.
+/// @return Converted diagnostics preserving messages, ranges, notes, and fix-its.
 std::vector<DiagnosticInfo> extractDiagnostics(const il::support::DiagnosticEngine &diag,
                                                const il::support::SourceManager *sm) {
     std::vector<DiagnosticInfo> result;

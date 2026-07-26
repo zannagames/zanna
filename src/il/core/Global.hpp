@@ -21,6 +21,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares module-scope IL storage objects and their linkage metadata.
+ *
+ * @details A `Global` owns its canonical name, declared type, serialized
+ *          initializer, source-level const/initializer intent, and cross-module
+ *          visibility. An optional interned name sidecar supports efficient
+ *          module lookup without replacing the owned textual identity.
+ */
+
 #pragma once
 
 #include "il/core/Linkage.hpp"

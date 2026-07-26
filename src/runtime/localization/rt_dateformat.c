@@ -28,6 +28,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements the managed DateFormat facade and locale style selection.
+ * @details Captures an immutable locale-data snapshot, resolves canonical and
+ * combined patterns, delegates checked pattern emission, formats DateOnly
+ * values, and exposes localized month, weekday, and day-period names.
+ */
+
 #include "rt_dateformat.h"
 
 #include "rt_datetime.h"
@@ -48,11 +56,13 @@
 // Forward declaration for the pattern emitter (implemented in
 // rt_dateformat_patterns.c).
 //===----------------------------------------------------------------------===//
+/// @copydoc rt_dateformat_emit_pattern()
 void rt_dateformat_emit_pattern(rt_string_builder *sb,
                                 int64_t timestamp,
                                 const char *pattern,
                                 size_t pattern_len,
                                 const rt_locale_data_t *data);
+/// @copydoc rt_dateformat_emit_pattern_checked()
 int rt_dateformat_emit_pattern_checked(rt_string_builder *sb,
                                        int64_t timestamp,
                                        const char *pattern,
@@ -63,9 +73,10 @@ int rt_dateformat_emit_pattern_checked(rt_string_builder *sb,
 // Instance struct
 //===----------------------------------------------------------------------===//
 
+/** GC payload retaining the Locale and data snapshot for one DateFormat. */
 typedef struct rt_dateformat_inst {
-    void *locale;
-    const rt_locale_data_t *data;
+    void *locale;                 ///< Retained Locale handle, if supplied.
+    const rt_locale_data_t *data; ///< Retained immutable formatting data.
 } rt_dateformat_inst_t;
 
 /// @brief Unchecked cast of an opaque handle to the DateFormat instance.

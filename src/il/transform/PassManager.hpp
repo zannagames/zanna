@@ -20,6 +20,18 @@
 //        il/transform/PipelineExecutor.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares registration, configuration, and execution of IL pass pipelines.
+ *
+ * @details `PassManager` owns analysis/pass registries and named ordered
+ *          pipelines, exposes convenience registration adapters, and forwards
+ *          execution to `PipelineExecutor`. Optional instrumentation controls
+ *          verification, IR printing, statistics, and parallel execution of
+ *          function passes explicitly audited as safe.
+ */
+
 #pragma once
 
 #include "il/core/fwd.hpp"
@@ -209,14 +221,23 @@ class PassManager {
     bool runPipeline(core::Module &module, const std::string &pipelineId) const;
 
   private:
+    /// @brief Registry of module- and function-level analysis computations.
     AnalysisRegistry analysisRegistry_;
+    /// @brief Registry of materializable module and function transformations.
     PassRegistry passRegistry_;
+    /// @brief Named pass-identifier sequences available to runPipeline().
     std::unordered_map<std::string, Pipeline> pipelines_;
+    /// @brief Whether to verify the module after each successful pass.
     bool verifyBetweenPasses_ = false;
+    /// @brief Whether to serialize IR before each pass.
     bool printBeforeEach_ = false;
+    /// @brief Whether to serialize IR after each pass.
     bool printAfterEach_ = false;
+    /// @brief Borrowed destination for instrumentation output, or nullptr for the default.
     std::ostream *instrumentationStream_ = nullptr;
+    /// @brief Whether to report per-pass size and analysis metrics.
     bool reportPassStatistics_ = false;
+    /// @brief Whether audited function passes may execute concurrently.
     bool parallelFunctionPasses_ = false;
 };
 

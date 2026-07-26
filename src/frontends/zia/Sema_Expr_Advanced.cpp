@@ -867,6 +867,9 @@ TypeRef Sema::analyzeAs(AsExpr *expr) {
         return targetType;
 
     // Targeted guidance for String <-> scalar, which is not an `as` cast.
+    /// @brief Tests whether a semantic kind is a scalar conversion category.
+    /// @param k Semantic type kind.
+    /// @return `true` for integer, number, boolean, or byte.
     auto isScalar = [](TypeKindSem k) {
         return k == TypeKindSem::Integer || k == TypeKindSem::Number ||
                k == TypeKindSem::Boolean || k == TypeKindSem::Byte;
@@ -921,6 +924,9 @@ bool Sema::analyzeMatchPattern(const MatchArm::Pattern &pattern,
                                TypeRef scrutineeType,
                                MatchCoverage &coverage,
                                std::unordered_map<std::string, TypeRef> &bindings) {
+    /// @brief Records one unique pattern binding.
+    /// @param name Binding identifier.
+    /// @param type Bound semantic type.
     auto bind = [&](const std::string &name, TypeRef type) {
         if (bindings.find(name) != bindings.end()) {
             error(pattern.literal ? pattern.literal->loc : SourceLoc{},
@@ -1294,6 +1300,9 @@ TypeRef Sema::analyzeNew(NewExpr *expr) {
         return types::unknown();
     }
 
+    /// @brief Finds the registered runtime constructor for a candidate type.
+    /// @param candidate Constructed semantic type.
+    /// @return Constructor symbol, or null.
     auto findRuntimeCtor = [&](TypeRef candidate) -> Symbol * {
         if (!candidate || candidate->name.empty())
             return nullptr;
@@ -1370,6 +1379,10 @@ TypeRef Sema::analyzeNew(NewExpr *expr) {
         return type;
     }
 
+    /// @brief Tests whether a class or struct declares its own `init` method.
+    /// @param typeName Semantic owner type name.
+    /// @param isClass Whether to query the class registry rather than structs.
+    /// @return `true` when an `init` member is declared directly.
     auto hasOwnInit = [&](const std::string &typeName, bool isClass) {
         if (isClass) {
             auto classIt = classDecls_.find(typeName);

@@ -30,6 +30,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Defines the process-lifetime baked en-US locale-data record.
+ * @details Supplies immutable calendar names, numeric and currency settings,
+ * list and relative-time templates, and static CLDR-derived cardinal and
+ * ordinal rule DAGs used as both the en-US locale and invariant fallback.
+ */
+
 #include "rt_locale_data.h"
 
 #include <stddef.h>
@@ -38,6 +46,7 @@
 // Calendar name tables
 //===----------------------------------------------------------------------===//
 
+/** Wide English month names in one-based calendar order. */
 static const char *const g_en_us_months_wide[12] = {
     "January",
     "February",
@@ -53,6 +62,7 @@ static const char *const g_en_us_months_wide[12] = {
     "December",
 };
 
+/** Abbreviated English month names in one-based calendar order. */
 static const char *const g_en_us_months_abbr[12] = {
     "Jan",
     "Feb",
@@ -68,6 +78,7 @@ static const char *const g_en_us_months_abbr[12] = {
     "Dec",
 };
 
+/** Wide English weekday names in Sunday-first order. */
 static const char *const g_en_us_days_wide[7] = {
     "Sunday",
     "Monday",
@@ -78,6 +89,7 @@ static const char *const g_en_us_days_wide[7] = {
     "Saturday",
 };
 
+/** Abbreviated English weekday names in Sunday-first order. */
 static const char *const g_en_us_days_abbr[7] = {
     "Sun",
     "Mon",
@@ -175,6 +187,7 @@ static const rt_plural_rule_entry_t g_en_us_ordinal[] = {
 // Top-level record
 //===----------------------------------------------------------------------===//
 
+/** Complete immutable locale record returned for en-US and invariant fallback. */
 static const rt_locale_data_t g_en_us_data = {
     .tag = "en-US",
     .names =

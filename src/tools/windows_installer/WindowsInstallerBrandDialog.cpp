@@ -5,21 +5,17 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/tools/windows_installer/WindowsInstallerBrandDialog.cpp
-// Purpose: Implement the dark Zanna Games choice and progress windows.
-//
-// Key invariants:
-//   - Win32 callbacks catch or avoid every exception at the native boundary.
-//   - Controls expose native names, focus, activation, and tab navigation.
-//   - Scrolling never changes the logical result or publishes partial choices.
-//   - Progress completion and callback messages cannot outlive their context.
-//
-// Ownership/Lifetime:
-//   - Modal context objects outlive their windows and own their theme resources.
-//   - Posted status strings transfer ownership to the UI thread.
-//
-// Links: WindowsInstallerBrandDialog.hpp, WindowsInstallerTheme.cpp,
-//        WindowsInstallerWizard.cpp
+/// @file
+/// @brief Implements the branded native choice and cooperative-progress windows.
+///
+/// Native controls retain keyboard focus, accessible names, and dialog
+/// navigation. Modal contexts own theme resources and outlive their HWNDs;
+/// worker progress is copied through bounded, coalesced UI messages. Every
+/// Win32 callback prevents exceptions from crossing the native boundary.
+///
+/// @see WindowsInstallerBrandDialog.hpp
+/// @see WindowsInstallerTheme.cpp
+/// @see WindowsInstallerWizard.cpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -61,15 +57,25 @@ constexpr UINT kMessageProgressComplete = WM_APP + 42U;
 constexpr UINT_PTR kProgressTimer = 1U;
 constexpr size_t kMaximumProgressStatusUnits = 2048U;
 
+/// @brief Scale a logical 96-DPI coordinate to a target DPI.
+/// @param value Logical pixel value.
+/// @param dpi Normalized target dots per inch.
+/// @return Device-pixel coordinate rounded by MulDiv.
 int scaled(int value, UINT dpi) noexcept {
     return MulDiv(value, static_cast<int>(dpi), 96);
 }
 
+/// @brief Apply a font to an existing native control.
+/// @param control Control handle, ignored when null.
+/// @param font Font handle, ignored when null.
 void setControlFont(HWND control, HFONT font) noexcept {
     if (control && font)
         SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
 }
 
+/// @brief Convert lone line feeds to CRLF for a multiline Win32 edit control.
+/// @param text Source display text.
+/// @return Owned text preserving existing CRLF pairs.
 std::wstring windowsEditText(std::wstring_view text) {
     std::wstring result;
     result.reserve(text.size());
@@ -83,6 +89,9 @@ std::wstring windowsEditText(std::wstring_view text) {
     return result;
 }
 
+/// @brief Resolve and validate the desktop work area available to setup.
+/// @return Usable screen work-area rectangle, falling back to screen metrics.
+/// @throws std::runtime_error When the resulting dimensions are invalid.
 RECT installerWorkArea() {
     RECT workArea{};
     if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0)) {
@@ -97,6 +106,10 @@ RECT installerWorkArea() {
     return workArea;
 }
 
+/// @brief Center and reveal a window within the installer work area.
+/// @param window Window to inspect and position.
+/// @param workArea Bounding desktop work area.
+/// @throws std::runtime_error When bounds cannot be queried or positioning fails.
 void centerAndShow(HWND window, const RECT &workArea) {
     RECT bounds{};
     if (!GetWindowRect(window, &bounds))
@@ -113,6 +126,10 @@ void centerAndShow(HWND window, const RECT &workArea) {
     }
 }
 
+/// @brief Accumulate high-resolution wheel deltas into integral scroll steps.
+/// @param value Mouse-wheel message parameter.
+/// @param remainder Receives the unconsumed delta remainder.
+/// @return Number of complete WHEEL_DELTA steps, possibly negative.
 int consumeWheelSteps(WPARAM value, int &remainder) noexcept {
     remainder += GET_WHEEL_DELTA_WPARAM(value);
     const int steps = remainder / WHEEL_DELTA;
@@ -120,6 +137,9 @@ int consumeWheelSteps(WPARAM value, int &remainder) noexcept {
     return steps;
 }
 
+/// @brief Apply the operating system's suggested bounds after a DPI change.
+/// @param window Window to reposition.
+/// @param bounds Suggested rectangle, ignored when null or degenerate.
 void applySuggestedDpiBounds(HWND window, const RECT *bounds) noexcept {
     if (!window || !bounds || bounds->right <= bounds->left || bounds->bottom <= bounds->top)
         return;
@@ -154,6 +174,10 @@ struct PageContext {
     int defaultButtonId{0};
     bool compact{false};
 
+    /// @brief Construct modal page state and initialize its default result.
+    /// @param pageInstance Module instance used to create controls.
+    /// @param pageModel Borrowed page model valid for the modal lifetime.
+    /// @param dpi Initial normalized window DPI.
     PageContext(HINSTANCE pageInstance, const BrandedInstallerPage &pageModel, UINT dpi)
         : instance(pageInstance), page(pageModel), theme(dpi) {
         result.action = page.closeAction;
@@ -163,6 +187,11 @@ struct PageContext {
 
 void updatePageScrollbars(PageContext &context) noexcept;
 
+/// @brief Rebuild page theme resources and rescale children for a DPI change.
+/// @param context Live page context.
+/// @param requestedDpi DPI reported by WM_DPICHANGED.
+/// @param suggestedBounds Optional operating-system window rectangle.
+/// @details Allocation or theming failures are suppressed at the Win32 boundary.
 void updatePageDpi(PageContext &context, UINT requestedDpi, const RECT *suggestedBounds) noexcept {
     const UINT newDpi = normalizeInstallerDpi(requestedDpi);
     const UINT oldDpi = context.theme.dpi();
@@ -202,6 +231,20 @@ void updatePageDpi(PageContext &context, UINT requestedDpi, const RECT *suggeste
     InvalidateRect(context.window, nullptr, TRUE);
 }
 
+/// @brief Create, font, and theme one page child control.
+/// @param context Live page context providing parent, instance, theme, and DPI.
+/// @param exStyle Extended window styles.
+/// @param className Native window class name.
+/// @param text Initial accessible/display text.
+/// @param style Child-specific window styles.
+/// @param x Logical left coordinate.
+/// @param y Logical top coordinate.
+/// @param width Logical width.
+/// @param height Logical height.
+/// @param id Dialog control identifier.
+/// @param font Font applied to the control.
+/// @return Created child HWND.
+/// @throws std::runtime_error When CreateWindowExW fails.
 HWND createPageControl(PageContext &context,
                        DWORD exStyle,
                        const wchar_t *className,
@@ -232,6 +275,10 @@ HWND createPageControl(PageContext &context,
     return control;
 }
 
+/// @brief Move the page viewport to a bounded scrollbar position.
+/// @param context Live page context.
+/// @param bar @c SB_HORZ or @c SB_VERT.
+/// @param requestedPosition Desired logical scroll position.
 void scrollPage(PageContext &context, int bar, int requestedPosition) noexcept {
     SCROLLINFO info{sizeof(info), SIF_ALL};
     if (!GetScrollInfo(context.window, bar, &info))
@@ -254,6 +301,10 @@ void scrollPage(PageContext &context, int bar, int requestedPosition) noexcept {
                    SW_INVALIDATE | SW_ERASE | SW_SCROLLCHILDREN);
 }
 
+/// @brief Interpret a Win32 scrollbar command for the page viewport.
+/// @param context Live page context.
+/// @param bar @c SB_HORZ or @c SB_VERT.
+/// @param value Scroll-message parameter containing command and thumb data.
 void handlePageScroll(PageContext &context, int bar, WPARAM value) noexcept {
     SCROLLINFO info{sizeof(info), SIF_ALL};
     if (!GetScrollInfo(context.window, bar, &info))
@@ -288,6 +339,8 @@ void handlePageScroll(PageContext &context, int bar, WPARAM value) noexcept {
     scrollPage(context, bar, position);
 }
 
+/// @brief Synchronize page scrollbar ranges and page sizes with the client area.
+/// @param context Live page context containing virtual content dimensions.
 void updatePageScrollbars(PageContext &context) noexcept {
     RECT client{};
     if (!GetClientRect(context.window, &client))
@@ -304,6 +357,9 @@ void updatePageScrollbars(PageContext &context) noexcept {
     SetScrollInfo(context.window, SB_VERT, &vertical, TRUE);
 }
 
+/// @brief Scroll the page until a focused child is visible with a margin.
+/// @param context Live page context.
+/// @param control Child control to reveal.
 void revealPageControl(PageContext &context, HWND control) noexcept {
     if (!control || control == context.window)
         return;
@@ -333,6 +389,10 @@ void revealPageControl(PageContext &context, HWND control) noexcept {
     }
 }
 
+/// @brief Draw the compact-layout brand mark and labels.
+/// @param dc Paint device context.
+/// @param client Current client rectangle.
+/// @param context Page theme and layout state.
 void paintCompactHeader(HDC dc, const RECT &client, const PageContext &context) noexcept {
     if (!context.compact)
         return;
@@ -364,6 +424,11 @@ void paintCompactHeader(HDC dc, const RECT &client, const PageContext &context) 
     RestoreDC(dc, saved);
 }
 
+/// @brief Validate verification state and commit a selected page action.
+/// @param context Live page context whose result is updated.
+/// @param action Action requested by keyboard or mouse activation.
+/// @details A required unchecked verification control receives focus and leaves
+///          the modal page open.
 void acceptPageAction(PageContext &context, const BrandedInstallerAction &action) noexcept {
     if (action.requiresVerification && !context.page.verificationText.empty() &&
         context.verification &&
@@ -380,6 +445,12 @@ void acceptPageAction(PageContext &context, const BrandedInstallerAction &action
     DestroyWindow(context.window);
 }
 
+/// @brief Dispatch native messages for the branded choice page.
+/// @param window Page HWND.
+/// @param message Win32 message identifier.
+/// @param wParam Message-specific word parameter.
+/// @param lParam Message-specific long parameter.
+/// @return Message result, delegating unhandled messages to DefWindowProcW.
 LRESULT CALLBACK pageWindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     auto *context = reinterpret_cast<PageContext *>(GetWindowLongPtrW(window, GWLP_USERDATA));
     if (message == WM_NCCREATE) {
@@ -424,6 +495,9 @@ LRESULT CALLBACK pageWindowProcedure(HWND window, UINT message, WPARAM wParam, L
             const auto action =
                 std::find_if(context->actions.begin(),
                              context->actions.end(),
+                             /// @brief Match a rendered owner-draw control to its page action.
+                             /// @param candidate Candidate action-control binding.
+                             /// @return `true` when its action identifier equals the control ID.
                              [&](const PageActionControl &candidate) {
                                  return candidate.action &&
                                         candidate.action->id == static_cast<int>(item->CtlID);
@@ -459,6 +533,9 @@ LRESULT CALLBACK pageWindowProcedure(HWND window, UINT message, WPARAM wParam, L
                 const auto action =
                     std::find_if(context->actions.begin(),
                                  context->actions.end(),
+                                 /// @brief Match a clicked control identifier to its page action.
+                                 /// @param candidate Candidate action-control binding.
+                                 /// @return `true` when its action identifier equals `id`.
                                  [&](const PageActionControl &candidate) {
                                      return candidate.action && candidate.action->id == id;
                                  });
@@ -507,6 +584,10 @@ LRESULT CALLBACK pageWindowProcedure(HWND window, UINT message, WPARAM wParam, L
     return DefWindowProcW(window, message, wParam, lParam);
 }
 
+/// @brief Register or verify the branded page window class.
+/// @param instance Module instance owning the class and icon resource.
+/// @return Registered class atom.
+/// @throws std::runtime_error When registration or verification fails.
 ATOM registerPageWindowClass(HINSTANCE instance) {
     WNDCLASSEXW windowClass{sizeof(windowClass)};
     windowClass.style = CS_DBLCLKS;
@@ -556,6 +637,15 @@ struct ProgressContext {
     int virtualHeight{0};
     int wheelDelta{0};
 
+    /// @brief Construct progress-window state from borrowed work and logger callbacks.
+    /// @param progressInstance Module instance used to create controls.
+    /// @param dpi Initial normalized window DPI.
+    /// @param titleText Window caption.
+    /// @param eyebrowText Short brand/context label.
+    /// @param headingText Primary operation heading.
+    /// @param bodyText Explanatory operation text.
+    /// @param progressLogger Borrowed logger valid until the modal call returns.
+    /// @param progressWork Borrowed callable copied into owned context storage.
     ProgressContext(HINSTANCE progressInstance,
                     UINT dpi,
                     std::wstring_view titleText,
@@ -568,6 +658,11 @@ struct ProgressContext {
           heading(headingText), body(bodyText), logger(progressLogger), work(progressWork) {}
 };
 
+/// @brief Coalesce a bounded worker status update onto the UI message queue.
+/// @param context Live progress context shared with the worker.
+/// @param message Status text, truncated to the configured UTF-16-unit limit.
+/// @details Allocation, mutex, and posting failures are suppressed because this
+///          function can run from arbitrary lifecycle callbacks.
 void postProgressStatus(ProgressContext &context, std::wstring_view message) noexcept {
     bool shouldPost = false;
     try {
@@ -587,6 +682,10 @@ void postProgressStatus(ProgressContext &context, std::wstring_view message) noe
     }
 }
 
+/// @brief Rebuild progress theme resources and rescale controls for a DPI change.
+/// @param context Live progress context.
+/// @param requestedDpi DPI reported by WM_DPICHANGED.
+/// @param suggestedBounds Optional operating-system window rectangle.
 void updateProgressDpi(ProgressContext &context,
                        UINT requestedDpi,
                        const RECT *suggestedBounds) noexcept {
@@ -623,6 +722,19 @@ void updateProgressDpi(ProgressContext &context,
     InvalidateRect(context.window, nullptr, TRUE);
 }
 
+/// @brief Create, font, and theme one progress-window child control.
+/// @param context Live progress context providing parent, theme, and DPI.
+/// @param className Native window class name.
+/// @param text Initial accessible/display text.
+/// @param style Child-specific styles.
+/// @param x Logical left coordinate.
+/// @param y Logical top coordinate.
+/// @param width Logical width.
+/// @param height Logical height.
+/// @param id Dialog control identifier.
+/// @param font Font applied to the control.
+/// @return Created child HWND.
+/// @throws std::runtime_error When CreateWindowExW fails.
 HWND createProgressControl(ProgressContext &context,
                            const wchar_t *className,
                            const wchar_t *text,
@@ -652,6 +764,10 @@ HWND createProgressControl(ProgressContext &context,
     return control;
 }
 
+/// @brief Draw the indeterminate animated progress track.
+/// @param dc Paint device context.
+/// @param client Current client rectangle.
+/// @param context Animation, scrolling, layout, and theme state.
 void paintProgressTrack(HDC dc, const RECT &client, const ProgressContext &context) noexcept {
     SCROLLINFO horizontal{sizeof(horizontal), SIF_POS};
     SCROLLINFO vertical{sizeof(vertical), SIF_POS};
@@ -694,6 +810,10 @@ void paintProgressTrack(HDC dc, const RECT &client, const ProgressContext &conte
     }
 }
 
+/// @brief Record cooperative cancellation and disable repeated cancellation.
+/// @param context Live progress context shared with the worker.
+/// @details Completed work ignores cancellation; active work receives an atomic
+///          signal through the logger callback.
 void requestProgressCancellation(ProgressContext &context) noexcept {
     if (context.completed.load())
         return;
@@ -706,6 +826,12 @@ void requestProgressCancellation(ProgressContext &context) noexcept {
     }
 }
 
+/// @brief Dispatch native messages for the cooperative progress window.
+/// @param window Progress HWND.
+/// @param message Win32 message identifier.
+/// @param wParam Message-specific word parameter.
+/// @param lParam Message-specific long parameter.
+/// @return Message result, delegating unhandled messages to DefWindowProcW.
 LRESULT CALLBACK progressWindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     auto *context = reinterpret_cast<ProgressContext *>(GetWindowLongPtrW(window, GWLP_USERDATA));
     if (message == WM_NCCREATE) {
@@ -902,6 +1028,10 @@ LRESULT CALLBACK progressWindowProcedure(HWND window, UINT message, WPARAM wPara
     return DefWindowProcW(window, message, wParam, lParam);
 }
 
+/// @brief Register or verify the branded progress window class.
+/// @param instance Module instance owning the class and icon resource.
+/// @return Registered class atom.
+/// @throws std::runtime_error When registration or verification fails.
 ATOM registerProgressWindowClass(HINSTANCE instance) {
     WNDCLASSEXW windowClass{sizeof(windowClass)};
     windowClass.lpfnWndProc = progressWindowProcedure;
@@ -924,6 +1054,12 @@ ATOM registerProgressWindowClass(HINSTANCE instance) {
 
 } // namespace
 
+/// @brief Display one validated branded action page modally.
+/// @param instance Module instance used for classes, icons, and controls.
+/// @param page Borrowed content/action model valid for the modal call.
+/// @return Selected action and final verification-checkbox state.
+/// @throws std::runtime_error On invalid model data, native creation failures,
+///         or message-queue errors.
 BrandedInstallerPageResult showBrandedInstallerPage(HINSTANCE instance,
                                                     const BrandedInstallerPage &page) {
     validateBrandedInstallerPage(instance, page);
@@ -1156,6 +1292,17 @@ BrandedInstallerPageResult showBrandedInstallerPage(HINSTANCE instance,
     return context.result;
 }
 
+/// @brief Run lifecycle work on a worker behind a modal progress surface.
+/// @param instance Module instance used for native resources.
+/// @param windowTitle Window caption.
+/// @param eyebrow Short brand/context label.
+/// @param heading Primary operation heading.
+/// @param body Explanatory operation text.
+/// @param logger Logger temporarily configured with progress and cancellation callbacks.
+/// @param work Lifecycle callable executed exactly once on the worker thread.
+/// @return Work callable's exit code.
+/// @throws std::runtime_error On validation/native UI failures; rethrows any
+///         exception captured from @p work after joining the worker.
 int runBrandedInstallerProgress(HINSTANCE instance,
                                 std::wstring_view windowTitle,
                                 std::wstring_view eyebrow,
@@ -1280,10 +1427,16 @@ int runBrandedInstallerProgress(HINSTANCE instance,
         throw std::runtime_error("cannot start the branded progress animation timer");
     SetFocus(context.cancel);
 
+    /// @brief Forward one lifecycle progress message to the branded progress window.
+    /// @param message Status text to publish asynchronously.
     logger.setProgressCallback(
         [&context](std::wstring_view message) noexcept { postProgressStatus(context, message); });
+    /// @brief Report whether the user has requested cooperative cancellation.
+    /// @return Current cancellation-request flag.
     logger.setCancellationCallback([&context] { return context.cancellationRequested.load(); });
     const HWND progressWindow = context.window;
+    /// @brief Execute the lifecycle operation and notify the progress window on completion.
+    /// @details Captures any exception for propagation by the UI thread.
     context.worker = std::thread([progressWindow, &context] {
         try {
             context.result = context.work();

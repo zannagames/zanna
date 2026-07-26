@@ -141,6 +141,7 @@ static rt_soundsource3d *sound3d_source_checked(void *obj) {
 /// @details Idempotent — safe to call on already-null slots. Used by the
 ///   listener/source finalizers and by bind-site setters that need to
 ///   release the previous target before installing a new one.
+/// @param[in,out] slot Address of an owned GC reference cleared after release.
 static void sound3d_release_ref(void **slot) {
     if (!slot || !*slot)
         return;
@@ -229,6 +230,8 @@ static double sound3d_doppler_or(double value) {
 /// @brief Translation-unit-local copy of `rt_sound3d.c::sound3d_copy3`.
 /// @details Null-source-fills-zero convention applies: missing position
 ///   vectors collapse to the origin rather than leaving `dst` untouched.
+/// @param[out] dst Destination XYZ vector; NULL is ignored.
+/// @param[in] src Source XYZ vector, or NULL to write the origin.
 static void sound3d_copy3(double *dst, const double *src) {
     if (!dst)
         return;
@@ -265,6 +268,9 @@ static void sound3d_listener_sanitized_state(const rt_soundlistener3d *listener,
 /// @brief Translation-unit-local copy of `rt_sound3d.c::sound3d_vec_from_obj`.
 /// @details Decodes an `rt_vec3` object through the accessor API; null
 ///   collapses to origin. Returns 0 only when a non-null object is not a Vec3.
+/// @param[in] vec Optional runtime Vec3 object to decode.
+/// @param[out] out_xyz Destination XYZ vector.
+/// @return `1` for a null or valid Vec3 input; `0` for an invalid object or output buffer.
 static int sound3d_vec_from_obj(void *vec, double *out_xyz) {
     if (!out_xyz)
         return 0;
@@ -288,6 +294,12 @@ static int sound3d_vec_from_obj(void *vec, double *out_xyz) {
 ///          producing huge spurious velocities). The last-position cache is
 ///          always updated so the *next* call has a baseline. Velocity is
 ///          intended to drive Doppler effects in the audio core.
+/// @param[out] velocity Receives the bounded velocity when a prior position and usable delta
+/// time are available.
+/// @param[in,out] last_position Cached position updated to @p new_position.
+/// @param[in,out] has_last_position Flag indicating whether @p last_position is initialized.
+/// @param[in] new_position Current position used for the velocity calculation.
+/// @param[in] dt Elapsed time in seconds, sanitized to the supported synchronization range.
 static void sound3d_update_velocity(double *velocity,
                                     double *last_position,
                                     int8_t *has_last_position,
@@ -318,6 +330,8 @@ static void sound3d_update_velocity(double *velocity,
 ///   sentinels or "1000 = maximum" style conventions from other
 ///   engines). This chokepoint normalizes everything to the actual
 ///   mixer range so downstream code can assume valid input.
+/// @param volume Requested runtime volume.
+/// @return Volume clamped to the inclusive range `[0, 100]`.
 static int64_t sound3d_clamp_volume(int64_t volume) {
     if (volume < 0)
         return 0;
@@ -331,6 +345,7 @@ static int64_t sound3d_clamp_volume(int64_t volume) {
 ///   live on the listener struct itself) used by `sync_bindings` to walk
 ///   every live listener once per tick. Insertion at head is O(1) and
 ///   order doesn't matter since every node is visited uniformly.
+/// @param[in,out] listener Listener to link into the traversal list; NULL is ignored.
 static void sound3d_listener_list_add(rt_soundlistener3d *listener) {
     RT_ASSERT_MAIN_THREAD();
     if (!listener)
@@ -348,6 +363,7 @@ static void sound3d_listener_list_add(rt_soundlistener3d *listener) {
 ///   previous node's next). Both prev/next fields are zeroed on exit so the
 ///   listener can be re-added later without carrying stale pointers. Called
 ///   by the finalizer and by deactivation paths.
+/// @param[in,out] listener Listener to unlink from the traversal list; NULL is ignored.
 static void sound3d_listener_list_remove(rt_soundlistener3d *listener) {
     RT_ASSERT_MAIN_THREAD();
     if (!listener)
@@ -366,6 +382,7 @@ static void sound3d_listener_list_remove(rt_soundlistener3d *listener) {
 /// @details Mirrors `sound3d_listener_list_add` — intrusive doubly-linked
 ///   list, O(1) insertion, iteration order immaterial because every live
 ///   source is visited uniformly during `sync_bindings`.
+/// @param[in,out] source Source to link into the traversal list; NULL is ignored.
 static void sound3d_source_list_add(rt_soundsource3d *source) {
     RT_ASSERT_MAIN_THREAD();
     if (!source)
@@ -380,6 +397,7 @@ static void sound3d_source_list_add(rt_soundsource3d *source) {
 /// @brief Splice an audio source out of the global source list.
 /// @details Symmetric to `sound3d_listener_list_remove`; clears both prev
 ///   and next on exit so the source can re-enter the list cleanly.
+/// @param[in,out] source Source to unlink from the traversal list; NULL is ignored.
 static void sound3d_source_list_remove(rt_soundsource3d *source) {
     RT_ASSERT_MAIN_THREAD();
     if (!source)
@@ -395,6 +413,8 @@ static void sound3d_source_list_remove(rt_soundsource3d *source) {
 }
 
 /// @brief Resolve a SceneNode3D's world-space position without allocating wrapper objects.
+/// @param[in] node Optional SceneNode3D object whose transform should be queried.
+/// @param[out] out_position Receives the world position, or the origin for a null node.
 static void sound3d_get_node_world_position(void *node, double *out_position) {
     if (!out_position)
         return;
@@ -423,6 +443,10 @@ static void sound3d_get_node_world_position(void *node, double *out_position) {
 ///          profile, the allocation-free path is an rt_mat4_transform_point/dir variant that
 ///          writes into a caller double[3] (no Vec3 wrapper objects), or caching two reusable
 ///          scratch Vec3 on the listener/source.
+/// @param[in] node Optional SceneNode3D object whose transform should be applied.
+/// @param[in] local_direction Local-space direction to transform.
+/// @param[in] fallback Direction copied when the node transform is unavailable or degenerate.
+/// @param[out] out_direction Receives the normalized world-space direction.
 static void sound3d_get_node_world_direction(void *node,
                                              const double *local_direction,
                                              const double *fallback,
@@ -499,6 +523,8 @@ static void sound3d_get_node_world_direction(void *node,
 
 /// @brief World-space forward of @p node (its local -Z mapped through the node transform).
 /// @details Falls back to world -Z when the node has no usable transform.
+/// @param[in] node Optional SceneNode3D object to query.
+/// @param[out] out_forward Receives the normalized world-space forward vector.
 static void sound3d_get_node_world_forward(void *node, double *out_forward) {
     static const double local_forward[3] = {0.0, 0.0, -1.0};
     static const double fallback_forward[3] = {0.0, 0.0, -1.0};
@@ -507,6 +533,8 @@ static void sound3d_get_node_world_forward(void *node, double *out_forward) {
 
 /// @brief World-space up of @p node (its local +Y mapped through the node transform).
 /// @details Falls back to world +Y when the node has no usable transform.
+/// @param[in] node Optional SceneNode3D object to query.
+/// @param[out] out_up Receives the normalized world-space up vector.
 static void sound3d_get_node_world_up(void *node, double *out_up) {
     static const double local_up[3] = {0.0, 1.0, 0.0};
     static const double fallback_up[3] = {0.0, 1.0, 0.0};
@@ -520,6 +548,7 @@ static void sound3d_get_node_world_up(void *node, double *out_up) {
 ///   parallel (e.g. for split-screen or debug views). The audio core holds
 ///   a copy, so the listener's state can continue to change without
 ///   immediately perturbing in-flight voice params until the next sync.
+/// @param[in] listener Listener whose state should be pushed when active.
 static void sound3d_listener_push_active_state(rt_soundlistener3d *listener) {
     if (listener && listener->is_active)
         rt_sound3d_set_active_listener_state(&listener->state);
@@ -534,6 +563,8 @@ static void sound3d_listener_push_active_state(rt_soundlistener3d *listener) {
 ///          core so spatial mixing immediately reflects the new pose.
 ///          No-op when the listener has no binding at all (free-floating
 ///          listener whose state is set manually).
+/// @param[in,out] listener Listener whose bound transform and velocity should be synchronized.
+/// @param[in] dt Elapsed time in seconds used to derive velocity.
 static void sound3d_listener_sync_binding(rt_soundlistener3d *listener, double dt) {
     double position[3];
     double forward[3];
@@ -608,6 +639,8 @@ static void sound3d_refresh_active_listener(void) {
 ///   sending commands to a now-recycled id. Returns whether the source
 ///   currently has a live voice, so callers can fast-skip spatial updates
 ///   for silent sources.
+/// @param[in,out] source Source whose cached voice identifier should be checked.
+/// @return Nonzero when the source owns a currently playing voice; otherwise zero.
 static int8_t sound3d_source_refresh_play_state(rt_soundsource3d *source) {
     if (!source)
         return 0;
@@ -631,6 +664,7 @@ static int8_t sound3d_source_refresh_play_state(rt_soundsource3d *source) {
 ///          `rt_voice_set_volume` / `rt_voice_set_pan`. Called from every
 ///          source-mutating setter so changes take effect immediately rather
 ///          than at the next sync tick.
+/// @param[in,out] source Source whose live voice should receive updated spatial parameters.
 static void sound3d_source_apply_spatial(rt_soundsource3d *source) {
     rt_sound3d_listener_state listener;
     int64_t spatial_volume = 0;
@@ -659,6 +693,7 @@ static void sound3d_source_apply_spatial(rt_soundsource3d *source) {
 }
 
 /// @brief Refresh the cached Doppler factor even when the source is not playing.
+/// @param[in,out] source Source whose Doppler factor should be recomputed.
 static void sound3d_source_refresh_doppler(rt_soundsource3d *source) {
     rt_sound3d_listener_state listener;
     int64_t ignored_volume = 0;
@@ -683,6 +718,8 @@ static void sound3d_source_refresh_doppler(rt_soundsource3d *source) {
 ///          source whose position is set manually). After updating
 ///          position + velocity, applies spatial mixing so the next
 ///          mixer tick uses the new values.
+/// @param[in,out] source Source whose bound transform and velocity should be synchronized.
+/// @param[in] dt Elapsed time in seconds used to derive velocity.
 static void sound3d_source_sync_binding(rt_soundsource3d *source, double dt) {
     double position[3];
     if (!source || !source->bound_node)
@@ -709,6 +746,7 @@ static void sound3d_source_sync_binding(rt_soundsource3d *source, double dt) {
 ///   `sync_bindings` stops visiting it; (3) drop the scene-node and camera
 ///   back-references. The order (active-check first) is deliberate — the
 ///   core must be cleared before the listener memory is eligible for reuse.
+/// @param[in,out] obj Listener object being finalized; NULL is ignored.
 static void sound3d_listener_finalize(void *obj) {
     rt_soundlistener3d *listener = (rt_soundlistener3d *)obj;
     if (!listener)
@@ -730,6 +768,7 @@ static void sound3d_listener_finalize(void *obj) {
 ///   and bound scene node. The sound's own refcount may still keep its
 ///   buffer alive if other sources share it — only this one source's
 ///   handle goes away.
+/// @param[in,out] obj Source object being finalized; NULL is ignored.
 static void sound3d_source_finalize(void *obj) {
     rt_soundsource3d *source = (rt_soundsource3d *)obj;
     if (!source)

@@ -29,6 +29,14 @@
 //        src/runtime/io/rt_file.h (RtFile type and RT_F_* mode enum)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements file-mode parsing and borrowed runtime-string path views.
+ * @details Maps BASIC modes to immutable stdio spellings, validates complete
+ * fopen-style modifiers into platform descriptor flags, rejects invalid path
+ * handles and embedded NUL bytes, and performs strict Windows path encoding
+ * conversion where required.
+ */
 
 #include "rt_file_path.h"
 #include "rt_file.h"
@@ -44,6 +52,7 @@
 #include <windows.h>
 #endif
 
+/** No-op fallback allowing close-on-exec flag composition on older hosts. */
 #ifndef O_CLOEXEC
 #define O_CLOEXEC 0
 #endif

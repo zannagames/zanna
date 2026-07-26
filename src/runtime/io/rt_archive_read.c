@@ -26,6 +26,14 @@
 //        src/runtime/core/rt_crc32.h
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements bounded ZIP central-directory parsing and entry decoding.
+ * @details Locates and validates the ZIP32 end record, constructs collision-
+ * checked name indexes, cross-checks central entries with disjoint local
+ * records, rejects unsupported metadata, inflates supported payloads within
+ * sampled limits, and verifies uncompressed sizes and CRC-32 values.
+ */
 
 #include "rt_archive.h"
 #include "rt_archive_internal.h"

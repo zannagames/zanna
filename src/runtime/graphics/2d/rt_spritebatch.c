@@ -36,6 +36,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements retained SpriteBatch command collection and rendering.
+ *
+ * @details An active batch retains submitted Sprite or Pixels sources, records
+ *          their draw parameters, optionally orders commands by depth and
+ *          submission sequence, applies persistent batch color modulation,
+ *          renders to a Canvas, and releases queued ownership after traversal.
+ */
+
 #include "rt_spritebatch.h"
 #include "rt_graphics.h"
 #include "rt_graphics_internal.h"
@@ -56,8 +66,11 @@
 // Internal Types
 //=============================================================================
 
+/// @brief Default number of draw commands allocated by a new batch.
 #define DEFAULT_CAPACITY 256
+/// @brief Multiplicative command-storage growth factor.
 #define GROWTH_FACTOR 2
+/// @brief Hard upper bound on queued commands in one batch.
 #define MAX_BATCH_CAPACITY 1048576LL
 
 /// @brief Release a temporary Pixels object created during batch color transforms.
@@ -80,39 +93,38 @@ typedef enum { BATCH_ITEM_SPRITE, BATCH_ITEM_PIXELS, BATCH_ITEM_REGION } batch_i
 ///          commands use destination fields, and region commands use all source
 ///          rectangle and transform fields.
 typedef struct {
-    batch_item_type type;
-    void *source;     // Sprite or Pixels object
-    int64_t x;        // Destination X
-    int64_t y;        // Destination Y
-    int64_t scale_x;  // Scale X (100 = 100%)
-    int64_t scale_y;  // Scale Y (100 = 100%)
-    int64_t rotation; // Rotation in degrees
-    int64_t depth;    // For depth sorting
-    // For region drawing
-    int64_t src_x;
-    int64_t src_y;
-    int64_t src_w;
-    int64_t src_h;
-    int64_t submission_order;
+    batch_item_type type;     ///< Queued command variant.
+    void *source;             ///< Retained Sprite or Pixels object.
+    int64_t x;                ///< Destination X coordinate.
+    int64_t y;                ///< Destination Y coordinate.
+    int64_t scale_x;          ///< Horizontal scale percentage.
+    int64_t scale_y;          ///< Vertical scale percentage.
+    int64_t rotation;         ///< Clockwise rotation in degrees.
+    int64_t depth;            ///< Primary depth-sort key.
+    int64_t src_x;            ///< Region source X coordinate.
+    int64_t src_y;            ///< Region source Y coordinate.
+    int64_t src_w;            ///< Region source width.
+    int64_t src_h;            ///< Region source height.
+    int64_t submission_order; ///< Stable secondary sort key.
 } batch_item;
 
 /// @brief Private state of one runtime-managed SpriteBatch.
 typedef struct {
-    batch_item *items;
-    int64_t count;
-    int64_t capacity;
-    int8_t active;
-    int8_t sort_by_depth;
-    int64_t tint_color;
-    int64_t alpha;
-    int64_t next_submission_order;
+    batch_item *items;             ///< Owned reusable command allocation.
+    int64_t count;                 ///< Number of initialized queued commands.
+    int64_t capacity;              ///< Number of allocated command slots.
+    int8_t active;                 ///< Whether submissions are currently accepted.
+    int8_t sort_by_depth;          ///< Whether End sorts commands before drawing.
+    int64_t tint_color;            ///< Persistent batch tint or the no-tint sentinel.
+    int64_t alpha;                 ///< Persistent batch alpha multiplier.
+    int64_t next_submission_order; ///< Sequence number assigned to the next command.
 } spritebatch_impl;
 
 /// @brief Non-owning dimensions/data view used while applying batch alpha.
 typedef struct {
-    int64_t width;
-    int64_t height;
-    uint32_t *data;
+    int64_t width;  ///< Pixel-buffer width.
+    int64_t height; ///< Pixel-buffer height.
+    uint32_t *data; ///< Borrowed mutable RGBA storage.
 } spritebatch_pixels_view;
 
 /// @brief Validate-and-return a SpriteBatch pointer; returns NULL for NULL or wrong class.

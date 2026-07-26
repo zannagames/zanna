@@ -167,6 +167,9 @@ TypeRef Sema::analyzeExpr(Expr *expr) {
                     break;
                 }
 
+                /// @brief Finds an async function declaration by direct or overload lookup.
+                /// @param name Semantic function name.
+                /// @return Async declaration, or null.
                 auto findAsyncDecl = [&](const std::string &name) -> FunctionDecl * {
                     if (FunctionDecl *decl = getFunctionDecl(name); decl && decl->isAsync)
                         return decl;
@@ -196,6 +199,10 @@ TypeRef Sema::analyzeExpr(Expr *expr) {
                         if (!asyncDecl)
                             asyncDecl = findAsyncDecl(ident->name);
                     } else if (auto *field = dynamic_cast<FieldExpr *>(call->callee.get())) {
+                        /// @brief Reconstructs a dotted identifier/field callee name.
+                        /// @param node Expression node to inspect.
+                        /// @param[out] out Receives the reconstructed name.
+                        /// @return `true` when the expression is a pure name chain.
                         std::function<bool(Expr *, std::string &)> buildName =
                             [&](Expr *node, std::string &out) -> bool {
                             if (auto *name = dynamic_cast<IdentExpr *>(node)) {

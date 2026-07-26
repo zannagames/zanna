@@ -26,6 +26,14 @@
 //        src/runtime/localization/rt_locale.h (Locale handle type).
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares stateless LocaleInfo metadata queries.
+ * @details Exposes display-name, direction, calendar, measurement-system, and
+ * default-currency lookups with invariant fallback and fresh-string ownership.
+ */
+
 #pragma once
 
 #include "rt.hpp"

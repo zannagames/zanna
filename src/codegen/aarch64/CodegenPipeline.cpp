@@ -246,6 +246,8 @@ static void collectNativeLinkArchives(const common::LinkContext &ctx,
                                       std::vector<std::string> &archives) {
     std::unordered_set<std::string> seenArchives;
 
+    /// @brief Append one existing archive path exactly once.
+    /// @param path Candidate archive path.
     auto appendIfExists = [&](const std::filesystem::path &path) {
         if (!common::fileExists(path))
             return;
@@ -254,6 +256,8 @@ static void collectNativeLinkArchives(const common::LinkContext &ctx,
             archives.push_back(archivePath);
     };
 
+    /// @brief Resolve and append one runtime component archive.
+    /// @param comp Runtime component whose archive is required.
     auto appendComponent = [&](RtComponent comp) {
         appendIfExists(common::runtimeArchivePath(ctx.buildDir, archiveNameForComponent(comp)));
     };
@@ -428,6 +432,8 @@ bool runCodegenPipeline(passes::AArch64Module &module,
                         const PipelineOptions &opts,
                         std::ostream &diagOut) {
     passes::Diagnostics diags;
+    /// @brief Flush accumulated diagnostics after a pass failure.
+    /// @return Always `false` for direct propagation by the caller.
     auto flushOnFailure = [&]() {
         diags.flush(diagOut);
         return false;
@@ -504,6 +510,8 @@ PipelineResult CodegenPipeline::run() {
     PipelineResult result{};
     std::ostringstream out;
     std::ostringstream err;
+    /// @brief Capture buffered output streams in the current pipeline result.
+    /// @return Completed result value.
     auto finish = [&]() -> PipelineResult {
         result.stdout_text = out.str();
         result.stderr_text = err.str();
@@ -541,6 +549,8 @@ PipelineResult CodegenPipeline::runWithModule(il::core::Module mod,
     PipelineResult result{};
     std::ostringstream out;
     std::ostringstream err;
+    /// @brief Capture buffered output streams in the current pipeline result.
+    /// @return Completed result value.
     auto finish = [&]() -> PipelineResult {
         result.stdout_text = out.str();
         result.stderr_text = err.str();

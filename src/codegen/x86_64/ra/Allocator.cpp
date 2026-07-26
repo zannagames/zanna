@@ -93,6 +93,9 @@ struct PhysClobber {
 /// @param reg Physical register to add when not already represented.
 void addPhysClobber(std::vector<PhysClobber> &clobbers, PhysReg reg) {
     const RegClass cls = isXMM(reg) ? RegClass::XMM : RegClass::GPR;
+    /// @brief Tests whether a physical clobber is already recorded.
+    /// @param item Candidate clobber entry.
+    /// @return `true` when the register and class match `reg`.
     const auto duplicate = std::any_of(clobbers.begin(), clobbers.end(), [&](const auto &item) {
         return item.reg == reg && item.cls == cls;
     });
@@ -479,7 +482,9 @@ void LinearScanAllocator::assignPinnedGlobals() {
 
     // Pinned registers belong to their candidates for the whole function;
     // remove them from the local free pool.
-    /// @brief Predicate matching registers consumed by global pin assignments.
+    /// @brief Tests whether a register is consumed by a global pin assignment.
+    /// @param reg Free-pool register to inspect.
+    /// @return `true` when the register occurs in `assignment.usedRegs`.
     freeGPR_.erase(std::remove_if(freeGPR_.begin(),
                                   freeGPR_.end(),
                                   [&](PhysReg reg) {
@@ -535,7 +540,9 @@ void LinearScanAllocator::buildPools() {
 
     appendRegs(freeGPR_, target_.callerSavedGPR);
     appendRegs(freeGPR_, target_.calleeSavedGPR);
-    /// @brief Predicate filtering fixed GPRs from the allocator pool.
+    /// @brief Tests whether a GPR is reserved from allocator use.
+    /// @param reg Register to inspect.
+    /// @return `true` when the target reserves `reg`.
     freeGPR_.erase(std::remove_if(freeGPR_.begin(),
                                   freeGPR_.end(),
                                   [](PhysReg reg) { return isReservedGPR(reg); }),
@@ -1150,8 +1157,11 @@ void LinearScanAllocator::handleOperand(Operand &operand,
                                         std::vector<MInstr> &prefix,
                                         std::vector<MInstr> &suffix,
                                         std::vector<ScratchRelease> &scratch) {
-    /// @brief Variant visitor rewriting register and memory-address operands.
+    /// @brief Rewrites a register variant through `processRegOperand`.
+    /// @param reg Register operand to rewrite.
     std::visit(Overload{[&](OpReg &reg) { processRegOperand(reg, role, prefix, suffix, scratch); },
+                        /// @brief Rewrites the base and optional index of a memory operand.
+                        /// @param mem Memory operand to rewrite.
                         [&](OpMem &mem) {
                             OperandRole baseRole{true, false};
                             processRegOperand(mem.base, baseRole, prefix, suffix, scratch);
@@ -1160,6 +1170,7 @@ void LinearScanAllocator::handleOperand(Operand &operand,
                                 processRegOperand(mem.index, baseRole, prefix, suffix, scratch);
                             }
                         },
+                        /// @brief Leaves immediate and label variants unchanged.
                         [](auto &) {}},
                operand);
 }

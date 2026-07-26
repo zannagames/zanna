@@ -19,6 +19,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Declares the value representation of primitive Zanna IL types.
+ *
+ * @details `Type` wraps a closed primitive-kind enumeration and supplies the
+ *          canonical textual spellings used by the parser and serializer.
+ *          Shared storage-width queries centralize byte-size reasoning for the
+ *          verifier, alias analysis, and memory transformations.
+ */
+
 #pragma once
 
 #include <optional>
@@ -29,8 +39,11 @@ namespace il::core {
 /// @brief Simple type wrapper for IL primitive types.
 struct Type {
     /// @brief Enumerates primitive IL types.
+    /// @details Includes no-value (`Void`), logical and fixed-width integers,
+    ///          double-precision floating point, opaque pointer/string handles,
+    ///          and the error/resume-token runtime control types.
     enum class Kind { Void, I1, I16, I32, I64, F64, Ptr, Str, Error, ResumeTok };
-    Kind kind; ///< Discriminator specifying the active kind
+    Kind kind; ///< Discriminator specifying the active kind.
 
     /// @brief Construct a type of kind @p k.
     /// @param k Desired kind.

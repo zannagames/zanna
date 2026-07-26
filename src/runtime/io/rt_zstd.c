@@ -24,27 +24,48 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements the dependency-free single-frame Zstandard decoder.
+ * @details Provides bounded RFC 8878 frame parsing, backward entropy streams,
+ * FSE and Huffman table construction, literal and sequence reconstruction,
+ * repeated-offset handling, and optional xxHash64 checksum verification for
+ * allocating and exact-destination decode paths.
+ */
+
 #include "rt_zstd.h"
 
 #include <stdlib.h>
 #include <string.h>
 
+/** Little-endian signature of a standard Zstandard frame. */
 #define ZSTD_MAGIC 0xFD2FB528u
+/** Largest FSE table logarithm accepted by the bounded decoder. */
 #define ZSTD_MAX_TABLELOG 12
+/** Largest canonical Huffman code width supported for literal decoding. */
 #define ZSTD_MAX_HUF_BITS 11
+/** Highest legal literal-length code symbol. */
 #define ZSTD_MAX_LL_SYMBOL 35
+/** Highest legal match-length code symbol. */
 #define ZSTD_MAX_ML_SYMBOL 52
+/** Highest accepted offset code symbol, permitting offsets through 2^31. */
 #define ZSTD_MAX_OF_SYMBOL 31 /* offsets up to 2^31; generous for one-shot frames */
+/** Defensive ceiling on the number of sequences in one compressed block. */
 #define ZSTD_MAX_SEQUENCES (1u << 24)
 
 /*==========================================================================
  * xxhash64 (checksum verification)
  *=========================================================================*/
 
+/** First 64-bit xxHash mixing prime. */
 #define XXH_PRIME64_1 0x9E3779B185EBCA87ULL
+/** Second 64-bit xxHash mixing prime. */
 #define XXH_PRIME64_2 0xC2B2AE3D27D4EB4FULL
+/** Third 64-bit xxHash mixing prime. */
 #define XXH_PRIME64_3 0x165667B19E3779F9ULL
+/** Fourth 64-bit xxHash mixing prime. */
 #define XXH_PRIME64_4 0x85EBCA77C2B2AE63ULL
+/** Fifth 64-bit xxHash mixing prime. */
 #define XXH_PRIME64_5 0x27D4EB2F165667C5ULL
 
 /// @brief Rotate a 64-bit checksum lane left by a fixed distance.
@@ -265,15 +286,17 @@ static int zstd_rbits_fully_consumed(const zstd_rbits *b) {
  * FSE (tANS) decode tables
  *=========================================================================*/
 
+/** One state transition in an FSE decoding table. */
 typedef struct {
-    uint8_t symbol;
-    uint8_t nbits;
-    uint16_t base;
+    uint8_t symbol; ///< Alphabet symbol emitted from this state.
+    uint8_t nbits;  ///< Number of backward-stream bits consumed next.
+    uint16_t base;  ///< Base state to which the consumed bits are added.
 } zstd_fse_cell;
 
+/** Fixed-capacity FSE table for one decoded alphabet. */
 typedef struct {
-    zstd_fse_cell cells[1 << ZSTD_MAX_TABLELOG];
-    int table_log;
+    zstd_fse_cell cells[1 << ZSTD_MAX_TABLELOG]; ///< State transition cells.
+    int table_log;                              ///< Base-two logarithm of active cells.
 } zstd_fse_table;
 
 /// @brief Find the index of the highest set bit in a 32-bit value.
@@ -454,10 +477,11 @@ static size_t zstd_fse_read_ncount(const uint8_t *data,
  * Huffman literals
  *=========================================================================*/
 
+/** Canonical Huffman lookup table for one literal alphabet. */
 typedef struct {
-    uint8_t symbol[1 << ZSTD_MAX_HUF_BITS];
-    uint8_t nbits[1 << ZSTD_MAX_HUF_BITS];
-    int table_log;
+    uint8_t symbol[1 << ZSTD_MAX_HUF_BITS]; ///< Symbol selected by each lookup prefix.
+    uint8_t nbits[1 << ZSTD_MAX_HUF_BITS];  ///< Real code width for each lookup cell.
+    int table_log;                          ///< Width of the complete lookup prefix.
 } zstd_huf_table;
 
 /// @brief Build the canonical Huffman lookup table from symbol weights
@@ -688,26 +712,32 @@ static const int16_t zstd_of_default[29] = {1, 1, 1, 1, 1, 1, 2, 2, 2, 1,  1,  1
  * Frame decoding
  *=========================================================================*/
 
+/**
+ * @brief Mutable state shared by every block in one Zstandard frame.
+ * @details Owns or borrows the output destination, reuses literal storage,
+ * carries the three repeated offsets, and preserves entropy tables when a
+ * later block selects treeless or repeat mode.
+ */
 typedef struct {
-    uint8_t *out;
+    uint8_t *out;   ///< Destination bytes, either caller-owned or decoder-owned.
     size_t out_len; /* bytes produced so far */
-    size_t out_cap;
+    size_t out_cap; ///< Maximum writable destination size.
     /* Literals buffer for the current block. */
-    uint8_t *literals;
-    size_t literals_len;
-    size_t literals_cap;
+    uint8_t *literals;   ///< Reusable decoded literals for the current block.
+    size_t literals_len; ///< Number of current decoded literal bytes.
+    size_t literals_cap; ///< Allocated capacity of @ref literals.
     /* Repeated offsets (RFC: initialized to 1, 4, 8). */
-    uint32_t rep[3];
+    uint32_t rep[3]; ///< Most-recent offset history defined by RFC 8878.
     /* Huffman table persists across blocks for treeless literals. */
-    zstd_huf_table huf;
-    int huf_valid;
+    zstd_huf_table huf; ///< Most recently constructed literal Huffman table.
+    int huf_valid;      ///< Non-zero when @ref huf is available for reuse.
     /* FSE tables persist across blocks for "repeat" mode. */
-    zstd_fse_table ll_fse;
-    zstd_fse_table ml_fse;
-    zstd_fse_table of_fse;
-    int ll_valid;
-    int ml_valid;
-    int of_valid;
+    zstd_fse_table ll_fse; ///< Literal-length code table.
+    zstd_fse_table ml_fse; ///< Match-length code table.
+    zstd_fse_table of_fse; ///< Offset code table.
+    int ll_valid;          ///< Whether @ref ll_fse may be repeated.
+    int ml_valid;          ///< Whether @ref ml_fse may be repeated.
+    int of_valid;          ///< Whether @ref of_fse may be repeated.
 } zstd_ctx;
 
 /// @brief Grow the reusable current-block literal buffer when necessary.

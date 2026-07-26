@@ -11,17 +11,31 @@
 //
 // Key invariants:
 //   - Refcounts never underflow; retain and release calls must be balanced.
-//   - Objects start at refcount 1; freed when the count reaches zero.
+//   - Objects start at refcount 1; zero-count objects are finalized and freed
+//     by rt_obj_free or the public Memory release path unless resurrected.
 //   - Finalizer callbacks are invoked from rt_obj_free before releasing heap storage.
-//   - rt_obj_resurrect re-arms a finalizer for pool-managed objects (e.g., Vec2/Vec3 pools).
+//   - rt_obj_resurrect restores a zero count to one; a pool that resurrects an
+//     object must explicitly reinstall its finalizer for the next release cycle.
 //
 // Ownership/Lifetime:
 //   - Objects start with refcount 1; caller owns the initial reference.
-//   - rt_obj_retain increments; rt_obj_release decrements and frees at zero.
+//   - Retains add ownership; rt_memory_release decrements and finalizes/frees
+//     at zero, while low-level deferred-release callers explicitly invoke
+//     rt_obj_free after observing the zero transition.
 //
 // Links: src/runtime/oop/rt_object.c (implementation), src/runtime/core/rt_heap.h
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_object.h
+ * @brief Declares managed object allocation, identity, and lifetime services.
+ * @details This foundational API creates class-tagged payloads, performs safe
+ *          instance validation, exposes permissive and compiler-proven retain
+ *          or release paths, manages finalizers and resurrection, and supplies
+ *          the native System.Object behavior shared by runtime heap values.
+ */
+
 #pragma once
 
 #include <stddef.h>
@@ -32,14 +46,20 @@ extern "C" {
 #endif
 
 /// @brief Finalizer callback invoked from @ref rt_obj_free before releasing heap storage.
+/// @param obj Zero-reference object payload being finalized. The callback may
+///        call @ref rt_obj_resurrect to keep the allocation alive.
 typedef void (*rt_obj_finalizer_t)(void *obj);
 
 struct rt_string_impl; // fwd decl is provided in rt_string.h; include where needed
 
 /// @brief Allocate a new runtime-managed object with the given class identifier and size.
+/// @details Creates a zero-filled `RT_HEAP_OBJECT` payload with reference count
+///          one and records @p class_id in its heap metadata. Negative or
+///          unrepresentable sizes trap.
 /// @param class_id Runtime class identifier tag for the object to create.
 /// @param byte_size Total size in bytes to allocate for the object payload.
-/// @return Pointer to the allocated object or NULL on allocation failure.
+/// @return Caller-owned object payload, or @c NULL after reporting an allocation
+///         failure through the runtime trap path.
 void *rt_obj_new_i64(int64_t class_id, int64_t byte_size);
 
 /// @brief Get the class ID of a runtime-managed object.
@@ -59,7 +79,9 @@ int8_t rt_obj_is_instance(void *p, int64_t class_id, size_t min_payload_bytes);
 
 /// @brief Increment the reference count for a runtime-managed object if the pointer is
 /// non-null.
-/// @param p Pointer to a runtime-managed object; NULL pointers are ignored.
+/// @details Recognizes runtime string handles and heap payloads. Null, raw, and
+///          stale pointers are silently ignored by this permissive internal helper.
+/// @param p Managed value to retain; @c NULL is ignored.
 void rt_obj_retain_maybe(void *p);
 
 /// @brief Increment the reference count for a compiler-proven runtime heap object.
@@ -71,15 +93,26 @@ void rt_obj_retain_known(void *p);
 /// @brief Public Zanna.Memory retain wrapper.
 /// @details Validates that @p p is a live runtime heap/string handle before
 ///          retaining. Invalid non-null pointers trap instead of relying on
-///          debug-only heap assertions.
+///          debug-only heap assertions. Objects and arrays are accepted; an
+///          internal string payload pointer or unsupported heap kind traps.
+/// @param p Managed string handle, object payload, or array payload to retain;
+///        @c NULL is ignored.
 void rt_memory_retain(void *p);
 
 /// @brief String-typed Zanna.Memory retain wrapper.
+/// @details Validates the public string handle before incrementing its reference
+///          count; a non-NULL invalid handle traps.
+/// @param s Managed string handle to retain; @c NULL is ignored.
 void rt_memory_retain_str(struct rt_string_impl *s);
 
 /// @brief Decrement the reference count and report whether the object should be destroyed.
-/// @param p Pointer to a runtime-managed object.
-/// @return 1 when the reference count reaches zero, otherwise 0.
+/// @details Heap payloads use deferred release so a true result requires a
+///          subsequent @ref rt_obj_free call. String handles are released
+///          immediately and always return zero; null, raw, and stale pointers
+///          are ignored.
+/// @param p Managed value to release; may be @c NULL.
+/// @return @c 1 when a heap payload reaches zero and requires destruction;
+///         otherwise @c 0.
 int32_t rt_obj_release_check0(void *p);
 
 /// @brief Release a compiler-proven runtime heap object and report last-user state.
@@ -91,21 +124,39 @@ int32_t rt_obj_release_known_check0(void *p);
 
 /// @brief Public Zanna.Memory release wrapper.
 /// @details Releases strings, arrays, and objects through their managed
-///          lifetime paths. Object finalizers run when this drops the last
-///          reference.
+///          lifetime paths. Last-reference arrays release their owned managed
+///          elements, and object finalizers run before last-reference objects
+///          are reclaimed. A finalizer may resurrect an object, in which case
+///          the new nonzero count is returned. Invalid, stale, and unsupported
+///          non-null values trap.
+/// @param p Managed string handle, object payload, or array payload to release;
+///        @c NULL returns zero.
 /// @return Remaining reference count, or 0 when the value was destroyed.
 int64_t rt_memory_release(void *p);
 
 /// @brief String-typed Zanna.Memory release wrapper.
+/// @details Validates and decrements a string handle without requiring a
+///          `void *` cast at the language/runtime boundary.
+/// @param s Managed string handle to release; @c NULL returns zero.
+/// @return Post-release count, `INT64_MAX` for an immortal string, or zero for
+///         null or final release.
 int64_t rt_memory_release_str(struct rt_string_impl *s);
 
-/// @brief Release storage for a runtime-managed object without modifying its reference count.
-/// @param p Pointer to a runtime-managed object to free; must not be NULL.
+/// @brief Finalize and reclaim a zero-reference heap payload.
+/// @details Objects run their installed finalizer and arrays release owned
+///          managed elements before deallocation. A resurrecting finalizer keeps
+///          an object live. String handles are released normally as a compatibility
+///          special case; invalid pointers are ignored, while nonzero-reference
+///          or unsupported heap payloads trap.
+/// @param p Zero-reference object/array payload or string handle; @c NULL is ignored.
 void rt_obj_free(void *p);
 
 /// @brief Install a finalizer callback for a runtime-managed object.
-/// @details The finalizer runs exactly once from @ref rt_obj_free when the reference count has
-///          already reached zero (typically after @ref rt_obj_release_check0 returns true).
+/// @details Replaces the object's current finalizer slot. The slot is cleared
+///          before callback invocation, so an installation runs at most once.
+///          A callback that resurrects the object must install a finalizer again
+///          if another release cycle should invoke it. Null, invalid, and
+///          non-object payloads are ignored.
 /// @param p Object payload pointer returned by @ref rt_obj_new_i64; ignored when NULL.
 /// @param fn Finalizer callback or NULL to clear.
 void rt_obj_set_finalizer(void *p, rt_obj_finalizer_t fn);
@@ -124,30 +175,57 @@ void rt_obj_resurrect(void *p);
 // --- System.Object runtime surface ---
 
 /// @brief Value equality check between @p self and @p other.
-/// @details Compares identity by default; types may override for value semantics.
+/// @details Runtime strings compare by byte content and tagged boxes compare by
+///          tag and value. All other values, including null, compare by pointer
+///          identity; this function does not dispatch an overridable method.
+/// @param self First value to compare; may be @c NULL.
+/// @param other Second value to compare; may be @c NULL.
+/// @return @c 1 when the values are equal under the runtime rules, otherwise @c 0.
 int64_t rt_obj_equals(void *self, void *other);
 
 /// @brief Compute a hash code for @p self.
-/// @details Uses identity or type-specific hashing where available.
+/// @details Hashes complete string bytes and tagged-box values consistently
+///          with @ref rt_obj_equals. Other non-null objects use a mixed pointer
+///          hash, and null hashes to zero.
+/// @param self Value to hash; may be @c NULL.
+/// @return Signed 64-bit representation of the content, value, or identity hash.
 int64_t rt_obj_get_hash_code(void *self);
 
 /// @brief Convert @p self to a runtime string.
-/// @details Uses type-specific ToString or a default qualified-name fallback.
+/// @details Retains and returns string inputs, formats tagged primitive boxes,
+///          and uses built-in or registered qualified class names for objects.
+///          Null becomes `"<null>"`; unavailable or invalid metadata falls back
+///          to `"Object"`.
+/// @param self Value to describe; may be @c NULL.
+/// @return Caller-owned runtime string containing the display representation.
 struct rt_string_impl *rt_obj_to_string(void *self);
 
 /// @brief Identity equality check for two object references.
 /// @details Returns 1 when pointers are identical, 0 otherwise.
+/// @param a First reference; may be @c NULL.
+/// @param b Second reference; may be @c NULL.
+/// @return @c 1 when @p a and @p b are the same pointer, otherwise @c 0.
 int64_t rt_obj_reference_equals(void *a, void *b);
 
 // --- Object Introspection ---
 
 /// @brief Get the fully-qualified type name of an object.
+/// @details Recognizes strings, built-in runtime classes, and registered class
+///          metadata. Null returns `"<null>"`; invalid, non-object, or unnamed
+///          payloads fall back to `"Object"`.
+/// @param self Value whose runtime type name is requested; may be @c NULL.
+/// @return Caller-owned runtime string containing the resolved type name.
 struct rt_string_impl *rt_obj_type_name(void *self);
 
 /// @brief Get the numeric type ID of an object.
+/// @details Returns the fixed string class identifier for a runtime string and
+///          the heap metadata class identifier for an object payload.
+/// @param self Value whose runtime type identifier is requested; may be @c NULL.
+/// @return Runtime class identifier, or zero for null, invalid, or non-object payloads.
 int64_t rt_obj_type_id(void *self);
 
 /// @brief Check if an object reference is null.
+/// @param self Reference to test.
 /// @return 1 when @p self is NULL, 0 otherwise.
 int64_t rt_obj_is_null(void *self);
 
@@ -157,7 +235,8 @@ int64_t rt_obj_is_null(void *self);
 /// @param value Managed target pointer to store (may be NULL).
 /// @details Runtime-managed objects, arrays, and strings are wrapped in a
 ///          zeroing weak handle; non-runtime raw pointers are stored as-is for
-///          compatibility.
+///          compatibility. Replacing an existing managed weak slot resets its
+///          handle without retaining the new target.
 void rt_weak_store(void **addr, void *value);
 
 /// @brief Load a weak reference and retain the live target.

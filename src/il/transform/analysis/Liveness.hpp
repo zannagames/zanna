@@ -19,6 +19,16 @@
 // Links: il/core/fwd.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares CFG summaries and block-level SSA liveness analysis.
+ *
+ * @details Liveness is represented by dense value-id bitsets and exposed
+ *          through lightweight set views. Callers may either let the analysis
+ *          construct CFG adjacency or supply a stable precomputed snapshot.
+ */
+
 #pragma once
 
 #include "il/core/fwd.hpp"
@@ -31,9 +41,9 @@ namespace il::transform {
 
 /// @brief Cached control-flow information for a function.
 struct CFGInfo {
-    /// Outgoing block edges keyed by source block.
+    /// @brief Outgoing block edges keyed by source block.
     std::unordered_map<const core::BasicBlock *, std::vector<const core::BasicBlock *>> successors;
-    /// Incoming block edges keyed by target block.
+    /// @brief Incoming block edges keyed by target block.
     std::unordered_map<const core::BasicBlock *, std::vector<const core::BasicBlock *>>
         predecessors;
 };
@@ -73,8 +83,11 @@ class LivenessInfo {
         const std::vector<bool> &bits() const;
 
       private:
+        /// @brief Construct a borrowed view over an existing bitset.
+        /// @param bits Bitset to observe, or nullptr for an unattached view.
         explicit SetView(const std::vector<bool> *bits);
 
+        /// @brief Borrowed bitset storage, or nullptr for the empty view.
         const std::vector<bool> *bits_ = nullptr;
 
         friend class LivenessInfo;
@@ -103,12 +116,18 @@ class LivenessInfo {
     std::size_t valueCount() const;
 
   private:
+    /// @brief Dense boolean storage used for each live-value set.
     using BitSet = std::vector<bool>;
 
+    /// @brief Number of value identifiers addressable by every stored bitset.
     std::size_t valueCount_{0};
+    /// @brief Borrowed blocks retained in function order for this snapshot.
     std::vector<const core::BasicBlock *> blocks_;
+    /// @brief Maps each retained block pointer to its bitset-vector index.
     std::unordered_map<const core::BasicBlock *, std::size_t> blockIndex_;
+    /// @brief Live-before sets indexed in parallel with @ref blocks_.
     std::vector<BitSet> liveInBits_;
+    /// @brief Live-after sets indexed in parallel with @ref blocks_.
     std::vector<BitSet> liveOutBits_;
 
     friend LivenessInfo computeLiveness(core::Module &module, core::Function &fn);

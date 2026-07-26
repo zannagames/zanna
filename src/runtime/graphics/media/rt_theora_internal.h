@@ -23,6 +23,14 @@
 //        src/runtime/graphics/media/rt_theora_recon.c (reconstruction)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Shares private Theora decoder state between entropy and reconstruction units.
+ * @details Defines the sticky bit reader, Huffman representation, coded block
+ * and macroblock layouts, quantizer state, per-frame header, DC predictor
+ * weights, and cross-unit helper contracts. This header is internal to the
+ * graphics media decoder and does not transfer ownership of any buffers.
+ */
 #pragma once
 
 #include "rt_theora.h"
@@ -31,6 +39,11 @@
 #include <stdint.h>
 
 // --- Core decoder state + bitstream/huffman/block types ---
+/**
+ * @brief MSB-first packet bit reader with sticky failure state.
+ * @details Once @ref failed becomes nonzero, subsequent reads return zero so
+ * callers can check truncation once at the end of a syntax section.
+ */
 typedef struct {
     const uint8_t *data;
     size_t len;
@@ -39,6 +52,7 @@ typedef struct {
     int failed;
 } bitreader_t;
 
+/** One node in a bounded binary Huffman decoding tree. */
 typedef struct {
     int16_t left;
     int16_t right;
@@ -46,11 +60,13 @@ typedef struct {
     int8_t token;
 } theora_huff_node_t;
 
+/** Parsed Huffman tree and number of initialized nodes. */
 typedef struct {
     theora_huff_node_t nodes[64];
     int node_count;
 } theora_huff_table_t;
 
+/** Coded-order location and macroblock ownership of one 8-by-8 block. */
 typedef struct {
     int32_t plane;
     int32_t bx;
@@ -59,11 +75,19 @@ typedef struct {
     int32_t mb;
 } theora_block_info_t;
 
+/** Coded block indexes associated with one luma/chroma macroblock. */
 typedef struct {
     int32_t luma[4];
     int32_t chroma[2][4];
 } theora_mb_info_t;
 
+/**
+ * @brief Complete decoder-private setup, layout, and per-frame entropy state.
+ * @details Owns geometry lookup arrays, coded flags, modes, vectors,
+ * coefficients, quantizer ranges, base matrices, and Huffman trees. Storage
+ * referenced by pointer fields is allocated after setup-header validation and
+ * released with the enclosing decoder.
+ */
 typedef struct {
     int32_t plane_width[3];
     int32_t plane_height[3];
@@ -107,12 +131,14 @@ typedef struct {
 } theora_priv_t;
 
 // --- DC prediction weight table entry ---
+/** Numerator weights and divisor for one available-neighbor DC prediction pattern. */
 typedef struct {
     int16_t w[4];
     int16_t div;
 } theora_dc_weight_t;
 
 // --- Per-frame header (parsed from each frame packet) ---
+/** Frame type and the one to three quantizer indexes selected by a packet header. */
 typedef struct {
     int frame_type;
     int nqi;

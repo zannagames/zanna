@@ -84,11 +84,11 @@ bool SourceRange::isTracked() const {
 
 /// @brief Determine whether the range is a fully-addressed replacement span.
 ///
-/// @details Concrete ranges are stricter than @ref isValid: both endpoints must
-///          carry file, line, and column information, must refer to the same file,
-///          and the begin point must strictly precede the end point. This prevents
-///          partially-known ranges from being serialized as actionable fix-it
-///          spans.
+/// @details Unlike the insertion case also accepted by @ref isValid, a concrete
+///          range must have nonzero width. Both endpoints must carry file, line,
+///          and column information, must refer to the same file, and the begin
+///          point must strictly precede the end point. This prevents partially
+///          known ranges from being serialized as replacement spans.
 ///
 /// @return True when the range has complete coordinates and nonzero length.
 bool SourceRange::isConcrete() const {

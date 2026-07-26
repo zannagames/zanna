@@ -5,23 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/tools/windows_installer/WindowsInstallerWizard.cpp
-// Purpose: Implement the native, accessible Windows installer configuration,
-//          progress, and successful-completion experience.
-//
-// Key invariants:
-//   - Native controls preserve system high-contrast, keyboard, screen-reader,
-//     and per-monitor DPI behavior.
-//   - Component and destination choices are collected before lifecycle writes.
-//   - Progress work executes off the UI thread and propagates its exact result.
-//   - The progress surface cannot close while a transaction is in flight.
-//
-// Ownership/Lifetime:
-//   - Modal contexts outlive their HWNDs and worker threads are joined.
-//
-// Links: WindowsInstallerWizard.hpp, WindowsInstallerBrandDialog.cpp,
-//        WindowsInstallerTheme.cpp, WindowsInstallerLifecycle.cpp,
-//        docs/adr/0175-zanna-games-windows-installer-experience.md
+/// @file WindowsInstallerWizard.cpp
+/// @brief Implements native setup configuration, progress, and successful-completion UI.
+///
+/// Native controls preserve high contrast, keyboard access, screen-reader semantics, and
+/// per-monitor DPI. Component and destination choices are collected before lifecycle mutation.
+/// Progress work executes off the UI thread, propagates its exact result, and prevents the window
+/// from closing while a transaction is active.
+///
+/// Modal contexts outlive their windows, and every worker thread is joined before return.
 //
 //===----------------------------------------------------------------------===//
 
@@ -86,6 +78,9 @@ constexpr int kFinishClose = 2034;
 constexpr int kFinishSamples = 2035;
 constexpr int kFinishCopyVerification = 2036;
 
+/// @brief Format a byte count using a compact binary unit.
+/// @param bytes Exact byte count.
+/// @return Human-readable value from bytes through terabytes.
 std::wstring formatBytes(uint64_t bytes) {
     static constexpr std::array<const wchar_t *, 5> kUnits = {L"bytes", L"KB", L"MB", L"GB", L"TB"};
     long double value = static_cast<long double>(bytes);
@@ -103,6 +98,10 @@ std::wstring formatBytes(uint64_t bytes) {
     return out.str();
 }
 
+/// @brief Resolve a Windows known folder to owned UTF-16 text.
+/// @param id Known-folder identifier.
+/// @return Absolute folder path.
+/// @throws std::runtime_error If the shell cannot resolve the folder.
 std::wstring knownFolder(REFKNOWNFOLDERID id) {
     PWSTR value = nullptr;
     const HRESULT folderResult = SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, nullptr, &value);
@@ -116,6 +115,10 @@ std::wstring knownFolder(REFKNOWNFOLDERID id) {
     return result;
 }
 
+/// @brief Derive the package's default installation root for a scope.
+/// @param package Verified package supplying its default directory name.
+/// @param scope User or machine destination policy.
+/// @return Default path beneath LocalAppData Programs or Program Files.
 fs::path defaultDestination(const HostPackage &package, InstallScope scope) {
     const fs::path base = scope == InstallScope::User
                               ? fs::path(knownFolder(FOLDERID_LocalAppData)) / L"Programs"
@@ -123,6 +126,9 @@ fs::path defaultDestination(const HostPackage &package, InstallScope scope) {
     return base / utf8ToWide(package.metadata.defaultInstallDir);
 }
 
+/// @brief Read a dynamically sized environment-variable folder path.
+/// @param name NUL-terminated variable name.
+/// @return Folder path, or @c std::nullopt when absent, invalid, or repeatedly changing.
 std::optional<fs::path> environmentFolder(const wchar_t *name) {
     DWORD capacity = GetEnvironmentVariableW(name, nullptr, 0);
     if (capacity == 0U)
@@ -141,11 +147,17 @@ std::optional<fs::path> environmentFolder(const wchar_t *name) {
     return std::nullopt;
 }
 
+/// @brief Test whether a path exists and is not a directory.
+/// @param path Candidate file path.
+/// @return @c true for an existing non-directory filesystem object.
 bool ordinaryFile(const fs::path &path) {
     const DWORD attributes = GetFileAttributesW(path.c_str());
     return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0U;
 }
 
+/// @brief Search the Windows executable path for a command.
+/// @param command NUL-terminated command filename.
+/// @return @c true when SearchPath resolves a bounded result.
 bool commandAvailable(const wchar_t *command) {
     wchar_t path[32768]{};
     const DWORD found =
@@ -153,6 +165,8 @@ bool commandAvailable(const wchar_t *command) {
     return found > 0U && found < std::size(path);
 }
 
+/// @brief Discover Visual Studio edition roots beneath conventional program directories.
+/// @return Candidate installation directories; inaccessible locations are skipped.
 std::vector<fs::path> visualStudioInstallations() {
     std::vector<fs::path> results;
     for (const wchar_t *variable : {L"ProgramFiles", L"ProgramFiles(x86)"}) {
@@ -180,6 +194,9 @@ std::vector<fs::path> visualStudioInstallations() {
     return results;
 }
 
+/// @brief Detect a Visual C++ command or developer-environment script.
+/// @param visualStudios Candidate Visual Studio installation roots.
+/// @return @c true when @c cl.exe or @c vcvarsall.bat is available.
 bool visualCppAvailable(const std::vector<fs::path> &visualStudios) {
     if (commandAvailable(L"cl.exe"))
         return true;
@@ -190,6 +207,8 @@ bool visualCppAvailable(const std::vector<fs::path> &visualStudios) {
     return false;
 }
 
+/// @brief Detect a Windows SDK through PATH or conventional kit include roots.
+/// @return @c true when @c rc.exe or a Windows.h SDK header is found.
 bool windowsSdkAvailable() {
     if (commandAvailable(L"rc.exe"))
         return true;
@@ -210,6 +229,8 @@ bool windowsSdkAvailable() {
     return false;
 }
 
+/// @brief Detect Git through PATH or conventional per-user and system locations.
+/// @return @c true when a Git executable is found.
 bool gitAvailable() {
     if (commandAvailable(L"git.exe"))
         return true;
@@ -222,6 +243,8 @@ bool gitAvailable() {
     return false;
 }
 
+/// @brief Detect CMake through PATH or its conventional Program Files location.
+/// @return @c true when a CMake executable is found.
 bool cmakeAvailable() {
     if (commandAvailable(L"cmake.exe"))
         return true;
@@ -229,9 +252,15 @@ bool cmakeAvailable() {
     return programFiles && ordinaryFile(*programFiles / L"CMake" / L"bin" / L"cmake.exe");
 }
 
+/// @brief Detect Ninja through PATH or Visual Studio's bundled CMake tools.
+/// @param visualStudios Candidate Visual Studio installation roots.
+/// @return @c true when a Ninja executable is found.
 bool ninjaAvailable(const std::vector<fs::path> &visualStudios) {
     if (commandAvailable(L"ninja.exe"))
         return true;
+    /// @brief Test whether a Visual Studio installation bundles Ninja.
+    /// @param installation Candidate Visual Studio root.
+    /// @return `true` when the conventional bundled Ninja executable exists.
     return std::any_of(
         visualStudios.begin(), visualStudios.end(), [](const fs::path &installation) {
             return ordinaryFile(installation / L"Common7" / L"IDE" / L"CommonExtensions" /
@@ -239,6 +268,8 @@ bool ninjaAvailable(const std::vector<fs::path> &visualStudios) {
         });
 }
 
+/// @brief Detect Visual Studio Code through PATH or conventional install locations.
+/// @return @c true when its command shim or executable is found.
 bool visualStudioCodeAvailable() {
     if (commandAvailable(L"code.cmd") || commandAvailable(L"code.exe"))
         return true;
@@ -255,6 +286,8 @@ bool visualStudioCodeAvailable() {
     return false;
 }
 
+/// @brief Detect Windows Terminal through PATH or the per-user app alias.
+/// @return @c true when @c wt.exe is found.
 bool windowsTerminalAvailable() {
     if (commandAvailable(L"wt.exe"))
         return true;
@@ -262,7 +295,10 @@ bool windowsTerminalAvailable() {
     return local && ordinaryFile(*local / L"Microsoft" / L"WindowsApps" / L"wt.exe");
 }
 
+/// @brief Build the optional developer-companion availability summary.
+/// @return Multiline user-facing text that makes the no-download policy explicit.
 std::wstring dependencySummary() {
+    /// @brief Display label and detected state for one optional companion.
     struct Dependency {
         const wchar_t *label;
         bool available;
@@ -287,6 +323,9 @@ std::wstring dependencySummary() {
     return result;
 }
 
+/// @brief Publish Unicode text to the Windows clipboard.
+/// @param text Text copied with a terminating NUL.
+/// @throws std::runtime_error If allocation, clipboard access, clearing, or publication fails.
 void copyTextToClipboard(std::wstring_view text) {
     if (text.size() > std::numeric_limits<size_t>::max() / sizeof(wchar_t) - 1U)
         throw std::runtime_error("clipboard text is too large");
@@ -307,7 +346,9 @@ void copyTextToClipboard(std::wstring_view text) {
         throw std::runtime_error("cannot open the Windows clipboard");
     }
 
+    /// @brief Ensure an opened clipboard is closed on every exit path.
     struct ClipboardGuard {
+        /// @brief Close the clipboard owned by the surrounding operation.
         ~ClipboardGuard() {
             CloseClipboard();
         }
@@ -323,6 +364,9 @@ void copyTextToClipboard(std::wstring_view text) {
     }
 }
 
+/// @brief Run update discovery and translate failures into a non-mutating warning dialog.
+/// @param instance Current module instance used by the update result dialog.
+/// @param package Verified package supplying update configuration and display metadata.
 void checkUpdatesInteractive(HINSTANCE instance, const HostPackage &package) {
     try {
         showUpdateResult(instance, package, checkForUpdates(package));
@@ -337,11 +381,13 @@ void checkUpdatesInteractive(HINSTANCE instance, const HostPackage &package) {
     }
 }
 
+/// @brief Pair one component definition with its native checkbox.
 struct ComponentControl {
     const zanna::pkg::WindowsInstallerComponentMetadata *metadata{nullptr};
     HWND checkbox{nullptr};
 };
 
+/// @brief Complete state owned for the lifetime of the custom-options modal window.
 struct CustomDialogContext {
     HINSTANCE instance{nullptr};
     const HostPackage *package{nullptr};
@@ -364,10 +410,18 @@ struct CustomDialogContext {
     int defaultButtonId{kIdAccept};
 };
 
+/// @brief Scale a 96-DPI layout metric to the active options-window DPI.
+/// @param value Baseline pixel metric.
+/// @param dpi Normalized target DPI.
+/// @return Proportionally scaled integer metric.
 int scaled(int value, UINT dpi) {
     return MulDiv(value, static_cast<int>(dpi), 96);
 }
 
+/// @brief Accumulate high-resolution wheel deltas into whole scrolling steps.
+/// @param value Mouse-wheel message parameter containing the latest delta.
+/// @param remainder Persistent sub-step delta, updated in place.
+/// @return Signed whole wheel steps ready to apply.
 int consumeOptionsWheelSteps(WPARAM value, int &remainder) noexcept {
     remainder += GET_WHEEL_DELTA_WPARAM(value);
     const int steps = remainder / WHEEL_DELTA;
@@ -375,6 +429,9 @@ int consumeOptionsWheelSteps(WPARAM value, int &remainder) noexcept {
     return steps;
 }
 
+/// @brief Apply a valid DPI-suggested top-level window rectangle.
+/// @param window Options window to reposition.
+/// @param bounds Suggested screen rectangle, or null.
 void applyOptionsDpiBounds(HWND window, const RECT *bounds) noexcept {
     if (!window || !bounds || bounds->right <= bounds->left || bounds->bottom <= bounds->top)
         return;
@@ -387,10 +444,27 @@ void applyOptionsDpiBounds(HWND window, const RECT *bounds) noexcept {
                  SWP_NOACTIVATE | SWP_NOZORDER);
 }
 
+/// @brief Assign a borrowed font to a native control and request repaint.
+/// @param control Target child window.
+/// @param font Borrowed GDI font.
 void setControlFont(HWND control, HFONT font) {
     SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
 }
 
+/// @brief Create, font, and theme one child control in baseline layout coordinates.
+/// @param context Owning dialog context and parent window.
+/// @param exStyle Extended window style.
+/// @param className Native control class name.
+/// @param text Initial control text.
+/// @param style Control-specific style flags.
+/// @param x Baseline horizontal position.
+/// @param y Baseline vertical position.
+/// @param width Baseline width.
+/// @param height Baseline height.
+/// @param id Dialog control identifier.
+/// @param dpi Active normalized DPI.
+/// @return Created child window handle.
+/// @throws std::runtime_error If native control creation fails.
 HWND createControl(CustomDialogContext &context,
                    DWORD exStyle,
                    const wchar_t *className,
@@ -421,8 +495,14 @@ HWND createControl(CustomDialogContext &context,
     return control;
 }
 
+/// @brief Recalculate scroll ranges and clamp the custom-options viewport.
+/// @param context Dialog state containing virtual dimensions and window handle.
 void updateOptionsScrollbars(CustomDialogContext &context);
 
+/// @brief Replace DPI-specific resources and rescale the custom-options window.
+/// @param context Dialog state and owned theme resources.
+/// @param requestedDpi New per-monitor DPI reported by Windows.
+/// @param suggestedBounds Optional top-level rectangle supplied by @c WM_DPICHANGED.
 void updateOptionsDpi(CustomDialogContext &context,
                       UINT requestedDpi,
                       const RECT *suggestedBounds) noexcept {
@@ -452,6 +532,10 @@ void updateOptionsDpi(CustomDialogContext &context,
     InvalidateRect(context.window, nullptr, TRUE);
 }
 
+/// @brief Read mutable native window text without accepting a truncated value.
+/// @param window Control whose text is sampled and length-verified.
+/// @return Exact text captured during one stable attempt.
+/// @throws std::runtime_error If the text is too long or changes repeatedly.
 std::wstring readWindowTextExact(HWND window) {
     for (unsigned attempt = 0; attempt < 8U; ++attempt) {
         SetLastError(ERROR_SUCCESS);
@@ -478,6 +562,9 @@ std::wstring readWindowTextExact(HWND window) {
     throw std::runtime_error("cannot read the current installation folder");
 }
 
+/// @brief Show the shell folder picker and copy an accepted path into the destination control.
+/// @param context Dialog state containing the owner and destination edit control.
+/// @throws std::runtime_error If COM objects, shell items, or selected paths cannot be resolved.
 void browseForDestination(CustomDialogContext &context) {
     const std::wstring current = readWindowTextExact(context.destination);
     IFileOpenDialog *dialog = nullptr;
@@ -489,9 +576,11 @@ void browseForDestination(CustomDialogContext &context) {
         throw std::runtime_error("cannot create the Windows folder picker");
     }
 
+    /// @brief Release the folder-picker COM interface on every exit path.
     struct DialogRelease {
         IFileOpenDialog *value;
 
+        /// @brief Release the owned interface when present.
         ~DialogRelease() {
             if (value)
                 value->Release();
@@ -537,9 +626,11 @@ void browseForDestination(CustomDialogContext &context) {
         throw std::runtime_error("cannot read the selected installation folder");
     }
 
+    /// @brief Release the selected shell-item interface on every exit path.
     struct ItemRelease {
         IShellItem *value;
 
+        /// @brief Release the owned interface when present.
         ~ItemRelease() {
             if (value)
                 value->Release();
@@ -560,17 +651,25 @@ void browseForDestination(CustomDialogContext &context) {
     CoTaskMemFree(path);
 }
 
+/// @brief Enable file-association selection only when its executable component is selected.
+/// @param context Dialog state containing payload metadata and component controls.
 void updateAssociationControl(CustomDialogContext &context) {
     if (!context.associationOption)
         return;
     bool executableSelected = true;
     const std::string associationPath = context.package->metadata.associationExecutable;
+    /// @brief Match payload metadata to the file-association executable.
+    /// @param file Payload entry to inspect.
+    /// @return `true` when its path equals `associationPath`.
     const auto payload = std::find_if(context.package->metadata.payloadFiles.begin(),
                                       context.package->metadata.payloadFiles.end(),
                                       [&](const zanna::pkg::WindowsInstallerPayloadMetadata &file) {
                                           return file.path == associationPath;
                                       });
     if (payload != context.package->metadata.payloadFiles.end() && !payload->componentId.empty()) {
+        /// @brief Match a component checkbox to the executable's owning component.
+        /// @param component Component-control binding to inspect.
+        /// @return `true` when its metadata identifier matches the payload component.
         const auto control = std::find_if(context.components.begin(),
                                           context.components.end(),
                                           [&](const ComponentControl &component) {
@@ -585,6 +684,9 @@ void updateAssociationControl(CustomDialogContext &context) {
         SendMessageW(context.associationOption, BM_SETCHECK, BST_UNCHECKED, 0);
 }
 
+/// @brief Apply a component preset to every component checkbox.
+/// @param context Dialog state containing component metadata and controls.
+/// @param preset Minimal, typical, SDK, or complete selection policy.
 void selectPreset(CustomDialogContext &context, ComponentPreset preset) {
     for (const ComponentControl &component : context.components) {
         const auto &metadata = *component.metadata;
@@ -600,6 +702,9 @@ void selectPreset(CustomDialogContext &context, ComponentPreset preset) {
     updateAssociationControl(context);
 }
 
+/// @brief Validate custom choices, stage them in HostOptions, and close the window.
+/// @param context Dialog state containing controls and mutable options.
+/// @throws std::runtime_error If control text or native window closure fails.
 void acceptCustomDialog(CustomDialogContext &context) {
     const std::wstring destination = readWindowTextExact(context.destination);
     if (destination.empty()) {
@@ -634,6 +739,10 @@ void acceptCustomDialog(CustomDialogContext &context) {
     context.accepted = true;
 }
 
+/// @brief Clamp and apply one horizontal or vertical custom-options scroll position.
+/// @param context Dialog state containing the scrollable window.
+/// @param bar @c SB_HORZ or @c SB_VERT.
+/// @param requestedPosition Requested logical pixel offset.
 void scrollOptionsWindow(CustomDialogContext &context, int bar, int requestedPosition) {
     SCROLLINFO info{sizeof(info), SIF_ALL};
     if (!GetScrollInfo(context.window, bar, &info))
@@ -656,6 +765,10 @@ void scrollOptionsWindow(CustomDialogContext &context, int bar, int requestedPos
                    SW_INVALIDATE | SW_ERASE | SW_SCROLLCHILDREN);
 }
 
+/// @brief Translate a native scrollbar command into a new viewport position.
+/// @param context Dialog state containing the scrollable window.
+/// @param bar @c SB_HORZ or @c SB_VERT.
+/// @param wParam Scroll message parameter containing command and track position.
 void handleOptionsScroll(CustomDialogContext &context, int bar, WPARAM wParam) {
     SCROLLINFO info{sizeof(info), SIF_ALL};
     if (!GetScrollInfo(context.window, bar, &info))
@@ -690,6 +803,8 @@ void handleOptionsScroll(CustomDialogContext &context, int bar, WPARAM wParam) {
     scrollOptionsWindow(context, bar, position);
 }
 
+/// @brief Recalculate horizontal and vertical scroll ranges from virtual and client sizes.
+/// @param context Dialog state containing virtual dimensions and the current window.
 void updateOptionsScrollbars(CustomDialogContext &context) {
     RECT client{};
     GetClientRect(context.window, &client);
@@ -705,6 +820,9 @@ void updateOptionsScrollbars(CustomDialogContext &context) {
     SetScrollInfo(context.window, SB_VERT, &vertical, TRUE);
 }
 
+/// @brief Scroll the custom-options viewport until a focused child is visible.
+/// @param context Dialog state containing the scrollable parent.
+/// @param control Focused descendant control.
 void revealFocusedControl(CustomDialogContext &context, HWND control) {
     if (!control || control == context.window)
         return;
@@ -736,6 +854,12 @@ void revealFocusedControl(CustomDialogContext &context, HWND control) {
     }
 }
 
+/// @brief Dispatch painting, DPI, scrolling, focus, and command messages for custom options.
+/// @param window Custom-options top-level window.
+/// @param message Native window message identifier.
+/// @param wParam Message-specific word parameter.
+/// @param lParam Message-specific long parameter.
+/// @return Message-specific result or the default-window-procedure result.
 LRESULT CALLBACK customWindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     auto *context =
         reinterpret_cast<CustomDialogContext *>(GetWindowLongPtrW(window, GWLP_USERDATA));
@@ -936,6 +1060,10 @@ LRESULT CALLBACK customWindowProcedure(HWND window, UINT message, WPARAM wParam,
     return DefWindowProcW(window, message, wParam, lParam);
 }
 
+/// @brief Register or verify the custom-options native window class.
+/// @param instance Module instance owning the callback and icon.
+/// @return Registered or verified class atom.
+/// @throws std::runtime_error If class registration is invalid or conflicts.
 ATOM registerCustomWindowClass(HINSTANCE instance) {
     WNDCLASSEXW windowClass{sizeof(windowClass)};
     windowClass.style = CS_DBLCLKS;
@@ -957,6 +1085,16 @@ ATOM registerCustomWindowClass(HINSTANCE instance) {
     return atom;
 }
 
+/// @brief Create and run the modal custom installation-options window.
+/// @param instance Current module instance.
+/// @param package Verified package supplying component and integration metadata.
+/// @param initialDestination Initial installation root.
+/// @param initialScope Initial user or machine scope.
+/// @param initialComponents Initially selected normalized component IDs.
+/// @param scopeLocked Whether maintenance prevents changing installation scope.
+/// @param options Mutable host options populated only after acceptance.
+/// @return @c true when the user accepts; @c false after cancellation.
+/// @throws std::runtime_error If class, theme, window, or control creation fails.
 bool showCustomDialog(HINSTANCE instance,
                       const HostPackage &package,
                       const fs::path &initialDestination,
@@ -979,9 +1117,11 @@ bool showCustomDialog(HINSTANCE instance,
     const UINT dpi = normalizeInstallerDpi(GetDpiForSystem());
     context.theme = std::make_unique<InstallerThemeResources>(dpi);
 
+    /// @brief Destroy a surviving custom-options window during stack unwinding.
     struct DialogResources {
         CustomDialogContext &context;
 
+        /// @brief Destroy the owned native window if it remains live.
         ~DialogResources() {
             if (context.window && IsWindow(context.window))
                 DestroyWindow(context.window);
@@ -1279,6 +1419,12 @@ bool showCustomDialog(HINSTANCE instance,
     return context.accepted;
 }
 
+/// @brief Summarize effective component labels and aggregate packaged size.
+/// @param package Verified package supplying component metadata.
+/// @param options Accepted explicit selection or preset.
+/// @param initialComponents Selection inherited from existing or default state.
+/// @return Comma-separated labels followed by a human-readable total size.
+/// @throws std::runtime_error If selected component sizes overflow.
 std::wstring selectedComponentSummary(const HostPackage &package,
                                       const HostOptions &options,
                                       const std::set<std::string> &initialComponents) {
@@ -1312,6 +1458,15 @@ std::wstring selectedComponentSummary(const HostPackage &package,
 
 } // namespace
 
+/// @brief Collect welcome, maintenance, custom, license, and ready-page decisions.
+/// @param instance Current module instance.
+/// @param package Verified package supplying display, component, license, and update metadata.
+/// @param initialDestination Initial installation root.
+/// @param initialScope Initial user or machine scope.
+/// @param initialComponents Initially selected normalized component IDs.
+/// @param installationPresent Whether the workflow is updating an existing installation.
+/// @param options Mutable host options populated before lifecycle mutation.
+/// @return @c true when the user confirms the transaction; @c false on cancellation.
 bool configureInstallerWizard(HINSTANCE instance,
                               const HostPackage &package,
                               const fs::path &initialDestination,
@@ -1496,6 +1651,14 @@ bool configureInstallerWizard(HINSTANCE instance,
     }
 }
 
+/// @brief Execute lifecycle work directly or behind a branded cooperative progress surface.
+/// @param instance Current module instance.
+/// @param package Verified package supplying display metadata.
+/// @param operation Operation used to select progress messaging.
+/// @param uiLevel Quiet mode bypasses UI; passive and full modes show progress.
+/// @param logger Installer logger and cooperative cancellation source.
+/// @param work Lifecycle callback executed exactly once.
+/// @return Exact callback result.
 int runInstallerProgress(HINSTANCE instance,
                          const HostPackage &package,
                          Operation operation,
@@ -1537,6 +1700,12 @@ int runInstallerProgress(HINSTANCE instance,
     return runBrandedInstallerProgress(instance, title, eyebrow, action, body, logger, work);
 }
 
+/// @brief Present successful completion actions and store the user's selected launch request.
+/// @param instance Current module instance.
+/// @param package Verified package supplying product and display metadata.
+/// @param installRoot Completed installation root used to gate available actions.
+/// @param selectedComponents Effective component selection, reserved for completion gating.
+/// @param options Mutable options receiving the selected post-install action.
 void showInstallerFinish(HINSTANCE instance,
                          const HostPackage &package,
                          const fs::path &installRoot,

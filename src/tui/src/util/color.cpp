@@ -23,6 +23,15 @@
 
 namespace zanna::tui::util {
 
+/// @brief Parse a six-digit hexadecimal RGB color.
+/// @details Accepts exactly six hexadecimal digits with an optional leading
+///          hash character.  On success, the decoded red, green, and blue bytes
+///          are stored in @p out and its alpha channel is set to fully opaque.
+///          Invalid input is rejected before @p out is modified.
+/// @param s Color text in @c RRGGBB or @c #RRGGBB form.
+/// @param [out] out Destination for the decoded opaque color on success.
+/// @return @c true when @p s has the required form and was decoded; otherwise
+///         @c false.
 bool parseHexColor(const std::string &s, render::RGBA &out) {
     if (s.empty()) {
         return false;

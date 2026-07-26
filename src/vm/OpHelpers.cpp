@@ -17,6 +17,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the shared contextual trap adapter used by VM operation
+///        helpers.
+/// @details The adapter enriches a trap with source, function, and block
+///          metadata before handing it to the runtime diagnostics bridge.
+
 #include "zanna/vm/internal/OpHelpers.hpp"
 
 #include "il/core/Function.hpp"

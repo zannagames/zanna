@@ -25,6 +25,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements dependency-free PE32+ image, import, resource, and manifest serialization.
+/// @details Produces deterministic AMD64/ARM64 executables with validated section
+///          layout, import tables, Win32 resources, relocations, and optional overlays.
+
 #include "PEBuilder.hpp"
 #include "PkgUtils.hpp"
 
@@ -55,6 +60,10 @@ constexpr uint32_t kSectionHeaderSize = 40;
 constexpr uint32_t kNumDataDirectories = 16;
 
 /// @brief Round up to alignment boundary.
+/// @param value Value to round upward.
+/// @param alignment Non-zero power-of-two boundary.
+/// @return Smallest aligned value not less than `value`.
+/// @throws std::runtime_error If alignment is invalid or rounding overflows.
 uint32_t alignUp(uint32_t value, uint32_t alignment) {
     if (alignment == 0 || (alignment & (alignment - 1)) != 0)
         throw std::runtime_error("PEBuilder: alignment must be a non-zero power of two");
@@ -69,6 +78,10 @@ uint32_t alignUp(uint32_t value, uint32_t alignment) {
 /// @brief Cast `size_t` to `uint32_t`, throwing if the value exceeds 2^32-1.
 /// PE32+ fields (VirtualSize, SizeOfRawData, offsets) are all 32-bit; any section or
 /// blob that exceeds this limit would silently truncate without this guard.
+/// @param value Host-size value to convert.
+/// @param what Human-readable field description used in diagnostics.
+/// @return Value represented as uint32_t.
+/// @throws std::runtime_error If `value` exceeds the PE field width.
 uint32_t checkedU32Size(size_t value, const char *what) {
     if (value > std::numeric_limits<uint32_t>::max())
         throw std::runtime_error(std::string("PEBuilder: ") + what +
@@ -79,6 +92,11 @@ uint32_t checkedU32Size(size_t value, const char *what) {
 /// @brief Add two `uint32_t` values, throwing on overflow.
 /// Used when accumulating section VAs and file offsets to detect a pathological
 /// image that would exceed the 4 GB PE32+ address space.
+/// @param lhs First addend.
+/// @param rhs Second addend.
+/// @param what Human-readable quantity used in diagnostics.
+/// @return Checked sum.
+/// @throws std::runtime_error If the addition overflows.
 uint32_t checkedAddU32(uint32_t lhs, uint32_t rhs, const char *what) {
     if (lhs > std::numeric_limits<uint32_t>::max() - rhs)
         throw std::runtime_error(std::string("PEBuilder: ") + what +
@@ -87,12 +105,18 @@ uint32_t checkedAddU32(uint32_t lhs, uint32_t rhs, const char *what) {
 }
 
 /// @brief Write a little-endian uint16_t to a buffer at given offset.
+/// @param buf Mutable destination buffer.
+/// @param offset Starting byte offset.
+/// @param val Value to encode.
 void putLE16(std::vector<uint8_t> &buf, size_t offset, uint16_t val) {
     buf[offset + 0] = static_cast<uint8_t>(val & 0xFF);
     buf[offset + 1] = static_cast<uint8_t>((val >> 8) & 0xFF);
 }
 
 /// @brief Write a little-endian uint32_t to a buffer at given offset.
+/// @param buf Mutable destination buffer.
+/// @param offset Starting byte offset.
+/// @param val Value to encode.
 void putLE32(std::vector<uint8_t> &buf, size_t offset, uint32_t val) {
     buf[offset + 0] = static_cast<uint8_t>(val & 0xFF);
     buf[offset + 1] = static_cast<uint8_t>((val >> 8) & 0xFF);
@@ -101,18 +125,25 @@ void putLE32(std::vector<uint8_t> &buf, size_t offset, uint32_t val) {
 }
 
 /// @brief Write a little-endian uint64_t to a buffer at given offset.
+/// @param buf Mutable destination buffer.
+/// @param offset Starting byte offset.
+/// @param val Value to encode.
 void putLE64(std::vector<uint8_t> &buf, size_t offset, uint64_t val) {
     putLE32(buf, offset, static_cast<uint32_t>(val & 0xFFFFFFFF));
     putLE32(buf, offset + 4, static_cast<uint32_t>(val >> 32));
 }
 
 /// @brief Append a little-endian uint16_t.
+/// @param buf Destination buffer.
+/// @param val Value to append.
 void appendLE16(std::vector<uint8_t> &buf, uint16_t val) {
     buf.push_back(static_cast<uint8_t>(val & 0xFF));
     buf.push_back(static_cast<uint8_t>((val >> 8) & 0xFF));
 }
 
 /// @brief Append a little-endian uint32_t.
+/// @param buf Destination buffer.
+/// @param val Value to append.
 void appendLE32(std::vector<uint8_t> &buf, uint32_t val) {
     buf.push_back(static_cast<uint8_t>(val & 0xFF));
     buf.push_back(static_cast<uint8_t>((val >> 8) & 0xFF));
@@ -121,6 +152,9 @@ void appendLE32(std::vector<uint8_t> &buf, uint32_t val) {
 }
 
 /// @brief Pad buffer to alignment boundary with zeros.
+/// @param buf Buffer to extend.
+/// @param alignment Non-zero power-of-two byte alignment.
+/// @throws std::runtime_error If alignment is invalid or the aligned size overflows.
 void padTo(std::vector<uint8_t> &buf, uint32_t alignment) {
     size_t aligned = alignUp(checkedU32Size(buf.size(), "buffer size"), alignment);
     buf.resize(aligned, 0);
@@ -157,6 +191,10 @@ struct ImportResult {
 
 /// @brief Build the import directory tables (IDT, ILT, Hint/Name, DLL name strings, IAT)
 /// for the .rdata section. Returns the complete rdata bytes plus RVA/size metadata.
+/// @param imports Ordered DLL/function imports.
+/// @param rdataRVA RVA assigned to the resulting `.rdata` section.
+/// @return Serialized tables and import/IAT directory metadata.
+/// @throws std::runtime_error If an encoded size or offset exceeds PE limits.
 ImportResult buildImportTables(const std::vector<PEImport> &imports, uint32_t rdataRVA) {
     ImportResult result{};
     if (imports.empty())
@@ -324,6 +362,8 @@ void patchVersionLength(std::vector<uint8_t> &buf, size_t start) {
 }
 
 /// @brief Append a UTF-16LE, NUL-terminated value string to the resource buffer.
+/// @param buf Resource buffer to extend.
+/// @param value UTF-8 text to transcode.
 void appendUtf16Value(std::vector<uint8_t> &buf, const std::string &value) {
     for (uint16_t ch : utf8ToUtf16CodeUnits(value))
         appendLE16(buf, ch);
@@ -406,6 +446,8 @@ std::vector<uint8_t> buildVersionInfoResource(const PEVersionInfo &info) {
 }
 
 /// @brief Parse ICO data into RT_ICON + RT_GROUP_ICON resource items.
+/// @param ico Complete candidate ICO bytes.
+/// @param items Resource list extended only when the ICO structure is valid.
 void parseIcoToResources(const std::vector<uint8_t> &ico, std::vector<ResItem> &items) {
     if (ico.size() < 6)
         return;
@@ -477,6 +519,12 @@ void parseIcoToResources(const std::vector<uint8_t> &ico, std::vector<ResItem> &
 /// Tree: Type → Name/ID → Language (always 0x0409 en-US).
 /// Items are sorted by type ID because the Windows loader binary-searches the type directory;
 /// unsorted entries cause lookup failures at runtime.
+/// @param manifest Optional RT_MANIFEST XML bytes.
+/// @param iconData Optional ICO file split into group/icon resources.
+/// @param versionInfo Optional VERSIONINFO metadata.
+/// @param rsrcRVA RVA assigned to the resource section.
+/// @return Serialized resource directory, data entries, blobs, and size metadata.
+/// @throws std::runtime_error If resource counts, sizes, or offsets exceed format limits.
 ResourceResult buildResourceSection(const std::string &manifest,
                                     const std::vector<uint8_t> &iconData,
                                     const PEVersionInfo &versionInfo,
@@ -528,7 +576,10 @@ ResourceResult buildResourceSection(const std::string &manifest,
             types.push_back({items[i].typeId, {i}});
     }
 
-    // Sort types by ID (Windows requires sorted entries)
+    /// @brief Order resource-type groups by the numeric identifier required by Windows.
+    /// @param a Left-hand resource-type group.
+    /// @param b Right-hand resource-type group.
+    /// @return `true` when `a` must precede `b`.
     std::sort(types.begin(), types.end(), [](const TypeGroup &a, const TypeGroup &b) {
         return a.typeId < b.typeId;
     });
@@ -694,6 +745,10 @@ std::vector<uint8_t> buildRelocSection() {
 /// `.reloc` (enabled by default).
 /// RVAs and file offsets are computed in a single layout pass, then headers are filled in.
 /// An optional raw overlay (e.g. a ZIP payload) is appended after all sections.
+/// @param params Code/data, imports, resources, architecture, header settings, and overlay.
+/// @return Complete PE image bytes.
+/// @throws std::runtime_error If required input is absent, the entry point is invalid,
+///         or any section/layout/resource value exceeds its PE representation.
 std::vector<uint8_t> buildPE(const PEBuildParams &params) {
     // ─── Section planning ──────────────────────────────────────────────
     if (params.textSection.empty())
@@ -951,6 +1006,9 @@ std::vector<uint8_t> buildPE(const PEBuildParams &params) {
 
 /// @brief Write a PE image to `path`. Throws `std::runtime_error` if the file cannot
 /// be created or if the write fails partway through.
+/// @param pe Complete PE image bytes.
+/// @param path Destination file path.
+/// @throws std::runtime_error If the atomic file write fails.
 void writePEToFile(const std::vector<uint8_t> &pe, const std::string &path) {
     writeFileAtomic(path, pe);
 }
@@ -960,6 +1018,9 @@ namespace {
 /// @brief Parse a `major.minor[.build[.revision]]` version string into a numeric vector.
 /// Throws if the component count is not in [2, 4], as required by the Windows compatibility
 /// manifest.
+/// @param version Dotted-numeric Windows version.
+/// @return Two through four numeric components.
+/// @throws std::runtime_error If syntax or component count is invalid.
 std::vector<unsigned> parseDottedVersion(const std::string &version) {
     const auto parsed =
         parseDottedNumericVersionParts(version, "Windows compatibility manifest version");
@@ -973,6 +1034,9 @@ std::vector<unsigned> parseDottedVersion(const std::string &version) {
 
 /// @brief Compare a dotted-version string against a fixed version tuple.
 /// Returns -1, 0, or +1 (lhs < / == / > rhs). Missing trailing components are treated as 0.
+/// @param lhs Dotted-numeric version string.
+/// @param rhs Fixed numeric version tuple.
+/// @return Negative, zero, or positive according to version ordering.
 int compareDottedVersion(const std::string &lhs, std::initializer_list<unsigned> rhs) {
     const auto left = parseDottedVersion(lhs);
     const size_t n = std::max(left.size(), rhs.size());
@@ -991,10 +1055,14 @@ int compareDottedVersion(const std::string &lhs, std::initializer_list<unsigned>
 /// @brief Build the `<compatibility>` XML block for a Windows application manifest.
 /// Emits a `<supportedOS>` GUID entry for every Windows version from `minOsWindows` through 10/11.
 /// Returns an empty string when `minOsWindows` is empty (block omitted).
+/// @param minOsWindows Optional minimum supported dotted-numeric Windows version.
+/// @return Compatibility XML fragment, or an empty string.
 std::string windowsCompatibilityXml(const std::string &minOsWindows) {
     if (minOsWindows.empty())
         return {};
     std::string ids;
+    /// @brief Append one Windows supported-operating-system GUID element.
+    /// @param id GUID text to place in the element's `Id` attribute.
     auto add = [&](std::string_view id) {
         ids += "      <supportedOS Id=\"";
         ids += id;
@@ -1019,6 +1087,9 @@ std::string windowsCompatibilityXml(const std::string &minOsWindows) {
 /// @brief Generate a complete Windows application manifest XML with the given
 /// `requestedExecutionLevel`. `level` maps directly to the UAC attribute value
 /// (`"requireAdministrator"` or `"asInvoker"`).
+/// @param level UAC requestedExecutionLevel attribute value.
+/// @param minOsWindows Optional minimum Windows version for compatibility declarations.
+/// @return Complete application-manifest XML.
 std::string generateManifestWithExecutionLevel(const std::string &level,
                                                const std::string &minOsWindows) {
     return "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
@@ -1062,6 +1133,8 @@ std::string generateUacManifest() {
 /// @brief Generate a UAC-elevating manifest with a Windows OS compatibility block.
 /// Use this overload when the installer needs to opt in to Windows 8+ DPI behaviors
 /// gated on `supportedOS` declarations.
+/// @param minOsWindows Minimum supported dotted-numeric Windows version.
+/// @return Complete `requireAdministrator` application-manifest XML.
 std::string generateUacManifest(const std::string &minOsWindows) {
     return generateManifestWithExecutionLevel("requireAdministrator", minOsWindows);
 }
@@ -1073,6 +1146,8 @@ std::string generateAsInvokerManifest() {
 }
 
 /// @brief Generate a non-elevating manifest with a Windows OS compatibility block.
+/// @param minOsWindows Minimum supported dotted-numeric Windows version.
+/// @return Complete `asInvoker` application-manifest XML.
 std::string generateAsInvokerManifest(const std::string &minOsWindows) {
     return generateManifestWithExecutionLevel("asInvoker", minOsWindows);
 }

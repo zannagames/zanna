@@ -49,6 +49,7 @@ bind "../core/document_manager";
 bind "../editor/editor_engine";
 bind "../ui/app_shell";
 bind "../ui/scene_editor_3d";
+bind "../ui/scene_panels_3d";
 bind "../ui/scene_transform_3d";
 
 bind GUI = Zanna.GUI;
@@ -89,7 +90,7 @@ func main() {
     shell.Build("Zanna Studio Perspective Viewport Probe", 1180, 780);
 
     var editor = new scene_editor_3d.SceneEditor3D();
-    editor.Setup(shell.workbench.scene3DHost, shell.app);
+    scene_panels_3d.Build(editor,shell.workbench.scene3DHost, shell.app);
     var hiddenEngine = new editor_engine.EditorEngine();
     hiddenEngine.Setup(shell.workbench.editorRow);
     var documents = new document_manager.DocumentManager();

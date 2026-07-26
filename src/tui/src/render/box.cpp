@@ -23,6 +23,18 @@
 
 namespace zanna::tui::render {
 
+/// @brief Draw an ASCII bordered rectangle and optionally clear its interior.
+/// @details Widths or heights below two produce no output. Border and fill
+///          styles are applied only when their pointers are non-null, allowing
+///          callers to preserve existing cell styles.
+/// @param sb Screen buffer to mutate; the requested rectangle must be in bounds.
+/// @param x Zero-based left column.
+/// @param y Zero-based top row.
+/// @param w Width including both border columns.
+/// @param h Height including both border rows.
+/// @param borderStyle Optional style for corners and edges.
+/// @param fillStyle Optional style for cleared interior cells.
+/// @param fill Whether to replace interior glyphs with spaces.
 void drawBox(ScreenBuffer &sb,
              int x,
              int y,

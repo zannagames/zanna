@@ -19,6 +19,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements deterministic macOS application metadata generation.
+/// @details Inputs are validated as package metadata, XML text is escaped
+///          explicitly, and optional keys are omitted when their values are empty.
+
 #include "PlistGenerator.hpp"
 #include "PkgUtils.hpp"
 
@@ -28,6 +33,10 @@
 namespace zanna::pkg {
 
 /// @brief Escape XML special characters in a string value.
+/// @details Replaces ampersand, angle brackets, and double quote with their XML
+///          entity references; all other bytes are copied unchanged.
+/// @param s Plain text to embed in an XML text node.
+/// @return Escaped text without surrounding XML tags.
 static std::string xmlEscape(const std::string &s) {
     std::string result;
     result.reserve(s.size());
@@ -82,9 +91,14 @@ static std::string utiConformanceFor(const FileAssoc &assoc) {
 }
 
 /// @brief Generate a complete macOS Info.plist for an .app bundle.
-/// Validates file associations first, then emits the PropertyList-1.0 XML with
-/// required CFBundle* keys, optional icon and min-OS entries, and — if file
-/// associations are present — both CFBundleDocumentTypes and UTExportedTypeDeclarations.
+/// @details Validates scalar fields and file associations first, then emits the
+///          PropertyList-1.0 XML with required `CFBundle*` keys, optional icon
+///          and category entries, and both document and exported-UTI declarations
+///          when file associations are present.
+/// @param params Validated values to encode in the property list.
+/// @return Complete UTF-8 XML document with a trailing newline.
+/// @throws std::runtime_error If a scalar or association violates package
+///         metadata syntax or safety requirements.
 std::string generatePlist(const PlistParams &params) {
     validateSingleLineField(params.executableName, "macOS bundle executable name");
     validateMacOSBundleIdentifier(params.bundleId, "macOS bundle identifier");
@@ -209,6 +223,7 @@ std::string generatePlist(const PlistParams &params) {
 /// Every .app bundle requires this file in Contents/ alongside Info.plist.
 /// The first four bytes are the package type (APPL = application) and the
 /// second four are the legacy creator code (all '?' = unregistered).
+/// @return Exactly eight ASCII bytes with no terminator or trailing newline.
 std::string generatePkgInfo() {
     return "APPL????";
 }

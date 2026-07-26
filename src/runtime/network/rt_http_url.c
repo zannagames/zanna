@@ -17,6 +17,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements managed URL parsing, normalization, encoding, and queries.
+ * @details Validates exact runtime-string bytes, parses RFC 3986 components,
+ * normalizes paths and default ports, percent-encodes and decodes components,
+ * exposes owned component strings, and provides query-map construction with
+ * trap-safe cleanup of partial native state.
+ */
+
 #include "rt_network.h"
 
 #include "rt_box.h"
@@ -34,9 +43,11 @@
 #include <string.h>
 
 // Forward declarations (defined in rt_io.c).
+/// @copydoc rt_trap_net()
 extern void rt_trap_net(const char *msg, int err_code);
 
 typedef struct rt_url rt_url_t;
+/// @copydoc free_url()
 static void free_url(rt_url_t *url);
 
 /// @brief Runtime class identifier for Url objects.
@@ -66,6 +77,7 @@ static void rt_url_trap_runtime(const char *msg) {
     rt_trap_raise_kind(RT_TRAP_KIND_RUNTIME_ERROR, Err_RuntimeError, 0, msg);
 }
 
+/// @copydoc rt_url_require_obj()
 static rt_url_t *rt_url_require_obj(void *obj, const char *context);
 
 /// @brief `malloc(size)` or trap with `context`.
@@ -261,14 +273,14 @@ static int rt_url_scheme_is_valid(const char *scheme, size_t len) {
 
 /// @brief URL structure.
 typedef struct rt_url {
-    char *scheme;   // URL scheme (e.g., "http", "https")
-    char *user;     // Username (optional)
-    char *pass;     // Password (optional)
-    char *host;     // Hostname
-    int64_t port;   // Port number (0 = not specified)
-    char *path;     // Path component
-    char *query;    // Query string (without leading ?)
-    char *fragment; // Fragment (without leading #)
+    char *scheme;   ///< Owned URL scheme such as `http` or `https`.
+    char *user;     ///< Owned optional username.
+    char *pass;     ///< Owned optional password.
+    char *host;     ///< Owned host name or address literal.
+    int64_t port;   ///< Explicit port, or zero when unspecified.
+    char *path;     ///< Owned path component.
+    char *query;    ///< Owned query string without the leading question mark.
+    char *fragment; ///< Owned fragment without the leading hash.
 } rt_url_t;
 
 /// @brief Validate and cast a Url handle.
@@ -296,8 +308,8 @@ static rt_url_t *rt_url_require_obj(void *obj, const char *context) {
 ///          heap allocation per path segment while still preserving exact bytes
 ///          when the normalized path is materialized.
 typedef struct {
-    const char *start;
-    size_t len;
+    const char *start; ///< First byte borrowed from the original path.
+    size_t len;        ///< Number of bytes in the segment.
 } rt_url_path_segment_span_t;
 
 /// @brief Get default port for a scheme.

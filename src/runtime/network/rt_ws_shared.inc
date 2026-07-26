@@ -20,12 +20,27 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_ws_shared.inc
+ * @brief Supplies strict WebSocket server parsing helpers to both transports.
+ * @details The included static routines implement locale-independent HTTP
+ *          token processing, authority validation, upgrade-header checks,
+ *          canonical frame-length decoding, and incremental UTF-8 state. Any
+ *          returned native string is caller-owned; other inputs are borrowed.
+ */
+
 /// @brief Fold one ASCII uppercase byte without consulting the process locale.
+/// @param[in] value Byte to fold.
+/// @return Lowercase ASCII equivalent for `A` through `Z`; otherwise @p value unchanged.
 static unsigned char ws_ascii_lower(unsigned char value) {
     return value >= 'A' && value <= 'Z' ? (unsigned char)(value + ('a' - 'A')) : value;
 }
 
 /// @brief Compare exactly @p length bytes using ASCII case-insensitive semantics.
+/// @param[in] left First byte span.
+/// @param[in] right Second byte span.
+/// @param[in] length Exact number of bytes to compare.
+/// @return 1 when both non-null spans match under ASCII folding; otherwise 0.
 static int ws_ascii_equal_n(const char *left, const char *right, size_t length) {
     if (!left || !right)
         return 0;
@@ -38,12 +53,20 @@ static int ws_ascii_equal_n(const char *left, const char *right, size_t length) 
 }
 
 /// @brief Compare two NUL-terminated strings using ASCII case-insensitive semantics.
+/// @param[in] left First null-terminated string.
+/// @param[in] right Second null-terminated string.
+/// @return 1 when both strings are non-null, equal length, and ASCII-case equivalent;
+///         otherwise 0.
 static int ws_ascii_equal(const char *left, const char *right) {
     return left && right && strlen(left) == strlen(right) &&
            ws_ascii_equal_n(left, right, strlen(left));
 }
 
 /// @brief Validate one HTTP token represented by a non-NUL-terminated span.
+/// @param[in] value Token bytes.
+/// @param[in] length Number of bytes at @p value.
+/// @return 1 for a nonempty span without controls, whitespace, DEL, or HTTP separators;
+///         otherwise 0.
 static int ws_token_span_is_valid(const char *value, size_t length) {
     static const char *kSeparators = "()<>@,;:\\\"/[]?={} \t";
     if (!value || length == 0)
@@ -56,10 +79,20 @@ static int ws_token_span_is_valid(const char *value, size_t length) {
     return 1;
 }
 
+/// @brief Validate one null-terminated HTTP token.
+/// @param[in] value Token candidate.
+/// @return 1 for a valid nonempty token; otherwise 0.
 static int ws_token_is_valid(const char *value) {
     return value ? ws_token_span_is_valid(value, strlen(value)) : 0;
 }
 
+/// @brief Validate a comma-separated token list and search it for one token.
+/// @details Empty list members, trailing commas, and invalid token bytes reject
+///          the entire value rather than merely producing a non-match.
+/// @param[in] value Null-terminated HTTP token-list field value.
+/// @param[in] token Nonempty null-terminated token to locate.
+/// @param[in] case_sensitive Nonzero for byte-exact comparison; zero for ASCII folding.
+/// @return 1 when the whole list is valid and contains @p token; otherwise 0.
 static int ws_header_has_token_impl(const char *value, const char *token, int case_sensitive) {
     const char *p = value;
     size_t token_len = token ? strlen(token) : 0;
@@ -97,10 +130,18 @@ static int ws_header_has_token_impl(const char *value, const char *token, int ca
     return saw_any && found;
 }
 
+/// @brief Check a Connection field for the case-insensitive `Upgrade` token.
+/// @param[in] value Null-terminated Connection field value.
+/// @return 1 when @p value is a valid token list containing `Upgrade`; otherwise 0.
 static int ws_header_has_upgrade_token(const char *value) {
     return ws_header_has_token_impl(value, "Upgrade", 0);
 }
 
+/// @brief Validate a Sec-WebSocket-Protocol comma-separated token list.
+/// @details Each trimmed member must be nonempty, fit the bounded parser, and
+///          satisfy the HTTP token grammar.
+/// @param[in] value Null-terminated protocol-list field value.
+/// @return 1 for a valid nonempty list; otherwise 0.
 static int ws_protocol_header_is_valid(const char *value) {
     const char *p = value;
     int saw_any = 0;
@@ -140,12 +181,20 @@ static int ws_protocol_header_is_valid(const char *value) {
     return saw_any;
 }
 
+/// @brief Search a valid Sec-WebSocket-Protocol list using case-sensitive token semantics.
+/// @param[in] value Null-terminated offered protocol list.
+/// @param[in] token Exact protocol token required by the server.
+/// @return 1 when both inputs are valid and the list contains @p token; otherwise 0.
 static int ws_protocol_list_contains(const char *value, const char *token) {
     if (!ws_protocol_header_is_valid(value) || !ws_token_is_valid(token))
         return 0;
     return ws_header_has_token_impl(value, token, 1);
 }
 
+/// @brief Duplicate a string after trimming leading and trailing HTTP optional whitespace.
+/// @param[in] text Null-terminated source text.
+/// @return Newly allocated trimmed string, or NULL for null input or allocation failure.
+///         The caller must release the result with free().
 static char *ws_strdup_trimmed(const char *text) {
     if (!text)
         return NULL;
@@ -371,6 +420,8 @@ static int ws_handshake_headers_are_valid(const ws_handshake_headers_t *state,
 }
 
 /// @brief Test one ASCII hexadecimal digit.
+/// @param[in] byte Byte to classify.
+/// @return 1 for `0-9`, `A-F`, or `a-f`; otherwise 0.
 static int ws_ascii_is_hex(unsigned char byte) {
     return (byte >= '0' && byte <= '9') || (byte >= 'A' && byte <= 'F') ||
            (byte >= 'a' && byte <= 'f');
@@ -380,6 +431,8 @@ static int ws_ascii_is_hex(unsigned char byte) {
 /// @details Accepts RFC 3986 unreserved/sub-delimiter characters and canonical
 ///          percent triplets; rejects raw non-ASCII bytes and structural
 ///          delimiters that would make Host/Origin authority ambiguous.
+/// @param[in] host Null-terminated registered-name candidate.
+/// @return 1 for a nonempty syntactically valid registered name; otherwise 0.
 static int ws_reg_name_is_valid(const char *host) {
     if (!host || !*host)
         return 0;
@@ -402,6 +455,8 @@ static int ws_reg_name_is_valid(const char *host) {
 /// @brief Validate a bracketed IP-literal host.
 /// @details Native `inet_pton` provides exact IPv6 syntax. RFC 3986 IPvFuture
 ///          literals are also accepted using their `vHEXDIG+.payload` grammar.
+/// @param[in] host Null-terminated literal contents with surrounding brackets removed.
+/// @return 1 for valid IPv6 or IPvFuture syntax; otherwise 0.
 static int ws_ip_literal_is_valid(const char *host) {
     struct in6_addr ipv6;
     if (!host || !*host)
@@ -426,6 +481,16 @@ static int ws_ip_literal_is_valid(const char *host) {
     return 1;
 }
 
+/// @brief Parse and validate an HTTP authority without user-info.
+/// @details Trims optional whitespace, requires IPv6/IPvFuture literals to be
+///          bracketed, validates registered names and decimal ports, rejects
+///          ambiguous unbracketed colons, and strips brackets from the
+///          returned host. Output fields are cleared before parsing.
+/// @param[in] authority Null-terminated authority text.
+/// @param[out] host_out Optional destination for an allocated host string.
+/// @param[out] port_out Optional destination for the port, or -1 when omitted.
+/// @return 1 on success, or 0 for malformed input or allocation failure. The
+///         caller must free the published host.
 static int ws_parse_authority(const char *authority, char **host_out, int *port_out) {
     char *trimmed = NULL;
     char *host = NULL;
@@ -571,6 +636,10 @@ static int ws_parse_authority(const char *authority, char **host_out, int *port_
     return 1;
 }
 
+/// @brief Validate a Host field as one complete authority.
+/// @param[in] host_header Null-terminated Host field value.
+/// @return 1 for a valid host with an omitted port or a port in 1..65535;
+///         otherwise 0.
 static int ws_host_header_is_valid(const char *host_header) {
     char *trimmed = NULL;
     char *host = NULL;
@@ -599,6 +668,11 @@ static int ws_host_header_is_valid(const char *host_header) {
     return ok;
 }
 
+/// @brief Validate the strict WebSocket HTTP/1.1 request line.
+/// @details Requires `GET`, one nonempty origin-form target beginning with `/`,
+///          exact `HTTP/1.1`, and no controls, DEL, or fragment marker in the target.
+/// @param[in] request_line Null-terminated line without CRLF.
+/// @return 1 when the line satisfies the server handshake grammar; otherwise 0.
 static int ws_request_line_is_valid(const char *request_line) {
     const char *target = NULL;
     const char *version = NULL;
@@ -623,6 +697,11 @@ static int ws_request_line_is_valid(const char *request_line) {
     return 1;
 }
 
+/// @brief Validate the canonical Base64 shape of a 16-byte Sec-WebSocket-Key.
+/// @details Requires exactly 24 characters, two trailing padding bytes, and
+///          zero unused low bits in the final data symbol.
+/// @param[in] key Null-terminated key field value.
+/// @return 1 for the canonical 16-byte nonce encoding; otherwise 0.
 static int ws_sec_key_is_valid(const char *key) {
     static const char base64_chars[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -648,6 +727,15 @@ static int ws_sec_key_is_valid(const char *key) {
            key[23] == '=';
 }
 
+/// @brief Enforce same-origin scheme, host, and effective port for an upgrade.
+/// @details An absent Origin is accepted. A present Origin must contain only
+///          `scheme://authority`, use the expected scheme, and match the Host
+///          field after ASCII host folding and default-port substitution.
+/// @param[in] origin Trimmed Origin field, or an empty string when absent.
+/// @param[in] host_header Validated request Host field.
+/// @param[in] expected_scheme Expected `http` or `https` scheme.
+/// @param[in] default_port Port substituted when either authority omits one.
+/// @return 1 when Origin is absent or matches exactly; otherwise 0.
 static int ws_origin_matches_expected(const char *origin,
                                       const char *host_header,
                                       const char *expected_scheme,
@@ -714,6 +802,9 @@ static int ws_origin_matches_expected(const char *origin,
     return matches;
 }
 
+/// @brief Validate an RFC 6455 frame opcode.
+/// @param[in] opcode Four-bit opcode value.
+/// @return 1 for continuation, text, binary, close, ping, or pong; otherwise 0.
 static int ws_is_valid_opcode(uint8_t opcode) {
     switch (opcode) {
         case WS_OP_CONTINUATION:
@@ -728,6 +819,9 @@ static int ws_is_valid_opcode(uint8_t opcode) {
     }
 }
 
+/// @brief Encode a payload length as an eight-byte network-order field.
+/// @param[out] out Eight-byte destination.
+/// @param[in] len Host payload length.
 static void ws_encode_u64_len(uint8_t out[8], size_t len) {
     uint64_t value = (uint64_t)len;
     for (int i = 7; i >= 0; i--) {
@@ -736,6 +830,11 @@ static void ws_encode_u64_len(uint8_t out[8], size_t len) {
     }
 }
 
+/// @brief Decode an RFC 6455 63-bit network-order payload length.
+/// @param[in] in Eight-byte encoded field.
+/// @param[out] len_out Receives the host-representable length.
+/// @return 1 on success, or 0 when arguments are null, the forbidden high bit
+///         is set, or the value exceeds SIZE_MAX.
 static int ws_decode_u64_len(const uint8_t in[8], size_t *len_out) {
     if (!in || !len_out || (in[0] & 0x80u) != 0)
         return 0;
@@ -749,6 +848,9 @@ static int ws_decode_u64_len(const uint8_t in[8], size_t *len_out) {
 }
 
 /// @brief Validate an RFC 6455 close status received on the wire.
+/// @param[in] code Unsigned close status.
+/// @return 1 for defined protocol codes below 1016 or application/private codes
+///         3000..4999, excluding wire-reserved statuses; otherwise 0.
 static int ws_close_code_is_valid(uint16_t code) {
     if (code < 1000 || code >= 5000)
         return 0;
@@ -769,6 +871,7 @@ typedef struct {
 } ws_utf8_state_t;
 
 /// @brief Reset an incremental UTF-8 validator to the code-point boundary state.
+/// @param[out] state Validator to clear; NULL is a no-op.
 static void ws_utf8_state_init(ws_utf8_state_t *state) {
     if (state)
         memset(state, 0, sizeof(*state));
@@ -824,10 +927,17 @@ static int ws_utf8_state_feed(ws_utf8_state_t *state, const uint8_t *data, size_
 }
 
 /// @brief Test whether an incremental UTF-8 prefix ends at a code-point boundary.
+/// @param[in] state Validator after feeding the complete message prefix.
+/// @return 1 when @p state is non-null and no continuation bytes remain; otherwise 0.
 static int ws_utf8_state_is_complete(const ws_utf8_state_t *state) {
     return state && state->remaining == 0;
 }
 
+/// @brief Validate one complete byte sequence as RFC 3629 UTF-8.
+/// @param[in] data Input bytes; NULL is permitted only when @p len is zero.
+/// @param[in] len Number of bytes to validate.
+/// @return 1 when the complete sequence is valid and ends at a code-point
+///         boundary; otherwise 0.
 static int ws_is_valid_utf8(const uint8_t *data, size_t len) {
     ws_utf8_state_t state;
     ws_utf8_state_init(&state);

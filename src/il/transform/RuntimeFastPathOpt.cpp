@@ -15,6 +15,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements dominance-checked runtime ownership helper specialization.
+ *
+ * @details Factory calls whose registered signatures guarantee object results
+ *          are indexed by SSA ID and source position. A generic ownership call
+ *          is rewritten only when the factory precedes it in the same block or
+ *          its block dominates the use, preserving provenance validity on
+ *          every control-flow path.
+ */
+
 #include "il/transform/RuntimeFastPathOpt.hpp"
 
 #include "il/analysis/Dominators.hpp"
@@ -54,9 +65,9 @@ std::string_view RuntimeFastPathOpt::id() const {
 PreservedAnalyses RuntimeFastPathOpt::run(Function &function, AnalysisManager &analysis) {
     /// @brief Location of a factory result used for dominance checks.
     struct ObjectDefinition {
-        /// Block containing the defining call.
+        /// @brief Block containing the defining call.
         BasicBlock *block{nullptr};
-        /// Instruction position used to order same-block definitions and uses.
+        /// @brief Instruction position used to order same-block definitions and uses.
         std::size_t instructionIndex{0};
     };
 
@@ -116,7 +127,8 @@ PreservedAnalyses RuntimeFastPathOpt::run(Function &function, AnalysisManager &a
 
 /// @copydoc registerRuntimeFastPathOptPass()
 void registerRuntimeFastPathOptPass(PassRegistry &registry) {
-    /// Construct a stateless optimizer for one independently assigned function.
+    /// @brief Construct a stateless optimizer for one independently assigned function.
+    /// @return Newly owned `RuntimeFastPathOpt` pass.
     registry.registerFunctionPass(
         "runtime-fastpath", []() { return std::make_unique<RuntimeFastPathOpt>(); }, true);
 }

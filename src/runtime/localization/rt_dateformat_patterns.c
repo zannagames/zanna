@@ -31,6 +31,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements checked CLDR-style date and time pattern emission.
+ * @details Extracts local civil-time fields, interprets supported pattern
+ * runs and quoted literals, selects localized names, transliterates decimal
+ * digits through the active numbering system, and propagates builder failures.
+ */
+
 #include "rt_dateformat.h"
 
 #include "rt_datetime.h"
@@ -46,10 +54,11 @@
 // Small helpers
 //===----------------------------------------------------------------------===//
 
+/** Borrowed UTF-8 spans for the ten glyphs of a locale numbering system. */
 typedef struct digit_spans {
-    const char *ptr[10];
-    size_t len[10];
-    int valid;
+    const char *ptr[10]; ///< Start of each digit glyph within locale data.
+    size_t len[10];      ///< UTF-8 byte length of each corresponding glyph.
+    int valid;           ///< Whether exactly ten complete glyphs were decoded.
 } digit_spans_t;
 
 /// @brief Byte length of the leading UTF-8 codepoint in @p s (0 if empty/NULL,
@@ -229,8 +238,9 @@ static int emit_narrow(rt_string_builder *sb, const char *s) {
 // Letter run emitters
 //===----------------------------------------------------------------------===//
 
+/** Local civil-time fields consumed by individual pattern-run emitters. */
 typedef struct {
-    int64_t year;
+    int64_t year;   ///< Signed calendar year.
     int64_t month;  // 1-12
     int64_t day;    // 1-31
     int64_t hour;   // 0-23

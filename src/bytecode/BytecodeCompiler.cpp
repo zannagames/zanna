@@ -1249,12 +1249,15 @@ void BytecodeCompiler::emitPoolLoad(BCOpcode op, uint32_t index, std::string_vie
     emit16(op, static_cast<uint16_t>(index));
 }
 
+// cppcheck-suppress unusedPrivateFunction
+// cppcheck-suppress unusedFunction
 /// @brief Emit an opcode with two packed unsigned 8-bit inline operands.
+/// @details Packs @p arg0 into bits 8–15 and @p arg1 into bits 16–23 of the
+///          encoded instruction word, then appends that word to the current
+///          bytecode function.
 /// @param op Bytecode operation to encode.
 /// @param arg0 Payload stored in bits 8–15.
 /// @param arg1 Payload stored in bits 16–23.
-// cppcheck-suppress unusedPrivateFunction
-// cppcheck-suppress unusedFunction
 void BytecodeCompiler::emit88(BCOpcode op, uint8_t arg0, uint8_t arg1) {
     emit(encodeOp88(op, arg0, arg1));
 }
@@ -1877,6 +1880,9 @@ void BytecodeCompiler::compileMemory(const il::core::Instr &instr) {
                 } else if (op.kind == il::core::Value::Kind::GlobalAddr) {
                     // Reference to a global string constant - look it up
                     if (ilModule_) {
+                        /// @brief Match one IL global to the referenced string-global name.
+                        /// @param global Candidate global definition.
+                        /// @return `true` when its name equals the operand spelling.
                         auto it = std::find_if(ilModule_->globals.begin(),
                                                ilModule_->globals.end(),
                                                [&op](const il::core::Global &global) {
@@ -2137,6 +2143,9 @@ void BytecodeCompiler::compileBranch(const il::core::Instr &instr) {
 
     static const std::vector<il::core::Value> kNoBranchArgs;
 
+    /// @brief Return the branch-argument list at one successor index.
+    /// @param idx Successor index to inspect.
+    /// @return Borrowed argument list, or the shared empty list when absent.
     auto branchArgsAt = [&instr](size_t idx) -> const std::vector<il::core::Value> & {
         if (idx < instr.brArgs.size())
             return instr.brArgs[idx];
@@ -2144,6 +2153,10 @@ void BytecodeCompiler::compileBranch(const il::core::Instr &instr) {
     };
 
     // Helper to emit stores for branch arguments to block parameter locals
+    /// @brief Evaluate and store all arguments for one target block.
+    /// @param label Target block label.
+    /// @param args Edge values assigned to the target's block parameters.
+    /// @throws BytecodeCompileFailure If the target or argument arity is invalid.
     auto storeBranchArgs = [this](const std::string &label,
                                   const std::vector<il::core::Value> &args) {
         auto it = blockParamIds_.find(label);
@@ -2175,6 +2188,10 @@ void BytecodeCompiler::compileBranch(const il::core::Instr &instr) {
         }
     };
 
+    /// @brief Determine whether an edge requires a parameter-setup block.
+    /// @param label Target block label.
+    /// @param args Arguments carried by the edge.
+    /// @return `true` when target parameters or supplied arguments require setup.
     auto targetNeedsSetup = [this](const std::string &label,
                                    const std::vector<il::core::Value> &args) {
         auto it = blockParamIds_.find(label);
@@ -2183,6 +2200,10 @@ void BytecodeCompiler::compileBranch(const il::core::Instr &instr) {
         return !it->second.empty() || !args.empty();
     };
     std::unordered_set<std::string> syntheticLabels;
+    /// @brief Allocate a unique synthetic label for emitted branch setup.
+    /// @param prefix Descriptive label prefix.
+    /// @return Unique label absent from real blocks, parameters, and prior synthetic labels.
+    /// @throws BytecodeCompileFailure If no unique label is found within the attempt bound.
     auto makeSyntheticLabel = [this, &syntheticLabels](std::string_view prefix) {
         for (uint32_t attempt = 0; attempt < 1024; ++attempt) {
             std::string label = std::string(prefix) + std::to_string(currentFunc_->code.size()) +
@@ -2283,6 +2304,11 @@ void BytecodeCompiler::compileBranch(const il::core::Instr &instr) {
 
             std::vector<SwitchTarget> switchTargets;
             switchTargets.reserve(numCases + 1);
+            /// @brief Build one switch-table target and any required setup label.
+            /// @param index Successor and branch-argument index.
+            /// @param realLabel Original IL target label.
+            /// @return Fully classified switch target.
+            /// @throws BytecodeCompileFailure If synthetic setup-label allocation fails.
             auto makeSwitchTarget = [&](size_t index, const std::string &realLabel) {
                 const auto &args = branchArgsAt(index);
                 SwitchTarget target;

@@ -32,6 +32,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_box.c
+ * @brief Implements managed boxing, unboxing, and value-type layout tracking.
+ * @details Primitive boxes carry stable type tags and retain referenced
+ *          Strings, while strict and try-unboxing paths provide trapping and
+ *          non-trapping conversion semantics. Value-type boxes copy payloads
+ *          and register reference-bearing fields so finalization can release
+ *          nested managed ownership correctly.
+ */
+
 #include "rt_box.h"
 #include "rt_gc.h"
 #include "rt_hash_util.h"
@@ -85,6 +95,9 @@ typedef struct value_type_layout {
 static value_type_layout *g_value_type_layouts = NULL;
 static int g_value_type_layout_lock = 0;
 
+/// @brief Acquire the process-wide boxed value-type layout spin lock.
+/// @details Contended acquisition yields to the platform scheduler while
+///          preserving acquire ordering for layout metadata.
 static void value_type_lock(void) {
     if (__atomic_test_and_set(&g_value_type_layout_lock, __ATOMIC_ACQUIRE)) {
         do {
@@ -97,10 +110,14 @@ static void value_type_lock(void) {
     }
 }
 
+/// @brief Release the boxed value-type layout spin lock with release ordering.
 static void value_type_unlock(void) {
     __atomic_clear(&g_value_type_layout_lock, __ATOMIC_RELEASE);
 }
 
+/// @brief Find layout metadata for a boxed value type while the layout lock is held.
+/// @param[in] obj Managed value-type payload to locate.
+/// @return Borrowed layout pointer, or NULL when @p obj is not registered.
 static value_type_layout *value_type_find_locked(void *obj) {
     for (value_type_layout *layout = g_value_type_layouts; layout; layout = layout->next) {
         if (layout->obj == obj)
@@ -109,6 +126,9 @@ static value_type_layout *value_type_find_locked(void *obj) {
     return NULL;
 }
 
+/// @brief Remove one value-type layout from the global list while locked.
+/// @param[in] obj Managed value-type payload whose metadata is detached.
+/// @return Owned detached layout, or NULL when no registration exists.
 static value_type_layout *value_type_detach_locked(void *obj) {
     value_type_layout **pp = &g_value_type_layouts;
     while (*pp) {
@@ -123,6 +143,9 @@ static value_type_layout *value_type_detach_locked(void *obj) {
     return NULL;
 }
 
+/// @brief Release and clear one registered managed field slot.
+/// @param[in,out] obj Value-type payload containing the slot.
+/// @param[in] field Borrowed field descriptor.
 static void value_type_release_slot(void *obj, const value_type_field *field) {
     if (!obj || !field)
         return;
@@ -138,6 +161,9 @@ static void value_type_release_slot(void *obj, const value_type_field *field) {
     }
 }
 
+/// @brief Undo one registration-time retain without clearing the field slot.
+/// @param[in,out] obj Value-type payload containing the retained slot.
+/// @param[in] field Borrowed field descriptor.
 static void value_type_release_retained_slot(void *obj, const value_type_field *field) {
     if (!obj || !field)
         return;
@@ -151,6 +177,9 @@ static void value_type_release_retained_slot(void *obj, const value_type_field *
     }
 }
 
+/// @brief Retain the current managed value in one registered field slot.
+/// @param[in] obj Value-type payload containing the slot.
+/// @param[in] field Borrowed field descriptor identifying String or object ownership.
 static void value_type_retain_slot(void *obj, const value_type_field *field) {
     if (!obj || !field)
         return;
@@ -162,6 +191,10 @@ static void value_type_retain_slot(void *obj, const value_type_field *field) {
     }
 }
 
+/// @brief Validate the current pointer stored in a prospective managed field.
+/// @param[in] obj Value-type payload containing the slot.
+/// @param[in] field Borrowed field descriptor.
+/// @return 1 for NULL or a handle valid for the declared field kind; otherwise 0.
 static int value_type_slot_is_valid(void *obj, const value_type_field *field) {
     if (!obj || !field)
         return 0;
@@ -176,6 +209,8 @@ static int value_type_slot_is_valid(void *obj, const value_type_field *field) {
     return 0;
 }
 
+/// @brief Free detached layout metadata without touching registered field values.
+/// @param[in] layout Owned layout chain head, or NULL.
 static void value_type_free_layout(value_type_layout *layout) {
     if (!layout)
         return;
@@ -188,6 +223,14 @@ static void value_type_free_layout(value_type_layout *layout) {
     free(layout);
 }
 
+/// @brief Release every managed slot described by a detached value-type layout.
+/// @details Field cleanup runs under GC mutator participation and local trap
+///          recovery so all remaining fields are attempted after one release traps.
+/// @param[in,out] obj Value-type payload being finalized.
+/// @param[in] layout Detached layout whose field descriptors remain stable.
+/// @param[out] error Optional buffer receiving the first trap diagnostic.
+/// @param[in] error_size Capacity of @p error including its terminator.
+/// @return 1 when any field cleanup trapped; otherwise 0.
 static int value_type_release_layout_slots(void *obj,
                                            value_type_layout *layout,
                                            char *error,
@@ -226,10 +269,18 @@ static int value_type_release_layout_slots(void *obj,
     return trapped;
 }
 
+/// @brief Check whether an integer is a defined primitive box type tag.
+/// @param[in] tag Candidate tag.
+/// @return 1 for i64, f64, i1, or String tags; otherwise 0.
 static int box_tag_is_valid(int64_t tag) {
     return tag == RT_BOX_I64 || tag == RT_BOX_F64 || tag == RT_BOX_I1 || tag == RT_BOX_STR;
 }
 
+/// @brief Finalize a boxed value type and its registered managed fields.
+/// @details Chains a previously installed finalizer under trap recovery,
+///          reinstalls itself if that finalizer resurrects the object, and
+///          otherwise detaches metadata and releases every managed slot.
+/// @param[in,out] obj Managed value-type payload being finalized.
 static void value_type_finalizer(void *obj) {
     rt_gc_mutator_enter();
     rt_heap_finalizer_t previous = NULL;
@@ -295,6 +346,10 @@ static void value_type_finalizer(void *obj) {
         rt_trap(field_error[0] ? field_error : "rt_box_value_type: field cleanup trap");
 }
 
+/// @brief Visit registered object fields for managed-cycle tracing.
+/// @param[in] obj Value-type payload whose immutable layout is traversed.
+/// @param[in] visitor Collector callback invoked for each non-null object child.
+/// @param[in,out] ctx Opaque collector context forwarded to @p visitor.
 static void value_type_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     if (!obj || !visitor)
         return;
@@ -314,6 +369,7 @@ static void value_type_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
 
 /// @brief Allocate a fresh boxed-value object via the heap (refcount=1, tagged RT_ELEM_BOX so
 /// `box_maybe` can later identify it). Caller fills the tag and union fields.
+/// @return Caller-owned managed box payload, or NULL after allocation failure.
 static void *alloc_box(void) {
     void *box = rt_obj_new_i64(RT_BOX_CLASS_ID, (int64_t)sizeof(rt_box_t));
     rt_heap_hdr_t *hdr = rt_heap_hdr(box);
@@ -326,6 +382,8 @@ static void *alloc_box(void) {
 /// element-kind is RT_ELEM_BOX. Returns NULL for null pointers, non-heap pointers, or heap objects
 /// of a different kind. Used to make `rt_box_eq_*`, `rt_box_hash`, and `rt_box_equal` safe when
 /// passed arbitrary collection elements.
+/// @param[in] box Candidate managed payload.
+/// @return Borrowed validated box payload, or NULL when identity, size, kind, or tag is invalid.
 static rt_box_t *box_maybe(void *box) {
     rt_heap_info_t info;
     if (!box || !rt_heap_get_info(box, &info))
@@ -340,6 +398,10 @@ static rt_box_t *box_maybe(void *box) {
 /// @brief Strict accessor used by the unbox-* primitives: traps with a formatted message if `box`
 /// is null, isn't actually a boxed value, or has a tag that doesn't match `expected_tag`. Pass
 /// `expected_tag = -1` to skip the type check (accept any tag).
+/// @param[in] box Candidate managed box payload.
+/// @param[in] fn_name Operation name included in trap diagnostics.
+/// @param[in] expected_tag Required primitive tag, or a negative value to accept any valid tag.
+/// @return Borrowed validated box payload, or NULL after a returning trap hook.
 static rt_box_t *box_require(void *box, const char *fn_name, int64_t expected_tag) {
     if (!box) {
         char buf[96];
@@ -382,6 +444,8 @@ static rt_box_t *box_require(void *box, const char *fn_name, int64_t expected_ta
 }
 
 /// @brief Wrap an Int64 into a heap-allocated Box. Refcount=1; release as any other heap object.
+/// @param[in] val Integer value to copy.
+/// @return Caller-owned managed i64 box, or NULL on allocation failure.
 void *rt_box_i64(int64_t val) {
     rt_box_t *box = (rt_box_t *)alloc_box();
     if (!box)
@@ -392,6 +456,8 @@ void *rt_box_i64(int64_t val) {
 }
 
 /// @brief Wrap a Float64 into a heap-allocated Box. NaN is stored as-is (round-trip safe).
+/// @param[in] val Floating-point value to copy, including its NaN payload.
+/// @return Caller-owned managed f64 box, or NULL on allocation failure.
 void *rt_box_f64(double val) {
     rt_box_t *box = (rt_box_t *)alloc_box();
     if (!box)
@@ -403,6 +469,8 @@ void *rt_box_f64(double val) {
 
 /// @brief Wrap a Boolean into a heap-allocated Box. Normalizes to {0, 1} so two true booleans
 /// from different sources compare equal.
+/// @param[in] val Integer truth value; zero is false and every other value is true.
+/// @return Caller-owned managed boolean box, or NULL on allocation failure.
 void *rt_box_i1(int64_t val) {
     rt_box_t *box = (rt_box_t *)alloc_box();
     if (!box)
@@ -412,12 +480,16 @@ void *rt_box_i1(int64_t val) {
     return box;
 }
 
+/// @brief Box the runtime's narrow i1 ABI representation.
+/// @param[in] val Narrow truth value normalized to zero or one.
+/// @return Caller-owned managed boolean box, or NULL on allocation failure.
 void *rt_box_i1_bool(int8_t val) {
     return rt_box_i1(val ? 1 : 0);
 }
 
 /// @brief GC finalizer for boxed strings — releases the contained rt_string reference. Other
 /// box variants (i64/f64/i1) hold no managed references so don't need a finalizer.
+/// @param[in,out] obj Boxed String payload being finalized.
 static void box_str_finalizer(void *obj) {
     rt_box_t *box = (rt_box_t *)obj;
     if (box && box->tag == RT_BOX_STR && box->data.str_val) {
@@ -429,6 +501,9 @@ static void box_str_finalizer(void *obj) {
 /// @brief Wrap an rt_string into a heap-allocated Box, retaining the string (via `rt_string_ref`,
 /// which handles both heap and literal-pool strings) and registering `box_str_finalizer` to
 /// release it on collection. Stores NULL string as-is.
+/// @param[in] val Managed String handle to retain, or NULL.
+/// @return Caller-owned managed String box, or NULL after invalid input,
+///         allocation failure, or a returning trap hook.
 void *rt_box_str(rt_string val) {
     if (val && !rt_string_is_handle(val)) {
         rt_trap("rt_box_str: invalid string handle");
@@ -465,6 +540,8 @@ void *rt_box_str(rt_string val) {
 }
 
 /// @brief Extract the i64 contents. **Traps** if `box` isn't a Box or its tag isn't RT_BOX_I64.
+/// @param[in] box Managed i64 box.
+/// @return Stored integer, or zero after a returning trap hook.
 int64_t rt_unbox_i64(void *box) {
     rt_box_t *b = box_require(box, "rt_unbox_i64", RT_BOX_I64);
     if (!b)
@@ -473,6 +550,8 @@ int64_t rt_unbox_i64(void *box) {
 }
 
 /// @brief Extract the f64 contents. **Traps** if `box` isn't a Box or its tag isn't RT_BOX_F64.
+/// @param[in] box Managed f64 box.
+/// @return Stored floating-point value, or zero after a returning trap hook.
 double rt_unbox_f64(void *box) {
     rt_box_t *b = box_require(box, "rt_unbox_f64", RT_BOX_F64);
     if (!b)
@@ -481,6 +560,8 @@ double rt_unbox_f64(void *box) {
 }
 
 /// @brief Extract the bool contents (returned as 0/1). **Traps** on tag mismatch.
+/// @param[in] box Managed boolean box.
+/// @return Canonical zero or one, or zero after a returning trap hook.
 int8_t rt_unbox_i1(void *box) {
     rt_box_t *b = box_require(box, "rt_unbox_i1", RT_BOX_I1);
     if (!b)
@@ -490,6 +571,9 @@ int8_t rt_unbox_i1(void *box) {
 
 /// @brief Extract the rt_string contents, **retaining a fresh reference** for the caller (the box
 /// retains its own; the returned ref must be released independently). Traps on tag mismatch.
+/// @param[in] box Managed String box.
+/// @return Caller-owned retained String handle, NULL stored value, or NULL after
+///         a returning trap hook.
 rt_string rt_unbox_str(void *box) {
     rt_box_t *b = box_require(box, "rt_unbox_str", RT_BOX_STR);
     if (!b)
@@ -506,6 +590,9 @@ rt_string rt_unbox_str(void *box) {
 /// @details Option-style accessor backing `Zanna.Core.Box.ToI64Option`. On success writes the
 ///          unboxed `int64_t` to @p out and returns 1. Returns 0 (with @p out zeroed) when
 ///          @p box is NULL, isn't a Box, has the wrong tag, or @p out itself is NULL.
+/// @param[in] box Candidate managed box.
+/// @param[out] out Receives the integer on success and is cleared before validation.
+/// @return 1 on a matching box; otherwise 0.
 int8_t rt_box_try_to_i64(void *box, int64_t *out) {
     if (out)
         *out = 0;
@@ -520,6 +607,9 @@ int8_t rt_box_try_to_i64(void *box, int64_t *out) {
 
 /// @brief Try to extract an `f64` value from @p box, never trapping. Returns 1 on success.
 /// @details Mirror of `rt_box_try_to_i64` for `RT_BOX_F64`. Failure paths zero @p out.
+/// @param[in] box Candidate managed box.
+/// @param[out] out Receives the floating-point value on success and is cleared first.
+/// @return 1 on a matching box; otherwise 0.
 int8_t rt_box_try_to_f64(void *box, double *out) {
     if (out)
         *out = 0.0;
@@ -536,6 +626,9 @@ int8_t rt_box_try_to_f64(void *box, double *out) {
 /// @details Mirror of `rt_box_try_to_i64` for `RT_BOX_I1`. The contained `int64_t` is
 ///          normalised to `0`/`1` via the ternary so callers always observe a canonical
 ///          boolean even if the box was constructed with a non-canonical truthy integer.
+/// @param[in] box Candidate managed box.
+/// @param[out] out Receives canonical zero or one on success and is cleared first.
+/// @return 1 on a matching box; otherwise 0.
 int8_t rt_box_try_to_i1(void *box, int8_t *out) {
     if (out)
         *out = 0;
@@ -553,6 +646,9 @@ int8_t rt_box_try_to_i1(void *box, int8_t *out) {
 ///          reference and must release it. This raw C helper is runtime-internal; the public
 ///          `Zanna.Core.Box.ToStrOption` surface returns an owned `Option<String>`.
 ///          Failure paths NULL out @p out.
+/// @param[in] box Candidate managed box.
+/// @param[out] out Receives a caller-owned retained String, or NULL for a stored null value.
+/// @return 1 on a matching String box; otherwise 0.
 int8_t rt_box_try_to_str(void *box, rt_string *out) {
     if (out)
         *out = NULL;
@@ -567,21 +663,36 @@ int8_t rt_box_try_to_str(void *box, rt_string *out) {
     return 1;
 }
 
+/// @brief Convert a candidate box to an owned Option<i64>.
+/// @param[in] box Candidate managed box.
+/// @return Caller-owned Some for a matching i64 box, otherwise caller-owned None.
 void *rt_box_to_i64_option(void *box) {
     int64_t value = 0;
     return rt_box_try_to_i64(box, &value) ? rt_option_some_i64(value) : rt_option_none();
 }
 
+/// @brief Convert a candidate box to an owned Option<f64>.
+/// @param[in] box Candidate managed box.
+/// @return Caller-owned Some for a matching f64 box, otherwise caller-owned None.
 void *rt_box_to_f64_option(void *box) {
     double value = 0.0;
     return rt_box_try_to_f64(box, &value) ? rt_option_some_f64(value) : rt_option_none();
 }
 
+/// @brief Convert a candidate box to an owned Option<i1>.
+/// @param[in] box Candidate managed box.
+/// @return Caller-owned Some for a matching boolean box, otherwise caller-owned None.
 void *rt_box_to_i1_option(void *box) {
     int8_t value = 0;
     return rt_box_try_to_i1(box, &value) ? rt_option_some_i1(value) : rt_option_none();
 }
 
+/// @brief Convert a candidate box to an owned Option<String>.
+/// @details The temporary retained String is released after Option construction
+///          and also on a recovered allocation trap.
+/// @param[in] box Candidate managed box.
+/// @return Caller-owned Some for a matching String box, caller-owned None for
+///         mismatch, or NULL after a returning allocation trap.
 void *rt_box_to_str_option(void *box) {
     rt_string value = NULL;
     if (!rt_box_try_to_str(box, &value))
@@ -609,6 +720,8 @@ void *rt_box_to_str_option(void *box) {
 
 /// @brief Read the type tag of a box (`RT_BOX_I64`, `RT_BOX_F64`, `RT_BOX_I1`, `RT_BOX_STR`),
 /// or -1 if the pointer isn't a Box. Used to dispatch on contained type without unboxing.
+/// @param[in] box Candidate managed payload.
+/// @return Primitive box tag, or -1 when @p box is invalid or not a primitive box.
 int64_t rt_box_type(void *box) {
     rt_box_t *b = box_maybe(box);
     if (!b)
@@ -618,6 +731,9 @@ int64_t rt_box_type(void *box) {
 
 /// @brief Compare a box to a raw i64. Returns 0 (not 1) for non-i64 boxes — never traps, so
 /// safe for heterogeneous collection scans (e.g. `Seq.contains(boxedValue)`).
+/// @param[in] box Candidate managed payload.
+/// @param[in] val Integer to compare.
+/// @return 1 for an equal i64 box; otherwise 0.
 int64_t rt_box_eq_i64(void *box, int64_t val) {
     rt_box_t *b = box_maybe(box);
     if (!b)
@@ -628,6 +744,9 @@ int64_t rt_box_eq_i64(void *box, int64_t val) {
 }
 
 /// @brief Compare a box to a raw f64. Uses IEEE-754 `==`, so `Box(NaN).eq(NaN) == 0` (intentional).
+/// @param[in] box Candidate managed payload.
+/// @param[in] val Floating-point value to compare.
+/// @return 1 for IEEE-equal values in an f64 box; otherwise 0.
 int64_t rt_box_eq_f64(void *box, double val) {
     rt_box_t *b = box_maybe(box);
     if (!b)
@@ -640,6 +759,9 @@ int64_t rt_box_eq_f64(void *box, double val) {
 
 /// @brief Compare a box to a raw rt_string. Delegates to `rt_str_eq` so encoding is handled
 /// canonically; returns 0 if `box` isn't a string box.
+/// @param[in] box Candidate managed payload.
+/// @param[in] val Managed String to compare, or NULL.
+/// @return 1 for equal String values, including two nulls; otherwise 0.
 int64_t rt_box_eq_str(void *box, rt_string val) {
     if (val && !rt_string_is_handle(val)) {
         rt_trap("rt_box_eq_str: invalid string handle");
@@ -659,6 +781,9 @@ int64_t rt_box_eq_str(void *box, rt_string val) {
 /// Distinct from the tagged Box family — this isn't a Box at all (RT_ELEM_NONE), the compiler
 /// emits direct field copies into the returned memory. Zero-sized value types are
 /// valid and allocate a managed header with an empty payload.
+/// @param[in] size Nonnegative payload size in bytes.
+/// @return Caller-owned zero-initialized managed value-type payload, or NULL
+///         after invalid size or allocation failure.
 void *rt_box_value_type(int64_t size) {
     if (size < 0) {
         rt_trap("rt_box_value_type: negative size");
@@ -684,6 +809,10 @@ void *rt_box_value_type(int64_t size) {
 ///          non-zero the runtime takes its own retain on whatever value already lives in
 ///          the slot — used at construction time when the caller transfers an owned
 ///          reference into a freshly-allocated value type.
+/// @param[in,out] obj Managed value-type payload.
+/// @param[in] offset Pointer-aligned byte offset of the managed slot.
+/// @param[in] kind RT_VALUE_FIELD_OBJ or RT_VALUE_FIELD_STR.
+/// @param[in] retain_now Nonzero to retain the slot's current value during registration.
 void rt_box_value_type_add_field(void *obj, int64_t offset, int64_t kind, int8_t retain_now) {
     if (!obj) {
         rt_trap("rt_box_value_type_add_field: null value type");
@@ -856,6 +985,8 @@ void rt_box_value_type_add_field(void *obj, int64_t offset, int64_t kind, int8_t
 
 /// @brief Check if a heap-allocated element is a boxed value.
 /// Safe for non-heap pointers: checks magic before accessing header fields.
+/// @param[in] elem Candidate collection element.
+/// @return 1 for a validated primitive box; otherwise 0.
 static int is_boxed(void *elem) {
     return box_maybe(elem) != NULL;
 }
@@ -865,6 +996,8 @@ static int is_boxed(void *elem) {
 /// raw heap pointers in mixed collections still distribute reasonably. **Caller-side note:**
 /// strings hash by content, so two boxed-string instances with equal text hash equally — required
 /// for `Map[Box, ...]` lookup correctness.
+/// @param[in] elem Candidate collection element, including NULL.
+/// @return Content hash for boxes or a deterministic pointer-identity hash for other values.
 size_t rt_box_hash(void *elem) {
     if (is_boxed(elem)) {
         rt_box_t *box = (rt_box_t *)elem;
@@ -901,12 +1034,11 @@ size_t rt_box_hash(void *elem) {
     return (size_t)((val * KNUTH_MULT) >> 16);
 }
 
-/// @brief Content-based equality for hashtable buckets. Handles pointer-identity fast path,
-/// rejects mixed box vs non-box, then dispatches by tag. Companion to `rt_box_hash` — together
-/// they let `Set[Box]` and `Map[Box, ...]` deduplicate by VALUE, not by pointer identity.
 /// @brief Sort rank for the default collection comparator (VDOC-089).
 /// @details Ranking by type class first makes the order total and transitive:
 ///          NULL < numeric (boxed i64/i1/f64) < string (raw or boxed) < other.
+/// @param[in] p Candidate collection element.
+/// @return Type-class rank from zero through three.
 static int box_sort_rank(void *p) {
     if (!p)
         return 0;
@@ -924,6 +1056,13 @@ static int box_sort_rank(void *p) {
     }
 }
 
+/// @brief Compare two arbitrary collection elements using the runtime's total default order.
+/// @details Orders type classes as NULL, numeric, String, then other. Integers
+///          compare exactly, mixed numeric values compare as doubles, NaN sorts
+///          last, Strings compare lexicographically, and other values use uintptr_t order.
+/// @param[in] a First collection element.
+/// @param[in] b Second collection element.
+/// @return Negative when @p a sorts first, zero when equivalent, or positive when @p b sorts first.
 int64_t rt_box_default_sort_compare(void *a, void *b) {
     int ra = box_sort_rank(a);
     int rb = box_sort_rank(b);
@@ -974,6 +1113,13 @@ int64_t rt_box_default_sort_compare(void *a, void *b) {
     }
 }
 
+/// @brief Compare collection elements using primitive-box content semantics.
+/// @details Pointer identity is a fast path; distinct non-box values are not
+///          equal. Matching boxes compare tag and value, with all NaNs treated
+///          as equal so equality remains compatible with canonical NaN hashing.
+/// @param[in] a First collection element.
+/// @param[in] b Second collection element.
+/// @return 1 when identical or content-equal primitive boxes; otherwise 0.
 int8_t rt_box_equal(void *a, void *b) {
     if (a == b)
         return 1;

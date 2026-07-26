@@ -12,6 +12,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements constant-edge jump threading for SimplifyCFG.
+ *
+ * @details The transformation discovers predecessor edges that supply a known
+ *          integer value to an intermediate block's conditional parameter,
+ *          composes the predecessor and successor argument mappings, and then
+ *          redirects validated edges directly to the selected successor.
+ */
+
 #include "il/transform/SimplifyCFG/JumpThreading.hpp"
 
 #include "il/transform/SimplifyCFG/Utils.hpp"
@@ -44,11 +54,11 @@ il::core::BasicBlock *findBlock(il::core::Function &F, const std::string &label)
     return nullptr;
 }
 
-/// @brief Build a map of all predecessors for each block.
+/// @brief Describes one indexed incoming CFG edge.
 struct PredEdge {
-    /// Block owning the incoming terminator edge.
+    /// @brief Borrowed block owning the incoming terminator edge.
     il::core::BasicBlock *block = nullptr;
-    /// Successor slot in that terminator.
+    /// @brief Successor slot in the owning block's terminator.
     size_t edgeIndex = 0;
 };
 
@@ -225,15 +235,15 @@ bool threadJumps(SimplifyCFG::SimplifyCFGPassContext &ctx) {
     // Collect blocks to thread (don't modify while iterating)
     /// @brief Fully validated edge rewrite applied after the discovery scan.
     struct ThreadingCandidate {
-        /// Predecessor whose terminator is changed.
+        /// @brief Borrowed predecessor whose terminator is changed.
         il::core::BasicBlock *pred{nullptr};
-        /// Predictable conditional block being bypassed.
+        /// @brief Borrowed predictable conditional block being bypassed.
         il::core::BasicBlock *intermediate{nullptr};
-        /// Selected final target label.
+        /// @brief Selected final target label.
         std::string newTarget;
-        /// Arguments after substituting intermediate block parameters.
+        /// @brief Arguments after substituting intermediate block parameters.
         std::vector<il::core::Value> newArgs;
-        /// Successor slot in the predecessor terminator.
+        /// @brief Successor slot in the predecessor terminator.
         size_t predBranchIdx{0};
     };
 

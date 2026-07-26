@@ -14,8 +14,9 @@
 // behaviour; view-specific styling is delegated to the nested widgets.
 //
 // Invariants:
-//   * The stored ratio is always clamped between 5% and 95% to prevent a child
-//     from collapsing entirely and becoming impossible to resize back.
+//   * Keyboard adjustments clamp the stored ratio between 5% and 95%; an
+//     arbitrary constructor ratio is tolerated because layout clamps the
+//     resulting child extent to the available rectangle.
 //   * Layout propagation maintains the splitter's rectangle so repainting uses
 //     the same geometry observed during event handling.
 // Ownership:
@@ -47,6 +48,11 @@ namespace zanna::tui::widgets {
 ///          stores the requested division ratio without clamping.  The first
 ///          call to @ref layout() computes the actual child rectangles based on
 ///          the available width.
+/// @param left First child, placed on the left; ownership transfers to the
+///        splitter.
+/// @param right Second child, placed on the right; ownership transfers to the
+///        splitter.
+/// @param ratio Initial fraction of the width requested for @p left.
 HSplitter::HSplitter(std::unique_ptr<ui::Widget> left,
                      std::unique_ptr<ui::Widget> right,
                      float ratio)
@@ -60,6 +66,7 @@ HSplitter::HSplitter(std::unique_ptr<ui::Widget> left,
 ///          rectangles before forwarding the layout call to each present child.
 ///          Using the parent's rectangle ensures resize events keep the layout
 ///          consistent with the geometry used for painting.
+/// @param r Rectangle to divide horizontally between the two children.
 void HSplitter::layout(const ui::Rect &r) {
     Widget::layout(r);
     int leftW = static_cast<int>(static_cast<float>(r.w) * ratio_);
@@ -107,8 +114,14 @@ bool HSplitter::onKeyEvent(const zanna::tui::term::KeyEvent &ev) {
 
 /// @brief Construct a vertical splitter with the supplied child widgets.
 /// @details Ownership is transferred to the splitter and the starting ratio is
-///          stored verbatim.  Actual clamping occurs during layout to preserve
-///          precision between calls.
+///          stored verbatim.  Layout clamps the resulting top-child height to
+///          the available rectangle, while keyboard adjustments clamp future
+///          ratio values to the interactive range.
+/// @param top First child, placed above the divider; ownership transfers to the
+///        splitter.
+/// @param bottom Second child, placed below the divider; ownership transfers to
+///        the splitter.
+/// @param ratio Initial fraction of the height requested for @p top.
 VSplitter::VSplitter(std::unique_ptr<ui::Widget> top,
                      std::unique_ptr<ui::Widget> bottom,
                      float ratio)
@@ -117,9 +130,10 @@ VSplitter::VSplitter(std::unique_ptr<ui::Widget> top,
 }
 
 /// @brief Split the rectangle into stacked child regions and propagate layout.
-/// @details Calculates the pixel height for the top child from the ratio,
+/// @details Calculates the terminal-row height for the top child from the ratio,
 ///          clamps it within bounds, and assigns the remainder to the bottom
 ///          child before invoking their respective @ref layout() methods.
+/// @param r Rectangle to divide vertically between the two children.
 void VSplitter::layout(const ui::Rect &r) {
     Widget::layout(r);
     int topH = static_cast<int>(static_cast<float>(r.h) * ratio_);

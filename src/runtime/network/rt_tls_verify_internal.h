@@ -23,6 +23,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_tls_verify_internal.h
+ * @brief Declares shared certificate-parsing and verification infrastructure.
+ * @details This private interface centralizes cryptographic includes, platform
+ *          trust-store types, verification limits, X.509 usage checks, DER and
+ *          SAN helpers, hostname matching, and CertificateVerify construction
+ *          for the POSIX and Windows verification translation units.
+ */
+
 #pragma once
 
 #include "rt_crypto.h"
@@ -55,33 +64,85 @@
 #pragma comment(lib, "bcrypt.lib")
 #endif
 
+/// @brief Suppress unused-function diagnostics for helpers compiled into only some platform paths.
 #if defined(__GNUC__) || defined(__clang__)
 #define RT_TLS_MAYBE_UNUSED __attribute__((unused))
 #else
 #define RT_TLS_MAYBE_UNUSED
 #endif
 
+/// @brief Maximum number of handshake intermediates accepted by either trust adapter.
 #define TLS_MAX_INTERMEDIATE_CERTS 16
 
-/// @brief Forward declaration: check whether a certificate's Extended Key Usage allows TLS Web
-/// Server Authentication.
-/// @details Real implementation later in the file. Marked MAYBE_UNUSED so
-///          builds that strip platform-specific verification paths still
-///          link. Used by chain validation to reject leaf certs that don't
-///          carry the id-kp-serverAuth EKU (1.3.6.1.5.5.7.3.1).
+/// @brief Check whether an X.509 certificate permits TLS server authentication.
+/// @details Each platform translation unit supplies its own static definition.
+///          When KeyUsage is present it must permit digital signatures, and
+///          when ExtendedKeyUsage is present it must include serverAuth or
+///          anyExtendedKeyUsage.
+/// @param[in] cert_der Complete DER-encoded X.509 certificate.
+/// @param[in] cert_len Length of @p cert_der in bytes.
+/// @return 1 when the applicable usage extensions allow server authentication;
+///         otherwise 0, including malformed recognized extensions.
 static RT_TLS_MAYBE_UNUSED int cert_allows_tls_server_auth(const uint8_t *cert_der,
                                                            size_t cert_len);
 
-// Common cert/ASN.1 helpers defined in rt_tls_verify_common.c and shared with the
-// platform-specific verification paths (rt_tls_verify_win.c / rt_tls_verify_posix.c).
+/// @brief Advance through one entry of a TLS 1.3 certificate_list.
+/// @details Parses the certificate and per-entry extension length fields,
+///          returns a borrowed view of the DER certificate, and advances the
+///          cursor past the complete entry.
+/// @param[in] list Encoded certificate_list entry bytes.
+/// @param[in] list_len Number of bytes available at @p list.
+/// @param[in,out] pos Current byte offset; advanced past the entry on success.
+/// @param[out] cert_der Receives a borrowed pointer into @p list.
+/// @param[out] cert_len Receives the certificate length in bytes.
+/// @return 0 on success, or -1 for null arguments, truncated fields, an empty
+///         certificate, or out-of-bounds lengths.
 int tls_next_certificate_entry(const uint8_t *list,
                                size_t list_len,
                                size_t *pos,
                                const uint8_t **cert_der,
                                size_t *cert_len);
+
+/// @brief Parse one canonical ASN.1 DER tag-and-length header.
+/// @details Indefinite lengths, non-minimal long-form lengths, oversized
+///          length fields, and values extending beyond the supplied buffer are rejected.
+/// @param[in] buf DER bytes beginning at a TLV header.
+/// @param[in] buf_len Number of bytes available at @p buf.
+/// @param[out] tag Receives the single-byte ASN.1 tag.
+/// @param[out] val_len Receives the value length in bytes.
+/// @param[out] hdr_len Receives the tag-plus-length header size in bytes.
+/// @return 0 on success, or -1 when the input is null, truncated, or non-canonical.
 int der_read_tlv(const uint8_t *buf, size_t buf_len, uint8_t *tag, size_t *val_len, size_t *hdr_len);
+
+/// @brief Validate absent or canonical DER NULL AlgorithmIdentifier parameters.
+/// @param[in] params Remaining parameter bytes after an algorithm OID.
+/// @param[in] params_len Number of bytes available at @p params.
+/// @return 1 for absent parameters or exactly one empty NULL TLV; otherwise 0.
 int der_params_absent_or_null(const uint8_t *params, size_t params_len);
+
+/// @brief Locate the DER-encoded Subject Name in an X.509 certificate.
+/// @param[in] cert_der Complete DER-encoded X.509 certificate.
+/// @param[in] cert_len Length of @p cert_der in bytes.
+/// @param[out] subject_len Receives the complete Subject Name TLV length.
+/// @return Borrowed pointer into @p cert_der on success, or NULL when malformed.
 const uint8_t *cert_get_subject(const uint8_t *cert_der, size_t cert_len, size_t *subject_len);
+
+/// @brief Detect critical X.509 extensions unsupported by the runtime verifier.
+/// @details Malformed certificate or extension structures fail closed and are
+///          reported as unsupported.
+/// @param[in] cert_der Complete DER-encoded X.509 certificate.
+/// @param[in] cert_len Length of @p cert_der in bytes.
+/// @return 1 when the certificate must be rejected; 0 when all critical
+///         extensions are recognized.
 int cert_has_unsupported_critical_extension(const uint8_t *cert_der, size_t cert_len);
+
+/// @brief Construct the RFC 8446 server CertificateVerify signed content.
+/// @param[in] transcript_hash 32-byte SHA-256 handshake transcript hash.
+/// @param[out] out_content Buffer that receives the 130-byte context-prefixed message.
 void build_cert_verify_message(const uint8_t transcript_hash[32], uint8_t out_content[130]);
+
+/// @brief Return the digest size selected by a supported TLS SignatureScheme.
+/// @param[in] sig_scheme TLS SignatureScheme code.
+/// @return 32, 48, or 64 for supported SHA-256, SHA-384, or SHA-512 schemes;
+///         otherwise 0.
 size_t sig_scheme_hash_len(uint16_t sig_scheme);

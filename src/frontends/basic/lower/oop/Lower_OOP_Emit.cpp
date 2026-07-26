@@ -76,15 +76,22 @@ using AstType = ::il::frontends::basic::Type;
     return out;
 }
 
+/// @brief Balances the active field-resolution scope for one class emission.
 class FieldScopeGuard {
   public:
+    /// @brief Pushes the class field scope for the guard lifetime.
+    /// @param lowerer Lowerer whose field-scope stack is modified.
+    /// @param className Class name used to select the field scope.
     FieldScopeGuard(Lowerer &lowerer, const std::string &className) noexcept : lowerer_(lowerer) {
         lowerer_.pushFieldScope(className);
     }
 
+    /// @brief Prevents copying a guard that owns one balanced scope pop.
     FieldScopeGuard(const FieldScopeGuard &) = delete;
+    /// @brief Prevents assigning guards with distinct active scopes.
     FieldScopeGuard &operator=(const FieldScopeGuard &) = delete;
 
+    /// @brief Pops the field scope installed at construction.
     ~FieldScopeGuard() {
         lowerer_.popFieldScope();
     }
@@ -96,16 +103,23 @@ class FieldScopeGuard {
 } // namespace
 
 namespace {
+/// @brief Balances the active qualified-class context for member emission.
 class ClassContextGuard {
   public:
+    /// @brief Pushes a qualified class context for the guard lifetime.
+    /// @param lowerer Lowerer whose class-context stack is modified.
+    /// @param qualifiedName Fully qualified class name to activate.
     explicit ClassContextGuard(Lowerer &lowerer, const std::string &qualifiedName)
         : lowerer_(lowerer) {
         lowerer_.pushClass(qualifiedName);
     }
 
+    /// @brief Prevents copying a guard that owns one balanced context pop.
     ClassContextGuard(const ClassContextGuard &) = delete;
+    /// @brief Prevents assigning guards with distinct active contexts.
     ClassContextGuard &operator=(const ClassContextGuard &) = delete;
 
+    /// @brief Pops the class context installed at construction.
     ~ClassContextGuard() {
         lowerer_.popClass();
     }
@@ -521,6 +535,7 @@ void Lowerer::emitClassMethod(const ClassDecl &klass, const MethodDecl &method) 
     ctx.blockNames().resetNamer();
 }
 
+/// @copydoc Lowerer::emitClassMethodWithBody()
 void Lowerer::emitClassMethodWithBody(const ClassDecl &klass,
                                       const MethodDecl &method,
                                       const std::vector<const Stmt *> &bodyStmts) {
@@ -674,6 +689,8 @@ void Lowerer::emitOopDeclsAndBodies(const Program &prog) {
 
     // Walk the program and nested namespaces to emit class/interface members.
     std::function<void(const std::vector<StmtPtr> &)> scan;
+    /// @brief Recursively emits OOP members from a statement list.
+    /// @param stmts Statements to scan within the active namespace.
     scan = [&](const std::vector<StmtPtr> &stmts) {
         for (const auto &stmt : stmts) {
             if (!stmt)
@@ -822,6 +839,8 @@ void Lowerer::emitOopDeclsAndBodies(const Program &prog) {
     std::vector<std::string> classOrder;
     {
         std::unordered_set<std::string> registered;
+        /// @brief Adds a class after recursively ordering its base class.
+        /// @param qname Qualified class name to register.
         std::function<void(const std::string &)> registerInOrder = [&](const std::string &qname) {
             if (registered.count(qname))
                 return;
@@ -935,6 +954,7 @@ void Lowerer::emitOopDeclsAndBodies(const Program &prog) {
     // Note: Program emission will run after this; ensure ProgramLowering invokes this init.
 }
 
+/// @copydoc Lowerer::emitInterfaceRegThunks()
 std::vector<std::string> Lowerer::emitInterfaceRegThunks() {
     std::vector<std::string> regThunks;
     for (const auto &p : oopIndex_.interfacesByQname()) {
@@ -961,6 +981,7 @@ std::vector<std::string> Lowerer::emitInterfaceRegThunks() {
     return regThunks;
 }
 
+/// @copydoc Lowerer::emitInterfaceBindThunks()
 std::vector<std::string> Lowerer::emitInterfaceBindThunks() {
     std::vector<std::string> bindThunks;
     for (const auto &entry : oopIndex_.classes()) {

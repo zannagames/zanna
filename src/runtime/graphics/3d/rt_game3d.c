@@ -136,6 +136,7 @@ static void game3d_world_rebuild_name_index(rt_game3d_world *world);
 void game3d_audio_prune_sources(rt_game3d_audio *audio);
 
 /// @brief Per-frame update callback signature: receives the frame delta in seconds.
+/// @param dt Frame delta in seconds.
 typedef void (*rt_game3d_update_fn)(double dt);
 /// @brief 2D overlay callback signature: invoked once per frame to draw HUD/UI.
 typedef void (*rt_game3d_overlay_fn)(void);

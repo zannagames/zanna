@@ -169,6 +169,8 @@ static double sound3d_velocity_or(double value) {
 ///   optional out-params without null-checking at every site. `src == NULL`
 ///   writes zero rather than leaving `dst` untouched — spatial audio math
 ///   treats missing positions as the origin, not undefined.
+/// @param[out] dst Destination array with room for three doubles; NULL is ignored.
+/// @param src Optional three-component source array; NULL writes the origin.
 static void sound3d_copy3(double *dst, const double *src) {
     if (!dst)
         return;
@@ -188,6 +190,8 @@ static void sound3d_copy3(double *dst, const double *src) {
 ///   `rt_vec3_{x,y,z}`; this helper converts it into the plain array that
 ///   the spatial-audio math works in. Null object collapses to the origin,
 ///   matching `sound3d_copy3`'s null-fill convention.
+/// @param vec Optional runtime Vec3 object handle.
+/// @param[out] out_xyz Destination array with room for three doubles; NULL is ignored.
 static void sound3d_vec_from_obj(void *vec, double *out_xyz) {
     if (!out_xyz)
         return;
@@ -213,6 +217,7 @@ static void sound3d_cross3(const double *a, const double *b, double *out) {
 }
 
 /// @brief Normalize a 3-vector in place (sanitizing non-finite components first).
+/// @param[in,out] v Three-component vector to sanitize and normalize.
 /// @return 1 on success, 0 if the vector is degenerate (length <= 1e-8), leaving it unchanged.
 static int sound3d_normalize3(double *v) {
     double len;
@@ -234,6 +239,9 @@ static int sound3d_normalize3(double *v) {
 /// @details Falls back to forward = `(0, 0, -1)` and up = `(0, 1, 0)` when
 ///   inputs are missing or degenerate, then orthonormalizes the basis. Right
 ///   is `forward x up`, so a caller-provided roll affects stereo panning.
+/// @param[out] state Listener state receiving orthonormal forward, up, and right vectors.
+/// @param forward Optional requested forward direction.
+/// @param up Optional requested up direction.
 static void sound3d_set_basis(rt_sound3d_listener_state *state,
                               const double *forward,
                               const double *up) {
@@ -545,6 +553,11 @@ int64_t rt_sound3d_tracked_voice_capacity(void) {
 ///   the out-params are left untouched (so the caller's pre-seeded defaults —
 ///   ref 0.0, max 50.0, base 100 — stand). Replaces three separate per-field
 ///   scans of the voice table with one pass.
+/// @param voice Backend voice identifier to find.
+/// @param[out] out_ref_distance Optional destination for the reference distance.
+/// @param[out] out_max_distance Optional destination for the maximum distance.
+/// @param[out] out_base_volume Optional destination for the logical base volume.
+/// @return 1 when a matching voice record is found, otherwise 0.
 static int lookup_voice_params(int64_t voice,
                                double *out_ref_distance,
                                double *out_max_distance,

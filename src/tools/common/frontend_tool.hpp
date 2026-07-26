@@ -15,6 +15,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Defines the shared command-line pipeline for standalone language frontends.
+/// @details The header centralizes option validation, language-specific callback
+///          hooks, frontend argument construction, stdout redirection, temporary
+///          IL handling, and optional native compilation for `zia` and `vbasic`.
+
 #pragma once
 
 #include "common/Filesystem.hpp"
@@ -37,8 +43,13 @@ namespace zanna::tools {
 /// @details Frontend tool file-extension parsing should behave predictably across
 ///          case-insensitive and case-sensitive filesystems. Only ASCII is folded
 ///          because source extensions are ASCII command-line syntax.
+/// @param value Text whose ASCII uppercase bytes should be folded.
+/// @return Owned copy with each byte safely passed through `std::tolower`.
 inline std::string lowerAscii(std::string_view value) {
     std::string lowered(value);
+    /// @brief Convert through unsigned char so negative plain-char values are not passed to ctype.
+    /// @param c Unsigned source byte.
+    /// @return Lowercase byte converted back to plain char.
     std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
     });
@@ -48,6 +59,9 @@ inline std::string lowerAscii(std::string_view value) {
 /// @brief Test whether @p path ends with @p extension using ASCII case folding.
 /// @details This keeps wrapper tools from rejecting valid source paths such as
 ///          `MAIN.ZIA` on platforms and editors that preserve uppercase suffixes.
+/// @param path Candidate source path.
+/// @param extension Required language suffix, including its leading dot.
+/// @return True when the complete suffix matches after case folding.
 inline bool endsWithExtensionInsensitive(std::string_view path, std::string_view extension) {
     if (path.size() < extension.size())
         return false;
@@ -55,6 +69,8 @@ inline bool endsWithExtensionInsensitive(std::string_view path, std::string_view
 }
 
 /// @brief Configuration parsed from frontend tool command-line arguments.
+/// @details Owns every path and forwarded argument needed after parsing; the
+///          optional architecture selects native output independently of IL mode.
 struct FrontendToolConfig {
     /// @brief Path to the source file to compile.
     std::string sourcePath;
@@ -79,6 +95,9 @@ struct FrontendToolConfig {
 };
 
 /// @brief Callbacks for language-specific behavior in frontend tools.
+/// @details String views borrow static language metadata, while std::function
+///          members own their callable wrappers. All three callbacks must be
+///          populated before parsing or running a tool.
 struct FrontendToolCallbacks {
     /// @brief File extension for this language (e.g., ".bas", ".zia").
     std::string_view fileExtension;
@@ -109,6 +128,8 @@ struct FrontendToolParseStop {
 /// @details The standalone `zia` and `vbasic` wrappers forward only options
 ///          understood by the underlying `zanna front` commands. This prevents
 ///          spelling mistakes from being accepted as opaque passthrough flags.
+/// @param arg Complete option token to classify.
+/// @return True when the option requires a separate following value.
 inline bool frontendForwardedFlagTakesValue(std::string_view arg) {
     return arg == "--stdin-from" || arg == "--max-steps" || arg == "--diagnostic-format" ||
            arg == "--build-profile";
@@ -117,6 +138,8 @@ inline bool frontendForwardedFlagTakesValue(std::string_view arg) {
 /// @brief Return true when @p arg is a supported forwarded frontend option.
 /// @details Inline forms that include values are accepted here; separated forms
 ///          are handled by @ref frontendForwardedFlagTakesValue.
+/// @param arg Complete leading-dash token to validate.
+/// @return True when the shared underlying frontend recognizes the option form.
 inline bool isKnownFrontendForwardedFlag(std::string_view arg) {
     if (arg == "--debug-vm" || arg == "--dump-trap" || arg == "--bounds-checks" ||
         arg == "--no-bounds-checks" || arg == "--dump-tokens" || arg == "--dump-ast" ||
@@ -160,6 +183,8 @@ inline bool isKnownFrontendForwardedFlag(std::string_view arg) {
 /// @param callbacks Language-specific callbacks (usage/version text, extension).
 /// @return Parsed configuration on success.
 /// @throws FrontendToolParseStop for help, version, and parse failures.
+/// @pre @p argv references at least @p argc non-null C strings and all callbacks
+///      required by the encountered control path are callable.
 inline FrontendToolConfig parseArgs(int argc, char **argv, const FrontendToolCallbacks &callbacks) {
     FrontendToolConfig config{};
 
@@ -330,12 +355,16 @@ inline std::vector<char *> buildIlcArgs(const FrontendToolConfig &config,
 ///             or run the program.
 ///          5. On success with native output, invoke @ref compileToNative using
 ///             the requested or host-detected architecture.
-///          6. Remove the temporary IL file, if any, before returning.
+///          6. After frontend/native execution, make a best-effort removal of
+///             the temporary IL file. Cleanup errors do not replace the command
+///             result.
 ///
 /// @param argc Number of command-line arguments.
 /// @param argv Array of argument strings.
 /// @param callbacks Language-specific callbacks.
 /// @return Exit status: 0 on success, non-zero on error.
+/// @pre @p argv references at least @p argc non-null C strings and the callback
+///      bundle remains valid and callable for the duration of the invocation.
 inline int runFrontendTool(int argc, char **argv, const FrontendToolCallbacks &callbacks) {
     if (argc < 2) {
         callbacks.printUsage();

@@ -21,6 +21,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_tls_verify_win.c
+ * @brief Implements Windows trust-chain and CertificateVerify validation.
+ * @details The Windows adapter imports server certificates and optional
+ *          caller-provided trust anchors into CryptoAPI stores, evaluates the
+ *          chain and name policy, and uses CNG keys to verify the negotiated
+ *          TLS 1.3 signature. Every native context, store, and key handle is
+ *          released on all return paths.
+ */
+
 #include "rt_tls_verify_internal.h"
 
 #if defined(_WIN32)
@@ -30,6 +40,12 @@ enum {
 };
 
 /// @brief Open one runtime UTF-8 path through the Unicode Windows CRT boundary.
+/// @details The path is decoded with strict UTF-8 validation and opened in
+///          binary-read mode through _wfopen(). Temporary UTF-16 storage is
+///          released before return.
+/// @param[in] path Null-terminated UTF-8 filesystem path.
+/// @return Open stream on success, or NULL for an invalid path, conversion
+///         failure, allocation failure, or open failure. The caller owns the stream.
 static FILE *tls_open_file_utf8_win(const char *path) {
     wchar_t *wide_path = NULL;
     FILE *file = NULL;
@@ -52,7 +68,11 @@ static FILE *tls_open_file_utf8_win(const char *path) {
 }
 
 /// @brief Read an entire file into a freshly allocated buffer (Windows).
-///        Caller must free() the returned pointer.
+/// @details Files larger than TLS_MAX_CUSTOM_CA_FILE_BYTES and files that grow
+///          after the initial size snapshot are rejected. The caller owns the
+///          returned null-terminated buffer and must release it with free().
+/// @param[in] path Null-terminated UTF-8 path of the file to read.
+/// @param[out] len_out Optional destination for the file size, initialized to zero on failure.
 /// @return Pointer to null-terminated buffer on success, NULL on failure.
 static char *tls_read_file_bytes_win(const char *path, size_t *len_out) {
     FILE *f = NULL;
@@ -105,6 +125,12 @@ static char *tls_read_file_bytes_win(const char *path, size_t *len_out) {
 }
 
 /// @brief Load a PEM bundle or DER file and add all certificates to a Windows HCERTSTORE.
+/// @details PEM input must contain complete CERTIFICATE blocks and is limited
+///          to TLS_MAX_CUSTOM_CA_CERTIFICATES entries. Input without PEM
+///          markers is treated as one DER certificate. Certificates already
+///          added before a malformed later block remain in @p store.
+/// @param[in] store Open destination certificate store; ownership remains with the caller.
+/// @param[in] path Null-terminated UTF-8 path to a PEM bundle or DER certificate.
 /// @return 1 if at least one certificate was added, 0 otherwise.
 static int tls_add_pem_or_der_certs_to_store_win(HCERTSTORE store, const char *path) {
     static const char begin_marker[] = "-----BEGIN CERTIFICATE-----";
@@ -186,8 +212,11 @@ static int tls_add_pem_or_der_certs_to_store_win(HCERTSTORE store, const char *p
 }
 
 /// @brief Check whether a certificate permits TLS server authentication (Windows).
-///        Inspects KeyUsage (digitalSignature) and ExtendedKeyUsage
-///        (id-kp-serverAuth or anyExtendedKeyUsage) extensions via DER parsing.
+/// @details When KeyUsage is present, digitalSignature must be asserted. When
+///          ExtendedKeyUsage is present, it must include id-kp-serverAuth or
+///          anyExtendedKeyUsage. Malformed recognized extensions fail closed.
+/// @param[in] cert_der Complete DER-encoded X.509 certificate.
+/// @param[in] cert_len Length of @p cert_der in bytes.
 /// @return 1 if both checks pass, 0 if any extension explicitly forbids server auth.
 static RT_TLS_MAYBE_UNUSED int cert_allows_tls_server_auth(const uint8_t *cert_der,
                                                            size_t cert_len) {
@@ -319,9 +348,14 @@ static RT_TLS_MAYBE_UNUSED int cert_allows_tls_server_auth(const uint8_t *cert_d
 }
 
 /// @brief Validate the server certificate chain against the Windows system trust store (CryptoAPI).
-///        If session->ca_file is set, builds an exclusive engine from that bundle; otherwise
-///        uses the default ROOT store.  Intermediate certificates from the TLS handshake are
-///        added as additional store hints.
+/// @details If the session CA file is set, an exclusive or restricted chain
+///          engine is built from that bundle; otherwise the default ROOT store
+///          is used. Handshake intermediates are added as untrusted chain
+///          hints. The leaf is also checked for TLS server usage and
+///          unsupported critical extensions before CryptoAPI policy
+///          validation. All temporary stores, contexts, and engines are
+///          released before return.
+/// @param[in,out] session TLS session containing the peer chain and trust configuration.
 /// @return RT_TLS_OK on success, RT_TLS_ERROR_HANDSHAKE on validation failure.
 int tls_verify_chain(rt_tls_session_t *session) {
     if (!session)
@@ -505,6 +539,13 @@ int tls_verify_chain(rt_tls_session_t *session) {
     return RT_TLS_OK;
 }
 
+/// @brief Check whether a DER INTEGER is a canonical positive ECDSA scalar.
+/// @details Zero, negative encodings, and redundant leading-zero octets are
+///          rejected. A single leading zero is accepted only when required to
+///          keep the following high bit from indicating a negative value.
+/// @param[in] bytes INTEGER value bytes, excluding the DER tag and length.
+/// @param[in] len Number of value bytes at @p bytes.
+/// @return 1 for a canonical positive encoding; otherwise 0.
 static int ecdsa_der_integer_is_canonical(const uint8_t *bytes, size_t len) {
     if (!bytes || len == 0)
         return 0;
@@ -518,6 +559,12 @@ static int ecdsa_der_integer_is_canonical(const uint8_t *bytes, size_t len) {
 }
 
 /// @brief Parse a DER-encoded ECDSA signature for CNG, writing raw r || s bytes.
+/// @details Both INTEGERs must use canonical positive DER encodings. Required
+///          sign-padding is removed and each scalar is left-padded to 32 bytes.
+/// @param[in] sig Complete DER-encoded ECDSA signature.
+/// @param[in] sig_len Length of @p sig in bytes.
+/// @param[out] r_out Receives the normalized 32-byte big-endian R scalar.
+/// @param[out] s_out Receives the normalized 32-byte big-endian S scalar.
 /// @return 0 on success, -1 on malformed input.
 static int parse_ecdsa_sig_der(const uint8_t *sig,
                                size_t sig_len,
@@ -573,8 +620,14 @@ static int parse_ecdsa_sig_der(const uint8_t *sig,
 }
 
 /// @brief Build and hash the CertificateVerify content for Windows CNG verification.
-///        Constructs the 130-byte signed content, then hashes it with SHA-256/384/512 as
-///        required by sig_scheme.
+/// @details Constructs the 130-byte RFC 8446 server CertificateVerify content,
+///          then hashes it with SHA-256, SHA-384, or SHA-512 as selected by
+///          @p sig_scheme. Output storage and the optional length are cleared
+///          before input validation.
+/// @param[in] sig_scheme TLS SignatureScheme value selecting the digest.
+/// @param[in] transcript_hash Stored 32-byte handshake transcript hash.
+/// @param[out] out Buffer of at least 64 bytes that receives the digest prefix.
+/// @param[out] hash_len_out Optional destination for the selected digest size.
 /// @return 1 on success, 0 for unknown or unsupported sig_scheme.
 static int build_cert_verify_hash_for_scheme_win(uint16_t sig_scheme,
                                                  const uint8_t transcript_hash[32],
@@ -607,9 +660,16 @@ static int build_cert_verify_hash_for_scheme_win(uint16_t sig_scheme,
 }
 
 /// @brief Windows path: verify CertificateVerify via Windows CNG.
-///
-/// Builds the message, hashes it locally, then verifies ECDSA and RSA-PSS with
-/// CNG using the public key imported from the peer certificate.
+/// @details Builds and hashes the RFC 8446 signed content, imports the leaf
+///          certificate's public key, and verifies ECDSA P-256 or RSA-PSS
+///          through CNG. All certificate and key handles are released on every
+///          path. On failure, @p session receives a stable error string when
+///          it is non-null.
+/// @param[in,out] session TLS session containing the transcript hash and leaf certificate.
+/// @param[in] data CertificateVerify body beginning with scheme and signature length fields.
+/// @param[in] len Number of bytes available at @p data.
+/// @return RT_TLS_OK on success, or RT_TLS_ERROR_HANDSHAKE on malformed input,
+///         unsupported algorithms, import errors, or signature failure.
 int tls_verify_cert_verify(rt_tls_session_t *session, const uint8_t *data, size_t len) {
     if (!session)
         return RT_TLS_ERROR_HANDSHAKE;

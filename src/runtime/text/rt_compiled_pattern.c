@@ -29,6 +29,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_compiled_pattern.c
+ * @brief Implements immutable managed compiled regular-expression patterns.
+ * @details Construction validates and compiles a pattern once into owned
+ *          engine state. Reusable operations perform matching, capture
+ *          extraction, find-all, literal replacement, and splitting while
+ *          returning fresh managed Strings, Options, and sequences.
+ */
+
 #include "rt_compiled_pattern.h"
 #include "rt_object.h"
 #include "rt_regex_internal.h"
@@ -45,6 +54,9 @@
 
 #include "rt_trap.h"
 
+/// @brief Convert a nullable runtime-string byte length for the regex engine.
+/// @param s Runtime string, or NULL to represent empty text.
+/// @return Byte length as int, or 0 after trapping when it exceeds INT_MAX.
 static int safe_rt_string_len_int(rt_string s) {
     size_t n = s ? (size_t)rt_str_len(s) : 0;
     if (n > (size_t)INT_MAX) {
@@ -54,10 +66,22 @@ static int safe_rt_string_len_int(rt_string s) {
     return (int)n;
 }
 
+/// @brief Obtain a borrowed text pointer with a NULL-as-empty policy.
+/// @param text Runtime string, or NULL.
+/// @return Borrowed runtime bytes, or a static empty C string for NULL.
 static const char *compiled_text_or_empty(rt_string text) {
     return text ? rt_string_cstr(text) : "";
 }
 
+/// @brief Grow a replacement buffer to accommodate an append.
+/// @details Detects length arithmetic overflow and grows geometrically while
+///          preserving existing bytes. The current capacity must be nonzero.
+/// @param result Address of the caller-owned allocation.
+/// @param result_cap Address of its writable byte capacity.
+/// @param result_len Number of bytes currently used.
+/// @param add Additional bytes that must fit.
+/// @return 1 when capacity exceeds the required used length, otherwise 0 after
+///         an overflow or allocation trap.
 static int compiled_ensure_result_capacity(char **result,
                                            size_t *result_cap,
                                            size_t result_len,
@@ -95,8 +119,9 @@ static int compiled_ensure_result_capacity(char **result,
 // Internal Structure
 //=============================================================================
 
+/// @brief GC wrapper around the regex engine's separately allocated automaton.
 typedef struct {
-    re_compiled_pattern *pattern;
+    re_compiled_pattern *pattern; ///< Owned immutable compiled regex state.
 } compiled_pattern_obj;
 
 
@@ -110,6 +135,7 @@ typedef struct {
 ///          allocation back to the regex engine when the wrapping
 ///          GC object is collected. Nulled afterwards so a double
 ///          finalize (rare but possible during shutdown) is safe.
+/// @param obj CompiledPattern wrapper being finalized; NULL is ignored.
 static void compiled_pattern_finalizer(void *obj) {
     compiled_pattern_obj *cpo = (compiled_pattern_obj *)obj;
     if (cpo && cpo->pattern) {
@@ -119,6 +145,9 @@ static void compiled_pattern_finalizer(void *obj) {
 }
 
 /// @brief Compile a regex pattern for reuse (avoids recompilation on each call).
+/// @param pattern Required regex source string without embedded NUL bytes.
+/// @return New GC-managed CompiledPattern object, or NULL after a validation,
+///         allocation, or regex-compilation trap.
 void *rt_compiled_pattern_new(rt_string pattern) {
     if (!pattern) {
         rt_trap("CompiledPattern: null pattern");
@@ -149,6 +178,9 @@ void *rt_compiled_pattern_new(rt_string pattern) {
 }
 
 /// @brief Get the original regex source string that was compiled.
+/// @param obj CompiledPattern object, or NULL.
+/// @return Newly allocated pattern string for a valid object, or an empty
+///         constant string for NULL.
 rt_string rt_compiled_pattern_get_pattern(void *obj) {
     if (!obj)
         return rt_const_cstr("");
@@ -163,6 +195,9 @@ rt_string rt_compiled_pattern_get_pattern(void *obj) {
 //=============================================================================
 
 /// @brief Test whether the compiled pattern matches anywhere in the text.
+/// @param obj Required CompiledPattern object.
+/// @param text Text to search; NULL is treated as empty.
+/// @return 1 when any match exists, otherwise 0; a NULL object also traps.
 int8_t rt_compiled_pattern_is_match(void *obj, rt_string text) {
     if (!obj) {
         rt_trap("CompiledPattern: null pattern object");
@@ -178,6 +213,11 @@ int8_t rt_compiled_pattern_is_match(void *obj, rt_string text) {
 }
 
 /// @brief Find the first match of the compiled pattern in the text.
+/// @param obj Required CompiledPattern object.
+/// @param text Text to search; NULL is treated as empty.
+/// @return Newly allocated first matching substring, or an empty string when no
+///         match exists. Use rt_compiled_pattern_find_option() to distinguish no
+///         match from a valid zero-width match.
 rt_string rt_compiled_pattern_find(void *obj, rt_string text) {
     if (!obj) {
         rt_trap("CompiledPattern: null pattern object");
@@ -223,6 +263,11 @@ void *rt_compiled_pattern_find_option(void *obj, rt_string text) {
 }
 
 /// @brief Find the first match starting at or after the given byte offset.
+/// @param obj Required CompiledPattern object.
+/// @param text Text to search; NULL is treated as empty.
+/// @param start Starting byte offset; negative values clamp to zero.
+/// @return Newly allocated matching substring, or an empty string when no match
+///         begins at/after the clamped offset.
 rt_string rt_compiled_pattern_find_from(void *obj, rt_string text, int64_t start) {
     if (!obj) {
         rt_trap("CompiledPattern: null pattern object");
@@ -276,6 +321,10 @@ void *rt_compiled_pattern_find_from_option(void *obj, rt_string text, int64_t st
 }
 
 /// @brief Find the byte position of the first match (-1 if no match).
+/// @param obj Required CompiledPattern object.
+/// @param text Text to search; NULL is treated as empty.
+/// @return Zero-based byte offset of the first match, or -1 when absent or
+///         after trapping for a NULL object.
 int64_t rt_compiled_pattern_find_pos(void *obj, rt_string text) {
     if (!obj) {
         rt_trap("CompiledPattern: null pattern object");
@@ -314,6 +363,11 @@ void *rt_compiled_pattern_find_pos_option(void *obj, rt_string text) {
 }
 
 /// @brief Find all non-overlapping matches and return as a sequence of strings.
+/// @details Zero-width matches advance by one byte to guarantee progress.
+/// @param obj Required CompiledPattern object.
+/// @param text Text to search; NULL is treated as empty.
+/// @return Caller-owned element-owning Seq of newly allocated match strings;
+///         no matches produce an empty Seq.
 void *rt_compiled_pattern_find_all(void *obj, rt_string text) {
     if (!obj) {
         rt_trap("CompiledPattern: null pattern object");
@@ -351,11 +405,21 @@ void *rt_compiled_pattern_find_all(void *obj, rt_string text) {
 //=============================================================================
 
 /// @brief Extract capture groups from the first match (returns a sequence of group strings).
+/// @param obj Required CompiledPattern object.
+/// @param text Text to search; NULL is treated as empty.
+/// @return Caller-owned Seq whose first element is the full match followed by
+///         capture groups, or an empty Seq when no match exists.
 void *rt_compiled_pattern_captures(void *obj, rt_string text) {
     return rt_compiled_pattern_captures_from(obj, text, 0);
 }
 
 /// @brief Extract capture groups starting at or after the given byte offset.
+/// @details Nonparticipating capture groups are represented by empty strings.
+/// @param obj Required CompiledPattern object.
+/// @param text Text to search; NULL is treated as empty.
+/// @param start Starting byte offset; negatives clamp to zero.
+/// @return Caller-owned element-owning Seq containing full match then lexical
+///         capture groups, or an empty Seq when out of range/no match.
 void *rt_compiled_pattern_captures_from(void *obj, rt_string text, int64_t start) {
     if (!obj) {
         rt_trap("CompiledPattern: null pattern object");
@@ -429,6 +493,13 @@ void *rt_compiled_pattern_captures_from(void *obj, rt_string text, int64_t start
 //=============================================================================
 
 /// @brief Replace all matches of the compiled pattern with the replacement string.
+/// @details Replacement bytes are literal rather than capture-expansion syntax.
+///          Zero-width matches preserve the stepped-over input byte.
+/// @param obj Required CompiledPattern object.
+/// @param text Input text; NULL is treated as empty.
+/// @param replacement Literal replacement; NULL is treated as empty.
+/// @return Newly allocated replaced string, or an empty fallback after a
+///         validation, overflow, or allocation trap.
 rt_string rt_compiled_pattern_replace(void *obj, rt_string text, rt_string replacement) {
     if (!obj) {
         rt_trap("CompiledPattern: null pattern object");
@@ -506,6 +577,11 @@ rt_string rt_compiled_pattern_replace(void *obj, rt_string text, rt_string repla
 }
 
 /// @brief Replace only the first match of the compiled pattern.
+/// @param obj Required CompiledPattern object.
+/// @param text Input text; NULL is treated as empty.
+/// @param replacement Literal replacement; NULL is treated as empty.
+/// @return Newly allocated replaced string, or a fresh copy of @p text when no
+///         match exists; failures trap and return an empty fallback.
 rt_string rt_compiled_pattern_replace_first(void *obj, rt_string text, rt_string replacement) {
     if (!obj) {
         rt_trap("CompiledPattern: null pattern object");
@@ -556,11 +632,21 @@ rt_string rt_compiled_pattern_replace_first(void *obj, rt_string text, rt_string
 //=============================================================================
 
 /// @brief Split a string by the compiled pattern (unlimited splits).
+/// @param obj Required CompiledPattern object.
+/// @param text Input text; NULL is treated as empty.
+/// @return Caller-owned element-owning Seq of substrings, including a trailing
+///         empty element when the text ends with a nonzero-width separator.
 void *rt_compiled_pattern_split(void *obj, rt_string text) {
     return rt_compiled_pattern_split_n(obj, text, 0);
 }
 
 /// @brief Split a string by the compiled pattern, returning at most `limit` pieces (0 = unlimited).
+/// @details Nonpositive limits are unlimited. Zero-width matches neither split
+///          at the current segment start nor at end-of-text, preventing byte loss.
+/// @param obj Required CompiledPattern object.
+/// @param text Input text; NULL is treated as empty.
+/// @param limit Maximum result pieces when positive; nonpositive is unlimited.
+/// @return Caller-owned element-owning Seq of substring strings.
 void *rt_compiled_pattern_split_n(void *obj, rt_string text, int64_t limit) {
     if (!obj) {
         rt_trap("CompiledPattern: null pattern object");

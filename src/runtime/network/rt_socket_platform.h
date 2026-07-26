@@ -27,6 +27,17 @@
 //        src/runtime/network/rt_socket_platform_posix.c
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_socket_platform.h
+ * @brief Defines the runtime's cross-platform native socket adapter.
+ * @details This boundary selects the native socket type and constants and
+ *          declares platform-neutral startup, close, shutdown, error
+ *          classification, nonblocking, timeout, SIGPIPE, and readiness
+ *          operations. Network modules retain ownership of handles passed
+ *          through the adapter.
+ */
+
 #pragma once
 
 #include "rt_platform.h"

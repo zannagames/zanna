@@ -35,6 +35,8 @@ namespace {
 
 /// @brief True if @p type is stored inline by value (struct, fixed array, or
 ///        tuple) rather than behind a heap pointer — affects copy/load lowering.
+/// @param type Semantic type to classify.
+/// @return `true` for non-null struct, fixed-array, and tuple types.
 bool isInlineAggregateType(TypeRef type) {
     return type && (type->kind == TypeKindSem::Struct || type->kind == TypeKindSem::FixedArray ||
                     type->kind == TypeKindSem::Tuple);
@@ -300,6 +302,8 @@ LowerResult Lowerer::coerceValueToType(Value value,
 
     if (targetType->kind == TypeKindSem::Optional) {
         TypeRef innerType = targetType->innerType();
+        /// @brief Selects the storage IL type for an optional value.
+        /// @return Pointer storage for null strings; otherwise the mapped optional type.
         auto optionalStoreType = [&]() {
             Type optionalIlType = mapType(targetType);
             return value.kind == Value::Kind::NullPtr && optionalIlType.kind == Type::Kind::Str
@@ -697,6 +701,9 @@ Lowerer::Value Lowerer::emitBoxValue(Value val, Type ilType, TypeRef semanticTyp
             };
 
             std::vector<ManagedValueField> managedFields;
+            /// @brief Recursively records managed fields within a boxed value type.
+            /// @param type Semantic field or aggregate type.
+            /// @param baseOffset Byte offset accumulated from enclosing aggregates.
             std::function<void(TypeRef, size_t)> collectManagedFields = [&](TypeRef type,
                                                                             size_t baseOffset) {
                 if (!type)
@@ -2061,6 +2068,10 @@ void Lowerer::emitDestructorDispatch() {
             destructors.emplace_back(info.classId, dtorName);
     }
 
+    /// @brief Orders destructors by runtime class identifier.
+    /// @param lhs Left class-ID/destructor pair.
+    /// @param rhs Right class-ID/destructor pair.
+    /// @return `true` when `lhs` has the smaller class identifier.
     std::sort(destructors.begin(), destructors.end(), [](const auto &lhs, const auto &rhs) {
         return lhs.first < rhs.first;
     });

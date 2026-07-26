@@ -6,45 +6,57 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/oop/rt_sb_bridge.c
-// Purpose: Provides minimal bridge helpers that wrap Zanna.* namespaced types
-//          (such as StringBuilder) as heap-allocated runtime objects compatible
-//          with the OOP object model. Enables Zanna code to use these types
-//          through the standard retain/release interface.
+// Purpose: Constructs the heap-managed wrapper used by
+//          Zanna.Text.StringBuilder, placing native builder state after an
+//          OOP-compatible leading vptr slot.
 //
 // Key invariants:
-//   - All wrapped objects are allocated through the runtime heap (rt_heap_alloc).
+//   - Wrapper objects are allocated through rt_obj_new_i64.
 //   - Returned handles follow the same retain/release ownership model as
 //     other rt_object instances.
-//   - Each wrapped type embeds its data at a fixed offset after the vptr field.
-//   - The vptr field at offset 0 is set to a static vtable for the type.
+//   - The vptr field is at offset zero and builder state follows at the
+//     platform-defined aligned offset reported by the C structure layout.
+//   - Construction leaves the reserved vptr slot zero-initialized; bridge
+//     methods operate directly on the embedded builder rather than dispatching it.
 //
 // Ownership/Lifetime:
 //   - Callers receive a fresh reference (refcount=1) from bridge constructors.
-//   - The runtime GC handles deallocation when the refcount reaches zero.
+//   - The installed finalizer releases any grown builder buffer before the
+//     zero-reference wrapper allocation is reclaimed.
 //
 // Links: src/runtime/oop/rt_sb_bridge.h (public API),
-//        src/runtime/rt_object.h (rt_object allocation and lifecycle),
-//        src/runtime/rt_string_builder.h (StringBuilder embedded in bridge object)
+//        src/runtime/oop/rt_object.h (object allocation and lifecycle),
+//        src/runtime/core/rt_string_builder.h (embedded builder implementation)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_sb_bridge.c
+ * @brief Implements the managed wrapper for the native StringBuilder state.
+ * @details The bridge allocates an object-compatible payload with a reserved
+ *          leading vtable slot and an aligned embedded builder, initializes
+ *          that builder in place, and installs a finalizer that releases any
+ *          grown native buffer when the wrapper reaches zero references.
+ */
 
 #include "rt_object.h"
 #include "rt_string_builder.h"
 #include <stddef.h>
 
 // The StringBuilder object layout:
-// [0..7]   : vptr (for vtable)
-// [8..]    : embedded rt_string_builder struct
+// [offset 0]                    : native-width reserved vptr slot
+// [offsetof(StringBuilder, builder)] : embedded rt_string_builder state
 typedef struct {
-    void *vptr;                // vtable pointer (8 bytes)
+    void *vptr;                // reserved native-width vtable pointer slot
     rt_string_builder builder; // embedded builder state
 } StringBuilder;
 
 /// @brief GC finalizer for the namespaced StringBuilder class.
-/// @details Releases the embedded `rt_string_builder` state — its growable byte buffer
-///          and accumulated string fragments — when the GC reclaims the wrapper object.
-///          The vptr slot itself is part of the heap object's payload and is freed by
-///          the heap allocator after this hook returns.
+/// @details Resets the embedded @ref rt_string_builder and frees its growable
+///          byte buffer when the wrapper reaches finalization. The inline
+///          buffer and reserved vptr slot are part of the enclosing payload and
+///          are reclaimed with that payload after this callback returns.
+/// @param obj StringBuilder wrapper being finalized; @c NULL is ignored.
 static void rt_sb_finalize(void *obj) {
     if (!obj)
         return;
@@ -54,12 +66,15 @@ static void rt_sb_finalize(void *obj) {
 
 /// @brief Allocate a new instance of the namespaced StringBuilder class.
 ///
-/// @details This bridges the high-level Zanna.Strings.Builder class to a
-///          runtime-managed object by allocating a header (vptr) followed by an
-///          embedded @c rt_string_builder payload. The embedded builder is
-///          initialized in-place so callers receive a ready-to-use object.
+/// @details This bridges the high-level `Zanna.Text.StringBuilder` class to a
+///          runtime-managed object by allocating a reserved vptr slot followed
+///          by an embedded @ref rt_string_builder payload. The allocation is
+///          zero-filled with generic class ID zero; this constructor does not
+///          install a vtable. It initializes the embedded builder in place and
+///          installs @ref rt_sb_finalize before returning.
 ///
-/// @return Opaque pointer to the created object or NULL on allocation failure.
+/// @return Caller-owned opaque StringBuilder wrapper, or @c NULL after an
+///         allocation failure trap.
 void *rt_sb_new(void) {
     // Allocate enough space for vptr + embedded builder
     const int64_t kClassId = 0;

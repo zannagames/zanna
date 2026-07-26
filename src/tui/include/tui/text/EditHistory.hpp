@@ -5,10 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the EditHistory class, which implements transactional
-// undo/redo for Zanna's TUI text editor. Edit operations (insertions and
-// erasures) are grouped into transactions that can be atomically undone
-// or redone.
+/// @file
+/// @brief Declares transactional text-edit undo and redo history.
+/// @details EditHistory groups insertion and erasure payloads into atomic
+///          transactions, replays them through borrowed callbacks, and manages
+///          the history fork created by edits after undo.
 //
 // The history maintains two stacks: an undo stack of committed transactions
 // and a redo stack of undone transactions. Each transaction is a vector of
@@ -52,9 +53,9 @@ class EditHistory {
     /// @details Represents either an insertion or an erasure at a specific byte position.
     ///          The text field contains the inserted or erased text for replay.
     struct Op {
-        OpType type{};
-        std::size_t pos{};
-        std::string text{};
+        OpType type{};    ///< Whether text was inserted or erased.
+        std::size_t pos{}; ///< Byte offset at which the operation occurred.
+        std::string text{}; ///< Inserted or erased bytes required for replay.
     };
 
     /// @brief A transaction is a group of related edit operations that are undone/redone
@@ -65,6 +66,7 @@ class EditHistory {
     /// @details The callback receives each Op in the transaction and should apply
     ///          the inverse operation (for undo) or the forward operation (for redo)
     ///          to the underlying text buffer.
+    /// @param op Recorded operation to replay.
     using Replay = std::function<void(const Op &)>;
 
     /// @brief Begin a new transaction, grouping subsequent edit recordings.
@@ -112,11 +114,13 @@ class EditHistory {
     void clear();
 
   private:
+    /// @brief Append an operation to the active transaction or an implicit transaction.
+    /// @param op Owning operation payload to record.
     void append(Op op);
 
-    std::vector<Txn> undo_stack_{};
-    std::vector<Txn> redo_stack_{};
-    Txn current_{};
-    bool in_txn_{};
+    std::vector<Txn> undo_stack_{}; ///< Committed transactions available to undo.
+    std::vector<Txn> redo_stack_{}; ///< Undone transactions available to redo.
+    Txn current_{};                 ///< Operations in the active transaction.
+    bool in_txn_{};                 ///< Whether beginTxn() has opened a transaction.
 };
 } // namespace zanna::tui::text

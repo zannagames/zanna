@@ -13,6 +13,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Provides checked power-of-two alignment utilities.
+/// @details The templates accept integral values, reject negative offsets and
+///          invalid alignment boundaries, and expose both optional-returning
+///          and throwing overflow behavior without allocating state.
+
 #pragma once
 
 #include <cstddef>

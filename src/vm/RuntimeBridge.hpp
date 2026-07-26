@@ -50,6 +50,9 @@
 namespace il::runtime {
 struct RuntimeDescriptor;
 struct RuntimeSignature;
+/// @brief Generic runtime-call handler signature used by VM marshalling.
+/// @param args Array of pointers to argument storage.
+/// @param result Pointer to result storage, or null for unit results.
 using RuntimeHandler = void (*)(void **args, void *result);
 } // namespace il::runtime
 
@@ -89,10 +92,12 @@ ExternRegistry &currentExternRegistry();
 /// @details Registries are shared across VMs and worker payloads. Callers that
 ///          store a raw registry pointer beyond the lifetime of an owning
 ///          ExternRegistryPtr must retain it explicitly.
+/// @param registry Registry to retain; @c nullptr is ignored.
 void retainExternRegistry(ExternRegistry *registry);
 
 /// @brief Release a previously retained extern registry reference.
 /// @details Deletes the registry when the final retained reference is released.
+/// @param registry Registry to release; @c nullptr is ignored.
 void releaseExternRegistry(ExternRegistry *registry) noexcept;
 
 /// @brief Register an external function in the specified registry.
@@ -108,7 +113,7 @@ ExternRegisterResult registerExternIn(ExternRegistry &registry, const ExternDesc
 /// @brief Unregister an external function from the specified registry.
 /// @param registry Target registry.
 /// @param name Name of the external function to unregister (case-insensitive).
-/// @return True if a function was unregistered; false if not found.
+/// @return @c true if a function was unregistered; @c false if not found.
 bool unregisterExternIn(ExternRegistry &registry, std::string_view name);
 
 /// @brief Find an external function descriptor in the specified registry.
@@ -120,8 +125,8 @@ const ExternDesc *findExternIn(ExternRegistry &registry, std::string_view name);
 /// @brief Resolve an external function for invocation.
 /// @param registry Target registry.
 /// @param name Name of the external function (case-insensitive).
-/// @param[out] outSig Receives the runtime signature if found.
-/// @param[out] outHandler Receives the native handler if found.
+/// @param [out] outSig Receives the runtime signature if found.
+/// @param [out] outHandler Receives the native handler if found.
 /// @return Pointer to the public descriptor if found; nullptr otherwise.
 const ExternDesc *resolveExternIn(ExternRegistry &registry,
                                   std::string_view name,
@@ -149,13 +154,20 @@ struct RuntimeCallContext {
 ///          execution can temporarily install a thread-local interceptor so
 ///          runtime faults become BytecodeVM traps instead of aborting.
 struct RuntimeTrapSignal : std::exception {
-    TrapKind kind{};
-    int32_t code = 0;
-    std::string message;
-    il::support::SourceLoc loc{};
-    std::string function;
-    std::string block;
+    TrapKind kind{}; ///< Runtime trap classification.
+    int32_t code = 0; ///< Runtime-specific numeric error code.
+    std::string message; ///< Owning human-readable diagnostic.
+    il::support::SourceLoc loc{}; ///< Source location associated with the trap.
+    std::string function; ///< Function active when the trap occurred.
+    std::string block; ///< Block active when the trap occurred.
 
+    /// @brief Construct a complete trap signal for interception.
+    /// @param trapKind Runtime trap classification.
+    /// @param trapCode Runtime-specific numeric error code.
+    /// @param trapMessage Human-readable diagnostic.
+    /// @param trapLoc Source location associated with the trap.
+    /// @param trapFunction Active function name.
+    /// @param trapBlock Active block label.
     RuntimeTrapSignal(TrapKind trapKind,
                       int32_t trapCode,
                       std::string trapMessage,
@@ -165,25 +177,36 @@ struct RuntimeTrapSignal : std::exception {
         : kind(trapKind), code(trapCode), message(std::move(trapMessage)), loc(trapLoc),
           function(std::move(trapFunction)), block(std::move(trapBlock)) {}
 
+    /// @brief Expose the diagnostic through @c std::exception.
+    /// @return Null-terminated pointer into @ref message.
     const char *what() const noexcept override {
         return message.c_str();
     }
 };
 
+/// @brief Callback invoked before a runtime trap is rethrown to an alternate executor.
+/// @param signal Immutable trap signal containing diagnostics and source context.
+/// @param userData Opaque pointer supplied when the interceptor was installed.
 using RuntimeTrapInterceptor = void (*)(const RuntimeTrapSignal &signal, void *userData);
 
 /// @brief RAII helper that installs a thread-local runtime trap interceptor.
 class ScopedRuntimeTrapInterceptor {
   public:
+    /// @brief Install an interceptor and opaque user data for this thread.
+    /// @param interceptor Callback invoked for intercepted traps.
+    /// @param userData Opaque pointer forwarded to @p interceptor.
     ScopedRuntimeTrapInterceptor(RuntimeTrapInterceptor interceptor, void *userData);
+    /// @brief Restore the interceptor that was active before construction.
     ~ScopedRuntimeTrapInterceptor();
 
+    /// @brief Interceptor scopes cannot be copied.
     ScopedRuntimeTrapInterceptor(const ScopedRuntimeTrapInterceptor &) = delete;
+    /// @brief Interceptor scopes cannot be copy-assigned.
     ScopedRuntimeTrapInterceptor &operator=(const ScopedRuntimeTrapInterceptor &) = delete;
 
   private:
-    RuntimeTrapInterceptor previousInterceptor_ = nullptr;
-    void *previousUserData_ = nullptr;
+    RuntimeTrapInterceptor previousInterceptor_ = nullptr; ///< Callback to restore.
+    void *previousUserData_ = nullptr; ///< Opaque data to restore.
 };
 
 /**
@@ -210,6 +233,7 @@ class ScopedRuntimeTrapInterceptor {
 class RuntimeBridge {
   public:
     /// @brief Invoke runtime function @p name with arguments @p args.
+    /// @param ctx Runtime call context receiving descriptor and trap metadata.
     /// @param name Runtime function symbol.
     /// @param args Evaluated argument slots.
     /// @param loc Source location of call instruction.
@@ -244,6 +268,13 @@ class RuntimeBridge {
     /// @brief Invoke an already resolved built-in runtime descriptor.
     /// @details Keeps RuntimeBridge validation and trap context handling while
     ///          avoiding repeated descriptor lookup on hot bytecode calls.
+    /// @param ctx Runtime call context receiving descriptor and trap metadata.
+    /// @param desc Resolved built-in descriptor, subject to external override.
+    /// @param args Evaluated argument slots copied before native dispatch.
+    /// @param loc Source location of call instruction.
+    /// @param fn Calling function name.
+    /// @param block Calling block label.
+    /// @return Result slot from the effective runtime call.
     static Slot call(RuntimeCallContext &ctx,
                      const il::runtime::RuntimeDescriptor &desc,
                      std::span<const Slot> args,
@@ -255,6 +286,13 @@ class RuntimeBridge {
     /// @details Mirrors @ref callMutable for name-based dispatch while allowing
     ///          callers that already have a descriptor to preserve slot mutation
     ///          semantics without unsafe const casts.
+    /// @param ctx Runtime call context receiving descriptor and trap metadata.
+    /// @param desc Resolved built-in descriptor, subject to external override.
+    /// @param args Mutable evaluated argument slots.
+    /// @param loc Source location of call instruction.
+    /// @param fn Calling function name.
+    /// @param block Calling block label.
+    /// @return Result slot from the effective runtime call.
     static Slot callMutable(RuntimeCallContext &ctx,
                             const il::runtime::RuntimeDescriptor &desc,
                             std::span<Slot> args,
@@ -262,7 +300,14 @@ class RuntimeBridge {
                             const std::string &fn,
                             const std::string &block);
 
-    // Backward-compatible overload accepting std::vector to avoid callers copying into spans.
+    /// @brief Backward-compatible vector overload for named runtime calls.
+    /// @param ctx Runtime call context receiving descriptor and trap metadata.
+    /// @param name Runtime function symbol.
+    /// @param args Evaluated argument vector.
+    /// @param loc Source location of call instruction.
+    /// @param fn Calling function name.
+    /// @param block Calling block label.
+    /// @return Result slot from the runtime call.
     static Slot call(RuntimeCallContext &ctx,
                      std::string_view name,
                      const std::vector<Slot> &args,
@@ -270,7 +315,14 @@ class RuntimeBridge {
                      const std::string &fn,
                      const std::string &block);
 
-    // Convenience overload: initializer-list of Slots
+    /// @brief Convenience initializer-list overload for named runtime calls.
+    /// @param ctx Runtime call context receiving descriptor and trap metadata.
+    /// @param name Runtime function symbol.
+    /// @param args Temporary list of evaluated argument slots.
+    /// @param loc Source location of call instruction.
+    /// @param fn Calling function name.
+    /// @param block Calling block label.
+    /// @return Result slot from the runtime call.
     static Slot call(RuntimeCallContext &ctx,
                      std::string_view name,
                      std::initializer_list<Slot> args,
@@ -283,6 +335,12 @@ class RuntimeBridge {
     /// @details The common path does not return, but tests and embedders may
     ///          override `vm_trap()` with an observer that records the trap and
     ///          continues execution.
+    /// @param kind Runtime trap classification.
+    /// @param msg Human-readable diagnostic.
+    /// @param loc Source location associated with the trap.
+    /// @param fn Active function name.
+    /// @param block Active block label.
+    /// @param code Runtime-specific numeric error code.
     static void trap(TrapKind kind,
                      const std::string &msg,
                      const il::support::SourceLoc &loc,
@@ -292,6 +350,12 @@ class RuntimeBridge {
 
     /// @brief Dispatch a VM/runtime trap through the installed thread-local interceptor.
     /// @details No-ops when no interceptor is active; otherwise throws RuntimeTrapSignal.
+    /// @param kind Runtime trap classification.
+    /// @param code Runtime-specific numeric error code.
+    /// @param msg Human-readable diagnostic.
+    /// @param loc Source location associated with the trap.
+    /// @param fn Active function name.
+    /// @param block Active block label.
     static void interceptTrap(TrapKind kind,
                               int32_t code,
                               const std::string &msg,
@@ -304,6 +368,7 @@ class RuntimeBridge {
     static const RuntimeCallContext *activeContext();
 
     /// @brief Indicate whether a VM instance is actively executing on this thread.
+    /// @return @c true when a VM is active on the current thread.
     static bool hasActiveVm();
 
     /// @brief Retrieve the per-VM extern registry for the active VM, if any.
@@ -325,7 +390,7 @@ class RuntimeBridge {
 
     /// @brief Unregister an external function from the process-global registry.
     /// @param name Name of the function to unregister (case-insensitive).
-    /// @return True if a function was unregistered; false if not found.
+    /// @return @c true if a function was unregistered; @c false if not found.
     /// @note Equivalent to `unregisterExternIn(processGlobalExternRegistry(), name)`.
     static bool unregisterExtern(std::string_view name);
 

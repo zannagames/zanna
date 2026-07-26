@@ -5,9 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the Label widget for Zanna's TUI framework.
-// Label is a simple read-only text display widget that renders a single
-// string using the theme's normal style.
+/// @file
+/// @brief Declares a single-line, read-only TUI label widget.
+/// @details Label paints owned text at the top-left of its bounds with a
+///          borrowed theme's normal style and does not participate in focus.
 //
 // Labels are non-focusable and do not handle input events. They are
 // commonly used for static text, headings, or descriptive captions
@@ -44,11 +45,12 @@ class Label : public ui::Widget {
     explicit Label(std::string text, const style::Theme &theme);
 
     /// @brief Paint text into the screen buffer.
+    /// @param sb Screen buffer receiving clipped label text.
     void paint(render::ScreenBuffer &sb) override;
 
   private:
-    std::string text_{};
-    const style::Theme &theme_;
+    std::string text_{};        ///< Owned label text.
+    const style::Theme &theme_; ///< Borrowed render palette.
 };
 
 } // namespace zanna::tui::widgets

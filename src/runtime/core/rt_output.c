@@ -166,6 +166,8 @@ static int rt_output_register_exit_handler_(void) {
 /// @param len Number of bytes to write; zero is a no-op.
 #if RT_PLATFORM_WINDOWS
 /// @brief Write a raw byte range directly to the Windows stdout handle.
+/// @param s Source byte range; null is a no-op.
+/// @param len Number of bytes to write; zero is a no-op.
 static void rt_output_write_bytes(const char *s, size_t len) {
     if (!s || len == 0)
         return;

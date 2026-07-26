@@ -18,6 +18,15 @@
 // Links: rt_network_http.c (consumer)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares managed multipart/form-data building and parsing.
+ * @details Defines stable object identity, append-only text and file parts,
+ * content-type and body serialization, strict bounded parse and Result forms,
+ * and caller-owned field and file lookup values.
+ */
+
 #pragma once
 
 #include "rt_string.h"

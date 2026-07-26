@@ -20,11 +20,19 @@
 //
 //===----------------------------------------------------------------------===//
 
-#pragma once
+/**
+ * @file
+ * @brief Declares conservative signed-integer range analysis for IL SSA values.
+ *
+ * @details The analysis propagates inclusive integer intervals through
+ *          supported instructions and CFG edges, refines facts along
+ *          comparison-controlled branches, and merges incoming states at
+ *          block boundaries. Bounded widening guarantees termination for
+ *          loops; missing facts always mean unknown rather than unreachable or
+ *          impossible.
+ */
 
-/// @brief Forward value-range dataflow for IL functions.
-/// @invariant Block-entry range maps are sound over-approximations.
-/// @ownership Value-type result owned by the AnalysisManager cache.
+#pragma once
 
 #include "il/utils/CheckedIntRange.hpp"
 

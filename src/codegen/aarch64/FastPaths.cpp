@@ -93,6 +93,9 @@ std::optional<MFunction> tryFastPaths(
     // more general patterns (arithmetic, calls, returns).
 
     // Memory operations: alloca/store/load/ret pattern
+    /// @brief Attempt memory-operation fast-path recognition.
+    /// @param ctx Prepared matching and emission context.
+    /// @return Lowered function on a complete match, otherwise `std::nullopt`.
     if (auto result = tryFastPathAttempt(
             fn,
             ti,
@@ -103,6 +106,9 @@ std::optional<MFunction> tryFastPaths(
         return result;
 
     // Type conversions: zext1/trunc1, narrowing casts, FP conversions
+    /// @brief Attempt cast and conversion fast-path recognition.
+    /// @param ctx Prepared matching and emission context.
+    /// @return Lowered function on a complete match, otherwise `std::nullopt`.
     if (auto result = tryFastPathAttempt(
             fn,
             ti,
@@ -113,6 +119,9 @@ std::optional<MFunction> tryFastPaths(
         return result;
 
     // Integer arithmetic: add/sub/mul/and/or/xor, comparisons, shifts
+    /// @brief Attempt integer-arithmetic fast-path recognition.
+    /// @param ctx Prepared matching and emission context.
+    /// @return Lowered function on a complete match, otherwise `std::nullopt`.
     if (auto result = tryFastPathAttempt(fn,
                                          ti,
                                          mf,
@@ -124,6 +133,9 @@ std::optional<MFunction> tryFastPaths(
         return result;
 
     // Floating-point arithmetic: fadd/fsub/fmul/fdiv
+    /// @brief Attempt floating-point arithmetic fast-path recognition.
+    /// @param ctx Prepared matching and emission context.
+    /// @return Lowered function on a complete match, otherwise `std::nullopt`.
     if (auto result = tryFastPathAttempt(fn,
                                          ti,
                                          mf,
@@ -135,6 +147,9 @@ std::optional<MFunction> tryFastPaths(
         return result;
 
     // Call lowering: call @callee(args...) feeding ret
+    /// @brief Attempt call-and-return fast-path recognition.
+    /// @param ctx Prepared matching and emission context.
+    /// @return Lowered function on a complete match, otherwise `std::nullopt`.
     if (auto result = tryFastPathAttempt(
             fn,
             ti,
@@ -145,6 +160,9 @@ std::optional<MFunction> tryFastPaths(
         return result;
 
     // Simple returns: ret %param, ret const, ret const_str/addr_of
+    /// @brief Attempt simple-return fast-path recognition.
+    /// @param ctx Prepared matching and emission context.
+    /// @return Lowered function on a complete match, otherwise `std::nullopt`.
     if (auto result = tryFastPathAttempt(
             fn,
             ti,

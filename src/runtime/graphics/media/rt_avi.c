@@ -21,6 +21,14 @@
 //        src/runtime/graphics/media/rt_videoplayer.c (playback consumer)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements bounded parsing and frame indexing for AVI RIFF data.
+ * @details Decodes little-endian container metadata, selects primary video
+ * and audio streams, recursively walks validated chunk extents, and builds
+ * owned playback indexes whose payload pointers continue to alias the
+ * caller-owned input buffer.
+ */
 
 #include "rt_avi.h"
 
@@ -57,6 +65,8 @@ static uint32_t make_fourcc(char a, char b, char c, char d) {
            ((uint32_t)(uint8_t)d << 24);
 }
 
+/** @name AVI RIFF and stream FOURCC identifiers
+ * @{ */
 #define FOURCC_RIFF make_fourcc('R', 'I', 'F', 'F')
 #define FOURCC_AVI make_fourcc('A', 'V', 'I', ' ')
 #define FOURCC_LIST make_fourcc('L', 'I', 'S', 'T')
@@ -70,13 +80,20 @@ static uint32_t make_fourcc(char a, char b, char c, char d) {
 #define FOURCC_vids make_fourcc('v', 'i', 'd', 's')
 #define FOURCC_auds make_fourcc('a', 'u', 'd', 's')
 #define FOURCC_rec make_fourcc('r', 'e', 'c', ' ')
+/** @} */
 
+/** Maximum recursive RIFF/LIST nesting accepted from an input file. */
 #define AVI_MAX_CHUNK_DEPTH 32
+/** Lowest nonzero frame rate accepted as useful playback metadata. */
 #define AVI_MIN_VALID_FPS 0.001
+/** Highest frame rate accepted as useful playback metadata. */
 #define AVI_MAX_VALID_FPS 1000.0
+/** Maximum supported width or absolute height in pixels. */
 #define AVI_MAX_DIMENSION 32768
+/** Maximum number of legacy `idx1` records considered while indexing. */
 #define AVI_MAX_IDX1_ENTRIES (1024u * 1024u)
 
+/** Parser-local classification for the stream list currently being visited. */
 typedef struct {
     int stream_type;  ///< -1=unknown, 0=video, 1=audio.
     int stream_index; ///< Zero-based stream list index from hdrl.

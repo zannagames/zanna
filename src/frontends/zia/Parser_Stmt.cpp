@@ -339,6 +339,8 @@ StmtPtr Parser::parseForStmt() {
 
     bool hasParen = match(TokenKind::LParen);
 
+    /// @brief Distinguishes C-style `for` syntax from `for-in` by lookahead.
+    /// @return `true` when a top-level semicolon appears before the loop body.
     auto isCStyleFor = [&]() -> bool {
         constexpr int kMaxForLookahead = 512;
         int parenDepth = 0;
@@ -618,6 +620,8 @@ StmtPtr Parser::parseMatchStmt() {
         if (!expect(TokenKind::FatArrow, "=>"))
             return nullptr;
 
+        /// @brief Tests whether the next match arm body begins with a statement keyword.
+        /// @return `true` when statement parsing should be selected.
         auto startsStatementArm = [&]() {
             switch (peek().kind) {
                 case TokenKind::KwReturn:
@@ -640,6 +644,8 @@ StmtPtr Parser::parseMatchStmt() {
             }
         };
 
+        /// @brief Speculatively parses a delimiter-terminated match-arm expression.
+        /// @return Parsed expression on committed success; otherwise null.
         auto tryParseExpressionArm = [&]() -> ExprPtr {
             Speculation speculation(*this);
             ExprPtr expr = parseExpressionAllowingStructLiterals();

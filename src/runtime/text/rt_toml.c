@@ -34,6 +34,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_toml.c
+ * @brief Implements the runtime's documented TOML structural subset.
+ * @details The parser validates NUL-free UTF-8 and builds nested Maps,
+ *          sequences, arrays of tables, inline tables, dotted keys, and
+ *          multiple String forms while retaining scalar spellings as Strings.
+ *          Formatting and dotted lookup operate on this managed representation.
+ */
+
 #include "rt_toml.h"
 
 #include "rt_string_internal.h"
@@ -64,6 +73,9 @@ static _Thread_local int g_toml_had_error = 0;
 // --- Helper: create string from substring ---
 
 /// @brief One-line wrapper that builds an `rt_string` from a (ptr, len) substring.
+/// @param s Source byte span.
+/// @param len Number of bytes to copy.
+/// @return Newly allocated runtime string.
 static rt_string make_str(const char *s, int64_t len) {
     return rt_string_from_bytes(s, len);
 }
@@ -88,6 +100,7 @@ static int toml_parse_append_bytes(rt_string_builder *sb, const char *bytes, siz
 /// @brief Skip horizontal whitespace (`space`, `tab`) — does NOT consume newlines.
 /// @details TOML treats newlines as significant (line-oriented format),
 ///          so we explicitly limit whitespace skipping to in-line spaces.
+/// @param p In/out null-terminated parse cursor.
 static void skip_ws(const char **p) {
     while (**p == ' ' || **p == '\t')
         (*p)++;
@@ -96,6 +109,7 @@ static void skip_ws(const char **p) {
 /// @brief Advance the cursor past the rest of the current line, including the `\n`.
 /// @details Used to skip comments and malformed lines without breaking
 ///          the parser. Stops at NUL if no terminating newline is found.
+/// @param p In/out null-terminated parse cursor.
 static void skip_line(const char **p) {
     while (**p && **p != '\n')
         (*p)++;
@@ -126,6 +140,8 @@ static void skip_array_ws(const char **p) {
 ///          string here — the caller splits on `.` to walk nested
 ///          tables. Returns NULL when the cursor isn't sitting on a
 ///          legal key character.
+/// @param p In/out parse cursor.
+/// @return Newly allocated key string, or null when no bare-key byte is present.
 static rt_string parse_bare_key(const char **p) {
     const char *start = *p;
     while (isalnum((unsigned char)**p) || **p == '-' || **p == '_' || **p == '.')
@@ -188,6 +204,8 @@ static void toml_append_utf8(rt_string_builder *sb, uint32_t codepoint) {
 ///          `\uXXXX`, and `\UXXXXXXXX`). Literal strings preserve bytes.
 ///          Triple-quoted strings may span lines and terminate only at the
 ///          matching triple quote. The opening quote must be at `**p`.
+/// @param p In/out cursor positioned at a single or double quote.
+/// @return Newly allocated decoded string; malformed input sets the parse-error flag.
 static rt_string parse_quoted_string(const char **p) {
     char quote = **p;
     int multiline = ((*p)[1] == quote && (*p)[2] == quote);
@@ -288,6 +306,10 @@ static rt_string parse_quoted_string(const char **p) {
 ///          `rt_parse_try_bool` to coerce after the fact). Stops at
 ///          newline, `#` (comment), or `,` (array element separator);
 ///          trailing in-line whitespace is trimmed off.
+/// @param p In/out parse cursor.
+/// @param stop_bracket Whether a closing bracket terminates a bare scalar.
+/// @param stop_brace Whether a closing brace terminates a bare scalar.
+/// @return Newly allocated scalar string.
 static rt_string parse_value_until(const char **p, int stop_bracket, int stop_brace) {
     skip_ws(p);
 
@@ -398,6 +420,9 @@ static void *parse_inline_table(const char **p) {
 ///          element is read via `parse_value_object`, so nested arrays and
 ///          inline tables are preserved as runtime containers. Tolerates
 ///          trailing commas and stray whitespace between elements.
+/// @param p In/out cursor positioned at the opening bracket.
+/// @return Caller-owned Seq containing parsed values; malformed input sets the
+///         parse-error flag.
 static void *parse_array(const char **p) {
     (*p)++; // skip '['
     void *seq = rt_seq_new();
@@ -454,16 +479,29 @@ static void *parse_value_object(const char **p, int stop_bracket, int stop_brace
 /// @brief Maximum nesting depth for TOML sections/tables (consistent with JSON/XML/YAML).
 #define TOML_MAX_DEPTH 200
 
+/// @brief Test whether a value has the runtime Map layout.
+/// @param obj Borrowed candidate value.
+/// @return Nonzero for a Map object, otherwise zero.
 static int is_map_obj(void *obj) {
     return obj && !rt_string_is_handle(obj) &&
            rt_obj_is_instance(obj, RT_MAP_CLASS_ID, TOML_MAP_MIN_PAYLOAD);
 }
 
+/// @brief Test whether a value has the runtime Seq layout.
+/// @param obj Borrowed candidate value.
+/// @return Nonzero for a Seq object, otherwise zero.
 static int is_seq_obj(void *obj) {
     return obj && !rt_string_is_handle(obj) &&
            rt_obj_is_instance(obj, RT_SEQ_CLASS_ID, TOML_SEQ_MIN_PAYLOAD);
 }
 
+/// @brief Resolve or create a dotted path of nested TOML tables.
+/// @details Each missing segment becomes a Map. Empty segments and collisions
+///          with non-Map values set the parse-error flag.
+/// @param root Borrowed root Map.
+/// @param name Dotted bare-key bytes.
+/// @param len Number of bytes in @p name.
+/// @return Borrowed deepest table, or the last reachable value after an error.
 static void *ensure_table_path(void *root, const char *name, size_t len) {
     void *current = root;
     size_t pos = 0;
@@ -570,6 +608,12 @@ static void *ensure_array_table_path(void *root, const char *name, size_t len) {
 
 // --- Public API ---
 
+/// @brief Parse a NUL-free UTF-8 TOML-subset document into nested containers.
+/// @details Tables become Maps, arrays become Seqs, and every scalar spelling
+///          becomes a runtime string. Duplicate keys, malformed structure,
+///          invalid UTF-8, and embedded null bytes return null without trapping.
+/// @param src Borrowed TOML source string.
+/// @return Caller-owned root Map, or null on invalid input or parse allocation failure.
 void *rt_toml_parse(rt_string src) {
     if (!src)
         return NULL;
@@ -760,6 +804,9 @@ void *rt_toml_parse(rt_string src) {
 }
 
 /// @brief Check whether a string contains valid TOML syntax.
+/// @details Performs a complete parse and releases the temporary result.
+/// @param src Borrowed TOML source string.
+/// @return `1` when `rt_toml_parse` succeeds, otherwise `0`.
 int8_t rt_toml_is_valid(rt_string src) {
     void *result = rt_toml_parse(src);
     if (!result || g_toml_had_error)
@@ -768,6 +815,10 @@ int8_t rt_toml_is_valid(rt_string src) {
     return 1;
 }
 
+/// @brief Test whether bytes can be emitted as an unquoted TOML key.
+/// @param s Candidate key bytes.
+/// @param len Number of candidate bytes.
+/// @return Nonzero for a nonempty alphanumeric/underscore/hyphen key.
 static int is_bare_key_bytes(const char *s, size_t len) {
     if (!s || len == 0)
         return 0;
@@ -882,10 +933,11 @@ static int append_toml_key_bytes(rt_string_builder *sb, const char *key, size_t 
 
 /// @brief Append one runtime value using TOML value syntax.
 /// @details Supports raw runtime strings, boxed booleans/integers/floats/strings,
-///          and sequence objects. Unsupported values are serialized as an empty
-///          TOML string to preserve the legacy fallback behavior.
+///          sequence objects, and inline Map values. Unsupported values are
+///          serialized as an empty TOML string to preserve the legacy fallback.
 /// @param sb Destination builder.
 /// @param val Runtime value pointer.
+/// @param depth Current recursive container depth.
 /// @return 1 on success, 0 when appending or numeric formatting failed.
 static int append_toml_value(rt_string_builder *sb, void *val, int depth) {
     // Depth guard bounds recursion for deeply nested (or cyclic) containers;
@@ -1002,7 +1054,6 @@ static int append_toml_value(rt_string_builder *sb, void *val, int depth) {
     return append_quoted_toml_string(sb, "");
 }
 
-/// @brief Format a Map as a TOML document string.
 /// @brief Recursively emit a table: scalar entries first, then subtables as
 ///        dotted `[a.b.c]` section headers.
 /// @param sb Output builder.
@@ -1066,6 +1117,12 @@ static int toml_format_table(rt_string_builder *sb, void *map, rt_string_builder
     return ok;
 }
 
+/// @brief Format a runtime Map as TOML-subset text.
+/// @details Emits non-Map entries before recursively emitted dotted section
+///          headers. Invalid roots, allocation failure, and recursion beyond
+///          `TOML_MAX_DEPTH` produce an empty string.
+/// @param map Borrowed root Map.
+/// @return Caller-owned TOML text, or an empty string on failure.
 rt_string rt_toml_format(void *map) {
     if (!map)
         return rt_string_from_bytes("", 0);
@@ -1090,6 +1147,11 @@ rt_string rt_toml_format(void *map) {
 }
 
 /// @brief Get a value from a parsed TOML document by dot-separated key path.
+/// @details @p root may be a Map, raw TOML runtime string, or boxed string.
+///          Empty path segments and non-Map intermediate values fail.
+/// @param root Borrowed parsed Map or TOML text value.
+/// @param key_path Borrowed dotted byte path.
+/// @return Borrowed value at the path, or null when parsing or lookup fails.
 void *rt_toml_get(void *root, rt_string key_path) {
     if (!root || !key_path)
         return NULL;
@@ -1140,6 +1202,10 @@ void *rt_toml_get(void *root, rt_string key_path) {
 }
 
 /// @brief Get a string value from a parsed TOML document by key path.
+/// @param root Borrowed parsed Map or TOML text value.
+/// @param key_path Borrowed dotted byte path.
+/// @return Retained string value, or a newly allocated empty string for
+///         missing and non-string values.
 rt_string rt_toml_get_str(void *root, rt_string key_path) {
     void *val = rt_toml_get(root, key_path);
     if (!val)

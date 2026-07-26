@@ -335,7 +335,9 @@ const SemanticAnalyzer::BuiltinSignature &SemanticAnalyzer::builtinSignature(
         static const SemanticAnalyzer::Type allowedAny[] = {
             Type::Int, Type::Float, Type::String, Type::Bool};
 
-        /// Maps one registry bit-mask category to static semantic-type storage.
+        /// @brief Maps one registry bit-mask category to static semantic-type storage.
+        /// @param m Registry argument mask.
+        /// @return Pointer/count view of the corresponding allowed types.
         auto maskToAllowed =
             [&](BuiltinArgTypeMask m) -> std::pair<const SemanticAnalyzer::Type *, std::size_t> {
             using M = BuiltinArgTypeMask;

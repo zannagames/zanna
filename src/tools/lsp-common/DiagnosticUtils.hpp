@@ -18,6 +18,9 @@
 
 #pragma once
 
+/// @file
+/// @brief Declares compiler-to-server diagnostic conversion.
+
 #include "tools/lsp-common/ServerTypes.hpp"
 
 #include <vector>

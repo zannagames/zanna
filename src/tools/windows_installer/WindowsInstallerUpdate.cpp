@@ -5,19 +5,14 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/tools/windows_installer/WindowsInstallerUpdate.cpp
-// Purpose: Implement bounded HTTPS update discovery with pinned RSA signatures.
-//
-// Key invariants:
-//   - Network redirects, oversized responses, cross-origin links, and unsigned
-//     manifests are rejected before any result reaches the user.
-//   - The canonical signed bytes are reconstructed from strictly ordered fields.
-//   - This module never downloads or launches an installer automatically.
-//
-// Ownership/Lifetime:
-//   - RAII wrappers close WinHTTP and CNG handles on every path.
-//
-// Links: WindowsInstallerUpdate.hpp, WindowsInstallerMetadata.hpp, PkgHash.hpp
+/// @file WindowsInstallerUpdate.cpp
+/// @brief Implements bounded HTTPS update discovery with pinned RSA signatures.
+///
+/// Redirects, oversized responses, cross-origin links, and unsigned manifests are rejected before
+/// any result reaches the user. Signature verification reconstructs canonical bytes from strictly
+/// ordered fields. This module never downloads or launches an installer automatically.
+///
+/// Local RAII wrappers close every WinHTTP and CNG handle on all exit paths.
 //
 //===----------------------------------------------------------------------===//
 
@@ -50,24 +45,37 @@ constexpr std::size_t kMaximumRsaModulusBytes = 512U;
 constexpr std::size_t kMaximumRsaExponentBytes = sizeof(uint32_t);
 constexpr int kOpenUpdate = 2401;
 
+/// @brief Move-only owner for a WinHTTP session, connection, or request handle.
 class InternetHandle {
   public:
+    /// @brief Construct an empty handle owner.
     InternetHandle() = default;
 
+    /// @brief Adopt a WinHTTP handle.
+    /// @param value Handle to close at destruction.
     explicit InternetHandle(HINTERNET value) : value_(value) {}
 
+    /// @brief Close the adopted WinHTTP handle.
     ~InternetHandle() {
         if (value_)
             WinHttpCloseHandle(value_);
     }
 
+    /// @brief WinHTTP handles have unique ownership and cannot be copied.
     InternetHandle(const InternetHandle &) = delete;
+
+    /// @brief WinHTTP handles have unique ownership and cannot be copy-assigned.
     InternetHandle &operator=(const InternetHandle &) = delete;
 
+    /// @brief Transfer ownership from another wrapper.
+    /// @param other Wrapper to empty.
     InternetHandle(InternetHandle &&other) noexcept : value_(other.value_) {
         other.value_ = nullptr;
     }
 
+    /// @brief Close the current handle and transfer ownership from another wrapper.
+    /// @param other Wrapper to empty.
+    /// @return This wrapper after the transfer.
     InternetHandle &operator=(InternetHandle &&other) noexcept {
         if (this != &other) {
             if (value_)
@@ -78,10 +86,14 @@ class InternetHandle {
         return *this;
     }
 
+    /// @brief Access the borrowed WinHTTP handle.
+    /// @return Stored handle, possibly null.
     HINTERNET get() const {
         return value_;
     }
 
+    /// @brief Test whether this wrapper owns a handle.
+    /// @return @c true when the stored handle is nonnull.
     explicit operator bool() const {
         return value_ != nullptr;
     }
@@ -90,13 +102,17 @@ class InternetHandle {
     HINTERNET value_{nullptr};
 };
 
+/// @brief RAII owner for a CNG algorithm-provider handle.
 class AlgorithmHandle {
   public:
+    /// @brief Close the provider if one was opened.
     ~AlgorithmHandle() {
         if (value_)
             BCryptCloseAlgorithmProvider(value_, 0);
     }
 
+    /// @brief Clear the current provider and expose storage to an opening API.
+    /// @return Pointer to the null handle slot.
     BCRYPT_ALG_HANDLE *put() {
         if (value_) {
             BCryptCloseAlgorithmProvider(value_, 0);
@@ -105,6 +121,8 @@ class AlgorithmHandle {
         return &value_;
     }
 
+    /// @brief Access the borrowed provider handle.
+    /// @return Stored provider handle, possibly null.
     BCRYPT_ALG_HANDLE get() const {
         return value_;
     }
@@ -113,13 +131,17 @@ class AlgorithmHandle {
     BCRYPT_ALG_HANDLE value_{nullptr};
 };
 
+/// @brief RAII owner for an imported CNG key handle.
 class KeyHandle {
   public:
+    /// @brief Destroy the key if one was imported.
     ~KeyHandle() {
         if (value_)
             BCryptDestroyKey(value_);
     }
 
+    /// @brief Clear the current key and expose storage to an import API.
+    /// @return Pointer to the null handle slot.
     BCRYPT_KEY_HANDLE *put() {
         if (value_) {
             BCryptDestroyKey(value_);
@@ -128,6 +150,8 @@ class KeyHandle {
         return &value_;
     }
 
+    /// @brief Access the borrowed imported key handle.
+    /// @return Stored key handle, possibly null.
     BCRYPT_KEY_HANDLE get() const {
         return value_;
     }
@@ -136,13 +160,21 @@ class KeyHandle {
     BCRYPT_KEY_HANDLE value_{nullptr};
 };
 
+/// @brief Security-relevant components of a validated HTTPS URL.
 struct ParsedUrl {
+    /// @brief Validated WinHTTP scheme.
     INTERNET_SCHEME scheme{static_cast<INTERNET_SCHEME>(0)};
+    /// @brief Authority host name.
     std::wstring host;
+    /// @brief Effective network port.
     INTERNET_PORT port{0};
+    /// @brief Path and query sent as the HTTP request target.
     std::wstring resource;
 };
 
+/// @brief Escape UTF-8 bytes and control characters for a JSON string literal.
+/// @param value Unquoted text to encode.
+/// @return Escaped bytes without surrounding quotation marks.
 std::string jsonEscape(std::string_view value) {
     std::ostringstream out;
     for (unsigned char ch : value) {
@@ -181,9 +213,18 @@ std::string jsonEscape(std::string_view value) {
     return out.str();
 }
 
+/// @brief Decode strict lowercase hexadecimal with field-specific diagnostics.
+/// @param value Nonempty, even-length encoded bytes.
+/// @param field Field name included in validation errors.
+/// @return Decoded byte vector.
+/// @throws std::runtime_error If length or any digit is invalid.
 std::vector<uint8_t> decodeHex(std::string_view value, std::string_view field) {
     if (value.empty() || value.size() % 2U != 0U)
         throw std::runtime_error("invalid " + std::string(field));
+    /// @brief Decode one lowercase hexadecimal digit.
+    /// @param ch Character to decode.
+    /// @return Numeric nibble value in the range zero through fifteen.
+    /// @throws std::runtime_error If `ch` is not lowercase hexadecimal.
     auto nibble = [field](char ch) -> uint8_t {
         if (ch >= '0' && ch <= '9')
             return static_cast<uint8_t>(ch - '0');
@@ -198,17 +239,29 @@ std::vector<uint8_t> decodeHex(std::string_view value, std::string_view field) {
     return result;
 }
 
+/// @brief Test whether every byte is a lowercase hexadecimal digit.
+/// @param value Text to inspect.
+/// @return @c true for an empty or entirely lowercase-hexadecimal sequence.
 bool isLowerHex(std::string_view value) {
+    /// @brief Test one byte for lowercase hexadecimal membership.
+    /// @param ch Byte to inspect.
+    /// @return `true` for `0` through `9` or `a` through `f`.
     return std::all_of(value.begin(), value.end(), [](unsigned char ch) {
         return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
     });
 }
 
+/// @brief Test whether a lowercase hexadecimal digit represents an odd nibble.
+/// @param ch Character to inspect.
+/// @return @c true for @c 1, 3, 5, 7, 9, b, d, or f.
 bool isOddLowerHexDigit(char ch) {
     return ch == '1' || ch == '3' || ch == '5' || ch == '7' || ch == '9' || ch == 'b' ||
            ch == 'd' || ch == 'f';
 }
 
+/// @brief Validate the structural and arithmetic constraints of a pinned RSA public key.
+/// @param metadata Package metadata containing lowercase modulus and exponent fields.
+/// @throws std::runtime_error If modulus size, top bit, parity, or exponent is invalid.
 void validatePinnedKey(const zanna::pkg::WindowsInstallerMetadata &metadata) {
     if (metadata.updateRsaModulus.size() < kMinimumRsaModulusBytes * 2U ||
         metadata.updateRsaModulus.size() > kMaximumRsaModulusBytes * 2U ||
@@ -233,9 +286,17 @@ void validatePinnedKey(const zanna::pkg::WindowsInstallerMetadata &metadata) {
         throw std::runtime_error("invalid pinned update RSA exponent");
 }
 
+/// @brief Validate a bounded printable UTF-8 manifest field.
+/// @param value Field value to inspect.
+/// @param field Field name included in diagnostics.
+/// @param allowEmpty Whether an empty value is permitted.
+/// @throws std::runtime_error If presence, size, control bytes, or UTF-8 validity fails.
 void validateManifestValue(std::string_view value,
                            std::string_view field,
                            bool allowEmpty = false) {
+    /// @brief Identify a control byte forbidden in update-manifest fields.
+    /// @param ch Byte to inspect.
+    /// @return `true` for C0 controls or DEL.
     if ((!allowEmpty && value.empty()) || value.size() > 8192U ||
         std::any_of(value.begin(), value.end(), [](unsigned char ch) {
             return ch < 0x20U || ch == 0x7fU;
@@ -245,6 +306,11 @@ void validateManifestValue(std::string_view value,
     (void)utf8ToWide(value);
 }
 
+/// @brief Parse a manifest field as an unambiguous HTTPS URL without credentials.
+/// @param utf8 URL text to validate and crack.
+/// @param field Field name included in diagnostics.
+/// @return Scheme, host, effective port, and request resource.
+/// @throws std::runtime_error If characters, encoding, scheme, authority, or credentials are unsafe.
 ParsedUrl parseHttpsUrl(std::string_view utf8, std::string_view field) {
     validateManifestValue(utf8, field);
     if (utf8.find('#') != std::string_view::npos || utf8.find('\\') != std::string_view::npos ||
@@ -279,6 +345,10 @@ ParsedUrl parseHttpsUrl(std::string_view utf8, std::string_view field) {
     return result;
 }
 
+/// @brief Compare two parsed URL origins using Windows ordinal host folding.
+/// @param left First validated URL.
+/// @param right Second validated URL.
+/// @return @c true when scheme, port, and case-insensitive host all match.
 bool sameOrigin(const ParsedUrl &left, const ParsedUrl &right) {
     if (left.scheme != right.scheme || left.port != right.port || left.host.size() > INT_MAX ||
         right.host.size() > INT_MAX) {
@@ -291,6 +361,11 @@ bool sameOrigin(const ParsedUrl &left, const ParsedUrl &right) {
                                 TRUE) == CSTR_EQUAL;
 }
 
+/// @brief Download a bounded manifest over TLS 1.2 without redirects.
+/// @param manifestUrl Configured HTTPS manifest URL.
+/// @param version Current package version included in the user agent.
+/// @return Nonempty response body no larger than 64 KiB.
+/// @throws std::runtime_error On URL, TLS, connection, HTTP, timeout, or size failure.
 std::string downloadManifest(std::string_view manifestUrl, std::string_view version) {
     const ParsedUrl url = parseHttpsUrl(manifestUrl, "manifest URL");
     const std::wstring agent = L"Zanna-Installer/" + utf8ToWide(version);
@@ -393,6 +468,12 @@ std::string downloadManifest(std::string_view manifestUrl, std::string_view vers
     return body;
 }
 
+/// @brief Extract one strictly named, single-tab manifest field.
+/// @param line Complete manifest line.
+/// @param name Expected field name.
+/// @param allowEmpty Whether the field value may be empty.
+/// @return Validated UTF-8 value after the field delimiter.
+/// @throws std::runtime_error If name, delimiters, or value constraints are invalid.
 std::string fieldValue(const std::string &line, std::string_view name, bool allowEmpty = false) {
     const std::string prefix = std::string(name) + "\t";
     if (line.rfind(prefix, 0) != 0 || line.find('\t', prefix.size()) != std::string::npos)
@@ -402,6 +483,11 @@ std::string fieldValue(const std::string &line, std::string_view name, bool allo
     return value;
 }
 
+/// @brief Verify a PKCS#1 v1.5 SHA-256 signature with the package-pinned RSA key.
+/// @param metadata Package metadata containing the pinned modulus and exponent.
+/// @param canonical Exact canonical manifest bytes covered by the signature.
+/// @param signatureHex Lowercase signature bytes with modulus-matched length.
+/// @throws std::runtime_error If key, signature shape, CNG import, or verification fails.
 void verifySignature(const zanna::pkg::WindowsInstallerMetadata &metadata,
                      std::string_view canonical,
                      std::string_view signatureHex) {
@@ -458,6 +544,11 @@ void verifySignature(const zanna::pkg::WindowsInstallerMetadata &metadata,
 
 } // namespace
 
+/// @brief Parse, constrain, and authenticate a canonical update manifest.
+/// @param package Verified package providing pinned update identity and public key.
+/// @param manifestText Complete downloaded manifest bytes.
+/// @return Matching release data with current, available, or unconfigured status.
+/// @throws std::runtime_error If configuration, schema, fields, origins, digest, or signature fails.
 UpdateCheckResult verifyUpdateManifest(const HostPackage &package, std::string_view manifestText) {
     const bool hasUpdateUrl = !package.metadata.updateManifestUrl.empty();
     const bool hasUpdateModulus = !package.metadata.updateRsaModulus.empty();
@@ -532,6 +623,10 @@ UpdateCheckResult verifyUpdateManifest(const HostPackage &package, std::string_v
     return result;
 }
 
+/// @brief Discover an update through the package's pinned secure service.
+/// @param package Verified package providing the current version and update configuration.
+/// @return Unconfigured status or an authenticated manifest result.
+/// @throws std::runtime_error If configuration, networking, or authentication fails.
 UpdateCheckResult checkForUpdates(const HostPackage &package) {
     const bool hasUrl = !package.metadata.updateManifestUrl.empty();
     const bool hasModulus = !package.metadata.updateRsaModulus.empty();
@@ -545,6 +640,9 @@ UpdateCheckResult checkForUpdates(const HostPackage &package) {
         package, downloadManifest(package.metadata.updateManifestUrl, package.metadata.version));
 }
 
+/// @brief Serialize an update result as deterministic UTF-16 JSON.
+/// @param result Authenticated result to encode.
+/// @return Pretty-printed JSON with stable field order and a trailing newline.
 std::wstring updateResultJson(const UpdateCheckResult &result) {
     const char *status =
         result.status == UpdateStatus::Available
@@ -564,6 +662,11 @@ std::wstring updateResultJson(const UpdateCheckResult &result) {
     return utf8ToWide(out.str());
 }
 
+/// @brief Present update status and optionally open its authenticated release URL.
+/// @param instance Module instance supplying the dialog icon.
+/// @param package Verified package supplying the product display name.
+/// @param result Authenticated update metadata to display.
+/// @throws std::runtime_error If the dialog or selected URL cannot be opened.
 void showUpdateResult(HINSTANCE instance,
                       const HostPackage &package,
                       const UpdateCheckResult &result) {

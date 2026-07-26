@@ -20,6 +20,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements POSIX-family operating-system entropy acquisition.
+ * @details Uses arc4random_buf on macOS, bounded getrandom requests on Linux,
+ * and close-on-exec /dev/urandom reads as a checked fallback while preserving
+ * interrupted-read and descriptor-error semantics.
+ */
+
 #include "rt_entropy_platform.h"
 #include "rt_platform.h"
 
@@ -31,6 +39,7 @@
 #endif
 #include <unistd.h>
 
+/** Maximum bytes requested from one Linux getrandom system call. */
 #define RT_ENTROPY_GETRANDOM_CHUNK ((size_t)256u * 1024u)
 
 #if RT_PLATFORM_MACOS

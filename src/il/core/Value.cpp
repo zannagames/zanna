@@ -52,7 +52,7 @@ Value Value::temp(unsigned t) {
 /// @brief Create a signed integer constant value.
 /// @details Preserves the exact @c long long bit pattern so two's-complement
 ///          wraparound semantics are maintained when consumed by handlers.
-/// @param v Integer payload to embed in the value.
+/// @param val Integer payload to embed in the value.
 /// @return Value representing the integer literal.
 Value Value::constInt(long long val) {
     Value v;
@@ -65,7 +65,7 @@ Value Value::constInt(long long val) {
 /// @details Booleans piggy-back on the integer constant representation but set
 ///          the @ref Value::isBool flag so printers render them as `true` /
 ///          `false` instead of numeric digits.
-/// @param v Boolean payload to embed in the value.
+/// @param val Boolean payload to embed in the value.
 /// @return Value representing the boolean literal.
 Value Value::constBool(bool val) {
     Value v;
@@ -78,7 +78,7 @@ Value Value::constBool(bool val) {
 /// @brief Create a floating-point constant value.
 /// @details Stores the exact @c double payload so NaNs and infinities propagate
 ///          through the IR unchanged.
-/// @param v Floating-point payload to embed in the value.
+/// @param val Floating-point payload to embed in the value.
 /// @return Value representing the floating literal.
 Value Value::constFloat(double val) {
     Value v;

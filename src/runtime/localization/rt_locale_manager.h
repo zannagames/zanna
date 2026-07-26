@@ -31,6 +31,15 @@
 //        src/runtime/localization/rt_locale_platform.h (system detect).
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares the synchronized process-global LocaleManager API.
+ * @details Defines current and system Locale access, registry enumeration,
+ * strict and soft JSON/asset loading, builtin and search-path discovery,
+ * unload/reset rules, and retained internal locale-data lookups.
+ */
+
 #pragma once
 
 #include "rt.hpp"

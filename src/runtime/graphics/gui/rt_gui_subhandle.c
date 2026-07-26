@@ -28,6 +28,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements identity-stable managed handles for GUI subobjects.
+ *
+ * @details Non-widget toolkit objects are wrapped in authenticated weak
+ *          runtime records indexed by `(kind, target)` and owner widget.
+ *          Wrapping is idempotent, invalidation preserves safe tombstones, and
+ *          intrusive-list fallbacks retain correctness when index allocation
+ *          fails.
+ */
+
 #include "rt_gui_internal.h"
 #include "rt_platform.h"
 
@@ -41,64 +52,83 @@
 // Runtime Subobject Handles
 //=============================================================================
 
+/// @brief Runtime discriminator for every supported GUI subobject category.
 typedef enum {
-    RT_GUI_HANDLE_TREE_NODE = 1,
-    RT_GUI_HANDLE_TAB = 2,
-    RT_GUI_HANDLE_LISTBOX_ITEM = 3,
-    RT_GUI_HANDLE_MENU = 4,
-    RT_GUI_HANDLE_MENU_ITEM = 5,
-    RT_GUI_HANDLE_CONTEXTMENU = 6,
-    RT_GUI_HANDLE_STATUSBAR_ITEM = 7,
-    RT_GUI_HANDLE_TOOLBAR_ITEM = 8,
+    RT_GUI_HANDLE_TREE_NODE = 1,      ///< TreeView node.
+    RT_GUI_HANDLE_TAB = 2,            ///< TabBar tab.
+    RT_GUI_HANDLE_LISTBOX_ITEM = 3,   ///< ListBox item.
+    RT_GUI_HANDLE_MENU = 4,           ///< Menu or submenu.
+    RT_GUI_HANDLE_MENU_ITEM = 5,      ///< Menu command item.
+    RT_GUI_HANDLE_CONTEXTMENU = 6,    ///< Standalone ContextMenu.
+    RT_GUI_HANDLE_STATUSBAR_ITEM = 7, ///< StatusBar item.
+    RT_GUI_HANDLE_TOOLBAR_ITEM = 8,   ///< Toolbar item.
 } rt_gui_subhandle_kind_t;
 
+/// @brief Magic value authenticating live managed GUI subhandle records.
 #define RT_GUI_SUBHANDLE_MAGIC UINT64_C(0x52544755484E444C)
 
+/// @brief Managed weak wrapper linked into global, target, and owner indexes.
 typedef struct rt_gui_subhandle {
-    uint64_t magic;
-    uint64_t generation;
-    uint32_t kind;
-    uint32_t retired;
-    void *ptr;
-    vg_widget_t *owner_widget;
-    uint64_t owner_widget_id;
-    struct rt_gui_subhandle *next;
-    struct rt_gui_subhandle *prev;
-    struct rt_gui_subhandle *owner_next;
-    struct rt_gui_subhandle *owner_prev;
-    bool target_indexed;
-    bool owner_indexed;
+    uint64_t magic;       ///< Must equal @ref RT_GUI_SUBHANDLE_MAGIC while live.
+    uint64_t generation;  ///< Monotonic wrapper generation for identity diagnostics.
+    uint32_t kind;        ///< One @ref rt_gui_subhandle_kind_t value.
+    uint32_t retired;     ///< Nonzero after the lower target is invalidated.
+    void *ptr;            ///< Borrowed lower target, or NULL after invalidation.
+    vg_widget_t *owner_widget; ///< Borrowed owning widget, or NULL.
+    uint64_t owner_widget_id; ///< Stable owner identity captured while live.
+    struct rt_gui_subhandle *next; ///< Next wrapper in the global intrusive list.
+    struct rt_gui_subhandle *prev; ///< Previous wrapper in the global intrusive list.
+    struct rt_gui_subhandle *owner_next; ///< Next wrapper in the owner bucket.
+    struct rt_gui_subhandle *owner_prev; ///< Previous wrapper in the owner bucket.
+    bool target_indexed; ///< Whether the target hash index contains this wrapper.
+    bool owner_indexed;  ///< Whether an owner bucket contains this wrapper.
 } rt_gui_subhandle_t;
 
+/// @brief Head of the authoritative global wrapper list.
 static rt_gui_subhandle_t *s_gui_subhandles = NULL;
+/// @brief Generation assigned to the next newly allocated wrapper.
 static uint64_t s_gui_subhandle_generation = 1;
+/// @brief Number of currently allocated wrappers.
 static size_t s_gui_subhandle_count = 0;
 
+/// @brief One open-addressed `(kind, target)` lookup slot.
 typedef struct rt_gui_subhandle_slot {
-    void *ptr;
-    rt_gui_subhandle_t *handle;
-    uint32_t kind;
-    uint8_t state;
+    void *ptr;                  ///< Borrowed indexed target address.
+    rt_gui_subhandle_t *handle; ///< Weak wrapper stored for the key.
+    uint32_t kind;              ///< Indexed subhandle-kind discriminator.
+    uint8_t state;              ///< Empty, live, or tombstone slot state.
 } rt_gui_subhandle_slot_t;
 
+/// @brief Slot-state values for the open-addressed target index.
 enum {
-    RT_GUI_SUBHANDLE_SLOT_EMPTY = 0,
-    RT_GUI_SUBHANDLE_SLOT_LIVE = 1,
-    RT_GUI_SUBHANDLE_SLOT_TOMBSTONE = 2,
+    RT_GUI_SUBHANDLE_SLOT_EMPTY = 0,     ///< Probe terminator with no prior entry.
+    RT_GUI_SUBHANDLE_SLOT_LIVE = 1,      ///< Occupied key and wrapper.
+    RT_GUI_SUBHANDLE_SLOT_TOMBSTONE = 2, ///< Deleted slot retained for probing.
 };
 
+/// @brief Owned target-index slot allocation.
 static rt_gui_subhandle_slot_t *s_target_slots = NULL;
+/// @brief Power-of-two target-index slot count.
 static size_t s_target_capacity = 0;
+/// @brief Number of live target keys.
 static size_t s_target_live = 0;
+/// @brief Number of live or tombstone target slots.
 static size_t s_target_occupied = 0;
+/// @brief Whether the target index represents every wrapper with a target.
 static bool s_target_index_complete = false;
 
+/// @brief Owned hash buckets keyed by owner-widget identity.
 static rt_gui_subhandle_t **s_owner_buckets = NULL;
+/// @brief Power-of-two owner-bucket count.
 static size_t s_owner_capacity = 0;
+/// @brief Number of wrappers linked through owner buckets.
 static size_t s_owner_indexed_count = 0;
+/// @brief Whether the owner index represents every wrapper with an owner.
 static bool s_owner_index_complete = false;
 
+/// @brief Probe count consumed by the latest target lookup.
 static size_t s_target_last_probes = 0;
+/// @brief Largest bounded target lookup probe count observed.
 static size_t s_target_max_probes = 0;
 
 /// @brief Mix an address and subhandle kind into a stable process-local hash.
@@ -446,6 +476,8 @@ static void rt_gui_subhandle_owner_unlink(rt_gui_subhandle_t *handle) {
         --s_owner_indexed_count;
 }
 
+/// @brief Reclaim retired lower subobjects belonging to one live owner widget.
+/// @param owner Widget whose retired item lists should be inspected.
 static void rt_gui_collect_retired_for_owner(vg_widget_t *owner);
 
 /// @brief Detach a subhandle from the global intrusive list.

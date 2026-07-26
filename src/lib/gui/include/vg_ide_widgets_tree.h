@@ -255,12 +255,24 @@ typedef struct vg_tree_node {
     vg_icon_t expanded_icon; ///< Icon when expanded (optional, for folders)
 } vg_tree_node_t;
 
-/// @brief TreeView callback types
+/// @brief Notify a client that TreeView selection changed.
+/// @param tree TreeView widget whose selection changed.
+/// @param node Borrowed selected node, or NULL when selection was cleared.
+/// @param user_data Opaque pointer registered with the TreeView.
 typedef void (*vg_tree_select_callback_t)(vg_widget_t *tree, vg_tree_node_t *node, void *user_data);
+/// @brief Notify a client that a node's expanded state changed.
+/// @param tree TreeView widget that owns the node.
+/// @param node Borrowed node whose state changed.
+/// @param expanded Current expanded state.
+/// @param user_data Opaque pointer registered with the TreeView.
 typedef void (*vg_tree_expand_callback_t)(vg_widget_t *tree,
                                           vg_tree_node_t *node,
                                           bool expanded,
                                           void *user_data);
+/// @brief Notify a client that a node was activated.
+/// @param tree TreeView widget that owns the node.
+/// @param node Borrowed activated node.
+/// @param user_data Opaque pointer registered with the TreeView.
 typedef void (*vg_tree_activate_callback_t)(vg_widget_t *tree,
                                             vg_tree_node_t *node,
                                             void *user_data);
@@ -279,18 +291,35 @@ typedef enum vg_treeview_app_dnd_mode {
     VG_TREEVIEW_APP_DND_ROW_AWARE = 2    ///< Classify BEFORE/INTO/AFTER on any row.
 } vg_treeview_app_dnd_mode_t;
 
-/// @brief Drag-and-drop callback types
+/// @brief Ask whether a tree node may begin a drag.
+/// @param node Borrowed candidate source node.
+/// @param user_data Opaque pointer registered with the TreeView.
+/// @return True when dragging is permitted.
 typedef bool (*vg_tree_can_drag_callback_t)(vg_tree_node_t *node, void *user_data);
+/// @brief Ask whether a source may be dropped at a target position.
+/// @param source Borrowed dragged node.
+/// @param target Borrowed candidate target node.
+/// @param position Proposed relative drop position.
+/// @param user_data Opaque pointer registered with the TreeView.
+/// @return True when the proposed drop is permitted.
 typedef bool (*vg_tree_can_drop_callback_t)(vg_tree_node_t *source,
                                             vg_tree_node_t *target,
                                             vg_tree_drop_position_t position,
                                             void *user_data);
+/// @brief Notify a client that an accepted tree drop occurred.
+/// @param source Borrowed dragged node.
+/// @param target Borrowed target node.
+/// @param position Accepted relative drop position.
+/// @param user_data Opaque pointer registered with the TreeView.
 typedef void (*vg_tree_on_drop_callback_t)(vg_tree_node_t *source,
                                            vg_tree_node_t *target,
                                            vg_tree_drop_position_t position,
                                            void *user_data);
 
 /// @brief Lazy loading callback type
+/// @param tree TreeView requesting children.
+/// @param node Borrowed node whose children should be populated.
+/// @param user_data Opaque pointer registered with the TreeView.
 typedef void (*vg_tree_load_children_callback_t)(struct vg_treeview *tree,
                                                  vg_tree_node_t *node,
                                                  void *user_data);
@@ -683,7 +712,9 @@ void vg_treeview_set_on_activate(vg_treeview_t *tree,
 void vg_tree_node_set_icon(vg_tree_node_t *node, vg_icon_t icon);
 
 /// @brief Set the alternate icon shown when a node is in the expanded state.
-/// @param node Icon shown while the node is expanded (e.g. open-folder glyph).
+/// @param node Tree node whose expanded-state icon is replaced.
+/// @param icon Icon shown while the node is expanded (e.g. open-folder glyph); ownership
+///             transfers to the node.
 void vg_tree_node_set_expanded_icon(vg_tree_node_t *node, vg_icon_t icon);
 
 // --- Drag and Drop ---
@@ -710,18 +741,27 @@ void vg_treeview_set_app_directed_dnd(vg_treeview_t *tree, bool enabled);
 void vg_treeview_set_app_directed_dnd_mode(vg_treeview_t *tree, int mode);
 
 /// @brief True when a completed drop is waiting to be consumed.
+/// @param tree Tree view whose application-directed drop latch is queried.
+/// @return True when source, target, and position data are pending.
 bool vg_treeview_has_pending_drop(const vg_treeview_t *tree);
 
 /// @brief The dragged (source) node of the latched drop, or NULL.
+/// @param tree Tree view whose pending drop is queried.
+/// @return Borrowed source node, or NULL when no drop is pending.
 vg_tree_node_t *vg_treeview_drop_source(vg_treeview_t *tree);
 
 /// @brief The target node of the latched drop, or NULL.
+/// @param tree Tree view whose pending drop is queried.
+/// @return Borrowed target node, or NULL when no drop is pending.
 vg_tree_node_t *vg_treeview_drop_target_node(vg_treeview_t *tree);
 
 /// @brief The latched drop position (0=before, 1=into, 2=after).
+/// @param tree Tree view whose pending drop is queried.
+/// @return Latched position value, or the implementation's no-drop sentinel when absent.
 int vg_treeview_drop_position_value(const vg_treeview_t *tree);
 
 /// @brief Consume the latched drop so the next drop can be observed.
+/// @param tree Tree view whose pending-drop state is cleared.
 void vg_treeview_clear_drop(vg_treeview_t *tree);
 
 /// @brief Set all three drag-and-drop callbacks at once.
@@ -1017,8 +1057,12 @@ bool vg_menubar_handle_accelerator(vg_menubar_t *menubar, int key, uint32_t modi
 /// @return true when item belongs to a live menu or context menu.
 bool vg_menu_item_is_live(const vg_menu_item_t *item);
 /// @brief Returns true when @p menu is still part of a live menubar menu tree.
+/// @param menu Candidate menubar-menu handle.
+/// @return True when the handle belongs to a live menubar menu tree.
 bool vg_menu_is_live(const vg_menu_t *menu);
 /// @brief Returns true when @p menu is still a live context menu.
+/// @param menu Candidate context-menu handle.
+/// @return True when the context-menu handle remains registered and live.
 bool vg_contextmenu_is_live(const vg_contextmenu_t *menu);
 
 #ifdef __cplusplus

@@ -48,6 +48,7 @@ struct Options {
 enum class ParseResult { Ok, Help, Version, Error };
 
 /// @brief Print il-dis usage text to @p out.
+/// @param out Destination stream.
 void usage(std::ostream &out) {
     out << "Usage: il-dis [options] <file.il>\n"
         << "\n"
@@ -64,6 +65,10 @@ void usage(std::ostream &out) {
 /// @details Recognises --raw, --no-pools, --version, and --help/-h, and exactly
 ///          one positional input file; errors on unknown options or a missing/
 ///          duplicate input file.
+/// @param argc Argument count.
+/// @param argv Argument vector.
+/// @param options Receives parsed flags and input path.
+/// @param err Destination for argument diagnostics.
 /// @return Ok, Help, Version, or Error (with a message written to @p err).
 ParseResult parseArgs(int argc, char **argv, Options &options, std::ostream &err) {
     for (int i = 1; i < argc; ++i) {
@@ -103,6 +108,8 @@ ParseResult parseArgs(int argc, char **argv, Options &options, std::ostream &err
 }
 
 /// @brief Format a 32-bit value as "0x" + 8 uppercase hex digits.
+/// @param value Word to format.
+/// @return Fixed-width hexadecimal text.
 std::string hexWord(uint32_t value) {
     std::ostringstream os;
     os << "0x" << std::hex << std::uppercase << std::setfill('0') << std::setw(8) << value;
@@ -110,6 +117,8 @@ std::string hexWord(uint32_t value) {
 }
 
 /// @brief Format a byte as "0x" + 2 uppercase hex digits.
+/// @param value Byte to format.
+/// @return Fixed-width hexadecimal text.
 std::string hexByte(uint8_t value) {
     std::ostringstream os;
     os << "0x" << std::hex << std::uppercase << std::setfill('0') << std::setw(2)
@@ -118,6 +127,9 @@ std::string hexByte(uint8_t value) {
 }
 
 /// @brief Format a program counter as a zero-padded decimal of the given width.
+/// @param pc Program-counter word index.
+/// @param width Minimum decimal column width.
+/// @return Zero-padded decimal text.
 std::string pcText(uint32_t pc, unsigned width) {
     std::ostringstream os;
     os << std::setfill('0') << std::setw(static_cast<int>(width)) << pc;
@@ -125,6 +137,8 @@ std::string pcText(uint32_t pc, unsigned width) {
 }
 
 /// @brief Choose the pc column width (digits) needed for a code of @p codeSize.
+/// @param codeSize Function length in instruction words.
+/// @return At least four decimal digits, expanded for larger functions.
 unsigned pcWidth(size_t codeSize) {
     unsigned width = 4;
     for (size_t limit = 10000; codeSize >= limit; limit *= 10)
@@ -133,6 +147,8 @@ unsigned pcWidth(size_t codeSize) {
 }
 
 /// @brief Render @p text as a quoted, escaped string literal for disassembly output.
+/// @param text Raw string-pool value.
+/// @return Quoted representation with controls and delimiters escaped.
 std::string escapeString(std::string_view text) {
     std::ostringstream os;
     os << '"';
@@ -173,6 +189,10 @@ std::string escapeString(std::string_view text) {
 /// @brief Describe a branch target as "pc=<abs> (offset=<rel>)".
 /// @details Computes the absolute target from @p basePc + @p offset and flags it
 ///          "[out-of-range]" when it falls outside [0, codeSize].
+/// @param basePc PC relative to which the signed offset is interpreted.
+/// @param offset Signed branch displacement.
+/// @param codeSize Function code length.
+/// @return Human-readable absolute/relative target description.
 std::string targetText(int64_t basePc, int32_t offset, size_t codeSize) {
     const int64_t target = basePc + static_cast<int64_t>(offset);
     std::ostringstream os;
@@ -184,11 +204,15 @@ std::string targetText(int64_t basePc, int32_t offset, size_t codeSize) {
 }
 
 /// @brief Return the textual name of an IL type.
+/// @param type IL type to render.
+/// @return Canonical type spelling.
 std::string typeName(const il::core::Type &type) {
     return type.toString();
 }
 
 /// @brief Map a narrow-integer type tag to its IL type name (i1/i16/i32/i64).
+/// @param tag Encoded narrow-integer tag.
+/// @return Type name or an explicit unknown-tag marker.
 std::string narrowTypeName(uint8_t tag) {
     switch (tag) {
         case 0:
@@ -205,6 +229,8 @@ std::string narrowTypeName(uint8_t tag) {
 }
 
 /// @brief Map a trap-kind byte to its human-readable name (e.g. "DivideByZero").
+/// @param kind Encoded runtime trap kind.
+/// @return Known name or a numeric fallback marker.
 std::string trapKindName(uint8_t kind) {
     switch (kind) {
         case 0:
@@ -246,6 +272,10 @@ std::string trapKindName(uint8_t kind) {
 
 /// @brief Look up an item's @c name by index, or a "<fallback>#N [invalid]" string.
 /// @details Used to render pool references safely even when an index is corrupt.
+/// @param items Indexed named records.
+/// @param index Candidate index.
+/// @param fallback Label used for invalid indexes.
+/// @return Item name or invalid-index marker.
 template <typename T>
 std::string indexedName(const std::vector<T> &items, uint32_t index, std::string_view fallback) {
     if (index < items.size()) {
@@ -255,21 +285,33 @@ std::string indexedName(const std::vector<T> &items, uint32_t index, std::string
 }
 
 /// @brief Resolve a function-pool index to its name (or an [invalid] marker).
+/// @param module Bytecode module owning the function pool.
+/// @param index Candidate function index.
+/// @return Function name or invalid-index marker.
 std::string functionName(const bc::BytecodeModule &module, uint32_t index) {
     return indexedName(module.functions, index, "function");
 }
 
 /// @brief Resolve a native-function-pool index to its name.
+/// @param module Bytecode module owning the native pool.
+/// @param index Candidate native index.
+/// @return Native name or invalid-index marker.
 std::string nativeName(const bc::BytecodeModule &module, uint32_t index) {
     return indexedName(module.nativeFuncs, index, "native");
 }
 
 /// @brief Resolve a global-pool index to its name.
+/// @param module Bytecode module owning the global pool.
+/// @param index Candidate global index.
+/// @return Global name or invalid-index marker.
 std::string globalName(const bc::BytecodeModule &module, uint32_t index) {
     return indexedName(module.globals, index, "global");
 }
 
 /// @brief Resolve a 1-based source-file table entry to its path ("" for entry 0).
+/// @param module Bytecode module owning the source table.
+/// @param tableEntry One-based encoded table entry.
+/// @return Source path, empty value, or invalid-index marker.
 std::string sourceFileName(const bc::BytecodeModule &module, uint32_t tableEntry) {
     if (tableEntry == 0) {
         return {};
@@ -282,6 +324,8 @@ std::string sourceFileName(const bc::BytecodeModule &module, uint32_t tableEntry
 }
 
 /// @brief Append @p text to @p comments when it is non-empty.
+/// @param comments Destination comment fragments.
+/// @param text Candidate fragment, moved when non-empty.
 void appendComment(std::vector<std::string> &comments, std::string text) {
     if (!text.empty()) {
         comments.push_back(std::move(text));
@@ -289,6 +333,8 @@ void appendComment(std::vector<std::string> &comments, std::string text) {
 }
 
 /// @brief Join comment fragments with "; " for a single trailing comment column.
+/// @param comments Ordered fragments.
+/// @return Delimiter-joined comment text.
 std::string joinComments(const std::vector<std::string> &comments) {
     std::ostringstream os;
     for (size_t i = 0; i < comments.size(); ++i) {
@@ -303,6 +349,10 @@ std::string joinComments(const std::vector<std::string> &comments) {
 /// @brief Append a "<source>:line N" debug comment for the instruction at @p pc.
 /// @details Reads the function's line and source-file tables; emits nothing when
 ///          no debug info is present for @p pc.
+/// @param module Module owning source paths.
+/// @param fn Function owning debug side tables.
+/// @param pc Instruction word index.
+/// @param comments Destination fragments.
 void appendDebugComment(const bc::BytecodeModule &module,
                         const bc::BytecodeFunction &fn,
                         uint32_t pc,
@@ -334,6 +384,9 @@ void appendDebugComment(const bc::BytecodeModule &module,
 }
 
 /// @brief Return true if @p pc indexes a valid instruction word in @p fn.code.
+/// @param fn Function whose code is queried.
+/// @param pc Candidate word index.
+/// @return true when @p pc is in bounds.
 bool hasWord(const bc::BytecodeFunction &fn, uint32_t pc) {
     return pc < fn.code.size();
 }
@@ -687,6 +740,8 @@ uint32_t disassembleInstruction(const bc::BytecodeModule &module,
 }
 
 /// @brief Print the module's constant/global/native/function pools to @p out.
+/// @param module Module whose pools are rendered.
+/// @param out Destination stream.
 void printPools(const bc::BytecodeModule &module, std::ostream &out) {
     out << "pools:\n";
     out << "  i64_pool count=" << module.i64Pool.size() << '\n';
@@ -745,6 +800,10 @@ void printPools(const bc::BytecodeModule &module, std::ostream &out) {
 }
 
 /// @brief Print a function's header line (params, locals, stack, source, etc.).
+/// @param module Owning module used for source lookup.
+/// @param fn Function metadata to render.
+/// @param index Module function index.
+/// @param out Destination stream.
 void printFunctionMetadata(const bc::BytecodeModule &module,
                            const bc::BytecodeFunction &fn,
                            uint32_t index,
@@ -760,6 +819,8 @@ void printFunctionMetadata(const bc::BytecodeModule &module,
 
 /// @brief Print a function's side tables: exception ranges, switch tables, and
 ///        local-variable debug info (each section omitted when empty).
+/// @param fn Function whose side tables are rendered.
+/// @param out Destination stream.
 void printFunctionSideTables(const bc::BytecodeFunction &fn, std::ostream &out) {
     if (!fn.exceptionRanges.empty()) {
         out << "  exception_ranges:\n";
@@ -793,6 +854,9 @@ void printFunctionSideTables(const bc::BytecodeFunction &fn, std::ostream &out) 
 /// @brief Disassemble an entire bytecode module to @p out.
 /// @details Prints the module header, optional pools, then each function's
 ///          metadata, instructions (via disassembleInstruction), and side tables.
+/// @param module Compiled bytecode module.
+/// @param options Output-selection flags.
+/// @param out Destination stream.
 void disassemble(const bc::BytecodeModule &module, const Options &options, std::ostream &out) {
     out << "bytecode_module magic=" << hexWord(module.magic) << " version=" << module.version
         << " flags=" << module.flags << " functions=" << module.functions.size() << '\n';

@@ -21,6 +21,12 @@
 //        WindowsPackageBuilder.cpp
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Defines shared validation, filesystem, encoding, and traversal utilities for packagers.
+/// @details All helpers are inline and cross-platform. They enforce package size,
+///          metadata, path-containment, atomic-output, and UTF conversion contracts.
+
 #pragma once
 
 #include <algorithm>
@@ -61,6 +67,7 @@
 
 namespace zanna::pkg {
 
+/// @brief Largest individual input representable by the package formats' 32-bit size fields.
 inline constexpr uint64_t kMaxPackageFileBytes = 0xFFFFFFFFull;
 
 /// @brief Parse a reproducible-build Unix epoch without accepting partial input.
@@ -169,12 +176,20 @@ inline std::filesystem::path createUniqueTempDirectory(const std::filesystem::pa
 namespace detail {
 
 #if ZANNA_HOST_WINDOWS
+/// @brief Exclusively create a non-inheritable binary temporary file on Windows.
+/// @param path Native temporary path.
+/// @return Writable CRT file descriptor, or a negative value on failure.
 inline int openExclusiveTempFile(const std::filesystem::path &path) {
     return _wopen(path.native().c_str(),
                   _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY | _O_NOINHERIT,
                   _S_IREAD | _S_IWRITE);
 }
 
+/// @brief Write an entire byte sequence to a Windows CRT descriptor.
+/// @param fd Writable file descriptor.
+/// @param data Source bytes.
+/// @param size Number of bytes to write.
+/// @return Zero on success or -1 on a short/failed write.
 inline int writeTempFileBytes(int fd, const uint8_t *data, size_t size) {
     size_t written = 0;
     while (written < size) {
@@ -187,14 +202,22 @@ inline int writeTempFileBytes(int fd, const uint8_t *data, size_t size) {
     return 0;
 }
 
+/// @brief Flush a Windows temporary file to stable storage.
+/// @param fd Open file descriptor.
+/// @return CRT commit result.
 inline int syncTempFile(int fd) {
     return _commit(fd);
 }
 
+/// @brief Close a Windows temporary file descriptor.
+/// @param fd Open file descriptor.
+/// @return CRT close result.
 inline int closeTempFile(int fd) {
     return _close(fd);
 }
 
+/// @brief Describe the most recent CRT I/O error.
+/// @return Human-readable errno text.
 inline std::string lastIoError() {
     return std::strerror(errno);
 }
@@ -220,6 +243,9 @@ inline void replaceFileAtomic(const std::filesystem::path &tempPath,
 }
 
 #else
+/// @brief Exclusively create a temporary file on a POSIX-like host.
+/// @param path Native temporary path.
+/// @return Writable file descriptor, or a negative value on failure.
 inline int openExclusiveTempFile(const std::filesystem::path &path) {
     int flags = O_WRONLY | O_CREAT | O_EXCL;
 #ifdef O_CLOEXEC
@@ -228,6 +254,11 @@ inline int openExclusiveTempFile(const std::filesystem::path &path) {
     return open(path.c_str(), flags, 0666);
 }
 
+/// @brief Write an entire byte sequence, retrying interrupted POSIX writes.
+/// @param fd Writable file descriptor.
+/// @param data Source bytes.
+/// @param size Number of bytes to write.
+/// @return Zero on success or -1 on a short/failed write.
 inline int writeTempFileBytes(int fd, const uint8_t *data, size_t size) {
     size_t written = 0;
     while (written < size) {
@@ -244,14 +275,22 @@ inline int writeTempFileBytes(int fd, const uint8_t *data, size_t size) {
     return 0;
 }
 
+/// @brief Flush a POSIX temporary file to stable storage.
+/// @param fd Open file descriptor.
+/// @return fsync result.
 inline int syncTempFile(int fd) {
     return fsync(fd);
 }
 
+/// @brief Close a POSIX temporary file descriptor.
+/// @param fd Open file descriptor.
+/// @return close result.
 inline int closeTempFile(int fd) {
     return close(fd);
 }
 
+/// @brief Best-effort flush of directory metadata after an atomic rename.
+/// @param parent Parent directory containing the renamed output.
 inline void syncParentDirectoryBestEffort(const std::filesystem::path &parent) {
     const int fd = open(parent.c_str(), O_RDONLY);
     if (fd < 0)
@@ -260,6 +299,8 @@ inline void syncParentDirectoryBestEffort(const std::filesystem::path &parent) {
     (void)close(fd);
 }
 
+/// @brief Describe the most recent POSIX I/O error.
+/// @return Human-readable errno text.
 inline std::string lastIoError() {
     return std::strerror(errno);
 }
@@ -283,6 +324,8 @@ inline void replaceFileAtomic(const std::filesystem::path &tempPath,
 class ExclusiveTempFile {
   public:
     /// @brief Reserve a unique hidden temp file next to @p finalPath.
+    /// @param finalPath Destination whose parent and leaf name seed the temporary path.
+    /// @throws std::runtime_error If exclusive creation fails or collisions exhaust retries.
     explicit ExclusiveTempFile(const std::filesystem::path &finalPath) {
         namespace fs = std::filesystem;
         const fs::path parent =
@@ -320,16 +363,19 @@ class ExclusiveTempFile {
     ExclusiveTempFile &operator=(const ExclusiveTempFile &) = delete;
 
     /// @brief Return the reserved path.
+    /// @return Const reference valid for the guard's lifetime.
     [[nodiscard]] const std::filesystem::path &path() const {
         return path_;
     }
 
     /// @brief Return the writable file descriptor.
+    /// @return Open descriptor, or -1 after flushAndClose().
     [[nodiscard]] int fd() const {
         return fd_;
     }
 
     /// @brief Close the descriptor after forcing file contents to stable storage.
+    /// @throws std::runtime_error If flushing or closing fails.
     void flushAndClose() {
         if (fd_ < 0)
             return;
@@ -393,6 +439,9 @@ inline void writeFileAtomic(const std::filesystem::path &path, const std::vector
 }
 
 /// @brief Decode a UTF-8 package output path and write it without using the Windows ACP.
+/// @param path UTF-8 destination path.
+/// @param data Bytes to write atomically.
+/// @throws std::runtime_error If path decoding or atomic output fails.
 inline void writeFileAtomic(const std::string &path, const std::vector<uint8_t> &data) {
     writeFileAtomic(zanna::filesystem::pathFromUtf8(path), data);
 }
@@ -413,11 +462,16 @@ inline void writeTextFileAtomic(const std::filesystem::path &path, std::string_v
 }
 
 /// @brief Decode a UTF-8 package text-output path and write it atomically.
+/// @param path UTF-8 destination path.
+/// @param text Exact text bytes to write.
+/// @throws std::runtime_error If path decoding or atomic output fails.
 inline void writeTextFileAtomic(const std::string &path, std::string_view text) {
     writeTextFileAtomic(zanna::filesystem::pathFromUtf8(path), text);
 }
 
 /// @brief Read a native filesystem path into a byte vector.
+/// @param path Input file path.
+/// @return Complete owned file contents.
 /// @throws std::runtime_error on open or read failure.
 inline std::vector<uint8_t> readFile(const std::filesystem::path &path) {
     const std::string displayPath = zanna::filesystem::pathToUtf8(path);
@@ -447,6 +501,9 @@ inline std::vector<uint8_t> readFile(const std::filesystem::path &path) {
 }
 
 /// @brief Decode a UTF-8 package path and read it without using the Windows ACP.
+/// @param path UTF-8 input path.
+/// @return Complete owned file contents.
+/// @throws std::runtime_error If path decoding or file reading fails.
 inline std::vector<uint8_t> readFile(const std::string &path) {
     return readFile(zanna::filesystem::pathFromUtf8(path));
 }
@@ -455,6 +512,9 @@ inline std::vector<uint8_t> readFile(const std::string &path) {
 ///
 /// Spaces become underscores, all chars lowered.
 /// e.g. "Zanna IDE" -> "zanna_ide"
+/// @param name Project name to normalize.
+/// @return Lowercase executable leaf name.
+/// @throws std::runtime_error If the name is empty, special, or contains unsupported characters.
 inline std::string normalizeExecName(const std::string &name) {
     std::string result;
     result.reserve(name.size());
@@ -477,6 +537,9 @@ inline std::string normalizeExecName(const std::string &name) {
 ///
 /// Spaces and underscores become hyphens, all chars lowered.
 /// e.g. "Zanna IDE" -> "zanna-ide"
+/// @param name Project name to normalize.
+/// @return Debian-compatible lowercase package name.
+/// @throws std::runtime_error If the result violates Debian name syntax.
 inline std::string normalizeDebName(const std::string &name) {
     std::string result;
     result.reserve(name.size());
@@ -501,6 +564,8 @@ inline std::string normalizeDebName(const std::string &name) {
 }
 
 /// @brief Strip leading and trailing ASCII whitespace (space, tab, CR, LF).
+/// @param value Text to trim.
+/// @return Trimmed copy, or an empty string when no non-whitespace remains.
 inline std::string trimAsciiWhitespace(std::string_view value) {
     const std::size_t start = value.find_first_not_of(" \t\r\n");
     if (start == std::string::npos)
@@ -510,7 +575,12 @@ inline std::string trimAsciiWhitespace(std::string_view value) {
 }
 
 /// @brief Return a copy of value with all ASCII letters converted to lowercase.
+/// @param value Text to normalize.
+/// @return Lowercase copy.
 inline std::string lowerAsciiCopy(std::string value) {
+    /// @brief Fold one byte through ctype without signed-char undefined behavior.
+    /// @param c Unsigned source byte.
+    /// @return Lowercase byte converted back to plain char.
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
     });
@@ -519,6 +589,9 @@ inline std::string lowerAsciiCopy(std::string value) {
 
 /// @brief Throw if value contains any ASCII control character (0x00-0x1F or 0x7F).
 /// Used to keep metadata strings safe for embedding in package control files.
+/// @param value Metadata text to validate.
+/// @param fieldName Human-readable field name used in diagnostics.
+/// @throws std::runtime_error If a control character is present.
 inline void rejectControlChars(const std::string &value, const char *fieldName) {
     for (char c : value) {
         unsigned char uc = static_cast<unsigned char>(c);
@@ -531,6 +604,9 @@ inline void rejectControlChars(const std::string &value, const char *fieldName) 
 
 /// @brief Throw if value contains CR or LF characters.
 /// Single-line metadata fields (Name, Version, etc.) must not span multiple lines.
+/// @param value Metadata text to validate.
+/// @param fieldName Human-readable field name used in diagnostics.
+/// @throws std::runtime_error If a line break is present.
 inline void rejectLineBreaks(const std::string &value, const char *fieldName) {
     if (value.find('\n') != std::string::npos || value.find('\r') != std::string::npos) {
         throw std::runtime_error(std::string(fieldName) + " must not contain line breaks");
@@ -539,6 +615,9 @@ inline void rejectLineBreaks(const std::string &value, const char *fieldName) {
 
 /// @brief Validate a string that must be a single, control-character-free line.
 /// Combines rejectLineBreaks + rejectControlChars in one call.
+/// @param value Metadata text to validate.
+/// @param fieldName Human-readable field name used in diagnostics.
+/// @throws std::runtime_error If a line break or control character is present.
 inline void validateSingleLineField(const std::string &value, const char *fieldName) {
     rejectLineBreaks(value, fieldName);
     rejectControlChars(value, fieldName);
@@ -569,6 +648,9 @@ inline void validatePortableArchiveVersion(const std::string &version,
 
 /// @brief Validate that arch is one of the two supported Zanna target architectures ("x64",
 /// "arm64").
+/// @param arch Architecture text to validate.
+/// @param fieldName Human-readable field name used in diagnostics.
+/// @throws std::runtime_error If the value is not `x64` or `arm64`.
 inline void validateToolchainArchitecture(const std::string &arch,
                                           const char *fieldName = "toolchain architecture") {
     validateSingleLineField(arch, fieldName);
@@ -577,6 +659,9 @@ inline void validateToolchainArchitecture(const std::string &arch,
 }
 
 /// @brief Validate that platform is one of "windows", "macos", or "linux".
+/// @param platform Platform text to validate.
+/// @param fieldName Human-readable field name used in diagnostics.
+/// @throws std::runtime_error If the value is unsupported.
 inline void validateToolchainPlatform(const std::string &platform,
                                       const char *fieldName = "toolchain platform") {
     validateSingleLineField(platform, fieldName);
@@ -589,7 +674,13 @@ inline void validateToolchainPlatform(const std::string &platform,
 /// @brief Validate a Debian package version string per Policy Manual §5.6.12.
 /// Accepts the full [epoch:]upstream[-revision] format. Throws on any invalid
 /// character, empty component, non-numeric epoch, or wrong starting digit.
+/// @param version Version text to validate.
+/// @param fieldName Human-readable field name used in diagnostics.
+/// @throws std::runtime_error If Debian version syntax is violated.
 inline void validateDebVersion(const std::string &version, const char *fieldName = "version") {
+    /// @brief Throw a contextual Debian-version validation error.
+    /// @param why Specific grammar failure.
+    /// @throws std::runtime_error Always.
     const auto fail = [&](const std::string &why) {
         throw std::runtime_error(std::string(fieldName) + " is not a valid Debian version: '" +
                                  version + "' (" + why + ")");
@@ -651,6 +742,10 @@ inline void validateDebVersion(const std::string &version, const char *fieldName
 /// @brief Parse a dotted-numeric version string ("1.2.3.4") into a uint32_t vector.
 /// Each component is validated to be purely numeric and ≤ 65535.
 /// Throws on empty input, non-numeric characters, or a trailing dot.
+/// @param version Version text to parse.
+/// @param fieldName Human-readable field name used in diagnostics.
+/// @return Ordered numeric components.
+/// @throws std::runtime_error If syntax is invalid or a component exceeds 65535.
 inline std::vector<uint32_t> parseDottedNumericVersionParts(const std::string &version,
                                                             const char *fieldName) {
     if (version.empty())
@@ -686,6 +781,9 @@ inline std::vector<uint32_t> parseDottedNumericVersionParts(const std::string &v
 }
 
 /// @brief Validate a dotted-numeric version string with 2-4 components (e.g. "1.0" or "1.2.3.4").
+/// @param version Version text to validate.
+/// @param fieldName Human-readable field name used in diagnostics.
+/// @throws std::runtime_error If parsing fails or the component count is outside 2–4.
 inline void validateDottedNumericVersion(const std::string &version, const char *fieldName) {
     const auto parts = parseDottedNumericVersionParts(version, fieldName);
     if (parts.size() < 2 || parts.size() > 4)
@@ -696,24 +794,37 @@ inline void validateDottedNumericVersion(const std::string &version, const char 
 /// @brief Validate a Debian dependency specification per Policy Manual §7.1.
 /// Accepts the full pkgname[:arch] [(op version)] [arch-list] [profile-list] | alt ...
 /// syntax. Throws with a descriptive error on any violation.
+/// @param dependency Dependency expression to validate.
+/// @throws std::runtime_error If the expression is empty, unsafe, or syntactically invalid.
 inline void validateDebDependency(const std::string &dependency) {
     const std::string dep = trimAsciiWhitespace(dependency);
     if (dep.empty())
         throw std::runtime_error("package dependency must not be empty");
     validateSingleLineField(dep, "package dependency");
 
+    /// @brief Test one byte for Debian package-name membership.
+    /// @param c Candidate byte.
+    /// @return `true` for lowercase alphanumeric or `+.-`.
     auto isPkgChar = [](char c) {
         unsigned char uc = static_cast<unsigned char>(c);
         return std::islower(uc) || std::isdigit(uc) || c == '+' || c == '-' || c == '.';
     };
+    /// @brief Test one byte for Debian architecture-name membership.
+    /// @param c Candidate byte.
+    /// @return `true` for lowercase alphanumeric or hyphen.
     auto isArchChar = [](char c) {
         unsigned char uc = static_cast<unsigned char>(c);
         return std::islower(uc) || std::isdigit(uc) || c == '-';
     };
+    /// @brief Advance a parser position past horizontal ASCII whitespace.
+    /// @param[in,out] pos Current dependency offset.
     auto skipSpaces = [&](size_t &pos) {
         while (pos < dep.size() && (dep[pos] == ' ' || dep[pos] == '\t'))
             ++pos;
     };
+    /// @brief Parse and validate one Debian package name.
+    /// @param[in,out] pos Current dependency offset, advanced past the name.
+    /// @throws std::runtime_error On invalid name syntax.
     auto parseName = [&](size_t &pos) {
         const size_t start = pos;
         if (pos >= dep.size() || (!std::islower(static_cast<unsigned char>(dep[pos])) &&
@@ -727,6 +838,9 @@ inline void validateDebDependency(const std::string &dependency) {
             throw std::runtime_error("package dependency package name has invalid suffix: '" + dep +
                                      "'");
     };
+    /// @brief Parse an optional Debian architecture qualifier.
+    /// @param[in,out] pos Current dependency offset, advanced when a qualifier exists.
+    /// @throws std::runtime_error On an empty qualifier.
     auto parseArchQualifier = [&](size_t &pos) {
         if (pos >= dep.size() || dep[pos] != ':')
             return;
@@ -738,6 +852,9 @@ inline void validateDebDependency(const std::string &dependency) {
             throw std::runtime_error("package dependency has empty architecture qualifier: '" +
                                      dep + "'");
     };
+    /// @brief Parse an optional parenthesized Debian version relation.
+    /// @param[in,out] pos Current dependency offset, advanced past the constraint.
+    /// @throws std::runtime_error On invalid or unterminated syntax.
     auto parseVersionConstraint = [&](size_t &pos) {
         skipSpaces(pos);
         if (pos >= dep.size() || dep[pos] != '(')
@@ -771,6 +888,12 @@ inline void validateDebDependency(const std::string &dependency) {
                                      dep + "'");
         ++pos;
     };
+    /// @brief Parse an optional bracketed architecture or profile restriction list.
+    /// @param[in,out] pos Current dependency offset, advanced past the list.
+    /// @param open Opening delimiter.
+    /// @param close Closing delimiter.
+    /// @param what Human-readable list kind for diagnostics.
+    /// @throws std::runtime_error On invalid or unterminated syntax.
     auto parseBracketList = [&](size_t &pos, char open, char close, const char *what) {
         skipSpaces(pos);
         if (pos >= dep.size() || dep[pos] != open)
@@ -854,6 +977,8 @@ inline void validateRpmDependency(const std::string &dependency) {
 /// @brief Return true if category is a registered freedesktop.org desktop category.
 /// Used by normalizeDesktopCategories to reject unknown tokens before writing
 /// the .desktop Categories= field.
+/// @param category One un-delimited category token.
+/// @return Whether the token appears in the registered category set.
 inline bool isKnownDesktopCategory(std::string_view category) {
     static constexpr std::string_view known[] = {"AudioVideo",
                                                  "Audio",
@@ -1002,6 +1127,9 @@ inline bool isKnownDesktopCategory(std::string_view category) {
 /// @brief Parse, validate, and normalize a semicolon-delimited freedesktop.org
 /// Categories string. Each token is trimmed of whitespace, checked against the
 /// known-categories list, and rejoined with semicolons. Returns "" for empty input.
+/// @param categories Semicolon-delimited category text.
+/// @return Normalized categories ending in semicolons, or an empty string.
+/// @throws std::runtime_error If a token or character is invalid.
 inline std::string normalizeDesktopCategories(const std::string &categories) {
     if (categories.empty())
         return {};
@@ -1033,6 +1161,8 @@ inline std::string normalizeDesktopCategories(const std::string &categories) {
 }
 
 /// @brief Validate desktop categories without returning the normalized form.
+/// @param categories Semicolon-delimited category text.
+/// @throws std::runtime_error If normalization would fail.
 inline void validateDesktopCategories(const std::string &categories) {
     (void)normalizeDesktopCategories(categories);
 }
@@ -1040,6 +1170,9 @@ inline void validateDesktopCategories(const std::string &categories) {
 /// @brief Validate an RPM version string.
 /// RPM versions may contain alphanumerics plus '.', '_', '+', '~', '^'.
 /// No epoch/revision parsing — RPM spec file handles those separately.
+/// @param version Version text to validate.
+/// @param fieldName Human-readable field name used in diagnostics.
+/// @throws std::runtime_error If empty or containing unsupported characters.
 inline void validateRpmVersion(const std::string &version, const char *fieldName = "version") {
     if (version.empty())
         throw std::runtime_error(std::string(fieldName) + " must not be empty");
@@ -1057,6 +1190,9 @@ inline void validateRpmVersion(const std::string &version, const char *fieldName
 /// Rules: ≤255 chars total; each dot-separated component ≤63 chars, starts and
 /// ends with alphanumeric, contains only alphanumerics and '-'; must have ≥1 dot.
 /// An empty identifier is accepted (optional field).
+/// @param identifier Optional reverse-DNS identifier.
+/// @param fieldName Human-readable field name used in diagnostics.
+/// @throws std::runtime_error If a non-empty value violates component rules.
 inline void validatePackageIdentifier(const std::string &identifier,
                                       const char *fieldName = "package identifier") {
     if (identifier.empty())
@@ -1107,6 +1243,9 @@ inline void validatePackageIdentifier(const std::string &identifier,
 
 /// @brief Validate a macOS bundle identifier. Delegates to validatePackageIdentifier
 /// with a macOS-specific field name for clearer error messages.
+/// @param identifier Optional reverse-DNS bundle identifier.
+/// @param fieldName Human-readable field name used in diagnostics.
+/// @throws std::runtime_error If a non-empty value is invalid.
 inline void validateMacOSBundleIdentifier(const std::string &identifier,
                                           const char *fieldName = "macOS bundle identifier") {
     validatePackageIdentifier(identifier, fieldName);
@@ -1115,6 +1254,9 @@ inline void validateMacOSBundleIdentifier(const std::string &identifier,
 /// @brief Validate a Windows ProgID base string (e.g. "Company.AppName").
 /// Must contain at least one '.' separating non-empty components composed of
 /// alphanumerics, '_', or '-'. Empty identifier is accepted (optional field).
+/// @param identifier Optional ProgID base.
+/// @param fieldName Human-readable field name used in diagnostics.
+/// @throws std::runtime_error If the value exceeds 39 characters or violates syntax.
 inline void validateWindowsProgIdBase(const std::string &identifier,
                                       const char *fieldName = "Windows ProgID base") {
     if (identifier.empty())
@@ -1150,6 +1292,10 @@ inline void validateWindowsProgIdBase(const std::string &identifier,
 /// @brief Normalize a package lifecycle hook script (preinst, postinst, etc.).
 /// Converts Windows CRLF line endings to LF, and rejects NUL bytes and other
 /// non-printable control characters. Returns "" for an empty input.
+/// @param script Raw hook text.
+/// @param fieldName Human-readable field name used in diagnostics.
+/// @return LF-normalized script text.
+/// @throws std::runtime_error If forbidden control bytes are present.
 inline std::string normalizePackageHookScript(const std::string &script, const char *fieldName) {
     if (script.empty())
         return {};
@@ -1177,6 +1323,8 @@ inline std::string normalizePackageHookScript(const std::string &script, const c
 /// @brief Require an explicit manifest opt-in before lifecycle hook scripts are packaged.
 /// @details Hook text is still supported, but install-time shell execution is surprising enough
 /// that manifests must set `allow-install-hooks true` before post/pre scripts are emitted.
+/// @param pkg Package configuration to validate.
+/// @throws std::runtime_error If hook text exists without explicit opt-in.
 inline void validatePackageHooksAllowed(const PackageConfig &pkg) {
     if (pkg.allowInstallHooks)
         return;
@@ -1190,6 +1338,10 @@ inline void validatePackageHooksAllowed(const PackageConfig &pkg) {
 /// Checks that the extension starts with '.' and contains valid characters,
 /// that description and mimeType are single-line printable strings, and that
 /// mimeType has exactly one '/' separating non-empty type and subtype.
+/// @param extension Dotted filename extension.
+/// @param description User-visible file type name.
+/// @param mimeType MIME type/subtype value.
+/// @throws std::runtime_error If any field is unsafe or syntactically invalid.
 inline void validateFileAssociation(const std::string &extension,
                                     const std::string &description,
                                     const std::string &mimeType) {
@@ -1234,6 +1386,8 @@ inline void validateFileAssociation(const std::string &extension,
 /// @brief Validate all file associations in the package config.
 /// Calls validateFileAssociation for each entry and additionally checks for
 /// duplicate extensions (case-insensitive comparison).
+/// @param associations File association list to validate.
+/// @throws std::runtime_error If an entry is invalid or extensions collide.
 inline void validatePackageFileAssociations(const std::vector<FileAssoc> &associations) {
     std::set<std::string> seenExtensions;
     for (const auto &assoc : associations) {
@@ -1251,6 +1405,10 @@ inline void validatePackageFileAssociations(const std::vector<FileAssoc> &associ
 /// @brief Normalize and validate a Windows certificate-store SHA-1 thumbprint.
 /// Accepts optional spaces/tabs for paste-friendliness, rejects line breaks, and
 /// returns the compact lowercase 40-hex-character form expected by signtool /sha1.
+/// @param thumbprint User-provided SHA-1 thumbprint.
+/// @param fieldName Human-readable field name used in diagnostics.
+/// @return Empty string or compact 40-character lowercase hexadecimal text.
+/// @throws std::runtime_error If the non-whitespace content is not a SHA-1 digest.
 inline std::string normalizeWindowsCertificateThumbprint(const std::string &thumbprint,
                                                          const char *fieldName) {
     if (thumbprint.empty())
@@ -1276,6 +1434,9 @@ inline std::string normalizeWindowsCertificateThumbprint(const std::string &thum
 }
 
 /// @brief Validate a Windows certificate-store SHA-1 thumbprint when present.
+/// @param thumbprint Optional user-provided thumbprint.
+/// @param fieldName Human-readable field name used in diagnostics.
+/// @throws std::runtime_error If normalization fails.
 inline void validateWindowsCertificateThumbprint(const std::string &thumbprint,
                                                  const char *fieldName) {
     (void)normalizeWindowsCertificateThumbprint(thumbprint, fieldName);
@@ -1283,6 +1444,8 @@ inline void validateWindowsCertificateThumbprint(const std::string &thumbprint,
 
 /// @brief Return true if mode is one of the four supported macOS signing modes.
 /// Valid values: "" (unset/default), "none", "preserve", "adhoc", "developer-id".
+/// @param mode Signing-mode text to inspect.
+/// @return Whether the value is supported or unset.
 inline bool isValidMacOSSignModeText(const std::string &mode) {
     return mode.empty() || mode == "none" || mode == "preserve" || mode == "adhoc" ||
            mode == "developer-id";
@@ -1291,6 +1454,8 @@ inline bool isValidMacOSSignModeText(const std::string &mode) {
 /// @brief Return the effective macOS sign mode for the current host.
 /// If pkg.macosSignMode is set, returns it directly. Otherwise defaults to
 /// "adhoc" on Apple hosts (where codesign is available) and "preserve" elsewhere.
+/// @param pkg Package signing configuration.
+/// @return Explicit mode or the host-specific default.
 inline std::string resolveMacOSSignModeForHost(const PackageConfig &pkg) {
     if (!pkg.macosSignMode.empty())
         return pkg.macosSignMode;
@@ -1305,6 +1470,8 @@ inline std::string resolveMacOSSignModeForHost(const PackageConfig &pkg) {
 /// Enforces that developer-id mode is required for notarization and stapling,
 /// that an identity string is present when developer-id is selected, and that
 /// stapling requires a notary profile.
+/// @param pkg Package signing configuration.
+/// @throws std::runtime_error If mode, identity, notarization, or stapling settings conflict.
 inline void validateMacOSSigningConfig(const PackageConfig &pkg) {
     if (!isValidMacOSSignModeText(pkg.macosSignMode)) {
         throw std::runtime_error("macOS sign mode must be none, preserve, adhoc, or "
@@ -1332,6 +1499,9 @@ inline void validateMacOSSigningConfig(const PackageConfig &pkg) {
 /// Checks for a valid URI scheme (letters only start), "://" separator, non-empty
 /// authority (host + optional port), no userinfo, and that the port (if present)
 /// is purely numeric. Accepts IPv6 bracket notation. Empty URL is accepted.
+/// @param url Optional HTTP(S) URL.
+/// @param fieldName Human-readable field name used in diagnostics.
+/// @throws std::runtime_error If a non-empty URL violates scheme, host, IPv6, or port rules.
 inline void validatePackageUrl(const std::string &url, const char *fieldName) {
     if (url.empty())
         return;
@@ -1356,6 +1526,9 @@ inline void validatePackageUrl(const std::string &url, const char *fieldName) {
                                      url + "'");
     }
     std::string scheme = url.substr(0, schemePos);
+    /// @brief Fold one URL-scheme byte through ctype safely.
+    /// @param c Unsigned scheme byte.
+    /// @return Lowercase byte converted back to plain char.
     std::transform(scheme.begin(), scheme.end(), scheme.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
     });
@@ -1508,11 +1681,18 @@ inline void validatePackageUrl(const std::string &url, const char *fieldName) {
 /// @brief Validate a package URL and require encrypted HTTPS transport.
 /// @details Use for signing and timestamp endpoints where accepting cleartext HTTP would weaken
 ///          the release trust chain. Empty URLs remain accepted so callers can apply defaults.
+/// @param url Optional URL to validate.
+/// @param fieldName Human-readable field name used in diagnostics.
+/// @throws std::runtime_error If URL validation fails or the scheme is not HTTPS.
 inline void validateHttpsPackageUrl(const std::string &url, const char *fieldName) {
     validatePackageUrl(url, fieldName);
     if (url.empty())
         return;
     if (url.size() < 8 ||
+        /// @brief Compare one URL byte against the HTTPS prefix case-insensitively.
+        /// @param lhs URL byte.
+        /// @param rhs Expected prefix byte.
+        /// @return `true` when the ASCII lowercase bytes are equal.
         !std::equal(url.begin(), url.begin() + 8, "https://", [](char lhs, char rhs) {
             return std::tolower(static_cast<unsigned char>(lhs)) ==
                    std::tolower(static_cast<unsigned char>(rhs));
@@ -1524,6 +1704,9 @@ inline void validateHttpsPackageUrl(const std::string &url, const char *fieldNam
 /// @brief Validate a filename for use on Windows.
 /// Rejects control characters, the characters <, >, :, ", /, \, |, ?, *,
 /// trailing spaces/dots, and Windows reserved device names (CON, NUL, COM1, etc.).
+/// @param name Filename leaf to validate.
+/// @param fieldName Human-readable field name used in diagnostics.
+/// @throws std::runtime_error If empty, reserved, or containing a forbidden form.
 inline void validateWindowsFileName(const std::string &name, const char *fieldName) {
     if (name.empty())
         throw std::runtime_error(std::string(fieldName) + " must not be empty");
@@ -1556,6 +1739,9 @@ inline void validateWindowsFileName(const std::string &name, const char *fieldNa
 /// @brief Return true if path starts with every component of root.
 /// Used to guard against symlink escapes that resolve outside the project root.
 /// Both paths should be canonical (absolute, no symlinks) before comparison.
+/// @param root Canonical containment root.
+/// @param path Canonical candidate path.
+/// @return Whether every component of `root` prefixes `path`.
 inline bool isPathWithin(const std::filesystem::path &root, const std::filesystem::path &path) {
     auto rootIt = root.begin();
     auto pathIt = path.begin();
@@ -1571,6 +1757,10 @@ inline bool isPathWithin(const std::filesystem::path &root, const std::filesyste
 /// Converts backslashes to forward slashes and rejects absolute paths, parent
 /// traversal, empty segments, drive-qualified paths, and control characters.
 /// Returns an empty string for "." or an empty input.
+/// @param raw Untrusted package path text.
+/// @param fieldName Human-readable field name used in diagnostics.
+/// @return Normalized slash-delimited relative path.
+/// @throws std::runtime_error If the input is absolute, escaping, special, or unsafe.
 inline std::string sanitizePackageRelativePath(const std::string &raw,
                                                const char *fieldName = "package path") {
     std::string normalized = raw;
@@ -1645,6 +1835,11 @@ inline std::string sanitizePackageRelativePath(const std::string &raw,
 }
 
 /// @brief Join two package-relative paths and sanitize the result.
+/// @param base First relative path.
+/// @param leaf Second relative path.
+/// @param fieldName Human-readable field name used in diagnostics.
+/// @return Safely joined normalized path.
+/// @throws std::runtime_error If either path is unsafe.
 inline std::string joinPackageRelativePath(const std::string &base,
                                            const std::string &leaf,
                                            const char *fieldName = "package path") {
@@ -1662,6 +1857,11 @@ inline std::string joinPackageRelativePath(const std::string &base,
 /// Uses fs::canonical when the file exists; falls back to weakly_canonical otherwise
 /// (so missing files can still be validated for escapes before creation).
 /// Throws if the result escapes the project root.
+/// @param projectRoot Existing trusted project directory.
+/// @param raw Untrusted project-relative source path.
+/// @param fieldName Human-readable field name used in diagnostics.
+/// @return Canonical or weakly canonical contained path.
+/// @throws std::runtime_error If resolution fails or escapes the project root.
 inline std::filesystem::path resolvePackageSourcePath(const std::filesystem::path &projectRoot,
                                                       const std::string &raw,
                                                       const char *fieldName) {
@@ -1728,6 +1928,9 @@ inline std::string readPackageTextFile(const std::filesystem::path &projectRoot,
 /// Handles the full Unicode range including supplementary characters via
 /// surrogate pairs (U+10000–U+10FFFF). Throws on overlong sequences, truncated
 /// multi-byte sequences, invalid leading bytes, or lone surrogates.
+/// @param text UTF-8 input.
+/// @return UTF-16 code units without a terminator.
+/// @throws std::runtime_error If the UTF-8 sequence is malformed or denotes an invalid code point.
 inline std::vector<uint16_t> utf8ToUtf16CodeUnits(const std::string &text) {
     std::vector<uint16_t> out;
     out.reserve(text.size());
@@ -1778,13 +1981,19 @@ inline std::vector<uint16_t> utf8ToUtf16CodeUnits(const std::string &text) {
 /// @brief Return the number of UTF-16 code units that text would occupy.
 /// Convenience wrapper around utf8ToUtf16CodeUnits for size-checking without
 /// retaining the full code unit array.
+/// @param text UTF-8 input.
+/// @return Number of UTF-16 code units excluding a terminator.
+/// @throws std::runtime_error If the UTF-8 input is invalid.
 inline size_t utf16CodeUnitCountFromUtf8(const std::string &text) {
     return utf8ToUtf16CodeUnits(text).size();
 }
 
 /// @brief Convert a UTF-8 string to a little-endian UTF-16 byte sequence.
+/// @param text UTF-8 input.
 /// @param nulTerminate If true, appends a UTF-16 NUL (two zero bytes).
 /// Used for Win32 registry string fields and .lnk StringData blocks.
+/// @return Little-endian UTF-16 bytes without a BOM.
+/// @throws std::runtime_error If UTF-8 is invalid or the encoded string exceeds 65535 units.
 inline std::vector<uint8_t> utf8ToUtf16LEBytes(const std::string &text, bool nulTerminate = true) {
     const auto units = utf8ToUtf16CodeUnits(text);
     if (units.size() > static_cast<size_t>(std::numeric_limits<uint16_t>::max()))
@@ -1822,6 +2031,10 @@ struct SafeDirectoryEntry {
 /// The callback receives both the logical archive path and the resolved path to
 /// use for filesystem reads. Callers should read/stat resolvedPath, not
 /// logicalPath, to preserve the validation decision.
+/// @param root Existing directory to traverse.
+/// @param projectRoot Trusted containment root for resolved entries.
+/// @param callback Invoked once per safe directory, file, or followed symlink.
+/// @throws std::runtime_error If traversal, canonicalization, containment, or stat checks fail.
 inline void safeDirectoryIterateResolved(
     const std::filesystem::path &root,
     const std::filesystem::path &projectRoot,
@@ -1842,6 +2055,10 @@ inline void safeDirectoryIterateResolved(
     std::set<fs::path> visitedDirectories;
     visitedDirectories.insert(canonicalIterRoot);
 
+    /// @brief Recursively traverse one verified physical directory at its logical package path.
+    /// @param physicalDir Canonical or safely resolved directory to enumerate.
+    /// @param logicalDir Corresponding path spelling exposed to the package callback.
+    /// @throws std::runtime_error If enumeration, resolution, containment, or metadata checks fail.
     std::function<void(const fs::path &, const fs::path &)> walk = [&](const fs::path &physicalDir,
                                                                        const fs::path &logicalDir) {
         auto it = fs::directory_iterator(physicalDir, ec);
@@ -1921,10 +2138,16 @@ inline void safeDirectoryIterateResolved(
 ///          location for stat/read/copy operations should use
 ///          safeDirectoryIterateResolved(), which provides both the logical
 ///          archive path and the resolved path that passed containment checks.
+/// @param root Existing directory to traverse.
+/// @param projectRoot Trusted containment root.
+/// @param callback Invoked with a logical-path directory entry for each safe item.
+/// @throws std::runtime_error If the resolved traversal fails.
 inline void safeDirectoryIterate(
     const std::filesystem::path &root,
     const std::filesystem::path &projectRoot,
     const std::function<void(const std::filesystem::directory_entry &)> &callback) {
+    /// @brief Adapt a validated safe entry to the legacy logical directory-entry callback.
+    /// @param entry Validated resolved traversal entry.
     safeDirectoryIterateResolved(root, projectRoot, [&](const SafeDirectoryEntry &entry) {
         callback(std::filesystem::directory_entry(entry.logicalPath));
     });

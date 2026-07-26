@@ -250,6 +250,7 @@ static bool lowerCastOpcodes(const il::core::Instr &ins,
                              LoweringContext &ctx,
                              std::size_t bbOutIdx) {
     /// @brief Reacquires the indexed destination block after nested helper calls.
+    /// @return Mutable destination block for the current instruction.
     auto bbOut = [&]() -> MBasicBlock & { return ctx.mf.blocks[bbOutIdx]; };
 
     switch (ins.op) {

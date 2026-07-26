@@ -30,6 +30,14 @@
 //        src/runtime/text/rt_json_stream.h (JSON token input)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements typed JSON save-data storage and durable persistence.
+ * @details Validates identifiers and UTF-8, retains typed key/value entries,
+ * serializes exact signed integers and escaped strings, parses replacement
+ * state transactionally, computes platform data locations, and commits files
+ * through synchronized adjacent sidecars with rollback-safe cleanup.
+ */
 
 #include "rt_savedata.h"
 #include "../rt_platform.h"
@@ -70,23 +78,33 @@
 
 #include "rt_trap.h"
 
+/// @copydoc rt_trap_set_recovery()
 void rt_trap_set_recovery(jmp_buf *buf);
+/// @copydoc rt_trap_clear_recovery()
 void rt_trap_clear_recovery(void);
+/// @copydoc rt_trap_get_error()
 const char *rt_trap_get_error(void);
 
 /* JSON stream parser (from rt_json_stream.h / text module) */
+/// @copydoc rt_json_stream_new()
 extern void *rt_json_stream_new(rt_string json);
+/// @copydoc rt_json_stream_next()
 extern int64_t rt_json_stream_next(void *parser);
+/// @copydoc rt_json_stream_string_value()
 extern rt_string rt_json_stream_string_value(void *parser);
+/// @copydoc rt_json_stream_number_text()
 extern rt_string rt_json_stream_number_text(void *parser);
 
 /* Token types */
+/** @name JSON token identifiers consumed by the SaveData subset parser
+ * @{ */
 #define TOK_OBJECT_START 1
 #define TOK_OBJECT_END 2
 #define TOK_KEY 5
 #define TOK_STRING 6
 #define TOK_NUMBER 7
 #define TOK_END 11
+/** @} */
 
 //=========================================================================
 // Internal Data Structures

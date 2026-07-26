@@ -366,6 +366,98 @@ Every menu action routes through the same editor transactions as the
 toolbar and shortcuts, so validation, history, and dirty state are
 identical.
 
+Both scene editors' widget construction now lives in dedicated builder
+modules (scene_panels_2d, scene_panels_3d): callers construct the editor
+and delegate the build, the editor file keeps behavior only, and every
+widget still lands on the editor's own fields — a verbatim relocation
+with no behavior change.
+
+Scene panes float: the Objects/Hierarchy pane, the Inspector, and the 2D
+Palette strip each carry a Float button that moves the pane's content —
+widget identity intact — into the dock substrate's floating panel, with
+the vacated split cell collapsing while it is away and a Dock button
+restoring the fixed layout exactly; the fixed three-pane arrangement
+remains the default preset and pane placement never touches canonical
+bytes. Full membership in the eight-panel dock tab-group model (tabbed
+merging, edge redocking, persisted membership migration) remains the
+deeper integration and is not implemented — the dock model validates a
+fixed eight-panel set today.
+
+Run Scene is one key and one click away: Ctrl+R triggers the existing
+Run Scene command (save-preflight, then the owning project with the scene
+path appended per ADR 0181), and both scene editors carry a Run Scene
+toolbar button feeding the same dispatcher path. Scene hot reload is a
+documented contract rather than an engine feature (ADR 0194): a game
+opting into --scene-watch re-runs its own scene-load path when the scene
+file's modification stamp changes, treats reloads as fresh loads with no
+state migration, and survives torn writes by keeping the previous scene;
+the runtime already provides File.Modified and Watcher, and a headless
+probe pins the conforming watcher loop including invalid-write recovery.
+Studio does not yet surface a "watching game will reload" note on save.
+
+The viewport mode button cycles Shaded, Wireframe, and Shaded+Wire —
+the combined mode draws the wire pass over the shaded frame without
+clearing — and the stats readout now appends per-pass CPU milliseconds
+(shadow, main, overlay, backend end) from the live render canvas.
+Lightmap-only and baked-preview modes, MSAA, and the resizable
+game-aspect camera inset remain unimplemented. The Scene tab gains a
+History panel listing undoable edits oldest-first with their commit
+labels plus a Current row: clicking an older row jumps there by running
+the equivalent undo chain, so redo stays available and bytes match exact
+undos; labels are best-effort presentation reconciled against the
+snapshot stacks (budget trims and workspace restores pad them as plain
+"Edit" entries). The 2D editor has no history panel yet.
+
+The 3D hierarchy budget rose from 1024 to 4096 nodes with the same
+truthful clipping flag past the limit; a synthetic 2000-node probe pins
+that such scenes open unclipped and stay editable, with loose latency
+tripwires against pathological regressions. Opening measures at roughly
+eleven milliseconds per node today because every structural change still
+clears and rebuilds the hierarchy tree — incremental row updates and
+virtualization remain future work, as does the 65k-node target.
+
+The material library renders a live swatch for the selected entry — a
+lit sphere carrying the entry's material, drawn through the deterministic
+software offscreen path and cached by entry name; presentation-only. The
+asset browser keeps its list-plus-preview form: a thumbnail grid mode and
+non-image type icons remain unimplemented.
+
+3D nodes can be pick-locked (workspace-only) through the hierarchy
+context menu's Toggle Pick Lock: a locked node yields viewport clicks to
+the geometry behind it, is skipped by the marquee, and its marker becomes
+unclickable, while hierarchy selection and every inspector edit remain
+available; unlocking restores normal picking. Icon toolbars, per-row
+eye/lock affordances, prefab row tints, and the broader inspector visual
+pass remain unimplemented (hierarchy rows already carry text kind badges).
+
+The 3D view gains Top/Front/Right quick-view buttons snapping the camera
+to axis-aligned poses about the view target, and camera bookmarks: with
+the viewport focused, Shift+1..9 stores the complete pose (angles, zoom,
+target, projection) into a slot and a bare digit recalls it; bookmarks
+persist in the per-document workspace state and never touch canonical
+bytes. A clickable corner view cube and 2D rulers/guides remain
+unimplemented.
+
+Gizmo snapping inverts on hold: keeping Ctrl pressed during a transform
+drag temporarily flips the Snap checkbox's effect (snapped drags run free,
+free drags snap) without touching workspace state, and rotate drags show a
+live signed tenth-degree readout of the swept angle in the status line.
+Vertex/surface snapping, a pivot-versus-center toggle, and cone/cube
+handle art remain unimplemented (handles already differ by tool mode).
+
+The layers panel understands opacity, lock, and solo: each layer carries
+an optional authored opacity (ADR 0195, serialized only away from fully
+opaque so legacy documents stay byte-stable) edited through a spinner that
+commits one undoable edit per change and rendered truthfully in the canvas
+via per-pixel alpha scaling; Lock is workspace-only and makes every tile
+writer (paint, erase, shapes, fill, region operations) refuse with a
+visible reason; Solo previews a single layer without touching content.
+Lock and solo key by layer index and deliberately reset on layer
+add/remove/reorder rather than guessing at remapping. Drag-reordering
+layer rows is not implemented — the Up/Down buttons remain the reorder
+surface — and the object draw-order interleaving marker is not yet
+implemented.
+
 Tile editing gained region operations: a completed canvas box-select also
 records an inclusive tile region on the active layer (drawn as a persistent
 amber rectangle), and the canvas context menu offers Copy/Cut/Delete Tiles

@@ -36,6 +36,14 @@
 //        src/runtime/graphics/math/rt_mat4.c (matrix-vector transform consumer)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Implements managed Vec3 allocation and three-dimensional vector math.
+ * @details Provides the public Vec3 runtime operations together with strict
+ * handle validation, overflow-resistant length calculations, and a
+ * thread-local resurrection pool used to reduce allocation churn in graphics
+ * and simulation workloads.
+ */
 
 #include "rt_vec3.h"
 
@@ -48,9 +56,12 @@
 // ============================================================================
 // Thread-local free-list pool (P2-3.6)
 // ============================================================================
+/** Maximum number of finalized Vec3 payloads retained by each thread. */
 #define VEC3_POOL_CAPACITY 32
 
+/** Per-thread LIFO storage for reusable, resurrected Vec3 payloads. */
 static _Thread_local void *vec3_pool_buf_[VEC3_POOL_CAPACITY];
+/** Number of reusable payloads currently stored in @ref vec3_pool_buf_. */
 static _Thread_local int vec3_pool_top_ = 0;
 
 /// @brief GC finalizer that returns a Vec3 object to the thread-local free pool.

@@ -329,7 +329,10 @@ void insertMainRuntimeContextInit(MFunction &func, const TargetInfo &target) {
     }
 
     auto &entry = func.blocks.front().instructions;
-    /// Recognize a direct call to the requested runtime symbol.
+    /// @brief Recognizes a direct call to the requested runtime symbol.
+    /// @param instr Instruction to inspect.
+    /// @param name Expected runtime symbol name.
+    /// @return `true` when `instr` is a direct call to `name`.
     auto isCallTo = [](const MInstr &instr, const char *name) {
         if (instr.opcode != MOpcode::CALL || instr.operands.empty())
             return false;
@@ -615,7 +618,8 @@ bool allocateModuleMIR(std::vector<MFunction> &mir,
 
     std::string firstError;
     std::mutex errorMutex;
-    /// Allocate one indexed function and retain the first reported diagnostic.
+    /// @brief Allocates one indexed function and retains the first diagnostic.
+    /// @param index MIR and frame index to allocate.
     auto allocateOne = [&](std::size_t index) {
         try {
             allocateFunctionPipeline(mir[index], target, options, frames[index]);
@@ -663,7 +667,9 @@ bool allocateModuleMIR(std::vector<MFunction> &mir,
             auto &instrs = block.instructions;
             instrs.erase(std::remove_if(instrs.begin(),
                                         instrs.end(),
-                                        /// Identify allocator-produced no-op register copies.
+                                        /// @brief Identifies allocator-produced no-op register copies.
+                                        /// @param instr Instruction to inspect.
+                                        /// @return `true` when the instruction is an identity move.
                                         [](const MInstr &instr) {
                                             return peephole::isIdentityMovRR(instr) ||
                                                    peephole::isIdentityMovSDRR(instr);
@@ -703,7 +709,8 @@ bool optimizeModuleMIR(std::vector<MFunction> &mir,
     const TargetInfo &target = selectTarget(options.targetABI);
     std::string firstError;
     std::mutex errorMutex;
-    /// Run target-aware peepholes for one function and capture its failure.
+    /// @brief Runs target-aware peepholes for one function and captures its failure.
+    /// @param index MIR function index to optimize.
     auto optimizeOne = [&](std::size_t index) {
         try {
             runPeepholes(mir[index], target);

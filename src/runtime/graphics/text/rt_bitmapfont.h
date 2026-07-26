@@ -27,6 +27,13 @@
 //        src/runtime/graphics/2d/rt_drawing.c
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares managed BDF/PSF bitmap-font loading, metrics, and Canvas rendering.
+ * @details Provides BitmapFont and SpriteFont construction, finalization,
+ * glyph and line metrics, UTF-8 text measurement, and aligned or scaled
+ * drawing operations. Loaded glyph data remains owned by the managed font.
+ */
 #pragma once
 
 #include "rt_string.h"

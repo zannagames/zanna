@@ -81,7 +81,9 @@ Lowerer::RVal LogicalExprLowering::lower(const BinaryExpr &expr) {
     Lowerer::RVal lhs = lowerer.lowerExpr(*expr.lhs);
     lowerer.curLoc = expr.loc;
 
-    /// Coerce one lowered operand to the `i1` condition type at this expression.
+    /// @brief Coerces one lowered operand to the `i1` condition type.
+    /// @param val Lowered operand.
+    /// @return Boolean IL value.
     auto toBool = [&](Lowerer::RVal val) {
         return lowerer.coerceToBool(std::move(val), expr.loc).value;
     };
@@ -91,12 +93,16 @@ Lowerer::RVal LogicalExprLowering::lower(const BinaryExpr &expr) {
         Lowerer::RVal andResult = lowerer.lowerBoolBranchExpr(
             cond,
             expr.loc,
+            /// @brief Evaluates and stores the right operand of short-circuit AND.
+            /// @param slot Boolean result storage.
             [&](Value slot) {
                 Lowerer::RVal rhs = lowerer.lowerExpr(*expr.rhs);
                 Value rhsBool = toBool(std::move(rhs));
                 lowerer.curLoc = expr.loc;
                 lowerer.emitStore(lowerer.ilBoolTy(), slot, rhsBool);
             },
+            /// @brief Stores false for the skipped right operand of AND.
+            /// @param slot Boolean result storage.
             [&](Value slot) {
                 lowerer.curLoc = expr.loc;
                 lowerer.emitStore(lowerer.ilBoolTy(), slot, lowerer.emitBoolConst(false));
@@ -115,10 +121,14 @@ Lowerer::RVal LogicalExprLowering::lower(const BinaryExpr &expr) {
         Lowerer::RVal orResult = lowerer.lowerBoolBranchExpr(
             cond,
             expr.loc,
+            /// @brief Stores true for the skipped right operand of OR.
+            /// @param slot Boolean result storage.
             [&](Value slot) {
                 lowerer.curLoc = expr.loc;
                 lowerer.emitStore(lowerer.ilBoolTy(), slot, lowerer.emitBoolConst(true));
             },
+            /// @brief Evaluates and stores the right operand of short-circuit OR.
+            /// @param slot Boolean result storage.
             [&](Value slot) {
                 Lowerer::RVal rhs = lowerer.lowerExpr(*expr.rhs);
                 Value rhsBool = toBool(std::move(rhs));

@@ -25,6 +25,13 @@
 //        src/runtime/graphics/2d/rt_pixels.h (decoded pixel buffers)
 //
 //===----------------------------------------------------------------------===//
+/**
+ * @file
+ * @brief Declares the bounded in-memory AVI container parser.
+ * @details Defines validated video and audio metadata, borrowed chunk
+ * descriptors, parser ownership state, and the entry points used to index
+ * frames without copying the caller-owned RIFF byte buffer.
+ */
 #pragma once
 
 #include <stddef.h>

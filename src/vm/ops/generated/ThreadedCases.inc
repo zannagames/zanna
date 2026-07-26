@@ -23,6 +23,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Defines computed-goto handler labels for every IL opcode.
+/// @details Each label invokes its inline opcode wrapper and either continues
+///          through the fast dispatch macro or returns to the slow path when
+///          control flow or exit state requires centralized bookkeeping.
+
 LBL_Add : {
     vm.inline_handle_Add(state);
     if (state.exitRequested) [[unlikely]]

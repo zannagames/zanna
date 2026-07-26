@@ -17,6 +17,17 @@
 // Links: rt_smtp.c (implementation), rt_network.h (TCP), rt_tls.h (TLS)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_smtp.h
+ * @brief Declares the managed SMTP client and message-sending API.
+ * @details Clients retain copied endpoint and optional authentication state,
+ *          support implicit TLS or STARTTLS, and send plain-text or HTML
+ *          messages through serialized, cancellation-aware sessions. Boolean
+ *          and Result-returning interfaces expose protocol diagnostics without
+ *          transferring client ownership.
+ */
+
 #pragma once
 
 #include "rt_string.h"

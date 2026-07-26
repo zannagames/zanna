@@ -37,6 +37,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements named rectangular regions over a retained Pixels atlas.
+ *
+ * @details SpriteSheet supports explicit region insertion and replacement,
+ *          exact uniform-grid generation, case-sensitive lookup, enumeration,
+ *          removal, and extraction into independent Pixels objects. Parallel
+ *          owned name and rectangle arrays preserve insertion order.
+ */
+
 #include "rt_spritesheet.h"
 
 #include "rt_internal.h"
@@ -54,6 +64,7 @@
 
 /// @brief Stored atlas-space rectangle for one named SpriteSheet region.
 typedef struct {
+    /// @brief Atlas-space left, top, width, and height coordinates.
     int64_t x, y, w, h;
 } ss_region;
 
@@ -61,14 +72,15 @@ typedef struct {
 /// @details `regions[i]` and `names[i]` describe the same entry for every
 ///          index below @c count. The atlas reference and every name are owned.
 typedef struct {
-    void *vptr;
-    void *atlas;
-    ss_region *regions;
-    char **names;
-    int64_t count;
-    int64_t capacity;
+    void *vptr;        ///< Reserved runtime virtual-table slot.
+    void *atlas;       ///< Retained Pixels atlas.
+    ss_region *regions; ///< Owned region array parallel to @ref names.
+    char **names;       ///< Owned copied names parallel to @ref regions.
+    int64_t count;      ///< Number of initialized region/name entries.
+    int64_t capacity;   ///< Number of allocated parallel-array slots.
 } rt_spritesheet_impl;
 
+/// @brief Initial number of named-region slots allocated for a sheet.
 #define SS_INITIAL_CAP 16
 
 /// @brief Validate-and-return a SpriteSheet pointer; NULL for NULL or wrong class.

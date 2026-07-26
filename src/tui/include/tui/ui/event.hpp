@@ -5,10 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the Event struct, the generic input event wrapper used
-// throughout Zanna's TUI widget system. Events encapsulate terminal input
-// (key presses, modifiers) and are routed through the widget tree by the
-// App and FocusManager.
+/// @file
+/// @brief Declares the generic event envelope routed through TUI widgets.
+/// @details The current value type carries keyboard input and leaves room for
+///          future mouse, paste, or application-specific payloads.
 //
 // The Event struct currently wraps a single KeyEvent, but is designed as
 // an extensible envelope that may later include mouse events, paste events,
@@ -32,6 +32,6 @@ namespace zanna::tui::ui {
 ///          Currently wraps a KeyEvent; designed for future extension to include
 ///          mouse, paste, and custom events.
 struct Event {
-    term::KeyEvent key{};
+    term::KeyEvent key{}; ///< Decoded keyboard input carried by this event.
 };
 } // namespace zanna::tui::ui

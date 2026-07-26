@@ -38,6 +38,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements reference-counted, transformable, animated 2D sprites.
+ *
+ * @details Sprites retain one or more Pixels frames and expose position,
+ *          origin, scale, rotation, depth, visibility, flipping, tinting,
+ *          alpha, hit testing, and frame-timing operations. Drawing builds a
+ *          cached transformed frame without mutating source pixels, while
+ *          constructors and finalizers integrate with the runtime object model.
+ */
+
 #include "rt_sprite.h"
 
 #include "rt_file_stdio.h"
@@ -57,7 +68,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Initial number of frame slots allocated for a growing sprite.
 #define SPRITE_INITIAL_FRAME_CAPACITY 4
+/// @brief Default per-frame animation delay in milliseconds.
 #define SPRITE_DEFAULT_FRAME_DELAY_MS 100
 
 /// @brief Sprite implementation structure.

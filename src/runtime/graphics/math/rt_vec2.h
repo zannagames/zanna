@@ -21,10 +21,21 @@
 //        src/runtime/graphics/math/rt_mat3.h (2D matrix transforms)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares immutable double-precision two-dimensional vector operations.
+ *
+ * @details Vec2 provides construction and component access, arithmetic, dot
+ *          and scalar cross products, overflow-resistant length and distance,
+ *          normalization, interpolation, polar angle, rotation, and negation.
+ */
+
 #pragma once
 
 #include <stdint.h>
 
+/// @brief Runtime class identifier assigned to managed Vec2 objects.
 #define RT_VEC2_CLASS_ID INT64_C(-0x600205)
 
 #ifdef __cplusplus

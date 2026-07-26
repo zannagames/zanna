@@ -24,6 +24,14 @@
 //        il/runtime/RuntimeSignatures.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Defines lightweight per-function alias and call ModRef analysis.
+/// @details BasicAA canonicalizes pointer bases/offsets from SSA, distinguishes
+///          allocas, parameters, globals and constants, incorporates escape and
+///          noalias facts, and resolves direct-call effects through local,
+///          extern, generated-runtime, and dynamic signature metadata.
+
 #pragma once
 
 #include "il/analysis/AllocaRoots.hpp"
@@ -546,6 +554,10 @@ inline AliasResult BasicAA::alias(const il::core::Value &lhs,
     Location l = describe(lhs);
     Location r = describe(rhs);
 
+    /// @brief Tests whether two abstract locations have the same base.
+    /// @param a First location.
+    /// @param b Second location.
+    /// @return `true` when their base identities match.
     auto basesEqual = [](const Location &a, const Location &b) {
         if (a.kind == BaseKind::Global || a.kind == BaseKind::ConstStr)
             return a.kind == b.kind && a.global == b.global;
@@ -558,6 +570,9 @@ inline AliasResult BasicAA::alias(const il::core::Value &lhs,
     if (l.kind == BaseKind::Null || r.kind == BaseKind::Null)
         return basesEqual(l, r) ? AliasResult::MustAlias : AliasResult::NoAlias;
 
+    /// @brief Tests whether a base kind denotes a parameter.
+    /// @param k Base kind.
+    /// @return `true` for ordinary or no-alias parameters.
     auto isParamLike = [](BaseKind k) {
         return k == BaseKind::Param || k == BaseKind::NoAliasParam;
     };
@@ -567,6 +582,9 @@ inline AliasResult BasicAA::alias(const il::core::Value &lhs,
     if (r.kind == BaseKind::NoAliasParam && isParamLike(l.kind) && !basesEqual(l, r))
         return AliasResult::NoAlias;
 
+    /// @brief Tests whether a base kind denotes global storage.
+    /// @param k Base kind.
+    /// @return `true` for a global or constant string.
     auto isGlobalLike = [](BaseKind k) { return k == BaseKind::Global || k == BaseKind::ConstStr; };
 
     if ((l.kind == BaseKind::Alloca && isGlobalLike(r.kind)) ||

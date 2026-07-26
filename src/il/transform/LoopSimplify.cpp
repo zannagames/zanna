@@ -12,6 +12,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements preheader creation and trivial-latch merging for IL loops.
+ *
+ * @details Loop edits use block/edge indices to survive stable-list growth,
+ *          create collision-free labels and SSA names, clone header parameter
+ *          interfaces, and redirect predecessor edges through forwarding
+ *          blocks. Loop information is recomputed after every committed edit
+ *          until all supported loops reach canonical form.
+ */
+
 #include "il/transform/LoopSimplify.hpp"
 
 #include "il/transform/AnalysisIDs.hpp"
@@ -46,9 +57,9 @@ namespace {
 ///          blocks are added to the function. The blockIdx field indexes into
 ///          function.blocks, and edgeIdx indexes into the terminator's labels.
 struct IncomingEdge {
-    /// Index of the predecessor block in `Function::blocks`.
+    /// @brief Index of the predecessor block in `Function::blocks`.
     size_t blockIdx;
-    /// Successor slot in the predecessor terminator.
+    /// @brief Successor slot in the predecessor terminator.
     size_t edgeIdx;
 };
 
@@ -92,7 +103,9 @@ static inline unsigned nextTempId(Function &function) {
 std::string makeUniqueLabel(const Function &function, const std::string &base) {
     std::string candidate = base;
     unsigned suffix = 0;
-    /// Return whether a candidate label is already used by a block.
+    /// @brief Test whether a candidate label is already used by a block.
+    /// @param label Candidate block label.
+    /// @return True when any block in @p function already owns @p label.
     auto labelExists = [&](const std::string &label) {
         for (const auto &block : function.blocks) {
             if (block.label == label)

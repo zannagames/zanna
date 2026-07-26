@@ -22,6 +22,15 @@
 //        src/runtime/network/rt_https_server.c
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Defines bounded HTTP/1 parsing and serialization shared by both servers.
+ * @details Supplies exact-length request-line, header, target, chunked-body,
+ * routing, query-decoding, and response-framing helpers instantiated by the
+ * plain and TLS-backed server translation units.
+ */
+
 #pragma once
 
 // Shared request/response helpers used by both the plain HTTP and TLS-backed
@@ -103,8 +112,10 @@ static const char *find_char_bounded(const char *buf, size_t len, char needle) {
  * @return Nonzero when @p text contains `\r` or `\n`; zero otherwise.
  */
 #if defined(__GNUC__) || defined(__clang__)
+/** Marks shared helpers unused in one of the including server variants. */
 #define HTTP_SERVER_SHARED_MAYBE_UNUSED __attribute__((unused))
 #else
+/** Empty shared-helper annotation for compilers without GNU attributes. */
 #define HTTP_SERVER_SHARED_MAYBE_UNUSED
 #endif
 
