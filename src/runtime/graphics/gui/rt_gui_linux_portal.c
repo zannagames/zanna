@@ -56,6 +56,14 @@ typedef struct rt_gui_gio_api {
 static rt_gui_gio_api_t g_rt_gui_gio;
 static atomic_int g_rt_gui_gio_state;
 
+/// @brief Initialize the process-wide late-bound GIO function table exactly once.
+/// @details One calling thread atomically claims initialization, tries the versioned and unversioned
+///          Linux GIO sonames, and resolves every symbol required by the Settings portal request.
+///          Contending callers yield while initialization is in progress. State is then published
+///          with release semantics as permanently ready or unavailable; a partially resolved table
+///          is closed and cleared before failure is published. A successful library handle remains
+///          open for process lifetime so the cached function pointers cannot become stale.
+/// @return One when the complete immutable GIO table is available, otherwise zero.
 static int rt_gui_linux_portal_load(void) {
     int state = atomic_load_explicit(&g_rt_gui_gio_state, memory_order_acquire);
     if (state >= 2)
@@ -105,6 +113,20 @@ static int rt_gui_linux_portal_load(void) {
     return 1;
 }
 
+/// @brief Read one integer or Boolean value from the desktop Settings portal.
+/// @details Late-loads GIO, connects to the session bus, and synchronously invokes
+///          `org.freedesktop.portal.Settings.Read` with a 250-millisecond timeout. The reply must
+///          contain a variant whose concrete type is unsigned 32-bit integer or Boolean; unsigned
+///          values above @c INT32_MAX are rejected. Every connection, result, wrapper, value, and
+///          error object acquired by the call is released before return. No build-time GIO symbols
+///          are referenced, allowing portal support to remain optional on Linux installations.
+/// @param name_space Borrowed non-NULL NUL-terminated portal namespace such as
+///                   `org.freedesktop.appearance`.
+/// @param key Borrowed non-NULL NUL-terminated setting key.
+/// @param[out] out_value Receives the decoded signed value only after a valid supported reply;
+///                       remains unchanged on failure.
+/// @return One when @p out_value was written, otherwise zero for invalid arguments, unavailable
+///         GIO/bus/portal service, timeout, malformed reply, unsupported type, or range failure.
 int rt_gui_linux_portal_read(const char *name_space, const char *key, int32_t *out_value) {
     if (!name_space || !key || !out_value || !rt_gui_linux_portal_load())
         return 0;

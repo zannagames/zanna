@@ -5,34 +5,33 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/runtime/graphics/rt_gui_menus.c
-// Purpose: Runtime bindings for ZannaGUI menu-system widgets: MenuBar (top-level
-//   menu strip), Menu (drop-down with items and separators), StatusBar (bottom
-//   status strip with labeled sections), Toolbar (icon/label button strip), and
-//   ContextMenu (right-click popup). Each widget wraps its vg_* counterpart and
-//   exposes a Zia-callable API for item management, click detection, and styling.
+// File: src/runtime/graphics/gui/rt_gui_menus.c
+// Purpose: Bind MenuBar, Menu, MenuItem, and standalone ContextMenu widgets to the runtime and
+//   provide shared StatusBar, Toolbar, and icon-validation helpers consumed by rt_gui_bars.c.
 //
 // Key invariants:
-//   - MenuBar and its child Menus share ownership: removing a Menu from the
-//     MenuBar transfers ownership back to the caller.
+//   - MenuBar owns its menu/item tree. Removal retires lower records until no managed wrapper can
+//     reference their tombstones; it never transfers ownership to runtime callers.
 //   - MenuItem click state is edge-triggered and cleared each frame by the vg
 //     widget's internal update; callers must poll within the same frame.
 //   - ContextMenu must be shown explicitly (rt_contextmenu_show) at a screen
 //     coordinate; it auto-hides on any click outside its bounds.
-//   - Toolbar buttons can carry both an icon (as text/glyph) and a label; either
-//     may be NULL.
-//   - StatusBar sections are addressed by zero-based index; count is fixed after
-//     creation unless sections are explicitly added or removed.
+//   - Managed Menu, MenuItem, StatusBarItem, ToolbarItem, and ContextMenu handles are authenticated
+//     and resolve to NULL after their lower records retire.
+//   - Standalone ContextMenus are not children of app->root and therefore must be explicitly
+//     registered as the active app overlay while visible.
 //
 // Ownership/Lifetime:
-//   - All widget objects are vg_widget_t* subtrees owned by the vg widget tree;
-//     vg_widget_destroy() recursively frees children.
-//   - C strings passed to add_menu / add_item are copied by the vg layer; the
-//     runtime frees temporary cstr allocations immediately after the call.
+//   - MenuBar widgets are owned by their widget tree; they own their menu hierarchy.
+//   - Standalone ContextMenus own their nested item/submenu hierarchy and require explicit destroy.
+//   - C strings passed to menu constructors/mutators are copied by the vg layer; the runtime frees
+//     temporary conversions immediately after each call.
+//   - Icons returned by the shared conversion helpers own their toolkit payload until destroyed or
+//     transferred into a menu item.
 //
-// Links: src/runtime/graphics/rt_gui_internal.h (internal types/globals),
-//        src/lib/gui/include/vg.h (ZannaGUI C API),
-//        src/runtime/graphics/rt_gui_app.c (default font used at construction)
+// Links: src/runtime/graphics/gui/rt_gui_internal.h,
+//        src/lib/gui/include/vg_ide_widgets_tree.h,
+//        src/runtime/graphics/gui/rt_gui_app.c
 //
 //===----------------------------------------------------------------------===//
 
@@ -48,12 +47,18 @@ void rt_gui_set_clicked_statusbar_item(void *item);
 // MenuBar Widget (Phase 2)
 //=============================================================================
 
-/// @brief Walk up from a menu to its owning menubar (NULL for orphan / context menus).
+/// @brief Resolve the MenuBar that owns a regular menu.
+/// @param menu Borrowed candidate menu; may be NULL or a detached submenu record.
+/// @return Borrowed owning MenuBar, or NULL when no MenuBar owns @p menu.
 static vg_menubar_t *rt_gui_menu_owner_from_menu(const vg_menu_t *menu) {
     return menu ? menu->owner_menubar : NULL;
 }
 
-/// @brief Walk from an item → parent menu → menubar; NULL if the chain isn't intact.
+/// @brief Resolve the MenuBar that owns a regular menu item.
+/// @details Follows the item's borrowed parent-menu link and then its owner link without changing
+///          either hierarchy.
+/// @param item Borrowed candidate item; may be NULL or belong to a ContextMenu.
+/// @return Borrowed owning MenuBar, or NULL when the ownership chain is absent.
 static vg_menubar_t *rt_gui_menu_owner_from_item(const vg_menu_item_t *item) {
     return item && item->parent_menu ? item->parent_menu->owner_menubar : NULL;
 }
@@ -62,23 +67,31 @@ static vg_menubar_t *rt_gui_menu_owner_from_item(const vg_menu_item_t *item) {
 ///
 /// The in-process accelerator table is used by non-native menu dispatch on every
 /// platform; macOS also mirrors the same model into the native menu strip.
+/// @param menubar Borrowed MenuBar whose current hierarchy should be synchronized; NULL only
+///                requests the platform bridge's null-safe no-op path.
 static void rt_gui_menu_sync_menubar(vg_menubar_t *menubar) {
     if (menubar)
         vg_menubar_rebuild_accelerators(menubar);
     rt_gui_macos_menu_sync_for_menubar(menubar);
 }
 
-/// @brief Validate a handle as a live MenuBar widget (NULL if not).
+/// @brief Validate an opaque handle as a live MenuBar widget.
+/// @param menubar Candidate runtime widget handle.
+/// @return Borrowed live MenuBar, or NULL for an invalid, stale, or wrong-type handle.
 static vg_menubar_t *rt_menubar_checked(void *menubar) {
     return (vg_menubar_t *)rt_gui_widget_handle_checked_type(menubar, VG_WIDGET_MENUBAR);
 }
 
-/// @brief Validate a Menu handle.
+/// @brief Resolve a managed Menu handle to its live lower record.
+/// @param menu Candidate runtime subhandle.
+/// @return Borrowed live Menu, or NULL for an invalid, retired, or wrong-kind handle.
 static vg_menu_t *rt_menu_checked(void *menu) {
     return rt_gui_menu_from_handle(menu);
 }
 
-/// @brief Validate a ContextMenu handle.
+/// @brief Resolve a managed ContextMenu handle to its live lower widget.
+/// @param menu Candidate runtime subhandle.
+/// @return Borrowed live ContextMenu, or NULL for an invalid, retired, or wrong-kind handle.
 static vg_contextmenu_t *rt_contextmenu_checked(void *menu) {
     return rt_gui_contextmenu_from_handle(menu);
 }
@@ -111,27 +124,37 @@ static void rt_contextmenu_apply_app_defaults(vg_contextmenu_t *menu) {
     }
 }
 
-/// @brief Validate a MenuItem handle.
+/// @brief Resolve a managed MenuItem handle to its live lower record.
+/// @param item Candidate runtime subhandle.
+/// @return Borrowed live MenuItem, or NULL for an invalid, retired, or wrong-kind handle.
 static vg_menu_item_t *rt_menuitem_checked(void *item) {
     return rt_gui_menu_item_from_handle(item);
 }
 
-/// @brief Validate a StatusBarItem handle.
+/// @brief Resolve a managed StatusBarItem handle to its live lower record.
+/// @param item Candidate runtime subhandle.
+/// @return Borrowed live item, or NULL for an invalid, retired, or wrong-kind handle.
 vg_statusbar_item_t *rt_statusbaritem_checked(void *item) {
     return rt_gui_statusbar_item_from_handle(item);
 }
 
-/// @brief Validate a ToolbarItem handle.
+/// @brief Resolve a managed ToolbarItem handle to its live lower record.
+/// @param item Candidate runtime subhandle.
+/// @return Borrowed live item, or NULL for an invalid, retired, or wrong-kind handle.
 vg_toolbar_item_t *rt_toolbaritem_checked(void *item) {
     return rt_gui_toolbar_item_from_handle(item);
 }
 
-/// @brief Validate a handle as a live StatusBar widget (NULL if not).
+/// @brief Validate an opaque handle as a live StatusBar widget.
+/// @param bar Candidate runtime widget handle.
+/// @return Borrowed live StatusBar, or NULL for an invalid, stale, or wrong-type handle.
 vg_statusbar_t *rt_statusbar_checked(void *bar) {
     return (vg_statusbar_t *)rt_gui_widget_handle_checked_type(bar, VG_WIDGET_STATUSBAR);
 }
 
-/// @brief Validate a handle as a live ToolBar widget (NULL if not).
+/// @brief Validate an opaque handle as a live Toolbar widget.
+/// @param toolbar Candidate runtime widget handle.
+/// @return Borrowed live Toolbar, or NULL for an invalid, stale, or wrong-type handle.
 vg_toolbar_t *rt_toolbar_checked(void *toolbar) {
     return (vg_toolbar_t *)rt_gui_widget_handle_checked_type(toolbar, VG_WIDGET_TOOLBAR);
 }
@@ -256,6 +279,9 @@ void *rt_menubar_new(void *parent) {
 }
 
 /// @brief Release resources and destroy the menubar.
+/// @details Unregisters any native macOS representation, invalidates runtime references through
+///          normal widget destruction, and recursively retires/frees the owned menu hierarchy.
+/// @param menubar Candidate live MenuBar handle; invalid handles are ignored.
 void rt_menubar_destroy(void *menubar) {
     RT_ASSERT_MAIN_THREAD();
     vg_menubar_t *mb = rt_menubar_checked(menubar);
@@ -284,6 +310,11 @@ void *rt_menubar_add_menu(void *menubar, rt_string title) {
 }
 
 /// @brief Remove a menu from the menu bar.
+/// @details Requires @p menu to be a live managed menu owned directly by @p menubar. The lower menu
+///          and its items are retired, unreferenced tombstones are collected, and accelerator plus
+///          native-menu state is rebuilt. Foreign or stale pairs are unchanged.
+/// @param menubar Candidate owning MenuBar widget.
+/// @param menu Candidate managed top-level Menu handle to retire.
 void rt_menubar_remove_menu(void *menubar, void *menu) {
     RT_ASSERT_MAIN_THREAD();
     vg_menubar_t *mb = rt_menubar_checked(menubar);
@@ -296,6 +327,8 @@ void rt_menubar_remove_menu(void *menubar, void *menu) {
 }
 
 /// @brief Get the number of menus in the menu bar.
+/// @param menubar Candidate live MenuBar handle.
+/// @return Number of live top-level menus, or zero for an invalid handle.
 int64_t rt_menubar_get_menu_count(void *menubar) {
     RT_ASSERT_MAIN_THREAD();
     vg_menubar_t *mb = rt_menubar_checked(menubar);
@@ -306,6 +339,10 @@ int64_t rt_menubar_get_menu_count(void *menubar) {
 ///
 /// Linear walk through the singly-linked menu list — fine because
 /// the typical menubar has under 10 entries (File/Edit/View/Help/…).
+/// @param menubar Candidate live MenuBar handle.
+/// @param index Zero-based top-level menu index.
+/// @return Stable managed Menu handle, or NULL for invalid input, an out-of-range index, or wrapper
+///         allocation failure.
 void *rt_menubar_get_menu(void *menubar, int64_t index) {
     RT_ASSERT_MAIN_THREAD();
     vg_menubar_t *mb = rt_menubar_checked(menubar);
@@ -322,6 +359,10 @@ void *rt_menubar_get_menu(void *menubar, int64_t index) {
 }
 
 /// @brief Show or hide the menu bar widget.
+/// @details Normalizes @p visible to Boolean, updates retained widget visibility, and rebuilds both
+///          in-process and native representations.
+/// @param menubar Candidate live MenuBar handle.
+/// @param visible Non-zero to show the bar, zero to hide it.
 void rt_menubar_set_visible(void *menubar, int64_t visible) {
     RT_ASSERT_MAIN_THREAD();
     vg_menubar_t *mb = rt_menubar_checked(menubar);
@@ -332,6 +373,8 @@ void rt_menubar_set_visible(void *menubar, int64_t visible) {
 }
 
 /// @brief Check whether the menu bar is currently visible.
+/// @param menubar Candidate live MenuBar handle.
+/// @return One when the live bar's visibility flag is set, otherwise zero.
 int64_t rt_menubar_is_visible(void *menubar) {
     RT_ASSERT_MAIN_THREAD();
     vg_menubar_t *mb = rt_menubar_checked(menubar);
@@ -362,7 +405,13 @@ void *rt_menu_add_item(void *menu, rt_string text) {
 }
 
 /// @brief Add an item with a keyboard shortcut (e.g. `"Ctrl+S"`).
-/// The shortcut string is parsed by the platform layer at sync time.
+/// @details Converts both runtime strings to GUI-safe UTF-8, lets the lower menu copy them, and
+///          rebuilds accelerator/native state. The shortcut string is parsed by the platform layer
+///          during synchronization; malformed text remains displayable but produces no accelerator.
+/// @param menu Candidate live managed Menu handle.
+/// @param text Runtime display label; embedded NULs become replacement characters.
+/// @param shortcut Runtime accelerator description such as `Ctrl+S`.
+/// @return Stable managed MenuItem handle, or NULL for invalid input or allocation failure.
 void *rt_menu_add_item_with_shortcut(void *menu, rt_string text, rt_string shortcut) {
     RT_ASSERT_MAIN_THREAD();
     vg_menu_t *m = rt_menu_checked(menu);
@@ -379,6 +428,9 @@ void *rt_menu_add_item_with_shortcut(void *menu, rt_string text, rt_string short
 }
 
 /// @brief Append a horizontal separator line between menu items.
+/// @details Adds an owned non-interactive item and resynchronizes accelerators/native menus.
+/// @param menu Candidate live managed Menu handle.
+/// @return Stable managed separator-item handle, or NULL on invalid input or allocation failure.
 void *rt_menu_add_separator(void *menu) {
     RT_ASSERT_MAIN_THREAD();
     vg_menu_t *m = rt_menu_checked(menu);
@@ -390,6 +442,11 @@ void *rt_menu_add_separator(void *menu) {
 }
 
 /// @brief Add a nested submenu with the given title; returns the new submenu handle.
+/// @details The parent menu owns the new submenu through its representing item. The lower layer
+///          copies the converted title, and synchronization publishes the new hierarchy.
+/// @param menu Candidate live managed parent Menu handle.
+/// @param title Runtime submenu title.
+/// @return Stable managed submenu handle, or NULL for invalid input or allocation failure.
 void *rt_menu_add_submenu(void *menu, rt_string title) {
     RT_ASSERT_MAIN_THREAD();
     vg_menu_t *m = rt_menu_checked(menu);
@@ -403,6 +460,11 @@ void *rt_menu_add_submenu(void *menu, rt_string title) {
 }
 
 /// @brief Remove a menu item and free its resources.
+/// @details The lower layer accepts only an item whose parent is @p menu, retires its text,
+///          shortcut, icon, and submenu payload, then the runtime reclaims only tombstones with no
+///          managed wrapper. Accelerator/native state is rebuilt after the attempt.
+/// @param menu Candidate live managed owner Menu.
+/// @param item Candidate live managed MenuItem owned by @p menu.
 void rt_menu_remove_item(void *menu, void *item) {
     RT_ASSERT_MAIN_THREAD();
     vg_menu_t *m = rt_menu_checked(menu);
@@ -416,6 +478,9 @@ void rt_menu_remove_item(void *menu, void *item) {
 }
 
 /// @brief Remove all items from a menu, leaving it empty.
+/// @details Retires the complete owned item/submenu hierarchy, preserves the Menu record, collects
+///          unreferenced stable-handle tombstones, and rebuilds accelerator/native state.
+/// @param menu Candidate live managed Menu; invalid handles are ignored.
 void rt_menu_clear(void *menu) {
     RT_ASSERT_MAIN_THREAD();
     vg_menu_t *m = rt_menu_checked(menu);
@@ -428,6 +493,10 @@ void rt_menu_clear(void *menu) {
 }
 
 /// @brief Set the title of the menu.
+/// @details Converts the runtime string before mutating state, so allocation failure preserves the
+///          previous title. NULL clears the title. Successful changes rebuild native menu state.
+/// @param menu Candidate live managed Menu handle.
+/// @param title New runtime title, or NULL to clear it.
 void rt_menu_set_title(void *menu, rt_string title) {
     RT_ASSERT_MAIN_THREAD();
     vg_menu_t *m = rt_menu_checked(menu);
@@ -442,6 +511,9 @@ void rt_menu_set_title(void *menu, rt_string title) {
 }
 
 /// @brief Get the title of the menu.
+/// @details Copies the lower NUL-terminated title into a runtime string; no lower storage is exposed.
+/// @param menu Candidate live managed Menu handle.
+/// @return Runtime title copy, or the canonical empty string for invalid handles or no title.
 rt_string rt_menu_get_title(void *menu) {
     RT_ASSERT_MAIN_THREAD();
     vg_menu_t *m = rt_menu_checked(menu);
@@ -454,6 +526,8 @@ rt_string rt_menu_get_title(void *menu) {
 }
 
 /// @brief Get the number of items in a menu.
+/// @param menu Candidate live managed Menu handle.
+/// @return Number of live direct items, including separators and submenu entries, or zero if invalid.
 int64_t rt_menu_get_item_count(void *menu) {
     RT_ASSERT_MAIN_THREAD();
     vg_menu_t *m = rt_menu_checked(menu);
@@ -461,6 +535,10 @@ int64_t rt_menu_get_item_count(void *menu) {
 }
 
 /// @brief Return the `index`-th item in `menu` (linear walk; safe on out-of-range).
+/// @param menu Candidate live managed Menu handle.
+/// @param index Zero-based direct-item index.
+/// @return Stable managed MenuItem handle, or NULL for invalid input, out-of-range index, or
+///         wrapper allocation failure.
 void *rt_menu_get_item(void *menu, int64_t index) {
     RT_ASSERT_MAIN_THREAD();
     vg_menu_t *m = rt_menu_checked(menu);
@@ -477,6 +555,9 @@ void *rt_menu_get_item(void *menu, int64_t index) {
 }
 
 /// @brief Enable or disable an entire menu (greys out all items when disabled).
+/// @details Normalizes @p enabled to Boolean and republishes accelerator/native menu state.
+/// @param menu Candidate live managed Menu handle.
+/// @param enabled Non-zero to enable interaction, zero to disable it.
 void rt_menu_set_enabled(void *menu, int64_t enabled) {
     RT_ASSERT_MAIN_THREAD();
     vg_menu_t *m = rt_menu_checked(menu);
@@ -487,6 +568,8 @@ void rt_menu_set_enabled(void *menu, int64_t enabled) {
 }
 
 /// @brief Check whether a menu is currently enabled.
+/// @param menu Candidate live managed Menu handle.
+/// @return One when the menu is live and enabled, otherwise zero.
 int64_t rt_menu_is_enabled(void *menu) {
     RT_ASSERT_MAIN_THREAD();
     vg_menu_t *m = rt_menu_checked(menu);
@@ -498,6 +581,11 @@ int64_t rt_menu_is_enabled(void *menu) {
 //=============================================================================
 
 /// @brief Set the text of the menuitem.
+/// @details Converts the entire runtime display string before replacing lower storage. Allocation
+///          failure and byte-identical text preserve current state. Regular items rebuild their
+///          owning MenuBar; ContextMenu items invalidate their popup layout through the lower API.
+/// @param item Candidate live managed MenuItem handle.
+/// @param text New runtime display label, or NULL to clear it.
 void rt_menuitem_set_text(void *item, rt_string text) {
     RT_ASSERT_MAIN_THREAD();
     vg_menu_item_t *mi = rt_menuitem_checked(item);
@@ -518,6 +606,8 @@ void rt_menuitem_set_text(void *item, rt_string text) {
 }
 
 /// @brief Get the text of the menuitem.
+/// @param item Candidate live managed MenuItem handle.
+/// @return Runtime copy of the current label, or the canonical empty string when absent or invalid.
 rt_string rt_menuitem_get_text(void *item) {
     RT_ASSERT_MAIN_THREAD();
     vg_menu_item_t *mi = rt_menuitem_checked(item);
@@ -530,6 +620,11 @@ rt_string rt_menuitem_get_text(void *item) {
 }
 
 /// @brief Set the shortcut of the menuitem.
+/// @details Converts before mutation and preserves the old shortcut on allocation failure or a
+///          byte-identical value. Regular MenuBars rebuild accelerators/native state; ContextMenus
+///          refresh popup measurement but do not register app-level accelerators.
+/// @param item Candidate live managed MenuItem handle.
+/// @param shortcut New runtime accelerator text, or NULL to clear it.
 void rt_menuitem_set_shortcut(void *item, rt_string shortcut) {
     RT_ASSERT_MAIN_THREAD();
     vg_menu_item_t *mi = rt_menuitem_checked(item);
@@ -551,6 +646,8 @@ void rt_menuitem_set_shortcut(void *item, rt_string shortcut) {
 }
 
 /// @brief Get the shortcut of the menuitem.
+/// @param item Candidate live managed MenuItem handle.
+/// @return Runtime copy of the shortcut text, or the canonical empty string when absent or invalid.
 rt_string rt_menuitem_get_shortcut(void *item) {
     RT_ASSERT_MAIN_THREAD();
     vg_menu_item_t *mi = rt_menuitem_checked(item);
@@ -563,6 +660,11 @@ rt_string rt_menuitem_get_shortcut(void *item) {
 }
 
 /// @brief Set the icon of the menuitem.
+/// @details Converts the borrowed runtime Pixels object into an independently owned toolkit icon.
+///          ContextMenu and regular-menu setters take ownership of the converted payload; a
+///          conversion failure installs the no-icon sentinel and releases the prior icon.
+/// @param item Candidate live managed MenuItem handle.
+/// @param pixels Borrowed runtime Pixels object, or NULL to clear the icon.
 void rt_menuitem_set_icon(void *item, void *pixels) {
     RT_ASSERT_MAIN_THREAD();
     vg_menu_item_t *mi = rt_menuitem_checked(item);
@@ -580,6 +682,10 @@ void rt_menuitem_set_icon(void *item, void *pixels) {
 }
 
 /// @brief Enable or disable the checkable toggle behavior for a menu item.
+/// @details Disabling checkability also clears the checked flag. The operation updates the owning
+///          ContextMenu or MenuBar representation while retaining item identity.
+/// @param item Candidate live managed MenuItem handle.
+/// @param checkable Non-zero to permit checked state, zero to make the item ordinary.
 void rt_menuitem_set_checkable(void *item, int64_t checkable) {
     RT_ASSERT_MAIN_THREAD();
     vg_menu_item_t *mi = rt_menuitem_checked(item);
@@ -603,6 +709,8 @@ void rt_menuitem_set_checkable(void *item, int64_t checkable) {
 }
 
 /// @brief Check whether a menu item supports the checkable toggle state.
+/// @param item Candidate live managed MenuItem handle.
+/// @return One when the item is live and checkable, otherwise zero.
 int64_t rt_menuitem_is_checkable(void *item) {
     RT_ASSERT_MAIN_THREAD();
     vg_menu_item_t *mi = rt_menuitem_checked(item);
@@ -611,7 +719,12 @@ int64_t rt_menuitem_is_checkable(void *item) {
     return mi->checkable ? 1 : 0;
 }
 
-/// @brief Set the checked of the menuitem.
+/// @brief Set the checked state of a menu item.
+/// @details Normalizes @p checked to Boolean. Lower setters enforce their own checkability
+///          semantics and update the appropriate popup/native representation; unchanged valid
+///          state is not republished.
+/// @param item Candidate live managed MenuItem handle.
+/// @param checked Non-zero to request a check mark, zero to clear it.
 void rt_menuitem_set_checked(void *item, int64_t checked) {
     RT_ASSERT_MAIN_THREAD();
     vg_menu_item_t *mi = rt_menuitem_checked(item);
@@ -631,6 +744,8 @@ void rt_menuitem_set_checked(void *item, int64_t checked) {
 }
 
 /// @brief Check whether a menu item is currently in the checked state.
+/// @param item Candidate live managed MenuItem handle.
+/// @return One when the live item is checked, otherwise zero.
 int64_t rt_menuitem_is_checked(void *item) {
     RT_ASSERT_MAIN_THREAD();
     vg_menu_item_t *mi = rt_menuitem_checked(item);
@@ -640,6 +755,10 @@ int64_t rt_menuitem_is_checked(void *item) {
 }
 
 /// @brief Enable or disable a menu item (disabled items are greyed out).
+/// @details Normalizes @p enabled to Boolean and updates the owning ContextMenu or MenuBar only
+///          when the state actually changes.
+/// @param item Candidate live managed MenuItem handle.
+/// @param enabled Non-zero to allow interaction, zero to disable the item.
 void rt_menuitem_set_enabled(void *item, int64_t enabled) {
     RT_ASSERT_MAIN_THREAD();
     vg_menu_item_t *mi = rt_menuitem_checked(item);
@@ -657,6 +776,8 @@ void rt_menuitem_set_enabled(void *item, int64_t enabled) {
 }
 
 /// @brief Check whether a menu item is currently enabled.
+/// @param item Candidate live managed MenuItem handle.
+/// @return One when the live item is enabled, otherwise zero.
 int64_t rt_menuitem_is_enabled(void *item) {
     RT_ASSERT_MAIN_THREAD();
     vg_menu_item_t *mi = rt_menuitem_checked(item);
@@ -666,6 +787,8 @@ int64_t rt_menuitem_is_enabled(void *item) {
 }
 
 /// @brief Check whether a menu item is a separator (horizontal dividing line).
+/// @param item Candidate live managed MenuItem handle.
+/// @return One for a live separator record, otherwise zero.
 int64_t rt_menuitem_is_separator(void *item) {
     RT_ASSERT_MAIN_THREAD();
     vg_menu_item_t *mi = rt_menuitem_checked(item);
@@ -675,6 +798,10 @@ int64_t rt_menuitem_is_separator(void *item) {
 }
 
 /// @brief Check whether a menu item was clicked this frame (edge-triggered, clears after read).
+/// @details Consumes the lower item's click latch so one activation is reported at most once.
+///          Invalid, retired, disabled, or unclicked items return zero.
+/// @param item Candidate live managed MenuItem handle.
+/// @return One when a pending click was consumed, otherwise zero.
 int64_t rt_menuitem_was_clicked(void *item) {
     RT_ASSERT_MAIN_THREAD();
     vg_menu_item_t *mi = rt_menuitem_checked(item);
@@ -704,6 +831,9 @@ void *rt_contextmenu_new(void) {
 }
 
 /// @brief Release resources and destroy the contextmenu.
+/// @details Clears the active app's detached-overlay pointer before invalidating every managed item,
+///          submenu, and root handle, then recursively destroys the standalone toolkit tree.
+/// @param menu Candidate managed ContextMenu handle; invalid or retired handles are ignored.
 void rt_contextmenu_destroy(void *menu) {
     RT_ASSERT_MAIN_THREAD();
     vg_contextmenu_t *cm = rt_contextmenu_checked(menu);
@@ -719,6 +849,11 @@ void rt_contextmenu_destroy(void *menu) {
 }
 
 /// @brief Add a clickable item to a context (right-click) popup menu.
+/// @details Converts embedded NULs to replacement characters, lets the lower menu copy the
+///          temporary UTF-8 label, and returns the stable managed wrapper for the owned item.
+/// @param menu Candidate live managed ContextMenu handle.
+/// @param text Runtime display label.
+/// @return Stable managed MenuItem handle, or NULL for invalid input or allocation failure.
 void *rt_contextmenu_add_item(void *menu, rt_string text) {
     RT_ASSERT_MAIN_THREAD();
     vg_contextmenu_t *cm = rt_contextmenu_checked(menu);
@@ -732,6 +867,12 @@ void *rt_contextmenu_add_item(void *menu, rt_string text) {
 }
 
 /// @brief Add a context-menu item with an associated keyboard shortcut.
+/// @details Both runtime strings are converted to GUI-safe text and copied by the lower menu. The
+///          shortcut is presentation metadata for this standalone popup.
+/// @param menu Candidate live managed ContextMenu handle.
+/// @param text Runtime display label.
+/// @param shortcut Runtime shortcut description displayed beside the label.
+/// @return Stable managed MenuItem handle, or NULL for invalid input or allocation failure.
 void *rt_contextmenu_add_item_with_shortcut(void *menu, rt_string text, rt_string shortcut) {
     RT_ASSERT_MAIN_THREAD();
     vg_contextmenu_t *cm = rt_contextmenu_checked(menu);
@@ -747,8 +888,10 @@ void *rt_contextmenu_add_item_with_shortcut(void *menu, rt_string text, rt_strin
 }
 
 /// @brief Append a separator line to a context menu.
-/// Returns the separator item handle so callers can configure it consistently
-/// with other menu item handles.
+/// @details Returns the separator item handle so callers can retain and inspect it consistently
+///          with other managed MenuItem handles.
+/// @param menu Candidate live managed ContextMenu handle.
+/// @return Stable managed separator handle, or NULL for invalid input or allocation failure.
 void *rt_contextmenu_add_separator(void *menu) {
     RT_ASSERT_MAIN_THREAD();
     vg_contextmenu_t *cm = rt_contextmenu_checked(menu);
@@ -756,6 +899,12 @@ void *rt_contextmenu_add_separator(void *menu) {
 }
 
 /// @brief Add a nested submenu to a context menu; returns the new submenu handle.
+/// @details Creates and styles a standalone child ContextMenu, then transfers its ownership to the
+///          newly allocated parent item. If attachment fails, the temporary submenu is destroyed
+///          and the parent remains unchanged.
+/// @param menu Candidate live managed parent ContextMenu.
+/// @param title Runtime label for the submenu entry.
+/// @return Stable managed child ContextMenu handle, or NULL for invalid input or allocation failure.
 void *rt_contextmenu_add_submenu(void *menu, rt_string title) {
     RT_ASSERT_MAIN_THREAD();
     vg_contextmenu_t *cm = rt_contextmenu_checked(menu);
@@ -780,6 +929,10 @@ void *rt_contextmenu_add_submenu(void *menu, rt_string title) {
 }
 
 /// @brief Remove all items from a context menu.
+/// @details Invalidates stable item/submenu wrappers before the lower layer retires their payloads,
+///          then reclaims only tombstones no managed wrapper still references. The root menu
+///          remains live and reusable.
+/// @param menu Candidate live managed ContextMenu handle.
 void rt_contextmenu_clear(void *menu) {
     RT_ASSERT_MAIN_THREAD();
     vg_contextmenu_t *cm = rt_contextmenu_checked(menu);
@@ -790,7 +943,13 @@ void rt_contextmenu_clear(void *menu) {
     }
 }
 
-/// @brief Show the contextmenu.
+/// @brief Show a standalone ContextMenu at a screen-space coordinate.
+/// @details Reapplies the active app's theme and font, narrows each coordinate by saturation to the
+///          toolkit integer domain, opens the popup, and registers it as the active app's detached
+///          overlay so polling and painting can reach it.
+/// @param menu Candidate live managed ContextMenu handle.
+/// @param x Screen-space X coordinate, saturated to signed 32-bit range.
+/// @param y Screen-space Y coordinate, saturated to signed 32-bit range.
 void rt_contextmenu_show(void *menu, int64_t x, int64_t y) {
     RT_ASSERT_MAIN_THREAD();
     vg_contextmenu_t *cm = rt_contextmenu_checked(menu);
@@ -808,7 +967,10 @@ void rt_contextmenu_show(void *menu, int64_t x, int64_t y) {
     }
 }
 
-/// @brief Hide the contextmenu.
+/// @brief Dismiss a standalone ContextMenu.
+/// @details Clears the active app's detached-overlay pointer only when it refers to this menu,
+///          leaving other active overlays intact. The menu and its item hierarchy remain reusable.
+/// @param menu Candidate live managed ContextMenu handle.
 void rt_contextmenu_hide(void *menu) {
     RT_ASSERT_MAIN_THREAD();
     vg_contextmenu_t *cm = rt_contextmenu_checked(menu);
@@ -821,6 +983,8 @@ void rt_contextmenu_hide(void *menu) {
 }
 
 /// @brief Check whether a context menu is currently visible on screen.
+/// @param menu Candidate live managed ContextMenu handle.
+/// @return One when the popup is live and visible, otherwise zero.
 int64_t rt_contextmenu_is_visible(void *menu) {
     RT_ASSERT_MAIN_THREAD();
     vg_contextmenu_t *cm = rt_contextmenu_checked(menu);
@@ -832,6 +996,9 @@ int64_t rt_contextmenu_is_visible(void *menu) {
 /// Edge-triggered: each click is reported exactly once. Subsequent
 /// calls without a fresh click return NULL. The expected polling
 /// pattern is `if (item := get_clicked()) handle(item);` once per frame.
+/// @param menu Candidate live managed ContextMenu handle.
+/// @return Stable managed handle for the consumed clicked item, or NULL when no valid click is
+///         pending or wrapper allocation fails.
 void *rt_contextmenu_get_clicked_item(void *menu) {
     RT_ASSERT_MAIN_THREAD();
     vg_contextmenu_t *cm = rt_contextmenu_checked(menu);
@@ -852,60 +1019,80 @@ void *rt_contextmenu_get_clicked_item(void *menu) {
 // non-graphical builds (server / CLI) can link without pulling
 // in the GUI subsystem. Each stub safely no-ops or returns a sentinel
 // (NULL pointer, 0, or empty string) without referencing any GUI state.
-// Doxygen comments are inherited from the real implementations above by
-// virtue of identical names — these stubs intentionally have no extra docs.
+// Each stub retains an adjacent contract that names ignored inputs and its
+// deterministic sentinel, allowing either preprocessor branch to stand alone.
 // ===========================================================================
 
 /// @brief Stub: graphics disabled — returns NULL; no menu bar widget is created.
+/// @param parent Ignored candidate parent handle.
+/// @return Always NULL.
 void *rt_menubar_new(void *parent) {
     (void)parent;
     return NULL;
 }
 
-/// @brief Release resources and destroy the menubar.
+/// @brief Stub: ignore MenuBar destruction when graphics is disabled.
+/// @param menubar Ignored candidate MenuBar handle.
 void rt_menubar_destroy(void *menubar) {
     (void)menubar;
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no menu is added to the menu bar.
+/// @param menubar Ignored candidate MenuBar handle.
+/// @param title Ignored runtime title.
+/// @return Always NULL.
 void *rt_menubar_add_menu(void *menubar, rt_string title) {
     (void)menubar;
     (void)title;
     return NULL;
 }
 
-/// @brief Remove a menu from the menu bar.
+/// @brief Stub: ignore MenuBar removal when graphics is disabled.
+/// @param menubar Ignored candidate MenuBar handle.
+/// @param menu Ignored candidate Menu handle.
 void rt_menubar_remove_menu(void *menubar, void *menu) {
     (void)menubar;
     (void)menu;
 }
 
-/// @brief Get the number of menus in the menu bar.
+/// @brief Stub: report no MenuBar menus when graphics is disabled.
+/// @param menubar Ignored candidate MenuBar handle.
+/// @return Always zero.
 int64_t rt_menubar_get_menu_count(void *menubar) {
     (void)menubar;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no menu bar exists to retrieve from.
+/// @param menubar Ignored candidate MenuBar handle.
+/// @param index Ignored menu index.
+/// @return Always NULL.
 void *rt_menubar_get_menu(void *menubar, int64_t index) {
     (void)menubar;
     (void)index;
     return NULL;
 }
 
-/// @brief Show or hide the menu bar widget.
+/// @brief Stub: ignore MenuBar visibility changes when graphics is disabled.
+/// @param menubar Ignored candidate MenuBar handle.
+/// @param visible Ignored visibility flag.
 void rt_menubar_set_visible(void *menubar, int64_t visible) {
     (void)menubar;
     (void)visible;
 }
 
-/// @brief Check whether the menu bar is currently visible.
+/// @brief Stub: report the MenuBar hidden when graphics is disabled.
+/// @param menubar Ignored candidate MenuBar handle.
+/// @return Always zero.
 int64_t rt_menubar_is_visible(void *menubar) {
     (void)menubar;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no menu item is created.
+/// @param menu Ignored candidate Menu handle.
+/// @param text Ignored runtime label.
+/// @return Always NULL.
 void *rt_menu_add_item(void *menu, rt_string text) {
     (void)menu;
     (void)text;
@@ -913,6 +1100,10 @@ void *rt_menu_add_item(void *menu, rt_string text) {
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no menu item with shortcut is created.
+/// @param menu Ignored candidate Menu handle.
+/// @param text Ignored runtime label.
+/// @param shortcut Ignored runtime shortcut text.
+/// @return Always NULL.
 void *rt_menu_add_item_with_shortcut(void *menu, rt_string text, rt_string shortcut) {
     (void)menu;
     (void)text;
@@ -921,155 +1112,207 @@ void *rt_menu_add_item_with_shortcut(void *menu, rt_string text, rt_string short
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no separator item is created.
+/// @param menu Ignored candidate Menu handle.
+/// @return Always NULL.
 void *rt_menu_add_separator(void *menu) {
     (void)menu;
     return NULL;
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no submenu is created.
+/// @param menu Ignored candidate parent Menu handle.
+/// @param title Ignored runtime submenu title.
+/// @return Always NULL.
 void *rt_menu_add_submenu(void *menu, rt_string title) {
     (void)menu;
     (void)title;
     return NULL;
 }
 
-/// @brief Remove a menu item and free its resources.
+/// @brief Stub: ignore menu-item removal when graphics is disabled.
+/// @param menu Ignored candidate Menu handle.
+/// @param item Ignored candidate MenuItem handle.
 void rt_menu_remove_item(void *menu, void *item) {
     (void)menu;
     (void)item;
 }
 
-/// @brief Remove all items from a menu, leaving it empty.
+/// @brief Stub: ignore Menu clearing when graphics is disabled.
+/// @param menu Ignored candidate Menu handle.
 void rt_menu_clear(void *menu) {
     (void)menu;
 }
 
-/// @brief Set the title of the menu.
+/// @brief Stub: ignore Menu title changes when graphics is disabled.
+/// @param menu Ignored candidate Menu handle.
+/// @param title Ignored runtime title.
 void rt_menu_set_title(void *menu, rt_string title) {
     (void)menu;
     (void)title;
 }
 
-/// @brief Get the title of the menu.
+/// @brief Stub: return an empty Menu title when graphics is disabled.
+/// @param menu Ignored candidate Menu handle.
+/// @return Canonical empty runtime string.
 rt_string rt_menu_get_title(void *menu) {
     (void)menu;
     return rt_str_empty();
 }
 
-/// @brief Get the number of items in a menu.
+/// @brief Stub: report no Menu items when graphics is disabled.
+/// @param menu Ignored candidate Menu handle.
+/// @return Always zero.
 int64_t rt_menu_get_item_count(void *menu) {
     (void)menu;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no menu exists to retrieve items from.
+/// @param menu Ignored candidate Menu handle.
+/// @param index Ignored item index.
+/// @return Always NULL.
 void *rt_menu_get_item(void *menu, int64_t index) {
     (void)menu;
     (void)index;
     return NULL;
 }
 
-/// @brief Enable or disable an entire menu (greys out all items when disabled).
+/// @brief Stub: ignore Menu enabled-state changes when graphics is disabled.
+/// @param menu Ignored candidate Menu handle.
+/// @param enabled Ignored enabled flag.
 void rt_menu_set_enabled(void *menu, int64_t enabled) {
     (void)menu;
     (void)enabled;
 }
 
-/// @brief Check whether a menu is currently enabled.
+/// @brief Stub: report Menu disabled when graphics is disabled.
+/// @param menu Ignored candidate Menu handle.
+/// @return Always zero.
 int64_t rt_menu_is_enabled(void *menu) {
     (void)menu;
     return 0;
 }
 
-/// @brief Set the text of the menuitem.
+/// @brief Stub: ignore MenuItem text changes when graphics is disabled.
+/// @param item Ignored candidate MenuItem handle.
+/// @param text Ignored runtime label.
 void rt_menuitem_set_text(void *item, rt_string text) {
     (void)item;
     (void)text;
 }
 
-/// @brief Get the text of the menuitem.
+/// @brief Stub: return empty MenuItem text when graphics is disabled.
+/// @param item Ignored candidate MenuItem handle.
+/// @return Canonical empty runtime string.
 rt_string rt_menuitem_get_text(void *item) {
     (void)item;
     return rt_str_empty();
 }
 
-/// @brief Set the shortcut of the menuitem.
+/// @brief Stub: ignore MenuItem shortcut changes when graphics is disabled.
+/// @param item Ignored candidate MenuItem handle.
+/// @param shortcut Ignored runtime shortcut text.
 void rt_menuitem_set_shortcut(void *item, rt_string shortcut) {
     (void)item;
     (void)shortcut;
 }
 
-/// @brief Get the shortcut of the menuitem.
+/// @brief Stub: return an empty MenuItem shortcut when graphics is disabled.
+/// @param item Ignored candidate MenuItem handle.
+/// @return Canonical empty runtime string.
 rt_string rt_menuitem_get_shortcut(void *item) {
     (void)item;
     return rt_str_empty();
 }
 
-/// @brief Set the icon of the menuitem.
+/// @brief Stub: ignore MenuItem icon changes when graphics is disabled.
+/// @param item Ignored candidate MenuItem handle.
+/// @param pixels Ignored candidate Pixels object.
 void rt_menuitem_set_icon(void *item, void *pixels) {
     (void)item;
     (void)pixels;
 }
 
-/// @brief Enable or disable the checkable toggle behavior for a menu item.
+/// @brief Stub: ignore MenuItem checkability changes when graphics is disabled.
+/// @param item Ignored candidate MenuItem handle.
+/// @param checkable Ignored checkable flag.
 void rt_menuitem_set_checkable(void *item, int64_t checkable) {
     (void)item;
     (void)checkable;
 }
 
-/// @brief Check whether a menu item supports the checkable toggle state.
+/// @brief Stub: report MenuItem non-checkable when graphics is disabled.
+/// @param item Ignored candidate MenuItem handle.
+/// @return Always zero.
 int64_t rt_menuitem_is_checkable(void *item) {
     (void)item;
     return 0;
 }
 
-/// @brief Set the checked of the menuitem.
+/// @brief Stub: ignore MenuItem checked-state changes when graphics is disabled.
+/// @param item Ignored candidate MenuItem handle.
+/// @param checked Ignored checked flag.
 void rt_menuitem_set_checked(void *item, int64_t checked) {
     (void)item;
     (void)checked;
 }
 
-/// @brief Check whether a menu item is currently in the checked state.
+/// @brief Stub: report MenuItem unchecked when graphics is disabled.
+/// @param item Ignored candidate MenuItem handle.
+/// @return Always zero.
 int64_t rt_menuitem_is_checked(void *item) {
     (void)item;
     return 0;
 }
 
-/// @brief Enable or disable a menu item (disabled items are greyed out).
+/// @brief Stub: ignore MenuItem enabled-state changes when graphics is disabled.
+/// @param item Ignored candidate MenuItem handle.
+/// @param enabled Ignored enabled flag.
 void rt_menuitem_set_enabled(void *item, int64_t enabled) {
     (void)item;
     (void)enabled;
 }
 
-/// @brief Check whether a menu item is currently enabled.
+/// @brief Stub: report MenuItem disabled when graphics is disabled.
+/// @param item Ignored candidate MenuItem handle.
+/// @return Always zero.
 int64_t rt_menuitem_is_enabled(void *item) {
     (void)item;
     return 0;
 }
 
-/// @brief Check whether a menu item is a separator (horizontal dividing line).
+/// @brief Stub: report MenuItem non-separator when graphics is disabled.
+/// @param item Ignored candidate MenuItem handle.
+/// @return Always zero.
 int64_t rt_menuitem_is_separator(void *item) {
     (void)item;
     return 0;
 }
 
-/// @brief Check whether a menu item was clicked this frame (edge-triggered, clears after read).
+/// @brief Stub: report no MenuItem click when graphics is disabled.
+/// @param item Ignored candidate MenuItem handle.
+/// @return Always zero.
 int64_t rt_menuitem_was_clicked(void *item) {
     (void)item;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no context menu is created.
+/// @return Always NULL.
 void *rt_contextmenu_new(void) {
     return NULL;
 }
 
-/// @brief Release resources and destroy the contextmenu.
+/// @brief Stub: ignore ContextMenu destruction when graphics is disabled.
+/// @param menu Ignored candidate ContextMenu handle.
 void rt_contextmenu_destroy(void *menu) {
     (void)menu;
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no context menu item is created.
+/// @param menu Ignored candidate ContextMenu handle.
+/// @param text Ignored runtime item label.
+/// @return Always NULL.
 void *rt_contextmenu_add_item(void *menu, rt_string text) {
     (void)menu;
     (void)text;
@@ -1077,6 +1320,10 @@ void *rt_contextmenu_add_item(void *menu, rt_string text) {
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no context menu item with shortcut is created.
+/// @param menu Ignored candidate ContextMenu handle.
+/// @param text Ignored runtime item label.
+/// @param shortcut Ignored runtime shortcut text.
+/// @return Always NULL.
 void *rt_contextmenu_add_item_with_shortcut(void *menu, rt_string text, rt_string shortcut) {
     (void)menu;
     (void)text;
@@ -1085,42 +1332,56 @@ void *rt_contextmenu_add_item_with_shortcut(void *menu, rt_string text, rt_strin
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no context menu separator is created.
+/// @param menu Ignored candidate ContextMenu handle.
+/// @return Always NULL.
 void *rt_contextmenu_add_separator(void *menu) {
     (void)menu;
     return NULL;
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no context menu submenu is created.
+/// @param menu Ignored candidate parent ContextMenu handle.
+/// @param title Ignored runtime submenu title.
+/// @return Always NULL.
 void *rt_contextmenu_add_submenu(void *menu, rt_string title) {
     (void)menu;
     (void)title;
     return NULL;
 }
 
-/// @brief Remove all items from a context menu.
+/// @brief Stub: ignore ContextMenu clearing when graphics is disabled.
+/// @param menu Ignored candidate ContextMenu handle.
 void rt_contextmenu_clear(void *menu) {
     (void)menu;
 }
 
-/// @brief Show the contextmenu.
+/// @brief Stub: ignore ContextMenu display requests when graphics is disabled.
+/// @param menu Ignored candidate ContextMenu handle.
+/// @param x Ignored screen-space X coordinate.
+/// @param y Ignored screen-space Y coordinate.
 void rt_contextmenu_show(void *menu, int64_t x, int64_t y) {
     (void)menu;
     (void)x;
     (void)y;
 }
 
-/// @brief Hide the contextmenu.
+/// @brief Stub: ignore ContextMenu dismissal when graphics is disabled.
+/// @param menu Ignored candidate ContextMenu handle.
 void rt_contextmenu_hide(void *menu) {
     (void)menu;
 }
 
-/// @brief Check whether a context menu is currently visible on screen.
+/// @brief Stub: report ContextMenu hidden when graphics is disabled.
+/// @param menu Ignored candidate ContextMenu handle.
+/// @return Always zero.
 int64_t rt_contextmenu_is_visible(void *menu) {
     (void)menu;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no context menu item was clicked.
+/// @param menu Ignored candidate ContextMenu handle.
+/// @return Always NULL.
 void *rt_contextmenu_get_clicked_item(void *menu) {
     (void)menu;
     return NULL;

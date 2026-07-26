@@ -39,6 +39,9 @@
 #define RT_MESSAGEBOX_DATA_MAGIC UINT64_C(0x52544D5347424F58)
 
 /// @brief Return the active GUI app for message box hosting (falls back to `s_current_app`).
+/// @details The returned pointer is borrowed and may be NULL when neither an active polling app nor
+///          a widget-construction context exists.
+/// @return Borrowed host app, preferring the active app, or NULL.
 static rt_gui_app_t *rt_messagebox_app(void) {
     rt_gui_app_t *app = rt_gui_get_active_app();
     return app ? app : s_current_app;
@@ -64,6 +67,10 @@ static char *rt_messagebox_strdup(const char *text) {
 }
 
 /// @brief Return non-zero if the button label should be treated as a "cancel / close / no" action.
+/// @details Performs exact ASCII case-insensitive comparisons for the three legacy English labels;
+///          role-aware button APIs intentionally bypass this localization-sensitive inference.
+/// @param label Borrowed NUL-terminated button label; may be NULL.
+/// @return One for Cancel, Close, or No ignoring ASCII case, otherwise zero.
 static int rt_messagebox_label_is_cancel(const char *label) {
     if (!label)
         return 0;
@@ -73,6 +80,12 @@ static int rt_messagebox_label_is_cancel(const char *label) {
 
 /// @brief Configure a dialog for modal presentation: enforce minimum width, apply font,
 ///        set modal root, center-show, and push onto the app's dialog stack.
+/// @details Activates the host app, lazily applies its effective default font, constrains width to
+///          the supported modal range, and verifies that the dialog became the top modal entry.
+///          Invalid host/window/root/dialog state is rejected without entering an event loop.
+/// @param app Borrowed live app that will own modal routing.
+/// @param dlg Borrowed live lower dialog to present.
+/// @return One when @p dlg is installed as the top modal dialog, otherwise zero.
 static int rt_messagebox_prepare_modal(rt_gui_app_t *app, vg_dialog_t *dlg) {
     if (!app || !app->window || !app->root || !dlg)
         return 0;
@@ -88,7 +101,11 @@ static int rt_messagebox_prepare_modal(rt_gui_app_t *app, vg_dialog_t *dlg) {
 }
 
 /// @brief Run the event loop until the dialog closes or the app signals shutdown.
-/// @details Pops the dialog from the stack on exit and returns the VG dialog result code.
+/// @details Repeatedly polls and renders the supplied app without transferring ownership of either
+///          argument. The dialog is removed from the app's modal stack on every exit path.
+/// @param app Borrowed app whose normal poll/render loop should be driven.
+/// @param dlg Borrowed dialog whose open flag terminates the nested loop.
+/// @return Lower dialog result, or @c VG_DIALOG_RESULT_NONE for a NULL dialog.
 static vg_dialog_result_t rt_messagebox_run_modal(rt_gui_app_t *app, vg_dialog_t *dlg) {
     while (dlg && dlg->is_open && app && !app->should_close) {
         rt_gui_app_poll(app);
@@ -101,6 +118,9 @@ static vg_dialog_result_t rt_messagebox_run_modal(rt_gui_app_t *app, vg_dialog_t
 
 /// @brief One-shot informational message box (single OK button, info icon). Blocks until user
 /// dismisses. Returns 0 (no meaningful selection — the OK is the only choice).
+/// @param title Runtime dialog title converted to GUI-safe UTF-8 for the call.
+/// @param message Runtime body text converted to GUI-safe UTF-8 for the call.
+/// @return Always zero, including allocation, presentation, and shutdown failure paths.
 int64_t rt_messagebox_info(rt_string title, rt_string message) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *app = rt_messagebox_app();
@@ -127,6 +147,9 @@ int64_t rt_messagebox_info(rt_string title, rt_string message) {
 
 /// @brief One-shot warning message box (single OK button, warning/exclamation icon). Always
 /// returns 0; for accept/decline use `_confirm` or `_question`.
+/// @param title Runtime dialog title converted to GUI-safe UTF-8 for the call.
+/// @param message Runtime body text converted to GUI-safe UTF-8 for the call.
+/// @return Always zero, including allocation, presentation, and shutdown failure paths.
 int64_t rt_messagebox_warning(rt_string title, rt_string message) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *app = rt_messagebox_app();
@@ -152,6 +175,9 @@ int64_t rt_messagebox_warning(rt_string title, rt_string message) {
 }
 
 /// @brief One-shot error message box (single OK, red/error icon). Returns 0 always.
+/// @param title Runtime dialog title converted to GUI-safe UTF-8 for the call.
+/// @param message Runtime body text converted to GUI-safe UTF-8 for the call.
+/// @return Always zero, including allocation, presentation, and shutdown failure paths.
 int64_t rt_messagebox_error(rt_string title, rt_string message) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *app = rt_messagebox_app();
@@ -178,6 +204,9 @@ int64_t rt_messagebox_error(rt_string title, rt_string message) {
 
 /// @brief Yes/No question box (question icon). Returns 1 if user chose Yes, 0 for No or any
 /// other dismissal (Esc, window close).
+/// @param title Runtime dialog title converted to GUI-safe UTF-8 for the call.
+/// @param message Runtime body text converted to GUI-safe UTF-8 for the call.
+/// @return One only for an explicit Yes result; zero for No, dismissal, shutdown, or failure.
 int64_t rt_messagebox_question(rt_string title, rt_string message) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *app = rt_messagebox_app();
@@ -203,6 +232,9 @@ int64_t rt_messagebox_question(rt_string title, rt_string message) {
 }
 
 /// @brief OK/Cancel confirmation box (question icon). Returns 1 for OK, 0 for Cancel.
+/// @param title Runtime dialog title converted to GUI-safe UTF-8 for the call.
+/// @param message Runtime body text converted to GUI-safe UTF-8 for the call.
+/// @return One only for an explicit OK result; zero for Cancel, dismissal, shutdown, or failure.
 int64_t rt_messagebox_confirm(rt_string title, rt_string message) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *app = rt_messagebox_app();
@@ -234,6 +266,9 @@ typedef struct {
 } rt_prompt_commit_data_t;
 
 /// @brief Text-input `on_commit` callback — closes the prompt dialog as OK when Enter is pressed.
+/// @param w Borrowed committing TextInput widget; unused because @p user_data owns routing.
+/// @param text Borrowed committed text; collection occurs after modal exit, so this callback ignores it.
+/// @param user_data Borrowed stack-scoped @ref rt_prompt_commit_data_t valid for the modal loop.
 static void prompt_on_commit(vg_widget_t *w, const char *text, void *user_data) {
     (void)w;
     (void)text;
@@ -384,6 +419,7 @@ static size_t s_messagebox_wrapper_cap = 0;
 /// @details The registry is the source of truth for handle validation: a checked
 ///          cast only trusts an opaque `void*` once it is found here (then verifies
 ///          the magic tag), guarding against forged/freed handles. Capacity doubles from 8.
+/// @param data GC-managed wrapper to register; ownership is not transferred.
 /// @return 1 on success or if already present; 0 on overflow or realloc failure.
 static int rt_messagebox_register_wrapper(rt_messagebox_data_t *data) {
     if (!data)
@@ -408,6 +444,7 @@ static int rt_messagebox_register_wrapper(rt_messagebox_data_t *data) {
 }
 
 /// @brief Remove a wrapper from the message-box registry, compacting the array. No-op if absent.
+/// @param data Wrapper identity to remove; may be NULL.
 static void rt_messagebox_unregister_wrapper(rt_messagebox_data_t *data) {
     if (!data)
         return;
@@ -423,6 +460,8 @@ static void rt_messagebox_unregister_wrapper(rt_messagebox_data_t *data) {
 }
 
 /// @brief True if @p data is a currently-registered wrapper; backs handle validation.
+/// @param data Candidate wrapper address; never dereferenced by this function.
+/// @return One when pointer identity exists in the registry, otherwise zero.
 static int rt_messagebox_wrapper_is_registered(const rt_messagebox_data_t *data) {
     if (!data)
         return 0;
@@ -530,6 +569,11 @@ static void rt_messagebox_on_result(vg_dialog_t *dialog,
         rt_gui_remove_dialog(data->owner_app, dialog);
 }
 
+/// @brief Detach every stateful MessageBox wrapper that references a retiring lower dialog.
+/// @details Open operations transition once to Failed with the stable no-app diagnostic and record
+///          a completion edge. All matching wrappers then clear dialog/app pointers and reset the
+///          selected result before lower storage can be released.
+/// @param dialog Borrowed dialog being destroyed; NULL is a no-op.
 void rt_messagebox_invalidate_dialog(vg_dialog_t *dialog) {
     if (!dialog)
         return;
@@ -549,6 +593,10 @@ void rt_messagebox_invalidate_dialog(vg_dialog_t *dialog) {
 }
 
 /// @brief Authenticate a MessageBox handle via its magic tag (NULL if not).
+/// @details Registry membership is checked before reading the wrapper, preventing dereference of
+///          arbitrary, finalized, or forged runtime addresses.
+/// @param box Candidate opaque runtime handle.
+/// @return Borrowed live registered wrapper, or NULL when validation fails.
 static rt_messagebox_data_t *rt_messagebox_checked(void *box) {
     rt_messagebox_data_t *data = (rt_messagebox_data_t *)box;
     return rt_messagebox_wrapper_is_registered(data) && data->magic == RT_MESSAGEBOX_DATA_MAGIC
@@ -558,6 +606,10 @@ static rt_messagebox_data_t *rt_messagebox_checked(void *box) {
 
 /// @brief Release all resources: free custom button labels, destroy the VG dialog,
 ///        and remove it from the app's dialog stack.
+/// @details Clears all parallel custom-button arrays, detaches/destroys any lower dialog, resets
+///          result and magic state, and removes registry authentication. The GC-managed wrapper
+///          allocation itself remains owned by the runtime.
+/// @param data Registered or partially initialized wrapper to dispose; NULL is a no-op.
 static void rt_messagebox_dispose(rt_messagebox_data_t *data) {
     if (!data)
         return;
@@ -585,6 +637,7 @@ static void rt_messagebox_dispose(rt_messagebox_data_t *data) {
 
 /// @brief GC finalizer — delegates to `rt_messagebox_dispose` to free custom button labels
 ///        and destroy the underlying VG dialog handle before the GC reclaims the object.
+/// @param box GC-managed MessageBox wrapper being finalized.
 static void rt_messagebox_finalize(void *box) {
     rt_messagebox_dispose((rt_messagebox_data_t *)box);
 }
@@ -592,6 +645,14 @@ static void rt_messagebox_finalize(void *box) {
 /// @brief Build a stateful MessageBox (icon by `type`: INFO/WARNING/ERROR/QUESTION). Buttons
 /// start empty — call `_add_button` to register them, then `_show` to display modally. Returns
 /// the GC-managed handle, or NULL on failure.
+/// @details Converts/copies title and message into a new lower dialog, defaults unknown @p type
+///          values to the information icon, allocates a GC-managed authenticated wrapper, installs
+///          result/finalizer callbacks, and records the current host app without presenting.
+///          Every partially allocated resource is released on failure.
+/// @param title Runtime dialog title.
+/// @param message Runtime dialog body.
+/// @param type Public MessageBox icon kind.
+/// @return New GC-managed stateful MessageBox handle, or NULL on allocation/registration failure.
 void *rt_messagebox_new(rt_string title, rt_string message, int64_t type) {
     RT_ASSERT_MAIN_THREAD();
     char *ctitle = rt_string_to_gui_cstr(title);
@@ -657,24 +718,36 @@ void *rt_messagebox_new(rt_string title, rt_string message, int64_t type) {
 }
 
 /// @brief Convenience: stateful MessageBox with INFO icon.
+/// @param title Runtime dialog title.
+/// @param message Runtime dialog body.
+/// @return New GC-managed idle MessageBox, or NULL on failure.
 void *rt_messagebox_new_info(rt_string title, rt_string message) {
     RT_ASSERT_MAIN_THREAD();
     return rt_messagebox_new(title, message, RT_MESSAGEBOX_INFO);
 }
 
 /// @brief Convenience: stateful MessageBox with WARNING icon.
+/// @param title Runtime dialog title.
+/// @param message Runtime dialog body.
+/// @return New GC-managed idle MessageBox, or NULL on failure.
 void *rt_messagebox_new_warning(rt_string title, rt_string message) {
     RT_ASSERT_MAIN_THREAD();
     return rt_messagebox_new(title, message, RT_MESSAGEBOX_WARNING);
 }
 
 /// @brief Convenience: stateful MessageBox with ERROR icon.
+/// @param title Runtime dialog title.
+/// @param message Runtime dialog body.
+/// @return New GC-managed idle MessageBox, or NULL on failure.
 void *rt_messagebox_new_error(rt_string title, rt_string message) {
     RT_ASSERT_MAIN_THREAD();
     return rt_messagebox_new(title, message, RT_MESSAGEBOX_ERROR);
 }
 
 /// @brief Convenience: stateful MessageBox with QUESTION icon.
+/// @param title Runtime dialog title.
+/// @param message Runtime dialog body.
+/// @return New GC-managed idle MessageBox, or NULL on failure.
 void *rt_messagebox_new_question(rt_string title, rt_string message) {
     RT_ASSERT_MAIN_THREAD();
     return rt_messagebox_new(title, message, RT_MESSAGEBOX_QUESTION);
@@ -794,8 +867,12 @@ int64_t rt_messagebox_set_button_role(void *box, int64_t id, int64_t role) {
     return 1;
 }
 
-/// @brief Mark the button with `id` as the default (Enter-key activated). Updates any matching
-/// button in the buttons-list. Stored separately so it works even if added later.
+/// @brief Mark an existing custom button as the explicit Enter-key default.
+/// @details Requires the stable ID to exist, records the explicit binding, and recomputes every
+///          lower button flag so only the matching item receives Enter.
+/// @param box Live registered MessageBox wrapper.
+/// @param id Stable ID of an existing custom button.
+/// @return One when the binding was installed, otherwise zero for invalid state or missing ID.
 int64_t rt_messagebox_set_default_button(void *box, int64_t id) {
     RT_ASSERT_MAIN_THREAD();
     rt_messagebox_data_t *data = rt_messagebox_checked(box);
@@ -939,6 +1016,7 @@ rt_string rt_messagebox_get_error(void *box) {
 
 /// @brief Manually free dialog resources (custom buttons, backend handle). The GC finalizer
 /// also calls this — explicit destruction is optional but useful for early cleanup.
+/// @param box Candidate registered MessageBox wrapper; invalid or already disposed handles are ignored.
 void rt_messagebox_destroy(void *box) {
     RT_ASSERT_MAIN_THREAD();
     rt_messagebox_data_t *data = rt_messagebox_checked(box);
