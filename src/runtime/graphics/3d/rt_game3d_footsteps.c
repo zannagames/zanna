@@ -21,6 +21,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements surface-specific deterministic footstep playback for Game3D.
+/// @details SurfaceTable3D stores up to eight retained clip variants and a
+///          loudness scalar for each surface identifier, with row zero as the
+///          fallback. Footsteps3D attaches to an entity, scans matching animator
+///          events, raycasts beneath the entity, and chooses a clip through a
+///          fixed-seed linear congruential generator. A cooldown bounds duplicate
+///          events without introducing nondeterministic timing or allocation.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_game3d.h"
@@ -41,17 +50,20 @@
 #define FOOTSTEPS3D_MAX_CLIPS 8
 #define FOOTSTEPS3D_MIN_INTERVAL 0.12
 
+/// @brief One surface identifier's retained clip variants and stimulus metadata.
 typedef struct rt_game3d_surface_row {
     void *clips[FOOTSTEPS3D_MAX_CLIPS]; /* retained audio clips */
     int32_t clip_count;
     double loudness; /* hearing-stimulus scale (default 1) */
 } rt_game3d_surface_row;
 
+/// @brief Fixed-index table of all supported surface rows.
 typedef struct rt_game3d_surface_table {
     void *vptr;
     rt_game3d_surface_row rows[FOOTSTEPS3D_MAX_SURFACE + 1]; /* index = surface id; 0 = default */
 } rt_game3d_surface_table;
 
+/// @brief Per-entity footstep event consumer and deterministic selector state.
 typedef struct rt_game3d_footsteps {
     void *vptr;
     void *entity; /* plain backref; NULLed at entity teardown */
@@ -69,6 +81,8 @@ typedef struct rt_game3d_footsteps {
  * SurfaceTable3D
  *=========================================================================*/
 
+/// @brief Release every retained clip in a SurfaceTable3D.
+/// @param obj SurfaceTable3D storage being finalized; NULL is ignored.
 static void game3d_surface_table_finalize(void *obj) {
     rt_game3d_surface_table *table = (rt_game3d_surface_table *)obj;
     if (!table)
@@ -80,6 +94,8 @@ static void game3d_surface_table_finalize(void *obj) {
     }
 }
 
+/// @brief Allocate an empty surface table with unit loudness on every row.
+/// @return A newly allocated SurfaceTable3D, or NULL after allocation failure.
 void *rt_game3d_surface_table_new(void) {
     rt_game3d_surface_table *table = (rt_game3d_surface_table *)rt_obj_new_i64(
         RT_G3D_GAME3D_SURFACETABLE_CLASS_ID, (int64_t)sizeof(rt_game3d_surface_table));
@@ -94,6 +110,10 @@ void *rt_game3d_surface_table_new(void) {
     return table;
 }
 
+/// @brief Validate a runtime handle as SurfaceTable3D.
+/// @param obj Candidate runtime handle.
+/// @param method Trap message used when validation fails.
+/// @return The typed table pointer, or NULL after trapping.
 static rt_game3d_surface_table *game3d_surface_table_checked(void *obj, const char *method) {
     rt_game3d_surface_table *table =
         (rt_game3d_surface_table *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_SURFACETABLE_CLASS_ID);
@@ -103,6 +123,11 @@ static rt_game3d_surface_table *game3d_surface_table_checked(void *obj, const ch
 }
 
 /// @brief Append a clip variant for @p surface_id (row 0 = the untyped default).
+/// @param obj SurfaceTable3D runtime handle.
+/// @param surface_id Row identifier in [0, 255].
+/// @param clip Audio clip object to retain; NULL is ignored.
+/// @return @p obj for fluent chaining. Invalid rows and full eight-clip rows
+///         remain unchanged without trapping.
 void *rt_game3d_surface_table_add_clip(void *obj, int64_t surface_id, void *clip) {
     rt_game3d_surface_table *table =
         game3d_surface_table_checked(obj, "Game3D.SurfaceTable3D.addClip: invalid table");
@@ -119,6 +144,11 @@ void *rt_game3d_surface_table_add_clip(void *obj, int64_t surface_id, void *clip
 }
 
 /// @brief Hearing-stimulus scale for @p surface_id (plan 22 consumer; default 1).
+/// @param obj SurfaceTable3D runtime handle.
+/// @param surface_id Row identifier in [0, 255].
+/// @param loudness Requested non-negative scale; finite values are capped at
+///                 four and invalid/negative values reset the row to one.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_surface_table_set_loudness(void *obj, int64_t surface_id, double loudness) {
     rt_game3d_surface_table *table =
         game3d_surface_table_checked(obj, "Game3D.SurfaceTable3D.setLoudness: invalid table");
@@ -130,6 +160,9 @@ void *rt_game3d_surface_table_set_loudness(void *obj, int64_t surface_id, double
 }
 
 /// @brief Clip count configured for @p surface_id (tests/tooling).
+/// @param obj SurfaceTable3D runtime handle.
+/// @param surface_id Row identifier in [0, 255].
+/// @return The number of retained variants, or zero for an invalid table or row.
 int64_t rt_game3d_surface_table_clip_count(void *obj, int64_t surface_id) {
     rt_game3d_surface_table *table =
         game3d_surface_table_checked(obj, "Game3D.SurfaceTable3D.clipCount: invalid table");
@@ -139,6 +172,9 @@ int64_t rt_game3d_surface_table_clip_count(void *obj, int64_t surface_id) {
 }
 
 /// @brief Resolve the effective row for a surface id (row 0 fallback, NULL when empty).
+/// @param table Surface table to inspect; may be NULL.
+/// @param surface_id Raycast surface identifier.
+/// @return The populated exact row, otherwise populated row zero, otherwise NULL.
 static rt_game3d_surface_row *game3d_surface_table_resolve(rt_game3d_surface_table *table,
                                                            int64_t surface_id) {
     if (!table)
@@ -155,6 +191,8 @@ static rt_game3d_surface_row *game3d_surface_table_resolve(rt_game3d_surface_tab
  * Footsteps3D
  *=========================================================================*/
 
+/// @brief Clear the entity back-reference and release retained table/prefix values.
+/// @param obj Footsteps3D storage being finalized; NULL is ignored.
 static void game3d_footsteps_finalize(void *obj) {
     rt_game3d_footsteps *steps = (rt_game3d_footsteps *)obj;
     if (!steps)
@@ -164,6 +202,13 @@ static void game3d_footsteps_finalize(void *obj) {
     game3d_release_ref((void **)&steps->event_prefix);
 }
 
+/// @brief Create and install one footstep component on an entity.
+/// @details The component retains @p table_obj and the entity retains the
+///          component; any prior Footsteps3D has its plain entity back-reference
+///          cleared. The returned creation reference remains owned by the caller.
+/// @param entity_obj Entity3D that receives the component.
+/// @param table_obj SurfaceTable3D used to resolve clip variants.
+/// @return A newly allocated Footsteps3D, or NULL after validation or allocation failure.
 void *rt_game3d_footsteps_new(void *entity_obj, void *table_obj) {
     rt_game3d_entity *entity =
         (rt_game3d_entity *)rt_g3d_checked_or_null(entity_obj, RT_G3D_GAME3D_ENTITY_CLASS_ID);
@@ -199,6 +244,10 @@ void *rt_game3d_footsteps_new(void *entity_obj, void *table_obj) {
     return steps;
 }
 
+/// @brief Validate a runtime handle as Footsteps3D.
+/// @param obj Candidate runtime handle.
+/// @param method Trap message used when validation fails.
+/// @return The typed component pointer, or NULL after trapping.
 static rt_game3d_footsteps *game3d_footsteps_checked(void *obj, const char *method) {
     rt_game3d_footsteps *steps =
         (rt_game3d_footsteps *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_FOOTSTEPS_CLASS_ID);
@@ -207,6 +256,11 @@ static rt_game3d_footsteps *game3d_footsteps_checked(void *obj, const char *meth
     return steps;
 }
 
+/// @brief Set the non-empty animator-event prefix that triggers footsteps.
+/// @param obj Footsteps3D runtime handle.
+/// @param prefix Non-empty runtime string to retain; NULL or empty input leaves
+///               the current prefix unchanged.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_footsteps_set_event_prefix(void *obj, rt_string prefix) {
     rt_game3d_footsteps *steps =
         game3d_footsteps_checked(obj, "Game3D.Footsteps3D.setEventPrefix: invalid component");
@@ -215,6 +269,10 @@ void *rt_game3d_footsteps_set_event_prefix(void *obj, rt_string prefix) {
     return obj;
 }
 
+/// @brief Set the collision mask used by downward surface raycasts.
+/// @param obj Footsteps3D runtime handle.
+/// @param mask Physics collision-mask bits; -1 selects all layers by convention.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_footsteps_set_ground_mask(void *obj, int64_t mask) {
     rt_game3d_footsteps *steps =
         game3d_footsteps_checked(obj, "Game3D.Footsteps3D.setGroundMask: invalid component");
@@ -223,6 +281,11 @@ void *rt_game3d_footsteps_set_ground_mask(void *obj, int64_t mask) {
     return obj;
 }
 
+/// @brief Set the component's stored playback-volume scale.
+/// @param obj Footsteps3D runtime handle.
+/// @param scale Finite non-negative scale capped at four; invalid values leave
+///              the existing setting unchanged.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_footsteps_set_volume_scale(void *obj, double scale) {
     rt_game3d_footsteps *steps =
         game3d_footsteps_checked(obj, "Game3D.Footsteps3D.setVolumeScale: invalid component");
@@ -231,12 +294,18 @@ void *rt_game3d_footsteps_set_volume_scale(void *obj, double scale) {
     return obj;
 }
 
+/// @brief Return how many cooldown-admitted step events have fired.
+/// @param obj Footsteps3D runtime handle.
+/// @return The accumulated step count, including silent table/audio misses, or zero.
 int64_t rt_game3d_footsteps_get_step_count(void *obj) {
     rt_game3d_footsteps *steps =
         game3d_footsteps_checked(obj, "Game3D.Footsteps3D.get_StepCount: invalid component");
     return steps ? steps->step_count : 0;
 }
 
+/// @brief Return the surface identifier observed by the most recent step raycast.
+/// @param obj Footsteps3D runtime handle.
+/// @return The last surface id, with zero representing no typed hit or invalid state.
 int64_t rt_game3d_footsteps_get_last_surface(void *obj) {
     rt_game3d_footsteps *steps =
         game3d_footsteps_checked(obj, "Game3D.Footsteps3D.get_LastSurface: invalid component");
@@ -244,6 +313,12 @@ int64_t rt_game3d_footsteps_get_last_surface(void *obj) {
 }
 
 /// @brief Fire one footstep: ground raycast -> surface row -> deterministic clip.
+/// @details The cooldown is armed before querying the ground. Each admitted event
+///          updates telemetry even when no populated row or audio engine exists;
+///          clip selection advances the RNG only when playback is possible.
+/// @param world World3D supplying physics and audio services.
+/// @param entity Entity3D whose world position seeds the downward ray.
+/// @param steps Component containing mask, table, cooldown, and RNG state.
 static void game3d_footsteps_fire(rt_game3d_world *world,
                                   rt_game3d_entity *entity,
                                   rt_game3d_footsteps *steps) {
@@ -286,6 +361,9 @@ static void game3d_footsteps_fire(rt_game3d_world *world,
 }
 
 /// @brief Per-step tick: consume this frame's matching animator events.
+/// @param world World3D supplying physics and audio for admitted events.
+/// @param entity Spawned Entity3D whose animator event list is scanned.
+/// @param dt Simulation step in seconds used to reduce the duplicate-event cooldown.
 void game3d_footsteps_tick(rt_game3d_world *world, rt_game3d_entity *entity, double dt) {
     rt_game3d_footsteps *steps = (rt_game3d_footsteps *)rt_g3d_checked_or_null(
         entity->footsteps, RT_G3D_GAME3D_FOOTSTEPS_CLASS_ID);

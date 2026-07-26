@@ -20,6 +20,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements authored-map minimaps, compass markers, and objective indicators.
+/// @details Minimap3D maps world XZ coordinates into a configurable HUD viewport,
+/// tracks retained entity or fixed-point markers, discards stale entity markers,
+/// and renders optional compass and screen-edge objective projections through
+/// Canvas3D overlay primitives.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_canvas3d.h"
@@ -39,6 +46,7 @@
 #define MINIMAP3D_MAX_MARKERS 64
 #define MINIMAP3D_PI 3.14159265358979323846
 
+/// @brief One fixed-capacity minimap marker and its retained rendering references.
 typedef struct rt_game3d_minimap_marker {
     int8_t used;
     void *entity;    /* retained Entity3D, or NULL for point markers */
@@ -66,6 +74,10 @@ typedef struct rt_game3d_minimap {
     int64_t marker_ids[MINIMAP3D_MAX_MARKERS];
 } rt_game3d_minimap;
 
+/// @brief Validate an opaque handle as a Minimap3D payload.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message recorded when validation fails.
+/// @return Typed minimap payload, or `NULL` after recording a trap.
 static rt_game3d_minimap *game3d_minimap_checked(void *obj, const char *method) {
     rt_game3d_minimap *map =
         (rt_game3d_minimap *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_MINIMAP_CLASS_ID);
@@ -75,6 +87,7 @@ static rt_game3d_minimap *game3d_minimap_checked(void *obj, const char *method) 
 }
 
 /// @brief GC finalizer: release the world, map image, and marker refs.
+/// @param obj Finalized Minimap3D payload; `NULL` is ignored.
 static void game3d_minimap_finalize(void *obj) {
     rt_game3d_minimap *map = (rt_game3d_minimap *)obj;
     if (!map)
@@ -90,6 +103,9 @@ static void game3d_minimap_finalize(void *obj) {
 }
 
 /// @brief Create a minimap bound to @p world with a square default viewport.
+/// @param world_obj Borrowed live World3D handle retained by the minimap.
+/// @param size_px Initial square viewport size in pixels, from 32 through 2048.
+/// @return New GC-managed Minimap3D handle, or `NULL` after validation or allocation failure.
 void *rt_game3d_minimap_new(void *world_obj, int64_t size_px) {
     rt_game3d_world *world = game3d_world_checked(world_obj, "Game3D.Minimap3D.New: invalid world");
     if (!world)
@@ -122,6 +138,12 @@ void *rt_game3d_minimap_new(void *world_obj, int64_t size_px) {
 }
 
 /// @brief Set the authored north-up map image and its world-rect affine.
+/// @param obj Borrowed Minimap3D handle.
+/// @param pixels Borrowed Pixels handle retained as the map backdrop, or `NULL`.
+/// @param min_x World-space X coordinate mapped to the viewport's left edge.
+/// @param min_z World-space Z coordinate mapped to the viewport's top edge.
+/// @param max_x World-space X coordinate mapped to the viewport's right edge.
+/// @param max_z World-space Z coordinate mapped to the viewport's bottom edge.
 void rt_game3d_minimap_set_map_image(
     void *obj, void *pixels, double min_x, double min_z, double max_x, double max_z) {
     rt_game3d_minimap *map =
@@ -141,6 +163,8 @@ void rt_game3d_minimap_set_map_image(
 }
 
 /// @brief Track an entity (player): centered arrow + objective reference point.
+/// @param obj Borrowed Minimap3D handle.
+/// @param entity Borrowed Entity3D handle to retain, or `NULL` to clear tracking.
 void rt_game3d_minimap_set_tracked_entity(void *obj, void *entity) {
     rt_game3d_minimap *map =
         game3d_minimap_checked(obj, "Game3D.Minimap3D.SetTrackedEntity: invalid minimap");
@@ -157,6 +181,11 @@ void rt_game3d_minimap_set_tracked_entity(void *obj, void *entity) {
 }
 
 /// @brief Place the minimap viewport on screen.
+/// @param obj Borrowed Minimap3D handle.
+/// @param x Finite viewport left coordinate in pixels.
+/// @param y Finite viewport top coordinate in pixels.
+/// @param w Positive finite viewport width in pixels.
+/// @param h Positive finite viewport height in pixels.
 void rt_game3d_minimap_set_viewport(void *obj, double x, double y, double w, double h) {
     rt_game3d_minimap *map =
         game3d_minimap_checked(obj, "Game3D.Minimap3D.SetViewport: invalid minimap");
@@ -173,6 +202,10 @@ void rt_game3d_minimap_set_viewport(void *obj, double x, double y, double w, dou
 }
 
 /// @brief Enable the top-center compass strip.
+/// @param obj Borrowed Minimap3D handle.
+/// @param enabled Nonzero to render the compass strip.
+/// @param width_px Requested compass width; finite values of at least 64 pixels replace the current
+/// width.
 void rt_game3d_minimap_set_compass(void *obj, int8_t enabled, double width_px) {
     rt_game3d_minimap *map =
         game3d_minimap_checked(obj, "Game3D.Minimap3D.SetCompass: invalid minimap");
@@ -183,6 +216,10 @@ void rt_game3d_minimap_set_compass(void *obj, int8_t enabled, double width_px) {
         map->compass_width = width_px;
 }
 
+/// @brief Resolve an active marker by its monotonically assigned identifier.
+/// @param map Borrowed minimap payload to search.
+/// @param id Marker identifier returned by an add operation.
+/// @return Borrowed marker slot, or `NULL` when @p id is not active.
 static rt_game3d_minimap_marker *game3d_minimap_marker_by_id(rt_game3d_minimap *map, int64_t id) {
     for (int32_t i = 0; i < MINIMAP3D_MAX_MARKERS; ++i)
         if (map->markers[i].used && map->marker_ids[i] == id)
@@ -190,6 +227,13 @@ static rt_game3d_minimap_marker *game3d_minimap_marker_by_id(rt_game3d_minimap *
     return NULL;
 }
 
+/// @brief Initialize the first free marker slot and retain its optional references.
+/// @param map Borrowed minimap payload receiving the marker.
+/// @param entity Borrowed Entity3D handle for a following marker, or `NULL`.
+/// @param point Three-component fixed world point used when @p entity is `NULL`.
+/// @param icon Borrowed Pixels icon to retain, or `NULL` for a color chip.
+/// @param color Packed `0xRRGGBB` fallback color.
+/// @return Positive marker identifier, or zero after the fixed marker budget is exhausted.
 static int64_t game3d_minimap_add_marker_slot(
     rt_game3d_minimap *map, void *entity, const double point[3], void *icon, int64_t color) {
     for (int32_t i = 0; i < MINIMAP3D_MAX_MARKERS; ++i) {
@@ -215,6 +259,11 @@ static int64_t game3d_minimap_add_marker_slot(
 }
 
 /// @brief Add a marker following an entity. Returns a marker id.
+/// @param obj Borrowed Minimap3D handle.
+/// @param entity Borrowed Entity3D handle retained by the marker.
+/// @param icon Borrowed Pixels icon retained by the marker, or `NULL` for a color chip.
+/// @param color Packed `0xRRGGBB` fallback color.
+/// @return Positive marker identifier, or zero after invalid input or budget exhaustion.
 int64_t rt_game3d_minimap_add_marker(void *obj, void *entity, void *icon, int64_t color) {
     rt_game3d_minimap *map =
         game3d_minimap_checked(obj, "Game3D.Minimap3D.AddMarker: invalid minimap");
@@ -228,6 +277,11 @@ int64_t rt_game3d_minimap_add_marker(void *obj, void *entity, void *icon, int64_
 }
 
 /// @brief Add a marker at a fixed world point. Returns a marker id.
+/// @param obj Borrowed Minimap3D handle.
+/// @param point Borrowed Vec3 containing the fixed marker position.
+/// @param icon Borrowed Pixels icon retained by the marker, or `NULL` for a color chip.
+/// @param color Packed `0xRRGGBB` fallback color.
+/// @return Positive marker identifier, or zero after invalid input or budget exhaustion.
 int64_t rt_game3d_minimap_add_marker_at(void *obj, void *point, void *icon, int64_t color) {
     rt_game3d_minimap *map =
         game3d_minimap_checked(obj, "Game3D.Minimap3D.AddMarkerAt: invalid minimap");
@@ -240,6 +294,8 @@ int64_t rt_game3d_minimap_add_marker_at(void *obj, void *point, void *icon, int6
 }
 
 /// @brief Remove a marker by id (unknown ids are a safe no-op).
+/// @param obj Borrowed Minimap3D handle.
+/// @param id Marker identifier to remove.
 void rt_game3d_minimap_remove_marker(void *obj, int64_t id) {
     rt_game3d_minimap *map =
         game3d_minimap_checked(obj, "Game3D.Minimap3D.RemoveMarker: invalid minimap");
@@ -256,6 +312,9 @@ void rt_game3d_minimap_remove_marker(void *obj, int64_t id) {
 }
 
 /// @brief Toggle rim clamping for off-map markers (default on).
+/// @param obj Borrowed Minimap3D handle.
+/// @param id Marker identifier to update; unknown identifiers are ignored.
+/// @param clamp Nonzero to clamp the marker to the minimap border.
 void rt_game3d_minimap_set_marker_edge_clamp(void *obj, int64_t id, int8_t clamp) {
     rt_game3d_minimap *map =
         game3d_minimap_checked(obj, "Game3D.Minimap3D.SetMarkerEdgeClamp: invalid minimap");
@@ -265,6 +324,9 @@ void rt_game3d_minimap_set_marker_edge_clamp(void *obj, int64_t id, int8_t clamp
 }
 
 /// @brief Scale a marker's icon/chip (default 1).
+/// @param obj Borrowed Minimap3D handle.
+/// @param id Marker identifier to update; unknown identifiers are ignored.
+/// @param scale Positive finite glyph scale, capped at 8.
 void rt_game3d_minimap_set_marker_scale(void *obj, int64_t id, double scale) {
     rt_game3d_minimap *map =
         game3d_minimap_checked(obj, "Game3D.Minimap3D.SetMarkerScale: invalid minimap");
@@ -274,6 +336,9 @@ void rt_game3d_minimap_set_marker_scale(void *obj, int64_t id, double scale) {
 }
 
 /// @brief Project this marker onto the compass strip by bearing.
+/// @param obj Borrowed Minimap3D handle.
+/// @param id Marker identifier to update; unknown identifiers are ignored.
+/// @param enabled Nonzero to show the marker within the forward compass hemisphere.
 void rt_game3d_minimap_set_marker_on_compass(void *obj, int64_t id, int8_t enabled) {
     rt_game3d_minimap *map =
         game3d_minimap_checked(obj, "Game3D.Minimap3D.SetMarkerOnCompass: invalid minimap");
@@ -283,6 +348,9 @@ void rt_game3d_minimap_set_marker_on_compass(void *obj, int64_t id, int8_t enabl
 }
 
 /// @brief Draw this marker as a screen-space objective indicator.
+/// @param obj Borrowed Minimap3D handle.
+/// @param id Marker identifier to update; unknown identifiers are ignored.
+/// @param enabled Nonzero to render the projected or screen-edge objective glyph.
 void rt_game3d_minimap_set_objective_indicator(void *obj, int64_t id, int8_t enabled) {
     rt_game3d_minimap *map =
         game3d_minimap_checked(obj, "Game3D.Minimap3D.SetObjectiveIndicator: invalid minimap");
@@ -292,6 +360,8 @@ void rt_game3d_minimap_set_objective_indicator(void *obj, int64_t id, int8_t ena
 }
 
 /// @brief Number of live markers (telemetry/tests).
+/// @param obj Borrowed Minimap3D handle.
+/// @return Number of occupied marker slots, or zero for an invalid handle.
 int64_t rt_game3d_minimap_get_marker_count(void *obj) {
     rt_game3d_minimap *map =
         game3d_minimap_checked(obj, "Game3D.Minimap3D.get_MarkerCount: invalid minimap");
@@ -304,6 +374,10 @@ int64_t rt_game3d_minimap_get_marker_count(void *obj) {
 }
 
 /// @brief World X/Z to minimap viewport X (affine; unclamped).
+/// @param obj Borrowed Minimap3D handle.
+/// @param world_x World-space X coordinate to project.
+/// @param world_z World-space Z coordinate, accepted for API symmetry and otherwise unused.
+/// @return Unclamped viewport X coordinate, or zero for an invalid handle.
 double rt_game3d_minimap_map_x(void *obj, double world_x, double world_z) {
     rt_game3d_minimap *map = game3d_minimap_checked(obj, "Game3D.Minimap3D.MapX: invalid minimap");
     (void)world_z;
@@ -315,6 +389,10 @@ double rt_game3d_minimap_map_x(void *obj, double world_x, double world_z) {
 }
 
 /// @brief World X/Z to minimap viewport Y (affine; unclamped).
+/// @param obj Borrowed Minimap3D handle.
+/// @param world_x World-space X coordinate, accepted for API symmetry and otherwise unused.
+/// @param world_z World-space Z coordinate to project.
+/// @return Unclamped viewport Y coordinate, or zero for an invalid handle.
 double rt_game3d_minimap_map_y(void *obj, double world_x, double world_z) {
     rt_game3d_minimap *map = game3d_minimap_checked(obj, "Game3D.Minimap3D.MapY: invalid minimap");
     (void)world_x;
@@ -326,6 +404,8 @@ double rt_game3d_minimap_map_y(void *obj, double world_x, double world_z) {
 }
 
 /// @brief Wrap an angle to [-pi, pi].
+/// @param angle Angle in radians.
+/// @return Coterminal angle in the inclusive `[-pi, pi]` interval.
 static double game3d_minimap_wrap_angle(double angle) {
     while (angle > MINIMAP3D_PI)
         angle -= 2.0 * MINIMAP3D_PI;
@@ -336,6 +416,9 @@ static double game3d_minimap_wrap_angle(double angle) {
 
 /// @brief Clamp a map-space point to the viewport border along the ray from
 ///   the viewport center (the rim-bearing clamp).
+/// @param map Borrowed minimap payload defining the viewport.
+/// @param[in,out] px Horizontal point coordinate to clamp.
+/// @param[in,out] py Vertical point coordinate to clamp.
 static void game3d_minimap_clamp_to_rim(rt_game3d_minimap *map, double *px, double *py) {
     double cx = map->view_x + map->view_w * 0.5;
     double cy = map->view_y + map->view_h * 0.5;
@@ -353,6 +436,13 @@ static void game3d_minimap_clamp_to_rim(rt_game3d_minimap *map, double *px, doub
 }
 
 /// @brief Resolve a marker's current world position; 0 = drop (stale entity).
+/// @details Entity-following markers are removed in place when their retained entity is stale.
+/// Fixed-point markers copy their stored coordinates without additional validation.
+/// @param map Borrowed minimap payload owning the marker.
+/// @param[in,out] marker Marker slot to resolve and possibly invalidate.
+/// @param slot Marker-array index used to clear the parallel identifier.
+/// @param[out] out Required three-component world-position destination.
+/// @return Nonzero when @p out receives a position; zero when a stale marker was discarded.
 static int game3d_minimap_marker_world(rt_game3d_minimap *map,
                                        rt_game3d_minimap_marker *marker,
                                        int32_t slot,
@@ -374,6 +464,10 @@ static int game3d_minimap_marker_world(rt_game3d_minimap *map,
 }
 
 /// @brief Draw one marker glyph (icon or color chip) centered at px/py.
+/// @param canvas Borrowed Canvas3D handle receiving overlay primitives.
+/// @param marker Borrowed marker supplying its icon, color, and scale.
+/// @param px Horizontal glyph-center coordinate in pixels.
+/// @param py Vertical glyph-center coordinate in pixels.
 static void game3d_minimap_draw_glyph(void *canvas,
                                       rt_game3d_minimap_marker *marker,
                                       double px,
@@ -398,6 +492,7 @@ static void game3d_minimap_draw_glyph(void *canvas,
 
 /// @brief Render the minimap, compass, and objective indicators through the
 ///   Canvas3D overlay primitives. Games call this from their HUD pass.
+/// @param obj Borrowed Minimap3D handle.
 void rt_game3d_minimap_draw(void *obj) {
     rt_game3d_minimap *map = game3d_minimap_checked(obj, "Game3D.Minimap3D.Draw: invalid minimap");
     if (!map)

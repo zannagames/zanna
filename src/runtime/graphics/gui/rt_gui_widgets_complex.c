@@ -1660,6 +1660,17 @@ int64_t rt_spinner_was_submitted(void *spinner) {
     return sp ? (vg_widget_was_submitted(&sp->base) ? 1 : 0) : 0;
 }
 
+/// @brief Consume the spinner's value-scrub completion edge.
+/// @details A scrub is a horizontal value-area drag; the edge fires once per
+///          completed gesture so pollers can commit one coalesced edit.
+/// @param spinner Spinner widget handle.
+/// @return 1 once per completed scrub gesture, otherwise 0.
+int64_t rt_spinner_was_scrub_finished(void *spinner) {
+    RT_ASSERT_MAIN_THREAD();
+    vg_spinner_t *sp = rt_spinner_checked(spinner);
+    return sp && vg_spinner_was_scrub_finished(sp) ? 1 : 0;
+}
+
 /// @brief Return the spinner's non-consuming state revision.
 /// @param spinner Spinner widget handle.
 /// @return Monotonic signed revision, or zero when the handle is invalid.
@@ -3089,6 +3100,14 @@ int64_t rt_spinner_was_changed(void *spinner) {
 /// @param spinner Ignored spinner handle.
 /// @return Always zero.
 int64_t rt_spinner_was_submitted(void *spinner) {
+    (void)spinner;
+    return 0;
+}
+
+/// @brief Stub: no spinner scrub edge exists when graphics is disabled.
+/// @param spinner Ignored spinner handle.
+/// @return Always zero.
+int64_t rt_spinner_was_scrub_finished(void *spinner) {
     (void)spinner;
     return 0;
 }

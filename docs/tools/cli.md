@@ -416,8 +416,9 @@ zanna codegen arm64 <in.il> --native-asm --target-windows -o <out.obj>
 
 On x86-64, `--asset-blob` embeds the ZPAK payload directly when using `--native-asm`. If you force `--system-asm`, pair it with `--extra-obj <asset.o>` so the asset symbols are still linked into the final binary.
 
-On x86-64, `--target-darwin`, `--target-linux`, and `--target-windows` select the assembly dialect, native object
-format, and native-link platform together. `--target-win64` still switches the calling convention to Win64 and also
+On x86-64, `--target-linux` and `--target-windows` select the assembly dialect, native object
+format, and native-link platform together. (`--target-darwin` selects the Darwin assembly dialect and Mach-O object
+format only; macOS x86-64 is not a supported native-link target — macOS support is Apple Silicon/arm64.) `--target-win64` still switches the calling convention to Win64 and also
 selects the Windows platform policy. When you use `--native-asm` with `-o <file.o>` or `-o <file.obj>`, the compiler
 writes a relocatable object instead of linking an executable.
 

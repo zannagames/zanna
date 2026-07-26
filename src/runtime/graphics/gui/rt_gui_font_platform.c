@@ -24,6 +24,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file rt_gui_font_platform.c
+/// @brief Implements deterministic host UI-font discovery without external dependencies.
+///
+/// @details
+/// Platform-selected candidate lists are tried in preference order through
+/// Zanna's built-in font loader, returning the first complete parsed face and
+/// leaving embedded fallback policy to the caller.
+
 #include "rt_gui_font_platform.h"
 #include "rt_platform.h"
 #include "vg_font.h"

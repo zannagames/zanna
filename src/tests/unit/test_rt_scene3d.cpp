@@ -40,6 +40,7 @@
 #include "rt_option.h"
 #include "rt_physics3d.h"
 #include "rt_pixels.h"
+#include "rt_raycast3d.h"
 #include "rt_scene3d.h"
 #include "rt_scene3d_internal.h"
 #include "rt_seq.h"
@@ -1534,6 +1535,90 @@ static void test_scene_spatial_queries_validate_vec3_args_before_result_alloc() 
     EXPECT_TRUE(expect_trap_contains([&] { (void)rt_scene3d_query_sphere(scene, scene, 1.0); },
                                      "center must be Vec3"),
                 "QuerySphere traps with a clear message for non-Vec3 center");
+}
+
+static void test_scene_precise_raycast_selects_through_aabb_gaps() {
+    void *scene = rt_scene3d_new();
+    void *corner_node = rt_scene_node3d_new();
+    void *behind_node = rt_scene_node3d_new();
+    void *farther_node = rt_scene_node3d_new();
+    void *mesh = rt_mesh3d_new_box(2.0, 2.0, 2.0);
+    void *material = rt_material3d_new_color(1.0, 1.0, 1.0);
+
+    /* A box rotated 45° about Z inflates its world AABB past its geometry:
+     * the ray below passes inside that AABB but outside the diamond
+     * cross-section, so only triangle-accurate picking can reject it. */
+    rt_scene_node3d_set_name(corner_node, rt_const_cstr("corner"));
+    rt_scene_node3d_set_position(corner_node, 1.2, 0.0, -4.0);
+    rt_scene_node3d_set_rotation(corner_node, rt_quat_from_euler(0.0, 0.0, M_PI / 4.0));
+    rt_scene_node3d_set_mesh(corner_node, mesh);
+    rt_scene_node3d_set_material(corner_node, material);
+    rt_scene3d_add(scene, corner_node);
+
+    rt_scene_node3d_set_name(behind_node, rt_const_cstr("behind"));
+    rt_scene_node3d_set_position(behind_node, 0.0, 0.5, -8.0);
+    rt_scene_node3d_set_mesh(behind_node, mesh);
+    rt_scene_node3d_set_material(behind_node, material);
+    rt_scene3d_add(scene, behind_node);
+
+    rt_scene_node3d_set_name(farther_node, rt_const_cstr("farther"));
+    rt_scene_node3d_set_position(farther_node, 0.0, 0.5, -12.0);
+    rt_scene_node3d_set_mesh(farther_node, mesh);
+    rt_scene_node3d_set_material(farther_node, material);
+    rt_scene3d_add(scene, farther_node);
+
+    /* The AABB query provably picks the wrong node here — the empty box
+     * corner is nearer than the box actually on the ray. */
+    void *aabb_hit = rt_scene3d_raycast_nodes(
+        scene, rt_vec3_new(0.0, 0.5, 0.0), rt_vec3_new(0.0, 0.0, -1.0), 40.0);
+    EXPECT_TRUE(aabb_hit == corner_node,
+                "RaycastNodes hits the rotated box's empty AABB corner (the gap scenario)");
+
+    void *precise_hit = rt_scene3d_raycast_nodes_precise(
+        scene, rt_vec3_new(0.0, 0.5, 0.0), rt_vec3_new(0.0, 0.0, -1.0), 40.0);
+    EXPECT_TRUE(precise_hit == behind_node,
+                "RaycastNodesPrecise selects the triangle-hit node behind the empty corner");
+
+    void *all_hits = rt_scene3d_raycast_nodes_precise_all(
+        scene, rt_vec3_new(0.0, 0.5, 0.0), rt_vec3_new(0.0, 0.0, -1.0), 40.0);
+    EXPECT_TRUE(rt_seq_len(all_hits) == 2,
+                "RaycastNodesPreciseAll returns only triangle-hit nodes");
+    EXPECT_TRUE(rt_seq_get(all_hits, 0) == behind_node,
+                "RaycastNodesPreciseAll sorts the nearer hit first");
+    EXPECT_TRUE(rt_seq_get(all_hits, 1) == farther_node,
+                "RaycastNodesPreciseAll sorts the farther hit second");
+
+    void *hit_info = rt_scene3d_raycast_precise_hit(
+        scene, rt_vec3_new(0.0, 0.5, 0.0), rt_vec3_new(0.0, 0.0, -1.0), 40.0);
+    EXPECT_TRUE(hit_info != nullptr, "RaycastPreciseHit returns the nearest triangle hit");
+    if (hit_info) {
+        EXPECT_NEAR(rt_ray3d_hit_distance(hit_info), 7.0, 1e-6,
+                    "RaycastPreciseHit distance reaches the near face of the behind box");
+        void *point = rt_ray3d_hit_point(hit_info);
+        EXPECT_NEAR(rt_vec3_z(point), -7.0, 1e-6, "RaycastPreciseHit point sits on the near face");
+        void *normal = rt_ray3d_hit_normal(hit_info);
+        EXPECT_NEAR(rt_vec3_z(normal), 1.0, 1e-6, "RaycastPreciseHit face normal faces the ray");
+    }
+
+    /* Range and visibility follow the AABB query's contract. */
+    void *capped = rt_scene3d_raycast_nodes_precise(
+        scene, rt_vec3_new(0.0, 0.5, 0.0), rt_vec3_new(0.0, 0.0, -1.0), 5.0);
+    EXPECT_TRUE(capped == nullptr, "RaycastNodesPrecise respects the distance cap");
+
+    rt_scene_node3d_set_visible(behind_node, 0);
+    void *skipping_hidden = rt_scene3d_raycast_nodes_precise(
+        scene, rt_vec3_new(0.0, 0.5, 0.0), rt_vec3_new(0.0, 0.0, -1.0), 40.0);
+    EXPECT_TRUE(skipping_hidden == farther_node,
+                "RaycastNodesPrecise skips hidden nodes like the AABB query");
+    rt_scene_node3d_set_visible(behind_node, 1);
+
+    EXPECT_TRUE(expect_trap_contains(
+                    [&] {
+                        (void)rt_scene3d_raycast_nodes_precise(
+                            scene, scene, rt_vec3_new(0.0, 0.0, -1.0), 40.0);
+                    },
+                    "origin must be Vec3"),
+                "RaycastNodesPrecise traps with a clear message for non-Vec3 origin");
 }
 
 static void test_scene_spatial_index_rebuilds_on_dirty_node() {
@@ -4791,6 +4876,7 @@ int main() {
     test_dynamic_deformation_rejects_corrupt_morph_delta_span();
     test_parent_animator_drives_child_skinned_meshes();
     test_scene_spatial_queries_flat_walk_reference();
+    test_scene_precise_raycast_selects_through_aabb_gaps();
     test_scene_spatial_queries_validate_vec3_args_before_result_alloc();
     test_scene_spatial_index_rebuilds_on_dirty_node();
     test_scene_draw_spatial_index_matches_flat_reference();

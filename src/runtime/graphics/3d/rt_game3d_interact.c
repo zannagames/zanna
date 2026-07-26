@@ -13,13 +13,22 @@
 // Key invariants:
 //   - Scanning walks the world entity list (no physics query): deterministic
 //     candidate order, stale/despawned entities fail closed.
-//   - The current focus keeps a 10% score bonus so ties never flicker.
+//   - The current focus receives a 1.10 score multiplier to reduce focus churn.
 // Ownership/Lifetime:
 //   - Components hold plain backrefs to their owner entity (NULLed at entity
 //     teardown); the interactor retains its focused interactable.
 // Links: misc/plans/thirdpersonupgrade/21-interaction-system.md, ADR 0093.
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements deterministic focus selection and polled interactions for Game3D.
+/// @details Interactable3D describes a prompt, kind, range, priority, and enabled
+///          state on a candidate entity. Interactor3D scans the authoritative
+///          world registry in stable order, filters candidates by distance,
+///          view cone, and optional physics line of sight, then retains the
+///          highest-scoring target with a current-focus hysteresis multiplier.
+///          Focus changes and successful interactions are exposed as polled state.
 
 #ifdef ZANNA_ENABLE_GRAPHICS
 
@@ -38,6 +47,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Per-entity interaction target metadata.
 typedef struct rt_game3d_interactable {
     void *vptr;
     void *entity; /* plain backref; NULLed at teardown */
@@ -48,6 +58,7 @@ typedef struct rt_game3d_interactable {
     int8_t enabled;
 } rt_game3d_interactable;
 
+/// @brief Per-entity focus scanner and interaction telemetry.
 typedef struct rt_game3d_interactor {
     void *vptr;
     void *entity; /* owner backref; NULLed at teardown */
@@ -65,6 +76,8 @@ typedef struct rt_game3d_interactor {
  * Interactable3D
  *=========================================================================*/
 
+/// @brief Clear the entity back-reference and release the retained prompt.
+/// @param obj Interactable3D storage being finalized; NULL is ignored.
 static void game3d_interactable_finalize(void *obj) {
     rt_game3d_interactable *item = (rt_game3d_interactable *)obj;
     if (!item)
@@ -73,6 +86,12 @@ static void game3d_interactable_finalize(void *obj) {
     game3d_release_ref((void **)&item->prompt);
 }
 
+/// @brief Create and install an enabled interaction target on an entity.
+/// @details The entity retains the new component and clears the plain back-reference
+///          of any previous target. The returned creation reference remains owned
+///          by the caller.
+/// @param entity_obj Entity3D that receives the component.
+/// @return A newly allocated Interactable3D, or NULL after validation or allocation failure.
 void *rt_game3d_interactable_new(void *entity_obj) {
     rt_game3d_entity *entity =
         (rt_game3d_entity *)rt_g3d_checked_or_null(entity_obj, RT_G3D_GAME3D_ENTITY_CLASS_ID);
@@ -102,6 +121,10 @@ void *rt_game3d_interactable_new(void *entity_obj) {
     return item;
 }
 
+/// @brief Validate a runtime handle as Interactable3D.
+/// @param obj Candidate runtime handle.
+/// @param method Trap message used when validation fails.
+/// @return The typed component pointer, or NULL after trapping.
 static rt_game3d_interactable *game3d_interactable_checked(void *obj, const char *method) {
     rt_game3d_interactable *item =
         (rt_game3d_interactable *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_INTERACTABLE_CLASS_ID);
@@ -110,6 +133,10 @@ static rt_game3d_interactable *game3d_interactable_checked(void *obj, const char
     return item;
 }
 
+/// @brief Retain a new display prompt for an interaction target.
+/// @param obj Interactable3D runtime handle.
+/// @param prompt Runtime string to retain; NULL leaves the existing prompt unchanged.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_interactable_with_prompt(void *obj, rt_string prompt) {
     rt_game3d_interactable *item =
         game3d_interactable_checked(obj, "Game3D.Interactable3D.withPrompt: invalid component");
@@ -118,6 +145,9 @@ void *rt_game3d_interactable_with_prompt(void *obj, rt_string prompt) {
     return obj;
 }
 
+/// @brief Return an owned reference to the interaction prompt.
+/// @param obj Interactable3D runtime handle.
+/// @return A retained runtime string, or the canonical empty string when unavailable.
 rt_string rt_game3d_interactable_get_prompt(void *obj) {
     rt_game3d_interactable *item =
         game3d_interactable_checked(obj, "Game3D.Interactable3D.get_Prompt: invalid component");
@@ -126,6 +156,10 @@ rt_string rt_game3d_interactable_get_prompt(void *obj) {
     return rt_string_ref(item->prompt);
 }
 
+/// @brief Store the application-defined interaction kind.
+/// @param obj Interactable3D runtime handle.
+/// @param kind Opaque scalar kind value.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_interactable_with_kind(void *obj, int64_t kind) {
     rt_game3d_interactable *item =
         game3d_interactable_checked(obj, "Game3D.Interactable3D.withKind: invalid component");
@@ -134,12 +168,20 @@ void *rt_game3d_interactable_with_kind(void *obj, int64_t kind) {
     return obj;
 }
 
+/// @brief Return the application-defined interaction kind.
+/// @param obj Interactable3D runtime handle.
+/// @return The stored kind, or zero when invalid.
 int64_t rt_game3d_interactable_get_kind(void *obj) {
     rt_game3d_interactable *item =
         game3d_interactable_checked(obj, "Game3D.Interactable3D.get_Kind: invalid component");
     return item ? item->kind : 0;
 }
 
+/// @brief Configure the maximum focus distance.
+/// @param obj Interactable3D runtime handle.
+/// @param radius Finite positive world-space radius, capped at 64; invalid
+///               values leave the existing radius unchanged.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_interactable_with_radius(void *obj, double radius) {
     rt_game3d_interactable *item =
         game3d_interactable_checked(obj, "Game3D.Interactable3D.withRadius: invalid component");
@@ -148,12 +190,18 @@ void *rt_game3d_interactable_with_radius(void *obj, double radius) {
     return obj;
 }
 
+/// @brief Return the maximum focus distance.
+/// @param obj Interactable3D runtime handle.
+/// @return The stored world-space radius, or zero when invalid.
 double rt_game3d_interactable_get_radius(void *obj) {
     rt_game3d_interactable *item =
         game3d_interactable_checked(obj, "Game3D.Interactable3D.get_Radius: invalid component");
     return item ? item->radius : 0.0;
 }
 
+/// @brief Enable or disable participation in focus scans.
+/// @param obj Interactable3D runtime handle.
+/// @param enabled Non-zero to make the target eligible.
 void rt_game3d_interactable_set_enabled(void *obj, int8_t enabled) {
     rt_game3d_interactable *item =
         game3d_interactable_checked(obj, "Game3D.Interactable3D.set_Enabled: invalid component");
@@ -161,12 +209,18 @@ void rt_game3d_interactable_set_enabled(void *obj, int8_t enabled) {
         item->enabled = enabled ? 1 : 0;
 }
 
+/// @brief Report whether the target participates in focus scans.
+/// @param obj Interactable3D runtime handle.
+/// @return Non-zero when enabled, otherwise zero.
 int8_t rt_game3d_interactable_get_enabled(void *obj) {
     rt_game3d_interactable *item =
         game3d_interactable_checked(obj, "Game3D.Interactable3D.get_Enabled: invalid component");
     return item ? item->enabled : 0;
 }
 
+/// @brief Set the additive application-defined focus score bias.
+/// @param obj Interactable3D runtime handle.
+/// @param priority Finite score bias; non-finite values are ignored.
 void rt_game3d_interactable_set_focus_priority(void *obj, double priority) {
     rt_game3d_interactable *item = game3d_interactable_checked(
         obj, "Game3D.Interactable3D.set_FocusPriority: invalid component");
@@ -174,6 +228,9 @@ void rt_game3d_interactable_set_focus_priority(void *obj, double priority) {
         item->focus_priority = priority;
 }
 
+/// @brief Return the additive focus score bias.
+/// @param obj Interactable3D runtime handle.
+/// @return The stored bias, or zero when invalid.
 double rt_game3d_interactable_get_focus_priority(void *obj) {
     rt_game3d_interactable *item = game3d_interactable_checked(
         obj, "Game3D.Interactable3D.get_FocusPriority: invalid component");
@@ -184,6 +241,8 @@ double rt_game3d_interactable_get_focus_priority(void *obj) {
  * Interactor3D
  *=========================================================================*/
 
+/// @brief Clear the owner back-reference and release focused-target history.
+/// @param obj Interactor3D storage being finalized; NULL is ignored.
 static void game3d_interactor_finalize(void *obj) {
     rt_game3d_interactor *scanner = (rt_game3d_interactor *)obj;
     if (!scanner)
@@ -193,6 +252,12 @@ static void game3d_interactor_finalize(void *obj) {
     game3d_release_ref(&scanner->last_interacted);
 }
 
+/// @brief Create and install a focus scanner on an entity.
+/// @details The entity retains the new component and clears the plain back-reference
+///          of any previous scanner. The returned creation reference remains owned
+///          by the caller.
+/// @param entity_obj Entity3D that owns the scanner origin and forward direction.
+/// @return A newly allocated Interactor3D, or NULL after validation or allocation failure.
 void *rt_game3d_interactor_new(void *entity_obj) {
     rt_game3d_entity *entity =
         (rt_game3d_entity *)rt_g3d_checked_or_null(entity_obj, RT_G3D_GAME3D_ENTITY_CLASS_ID);
@@ -222,6 +287,10 @@ void *rt_game3d_interactor_new(void *entity_obj) {
     return scanner;
 }
 
+/// @brief Validate a runtime handle as Interactor3D.
+/// @param obj Candidate runtime handle.
+/// @param method Trap message used when validation fails.
+/// @return The typed scanner pointer, or NULL after trapping.
 static rt_game3d_interactor *game3d_interactor_checked(void *obj, const char *method) {
     rt_game3d_interactor *scanner =
         (rt_game3d_interactor *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_INTERACTOR_CLASS_ID);
@@ -230,6 +299,10 @@ static rt_game3d_interactor *game3d_interactor_checked(void *obj, const char *me
     return scanner;
 }
 
+/// @brief Configure the full horizontal/vertical focus cone angle.
+/// @param obj Interactor3D runtime handle.
+/// @param degrees Finite angle greater than one degree, capped at 180;
+///                invalid values leave the current cone unchanged.
 void rt_game3d_interactor_set_cone_degrees(void *obj, double degrees) {
     rt_game3d_interactor *scanner =
         game3d_interactor_checked(obj, "Game3D.Interactor3D.set_ConeDegrees: invalid scanner");
@@ -237,12 +310,18 @@ void rt_game3d_interactor_set_cone_degrees(void *obj, double degrees) {
         scanner->cone_degrees = degrees > 180.0 ? 180.0 : degrees;
 }
 
+/// @brief Return the full focus cone angle.
+/// @param obj Interactor3D runtime handle.
+/// @return The stored angle in degrees, or zero when invalid.
 double rt_game3d_interactor_get_cone_degrees(void *obj) {
     rt_game3d_interactor *scanner =
         game3d_interactor_checked(obj, "Game3D.Interactor3D.get_ConeDegrees: invalid scanner");
     return scanner ? scanner->cone_degrees : 0.0;
 }
 
+/// @brief Configure whether physics line of sight gates focus.
+/// @param obj Interactor3D runtime handle.
+/// @param required Non-zero to reject candidates occluded by a different body.
 void rt_game3d_interactor_set_require_los(void *obj, int8_t required) {
     rt_game3d_interactor *scanner = game3d_interactor_checked(
         obj, "Game3D.Interactor3D.set_RequireLineOfSight: invalid scanner");
@@ -250,12 +329,18 @@ void rt_game3d_interactor_set_require_los(void *obj, int8_t required) {
         scanner->require_los = required ? 1 : 0;
 }
 
+/// @brief Report whether physics line of sight is required.
+/// @param obj Interactor3D runtime handle.
+/// @return Non-zero when line-of-sight filtering is enabled.
 int8_t rt_game3d_interactor_get_require_los(void *obj) {
     rt_game3d_interactor *scanner = game3d_interactor_checked(
         obj, "Game3D.Interactor3D.get_RequireLineOfSight: invalid scanner");
     return scanner ? scanner->require_los : 0;
 }
 
+/// @brief Set the collision mask used for occlusion rays.
+/// @param obj Interactor3D runtime handle.
+/// @param mask Physics collision-mask bits; -1 selects all layers by convention.
 void rt_game3d_interactor_set_los_mask(void *obj, int64_t mask) {
     rt_game3d_interactor *scanner =
         game3d_interactor_checked(obj, "Game3D.Interactor3D.set_LosMask: invalid scanner");
@@ -263,12 +348,18 @@ void rt_game3d_interactor_set_los_mask(void *obj, int64_t mask) {
         scanner->los_mask = mask;
 }
 
+/// @brief Return the collision mask used for occlusion rays.
+/// @param obj Interactor3D runtime handle.
+/// @return The stored mask bits, or zero when invalid.
 int64_t rt_game3d_interactor_get_los_mask(void *obj) {
     rt_game3d_interactor *scanner =
         game3d_interactor_checked(obj, "Game3D.Interactor3D.get_LosMask: invalid scanner");
     return scanner ? scanner->los_mask : 0;
 }
 
+/// @brief Return an owned reference to the currently focused target.
+/// @param obj Interactor3D runtime handle.
+/// @return A retained Interactable3D pointer, or NULL when no target is focused.
 void *rt_game3d_interactor_get_focused(void *obj) {
     rt_game3d_interactor *scanner =
         game3d_interactor_checked(obj, "Game3D.Interactor3D.get_Focused: invalid scanner");
@@ -279,6 +370,9 @@ void *rt_game3d_interactor_get_focused(void *obj) {
 }
 
 /// @brief One-shot: true when the focused target changed since the last call.
+/// @param obj Interactor3D runtime handle.
+/// @return Non-zero once after a focus transition, otherwise zero.
+/// @post Any pending focus-change notification is cleared.
 int8_t rt_game3d_interactor_focus_changed(void *obj) {
     rt_game3d_interactor *scanner =
         game3d_interactor_checked(obj, "Game3D.Interactor3D.FocusChanged: invalid scanner");
@@ -289,7 +383,10 @@ int8_t rt_game3d_interactor_focus_changed(void *obj) {
     return changed;
 }
 
-/// @brief Request an interaction with the current focus (resolved next tick).
+/// @brief Record an interaction immediately against the current focus.
+/// @details Successful calls increment telemetry and retain the focused target
+///          as last-interacted state; no callback or deferred tick is involved.
+/// @param obj Interactor3D runtime handle.
 /// @return 1 when a target is currently focused.
 int8_t rt_game3d_interactor_interact(void *obj) {
     rt_game3d_interactor *scanner =
@@ -301,12 +398,18 @@ int8_t rt_game3d_interactor_interact(void *obj) {
     return 1;
 }
 
+/// @brief Return the number of successful interaction polls.
+/// @param obj Interactor3D runtime handle.
+/// @return The accumulated interaction count, or zero when invalid.
 int64_t rt_game3d_interactor_get_interact_count(void *obj) {
     rt_game3d_interactor *scanner =
         game3d_interactor_checked(obj, "Game3D.Interactor3D.get_InteractCount: invalid scanner");
     return scanner ? scanner->interact_count : 0;
 }
 
+/// @brief Return an owned reference to the most recently interacted target.
+/// @param obj Interactor3D runtime handle.
+/// @return A retained Interactable3D pointer, or NULL before any interaction.
 void *rt_game3d_interactor_get_last_interacted(void *obj) {
     rt_game3d_interactor *scanner =
         game3d_interactor_checked(obj, "Game3D.Interactor3D.get_LastInteracted: invalid scanner");
@@ -317,6 +420,9 @@ void *rt_game3d_interactor_get_last_interacted(void *obj) {
 }
 
 /// @brief Owner-forward vector: the entity node's world rotation applied to -Z.
+/// @param entity Entity3D supplying the scene-node world rotation.
+/// @param[out] out_fwd Three-element destination initialized to normalized -Z
+///                     and replaced with the normalized rotated vector when available.
 static void game3d_interactor_forward(rt_game3d_entity *entity, double out_fwd[3]) {
     out_fwd[0] = 0.0;
     out_fwd[1] = 0.0;
@@ -343,6 +449,14 @@ static void game3d_interactor_forward(rt_game3d_entity *entity, double out_fwd[3
 }
 
 /// @brief Per-step scan: pick the best focused interactable (hysteresis-stable).
+/// @details Candidates are visited in registry order and must be alive, enabled,
+///          within their radius, and inside the cone. Optional rays ignore a
+///          hit on the candidate's own body; near-touching candidates skip the
+///          ray. Strictly greater scores replace the current best, preserving
+///          deterministic first-candidate tie behavior.
+/// @param world World3D supplying candidate order and optional physics.
+/// @param owner Entity3D supplying scanner state, origin, and orientation.
+/// @param dt Simulation step in seconds; unused because scanning is instantaneous.
 void game3d_interactor_tick(rt_game3d_world *world, rt_game3d_entity *owner, double dt) {
     (void)dt;
     rt_game3d_interactor *scanner = (rt_game3d_interactor *)rt_g3d_checked_or_null(

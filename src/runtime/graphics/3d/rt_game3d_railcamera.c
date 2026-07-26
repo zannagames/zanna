@@ -22,6 +22,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements spline-driven gameplay cameras with arclength motion and keyed lens effects.
+/// @details RailCamera3D separates pre-physics progress integration from post-sync
+/// camera placement, supports mutually exclusive entity, point, path, or tangent
+/// look targets, and evaluates bounded FOV and roll key arrays with linear or
+/// smoothstep interpolation.
+
 #include "rt_canvas3d.h"
 #include "rt_game3d.h"
 #include "rt_game3d_internal.h"
@@ -34,6 +41,7 @@
 #include <string.h>
 
 /// @brief GC finalizer: release retained references.
+/// @param obj Finalized RailCamera3D payload; `NULL` is ignored.
 static void game3d_rail_camera_finalize(void *obj) {
     rt_game3d_rail_camera *rail = (rt_game3d_rail_camera *)obj;
     if (!rail)
@@ -47,6 +55,9 @@ static void game3d_rail_camera_finalize(void *obj) {
 
 /// @brief Create a rail camera riding @p path in @p world. Defaults: manual
 ///   progress, damping 0 (snap), linear keys, tangent-facing.
+/// @param world_obj Borrowed live World3D handle retained by the controller.
+/// @param path Borrowed Path3D handle retained as the camera rail.
+/// @return New GC-managed RailCamera3D handle, or `NULL` after validation or allocation failure.
 void *rt_game3d_rail_camera_new(void *world_obj, void *path) {
     rt_game3d_world *world =
         game3d_world_checked(world_obj, "Game3D.RailCamera3D.New: invalid world");
@@ -70,6 +81,8 @@ void *rt_game3d_rail_camera_new(void *world_obj, void *path) {
 }
 
 /// @brief Get the requested arclength-normalized progress [0,1].
+/// @param obj Borrowed RailCamera3D handle.
+/// @return Requested normalized progress, or zero for an invalid handle.
 double rt_game3d_rail_camera_get_progress(void *obj) {
     rt_game3d_rail_camera *rail =
         game3d_rail_camera_checked(obj, "Game3D.RailCamera3D.get_progress: invalid rail");
@@ -77,6 +90,8 @@ double rt_game3d_rail_camera_get_progress(void *obj) {
 }
 
 /// @brief Set the requested progress (clamped [0,1]; damped when Damping > 0).
+/// @param obj Borrowed RailCamera3D handle.
+/// @param progress Requested normalized progress; non-finite input becomes zero.
 void rt_game3d_rail_camera_set_progress(void *obj, double progress) {
     rt_game3d_rail_camera *rail =
         game3d_rail_camera_checked(obj, "Game3D.RailCamera3D.set_progress: invalid rail");
@@ -85,6 +100,8 @@ void rt_game3d_rail_camera_set_progress(void *obj, double progress) {
 }
 
 /// @brief Get the auto-advance speed (units/sec along arclength; 0 = manual).
+/// @param obj Borrowed RailCamera3D handle.
+/// @return Stored non-negative speed in world units per second, or zero when invalid.
 double rt_game3d_rail_camera_get_speed(void *obj) {
     rt_game3d_rail_camera *rail =
         game3d_rail_camera_checked(obj, "Game3D.RailCamera3D.get_speed: invalid rail");
@@ -92,6 +109,9 @@ double rt_game3d_rail_camera_get_speed(void *obj) {
 }
 
 /// @brief Set the auto-advance speed.
+/// @param obj Borrowed RailCamera3D handle.
+/// @param speed Requested non-negative world-units-per-second speed, bounded by the controller
+/// limit.
 void rt_game3d_rail_camera_set_speed(void *obj, double speed) {
     rt_game3d_rail_camera *rail =
         game3d_rail_camera_checked(obj, "Game3D.RailCamera3D.set_speed: invalid rail");
@@ -100,6 +120,8 @@ void rt_game3d_rail_camera_set_speed(void *obj, double speed) {
 }
 
 /// @brief Get the progress damping factor (0 = snap).
+/// @param obj Borrowed RailCamera3D handle.
+/// @return Stored non-negative exponential damping factor, or zero when invalid.
 double rt_game3d_rail_camera_get_position_damping(void *obj) {
     rt_game3d_rail_camera *rail =
         game3d_rail_camera_checked(obj, "Game3D.RailCamera3D.get_positionDamping: invalid rail");
@@ -107,6 +129,8 @@ double rt_game3d_rail_camera_get_position_damping(void *obj) {
 }
 
 /// @brief Set the progress damping factor.
+/// @param obj Borrowed RailCamera3D handle.
+/// @param damping Requested non-negative exponential damping factor, bounded by the Game3D limit.
 void rt_game3d_rail_camera_set_position_damping(void *obj, double damping) {
     rt_game3d_rail_camera *rail =
         game3d_rail_camera_checked(obj, "Game3D.RailCamera3D.set_positionDamping: invalid rail");
@@ -115,6 +139,8 @@ void rt_game3d_rail_camera_set_position_damping(void *obj, double damping) {
 }
 
 /// @brief Look at an entity's post-physics position (clears other look modes).
+/// @param obj Borrowed RailCamera3D handle.
+/// @param entity Borrowed Entity3D handle retained as the target, or `NULL` for tangent-facing.
 void rt_game3d_rail_camera_set_look_entity(void *obj, void *entity) {
     rt_game3d_rail_camera *rail =
         game3d_rail_camera_checked(obj, "Game3D.RailCamera3D.setLookEntity: invalid rail");
@@ -130,6 +156,8 @@ void rt_game3d_rail_camera_set_look_entity(void *obj, void *entity) {
 }
 
 /// @brief Look at a fixed point (clears other look modes).
+/// @param obj Borrowed RailCamera3D handle.
+/// @param point Borrowed Vec3 retained as the target, or `NULL` for tangent-facing.
 void rt_game3d_rail_camera_set_look_point(void *obj, void *point) {
     rt_game3d_rail_camera *rail =
         game3d_rail_camera_checked(obj, "Game3D.RailCamera3D.setLookPoint: invalid rail");
@@ -145,6 +173,8 @@ void rt_game3d_rail_camera_set_look_point(void *obj, void *point) {
 }
 
 /// @brief Look along a second path evaluated at the same t (clears other modes).
+/// @param obj Borrowed RailCamera3D handle.
+/// @param path Borrowed Path3D retained as the target rail, or `NULL` for tangent-facing.
 void rt_game3d_rail_camera_set_look_path(void *obj, void *path) {
     rt_game3d_rail_camera *rail =
         game3d_rail_camera_checked(obj, "Game3D.RailCamera3D.setLookPath: invalid rail");
@@ -160,6 +190,11 @@ void rt_game3d_rail_camera_set_look_path(void *obj, void *path) {
 }
 
 /// @brief Sorted-insert a key into a bounded key array.
+/// @param[in,out] keys Fixed-capacity key array receiving the entry.
+/// @param[in,out] count Current key count, incremented after insertion.
+/// @param t Normalized arclength position, sanitized and clamped to `[0, 1]`.
+/// @param value Finite key value; non-finite input becomes zero.
+/// @param full_message Diagnostic recorded when the 16-key budget is exhausted.
 static void game3d_rail_add_key(
     rt_game3d_rail_key *keys, int32_t *count, double t, double value, const char *full_message) {
     if (*count >= RT_GAME3D_RAIL_MAX_KEYS) {
@@ -179,6 +214,10 @@ static void game3d_rail_add_key(
 }
 
 /// @brief Fluent: add an FOV key at arclength t.
+/// @param obj Borrowed RailCamera3D handle.
+/// @param t Normalized arclength position, clamped to `[0, 1]`.
+/// @param fov Vertical field of view in degrees, clamped to `[1, 179]`.
+/// @return Original borrowed rail-camera handle for fluent chaining.
 void *rt_game3d_rail_camera_add_fov_key(void *obj, double t, double fov) {
     rt_game3d_rail_camera *rail =
         game3d_rail_camera_checked(obj, "Game3D.RailCamera3D.addFovKey: invalid rail");
@@ -192,6 +231,10 @@ void *rt_game3d_rail_camera_add_fov_key(void *obj, double t, double fov) {
 }
 
 /// @brief Fluent: add a roll key (degrees about the view axis) at arclength t.
+/// @param obj Borrowed RailCamera3D handle.
+/// @param t Normalized arclength position, clamped to `[0, 1]`.
+/// @param degrees Roll angle bounded to 720 degrees in either direction.
+/// @return Original borrowed rail-camera handle for fluent chaining.
 void *rt_game3d_rail_camera_add_roll_key(void *obj, double t, double degrees) {
     rt_game3d_rail_camera *rail =
         game3d_rail_camera_checked(obj, "Game3D.RailCamera3D.addRollKey: invalid rail");
@@ -205,6 +248,8 @@ void *rt_game3d_rail_camera_add_roll_key(void *obj, double t, double degrees) {
 }
 
 /// @brief Get whether keys interpolate with smoothstep instead of linearly.
+/// @param obj Borrowed RailCamera3D handle.
+/// @return Nonzero for smoothstep interpolation; zero for linear or invalid input.
 int8_t rt_game3d_rail_camera_get_key_ease(void *obj) {
     rt_game3d_rail_camera *rail =
         game3d_rail_camera_checked(obj, "Game3D.RailCamera3D.get_keyEase: invalid rail");
@@ -212,6 +257,8 @@ int8_t rt_game3d_rail_camera_get_key_ease(void *obj) {
 }
 
 /// @brief Choose smoothstep (true) or linear (false) key interpolation.
+/// @param obj Borrowed RailCamera3D handle.
+/// @param smooth Nonzero to use smoothstep within each key interval.
 void rt_game3d_rail_camera_set_key_ease(void *obj, int8_t smooth) {
     rt_game3d_rail_camera *rail =
         game3d_rail_camera_checked(obj, "Game3D.RailCamera3D.set_keyEase: invalid rail");
@@ -220,6 +267,12 @@ void rt_game3d_rail_camera_set_key_ease(void *obj, int8_t smooth) {
 }
 
 /// @brief Evaluate a sorted key array at @p t (clamped ends, linear/smoothstep).
+/// @param keys Borrowed sorted key array.
+/// @param count Number of readable entries.
+/// @param t Normalized evaluation position.
+/// @param smooth Nonzero to smoothstep the interval fraction.
+/// @param[out] out_value Required destination for the evaluated value.
+/// @return Nonzero when at least one key was evaluated; zero for an empty array.
 static int game3d_rail_eval_keys(
     const rt_game3d_rail_key *keys, int32_t count, double t, int8_t smooth, double *out_value) {
     if (count <= 0)
@@ -247,6 +300,9 @@ static int game3d_rail_eval_keys(
 }
 
 /// @brief Pre-physics update: auto-advance and damp the progress value.
+/// @param obj Borrowed RailCamera3D handle.
+/// @param world_obj Borrowed live World3D handle expected to own the controller.
+/// @param dt Candidate simulation delta, sanitized and capped before integration.
 void rt_game3d_rail_camera_update(void *obj, void *world_obj, double dt) {
     rt_game3d_rail_camera *rail =
         game3d_rail_camera_checked(obj, "Game3D.RailCamera3D.update: invalid rail");
@@ -276,6 +332,11 @@ void rt_game3d_rail_camera_update(void *obj, void *world_obj, double dt) {
 }
 
 /// @brief Post-sync late update: evaluate the spline + keys and write the camera.
+/// @details Resolves look targets after entity transforms are synchronized, rotates
+/// the up vector around the view axis for keyed roll, then applies any keyed FOV.
+/// @param obj Borrowed RailCamera3D handle.
+/// @param world_obj Borrowed live World3D handle expected to own the controller.
+/// @param dt Frame delta accepted for the controller interface; placement is progress-driven.
 void rt_game3d_rail_camera_late_update(void *obj, void *world_obj, double dt) {
     (void)dt;
     rt_game3d_rail_camera *rail =

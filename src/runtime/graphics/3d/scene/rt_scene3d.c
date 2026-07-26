@@ -31,6 +31,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Defines shared Scene3D validation, numeric, allocation, and spatial-dirty helpers.
+/// @details The public scene implementation is split across included modules;
+/// this translation unit establishes the common finite-value, transform,
+/// ownership, growth, and spatial-index invariants those modules rely on.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_scene3d.h"
@@ -67,15 +73,22 @@
 #include <string.h>
 
 /// @brief Validate @p obj as a Scene3D handle and return its typed pointer (NULL on mismatch).
+/// @param obj Borrowed opaque runtime handle.
+/// @return Borrowed Scene3D payload on a class match, otherwise `NULL`.
 rt_scene3d *scene3d_checked(void *obj) {
     return (rt_scene3d *)rt_g3d_checked_or_null(obj, RT_G3D_SCENE3D_CLASS_ID);
 }
 
 /// @brief Validate @p obj as a SceneNode3D handle and return its typed pointer (NULL on mismatch).
+/// @param obj Borrowed opaque runtime handle.
+/// @return Borrowed SceneNode3D payload on a class match, otherwise `NULL`.
 rt_scene_node3d *scene_node3d_checked(void *obj) {
     return (rt_scene_node3d *)rt_g3d_checked_or_null(obj, RT_G3D_SCENENODE3D_CLASS_ID);
 }
 
+/// @brief Validate an immutable SceneNode3D payload without discarding const qualification.
+/// @param obj Borrowed candidate node payload.
+/// @return The unchanged node on a class match, otherwise `NULL`.
 static const rt_scene_node3d *scene_node3d_checked_const(const rt_scene_node3d *obj) {
 #if defined(RT_G3D_INTERNAL_ASSUME_STRUCT_HANDLE) && RT_G3D_INTERNAL_ASSUME_STRUCT_HANDLE
     return obj;
@@ -86,11 +99,16 @@ static const rt_scene_node3d *scene_node3d_checked_const(const rt_scene_node3d *
 }
 
 /// @brief Drop the GC reference in `*slot` and null the pointer (refcount-aware free).
+/// @param slot Address of an owned runtime-reference slot.
 void scene3d_release_ref(void **slot) {
     rt_g3d_ref_slot_release(slot);
 }
 
 /// @brief Release a retained Graphics3D slot only if it still has the expected class.
+/// @details A stale or mismatched slot is cleared without releasing an object
+///          whose ownership can no longer be proven.
+/// @param slot Address of the retained opaque handle.
+/// @param class_id Stable class identifier required before release.
 static void scene3d_release_class_ref(void **slot, int64_t class_id) {
     if (!slot || !*slot)
         return;
@@ -102,6 +120,7 @@ static void scene3d_release_class_ref(void **slot, int64_t class_id) {
 }
 
 /// @brief Release a retained Pixels slot only if it still points at Pixels.
+/// @param slot Address of the retained Pixels handle.
 static void scene3d_release_pixels_ref(void **slot) {
     if (!slot || !*slot)
         return;
@@ -113,6 +132,9 @@ static void scene3d_release_pixels_ref(void **slot) {
 }
 
 /// @brief Grow a traversal-stack buffer by doubling (min 64 elements), overflow-checked.
+/// @param buffer Address of the caller-owned allocation pointer.
+/// @param capacity In/out element capacity.
+/// @param elem_size Nonzero size of one stack element in bytes.
 /// @return 1 with @p buffer / @p capacity updated, 0 on overflow or allocation failure.
 int scene3d_grow_stack_storage(void **buffer, size_t *capacity, size_t elem_size) {
     size_t new_capacity;
@@ -132,6 +154,12 @@ int scene3d_grow_stack_storage(void **buffer, size_t *capacity, size_t elem_size
 
 /// @brief Grow an int32-indexed array to hold at least @p needed elements (floor
 ///   @p min_capacity, doubling thereafter), optionally zeroing the newly added tail.
+/// @param buffer Address of the caller-owned allocation pointer.
+/// @param capacity In/out signed element capacity.
+/// @param needed Minimum required element count.
+/// @param min_capacity Positive initial growth floor.
+/// @param elem_size Nonzero size of one array element in bytes.
+/// @param zero_new Nonzero to clear newly allocated elements.
 /// @return 1 on success (including when already large enough), 0 on bad args or allocation failure.
 int scene3d_grow_array_i32(void **buffer,
                            int32_t *capacity,
@@ -171,6 +199,7 @@ int scene3d_grow_array_i32(void **buffer,
 }
 
 /// @brief Mark the spatial index fully stale: a topology change forces a full BVH rebuild.
+/// @param scene Borrowed scene whose spatial index flags are invalidated.
 void scene3d_mark_spatial_dirty(rt_scene3d *scene) {
     if (!scene)
         return;
@@ -181,6 +210,7 @@ void scene3d_mark_spatial_dirty(rt_scene3d *scene) {
 
 /// @brief Request a cheaper BVH refit (a node moved but the tree shape is unchanged).
 /// @details Only escalates to a full topology rebuild if the index is already invalid.
+/// @param scene Borrowed scene whose spatial index requires refreshed bounds.
 static void scene3d_mark_spatial_refit_dirty(rt_scene3d *scene) {
     if (!scene)
         return;
@@ -193,6 +223,7 @@ static void scene3d_mark_spatial_refit_dirty(rt_scene3d *scene) {
 /// @details Hidden nodes stay in the BVH as filtered entries, so a visibility
 ///   change is a refit (per-entry flag refresh), NOT a topology rebuild — a
 ///   blinking or LOD-hidden object no longer costs O(n log n) per toggle.
+/// @param scene Borrowed scene whose per-entry visibility flags changed.
 void scene3d_mark_spatial_visibility_dirty(rt_scene3d *scene) {
     scene3d_mark_spatial_refit_dirty(scene);
 }
@@ -211,6 +242,9 @@ static double scene3d_finite_or(double value, double fallback) {
 
 /// @brief Clamp `value` into `[-SCENE3D_ABS_MAX, SCENE3D_ABS_MAX]`, substituting `fallback` when
 /// not finite.
+/// @param value Candidate scene-space scalar.
+/// @param fallback Replacement used when @p value is non-finite.
+/// @return Finite value clamped to the scene numeric envelope.
 double scene3d_clamp_abs_or(double value, double fallback) {
     value = scene3d_finite_or(value, fallback);
     if (value > SCENE3D_ABS_MAX)
@@ -222,6 +256,8 @@ double scene3d_clamp_abs_or(double value, double fallback) {
 
 /// @brief Narrow a double to float, returning 0.0f when non-finite or outside
 /// ±SCENE3D_FLOAT_ABS_MAX.
+/// @param value Candidate double-precision scalar.
+/// @return Safely narrowed finite float, or zero when outside the supported envelope.
 float scene3d_float_or_zero(double value) {
     if (!isfinite(value) || value < -SCENE3D_FLOAT_ABS_MAX || value > SCENE3D_FLOAT_ABS_MAX)
         return 0.0f;
@@ -247,6 +283,8 @@ double scene3d_scale_or_unit(double value) {
 }
 
 /// @brief Clamp a non-negative scene-space distance/radius to the runtime numeric envelope.
+/// @param value Candidate distance or radius.
+/// @return Positive finite value capped at `SCENE3D_ABS_MAX`, or zero when invalid.
 double scene3d_distance_or_zero(double value) {
     if (!isfinite(value) || value <= 0.0)
         return 0.0;
@@ -254,6 +292,8 @@ double scene3d_distance_or_zero(double value) {
 }
 
 /// @brief Sanitize a raw double[3] coordinate vector in place.
+/// @param v Mutable three-component vector; `NULL` is accepted.
+/// @param fallback Replacement used independently for non-finite components.
 static void scene3d_sanitize_vec3d(double v[3], double fallback) {
     if (!v)
         return;
@@ -263,6 +303,7 @@ static void scene3d_sanitize_vec3d(double v[3], double fallback) {
 }
 
 /// @brief Sanitize a raw scale vector in place while preserving finite zero/negative scales.
+/// @param v Mutable three-component scale vector; `NULL` is accepted.
 static void scene3d_sanitize_scale3(double v[3]) {
     if (!v)
         return;
@@ -272,6 +313,8 @@ static void scene3d_sanitize_scale3(double v[3]) {
 }
 
 /// @brief Robustly normalize a raw double[3] vector without overflowing on huge finite inputs.
+/// @param v Mutable three-component vector.
+/// @return Nonzero after successful unit normalization, otherwise zero with input unchanged.
 int scene3d_normalize_vec3d(double v[3]) {
     double max_abs;
     double x;
@@ -298,6 +341,8 @@ int scene3d_normalize_vec3d(double v[3]) {
 }
 
 /// @brief Check that every matrix lane is finite.
+/// @param m Borrowed row-major 16-element matrix.
+/// @return Nonzero when the pointer and every lane are finite.
 static int scene3d_matrix_is_finite(const double *m) {
     if (!m)
         return 0;
@@ -309,6 +354,8 @@ static int scene3d_matrix_is_finite(const double *m) {
 }
 
 /// @brief Canonicalize and sanitize a double-precision AABB in place.
+/// @param mn Mutable three-component minimum corner.
+/// @param mx Mutable three-component maximum corner.
 void scene3d_canonicalize_aabb_d(double mn[3], double mx[3]) {
     if (!mn || !mx)
         return;
@@ -324,6 +371,7 @@ void scene3d_canonicalize_aabb_d(double mn[3], double mx[3]) {
 }
 
 /// @brief Restore SceneNode3D local TRS invariants before matrix composition or getters.
+/// @param node Borrowed node whose position, scale, and quaternion are repaired in place.
 static void scene3d_repair_node_transform(rt_scene_node3d *node) {
     if (!node)
         return;
@@ -332,6 +380,9 @@ static void scene3d_repair_node_transform(rt_scene_node3d *node) {
     scene3d_quat_normalize_local(node->rotation);
 }
 
+/// @brief Consume the pending root-motion rotation from an animation controller.
+/// @param obj Borrowed AnimController3D handle.
+/// @return New quaternion handle representing the consumed rotation.
 extern void *rt_anim_controller3d_consume_root_motion_rotation(void *obj);
 
 // clang-format off

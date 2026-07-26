@@ -24,6 +24,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements target acquisition, cycling, maintenance, and movement bias for TargetLock3D.
+/// @details Candidates are gathered from physics overlaps, resolved through the
+/// world's body index, filtered by camera cone and optional line of sight, and
+/// scored with angle, distance, and current-target stickiness. Maintenance
+/// applies death, distance, and timed occlusion release rules.
+
 #include "rt_game3d.h"
 #include "rt_game3d_internal.h"
 #include "rt_graphics3d_ids.h"
@@ -39,6 +46,8 @@
 //=========================================================================
 
 /// @brief Return the lock's owner Entity3D when still alive, else NULL.
+/// @param lock Borrowed target-lock payload.
+/// @return Borrowed live owner entity, or `NULL` when absent, stale, or invalid.
 static rt_game3d_entity *game3d_targetlock_owner_ref(const rt_game3d_targetlock *lock) {
     rt_game3d_entity *entity =
         lock
@@ -48,6 +57,8 @@ static rt_game3d_entity *game3d_targetlock_owner_ref(const rt_game3d_targetlock 
 }
 
 /// @brief Return the locked Entity3D when still alive, else NULL.
+/// @param lock Borrowed target-lock payload.
+/// @return Borrowed live target entity, or `NULL` when unlocked, stale, or invalid.
 static rt_game3d_entity *game3d_targetlock_target_ref(const rt_game3d_targetlock *lock) {
     rt_game3d_entity *entity = lock ? (rt_game3d_entity *)rt_g3d_checked_or_null(
                                           lock->target, RT_G3D_GAME3D_ENTITY_CLASS_ID)
@@ -56,6 +67,8 @@ static rt_game3d_entity *game3d_targetlock_target_ref(const rt_game3d_targetlock
 }
 
 /// @brief Return the lock's world when still valid, else NULL.
+/// @param lock Borrowed target-lock payload.
+/// @return Borrowed World3D payload, or `NULL` when absent or type-mismatched.
 static rt_game3d_world *game3d_targetlock_world_ref(const rt_game3d_targetlock *lock) {
     return lock ? (rt_game3d_world *)rt_g3d_checked_or_null(lock->world,
                                                             RT_G3D_GAME3D_WORLD_CLASS_ID)
@@ -66,6 +79,10 @@ static rt_game3d_world *game3d_targetlock_world_ref(const rt_game3d_targetlock *
 /// @details Casts owner→candidate through all layers and walks the sorted hits:
 ///   hits on the owner's or candidate's own bodies are transparent; any other solid
 ///   hit before the candidate blocks. Triggers never block.
+/// @param world Borrowed world providing physics and body-to-entity lookup.
+/// @param owner Borrowed live owner entity.
+/// @param candidate Borrowed live candidate entity.
+/// @return Nonzero when no foreign solid body blocks the origin-to-origin segment.
 static int game3d_targetlock_has_los(rt_game3d_world *world,
                                      rt_game3d_entity *owner,
                                      rt_game3d_entity *candidate) {
@@ -118,6 +135,9 @@ typedef struct {
 /// @details Overlap-sphere at the owner, resolve bodies to entities, reject the
 ///   owner/dead/mask-mismatched entities and (optionally) candidates without LoS,
 ///   and record distance plus camera-relative angles for scoring and cycling.
+/// @param lock Borrowed target-lock payload defining the query and filters.
+/// @param[out] out Caller-owned candidate array.
+/// @param out_capacity Maximum candidates that may be written.
 /// @return Number of candidates written to @p out (bounded).
 static int32_t game3d_targetlock_collect(rt_game3d_targetlock *lock,
                                          game3d_targetlock_candidate *out,
@@ -203,6 +223,9 @@ static int32_t game3d_targetlock_collect(rt_game3d_targetlock *lock,
 }
 
 /// @brief Angle-weighted (2:1) acquisition score for a candidate.
+/// @param lock Borrowed target-lock payload defining normalization and stickiness.
+/// @param candidate Borrowed candidate record to score.
+/// @return Higher-is-better normalized angle/distance score with optional stickiness multiplier.
 static double game3d_targetlock_score(const rt_game3d_targetlock *lock,
                                       const game3d_targetlock_candidate *candidate) {
     double cone = lock->cone_degrees > 1e-9 ? lock->cone_degrees : 1.0;
@@ -215,6 +238,8 @@ static double game3d_targetlock_score(const rt_game3d_targetlock *lock,
 }
 
 /// @brief Install @p entity as the locked target, firing the one-shot flag.
+/// @param lock Target-lock payload whose retained target is replaced.
+/// @param entity Borrowed entity to retain, or `NULL` to clear without a lost event.
 static void game3d_targetlock_install(rt_game3d_targetlock *lock, rt_game3d_entity *entity) {
     if (lock->target == (void *)entity)
         return;
@@ -225,6 +250,7 @@ static void game3d_targetlock_install(rt_game3d_targetlock *lock, rt_game3d_enti
 }
 
 /// @brief Release the current target (if any), firing the one-shot lost flag.
+/// @param lock Target-lock payload to unlock.
 static void game3d_targetlock_release(rt_game3d_targetlock *lock) {
     if (!lock->target)
         return;
@@ -234,6 +260,7 @@ static void game3d_targetlock_release(rt_game3d_targetlock *lock) {
 }
 
 /// @brief GC finalizer: release retained references.
+/// @param obj Finalized TargetLock3D payload; `NULL` is ignored.
 static void game3d_targetlock_finalize(void *obj) {
     rt_game3d_targetlock *lock = (rt_game3d_targetlock *)obj;
     if (!lock)
@@ -250,6 +277,9 @@ static void game3d_targetlock_finalize(void *obj) {
 /// @brief Create a lock-on helper for @p owner_entity in @p world.
 ///   Defaults: max distance 18, cone 65°, mask all, LoS required, stickiness 1.25,
 ///   break distance 22.5 (max × 1.25), LoS grace 0.5 s. See header.
+/// @param world_obj Borrowed live World3D handle retained by the helper.
+/// @param owner_entity Borrowed live Entity3D handle retained as the lock origin.
+/// @return New GC-managed TargetLock3D handle, or `NULL` after validation or allocation failure.
 void *rt_game3d_targetlock_new(void *world_obj, void *owner_entity) {
     rt_game3d_world *world =
         game3d_world_checked(world_obj, "Game3D.TargetLock3D.New: invalid world");
@@ -281,6 +311,8 @@ void *rt_game3d_targetlock_new(void *world_obj, void *owner_entity) {
 }
 
 /// @brief Get the currently locked entity (NULL when unlocked/stale).
+/// @param obj Borrowed TargetLock3D handle.
+/// @return Borrowed live target Entity3D handle, or `NULL`.
 void *rt_game3d_targetlock_get_target(void *obj) {
     rt_game3d_targetlock *lock =
         game3d_targetlock_checked(obj, "Game3D.TargetLock3D.get_target: invalid lock");
@@ -288,6 +320,8 @@ void *rt_game3d_targetlock_get_target(void *obj) {
 }
 
 /// @brief Get the acquisition radius.
+/// @param obj Borrowed TargetLock3D handle.
+/// @return Stored acquisition radius in world units, or zero when invalid.
 double rt_game3d_targetlock_get_max_distance(void *obj) {
     rt_game3d_targetlock *lock =
         game3d_targetlock_checked(obj, "Game3D.TargetLock3D.get_maxDistance: invalid lock");
@@ -295,6 +329,8 @@ double rt_game3d_targetlock_get_max_distance(void *obj) {
 }
 
 /// @brief Set the acquisition radius (positive; non-finite resets the default).
+/// @param obj Borrowed TargetLock3D handle.
+/// @param distance Requested positive radius, bounded by the coordinate limit.
 void rt_game3d_targetlock_set_max_distance(void *obj, double distance) {
     rt_game3d_targetlock *lock =
         game3d_targetlock_checked(obj, "Game3D.TargetLock3D.set_maxDistance: invalid lock");
@@ -304,6 +340,8 @@ void rt_game3d_targetlock_set_max_distance(void *obj, double distance) {
 }
 
 /// @brief Get the half-angle acquisition cone in degrees.
+/// @param obj Borrowed TargetLock3D handle.
+/// @return Stored half-angle in degrees, or zero when invalid.
 double rt_game3d_targetlock_get_cone_degrees(void *obj) {
     rt_game3d_targetlock *lock =
         game3d_targetlock_checked(obj, "Game3D.TargetLock3D.get_coneDegrees: invalid lock");
@@ -311,6 +349,8 @@ double rt_game3d_targetlock_get_cone_degrees(void *obj) {
 }
 
 /// @brief Set the half-angle acquisition cone in degrees (clamped to 1..180).
+/// @param obj Borrowed TargetLock3D handle.
+/// @param degrees Requested half-angle; non-finite input restores the default.
 void rt_game3d_targetlock_set_cone_degrees(void *obj, double degrees) {
     rt_game3d_targetlock *lock =
         game3d_targetlock_checked(obj, "Game3D.TargetLock3D.set_coneDegrees: invalid lock");
@@ -320,6 +360,8 @@ void rt_game3d_targetlock_set_cone_degrees(void *obj, double degrees) {
 }
 
 /// @brief Get the targetable layer mask.
+/// @param obj Borrowed TargetLock3D handle.
+/// @return Stored collision-layer bit mask, or zero when invalid.
 int64_t rt_game3d_targetlock_get_candidate_mask(void *obj) {
     rt_game3d_targetlock *lock =
         game3d_targetlock_checked(obj, "Game3D.TargetLock3D.get_candidateMask: invalid lock");
@@ -327,6 +369,8 @@ int64_t rt_game3d_targetlock_get_candidate_mask(void *obj) {
 }
 
 /// @brief Set the targetable layer mask.
+/// @param obj Borrowed TargetLock3D handle.
+/// @param mask Raw physics collision-layer bit mask.
 void rt_game3d_targetlock_set_candidate_mask(void *obj, int64_t mask) {
     rt_game3d_targetlock *lock =
         game3d_targetlock_checked(obj, "Game3D.TargetLock3D.set_candidateMask: invalid lock");
@@ -335,6 +379,8 @@ void rt_game3d_targetlock_set_candidate_mask(void *obj, int64_t mask) {
 }
 
 /// @brief Get whether candidates must have line of sight.
+/// @param obj Borrowed TargetLock3D handle.
+/// @return Nonzero when LoS filtering and maintenance are enabled.
 int8_t rt_game3d_targetlock_get_require_los(void *obj) {
     rt_game3d_targetlock *lock =
         game3d_targetlock_checked(obj, "Game3D.TargetLock3D.get_requireLineOfSight: invalid lock");
@@ -342,6 +388,8 @@ int8_t rt_game3d_targetlock_get_require_los(void *obj) {
 }
 
 /// @brief Set whether candidates must have line of sight.
+/// @param obj Borrowed TargetLock3D handle.
+/// @param require Nonzero to require unobstructed candidates.
 void rt_game3d_targetlock_set_require_los(void *obj, int8_t require) {
     rt_game3d_targetlock *lock =
         game3d_targetlock_checked(obj, "Game3D.TargetLock3D.set_requireLineOfSight: invalid lock");
@@ -350,6 +398,8 @@ void rt_game3d_targetlock_set_require_los(void *obj, int8_t require) {
 }
 
 /// @brief Get the current-target score multiplier.
+/// @param obj Borrowed TargetLock3D handle.
+/// @return Stored positive stickiness multiplier, or zero when invalid.
 double rt_game3d_targetlock_get_stickiness(void *obj) {
     rt_game3d_targetlock *lock =
         game3d_targetlock_checked(obj, "Game3D.TargetLock3D.get_stickiness: invalid lock");
@@ -357,6 +407,8 @@ double rt_game3d_targetlock_get_stickiness(void *obj) {
 }
 
 /// @brief Set the current-target score multiplier (≥ 1 keeps locks stable).
+/// @param obj Borrowed TargetLock3D handle.
+/// @param stickiness Requested positive multiplier, bounded to 1000.
 void rt_game3d_targetlock_set_stickiness(void *obj, double stickiness) {
     rt_game3d_targetlock *lock =
         game3d_targetlock_checked(obj, "Game3D.TargetLock3D.set_stickiness: invalid lock");
@@ -366,6 +418,8 @@ void rt_game3d_targetlock_set_stickiness(void *obj, double stickiness) {
 }
 
 /// @brief Get the auto-release distance.
+/// @param obj Borrowed TargetLock3D handle.
+/// @return Stored break distance in world units, or zero when invalid.
 double rt_game3d_targetlock_get_break_distance(void *obj) {
     rt_game3d_targetlock *lock =
         game3d_targetlock_checked(obj, "Game3D.TargetLock3D.get_breakDistance: invalid lock");
@@ -373,6 +427,8 @@ double rt_game3d_targetlock_get_break_distance(void *obj) {
 }
 
 /// @brief Set the auto-release distance.
+/// @param obj Borrowed TargetLock3D handle.
+/// @param distance Requested positive world-space break distance.
 void rt_game3d_targetlock_set_break_distance(void *obj, double distance) {
     rt_game3d_targetlock *lock =
         game3d_targetlock_checked(obj, "Game3D.TargetLock3D.set_breakDistance: invalid lock");
@@ -382,6 +438,8 @@ void rt_game3d_targetlock_set_break_distance(void *obj, double distance) {
 }
 
 /// @brief Get the LoS-break grace period in seconds (0 releases instantly).
+/// @param obj Borrowed TargetLock3D handle.
+/// @return Stored non-negative grace duration in seconds, or zero when invalid.
 double rt_game3d_targetlock_get_los_grace_seconds(void *obj) {
     rt_game3d_targetlock *lock =
         game3d_targetlock_checked(obj, "Game3D.TargetLock3D.get_losGraceSeconds: invalid lock");
@@ -389,6 +447,8 @@ double rt_game3d_targetlock_get_los_grace_seconds(void *obj) {
 }
 
 /// @brief Set the LoS-break grace period in seconds.
+/// @param obj Borrowed TargetLock3D handle.
+/// @param seconds Requested non-negative duration, bounded to one hour.
 void rt_game3d_targetlock_set_los_grace_seconds(void *obj, double seconds) {
     rt_game3d_targetlock *lock =
         game3d_targetlock_checked(obj, "Game3D.TargetLock3D.set_losGraceSeconds: invalid lock");
@@ -403,6 +463,8 @@ void rt_game3d_targetlock_set_los_grace_seconds(void *obj, double seconds) {
 
 /// @brief Acquire the best candidate in view (angle-weighted 2:1 over distance,
 ///   sticky toward the current target). Returns true when a target is locked.
+/// @param obj Borrowed TargetLock3D handle.
+/// @return Nonzero when a new or existing live target is locked; otherwise zero.
 int8_t rt_game3d_targetlock_acquire(void *obj) {
     rt_game3d_targetlock *lock =
         game3d_targetlock_checked(obj, "Game3D.TargetLock3D.Acquire: invalid lock");
@@ -426,6 +488,7 @@ int8_t rt_game3d_targetlock_acquire(void *obj) {
 }
 
 /// @brief Release the current target without firing JustLost (explicit clear).
+/// @param obj Borrowed TargetLock3D handle.
 void rt_game3d_targetlock_clear(void *obj) {
     rt_game3d_targetlock *lock =
         game3d_targetlock_checked(obj, "Game3D.TargetLock3D.Clear: invalid lock");
@@ -437,6 +500,9 @@ void rt_game3d_targetlock_clear(void *obj) {
 
 /// @brief Cycle to the nearest candidate left (-1) or right (+1) of the current
 ///   target in the camera basis. Returns true when the target changed.
+/// @param obj Borrowed TargetLock3D handle.
+/// @param direction Negative to cycle left, positive to cycle right, or zero for no action.
+/// @return Nonzero when a target was acquired or changed; otherwise zero.
 int8_t rt_game3d_targetlock_cycle(void *obj, int64_t direction) {
     rt_game3d_targetlock *lock =
         game3d_targetlock_checked(obj, "Game3D.TargetLock3D.Cycle: invalid lock");
@@ -479,6 +545,8 @@ int8_t rt_game3d_targetlock_cycle(void *obj, int64_t direction) {
 
 /// @brief Per-step maintenance: clears one-shot flags, then auto-releases on
 ///   target death, break distance, or LoS broken longer than the grace period.
+/// @param obj Borrowed TargetLock3D handle.
+/// @param dt Candidate simulation delta, sanitized and capped before grace accumulation.
 void rt_game3d_targetlock_update(void *obj, double dt) {
     rt_game3d_targetlock *lock =
         game3d_targetlock_checked(obj, "Game3D.TargetLock3D.Update: invalid lock");
@@ -523,6 +591,8 @@ void rt_game3d_targetlock_update(void *obj, double dt) {
 }
 
 /// @brief One-shot: true for the frame after a target was acquired.
+/// @param obj Borrowed TargetLock3D handle.
+/// @return Current acquired-transition flag, or zero when invalid.
 int8_t rt_game3d_targetlock_just_acquired(void *obj) {
     rt_game3d_targetlock *lock =
         game3d_targetlock_checked(obj, "Game3D.TargetLock3D.JustAcquired: invalid lock");
@@ -530,6 +600,8 @@ int8_t rt_game3d_targetlock_just_acquired(void *obj) {
 }
 
 /// @brief One-shot: true for the frame after the target was auto-released.
+/// @param obj Borrowed TargetLock3D handle.
+/// @return Current lost-transition flag, or zero when invalid.
 int8_t rt_game3d_targetlock_just_lost(void *obj) {
     rt_game3d_targetlock *lock =
         game3d_targetlock_checked(obj, "Game3D.TargetLock3D.JustLost: invalid lock");
@@ -538,6 +610,10 @@ int8_t rt_game3d_targetlock_just_lost(void *obj) {
 
 /// @brief Soft aim assist: rotate a planar move vector up to 12° toward the
 ///   target bearing when within 30° of it. Pure function; Y is preserved.
+/// @param obj Borrowed TargetLock3D handle.
+/// @param move Borrowed Vec3 movement vector.
+/// @return New GC-managed Vec3 containing the biased or unchanged move, or `NULL` for invalid
+/// input/allocation failure.
 void *rt_game3d_targetlock_locked_move_bias(void *obj, void *move) {
     rt_game3d_targetlock *lock =
         game3d_targetlock_checked(obj, "Game3D.TargetLock3D.LockedMoveBias: invalid lock");

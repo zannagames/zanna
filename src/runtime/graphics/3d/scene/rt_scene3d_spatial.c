@@ -14,6 +14,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements Scene3D's world-bounds cache and bounding-volume hierarchy.
+/// @details Drawable nodes become stable-order spatial entries. Topology changes
+///   rebuild the BVH, transform/geometry/visibility changes refit affected paths,
+///   and queries return visible candidate entries through bounded native buffers.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_animcontroller3d.h"
@@ -49,6 +55,8 @@
 #define SCENE3D_MORPH_BOUND_SCAN_MAX_TRIPLETS (1024u * 1024u)
 
 /// @brief Ensure the spatial index can hold @p needed entries, growing by doubling (min 64).
+/// @param index Borrowed index whose native entry allocation may grow.
+/// @param needed Non-negative minimum entry capacity.
 /// @return 1 on success, 0 on bad args, overflow, or allocation failure.
 static int scene3d_spatial_ensure_capacity(rt_scene3d_spatial_index *index, int32_t needed) {
     int32_t new_capacity;
@@ -75,6 +83,9 @@ static int scene3d_spatial_ensure_capacity(rt_scene3d_spatial_index *index, int3
 }
 
 /// @brief Ensure the index's entry-index array (BVH leaf ordering) holds @p needed slots.
+/// @param index Borrowed index whose ordering allocation may grow.
+/// @param needed Non-negative minimum index capacity.
+/// @return Nonzero when sufficient storage is available, otherwise zero.
 static int scene3d_spatial_ensure_entry_index_capacity(rt_scene3d_spatial_index *index,
                                                        int32_t needed) {
     int32_t new_capacity;
@@ -101,6 +112,9 @@ static int scene3d_spatial_ensure_entry_index_capacity(rt_scene3d_spatial_index 
 }
 
 /// @brief Ensure the index's BVH node array holds @p needed nodes (doubling growth).
+/// @param index Borrowed index whose native BVH-node allocation may grow.
+/// @param needed Non-negative minimum node capacity.
+/// @return Nonzero when sufficient storage is available, otherwise zero.
 static int scene3d_spatial_ensure_bvh_node_capacity(rt_scene3d_spatial_index *index,
                                                     int32_t needed) {
     int32_t new_capacity;
@@ -127,6 +141,9 @@ static int scene3d_spatial_ensure_bvh_node_capacity(rt_scene3d_spatial_index *in
 }
 
 /// @brief Append a spatial entry to a query's candidate list, growing it as needed.
+/// @param list Caller-owned candidate list.
+/// @param entry Borrowed spatial entry to append.
+/// @return Nonzero after append, otherwise zero on invalid input, overflow, or allocation failure.
 static int scene3d_spatial_candidate_push(scene3d_spatial_candidate_list_t *list,
                                           rt_scene3d_spatial_entry *entry) {
     int32_t new_capacity;
@@ -150,6 +167,9 @@ static int scene3d_spatial_candidate_push(scene3d_spatial_candidate_list_t *list
 }
 
 /// @brief Push a BVH node index onto a query's traversal stack, growing it as needed.
+/// @param stack Caller-owned traversal stack.
+/// @param node_index Non-negative zero-based BVH-node index.
+/// @return Nonzero after append, otherwise zero on invalid input, overflow, or allocation failure.
 static int scene3d_spatial_node_stack_push(scene3d_spatial_node_stack_t *stack,
                                            int32_t node_index) {
     int32_t new_capacity;
@@ -173,6 +193,9 @@ static int scene3d_spatial_node_stack_push(scene3d_spatial_node_stack_t *stack,
 
 /// @brief qsort comparator ordering candidate entries by their scene traversal order (stable draw
 /// order).
+/// @param a Borrowed pointer to the first candidate-entry pointer.
+/// @param b Borrowed pointer to the second candidate-entry pointer.
+/// @return Negative, zero, or positive according to stable scene traversal order.
 static int scene3d_spatial_entry_ptr_compare_order(const void *a, const void *b) {
     const rt_scene3d_spatial_entry *ea = *(rt_scene3d_spatial_entry *const *)a;
     const rt_scene3d_spatial_entry *eb = *(rt_scene3d_spatial_entry *const *)b;
@@ -184,6 +207,10 @@ static int scene3d_spatial_entry_ptr_compare_order(const void *a, const void *b)
 }
 
 /// @brief Centroid of a spatial entry's world AABB along @p axis (used to choose BVH split planes).
+/// @param index Borrowed spatial index.
+/// @param entry_index Zero-based entry index.
+/// @param axis Coordinate axis in `[0, 2]`.
+/// @return Selected centroid coordinate, or zero for invalid input.
 static double scene3d_spatial_entry_centroid_axis(const rt_scene3d_spatial_index *index,
                                                   int32_t entry_index,
                                                   int axis) {
@@ -196,6 +223,11 @@ static double scene3d_spatial_entry_centroid_axis(const rt_scene3d_spatial_index
 
 /// @brief Ordering predicate for two entry indices along @p axis (by centroid, traversal-order
 /// tiebreak).
+/// @param index Borrowed spatial index.
+/// @param a First zero-based entry index.
+/// @param b Second zero-based entry index.
+/// @param axis Coordinate axis in `[0, 2]`.
+/// @return Nonzero when @p a sorts before @p b.
 static int scene3d_spatial_entry_index_less(const rt_scene3d_spatial_index *index,
                                             int32_t a,
                                             int32_t b,
@@ -214,6 +246,10 @@ static int scene3d_spatial_entry_index_less(const rt_scene3d_spatial_index *inde
 /// @brief Quicksort a sub-range of the entry-index array by centroid along @p axis.
 /// @details In-place median-of-center-pivot quicksort; orders leaves so a BVH range can be split
 ///          cleanly at its midpoint.
+/// @param index Borrowed index whose ordering array is sorted.
+/// @param start Zero-based first ordering-array slot.
+/// @param count Number of slots in the subrange.
+/// @param axis Coordinate axis in `[0, 2]`.
 static void scene3d_spatial_sort_entry_indices(rt_scene3d_spatial_index *index,
                                                int32_t start,
                                                int32_t count,
@@ -249,6 +285,10 @@ static void scene3d_spatial_sort_entry_indices(rt_scene3d_spatial_index *index,
 }
 
 /// @brief Expand AABB [out_min, out_max] in place to also contain AABB [in_min, in_max].
+/// @param out_min Mutable accumulated minimum corner.
+/// @param out_max Mutable accumulated maximum corner.
+/// @param in_min Borrowed minimum corner to include.
+/// @param in_max Borrowed maximum corner to include.
 static void scene3d_spatial_bounds_include(double out_min[3],
                                            double out_max[3],
                                            const double in_min[3],
@@ -259,6 +299,10 @@ static void scene3d_spatial_bounds_include(double out_min[3],
 
 /// @brief Choose the BVH split axis as the one with the greatest spread of entry centroids.
 /// @details Splitting along the widest centroid extent yields tighter, better-balanced child nodes.
+/// @param index Borrowed spatial index and ordering array.
+/// @param start Zero-based first ordering-array slot.
+/// @param count Positive number of entries in the range.
+/// @return Coordinate axis `0`, `1`, or `2`.
 static int scene3d_spatial_choose_split_axis(const rt_scene3d_spatial_index *index,
                                              int32_t start,
                                              int32_t count) {
@@ -286,6 +330,8 @@ static int scene3d_spatial_choose_split_axis(const rt_scene3d_spatial_index *ind
 
 /// @brief Allocate and zero-initialize a new BVH node (children/parent set to -1). Returns its
 /// index or -1.
+/// @param index Borrowed spatial index whose native node array may grow.
+/// @return New zero-based BVH-node index, or `-1` on failure.
 static int scene3d_spatial_alloc_bvh_node(rt_scene3d_spatial_index *index) {
     int32_t node_index;
     if (!index || !scene3d_spatial_ensure_bvh_node_capacity(index, index->node_count + 1))
@@ -302,6 +348,10 @@ static int scene3d_spatial_alloc_bvh_node(rt_scene3d_spatial_index *index) {
 /// @details Computes the node's bounds and cullable count; ranges of <= 8 entries become leaves,
 ///          larger ranges are sorted on the widest centroid axis and split at the midpoint into two
 ///          child nodes. Returns the node index, or -1 on allocation failure.
+/// @param index Borrowed spatial index under construction.
+/// @param start Zero-based first ordering-array slot in this subtree.
+/// @param count Positive number of entries covered by this subtree.
+/// @return Root BVH-node index for the range, or `-1` on invalid input/failure.
 static int scene3d_spatial_build_bvh_range(rt_scene3d_spatial_index *index,
                                            int32_t start,
                                            int32_t count) {
@@ -354,6 +404,9 @@ static int scene3d_spatial_build_bvh_range(rt_scene3d_spatial_index *index,
 /// @brief Whether a mesh deforms at runtime (skeletal animator or morph targets present).
 /// @details Deforming meshes need looser/refit bounds each frame, so the spatial index treats them
 ///          differently from static geometry during culling.
+/// @param mesh Borrowed Mesh3D payload.
+/// @param effective_animator Borrowed inherited animator, or `NULL`.
+/// @return Nonzero when skeletal or morph deformation may change geometry.
 int scene3d_mesh_has_dynamic_deformation(rt_mesh3d *mesh, void *effective_animator) {
     return mesh && (effective_animator != NULL || mesh->morph_targets_ref != NULL ||
                     mesh->morph_deltas != NULL || mesh->morph_weights != NULL ||
@@ -361,6 +414,9 @@ int scene3d_mesh_has_dynamic_deformation(rt_mesh3d *mesh, void *effective_animat
 }
 
 /// @brief Validate the raw transient morph-delta span before scanning it for culling bounds.
+/// @param mesh Borrowed Mesh3D payload with transient packed delta triplets.
+/// @param out_count Optional output receiving the bounded shape-times-vertex triplet count.
+/// @return Nonzero when the raw span is present and safe to scan.
 static int scene3d_morph_delta_triplet_count(const rt_mesh3d *mesh, size_t *out_count) {
     size_t shape_count;
     size_t vertex_count;
@@ -385,6 +441,8 @@ static int scene3d_morph_delta_triplet_count(const rt_mesh3d *mesh, size_t *out_
 
 /// @brief Euclidean length of a 3-component morph delta (as a double); returns 0 when any
 ///   lane is non-finite.
+/// @param delta Borrowed three-float morph-position delta.
+/// @return Finite Euclidean magnitude, or zero for invalid input.
 static double scene3d_morph_delta_length_or_zero(const float *delta) {
     double x;
     double y;
@@ -405,6 +463,8 @@ static double scene3d_morph_delta_length_or_zero(const float *delta) {
 ///   length avoids repeatedly scanning every shape/vertex during Scene3D culling. The cache key
 ///   includes the pointer, shape count, safe vertex count, and geometry revision so geometry edits
 ///   or a different morph payload force a rescan.
+/// @param mesh Borrowed mutable Mesh3D payload whose bound cache may be refreshed.
+/// @return Conservative non-negative local-space padding, or zero when unavailable.
 static double scene3d_cached_raw_morph_bound_pad(rt_mesh3d *mesh) {
     size_t total = 0;
     double max_len = 0.0;
@@ -441,6 +501,10 @@ static double scene3d_cached_raw_morph_bound_pad(rt_mesh3d *mesh) {
 }
 
 /// @brief Conservative local-space padding for runtime-deformed mesh bounds.
+/// @param mesh Borrowed Mesh3D payload.
+/// @param effective_animator Borrowed inherited animator, or `NULL`.
+/// @param base_radius Sanitized fallback for skeletal or otherwise unbounded deformation.
+/// @return Non-negative local-space bound padding, or zero for static geometry.
 double scene3d_mesh_dynamic_bound_pad(rt_mesh3d *mesh,
                                       void *effective_animator,
                                       double base_radius) {
@@ -467,6 +531,10 @@ double scene3d_mesh_dynamic_bound_pad(rt_mesh3d *mesh,
 }
 
 /// @brief Expand world AABB [out_min, out_max] in place to also contain [in_min, in_max].
+/// @param out_min Mutable accumulated world minimum.
+/// @param out_max Mutable accumulated world maximum.
+/// @param in_min Borrowed world minimum to include.
+/// @param in_max Borrowed world maximum to include.
 static void scene3d_bounds_include_world_aabb(double out_min[3],
                                               double out_max[3],
                                               const double in_min[3],
@@ -478,6 +546,13 @@ static void scene3d_bounds_include_world_aabb(double out_min[3],
 }
 
 /// @brief Accumulate a single node's mesh world-space AABB into the running bounds.
+/// @param node Borrowed node supplying the current world matrix.
+/// @param mesh_obj Borrowed candidate Mesh3D handle.
+/// @param effective_animator Borrowed inherited animator affecting deformation.
+/// @param out_min Mutable accumulated world minimum.
+/// @param out_max Mutable accumulated world maximum.
+/// @param out_radius Optional in/out largest undeformed mesh radius.
+/// @return Nonzero when valid transformed bounds were included.
 static int scene3d_include_mesh_world_bounds(rt_scene_node3d *node,
                                              void *mesh_obj,
                                              void *effective_animator,
@@ -517,6 +592,12 @@ static int scene3d_include_mesh_world_bounds(rt_scene_node3d *node,
 /// @details Includes the base mesh, all authored LOD meshes, and the impostor mesh. The result is
 ///   intentionally conservative so frustum/PVS culling uses one stable bound while the visible mesh
 ///   swaps between LODs.
+/// @param node Borrowed SceneNode3D payload.
+/// @param effective_animator Borrowed inherited animator, or `NULL`.
+/// @param world_min Output receiving the union minimum corner.
+/// @param world_max Output receiving the union maximum corner.
+/// @param out_radius Optional output receiving the largest base mesh radius.
+/// @return Nonzero when any drawable variant contributes valid bounds.
 int scene3d_node_world_draw_union_aabb(rt_scene_node3d *node,
                                        void *effective_animator,
                                        double world_min[3],
@@ -545,10 +626,19 @@ int scene3d_node_world_draw_union_aabb(rt_scene_node3d *node,
     return has_bounds;
 }
 
+/// @brief Resolve the nearest inherited skeletal animator for a node.
+/// @param node Borrowed node at which to begin the ancestor search.
+/// @return Borrowed AnimController3D handle, or `NULL`.
 void *scene3d_effective_animator(rt_scene_node3d *node);
+
+/// @brief Rebuild a scene's spatial entries and BVH topology from its node hierarchy.
+/// @param scene Borrowed scene whose index is rebuilt.
+/// @return Nonzero when a usable index was constructed, otherwise zero.
 static int scene3d_spatial_rebuild(rt_scene3d *scene);
 
 /// @brief Effective visibility of @p node: itself AND every ancestor visible.
+/// @param node Borrowed node whose ancestor chain is inspected.
+/// @return Nonzero when the node and every ancestor are visible.
 static int scene3d_node_effective_visible(const rt_scene_node3d *node) {
     const rt_scene_node3d *current = node;
     while (current) {
@@ -562,6 +652,7 @@ static int scene3d_node_effective_visible(const rt_scene_node3d *node) {
 /// @brief Recompute a spatial entry's world AABB and visibility from its node's
 ///   current transform/geometry. Hidden nodes stay indexed (visibility is a query
 ///   filter, not topology) so their bounds refresh like any other entry.
+/// @param entry Borrowed mutable spatial entry linked to a drawable node.
 /// @return 1 on success, 0 when the node no longer has drawable bounds (caller
 ///   escalates to a rebuild).
 static int scene3d_spatial_refresh_entry_bounds(rt_scene3d_spatial_entry *entry) {
@@ -585,6 +676,8 @@ static int scene3d_spatial_refresh_entry_bounds(rt_scene3d_spatial_entry *entry)
 
 /// @brief True if @p node or any ancestor has a dirty world transform (its cached world
 ///   bounds cannot be trusted until the transforms are refreshed).
+/// @param node Borrowed node whose ancestor chain is inspected.
+/// @return Nonzero when any cached world transform on the chain is dirty.
 static int scene3d_spatial_node_or_ancestor_dirty(const rt_scene_node3d *node) {
     const rt_scene_node3d *current = node;
     while (current) {
@@ -597,6 +690,8 @@ static int scene3d_spatial_node_or_ancestor_dirty(const rt_scene_node3d *node) {
 
 /// @brief Recompute a BVH node's bounds bottom-up from its children/leaf entries (refit, no
 /// resplit).
+/// @param index Borrowed mutable spatial index.
+/// @param node_index Zero-based BVH subtree root to refit recursively.
 static void scene3d_spatial_refit_bvh_node(rt_scene3d_spatial_index *index, int32_t node_index) {
     rt_scene3d_spatial_bvh_node *node;
     if (!index || node_index < 0 || node_index >= index->node_count)
@@ -632,6 +727,8 @@ static void scene3d_spatial_refit_bvh_node(rt_scene3d_spatial_index *index, int3
 
 /// @brief Recompute one BVH node's bounds/cullable count from its immediate
 ///   children (or its leaf entries) without recursing.
+/// @param index Borrowed mutable spatial index.
+/// @param node_index Zero-based BVH node to recompute.
 static void scene3d_spatial_recompute_node(rt_scene3d_spatial_index *index, int32_t node_index) {
     rt_scene3d_spatial_bvh_node *node;
     if (!index || node_index < 0 || node_index >= index->node_count)
@@ -668,6 +765,8 @@ static void scene3d_spatial_recompute_node(rt_scene3d_spatial_index *index, int3
 ///   on the path from its two children is exact. When several changed leaves
 ///   share ancestors, later walks simply recompute those ancestors again with
 ///   both children current — idempotent, order-independent.
+/// @param index Borrowed mutable spatial index.
+/// @param leaf_node Zero-based changed leaf-node index.
 static void scene3d_spatial_refit_path(rt_scene3d_spatial_index *index, int32_t leaf_node) {
     int32_t current = leaf_node;
     int32_t hops = 0;
@@ -684,6 +783,8 @@ static void scene3d_spatial_refit_path(rt_scene3d_spatial_index *index, int32_t 
 ///   changed does NO tree work at all — previously a single animated mesh
 ///   anywhere re-unioned the whole tree every query. Returns 0 (signalling a
 ///   rebuild is needed) if the tree shape no longer fits.
+/// @param scene Borrowed scene whose existing topology is refreshed.
+/// @return Nonzero when the existing/refreshed or rebuilt index is usable.
 static int scene3d_spatial_refit(rt_scene3d *scene) {
     rt_scene3d_spatial_index *index;
     int refreshed = 0;
@@ -745,6 +846,8 @@ static int scene3d_spatial_refit(rt_scene3d *scene) {
 }
 
 /// @brief Resolve the animator governing a node, inheriting the nearest ancestor's bound animator.
+/// @param node Borrowed node at which to begin the ancestor search.
+/// @return Borrowed validated AnimController3D handle, or `NULL`.
 void *scene3d_effective_animator(rt_scene_node3d *node) {
     rt_scene_node3d *current = node;
     while (current) {
@@ -758,6 +861,14 @@ void *scene3d_effective_animator(rt_scene_node3d *node) {
 }
 
 /// @brief Add a drawable node to the spatial index as a leaf entry with its world bounds.
+/// @param index Borrowed index receiving the entry.
+/// @param node Borrowed drawable node.
+/// @param traversal_order Stable scene traversal ordinal.
+/// @param world_min Borrowed world-space minimum corner.
+/// @param world_max Borrowed world-space maximum corner.
+/// @param radius Positive radius marks the entry cullable.
+/// @param visible Nonzero when the node and every ancestor are visible.
+/// @return Nonzero after append or a safe invalid-input no-op, otherwise zero.
 static int scene3d_spatial_add_entry(rt_scene3d_spatial_index *index,
                                      rt_scene_node3d *node,
                                      int32_t traversal_order,
@@ -786,6 +897,7 @@ static int scene3d_spatial_add_entry(rt_scene3d_spatial_index *index,
 /// @brief Rebuild the scene's spatial BVH from scratch by traversing the node hierarchy.
 /// @details Collects every drawable node as a leaf entry (tracking its effective animator), then
 ///          builds the BVH over them. Called when the topology dirty flag is set.
+/// @param scene Borrowed scene whose entries and BVH topology are rebuilt.
 /// @return 1 on success, 0 on allocation failure.
 static int scene3d_spatial_rebuild(rt_scene3d *scene) {
     scene_index_build_stack_item_t *stack = NULL;
@@ -869,6 +981,7 @@ static int scene3d_spatial_rebuild(rt_scene3d *scene) {
 
 /// @brief Ensure the spatial index is current before a query: rebuild on topology change, else
 /// refit.
+/// @param scene Borrowed scene whose index is requested.
 /// @return 1 if a usable index is available, 0 if it could not be built.
 static int scene3d_spatial_ensure(rt_scene3d *scene) {
     if (!scene || !scene->use_spatial_index)
@@ -887,6 +1000,12 @@ static int scene3d_spatial_ensure(rt_scene3d *scene) {
 /// @brief Collect spatial entries whose world bounds overlap a query AABB via BVH traversal.
 /// @details Descends only into nodes whose bounds intersect the query, so a large scene costs
 ///          O(log n + hits) rather than scanning every node.
+/// @param scene Borrowed scene whose refreshed index is queried.
+/// @param query_min Borrowed query minimum corner.
+/// @param query_max Borrowed query maximum corner.
+/// @param out Caller-owned candidate list to append to.
+/// @param count_cullable_prefilter Nonzero to count only cullable broad-phase rejections.
+/// @return Nonzero after successful stable-order collection, otherwise zero.
 int scene3d_spatial_collect_aabb(rt_scene3d *scene,
                                  const double query_min[3],
                                  const double query_max[3],
@@ -952,6 +1071,9 @@ int scene3d_spatial_collect_aabb(rt_scene3d *scene,
 }
 
 /// @brief Collect every spatial entry (no spatial filtering) into the candidate list.
+/// @param scene Borrowed scene whose refreshed index is enumerated.
+/// @param out Caller-owned candidate list to append visible entries to.
+/// @return Nonzero after successful stable-order collection, otherwise zero.
 int scene3d_spatial_collect_all(rt_scene3d *scene, scene3d_spatial_candidate_list_t *out) {
     rt_scene3d_spatial_index *index;
     if (!scene || !out)

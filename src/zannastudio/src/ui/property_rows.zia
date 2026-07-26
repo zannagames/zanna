@@ -1,0 +1,314 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/property_rows.zia
+// Purpose: Shared per-row typed property editor for the scene inspectors.
+// Key invariants:
+//   - Presentation only: rows never mutate scenes; owners consume latched
+//     commit/remove intents and perform validation, mutation, and history.
+//   - One latched intent at a time; Take* consume exactly once.
+//   - Rebuilding rows drops every pending intent and draft.
+// Ownership/Lifetime:
+//   - The owner's widget tree owns the host and all row widgets; SetRows
+//     destroys and rebuilds rows in place.
+// Links: zannastudio/src/ui/scene_metadata_inspector_3d.zia,
+//        zannastudio/src/ui/scene_editor_2d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module property_rows;
+
+bind "inspector_rows";
+
+bind GUI = Zanna.GUI;
+
+// ============================================================================
+// MODULE: property_rows
+// PURPOSE: One Unity-style property surface: every value is an always-visible
+//          editable row [key][kind][value][×] instead of a list plus a shared
+//          key/type/value draft trio behind Set/Remove buttons.
+//
+// WHERE-THIS-FITS: The 3D gameplay-metadata inspector and the 2D object and
+//          scene property groups all embed one PropertyRows.
+//
+// TEACHING-NOTE: Zia widgets poll. Pump walks every row's edges and latches
+//          at most one commit and one removal for the owner to consume, so
+//          owner transactions stay one-per-frame and probes stay stepwise.
+// ============================================================================
+
+final COMMIT_NONE: Integer = -1;
+
+/// @brief One editable [key][kind][value][remove] row's typed widgets.
+class PropertyRow {
+    expose GUI.Flex box;
+    expose GUI.TextInput keyInput;
+    expose GUI.Dropdown kindDropdown;
+    expose GUI.TextInput valueInput;
+    expose GUI.Button removeButton;
+    expose String canonicalKey;
+    expose String canonicalValue;
+    expose Boolean valueWasFocused;
+    expose Boolean keyWasFocused;
+
+    expose func init() {
+        box = null;
+        keyInput = null;
+        kindDropdown = null;
+        valueInput = null;
+        removeButton = null;
+        canonicalKey = "";
+        canonicalValue = "";
+        valueWasFocused = false;
+        keyWasFocused = false;
+    }
+
+    /// @brief Build the row's widgets under @p host.
+    expose func Build(host: GUI.VBox,
+                      kinds: List[String],
+                      noun: String,
+                      key: String,
+                      kind: Integer,
+                      value: String) {
+        box = inspector_rows.NewWrapRow();
+        host.AddChild(box);
+        keyInput = GUI.TextInput.New(box);
+        keyInput.SetText(key);
+        keyInput.SetPlaceholder("key");
+        keyInput.SetPreferredSize(96.0, 0.0);
+        keyInput.SetAccessibleName(noun + " key");
+        kindDropdown = GUI.Dropdown.New(box);
+        var k = 0;
+        while k < kinds.count() {
+            kindDropdown.AddItem(kinds.get(k));
+            k = k + 1;
+        }
+        var kindIndex = kind;
+        if kindIndex < 0 or kindIndex >= kinds.count() { kindIndex = 0; }
+        kindDropdown.SetSelected(kindIndex);
+        kindDropdown.SetAccessibleName(noun + " type");
+        valueInput = GUI.TextInput.New(box);
+        valueInput.SetText(value);
+        valueInput.SetPlaceholder("value");
+        valueInput.SetFlex(1.0);
+        valueInput.SetPreferredSize(110.0, 0.0);
+        valueInput.SetAccessibleName(noun + " value");
+        removeButton = GUI.Button.New(box, "×");
+        removeButton.SetTooltip("Remove this " + noun);
+        removeButton.SetAccessibleName("Remove " + noun);
+        canonicalKey = key;
+        canonicalValue = value;
+        valueWasFocused = false;
+        keyWasFocused = false;
+    }
+}
+
+/// @brief Presentation-only dynamic list of editable typed property rows.
+class PropertyRows {
+    expose GUI.VBox host;
+    expose GUI.Button addButton;
+    expose List[PropertyRow] rows;
+    expose Boolean hasDraftRow;
+    hide List[String] kindLabels;
+    hide Integer pendingCommitRow;
+    hide Integer pendingRemoveRow;
+    hide String rowNoun;
+
+    expose func init() {
+        host = null;
+        addButton = null;
+        rows = [];
+        hasDraftRow = false;
+        kindLabels = [];
+        pendingCommitRow = COMMIT_NONE;
+        pendingRemoveRow = COMMIT_NONE;
+        rowNoun = "property";
+    }
+
+    /// @brief Build the row host and the trailing add button.
+    /// @param parent Container that owns this property surface.
+    /// @param kinds Ordered kind labels shown by every row's dropdown.
+    /// @param addText Add-button label (e.g. "New property").
+    /// @param noun Accessible noun for row controls (e.g. "metadata").
+    expose func Setup(parent: GUI.Widget,
+                      kinds: List[String],
+                      addText: String,
+                      noun: String) {
+        kindLabels = kinds;
+        rowNoun = noun;
+        host = GUI.VBox.New();
+        host.SetSpacing(4.0);
+        parent.AddChild(host);
+        addButton = GUI.Button.New(parent, addText);
+        addButton.SetTooltip(
+            "Append an editable row; Enter on its key or value creates the "
+            + noun + " as one undoable edit");
+    }
+
+    /// @brief Destroy and rebuild every row from canonical owner state.
+    /// @details Any pending intents, drafts, and focus tracking are dropped:
+    ///          the owner refreshes from truth after each transaction.
+    expose func SetRows(keys: List[String],
+                        kinds: List[Integer],
+                        values: List[String]) {
+        host.ClearChildren();
+        rows = [];
+        hasDraftRow = false;
+        pendingCommitRow = COMMIT_NONE;
+        pendingRemoveRow = COMMIT_NONE;
+        var i = 0;
+        while i < keys.count() {
+            var row = new PropertyRow();
+            row.Build(host, kindLabels, rowNoun,
+                      keys.get(i), kinds.get(i), values.get(i));
+            rows.add(row);
+            i = i + 1;
+        }
+    }
+
+    /// @brief Ensure one trailing editable draft row exists without focusing.
+    /// @details Programmatic refreshes (e.g. batch mode) use this so focus
+    ///          never jumps on selection changes.
+    expose func EnsureDraftRow() {
+        if hasDraftRow { return; }
+        var row = new PropertyRow();
+        row.Build(host, kindLabels, rowNoun, "", 0, "");
+        rows.add(row);
+        hasDraftRow = true;
+    }
+
+    /// @brief Append one editable draft row and focus its key input.
+    expose func AddDraftRow() {
+        EnsureDraftRow();
+        var draft = rows.get(rows.count() - 1);
+        draft.keyInput.Focus();
+    }
+
+    /// @brief Poll every row's edges and latch at most one commit and remove.
+    expose func Pump() {
+        if addButton != null and addButton.WasClicked() {
+            AddDraftRow();
+        }
+        var i = 0;
+        while i < rows.count() {
+            var row = rows.get(i);
+            var isDraft = hasDraftRow and i == rows.count() - 1;
+
+            if row.removeButton.WasClicked() {
+                if isDraft {
+                    DiscardDraftRow();
+                    return;
+                }
+                if pendingRemoveRow == COMMIT_NONE {
+                    pendingRemoveRow = i;
+                }
+            }
+
+            var commit = row.keyInput.WasSubmitted()
+                or row.valueInput.WasSubmitted();
+            // A kind change on an existing row re-types the value right away.
+            if row.kindDropdown.WasChanged() and isDraft == false {
+                commit = true;
+            }
+            // Blur-commit: a value edit that loses focus without Enter still
+            // commits, mirroring the live transform drafts.
+            var valueFocused = row.valueInput.IsFocused();
+            if row.valueWasFocused and valueFocused == false
+               and isDraft == false
+               and row.valueInput.Text != row.canonicalValue {
+                commit = true;
+            }
+            row.valueWasFocused = valueFocused;
+            var keyFocused = row.keyInput.IsFocused();
+            if row.keyWasFocused and keyFocused == false
+               and isDraft == false
+               and row.keyInput.Text != row.canonicalKey {
+                commit = true;
+            }
+            row.keyWasFocused = keyFocused;
+
+            if commit and pendingCommitRow == COMMIT_NONE {
+                pendingCommitRow = i;
+            }
+            i = i + 1;
+        }
+    }
+
+    /// @brief Consume the latched commit row, or COMMIT_NONE.
+    expose func TakeCommitRow() -> Integer {
+        var row = pendingCommitRow;
+        pendingCommitRow = COMMIT_NONE;
+        return row;
+    }
+
+    /// @brief Consume the latched remove row, or COMMIT_NONE.
+    expose func TakeRemoveRow() -> Integer {
+        var row = pendingRemoveRow;
+        pendingRemoveRow = COMMIT_NONE;
+        return row;
+    }
+
+    /// @brief Return whether @p row is the trailing uncommitted draft.
+    expose func IsDraftRow(row: Integer) -> Boolean {
+        return hasDraftRow and row == rows.count() - 1;
+    }
+
+    /// @brief The canonical key @p row represented when last refreshed.
+    expose func CanonicalKeyAt(row: Integer) -> String {
+        if row < 0 or row >= rows.count() { return ""; }
+        return rows.get(row).canonicalKey;
+    }
+
+    /// @brief The row's current key draft text.
+    expose func KeyTextAt(row: Integer) -> String {
+        if row < 0 or row >= rows.count() { return ""; }
+        return rows.get(row).keyInput.Text;
+    }
+
+    /// @brief The row's current kind index.
+    expose func KindIndexAt(row: Integer) -> Integer {
+        if row < 0 or row >= rows.count() { return 0; }
+        return rows.get(row).kindDropdown.Selected;
+    }
+
+    /// @brief The row's current value draft text.
+    expose func ValueTextAt(row: Integer) -> String {
+        if row < 0 or row >= rows.count() { return ""; }
+        return rows.get(row).valueInput.Text;
+    }
+
+    /// @brief The number of visible rows including any draft.
+    expose func RowCount() -> Integer {
+        return rows.count();
+    }
+
+    /// @brief Enable or disable every row control and the add button.
+    expose func SetEnabled(enabled: Boolean) {
+        if addButton != null { addButton.SetEnabled(enabled); }
+        var i = 0;
+        while i < rows.count() {
+            var row = rows.get(i);
+            row.keyInput.SetEnabled(enabled);
+            row.kindDropdown.SetEnabled(enabled);
+            row.valueInput.SetEnabled(enabled);
+            row.removeButton.SetEnabled(enabled);
+            i = i + 1;
+        }
+    }
+
+    /// @brief Remove the trailing draft row without committing anything.
+    hide func DiscardDraftRow() {
+        if hasDraftRow == false { return; }
+        var last = rows.count() - 1;
+        var row = rows.get(last);
+        host.RemoveChild(row.box);
+        row.box.Destroy();
+        rows.removeAt(last);
+        hasDraftRow = false;
+        pendingCommitRow = COMMIT_NONE;
+        pendingRemoveRow = COMMIT_NONE;
+    }
+}

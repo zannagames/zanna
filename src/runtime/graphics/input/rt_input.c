@@ -89,6 +89,8 @@
 #define VGFX_KEY_END_VG 266
 #define VGFX_KEY_PAGE_UP_VG 267
 #define VGFX_KEY_PAGE_DOWN_VG 268
+#define VGFX_KEY_F1_VG 269
+#define VGFX_KEY_F12_VG 280
 
 /// @brief Convert vgfx key code to GLFW-style key code.
 static int64_t vgfx_to_glfw(int64_t vgfx_key) {
@@ -129,6 +131,9 @@ static int64_t vgfx_to_glfw(int64_t vgfx_key) {
         case VGFX_KEY_PAGE_DOWN_VG:
             return ZANNA_KEY_PAGEDOWN;
         default:
+            // Function keys occupy a contiguous range in both vocabularies.
+            if (vgfx_key >= VGFX_KEY_F1_VG && vgfx_key <= VGFX_KEY_F12_VG)
+                return ZANNA_KEY_F1 + (vgfx_key - VGFX_KEY_F1_VG);
             return vgfx_key;
     }
 }

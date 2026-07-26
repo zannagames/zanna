@@ -3,6 +3,15 @@
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
 //
+/// @file rt_gui_bars.c
+/// @brief Implements runtime bindings for status bars, toolbars, and their item handles.
+///
+/// @details
+/// The graphics-enabled path validates wrapper ownership, converts runtime
+/// strings and pixels at the ABI boundary, and forwards retained bar mutations
+/// to ZannaGUI. Graphics-disabled definitions preserve the same API with
+/// deterministic empty values and no side effects.
+///
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/graphics/gui/rt_gui_bars.c
@@ -40,6 +49,8 @@ void rt_gui_set_clicked_statusbar_item(void *item);
 /// @brief Status-bar item click callback: record the clicked item for the next poll.
 /// @details Matches the GUI library's callback signature; @p user_data is unused
 ///          because the clicked item is surfaced through global poll state instead.
+/// @param item Borrowed item reported by the toolkit callback.
+/// @param user_data Unused callback context.
 static void rt_statusbar_button_clicked(vg_statusbar_item_t *item, void *user_data) {
     (void)user_data;
     rt_gui_set_clicked_statusbar_item(item);
@@ -77,6 +88,7 @@ void *rt_statusbar_new(void *parent) {
 }
 
 /// @brief Release resources and destroy the statusbar.
+/// @param bar StatusBar widget handle; invalid handles are ignored.
 void rt_statusbar_destroy(void *bar) {
     RT_ASSERT_MAIN_THREAD();
     vg_statusbar_t *sb = rt_statusbar_checked(bar);
@@ -90,6 +102,9 @@ void rt_statusbar_destroy(void *bar) {
 /// can update an existing label rather than appending a new one
 /// each time. Walking the zone is fine — zones rarely hold more
 /// than a handful of items.
+/// @param sb Borrowed StatusBar widget.
+/// @param zone Zone to search.
+/// @return Borrowed first text item, or NULL when the zone has none.
 static vg_statusbar_item_t *get_zone_text_item(vg_statusbar_t *sb, vg_statusbar_zone_t zone) {
     vg_statusbar_item_t **items = NULL;
     size_t count = 0;
@@ -116,6 +131,8 @@ static vg_statusbar_item_t *get_zone_text_item(vg_statusbar_t *sb, vg_statusbar_
 }
 
 /// @brief Set the left text of the statusbar.
+/// @param bar StatusBar widget handle.
+/// @param text Runtime string copied into the left text item.
 void rt_statusbar_set_left_text(void *bar, rt_string text) {
     RT_ASSERT_MAIN_THREAD();
     vg_statusbar_t *sb = rt_statusbar_checked(bar);
@@ -134,6 +151,8 @@ void rt_statusbar_set_left_text(void *bar, rt_string text) {
 }
 
 /// @brief Set the center text of the statusbar.
+/// @param bar StatusBar widget handle.
+/// @param text Runtime string copied into the center text item.
 void rt_statusbar_set_center_text(void *bar, rt_string text) {
     RT_ASSERT_MAIN_THREAD();
     vg_statusbar_t *sb = rt_statusbar_checked(bar);
@@ -152,6 +171,8 @@ void rt_statusbar_set_center_text(void *bar, rt_string text) {
 }
 
 /// @brief Set the right text of the statusbar.
+/// @param bar StatusBar widget handle.
+/// @param text Runtime string copied into the right text item.
 void rt_statusbar_set_right_text(void *bar, rt_string text) {
     RT_ASSERT_MAIN_THREAD();
     vg_statusbar_t *sb = rt_statusbar_checked(bar);
@@ -170,6 +191,8 @@ void rt_statusbar_set_right_text(void *bar, rt_string text) {
 }
 
 /// @brief Get the left text of the statusbar.
+/// @param bar StatusBar widget handle.
+/// @return Owned left-zone text, or an empty runtime string when unavailable.
 rt_string rt_statusbar_get_left_text(void *bar) {
     RT_ASSERT_MAIN_THREAD();
     vg_statusbar_t *sb = rt_statusbar_checked(bar);
@@ -183,6 +206,8 @@ rt_string rt_statusbar_get_left_text(void *bar) {
 }
 
 /// @brief Get the center text of the statusbar.
+/// @param bar StatusBar widget handle.
+/// @return Owned center-zone text, or an empty runtime string when unavailable.
 rt_string rt_statusbar_get_center_text(void *bar) {
     RT_ASSERT_MAIN_THREAD();
     vg_statusbar_t *sb = rt_statusbar_checked(bar);
@@ -196,6 +221,8 @@ rt_string rt_statusbar_get_center_text(void *bar) {
 }
 
 /// @brief Get the right text of the statusbar.
+/// @param bar StatusBar widget handle.
+/// @return Owned right-zone text, or an empty runtime string when unavailable.
 rt_string rt_statusbar_get_right_text(void *bar) {
     RT_ASSERT_MAIN_THREAD();
     vg_statusbar_t *sb = rt_statusbar_checked(bar);
@@ -216,6 +243,10 @@ rt_string rt_statusbar_get_right_text(void *bar) {
 // ===========================================================================
 
 /// @brief Append a text label to the given status-bar zone.
+/// @param bar StatusBar widget handle.
+/// @param text Runtime string copied into the new item.
+/// @param zone Target status-bar zone.
+/// @return Wrapped item handle, or NULL for invalid input/allocation failure.
 void *rt_statusbar_add_text(void *bar, rt_string text, int64_t zone) {
     RT_ASSERT_MAIN_THREAD();
     vg_statusbar_t *sb = rt_statusbar_checked(bar);
@@ -231,6 +262,10 @@ void *rt_statusbar_add_text(void *bar, rt_string text, int64_t zone) {
 }
 
 /// @brief Append a clickable button to a status-bar zone.
+/// @param bar StatusBar widget handle.
+/// @param text Runtime string copied into the button.
+/// @param zone Target status-bar zone.
+/// @return Wrapped button-item handle, or NULL on failure.
 void *rt_statusbar_add_button(void *bar, rt_string text, int64_t zone) {
     RT_ASSERT_MAIN_THREAD();
     vg_statusbar_t *sb = rt_statusbar_checked(bar);
@@ -247,6 +282,9 @@ void *rt_statusbar_add_button(void *bar, rt_string text, int64_t zone) {
 }
 
 /// @brief Append a progress bar to a status-bar zone (drive via `rt_statusbaritem_set_progress`).
+/// @param bar StatusBar widget handle.
+/// @param zone Target status-bar zone.
+/// @return Wrapped progress-item handle, or NULL on failure.
 void *rt_statusbar_add_progress(void *bar, int64_t zone) {
     RT_ASSERT_MAIN_THREAD();
     vg_statusbar_t *sb = rt_statusbar_checked(bar);
@@ -257,6 +295,9 @@ void *rt_statusbar_add_progress(void *bar, int64_t zone) {
 }
 
 /// @brief Append a vertical separator line to a status-bar zone.
+/// @param bar StatusBar widget handle.
+/// @param zone Target status-bar zone.
+/// @return Wrapped separator-item handle, or NULL on failure.
 void *rt_statusbar_add_separator(void *bar, int64_t zone) {
     RT_ASSERT_MAIN_THREAD();
     vg_statusbar_t *sb = rt_statusbar_checked(bar);
@@ -267,6 +308,9 @@ void *rt_statusbar_add_separator(void *bar, int64_t zone) {
 }
 
 /// @brief Append a flexible spacer (consumes free space within the zone).
+/// @param bar StatusBar widget handle.
+/// @param zone Target status-bar zone.
+/// @return Wrapped spacer-item handle, or NULL on failure.
 void *rt_statusbar_add_spacer(void *bar, int64_t zone) {
     RT_ASSERT_MAIN_THREAD();
     vg_statusbar_t *sb = rt_statusbar_checked(bar);
@@ -277,6 +321,8 @@ void *rt_statusbar_add_spacer(void *bar, int64_t zone) {
 }
 
 /// @brief Remove an item from the status bar.
+/// @param bar Owning StatusBar widget handle.
+/// @param item Wrapped item handle; foreign or stale items are ignored.
 void rt_statusbar_remove_item(void *bar, void *item) {
     RT_ASSERT_MAIN_THREAD();
     if (!bar || !item)
@@ -293,6 +339,7 @@ void rt_statusbar_remove_item(void *bar, void *item) {
 }
 
 /// @brief Remove all items from all status bar zones.
+/// @param bar StatusBar widget handle.
 void rt_statusbar_clear(void *bar) {
     RT_ASSERT_MAIN_THREAD();
     vg_statusbar_t *sb = rt_statusbar_checked(bar);
@@ -308,6 +355,8 @@ void rt_statusbar_clear(void *bar) {
 }
 
 /// @brief Show or hide the status bar.
+/// @param bar StatusBar widget handle.
+/// @param visible Non-zero to show the bar; zero to hide it.
 void rt_statusbar_set_visible(void *bar, int64_t visible) {
     RT_ASSERT_MAIN_THREAD();
     vg_statusbar_t *sb = rt_statusbar_checked(bar);
@@ -317,6 +366,8 @@ void rt_statusbar_set_visible(void *bar, int64_t visible) {
 }
 
 /// @brief Check whether the status bar is currently visible.
+/// @param bar StatusBar widget handle.
+/// @return 1 when visible, otherwise 0.
 int64_t rt_statusbar_is_visible(void *bar) {
     RT_ASSERT_MAIN_THREAD();
     vg_statusbar_t *sb = rt_statusbar_checked(bar);
@@ -328,6 +379,8 @@ int64_t rt_statusbar_is_visible(void *bar) {
 //=============================================================================
 
 /// @brief Set the text of the statusbaritem.
+/// @param item StatusBarItem handle.
+/// @param text Runtime string copied into the item.
 void rt_statusbaritem_set_text(void *item, rt_string text) {
     RT_ASSERT_MAIN_THREAD();
     vg_statusbar_item_t *sbi = rt_statusbaritem_checked(item);
@@ -341,6 +394,8 @@ void rt_statusbaritem_set_text(void *item, rt_string text) {
 }
 
 /// @brief Set the text color of the statusbaritem.
+/// @param item StatusBarItem handle.
+/// @param color Packed ARGB text color.
 void rt_statusbaritem_set_text_color(void *item, int64_t color) {
     RT_ASSERT_MAIN_THREAD();
     vg_statusbar_item_t *sbi = rt_statusbaritem_checked(item);
@@ -352,6 +407,8 @@ void rt_statusbaritem_set_text_color(void *item, int64_t color) {
 /// @brief Set (or clear) a named scalable vector icon on a status bar item (ADR 0137).
 /// @details Unknown names are ignored so callers can probe icon availability;
 ///          an empty name clears the current vector icon.
+/// @param item StatusBarItem handle.
+/// @param name Stable vector icon name, or an empty string to clear it.
 void rt_statusbaritem_set_icon_name(void *item, rt_string name) {
     RT_ASSERT_MAIN_THREAD();
     vg_statusbar_item_t *sbi = rt_statusbaritem_checked(item);
@@ -370,6 +427,8 @@ void rt_statusbaritem_set_icon_name(void *item, rt_string name) {
 }
 
 /// @brief Get the text of the statusbaritem.
+/// @param item StatusBarItem handle.
+/// @return Owned item text, or an empty runtime string when unavailable.
 rt_string rt_statusbaritem_get_text(void *item) {
     RT_ASSERT_MAIN_THREAD();
     vg_statusbar_item_t *sbi = rt_statusbaritem_checked(item);
@@ -382,6 +441,8 @@ rt_string rt_statusbaritem_get_text(void *item) {
 }
 
 /// @brief Set the tooltip of the statusbaritem.
+/// @param item StatusBarItem handle.
+/// @param tooltip Runtime string copied into the tooltip.
 void rt_statusbaritem_set_tooltip(void *item, rt_string tooltip) {
     RT_ASSERT_MAIN_THREAD();
     vg_statusbar_item_t *sbi = rt_statusbaritem_checked(item);
@@ -395,6 +456,8 @@ void rt_statusbaritem_set_tooltip(void *item, rt_string tooltip) {
 }
 
 /// @brief Set the progress of the statusbaritem.
+/// @param item Progress StatusBarItem handle.
+/// @param value Progress value clamped to `[0,1]`; non-finite values become 0.
 void rt_statusbaritem_set_progress(void *item, double value) {
     RT_ASSERT_MAIN_THREAD();
     vg_statusbar_item_t *sbi = rt_statusbaritem_checked(item);
@@ -405,6 +468,8 @@ void rt_statusbaritem_set_progress(void *item, double value) {
 }
 
 /// @brief Get the progress of the statusbaritem.
+/// @param item Progress StatusBarItem handle.
+/// @return Current normalized progress, or 0 for an invalid handle.
 double rt_statusbaritem_get_progress(void *item) {
     RT_ASSERT_MAIN_THREAD();
     vg_statusbar_item_t *sbi = rt_statusbaritem_checked(item);
@@ -414,6 +479,8 @@ double rt_statusbaritem_get_progress(void *item) {
 }
 
 /// @brief Show or hide a status bar item.
+/// @param item StatusBarItem handle.
+/// @param visible Non-zero to show the item; zero to hide it.
 void rt_statusbaritem_set_visible(void *item, int64_t visible) {
     RT_ASSERT_MAIN_THREAD();
     vg_statusbar_item_t *sbi = rt_statusbaritem_checked(item);
@@ -423,7 +490,7 @@ void rt_statusbaritem_set_visible(void *item, int64_t visible) {
 }
 
 /// @brief Record which status bar item was clicked (for frame-based polling).
-/// @param item
+/// @param item Borrowed live status-bar item reported by the toolkit.
 void rt_gui_set_clicked_statusbar_item(void *item) {
     RT_ASSERT_MAIN_THREAD();
     vg_statusbar_item_t *sbi = (vg_statusbar_item_t *)item;
@@ -435,6 +502,8 @@ void rt_gui_set_clicked_statusbar_item(void *item) {
 }
 
 /// @brief Check if a status bar item was clicked this frame (edge-triggered).
+/// @param item StatusBarItem handle.
+/// @return 1 once when this item matches the app's pending click, otherwise 0.
 int64_t rt_statusbaritem_was_clicked(void *item) {
     RT_ASSERT_MAIN_THREAD();
     vg_statusbar_item_t *sbi = rt_statusbaritem_checked(item);
@@ -555,6 +624,7 @@ void *rt_toolbar_new_vertical(void *parent) {
 }
 
 /// @brief Release resources and destroy the toolbar.
+/// @param toolbar Toolbar widget handle; invalid handles are ignored.
 void rt_toolbar_destroy(void *toolbar) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_t *tb = rt_toolbar_checked(toolbar);
@@ -565,6 +635,10 @@ void rt_toolbar_destroy(void *toolbar) {
 /// @brief Append an icon-only toolbar button.
 ///
 /// Loads the icon from `icon_path` and uses `tooltip` for hover text.
+/// @param toolbar Toolbar widget handle.
+/// @param icon_path Runtime path for an image icon; empty produces no image.
+/// @param tooltip Runtime tooltip text copied into the item.
+/// @return Wrapped toolbar-item handle, or NULL on failure.
 void *rt_toolbar_add_button(void *toolbar, rt_string icon_path, rt_string tooltip) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_t *tb = rt_toolbar_checked(toolbar);
@@ -596,6 +670,11 @@ void *rt_toolbar_add_button(void *toolbar, rt_string icon_path, rt_string toolti
 /// Forces `show_label = true` on the resulting item — toolbars
 /// default to icon-only display, so this is required for the
 /// label to actually render.
+/// @param toolbar Toolbar widget handle.
+/// @param icon_path Runtime path for an image icon.
+/// @param text Runtime label text copied into the item.
+/// @param tooltip Runtime tooltip text copied into the item.
+/// @return Wrapped toolbar-item handle, or NULL on failure.
 void *rt_toolbar_add_button_with_text(void *toolbar,
                                       rt_string icon_path,
                                       rt_string text,
@@ -632,6 +711,10 @@ void *rt_toolbar_add_button_with_text(void *toolbar,
 }
 
 /// @brief Append an icon-only toolbar button using a built-in semantic icon name.
+/// @param toolbar Toolbar widget handle.
+/// @param icon_name Stable semantic icon name.
+/// @param tooltip Runtime tooltip text copied into the item.
+/// @return Wrapped toolbar-item handle, or NULL on failure.
 void *rt_toolbar_add_named_button(void *toolbar, rt_string icon_name, rt_string tooltip) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_t *tb = rt_toolbar_checked(toolbar);
@@ -651,6 +734,11 @@ void *rt_toolbar_add_named_button(void *toolbar, rt_string icon_name, rt_string 
 }
 
 /// @brief Append a toolbar button with text plus a built-in semantic icon.
+/// @param toolbar Toolbar widget handle.
+/// @param icon_name Stable semantic icon name.
+/// @param text Runtime label text copied into the item.
+/// @param tooltip Runtime tooltip text copied into the item.
+/// @return Wrapped toolbar-item handle, or NULL on failure.
 void *rt_toolbar_add_named_button_with_text(void *toolbar,
                                             rt_string icon_name,
                                             rt_string text,
@@ -680,6 +768,10 @@ void *rt_toolbar_add_named_button_with_text(void *toolbar,
 }
 
 /// @brief Append a sticky toggle button (radio/checkbox-style press state).
+/// @param toolbar Toolbar widget handle.
+/// @param icon_path Runtime path for an image icon.
+/// @param tooltip Runtime tooltip text copied into the item.
+/// @return Wrapped toggle-item handle, or NULL on failure.
 void *rt_toolbar_add_toggle(void *toolbar, rt_string icon_path, rt_string tooltip) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_t *tb = rt_toolbar_checked(toolbar);
@@ -707,6 +799,10 @@ void *rt_toolbar_add_toggle(void *toolbar, rt_string icon_path, rt_string toolti
 }
 
 /// @brief Append a sticky toggle button using a built-in semantic icon name.
+/// @param toolbar Toolbar widget handle.
+/// @param icon_name Stable semantic icon name.
+/// @param tooltip Runtime tooltip text copied into the item.
+/// @return Wrapped toggle-item handle, or NULL on failure.
 void *rt_toolbar_add_named_toggle(void *toolbar, rt_string icon_name, rt_string tooltip) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_t *tb = rt_toolbar_checked(toolbar);
@@ -726,6 +822,8 @@ void *rt_toolbar_add_named_toggle(void *toolbar, rt_string icon_name, rt_string 
 }
 
 /// @brief Append a vertical (or horizontal, for vertical toolbars) separator line.
+/// @param toolbar Toolbar widget handle.
+/// @return Wrapped separator-item handle, or NULL on failure.
 void *rt_toolbar_add_separator(void *toolbar) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_t *tb = rt_toolbar_checked(toolbar);
@@ -733,6 +831,8 @@ void *rt_toolbar_add_separator(void *toolbar) {
 }
 
 /// @brief Append a flexible spacer (consumes free space, useful for right-aligning items).
+/// @param toolbar Toolbar widget handle.
+/// @return Wrapped spacer-item handle, or NULL on failure.
 void *rt_toolbar_add_spacer(void *toolbar) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_t *tb = rt_toolbar_checked(toolbar);
@@ -740,6 +840,9 @@ void *rt_toolbar_add_spacer(void *toolbar) {
 }
 
 /// @brief Append a dropdown button — clicking opens an attached menu of choices.
+/// @param toolbar Toolbar widget handle.
+/// @param tooltip Runtime tooltip text copied into the item.
+/// @return Wrapped dropdown-item handle, or NULL on failure.
 void *rt_toolbar_add_dropdown(void *toolbar, rt_string tooltip) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_t *tb = rt_toolbar_checked(toolbar);
@@ -762,6 +865,8 @@ void *rt_toolbar_add_dropdown(void *toolbar, rt_string tooltip) {
 }
 
 /// @brief Remove an item from the toolbar.
+/// @param toolbar Owning Toolbar widget handle.
+/// @param item Wrapped item handle; foreign or stale items are ignored.
 void rt_toolbar_remove_item(void *toolbar, void *item) {
     RT_ASSERT_MAIN_THREAD();
     if (!toolbar || !item)
@@ -780,6 +885,8 @@ void rt_toolbar_remove_item(void *toolbar, void *item) {
 }
 
 /// @brief Get a size property of the toolbar (button width or height).
+/// @param toolbar Toolbar widget handle.
+/// @param size Icon-size enumeration value, clamped to the supported range.
 void rt_toolbar_set_icon_size(void *toolbar, int64_t size) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_t *tb = rt_toolbar_checked(toolbar);
@@ -789,6 +896,8 @@ void rt_toolbar_set_icon_size(void *toolbar, int64_t size) {
 }
 
 /// @brief Get a size property of the toolbar (button width or height).
+/// @param toolbar Toolbar widget handle.
+/// @return Current icon-size enumeration, or medium for an invalid handle.
 int64_t rt_toolbar_get_icon_size(void *toolbar) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_t *tb = rt_toolbar_checked(toolbar);
@@ -796,6 +905,8 @@ int64_t rt_toolbar_get_icon_size(void *toolbar) {
 }
 
 /// @brief Set the style of the toolbar.
+/// @param toolbar Toolbar widget handle.
+/// @param style Icon-only, text-only, or icon-and-text style value.
 void rt_toolbar_set_style(void *toolbar, int64_t style) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_t *tb = rt_toolbar_checked(toolbar);
@@ -807,6 +918,8 @@ void rt_toolbar_set_style(void *toolbar, int64_t style) {
 }
 
 /// @brief Get the number of items in the toolbar.
+/// @param toolbar Toolbar widget handle.
+/// @return Number of retained items, or 0 for an invalid handle.
 int64_t rt_toolbar_get_item_count(void *toolbar) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_t *tb = rt_toolbar_checked(toolbar);
@@ -814,6 +927,9 @@ int64_t rt_toolbar_get_item_count(void *toolbar) {
 }
 
 /// @brief Return the `index`-th item in the toolbar (NULL on out-of-range).
+/// @param toolbar Toolbar widget handle.
+/// @param index Zero-based item index.
+/// @return Wrapped borrowed item handle, or NULL when out of range.
 void *rt_toolbar_get_item(void *toolbar, int64_t index) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_t *tb = rt_toolbar_checked(toolbar);
@@ -825,6 +941,8 @@ void *rt_toolbar_get_item(void *toolbar, int64_t index) {
 }
 
 /// @brief Show or hide the toolbar.
+/// @param toolbar Toolbar widget handle.
+/// @param visible Non-zero to show the toolbar; zero to hide it.
 void rt_toolbar_set_visible(void *toolbar, int64_t visible) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_t *tb = rt_toolbar_checked(toolbar);
@@ -834,6 +952,8 @@ void rt_toolbar_set_visible(void *toolbar, int64_t visible) {
 }
 
 /// @brief Check whether the toolbar is currently visible.
+/// @param toolbar Toolbar widget handle.
+/// @return 1 when visible, otherwise 0.
 int64_t rt_toolbar_is_visible(void *toolbar) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_t *tb = rt_toolbar_checked(toolbar);
@@ -845,6 +965,8 @@ int64_t rt_toolbar_is_visible(void *toolbar) {
 //=============================================================================
 
 /// @brief Set the icon of the toolbaritem.
+/// @param item ToolbarItem handle.
+/// @param icon_path Runtime path for the replacement image icon.
 void rt_toolbaritem_set_icon(void *item, rt_string icon_path) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_item_t *ti = rt_toolbaritem_checked(item);
@@ -857,6 +979,8 @@ void rt_toolbaritem_set_icon(void *item, rt_string icon_path) {
 }
 
 /// @brief Set the icon pixels of the toolbaritem.
+/// @param item ToolbarItem handle.
+/// @param pixels Runtime Pixels handle used as the replacement icon.
 void rt_toolbaritem_set_icon_pixels(void *item, void *pixels) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_item_t *ti = rt_toolbaritem_checked(item);
@@ -866,6 +990,8 @@ void rt_toolbaritem_set_icon_pixels(void *item, void *pixels) {
 }
 
 /// @brief Replace a toolbar item icon with a built-in semantic icon.
+/// @param item ToolbarItem handle.
+/// @param icon_name Stable semantic icon name.
 void rt_toolbaritem_set_named_icon(void *item, rt_string icon_name) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_item_t *ti = rt_toolbaritem_checked(item);
@@ -875,6 +1001,8 @@ void rt_toolbaritem_set_named_icon(void *item, rt_string icon_name) {
 }
 
 /// @brief Set the text of the toolbaritem.
+/// @param item ToolbarItem handle.
+/// @param text Runtime label text copied into the item.
 void rt_toolbaritem_set_text(void *item, rt_string text) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_item_t *ti = rt_toolbaritem_checked(item);
@@ -888,6 +1016,8 @@ void rt_toolbaritem_set_text(void *item, rt_string text) {
 }
 
 /// @brief Set the tooltip of the toolbaritem.
+/// @param item ToolbarItem handle.
+/// @param tooltip Runtime tooltip text copied into the item.
 void rt_toolbaritem_set_tooltip(void *item, rt_string tooltip) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_item_t *ti = rt_toolbaritem_checked(item);
@@ -901,6 +1031,8 @@ void rt_toolbaritem_set_tooltip(void *item, rt_string tooltip) {
 }
 
 /// @brief Enable or disable a toolbar item.
+/// @param item ToolbarItem handle.
+/// @param enabled Non-zero to enable interaction; zero to disable it.
 void rt_toolbaritem_set_enabled(void *item, int64_t enabled) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_item_t *ti = rt_toolbaritem_checked(item);
@@ -910,6 +1042,8 @@ void rt_toolbaritem_set_enabled(void *item, int64_t enabled) {
 }
 
 /// @brief Check whether a toolbar item is currently enabled.
+/// @param item ToolbarItem handle.
+/// @return 1 when enabled, otherwise 0.
 int64_t rt_toolbaritem_is_enabled(void *item) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_item_t *ti = rt_toolbaritem_checked(item);
@@ -919,6 +1053,8 @@ int64_t rt_toolbaritem_is_enabled(void *item) {
 }
 
 /// @brief Set the toggled of the toolbaritem.
+/// @param item Toggle ToolbarItem handle.
+/// @param toggled Non-zero to select the item; zero to clear it.
 void rt_toolbaritem_set_toggled(void *item, int64_t toggled) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_item_t *ti = rt_toolbaritem_checked(item);
@@ -928,6 +1064,8 @@ void rt_toolbaritem_set_toggled(void *item, int64_t toggled) {
 }
 
 /// @brief Check whether a toolbar toggle button is currently in the toggled state.
+/// @param item Toggle ToolbarItem handle.
+/// @return 1 when toggled, otherwise 0.
 int64_t rt_toolbaritem_is_toggled(void *item) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_item_t *ti = rt_toolbaritem_checked(item);
@@ -937,7 +1075,7 @@ int64_t rt_toolbaritem_is_toggled(void *item) {
 }
 
 /// @brief Record which toolbar item was clicked (for frame-based polling).
-/// @param item
+/// @param item Borrowed live toolbar item reported by the toolkit.
 void rt_gui_set_clicked_toolbar_item(void *item) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_item_t *ti = (vg_toolbar_item_t *)item;
@@ -949,6 +1087,8 @@ void rt_gui_set_clicked_toolbar_item(void *item) {
 }
 
 /// @brief Check if a toolbar button was clicked this frame (edge-triggered).
+/// @param item ToolbarItem handle.
+/// @return 1 once when an unreported click exists for this item, otherwise 0.
 int64_t rt_toolbaritem_was_clicked(void *item) {
     RT_ASSERT_MAIN_THREAD();
     vg_toolbar_item_t *ti = rt_toolbaritem_checked(item);
@@ -976,53 +1116,72 @@ int64_t rt_toolbaritem_was_clicked(void *item) {
 
 
 /// @brief Stub: graphics disabled — returns NULL; no status bar widget is created.
+/// @param parent Ignored parent handle.
+/// @return Always NULL.
 void *rt_statusbar_new(void *parent) {
     (void)parent;
     return NULL;
 }
 
 /// @brief Release resources and destroy the statusbar.
+/// @param bar Ignored StatusBar handle.
 void rt_statusbar_destroy(void *bar) {
     (void)bar;
 }
 
 /// @brief Set the left text of the statusbar.
+/// @param bar Ignored StatusBar handle.
+/// @param text Ignored runtime string.
 void rt_statusbar_set_left_text(void *bar, rt_string text) {
     (void)bar;
     (void)text;
 }
 
 /// @brief Set the center text of the statusbar.
+/// @param bar Ignored StatusBar handle.
+/// @param text Ignored runtime string.
 void rt_statusbar_set_center_text(void *bar, rt_string text) {
     (void)bar;
     (void)text;
 }
 
 /// @brief Set the right text of the statusbar.
+/// @param bar Ignored StatusBar handle.
+/// @param text Ignored runtime string.
 void rt_statusbar_set_right_text(void *bar, rt_string text) {
     (void)bar;
     (void)text;
 }
 
 /// @brief Get the left text of the statusbar.
+/// @param bar Ignored StatusBar handle.
+/// @return Empty runtime string.
 rt_string rt_statusbar_get_left_text(void *bar) {
     (void)bar;
     return rt_str_empty();
 }
 
 /// @brief Get the center text of the statusbar.
+/// @param bar Ignored StatusBar handle.
+/// @return Empty runtime string.
 rt_string rt_statusbar_get_center_text(void *bar) {
     (void)bar;
     return rt_str_empty();
 }
 
 /// @brief Get the right text of the statusbar.
+/// @param bar Ignored StatusBar handle.
+/// @return Empty runtime string.
 rt_string rt_statusbar_get_right_text(void *bar) {
     (void)bar;
     return rt_str_empty();
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no status bar text item is created.
+/// @param bar Ignored StatusBar handle.
+/// @param text Ignored runtime string.
+/// @param zone Ignored zone.
+/// @return Always NULL.
 void *rt_statusbar_add_text(void *bar, rt_string text, int64_t zone) {
     (void)bar;
     (void)text;
@@ -1031,6 +1190,10 @@ void *rt_statusbar_add_text(void *bar, rt_string text, int64_t zone) {
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no status bar button item is created.
+/// @param bar Ignored StatusBar handle.
+/// @param text Ignored runtime string.
+/// @param zone Ignored zone.
+/// @return Always NULL.
 void *rt_statusbar_add_button(void *bar, rt_string text, int64_t zone) {
     (void)bar;
     (void)text;
@@ -1039,6 +1202,9 @@ void *rt_statusbar_add_button(void *bar, rt_string text, int64_t zone) {
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no status bar progress item is created.
+/// @param bar Ignored StatusBar handle.
+/// @param zone Ignored zone.
+/// @return Always NULL.
 void *rt_statusbar_add_progress(void *bar, int64_t zone) {
     (void)bar;
     (void)zone;
@@ -1046,6 +1212,9 @@ void *rt_statusbar_add_progress(void *bar, int64_t zone) {
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no status bar separator item is created.
+/// @param bar Ignored StatusBar handle.
+/// @param zone Ignored zone.
+/// @return Always NULL.
 void *rt_statusbar_add_separator(void *bar, int64_t zone) {
     (void)bar;
     (void)zone;
@@ -1053,6 +1222,9 @@ void *rt_statusbar_add_separator(void *bar, int64_t zone) {
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no status bar spacer item is created.
+/// @param bar Ignored StatusBar handle.
+/// @param zone Ignored zone.
+/// @return Always NULL.
 void *rt_statusbar_add_spacer(void *bar, int64_t zone) {
     (void)bar;
     (void)zone;
@@ -1060,106 +1232,140 @@ void *rt_statusbar_add_spacer(void *bar, int64_t zone) {
 }
 
 /// @brief Remove an item from the status bar.
+/// @param bar Ignored StatusBar handle.
+/// @param item Ignored item handle.
 void rt_statusbar_remove_item(void *bar, void *item) {
     (void)bar;
     (void)item;
 }
 
 /// @brief Remove all items from all status bar zones.
+/// @param bar Ignored StatusBar handle.
 void rt_statusbar_clear(void *bar) {
     (void)bar;
 }
 
 /// @brief Show or hide the status bar.
+/// @param bar Ignored StatusBar handle.
+/// @param visible Ignored visibility flag.
 void rt_statusbar_set_visible(void *bar, int64_t visible) {
     (void)bar;
     (void)visible;
 }
 
 /// @brief Check whether the status bar is currently visible.
+/// @param bar Ignored StatusBar handle.
+/// @return Always 0.
 int64_t rt_statusbar_is_visible(void *bar) {
     (void)bar;
     return 0;
 }
 
 /// @brief Set the text of the statusbaritem.
+/// @param item Ignored StatusBarItem handle.
+/// @param text Ignored runtime string.
 void rt_statusbaritem_set_text(void *item, rt_string text) {
     (void)item;
     (void)text;
 }
 
 /// @brief Set the text color of the statusbaritem.
+/// @param item Ignored StatusBarItem handle.
+/// @param color Ignored color.
 void rt_statusbaritem_set_text_color(void *item, int64_t color) {
     (void)item;
     (void)color;
 }
 
 /// @brief Graphics-disabled statusbaritem vector-icon setter stub.
+/// @param item Ignored StatusBarItem handle.
+/// @param name Ignored icon name.
 void rt_statusbaritem_set_icon_name(void *item, rt_string name) {
     (void)item;
     (void)name;
 }
 
 /// @brief Get the text of the statusbaritem.
+/// @param item Ignored StatusBarItem handle.
+/// @return Empty runtime string.
 rt_string rt_statusbaritem_get_text(void *item) {
     (void)item;
     return rt_str_empty();
 }
 
 /// @brief Set the tooltip of the statusbaritem.
+/// @param item Ignored StatusBarItem handle.
+/// @param tooltip Ignored runtime string.
 void rt_statusbaritem_set_tooltip(void *item, rt_string tooltip) {
     (void)item;
     (void)tooltip;
 }
 
 /// @brief Set the progress of the statusbaritem.
+/// @param item Ignored StatusBarItem handle.
+/// @param value Ignored progress value.
 void rt_statusbaritem_set_progress(void *item, double value) {
     (void)item;
     (void)value;
 }
 
 /// @brief Get the progress of the statusbaritem.
+/// @param item Ignored StatusBarItem handle.
+/// @return Always 0.
 double rt_statusbaritem_get_progress(void *item) {
     (void)item;
     return 0.0;
 }
 
 /// @brief Show or hide a status bar item.
+/// @param item Ignored StatusBarItem handle.
+/// @param visible Ignored visibility flag.
 void rt_statusbaritem_set_visible(void *item, int64_t visible) {
     (void)item;
     (void)visible;
 }
 
 /// @brief Record which status bar item was clicked (for frame-based polling).
-/// @param item
+/// @param item Ignored StatusBarItem handle.
 void rt_gui_set_clicked_statusbar_item(void *item) {
     (void)item;
 }
 
 /// @brief Check if a status bar item was clicked this frame (edge-triggered).
+/// @param item Ignored StatusBarItem handle.
+/// @return Always 0.
 int64_t rt_statusbaritem_was_clicked(void *item) {
     (void)item;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no horizontal toolbar widget is created.
+/// @param parent Ignored parent handle.
+/// @return Always NULL.
 void *rt_toolbar_new(void *parent) {
     (void)parent;
     return NULL;
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no vertical toolbar widget is created.
+/// @param parent Ignored parent handle.
+/// @return Always NULL.
 void *rt_toolbar_new_vertical(void *parent) {
     (void)parent;
     return NULL;
 }
 
 /// @brief Release resources and destroy the toolbar.
+/// @param toolbar Ignored Toolbar handle.
 void rt_toolbar_destroy(void *toolbar) {
     (void)toolbar;
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no toolbar button is created.
+/// @param toolbar Ignored Toolbar handle.
+/// @param icon_path Ignored icon path.
+/// @param tooltip Ignored tooltip.
+/// @return Always NULL.
 void *rt_toolbar_add_button(void *toolbar, rt_string icon_path, rt_string tooltip) {
     (void)toolbar;
     (void)icon_path;
@@ -1168,6 +1374,11 @@ void *rt_toolbar_add_button(void *toolbar, rt_string icon_path, rt_string toolti
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no toolbar button with text label is created.
+/// @param toolbar Ignored Toolbar handle.
+/// @param icon_path Ignored icon path.
+/// @param text Ignored label text.
+/// @param tooltip Ignored tooltip.
+/// @return Always NULL.
 void *rt_toolbar_add_button_with_text(void *toolbar,
                                       rt_string icon_path,
                                       rt_string text,
@@ -1180,6 +1391,10 @@ void *rt_toolbar_add_button_with_text(void *toolbar,
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no named toolbar button is created.
+/// @param toolbar Ignored Toolbar handle.
+/// @param icon_name Ignored icon name.
+/// @param tooltip Ignored tooltip.
+/// @return Always NULL.
 void *rt_toolbar_add_named_button(void *toolbar, rt_string icon_name, rt_string tooltip) {
     (void)toolbar;
     (void)icon_name;
@@ -1188,6 +1403,11 @@ void *rt_toolbar_add_named_button(void *toolbar, rt_string icon_name, rt_string 
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no named toolbar button with text is created.
+/// @param toolbar Ignored Toolbar handle.
+/// @param icon_name Ignored icon name.
+/// @param text Ignored label text.
+/// @param tooltip Ignored tooltip.
+/// @return Always NULL.
 void *rt_toolbar_add_named_button_with_text(void *toolbar,
                                             rt_string icon_name,
                                             rt_string text,
@@ -1200,6 +1420,10 @@ void *rt_toolbar_add_named_button_with_text(void *toolbar,
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no toolbar toggle button is created.
+/// @param toolbar Ignored Toolbar handle.
+/// @param icon_path Ignored icon path.
+/// @param tooltip Ignored tooltip.
+/// @return Always NULL.
 void *rt_toolbar_add_toggle(void *toolbar, rt_string icon_path, rt_string tooltip) {
     (void)toolbar;
     (void)icon_path;
@@ -1208,6 +1432,10 @@ void *rt_toolbar_add_toggle(void *toolbar, rt_string icon_path, rt_string toolti
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no named toolbar toggle button is created.
+/// @param toolbar Ignored Toolbar handle.
+/// @param icon_name Ignored icon name.
+/// @param tooltip Ignored tooltip.
+/// @return Always NULL.
 void *rt_toolbar_add_named_toggle(void *toolbar, rt_string icon_name, rt_string tooltip) {
     (void)toolbar;
     (void)icon_name;
@@ -1216,18 +1444,25 @@ void *rt_toolbar_add_named_toggle(void *toolbar, rt_string icon_name, rt_string 
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no toolbar separator item is created.
+/// @param toolbar Ignored Toolbar handle.
+/// @return Always NULL.
 void *rt_toolbar_add_separator(void *toolbar) {
     (void)toolbar;
     return NULL;
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no toolbar spacer item is created.
+/// @param toolbar Ignored Toolbar handle.
+/// @return Always NULL.
 void *rt_toolbar_add_spacer(void *toolbar) {
     (void)toolbar;
     return NULL;
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no toolbar dropdown item is created.
+/// @param toolbar Ignored Toolbar handle.
+/// @param tooltip Ignored tooltip.
+/// @return Always NULL.
 void *rt_toolbar_add_dropdown(void *toolbar, rt_string tooltip) {
     (void)toolbar;
     (void)tooltip;
@@ -1235,36 +1470,49 @@ void *rt_toolbar_add_dropdown(void *toolbar, rt_string tooltip) {
 }
 
 /// @brief Remove an item from the toolbar.
+/// @param toolbar Ignored Toolbar handle.
+/// @param item Ignored item handle.
 void rt_toolbar_remove_item(void *toolbar, void *item) {
     (void)toolbar;
     (void)item;
 }
 
 /// @brief Get a size property of the toolbar (button width or height).
+/// @param toolbar Ignored Toolbar handle.
+/// @param size Ignored icon-size value.
 void rt_toolbar_set_icon_size(void *toolbar, int64_t size) {
     (void)toolbar;
     (void)size;
 }
 
 /// @brief Get a size property of the toolbar (button width or height).
+/// @param toolbar Ignored Toolbar handle.
+/// @return Always 0.
 int64_t rt_toolbar_get_icon_size(void *toolbar) {
     (void)toolbar;
     return 0;
 }
 
 /// @brief Set the style of the toolbar.
+/// @param toolbar Ignored Toolbar handle.
+/// @param style Ignored style value.
 void rt_toolbar_set_style(void *toolbar, int64_t style) {
     (void)toolbar;
     (void)style;
 }
 
 /// @brief Get the number of items in the toolbar.
+/// @param toolbar Ignored Toolbar handle.
+/// @return Always 0.
 int64_t rt_toolbar_get_item_count(void *toolbar) {
     (void)toolbar;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no toolbar exists to retrieve items from.
+/// @param toolbar Ignored Toolbar handle.
+/// @param index Ignored item index.
+/// @return Always NULL.
 void *rt_toolbar_get_item(void *toolbar, int64_t index) {
     (void)toolbar;
     (void)index;
@@ -1272,78 +1520,102 @@ void *rt_toolbar_get_item(void *toolbar, int64_t index) {
 }
 
 /// @brief Show or hide the toolbar.
+/// @param toolbar Ignored Toolbar handle.
+/// @param visible Ignored visibility flag.
 void rt_toolbar_set_visible(void *toolbar, int64_t visible) {
     (void)toolbar;
     (void)visible;
 }
 
 /// @brief Check whether the toolbar is currently visible.
+/// @param toolbar Ignored Toolbar handle.
+/// @return Always 0.
 int64_t rt_toolbar_is_visible(void *toolbar) {
     (void)toolbar;
     return 0;
 }
 
 /// @brief Set the icon of the toolbaritem.
+/// @param item Ignored ToolbarItem handle.
+/// @param icon_path Ignored icon path.
 void rt_toolbaritem_set_icon(void *item, rt_string icon_path) {
     (void)item;
     (void)icon_path;
 }
 
 /// @brief Set the icon pixels of the toolbaritem.
+/// @param item Ignored ToolbarItem handle.
+/// @param pixels Ignored Pixels handle.
 void rt_toolbaritem_set_icon_pixels(void *item, void *pixels) {
     (void)item;
     (void)pixels;
 }
 
 /// @brief Set the named icon of the toolbaritem.
+/// @param item Ignored ToolbarItem handle.
+/// @param icon_name Ignored icon name.
 void rt_toolbaritem_set_named_icon(void *item, rt_string icon_name) {
     (void)item;
     (void)icon_name;
 }
 
 /// @brief Set the text of the toolbaritem.
+/// @param item Ignored ToolbarItem handle.
+/// @param text Ignored runtime string.
 void rt_toolbaritem_set_text(void *item, rt_string text) {
     (void)item;
     (void)text;
 }
 
 /// @brief Set the tooltip of the toolbaritem.
+/// @param item Ignored ToolbarItem handle.
+/// @param tooltip Ignored runtime string.
 void rt_toolbaritem_set_tooltip(void *item, rt_string tooltip) {
     (void)item;
     (void)tooltip;
 }
 
 /// @brief Enable or disable a toolbar item.
+/// @param item Ignored ToolbarItem handle.
+/// @param enabled Ignored enabled flag.
 void rt_toolbaritem_set_enabled(void *item, int64_t enabled) {
     (void)item;
     (void)enabled;
 }
 
 /// @brief Check whether a toolbar item is currently enabled.
+/// @param item Ignored ToolbarItem handle.
+/// @return Always 0.
 int64_t rt_toolbaritem_is_enabled(void *item) {
     (void)item;
     return 0;
 }
 
 /// @brief Set the toggled of the toolbaritem.
+/// @param item Ignored ToolbarItem handle.
+/// @param toggled Ignored toggled flag.
 void rt_toolbaritem_set_toggled(void *item, int64_t toggled) {
     (void)item;
     (void)toggled;
 }
 
 /// @brief Check whether a toolbar toggle button is currently in the toggled state.
+/// @param item Ignored ToolbarItem handle.
+/// @return Always 0.
 int64_t rt_toolbaritem_is_toggled(void *item) {
     (void)item;
     return 0;
 }
 
 /// @brief Record which toolbar item was clicked (for frame-based polling).
-/// @param item
+/// @param item Ignored ToolbarItem handle.
 void rt_gui_set_clicked_toolbar_item(void *item) {
     (void)item;
 }
 
 /// @brief Check if a toolbar button was clicked this frame (edge-triggered).
+/// @param item Ignored ToolbarItem handle.
+/// @return Always 0.
 int64_t rt_toolbaritem_was_clicked(void *item) {
     (void)item;
     return 0;

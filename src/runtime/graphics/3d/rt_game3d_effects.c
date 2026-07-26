@@ -13,6 +13,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the Game3D effect registry and stock transient-effect spawners.
+/// @details EffectRegistry3D retains particle systems and decals, advances them,
+///          and removes expired or stale entries without preserving order. It
+///          also owns the quality-scaled PostFx3D stack installed on the world
+///          canvas. Effects3D helper functions construct deterministic presets
+///          and register them with the target world's registry.
+
 #include "rt_animcontroller3d.h"
 #include "rt_asset.h"
 #include "rt_audio.h"
@@ -64,6 +72,7 @@
 
 /// @brief GC finalizer for the effect registry: tear down every live item, free the item array,
 ///   and release the post-FX stack.
+/// @param obj EffectRegistry3D storage being finalized; NULL is ignored.
 static void game3d_effects_finalize(void *obj) {
     rt_game3d_effects *effects = (rt_game3d_effects *)obj;
     if (!effects)
@@ -80,6 +89,9 @@ static void game3d_effects_finalize(void *obj) {
 
 /// @brief Allocate an effect registry, building a quality-scaled post-FX stack and
 ///   wiring it into the canvas; traps on OOM.
+/// @param canvas Canvas3D that receives the newly created PostFx3D stack; may be NULL.
+/// @param quality Quality preset forwarded to the PostFx3D constructor.
+/// @return A newly allocated EffectRegistry3D, or NULL on allocation failure.
 void *game3d_effects_new(void *canvas, int64_t quality) {
     rt_game3d_effects *effects = (rt_game3d_effects *)rt_obj_new_i64(RT_G3D_GAME3D_EFFECTS_CLASS_ID,
                                                                      (int64_t)sizeof(*effects));
@@ -96,6 +108,8 @@ void *game3d_effects_new(void *canvas, int64_t quality) {
 }
 
 /// @brief Get the post-FX stack owned by this registry (NULL if invalid).
+/// @param obj EffectRegistry3D runtime handle.
+/// @return The validated owned PostFx3D pointer, or NULL.
 void *rt_game3d_effects_get_postfx(void *obj) {
     rt_game3d_effects *effects =
         game3d_effects_checked(obj, "Game3D.EffectRegistry3D.get_PostFx: invalid effects");
@@ -103,6 +117,8 @@ void *rt_game3d_effects_get_postfx(void *obj) {
 }
 
 /// @brief Count all live effect items (particles + decals).
+/// @param obj EffectRegistry3D runtime handle.
+/// @return The repaired number of retained items, or zero when invalid.
 int64_t rt_game3d_effects_get_count(void *obj) {
     rt_game3d_effects *effects =
         game3d_effects_checked(obj, "Game3D.EffectRegistry3D.get_count: invalid effects");
@@ -113,6 +129,8 @@ int64_t rt_game3d_effects_get_count(void *obj) {
 }
 
 /// @brief Count live particle-system items.
+/// @param obj EffectRegistry3D runtime handle.
+/// @return The number of repaired entries tagged as Particles3D, or zero when invalid.
 int64_t rt_game3d_effects_get_particles_count(void *obj) {
     rt_game3d_effects *effects =
         game3d_effects_checked(obj, "Game3D.EffectRegistry3D.get_particlesCount: invalid effects");
@@ -128,6 +146,8 @@ int64_t rt_game3d_effects_get_particles_count(void *obj) {
 }
 
 /// @brief Count live decal items.
+/// @param obj EffectRegistry3D runtime handle.
+/// @return The number of repaired entries tagged as Decal3D, or zero when invalid.
 int64_t rt_game3d_effects_get_decal_count(void *obj) {
     rt_game3d_effects *effects =
         game3d_effects_checked(obj, "Game3D.EffectRegistry3D.get_decalCount: invalid effects");
@@ -144,6 +164,12 @@ int64_t rt_game3d_effects_get_decal_count(void *obj) {
 
 /// @brief Register and retain a Particles3D with an auto-expire lifetime (≤0 means
 ///   never expire); returns the particles. Traps on a non-Particles3D handle.
+/// @param obj EffectRegistry3D runtime handle.
+/// @param particles Particles3D object to retain.
+/// @param lifetime Positive registry lifetime in seconds; non-finite or
+///                 non-positive values disable registry-driven expiry.
+/// @return @p particles on success, or NULL after validation, capacity, or
+///         allocation failure.
 void *rt_game3d_effects_add_particles(void *obj, void *particles, double lifetime) {
     rt_game3d_effects *effects =
         game3d_effects_checked(obj, "Game3D.EffectRegistry3D.addParticles: invalid effects");
@@ -176,6 +202,10 @@ void *rt_game3d_effects_add_particles(void *obj, void *particles, double lifetim
 
 /// @brief Register and retain a Decal3D (expires via its own lifetime); returns the
 ///   decal. Traps on a non-Decal3D handle.
+/// @param obj EffectRegistry3D runtime handle.
+/// @param decal Decal3D object to retain.
+/// @return @p decal on success, or NULL after validation, capacity, or
+///         allocation failure.
 void *rt_game3d_effects_add_decal(void *obj, void *decal) {
     rt_game3d_effects *effects =
         game3d_effects_checked(obj, "Game3D.EffectRegistry3D.addDecal: invalid effects");
@@ -204,6 +234,9 @@ void *rt_game3d_effects_add_decal(void *obj, void *decal) {
 
 /// @brief Advance every effect by `dt`, ticking particle/decal systems and retiring
 ///   expired items via swap-remove (no order preserved).
+/// @param obj EffectRegistry3D runtime handle.
+/// @param dt Positive frame duration in seconds. Invalid, non-positive, and
+///           excessive values are sanitized before any item is advanced.
 void rt_game3d_effects_update(void *obj, double dt) {
     rt_game3d_effects *effects =
         game3d_effects_checked(obj, "Game3D.EffectRegistry3D.update: invalid effects");
@@ -252,6 +285,10 @@ void rt_game3d_effects_update(void *obj, double dt) {
 
 /// @brief Draw every effect through `canvas` (particles need `camera`; decals are
 ///   screen-projected by the canvas).
+/// @param obj EffectRegistry3D runtime handle.
+/// @param canvas Canvas3D receiving particle and decal draws; NULL is ignored.
+/// @param camera Camera3D used for particle billboarding; may be NULL, in which
+///               case particle entries are skipped while decals still draw.
 void rt_game3d_effects_draw(void *obj, void *canvas, void *camera) {
     rt_game3d_effects *effects =
         game3d_effects_checked(obj, "Game3D.EffectRegistry3D.draw: invalid effects");
@@ -271,6 +308,8 @@ void rt_game3d_effects_draw(void *obj, void *canvas, void *camera) {
 }
 
 /// @brief Remove and release all registered effects immediately.
+/// @param obj EffectRegistry3D runtime handle.
+/// @post The registry contains no items but retains its allocation and PostFx3D stack.
 void rt_game3d_effects_clear(void *obj) {
     rt_game3d_effects *effects =
         game3d_effects_checked(obj, "Game3D.EffectRegistry3D.clear: invalid effects");
@@ -284,6 +323,9 @@ void rt_game3d_effects_clear(void *obj) {
 
 /// @brief Resolve and validate a world's effect registry; returns NULL if the world is
 ///   invalid or has none.
+/// @param world_obj World3D runtime handle.
+/// @param method Trap message used by world and registry validation.
+/// @return The validated EffectRegistry3D owned by the world, or NULL.
 static rt_game3d_effects *game3d_world_effects_checked(void *world_obj, const char *method) {
     rt_game3d_world *world = game3d_world_checked(world_obj, method);
     if (!world || !world->effects)
@@ -293,6 +335,10 @@ static rt_game3d_effects *game3d_world_effects_checked(void *world_obj, const ch
 
 /// @brief Set a particle system's emitter position from a Vec3 (NaN-scrubbed); returns
 ///   0 (after trapping `method`) if `position` is not a Vec3.
+/// @param particles Particles3D object whose emitter position is changed.
+/// @param position Vec3 position to read and sanitize.
+/// @param method Trap message used when @p position is invalid.
+/// @return Non-zero after applying the position, otherwise zero.
 static int8_t game3d_particles_set_position_from_vec(void *particles,
                                                      void *position,
                                                      const char *method) {
@@ -305,6 +351,10 @@ static int8_t game3d_particles_set_position_from_vec(void *particles,
 
 /// @brief Spawn an upward fiery explosion burst at `position`, registered with a short
 ///   auto-expire lifetime; returns the particle system. See header.
+/// @param world_obj World3D whose effect registry owns the burst.
+/// @param position Vec3 world-space emitter position.
+/// @return The newly allocated and registered Particles3D, or NULL on validation
+///         or allocation failure.
 void *rt_game3d_effects3d_explosion(void *world_obj, void *position) {
     rt_game3d_effects *effects =
         game3d_world_effects_checked(world_obj, "Game3D.Effects3D.Explosion: invalid world");
@@ -334,6 +384,12 @@ void *rt_game3d_effects3d_explosion(void *world_obj, void *position) {
 
 /// @brief Spawn a fast directional spark burst at `position` along `direction`; returns
 ///   the particle system. See header.
+/// @param world_obj World3D whose effect registry owns the burst.
+/// @param position Vec3 world-space emitter position.
+/// @param direction Vec3 emission axis; its components are sanitized by the
+///                  shared vector reader.
+/// @return The newly allocated and registered Particles3D, or NULL on validation
+///         or allocation failure.
 void *rt_game3d_effects3d_sparks(void *world_obj, void *position, void *direction) {
     rt_game3d_effects *effects =
         game3d_world_effects_checked(world_obj, "Game3D.Effects3D.Sparks: invalid world");
@@ -365,6 +421,10 @@ void *rt_game3d_effects3d_sparks(void *world_obj, void *position, void *directio
 }
 
 /// @brief Spawn a slow drifting dust puff at `position`; returns the particle system. See header.
+/// @param world_obj World3D whose effect registry owns the puff.
+/// @param position Vec3 world-space emitter position.
+/// @return The newly allocated and registered Particles3D, or NULL on validation
+///         or allocation failure.
 void *rt_game3d_effects3d_dust(void *world_obj, void *position) {
     rt_game3d_effects *effects =
         game3d_world_effects_checked(world_obj, "Game3D.Effects3D.Dust: invalid world");
@@ -392,6 +452,10 @@ void *rt_game3d_effects3d_dust(void *world_obj, void *position) {
 }
 
 /// @brief Spawn a rising smoke plume at `position`; returns the particle system. See header.
+/// @param world_obj World3D whose effect registry owns the plume.
+/// @param position Vec3 world-space emitter position.
+/// @return The newly allocated and registered Particles3D, or NULL on validation
+///         or allocation failure.
 void *rt_game3d_effects3d_smoke(void *world_obj, void *position) {
     rt_game3d_effects *effects =
         game3d_world_effects_checked(world_obj, "Game3D.Effects3D.Smoke: invalid world");
@@ -420,6 +484,8 @@ void *rt_game3d_effects3d_smoke(void *world_obj, void *position) {
 
 /// @brief Procedurally generate a 16×16 radial-falloff splat texture used as the
 ///   default impact-decal albedo.
+/// @return A newly allocated Pixels object containing the alpha falloff, or NULL
+///         when pixel storage cannot be allocated.
 static void *game3d_effects_make_impact_texture(void) {
     void *pixels = rt_pixels_new(16, 16);
     if (!pixels)
@@ -442,6 +508,12 @@ static void *game3d_effects_make_impact_texture(void) {
 
 /// @brief Spawn a short-lived impact decal at `position` oriented to `normal` using the
 ///   generated splat texture; returns the decal. Traps on non-Vec3 args. See header.
+/// @param world_obj World3D whose effect registry owns the decal.
+/// @param position Vec3 world-space decal center.
+/// @param normal Vec3 surface normal defining decal orientation.
+/// @return The newly allocated and registered Decal3D, or NULL on validation or
+///         allocation failure. The temporary generated texture is released
+///         after Decal3D construction.
 void *rt_game3d_effects3d_impact_decal(void *world_obj, void *position, void *normal) {
     rt_game3d_effects *effects =
         game3d_world_effects_checked(world_obj, "Game3D.Effects3D.ImpactDecal: invalid world");

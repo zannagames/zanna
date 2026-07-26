@@ -3,6 +3,16 @@
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
 //
+/// @file rt_gui_accessibility_win32.c
+/// @brief Implements the Win32 UI Automation accessibility adapter.
+///
+/// @details
+/// The adapter dynamically resolves UI Automation, exposes the retained widget
+/// tree through reference-counted COM providers, guards borrowed widgets with
+/// immutable IDs and bridge generations, raises semantic change notifications,
+/// and queries native accessibility and appearance preferences. Missing Windows
+/// APIs degrade to the runtime's deterministic headless accessibility behavior.
+///
 // File: src/runtime/graphics/gui/rt_gui_accessibility_win32.c
 // Purpose: Win32 accessibility adapter for the Zanna GUI runtime — system
 //          preference queries plus a full UI Automation server-side provider
@@ -194,6 +204,10 @@ static rt_uia_api_t g_rt_uia_api;
 static INIT_ONCE g_rt_uia_api_once = INIT_ONCE_STATIC_INIT;
 
 /// @brief Resolve UI Automation exports for the process-wide API table.
+/// @param once Windows one-time initialization token.
+/// @param param Optional initialization context; unused.
+/// @param context Optional result context; unused.
+/// @return `TRUE` after attempting to populate the API table.
 static BOOL CALLBACK rt_uia_api_init(PINIT_ONCE once, PVOID param, PVOID *context) {
     (void)once;
     (void)param;
@@ -231,6 +245,7 @@ static rt_uia_api_t *rt_uia_api(void) {
 }
 
 /// @brief Return whether the provider bridge can operate at all.
+/// @return 1 when the required UI Automation exports are available, otherwise 0.
 static int32_t rt_uia_available(void) {
     rt_uia_api_t *api = rt_uia_api();
     return api->return_raw_element_provider != NULL && api->host_provider_from_hwnd != NULL;
@@ -241,6 +256,8 @@ static int32_t rt_uia_available(void) {
 //=============================================================================
 
 /// @brief Return whether a widget and all ancestors are enabled and visible.
+/// @param widget Borrowed widget to inspect.
+/// @return 1 when the widget is live, visible, and enabled through its ancestor chain.
 static int32_t rt_uia_is_available(const vg_widget_t *widget) {
     if (!vg_widget_is_live(widget))
         return 0;
@@ -252,6 +269,8 @@ static int32_t rt_uia_is_available(const vg_widget_t *widget) {
 }
 
 /// @brief Infer the same built-in accessible label used by the headless snapshot.
+/// @param widget Borrowed widget to inspect.
+/// @return Borrowed UTF-8 accessible name, never NULL.
 static const char *rt_uia_name(const vg_widget_t *widget) {
     if (!widget)
         return "";
@@ -289,6 +308,8 @@ static const char *rt_uia_name(const vg_widget_t *widget) {
 }
 
 /// @brief Map a Zanna semantic role to the closest UIA control type.
+/// @param widget Borrowed semantic widget; may be NULL.
+/// @return Stable UI Automation control-type identifier.
 static long rt_uia_control_type(const vg_widget_t *widget) {
     vg_accessible_role_t role = widget ? widget->accessibility.role : VG_ACCESSIBLE_ROLE_NONE;
     switch (role) {
@@ -354,6 +375,8 @@ static long rt_uia_control_type(const vg_widget_t *widget) {
 }
 
 /// @brief Return whether a role represents an interactive, focusable control.
+/// @param role Zanna accessible role to classify.
+/// @return 1 for focusable roles, otherwise 0.
 static int32_t rt_uia_role_focusable(vg_accessible_role_t role) {
     switch (role) {
         case VG_ACCESSIBLE_ROLE_BUTTON:
@@ -378,6 +401,8 @@ static int32_t rt_uia_role_focusable(vg_accessible_role_t role) {
 }
 
 /// @brief Convert UTF-8 into a caller-owned BSTR; NULL/invalid become empty.
+/// @param text Borrowed NUL-terminated UTF-8 text; may be NULL.
+/// @return Allocated BSTR owned by the caller, or NULL on allocation failure.
 static BSTR rt_uia_bstr(const char *text) {
     if (!text || !*text)
         return SysAllocString(L"");
@@ -396,6 +421,8 @@ static BSTR rt_uia_bstr(const char *text) {
 }
 
 /// @brief Activate a widget through its keyboard event path (Space press).
+/// @param widget Borrowed widget to focus and activate.
+/// @return 1 when the synthetic activation event was handled, otherwise 0.
 static int32_t rt_uia_activate(vg_widget_t *widget) {
     if (!rt_uia_is_available(widget))
         return 0;
@@ -423,6 +450,8 @@ typedef struct rt_uia_window_bridge {
 static rt_uia_window_bridge_t g_rt_uia_bridges[RT_UIA_MAX_BRIDGES];
 
 /// @brief Find the bridge slot for a window, or NULL.
+/// @param window Borrowed ZannaGFX window used as the slot key.
+/// @return Borrowed bridge slot, or NULL when the window is not attached.
 static rt_uia_window_bridge_t *rt_uia_bridge_for_window(vgfx_window_t window) {
     if (!window)
         return NULL;
@@ -461,6 +490,7 @@ static rt_uia_provider_t *rt_uia_provider_create(rt_uia_window_bridge_t *bridge,
                                                  vg_widget_t *widget);
 
 /// @brief Invalidate a bridge slot while keeping its generation monotonic.
+/// @param bridge Bridge slot to clear; NULL is ignored.
 static void rt_uia_bridge_reset(rt_uia_window_bridge_t *bridge) {
     if (!bridge)
         return;
@@ -472,6 +502,8 @@ static void rt_uia_bridge_reset(rt_uia_window_bridge_t *bridge) {
 }
 
 /// @brief Resolve a provider's bridge only while the slot still represents its attachment.
+/// @param provider Borrowed provider whose captured bridge generation is checked.
+/// @return Borrowed live bridge, or NULL when detached or stale.
 static rt_uia_window_bridge_t *rt_uia_resolve_bridge(rt_uia_provider_t *provider) {
     rt_uia_window_bridge_t *bridge = provider ? provider->bridge : NULL;
     return bridge && bridge->window && bridge->generation == provider->bridge_generation &&
@@ -481,6 +513,9 @@ static rt_uia_window_bridge_t *rt_uia_resolve_bridge(rt_uia_provider_t *provider
 }
 
 /// @brief Return whether a live widget belongs to this bridge's semantic tree.
+/// @param bridge Borrowed bridge whose root defines the tree.
+/// @param widget Borrowed candidate widget.
+/// @return 1 when @p widget is a live descendant of the guarded root, otherwise 0.
 static int rt_uia_bridge_contains_widget(const rt_uia_window_bridge_t *bridge,
                                          const vg_widget_t *widget) {
     if (!bridge || !vg_widget_is_live(bridge->root) || bridge->root->id != bridge->root_id ||
@@ -497,6 +532,8 @@ static int rt_uia_bridge_contains_widget(const rt_uia_window_bridge_t *bridge,
 }
 
 /// @brief Resolve the borrowed widget only while its immutable ID still matches.
+/// @param provider Borrowed provider carrying the guarded widget identity.
+/// @return Borrowed live widget, or NULL when the provider or tree is stale.
 static vg_widget_t *rt_uia_resolve(rt_uia_provider_t *provider) {
     rt_uia_window_bridge_t *bridge = rt_uia_resolve_bridge(provider);
     if (!bridge)
@@ -511,6 +548,11 @@ static vg_widget_t *rt_uia_resolve(rt_uia_provider_t *provider) {
 // Shared IUnknown behavior
 //----------------------------------------------------------------------------
 
+/// @brief Resolve one supported COM interface for a provider and retain the provider.
+/// @param provider Borrowed provider whose interfaces are queried.
+/// @param riid Requested interface identifier.
+/// @param out Receives the retained interface pointer on success.
+/// @return `S_OK`, `E_POINTER`, or `E_NOINTERFACE`.
 static HRESULT rt_uia_provider_qi(rt_uia_provider_t *provider, REFIID riid, void **out) {
     if (!out)
         return E_POINTER;
@@ -552,10 +594,16 @@ static HRESULT rt_uia_provider_qi(rt_uia_provider_t *provider, REFIID riid, void
     return S_OK;
 }
 
+/// @brief Add one COM reference to a provider.
+/// @param provider Provider whose reference count is incremented.
+/// @return New reference count.
 static ULONG rt_uia_provider_addref(rt_uia_provider_t *provider) {
     return (ULONG)InterlockedIncrement(&provider->ref_count);
 }
 
+/// @brief Release one COM reference and free the provider when the count reaches zero.
+/// @param provider Provider whose reference count is decremented.
+/// @return Remaining reference count.
 static ULONG rt_uia_provider_release(rt_uia_provider_t *provider) {
     LONG remaining = InterlockedDecrement(&provider->ref_count);
     if (remaining == 0)
@@ -563,6 +611,7 @@ static ULONG rt_uia_provider_release(rt_uia_provider_t *provider) {
     return (ULONG)remaining;
 }
 
+/// @brief Generate IUnknown methods that recover and delegate to a provider's shared identity.
 #define RT_UIA_IUNKNOWN_THUNKS(prefix, iface_type, member)                                         \
     static HRESULT STDMETHODCALLTYPE prefix##_QueryInterface(                                      \
         iface_type *iface, REFIID riid, void **out) {                                              \
@@ -581,6 +630,10 @@ static ULONG rt_uia_provider_release(rt_uia_provider_t *provider) {
 
 RT_UIA_IUNKNOWN_THUNKS(rt_uia_simple, IRawElementProviderSimple, simple)
 
+/// @brief Report that each element is a server-side UI Automation provider.
+/// @param iface Borrowed simple-provider interface.
+/// @param out Receives the provider option flags.
+/// @return `S_OK`, or `E_POINTER` when @p out is NULL.
 static HRESULT STDMETHODCALLTYPE rt_uia_simple_get_ProviderOptions(IRawElementProviderSimple *iface,
                                                                    enum ProviderOptions *out) {
     (void)iface;
@@ -590,6 +643,11 @@ static HRESULT STDMETHODCALLTYPE rt_uia_simple_get_ProviderOptions(IRawElementPr
     return S_OK;
 }
 
+/// @brief Return the role-appropriate UI Automation pattern interface.
+/// @param iface Borrowed simple-provider interface.
+/// @param pattern_id Requested UI Automation pattern identifier.
+/// @param out Receives a retained pattern interface, or NULL when unsupported.
+/// @return `S_OK`, or `E_POINTER` when @p out is NULL.
 static HRESULT STDMETHODCALLTYPE rt_uia_simple_GetPatternProvider(IRawElementProviderSimple *iface,
                                                                   PATTERNID pattern_id,
                                                                   IUnknown **out) {
@@ -626,6 +684,11 @@ static HRESULT STDMETHODCALLTYPE rt_uia_simple_GetPatternProvider(IRawElementPro
     return S_OK;
 }
 
+/// @brief Materialize one UI Automation property from the guarded semantic widget.
+/// @param iface Borrowed simple-provider interface.
+/// @param property_id Requested UI Automation property identifier.
+/// @param out Receives an initialized property VARIANT.
+/// @return COM success, pointer, or allocation status.
 static HRESULT STDMETHODCALLTYPE rt_uia_simple_GetPropertyValue(IRawElementProviderSimple *iface,
                                                                 PROPERTYID property_id,
                                                                 VARIANT *out) {
@@ -692,6 +755,10 @@ static HRESULT STDMETHODCALLTYPE rt_uia_simple_GetPropertyValue(IRawElementProvi
     return S_OK;
 }
 
+/// @brief Return the HWND host provider for the attached root element.
+/// @param iface Borrowed simple-provider interface.
+/// @param out Receives the retained host provider, or NULL for non-root or stale elements.
+/// @return COM success or pointer status from the host-provider query.
 static HRESULT STDMETHODCALLTYPE rt_uia_simple_get_HostRawElementProvider(
     IRawElementProviderSimple *iface, IRawElementProviderSimple **out) {
     rt_uia_provider_t *provider = RT_UIA_FROM(iface, simple);
@@ -724,12 +791,20 @@ static IRawElementProviderSimpleVtbl g_rt_uia_simple_vtbl = {
 RT_UIA_IUNKNOWN_THUNKS(rt_uia_fragment, IRawElementProviderFragment, fragment)
 
 /// @brief Wrap a live widget in a new provider fragment interface, or NULL.
+/// @param bridge Borrowed bridge owning the semantic tree.
+/// @param widget Borrowed live widget to wrap.
+/// @return Newly allocated fragment interface with one reference, or NULL on failure.
 static IRawElementProviderFragment *rt_uia_fragment_for(rt_uia_window_bridge_t *bridge,
                                                         vg_widget_t *widget) {
     rt_uia_provider_t *provider = rt_uia_provider_create(bridge, widget);
     return provider ? &provider->fragment : NULL;
 }
 
+/// @brief Navigate between visible parent, child, and sibling semantic fragments.
+/// @param iface Borrowed fragment interface.
+/// @param direction Requested UI Automation navigation direction.
+/// @param out Receives a retained target fragment, or NULL when no target exists.
+/// @return COM success, pointer, or allocation status.
 static HRESULT STDMETHODCALLTYPE rt_uia_fragment_Navigate(IRawElementProviderFragment *iface,
                                                           enum NavigateDirection direction,
                                                           IRawElementProviderFragment **out) {
@@ -796,6 +871,10 @@ static HRESULT STDMETHODCALLTYPE rt_uia_fragment_Navigate(IRawElementProviderFra
     return S_OK;
 }
 
+/// @brief Build a stable UI Automation runtime ID from the guarded widget ID.
+/// @param iface Borrowed fragment interface.
+/// @param out Receives the allocated integer SAFEARRAY, or NULL for the root or a stale widget.
+/// @return COM success, pointer, allocation, or SAFEARRAY operation status.
 static HRESULT STDMETHODCALLTYPE rt_uia_fragment_GetRuntimeId(IRawElementProviderFragment *iface,
                                                               SAFEARRAY **out) {
     rt_uia_provider_t *provider = RT_UIA_FROM(iface, fragment);
@@ -835,6 +914,10 @@ static HRESULT STDMETHODCALLTYPE rt_uia_fragment_GetRuntimeId(IRawElementProvide
     return S_OK;
 }
 
+/// @brief Return a fragment's absolute screen rectangle in physical pixels.
+/// @param iface Borrowed fragment interface.
+/// @param out Receives the initialized UI Automation rectangle.
+/// @return COM success, pointer, validation, or Win32 coordinate-conversion status.
 static HRESULT STDMETHODCALLTYPE
 rt_uia_fragment_get_BoundingRectangle(IRawElementProviderFragment *iface, struct UiaRect *out) {
     rt_uia_provider_t *provider = RT_UIA_FROM(iface, fragment);
@@ -862,6 +945,10 @@ rt_uia_fragment_get_BoundingRectangle(IRawElementProviderFragment *iface, struct
     return S_OK;
 }
 
+/// @brief Report that Zanna fragments contain no separately hosted fragment roots.
+/// @param iface Borrowed fragment interface.
+/// @param out Receives NULL.
+/// @return `S_OK`, or `E_POINTER` when @p out is NULL.
 static HRESULT STDMETHODCALLTYPE
 rt_uia_fragment_GetEmbeddedFragmentRoots(IRawElementProviderFragment *iface, SAFEARRAY **out) {
     (void)iface;
@@ -871,6 +958,9 @@ rt_uia_fragment_GetEmbeddedFragmentRoots(IRawElementProviderFragment *iface, SAF
     return S_OK;
 }
 
+/// @brief Move toolkit focus to an available fragment.
+/// @param iface Borrowed fragment interface.
+/// @return `S_OK` when focus was assigned, otherwise `E_FAIL`.
 static HRESULT STDMETHODCALLTYPE rt_uia_fragment_SetFocus(IRawElementProviderFragment *iface) {
     rt_uia_provider_t *provider = RT_UIA_FROM(iface, fragment);
     vg_widget_t *widget = rt_uia_resolve(provider);
@@ -880,6 +970,10 @@ static HRESULT STDMETHODCALLTYPE rt_uia_fragment_SetFocus(IRawElementProviderFra
     return S_OK;
 }
 
+/// @brief Return the retained fragment-root interface for an attached element.
+/// @param iface Borrowed fragment interface.
+/// @param out Receives the retained root interface, or NULL for a stale bridge.
+/// @return COM success, pointer, or interface-query status.
 static HRESULT STDMETHODCALLTYPE rt_uia_fragment_get_FragmentRoot(
     IRawElementProviderFragment *iface, IRawElementProviderFragmentRoot **out) {
     rt_uia_provider_t *provider = RT_UIA_FROM(iface, fragment);
@@ -912,6 +1006,10 @@ static IRawElementProviderFragmentVtbl g_rt_uia_fragment_vtbl = {
 RT_UIA_IUNKNOWN_THUNKS(rt_uia_root, IRawElementProviderFragmentRoot, fragment_root)
 
 /// @brief Return the deepest visible widget containing a client-area point.
+/// @param widget Borrowed subtree root to test.
+/// @param x Client-area X coordinate.
+/// @param y Client-area Y coordinate.
+/// @return Borrowed topmost matching widget, or NULL when the point misses the subtree.
 static vg_widget_t *rt_uia_hit_test(vg_widget_t *widget, float x, float y) {
     if (!widget || !widget->visible)
         return NULL;
@@ -933,6 +1031,12 @@ static vg_widget_t *rt_uia_hit_test(vg_widget_t *widget, float x, float y) {
     return best;
 }
 
+/// @brief Resolve an absolute screen point to its deepest visible provider fragment.
+/// @param iface Borrowed fragment-root interface.
+/// @param screen_x Absolute screen X coordinate.
+/// @param screen_y Absolute screen Y coordinate.
+/// @param out Receives a retained fragment, or NULL when no widget contains the point.
+/// @return COM success, pointer, argument, Win32 conversion, or allocation status.
 static HRESULT STDMETHODCALLTYPE
 rt_uia_root_ElementProviderFromPoint(IRawElementProviderFragmentRoot *iface,
                                      double screen_x,
@@ -964,6 +1068,8 @@ rt_uia_root_ElementProviderFromPoint(IRawElementProviderFragmentRoot *iface,
 }
 
 /// @brief Return the focused descendant, or NULL when none is focused.
+/// @param widget Borrowed subtree root to search.
+/// @return Borrowed focused visible widget, or NULL when none is found.
 static vg_widget_t *rt_uia_find_focus(vg_widget_t *widget) {
     if (!widget || !widget->visible)
         return NULL;
@@ -977,6 +1083,11 @@ static vg_widget_t *rt_uia_find_focus(vg_widget_t *widget) {
     return NULL;
 }
 
+/// @brief Return the currently focused descendant as a provider fragment.
+/// @param iface Borrowed fragment-root interface.
+/// @param out Receives a retained focused fragment, or NULL when the root or no descendant is
+/// focused.
+/// @return COM success, pointer, or allocation status.
 static HRESULT STDMETHODCALLTYPE rt_uia_root_GetFocus(IRawElementProviderFragmentRoot *iface,
                                                       IRawElementProviderFragment **out) {
     rt_uia_provider_t *provider = RT_UIA_FROM(iface, fragment_root);
@@ -1010,6 +1121,9 @@ static IRawElementProviderFragmentRootVtbl g_rt_uia_root_vtbl = {
 
 RT_UIA_IUNKNOWN_THUNKS(rt_uia_invoke, IInvokeProvider, invoke)
 
+/// @brief Invoke the guarded widget through its ordinary activation event path.
+/// @param iface Borrowed invoke-pattern interface.
+/// @return `S_OK` when activation was handled, otherwise `E_FAIL`.
 static HRESULT STDMETHODCALLTYPE rt_uia_invoke_Invoke(IInvokeProvider *iface) {
     rt_uia_provider_t *provider = RT_UIA_FROM(iface, invoke);
     return rt_uia_activate(rt_uia_resolve(provider)) ? S_OK : E_FAIL;
@@ -1028,11 +1142,18 @@ static IInvokeProviderVtbl g_rt_uia_invoke_vtbl = {
 
 RT_UIA_IUNKNOWN_THUNKS(rt_uia_toggle, IToggleProvider, toggle)
 
+/// @brief Toggle the guarded checkbox through its ordinary activation event path.
+/// @param iface Borrowed toggle-pattern interface.
+/// @return `S_OK` when activation was handled, otherwise `E_FAIL`.
 static HRESULT STDMETHODCALLTYPE rt_uia_toggle_Toggle(IToggleProvider *iface) {
     rt_uia_provider_t *provider = RT_UIA_FROM(iface, toggle);
     return rt_uia_activate(rt_uia_resolve(provider)) ? S_OK : E_FAIL;
 }
 
+/// @brief Return the checked, unchecked, or indeterminate state of the guarded widget.
+/// @param iface Borrowed toggle-pattern interface.
+/// @param out Receives the normalized UI Automation toggle state.
+/// @return `S_OK`, `E_POINTER`, or `E_FAIL` for a stale widget.
 static HRESULT STDMETHODCALLTYPE rt_uia_toggle_get_ToggleState(IToggleProvider *iface,
                                                                enum ToggleState *out) {
     rt_uia_provider_t *provider = RT_UIA_FROM(iface, toggle);
@@ -1064,6 +1185,10 @@ static IToggleProviderVtbl g_rt_uia_toggle_vtbl = {
 
 RT_UIA_IUNKNOWN_THUNKS(rt_uia_value, IValueProvider, value)
 
+/// @brief Replace editable text-input content from a UTF-16 UI Automation value.
+/// @param iface Borrowed value-pattern interface.
+/// @param value Borrowed UTF-16 value; NULL is treated as an empty string.
+/// @return COM success, validation, allocation, or unsupported-operation status.
 static HRESULT STDMETHODCALLTYPE rt_uia_value_SetValue(IValueProvider *iface, LPCWSTR value) {
     rt_uia_provider_t *provider = RT_UIA_FROM(iface, value);
     vg_widget_t *widget = rt_uia_resolve(provider);
@@ -1093,6 +1218,10 @@ static HRESULT STDMETHODCALLTYPE rt_uia_value_SetValue(IValueProvider *iface, LP
     return S_OK;
 }
 
+/// @brief Materialize the guarded control's current textual value.
+/// @param iface Borrowed value-pattern interface.
+/// @param out Receives a caller-owned BSTR.
+/// @return COM success, pointer, stale-widget, or allocation status.
 static HRESULT STDMETHODCALLTYPE rt_uia_value_get_Value(IValueProvider *iface, BSTR *out) {
     rt_uia_provider_t *provider = RT_UIA_FROM(iface, value);
     if (!out)
@@ -1133,6 +1262,10 @@ static HRESULT STDMETHODCALLTYPE rt_uia_value_get_Value(IValueProvider *iface, B
     }
 }
 
+/// @brief Report whether UI Automation may mutate the guarded value.
+/// @param iface Borrowed value-pattern interface.
+/// @param out Receives `FALSE` only for a writable text input.
+/// @return `S_OK`, or `E_POINTER` when @p out is NULL.
 static HRESULT STDMETHODCALLTYPE rt_uia_value_get_IsReadOnly(IValueProvider *iface, BOOL *out) {
     rt_uia_provider_t *provider = RT_UIA_FROM(iface, value);
     if (!out)
@@ -1160,6 +1293,12 @@ static IValueProviderVtbl g_rt_uia_value_vtbl = {
 
 RT_UIA_IUNKNOWN_THUNKS(rt_uia_range, IRangeValueProvider, range_value)
 
+/// @brief Normalize a slider, progress bar, or spinner into a bounded numeric range.
+/// @param widget Borrowed range-like widget.
+/// @param value Receives the finite value clamped to the normalized bounds.
+/// @param minimum Receives the finite lower bound.
+/// @param maximum Receives the finite upper bound.
+/// @return 1 for a supported widget and valid destinations, otherwise 0.
 static int32_t rt_uia_range_read(vg_widget_t *widget,
                                  double *value,
                                  double *minimum,
@@ -1210,6 +1349,10 @@ static int32_t rt_uia_range_read(vg_widget_t *widget,
     return 1;
 }
 
+/// @brief Reject direct UI Automation range mutation in the current read-only projection.
+/// @param iface Borrowed range-pattern interface.
+/// @param value Requested numeric value.
+/// @return `E_FAIL`; keyboard adjustment remains the supported mutation path.
 static HRESULT STDMETHODCALLTYPE rt_uia_range_SetValue(IRangeValueProvider *iface, double value) {
     (void)iface;
     (void)value;
@@ -1217,6 +1360,7 @@ static HRESULT STDMETHODCALLTYPE rt_uia_range_SetValue(IRangeValueProvider *ifac
     return E_FAIL;
 }
 
+/// @brief Generate a COM range-property getter from normalized value and bounds.
 #define RT_UIA_RANGE_GETTER(name, expression)                                                      \
     static HRESULT STDMETHODCALLTYPE name(IRangeValueProvider *iface, double *out) {               \
         rt_uia_provider_t *provider = RT_UIA_FROM(iface, range_value);                             \
@@ -1234,6 +1378,10 @@ RT_UIA_RANGE_GETTER(rt_uia_range_get_Value, value)
 RT_UIA_RANGE_GETTER(rt_uia_range_get_Maximum, maximum)
 RT_UIA_RANGE_GETTER(rt_uia_range_get_Minimum, minimum)
 
+/// @brief Report that the projected range pattern is read-only.
+/// @param iface Borrowed range-pattern interface.
+/// @param out Receives `TRUE`.
+/// @return `S_OK`, or `E_POINTER` when @p out is NULL.
 static HRESULT STDMETHODCALLTYPE rt_uia_range_get_IsReadOnly(IRangeValueProvider *iface,
                                                              BOOL *out) {
     (void)iface;
@@ -1265,21 +1413,34 @@ static IRangeValueProviderVtbl g_rt_uia_range_vtbl = {
 
 RT_UIA_IUNKNOWN_THUNKS(rt_uia_selitem, ISelectionItemProvider, selection_item)
 
+/// @brief Select the guarded item through its ordinary activation event path.
+/// @param iface Borrowed selection-item interface.
+/// @return `S_OK` when activation was handled, otherwise `E_FAIL`.
 static HRESULT STDMETHODCALLTYPE rt_uia_selitem_Select(ISelectionItemProvider *iface) {
     rt_uia_provider_t *provider = RT_UIA_FROM(iface, selection_item);
     return rt_uia_activate(rt_uia_resolve(provider)) ? S_OK : E_FAIL;
 }
 
+/// @brief Reject additive selection for the current single-selection projection.
+/// @param iface Borrowed selection-item interface.
+/// @return `E_FAIL` because additive selection is unsupported.
 static HRESULT STDMETHODCALLTYPE rt_uia_selitem_AddToSelection(ISelectionItemProvider *iface) {
     (void)iface;
     return E_FAIL; // Single-selection surfaces only in this bridge revision.
 }
 
+/// @brief Reject direct removal from the current single-selection projection.
+/// @param iface Borrowed selection-item interface.
+/// @return `E_FAIL` because direct removal is unsupported.
 static HRESULT STDMETHODCALLTYPE rt_uia_selitem_RemoveFromSelection(ISelectionItemProvider *iface) {
     (void)iface;
     return E_FAIL;
 }
 
+/// @brief Report whether the guarded item is selected or checked.
+/// @param iface Borrowed selection-item interface.
+/// @param out Receives the normalized selection state.
+/// @return `S_OK`, or `E_POINTER` when @p out is NULL.
 static HRESULT STDMETHODCALLTYPE rt_uia_selitem_get_IsSelected(ISelectionItemProvider *iface,
                                                                BOOL *out) {
     rt_uia_provider_t *provider = RT_UIA_FROM(iface, selection_item);
@@ -1290,6 +1451,10 @@ static HRESULT STDMETHODCALLTYPE rt_uia_selitem_get_IsSelected(ISelectionItemPro
     return S_OK;
 }
 
+/// @brief Find the nearest list, tree, tab list, or table selection container.
+/// @param iface Borrowed selection-item interface.
+/// @param out Receives a retained simple-provider interface, or NULL when no container exists.
+/// @return COM success, pointer, or allocation status.
 static HRESULT STDMETHODCALLTYPE rt_uia_selitem_get_SelectionContainer(
     ISelectionItemProvider *iface, IRawElementProviderSimple **out) {
     rt_uia_provider_t *provider = RT_UIA_FROM(iface, selection_item);
@@ -1330,6 +1495,10 @@ static ISelectionItemProviderVtbl g_rt_uia_selitem_vtbl = {
 //----------------------------------------------------------------------------
 
 /// @brief Create a provider for one live widget with a caller-owned reference.
+/// @param bridge Borrowed live bridge whose generation the provider captures.
+/// @param widget Borrowed live widget within the bridge's semantic tree.
+/// @return Allocated provider with one caller-owned reference, or NULL on validation/allocation
+/// failure.
 static rt_uia_provider_t *rt_uia_provider_create(rt_uia_window_bridge_t *bridge,
                                                  vg_widget_t *widget) {
     if (!bridge || !bridge->window || bridge->generation == 0 ||
@@ -1360,6 +1529,13 @@ static rt_uia_provider_t *rt_uia_provider_create(rt_uia_window_bridge_t *bridge,
 //=============================================================================
 
 /// @brief Answer WM_GETOBJECT with this window's root UIA provider.
+/// @param user Borrowed bridge registered as the native message-hook context.
+/// @param native_window Native HWND receiving the message.
+/// @param msg Win32 message identifier.
+/// @param wparam Message word parameter.
+/// @param lparam Message long parameter.
+/// @param result Receives the UI Automation provider result when handled.
+/// @param handled Receives 1 when this hook answers the message.
 static void rt_uia_msg_hook(void *user,
                             void *native_window,
                             uint32_t msg,
@@ -1532,6 +1708,11 @@ void rt_gui_accessibility_platform_notify(vgfx_window_t window, vg_widget_t *wid
     rt_uia_provider_release(provider);
 }
 
+/// @brief Synchronize the Win32 projection after layout; current providers resolve live state.
+/// @details UI Automation providers read the retained widget tree on demand, so no eager rebuild
+///          is required after layout.
+/// @param window Borrowed ZannaGFX window associated with the tree.
+/// @param root Borrowed semantic root.
 void rt_gui_accessibility_platform_sync(vgfx_window_t window, vg_widget_t *root) {
     (void)window;
     (void)root;

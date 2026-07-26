@@ -287,6 +287,12 @@ RT_FUNC(GuiTreeViewGetDropSourceData, rt_treeview_get_drop_source_data, "Zanna.G
 RT_FUNC(GuiTreeViewGetDropTargetData, rt_treeview_get_drop_target_data, "Zanna.GUI.TreeView.GetDropTargetData", "str(obj)")
 RT_FUNC(GuiTreeViewGetDropPosition, rt_treeview_get_drop_position, "Zanna.GUI.TreeView.GetDropPosition", "i64(obj)")
 RT_FUNC(GuiTreeViewClearDrop, rt_treeview_clear_drop, "Zanna.GUI.TreeView.ClearDrop", "void(obj)")
+RT_FUNC(GuiTreeViewBeginEditNode, rt_treeview_begin_edit_node, "Zanna.GUI.TreeView.BeginEditNode", "i1(obj,obj,str)")
+RT_FUNC(GuiTreeViewIsEditing, rt_treeview_is_editing, "Zanna.GUI.TreeView.IsEditing", "i1(obj)")
+RT_FUNC(GuiTreeViewWasEditCommitted, rt_treeview_was_edit_committed, "Zanna.GUI.TreeView.WasEditCommitted", "i1(obj)")
+RT_FUNC(GuiTreeViewGetEditText, rt_treeview_get_edit_text, "Zanna.GUI.TreeView.GetEditText", "str(obj)")
+RT_FUNC(GuiTreeViewGetEditedNodeOption, rt_treeview_get_edited_node_option, "Zanna.GUI.TreeView.GetEditedNodeOption", "obj<Zanna.Option>(obj)")
+RT_FUNC(GuiTreeViewCancelEdit, rt_treeview_cancel_edit, "Zanna.GUI.TreeView.CancelEdit", "void(obj)")
 RT_FUNC(GuiTreeViewNodeGetText, rt_treeview_node_get_text, "Zanna.GUI.TreeView.Node.GetText", "str(obj)")
 RT_FUNC(GuiTreeViewNodeSetText, rt_treeview_node_set_text, "Zanna.GUI.TreeView.Node.SetText", "void(obj,str)")
 RT_FUNC(GuiTreeViewNodeSetIcon, rt_treeview_node_set_icon, "Zanna.GUI.TreeView.Node.SetIcon", "void(obj,str)")
@@ -560,6 +566,7 @@ RT_FUNC(GuiSpinnerSetStep, rt_spinner_set_step, "Zanna.GUI.Spinner.SetStep", "vo
 RT_FUNC(GuiSpinnerSetDecimals, rt_spinner_set_decimals, "Zanna.GUI.Spinner.SetDecimals", "void(obj,i64)")
 RT_FUNC(GuiSpinnerWasChanged, rt_spinner_was_changed, "Zanna.GUI.Spinner.WasChanged", "i1(obj)")
 RT_FUNC(GuiSpinnerWasSubmitted, rt_spinner_was_submitted, "Zanna.GUI.Spinner.WasSubmitted", "i1(obj)")
+RT_FUNC(GuiSpinnerWasScrubFinished, rt_spinner_was_scrub_finished, "Zanna.GUI.Spinner.WasScrubFinished", "i1(obj)")
 RT_FUNC(GuiSpinnerGetRevision, rt_spinner_get_revision, "Zanna.GUI.Spinner.GetRevision", "i64(obj)")
 
 //=============================================================================

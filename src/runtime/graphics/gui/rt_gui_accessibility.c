@@ -3,6 +3,15 @@
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
 //
+/// @file rt_gui_accessibility.c
+/// @brief Implements GUI accessibility semantics, snapshots, preferences, and announcements.
+///
+/// @details
+/// The runtime keeps a deterministic toolkit-level semantic tree even when no
+/// native accessibility adapter is available. This translation layer validates
+/// public handles, converts ownership at the C ABI boundary, projects changes
+/// to an optional platform adapter, and builds iterative managed snapshots.
+///
 // File: src/runtime/graphics/gui/rt_gui_accessibility.c
 // Purpose: Runtime bindings for widget semantics, deterministic accessibility
 //          snapshots, live-region announcements, and app accessibility preferences.
@@ -396,6 +405,8 @@ static rt_string rt_gui_accessibility_get_widget_string(
 #endif
 
 /// @brief Set a widget's stable semantic role.
+/// @param widget Runtime widget handle; invalid handles are ignored.
+/// @param role Value from the public accessible-role enumeration.
 void rt_widget_set_accessible_role(void *widget, int64_t role) {
     RT_ASSERT_MAIN_THREAD();
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -411,6 +422,8 @@ void rt_widget_set_accessible_role(void *widget, int64_t role) {
 }
 
 /// @brief Return a widget's stable semantic role or none for invalid handles.
+/// @param widget Runtime widget handle.
+/// @return Accessible-role value, or the none role for an invalid handle.
 int64_t rt_widget_get_accessible_role(void *widget) {
     RT_ASSERT_MAIN_THREAD();
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -423,6 +436,8 @@ int64_t rt_widget_get_accessible_role(void *widget) {
 }
 
 /// @brief Set or clear a widget's explicit accessible name.
+/// @param widget Runtime widget handle; invalid handles are ignored.
+/// @param name UTF-8 name to copy, or an empty runtime string to clear the override.
 void rt_widget_set_accessible_name(void *widget, rt_string name) {
     RT_ASSERT_MAIN_THREAD();
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -435,6 +450,8 @@ void rt_widget_set_accessible_name(void *widget, rt_string name) {
 }
 
 /// @brief Return a widget's explicit accessible name as an owned runtime string.
+/// @param widget Runtime widget handle.
+/// @return Owned explicit name, or an empty runtime string for an invalid handle or no override.
 rt_string rt_widget_get_accessible_name(void *widget) {
     RT_ASSERT_MAIN_THREAD();
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -446,6 +463,8 @@ rt_string rt_widget_get_accessible_name(void *widget) {
 }
 
 /// @brief Set or clear a widget's accessible description.
+/// @param widget Runtime widget handle; invalid handles are ignored.
+/// @param description UTF-8 description to copy, or an empty runtime string to clear it.
 void rt_widget_set_accessible_description(void *widget, rt_string description) {
     RT_ASSERT_MAIN_THREAD();
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -459,6 +478,8 @@ void rt_widget_set_accessible_description(void *widget, rt_string description) {
 }
 
 /// @brief Return a widget's accessible description as an owned runtime string.
+/// @param widget Runtime widget handle.
+/// @return Owned description, or an empty runtime string for an invalid handle or no description.
 rt_string rt_widget_get_accessible_description(void *widget) {
     RT_ASSERT_MAIN_THREAD();
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -470,6 +491,8 @@ rt_string rt_widget_get_accessible_description(void *widget) {
 }
 
 /// @brief Set or clear a widget's explicit accessible value.
+/// @param widget Runtime widget handle; invalid handles are ignored.
+/// @param value UTF-8 value to copy, or an empty runtime string to clear the override.
 void rt_widget_set_accessible_value(void *widget, rt_string value) {
     RT_ASSERT_MAIN_THREAD();
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -482,6 +505,8 @@ void rt_widget_set_accessible_value(void *widget, rt_string value) {
 }
 
 /// @brief Return a widget's explicit accessible value as an owned runtime string.
+/// @param widget Runtime widget handle.
+/// @return Owned explicit value, or an empty runtime string for an invalid handle or no override.
 rt_string rt_widget_get_accessible_value(void *widget) {
     RT_ASSERT_MAIN_THREAD();
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -493,6 +518,8 @@ rt_string rt_widget_get_accessible_value(void *widget) {
 }
 
 /// @brief Install a same-tree, non-owning accessibility label relationship.
+/// @param widget Runtime handle for the widget that supplies the label.
+/// @param target Runtime handle for the widget described by the label.
 void rt_widget_set_accessible_label_for(void *widget, void *target) {
     RT_ASSERT_MAIN_THREAD();
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -509,6 +536,7 @@ void rt_widget_set_accessible_label_for(void *widget, void *target) {
 }
 
 /// @brief Clear a widget's non-owning accessibility label relationship.
+/// @param widget Runtime handle for the labeling widget; invalid handles are ignored.
 void rt_widget_clear_accessible_label_for(void *widget) {
     RT_ASSERT_MAIN_THREAD();
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -523,6 +551,8 @@ void rt_widget_clear_accessible_label_for(void *widget) {
 }
 
 /// @brief Set a widget's default live-region urgency.
+/// @param widget Runtime widget handle; invalid handles are ignored.
+/// @param mode Value from the public live-region mode enumeration.
 void rt_widget_set_live_region(void *widget, int64_t mode) {
     RT_ASSERT_MAIN_THREAD();
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -538,6 +568,8 @@ void rt_widget_set_live_region(void *widget, int64_t mode) {
 }
 
 /// @brief Return a widget's default live-region urgency.
+/// @param widget Runtime widget handle.
+/// @return Live-region mode, or the off mode for an invalid handle.
 int64_t rt_widget_get_live_region(void *widget) {
     RT_ASSERT_MAIN_THREAD();
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -550,6 +582,8 @@ int64_t rt_widget_get_live_region(void *widget) {
 }
 
 /// @brief Return a widget's non-consuming monotonic revision.
+/// @param widget Runtime widget handle.
+/// @return Revision saturated at `INT64_MAX`, or 0 for an invalid handle.
 int64_t rt_widget_get_revision(void *widget) {
     RT_ASSERT_MAIN_THREAD();
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -563,6 +597,7 @@ int64_t rt_widget_get_revision(void *widget) {
 }
 
 /// @brief Enable or disable the active app's deterministic high-contrast palette.
+/// @param enabled Non-zero to enable high contrast; zero to restore normal contrast.
 void rt_accessibility_set_high_contrast(int64_t enabled) {
     RT_ASSERT_MAIN_THREAD();
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -581,6 +616,7 @@ void rt_accessibility_set_high_contrast(int64_t enabled) {
 }
 
 /// @brief Return the active app's explicit high-contrast preference.
+/// @return 1 when high contrast is enabled, otherwise 0.
 int64_t rt_accessibility_is_high_contrast(void) {
     RT_ASSERT_MAIN_THREAD();
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -592,6 +628,7 @@ int64_t rt_accessibility_is_high_contrast(void) {
 }
 
 /// @brief Enable or disable the active app's reduced-motion preference.
+/// @param enabled Non-zero to request reduced motion; zero to allow normal animation.
 void rt_accessibility_set_reduced_motion(int64_t enabled) {
     RT_ASSERT_MAIN_THREAD();
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -610,6 +647,7 @@ void rt_accessibility_set_reduced_motion(int64_t enabled) {
 }
 
 /// @brief Return the active app's explicit reduced-motion preference.
+/// @return 1 when reduced motion is enabled, otherwise 0.
 int64_t rt_accessibility_is_reduced_motion(void) {
     RT_ASSERT_MAIN_THREAD();
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -623,6 +661,7 @@ int64_t rt_accessibility_is_reduced_motion(void) {
 /// @brief Return the native platform high-contrast preference when available.
 /// @details Native projection hooks are deliberately optional; zero is the deterministic fallback
 ///          until the selected ZannaGFX backend reports a preference.
+/// @return 1 when the platform reports high contrast, otherwise 0.
 int64_t rt_accessibility_get_system_high_contrast(void) {
 #ifdef ZANNA_ENABLE_GRAPHICS
     rt_gui_app_t *app = rt_gui_get_active_app();
@@ -635,6 +674,7 @@ int64_t rt_accessibility_get_system_high_contrast(void) {
 /// @brief Return the native platform reduced-motion preference when available.
 /// @details Native projection hooks are deliberately optional; zero is the deterministic fallback
 ///          until the selected ZannaGFX backend reports a preference.
+/// @return 1 when the platform reports reduced motion, otherwise 0.
 int64_t rt_accessibility_get_system_reduced_motion(void) {
 #ifdef ZANNA_ENABLE_GRAPHICS
     rt_gui_app_t *app = rt_gui_get_active_app();
@@ -645,6 +685,9 @@ int64_t rt_accessibility_get_system_reduced_motion(void) {
 }
 
 /// @brief Record a live-region announcement in the widget semantic tree.
+/// @param widget Runtime widget handle; invalid handles are ignored.
+/// @param text UTF-8 announcement text copied into the widget record.
+/// @param mode Requested live-region mode; the toolkit normalizes invalid values.
 void rt_accessibility_announce(void *widget, rt_string text, int64_t mode) {
     RT_ASSERT_MAIN_THREAD();
 #ifdef ZANNA_ENABLE_GRAPHICS

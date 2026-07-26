@@ -278,8 +278,9 @@ func main() {
 
     // ADR 0191: idle frames render the target at the full logical viewport,
     // and the acceleration request rebuilds the renderer without touching
-    // canonical content. In probe environments GPU construction falls back
-    // to software, so pixels stay deterministic on both settings.
+    // canonical content. Hosts with a headless GPU backend (ADR 0191) render
+    // accelerated pixels here, so this window asserts behavior and canonical
+    // bytes only; every pixel-sampling step runs with acceleration off.
     if editor.ViewportTargetWidth() != editor.renderedViewportWidth
        or editor.ViewportTargetHeight() != editor.renderedViewportHeight {
         Fail(shell, harness,

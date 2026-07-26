@@ -19,6 +19,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_terrain3d_internal.h
+ * @brief Declares layout-independent Terrain3D metadata shared by sibling runtime modules.
+ *
+ * The copied grid descriptor lets consumers reason about terrain dimensions and world extents
+ * without duplicating or depending on the private `rt_terrain3d` object payload.
+ */
+
 #pragma once
 
 #include <stdint.h>

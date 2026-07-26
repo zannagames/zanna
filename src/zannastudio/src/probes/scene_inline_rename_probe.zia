@@ -1,0 +1,231 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_inline_rename_probe.zia
+// Purpose: Verify F2 inline rename in both scene hierarchies.
+// Key invariants:
+//   - F2 with a focused hierarchy and one selection begins a row edit.
+//   - Typing replaces the pre-selected raw name; Enter commits one undoable
+//     rename; Escape cancels without touching content or history.
+//   - A 2D rename to an existing object id is refused without history growth.
+// Ownership/Lifetime:
+//   - The probe owns one hidden AppShell per editor plus one input harness.
+// Links: zannastudio/src/ui/scene_editor_2d.zia,
+//        zannastudio/src/ui/scene_editor_3d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_inline_rename_probe;
+
+// ============================================================================
+// MODULE: scene_inline_rename_probe
+// PURPOSE: Pin the inline-rename contract end to end through real key input.
+//
+// WHERE-THIS-FITS: The broad editor probes own transactions and inspectors;
+//          this focused display probe owns the F2 row-editor flow.
+//
+// TEACHING-NOTE: Names are typed through the harness so the probe proves the
+//          full path: F2 key, editor overlay, text entry, and Enter commit.
+// ============================================================================
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_2d";
+bind "../ui/scene_editor_3d";
+
+bind GUI = Zanna.GUI;
+bind Str = Zanna.String;
+bind Terminal = Zanna.Terminal;
+
+func Pump2D(shell: app_shell.AppShell,
+            editor: scene_editor_2d.SceneEditor2D,
+            doc: document.Document) {
+    editor.Pump(doc);
+    shell.Poll();
+    shell.Render();
+}
+
+func Pump3D(shell: app_shell.AppShell,
+            editor: scene_editor_3d.SceneEditor3D,
+            doc: document.Document) {
+    editor.Pump(doc);
+    shell.Poll();
+    shell.Render();
+}
+
+func TypeText(harness: GUI.TestHarness, text: String) {
+    var i = 0;
+    while i < Str.get_Length(text) {
+        harness.SendKey(Str.Substring(text, i, 1), 0);
+        i = i + 1;
+    }
+}
+
+func Fail(shell: app_shell.AppShell,
+          harness: GUI.TestHarness,
+          reason: String) {
+    if harness != null { harness.UnbindApp(); }
+    if shell != null { shell.Destroy(); }
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func main() {
+    // ------------------------------------------------------------------ 2D
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Inline Rename Probe", 1240, 800);
+
+    var editor2d = new scene_editor_2d.SceneEditor2D();
+    editor2d.Setup(shell.workbench.scene2DHost, shell.app);
+    var documents = new document_manager.DocumentManager();
+    var doc2d = documents.NewScene2DDocument();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_2D);
+    editor2d.Activate(doc2d);
+    Pump2D(shell, editor2d, doc2d);
+    Pump2D(shell, editor2d, doc2d);
+
+    if editor2d.AddSceneObject("enemy", "left", 0, 0) != 0
+       or editor2d.AddSceneObject("enemy", "right", 32, 32) != 1 {
+        Fail(shell, null, "2D object fixture");
+        return;
+    }
+    Pump2D(shell, editor2d, doc2d);
+
+    var harness = GUI.TestHarness.New();
+    if harness.BindApp(shell.app) == false {
+        Fail(shell, null, "2D bind");
+        return;
+    }
+
+    editor2d.SelectSceneObjects([0], 0);
+    editor2d.objectTree.Focus();
+    Pump2D(shell, editor2d, doc2d);
+    var undoBefore = editor2d.undoStack.count();
+
+    // F2 begins an inline edit of the selected object's id.
+    harness.SendKey("f2", 0);
+    harness.DispatchPending();
+    Pump2D(shell, editor2d, doc2d);
+    if editor2d.objectTree.IsEditing() == false {
+        Fail(shell, harness, "2D F2 did not begin an inline edit");
+        return;
+    }
+
+    // Typing replaces the selected id; Enter commits one undoable rename.
+    TypeText(harness, "hero");
+    harness.SendKey("enter", 0);
+    harness.DispatchPending();
+    Pump2D(shell, editor2d, doc2d);
+    Pump2D(shell, editor2d, doc2d);
+    if editor2d.scene.ObjectId(0) != "hero" {
+        Fail(shell, harness, "2D rename commit; id="
+            + editor2d.scene.ObjectId(0));
+        return;
+    }
+    if editor2d.undoStack.count() != undoBefore + 1 {
+        Fail(shell, harness, "2D rename history entries");
+        return;
+    }
+
+    // Renaming onto an existing id is refused without history growth.
+    editor2d.SelectSceneObjects([0], 0);
+    editor2d.objectTree.Focus();
+    Pump2D(shell, editor2d, doc2d);
+    harness.SendKey("f2", 0);
+    harness.DispatchPending();
+    Pump2D(shell, editor2d, doc2d);
+    if editor2d.objectTree.IsEditing() == false {
+        Fail(shell, harness, "2D duplicate-id edit did not begin");
+        return;
+    }
+    TypeText(harness, "right");
+    harness.SendKey("enter", 0);
+    harness.DispatchPending();
+    Pump2D(shell, editor2d, doc2d);
+    Pump2D(shell, editor2d, doc2d);
+    if editor2d.scene.ObjectId(0) != "hero"
+       or editor2d.undoStack.count() != undoBefore + 1 {
+        Fail(shell, harness, "2D duplicate id was not refused");
+        return;
+    }
+
+    // Escape cancels without touching the id or history.
+    editor2d.objectTree.Focus();
+    Pump2D(shell, editor2d, doc2d);
+    harness.SendKey("f2", 0);
+    harness.DispatchPending();
+    Pump2D(shell, editor2d, doc2d);
+    TypeText(harness, "zzz");
+    harness.SendKey("escape", 0);
+    harness.DispatchPending();
+    Pump2D(shell, editor2d, doc2d);
+    Pump2D(shell, editor2d, doc2d);
+    if editor2d.objectTree.IsEditing()
+       or editor2d.scene.ObjectId(0) != "hero"
+       or editor2d.undoStack.count() != undoBefore + 1 {
+        Fail(shell, harness, "2D Escape cancel leaked state");
+        return;
+    }
+    harness.UnbindApp();
+    shell.Destroy();
+
+    // ------------------------------------------------------------------ 3D
+    shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Inline Rename Probe 3D", 1240, 800);
+    var editor3d = new scene_editor_3d.SceneEditor3D();
+    editor3d.Setup(shell.workbench.scene3DHost, shell.app);
+    var doc3d = documents.NewScene3DDocument();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_3D);
+    editor3d.Activate(doc3d);
+    Pump3D(shell, editor3d, doc3d);
+    Pump3D(shell, editor3d, doc3d);
+
+    var nodeIndex = editor3d.AddEmptyNode("Marker", -1);
+    if nodeIndex < 0 {
+        Fail(shell, null, "3D node fixture");
+        return;
+    }
+    Pump3D(shell, editor3d, doc3d);
+
+    harness = GUI.TestHarness.New();
+    if harness.BindApp(shell.app) == false {
+        Fail(shell, null, "3D bind");
+        return;
+    }
+
+    editor3d.SelectSceneNodes([nodeIndex], nodeIndex);
+    editor3d.hierarchyTree.Focus();
+    Pump3D(shell, editor3d, doc3d);
+    var undo3dBefore = editor3d.undoStack.count();
+
+    harness.SendKey("f2", 0);
+    harness.DispatchPending();
+    Pump3D(shell, editor3d, doc3d);
+    if editor3d.hierarchyTree.IsEditing() == false {
+        Fail(shell, harness, "3D F2 did not begin an inline edit");
+        return;
+    }
+    TypeText(harness, "Spawn Point");
+    harness.SendKey("enter", 0);
+    harness.DispatchPending();
+    Pump3D(shell, editor3d, doc3d);
+    Pump3D(shell, editor3d, doc3d);
+    var renamed = editor3d.flatNodes.get(nodeIndex);
+    if renamed == null or renamed.Name != "Spawn Point" {
+        Fail(shell, harness, "3D rename commit");
+        return;
+    }
+    if editor3d.undoStack.count() != undo3dBefore + 1 {
+        Fail(shell, harness, "3D rename history entries");
+        return;
+    }
+
+    harness.UnbindApp();
+    shell.Destroy();
+    Terminal.Say("RESULT: ok");
+}

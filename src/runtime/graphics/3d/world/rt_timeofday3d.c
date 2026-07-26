@@ -20,6 +20,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_timeofday3d.c
+ * @brief Implements a deterministic in-world clock that drives sun, sky, and reflection state.
+ *
+ * Time advances only from caller-provided simulation deltas. The derived sun direction updates a
+ * retained directional light every call, while expensive sky and reflection refreshes are
+ * throttled by angular movement.
+ */
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_timeofday3d.h"
@@ -58,12 +67,16 @@ typedef struct rt_timeofday3d {
     int8_t has_refresh_dir;
 } rt_timeofday3d;
 
+/// @brief Release and clear one retained TimeOfDay3D consumer slot.
+/// @param slot Address of a valid retained-object slot.
 static void timeofday3d_release(void **slot) {
     if (*slot && rt_obj_release_check0(*slot))
         rt_obj_free(*slot);
     *slot = NULL;
 }
 
+/// @brief Release every light, sky, and reflection-probe reference owned by a clock.
+/// @param obj TimeOfDay3D runtime object being finalized; NULL is accepted.
 static void timeofday3d_finalize(void *obj) {
     rt_timeofday3d *tod = (rt_timeofday3d *)obj;
     if (!tod)
@@ -73,6 +86,8 @@ static void timeofday3d_finalize(void *obj) {
     timeofday3d_release(&tod->probe);
 }
 
+/// @brief Allocate a paused noon clock with default latitude and refresh threshold.
+/// @return New GC-managed TimeOfDay3D handle, or NULL after trapping on allocation failure.
 void *rt_timeofday3d_new(void) {
     rt_timeofday3d *tod = (rt_timeofday3d *)rt_obj_new_i64(RT_G3D_TIMEOFDAY3D_CLASS_ID,
                                                            (int64_t)sizeof(rt_timeofday3d));
@@ -89,6 +104,10 @@ void *rt_timeofday3d_new(void) {
     return tod;
 }
 
+/// @brief Validate a runtime handle as TimeOfDay3D and trap with calling-method context on failure.
+/// @param obj Candidate runtime object handle.
+/// @param method Trap message identifying the calling API.
+/// @return Typed TimeOfDay3D pointer, or NULL when validation fails.
 static rt_timeofday3d *timeofday3d_checked(void *obj, const char *method) {
     rt_timeofday3d *tod =
         (rt_timeofday3d *)rt_g3d_checked_or_null(obj, RT_G3D_TIMEOFDAY3D_CLASS_ID);
@@ -97,6 +116,9 @@ static rt_timeofday3d *timeofday3d_checked(void *obj, const char *method) {
     return tod;
 }
 
+/// @brief Set the clock hour, wrapping finite input into the half-open day interval `[0, 24)`.
+/// @param obj TimeOfDay3D handle; invalid handles trap and are ignored.
+/// @param hours New hour value; non-finite input is ignored.
 void rt_timeofday3d_set_hours(void *obj, double hours) {
     rt_timeofday3d *tod = timeofday3d_checked(obj, "TimeOfDay3D.set_Hours: invalid clock");
     if (!tod || !isfinite(hours))
@@ -107,11 +129,17 @@ void rt_timeofday3d_set_hours(void *obj, double hours) {
     tod->hours = hours;
 }
 
+/// @brief Return the current wrapped hour of day.
+/// @param obj TimeOfDay3D handle; invalid handles trap.
+/// @return Hour in `[0, 24)`, or zero when validation fails.
 double rt_timeofday3d_get_hours(void *obj) {
     rt_timeofday3d *tod = timeofday3d_checked(obj, "TimeOfDay3D.get_Hours: invalid clock");
     return tod ? tod->hours : 0.0;
 }
 
+/// @brief Set the simulated number of real-time seconds in one full day.
+/// @param obj TimeOfDay3D handle; invalid handles trap and are ignored.
+/// @param seconds Nonnegative day length; zero pauses automatic advancement.
 void rt_timeofday3d_set_day_length_seconds(void *obj, double seconds) {
     rt_timeofday3d *tod =
         timeofday3d_checked(obj, "TimeOfDay3D.set_DayLengthSeconds: invalid clock");
@@ -119,12 +147,18 @@ void rt_timeofday3d_set_day_length_seconds(void *obj, double seconds) {
         tod->day_length_seconds = seconds;
 }
 
+/// @brief Return the configured duration of a simulated day.
+/// @param obj TimeOfDay3D handle; invalid handles trap.
+/// @return Nonnegative day duration in seconds, or zero when paused or invalid.
 double rt_timeofday3d_get_day_length_seconds(void *obj) {
     rt_timeofday3d *tod =
         timeofday3d_checked(obj, "TimeOfDay3D.get_DayLengthSeconds: invalid clock");
     return tod ? tod->day_length_seconds : 0.0;
 }
 
+/// @brief Set the latitude used by the stylized solar-elevation model.
+/// @param obj TimeOfDay3D handle; invalid handles trap and are ignored.
+/// @param degrees Latitude in the accepted range `[-85, 85]`; other values are ignored.
 void rt_timeofday3d_set_latitude_degrees(void *obj, double degrees) {
     rt_timeofday3d *tod =
         timeofday3d_checked(obj, "TimeOfDay3D.set_LatitudeDegrees: invalid clock");
@@ -132,23 +166,38 @@ void rt_timeofday3d_set_latitude_degrees(void *obj, double degrees) {
         tod->latitude_degrees = degrees;
 }
 
+/// @brief Return the latitude used to derive solar elevation.
+/// @param obj TimeOfDay3D handle; invalid handles trap.
+/// @return Latitude in degrees, or zero when validation fails.
 double rt_timeofday3d_get_latitude_degrees(void *obj) {
     rt_timeofday3d *tod =
         timeofday3d_checked(obj, "TimeOfDay3D.get_LatitudeDegrees: invalid clock");
     return tod ? tod->latitude_degrees : 0.0;
 }
 
+/// @brief Set the angular sun movement required to refresh sky and reflection consumers.
+/// @param obj TimeOfDay3D handle; invalid handles trap and are ignored.
+/// @param degrees Threshold greater than 0.1 degrees, clamped to 45; smaller/invalid values are
+/// ignored.
 void rt_timeofday3d_set_refresh_degrees(void *obj, double degrees) {
     rt_timeofday3d *tod = timeofday3d_checked(obj, "TimeOfDay3D.set_RefreshDegrees: invalid clock");
     if (tod && isfinite(degrees) && degrees > 0.1)
         tod->refresh_degrees = degrees > 45.0 ? 45.0 : degrees;
 }
 
+/// @brief Return the angular refresh threshold.
+/// @param obj TimeOfDay3D handle; invalid handles trap.
+/// @return Threshold in degrees, or zero when validation fails.
 double rt_timeofday3d_get_refresh_degrees(void *obj) {
     rt_timeofday3d *tod = timeofday3d_checked(obj, "TimeOfDay3D.get_RefreshDegrees: invalid clock");
     return tod ? tod->refresh_degrees : 0.0;
 }
 
+/// @brief Validate, retain, and assign one bound runtime consumer.
+/// @param slot Address of the retained consumer slot.
+/// @param value New consumer handle, or NULL to clear the binding.
+/// @param class_id Required runtime class identifier.
+/// @param trap Diagnostic emitted when @p value has the wrong class.
 static void timeofday3d_bind(void **slot, void *value, int64_t class_id, const char *trap) {
     if (value && !rt_g3d_checked_or_null(value, class_id)) {
         rt_trap(trap);
@@ -160,6 +209,9 @@ static void timeofday3d_bind(void **slot, void *value, int64_t class_id, const c
     *slot = value;
 }
 
+/// @brief Bind the directional Light3D driven by the clock's sun model.
+/// @param obj TimeOfDay3D handle; invalid handles trap and are ignored.
+/// @param light Light3D handle to retain, or NULL to clear the binding.
 void rt_timeofday3d_set_sun_light(void *obj, void *light) {
     rt_timeofday3d *tod = timeofday3d_checked(obj, "TimeOfDay3D.SetSunLight: invalid clock");
     if (tod)
@@ -169,6 +221,9 @@ void rt_timeofday3d_set_sun_light(void *obj, void *light) {
                          "TimeOfDay3D.SetSunLight: light must be a Light3D");
 }
 
+/// @brief Bind the procedural Sky3D refreshed as the sun moves.
+/// @param obj TimeOfDay3D handle; invalid handles trap and are ignored.
+/// @param sky Sky3D handle to retain, or NULL to clear the binding.
 void rt_timeofday3d_set_sky(void *obj, void *sky) {
     rt_timeofday3d *tod = timeofday3d_checked(obj, "TimeOfDay3D.SetSky: invalid clock");
     if (tod)
@@ -176,6 +231,9 @@ void rt_timeofday3d_set_sky(void *obj, void *sky) {
             &tod->sky, sky, RT_G3D_SKY3D_CLASS_ID, "TimeOfDay3D.SetSky: sky must be a Sky3D");
 }
 
+/// @brief Bind the ReflectionProbe3D marked dirty as the sun moves.
+/// @param obj TimeOfDay3D handle; invalid handles trap and are ignored.
+/// @param probe ReflectionProbe3D handle to retain, or NULL to clear the binding.
 void rt_timeofday3d_set_reflection_probe(void *obj, void *probe) {
     rt_timeofday3d *tod = timeofday3d_checked(obj, "TimeOfDay3D.SetReflectionProbe: invalid clock");
     if (tod)
@@ -186,6 +244,8 @@ void rt_timeofday3d_set_reflection_probe(void *obj, void *probe) {
 }
 
 /// @brief Compute the direction TOWARD the sun for the current hour/latitude.
+/// @param obj TimeOfDay3D handle; invalid handles trap.
+/// @param out_dir Three-element output array receiving a normalized direction.
 void rt_timeofday3d_get_sun_direction_raw(void *obj, double out_dir[3]) {
     rt_timeofday3d *tod = timeofday3d_checked(obj, "TimeOfDay3D.SunDirection: invalid clock");
     if (!tod || !out_dir)
@@ -216,6 +276,9 @@ void rt_timeofday3d_get_sun_direction_raw(void *obj, double out_dir[3]) {
     out_dir[2] /= len;
 }
 
+/// @brief Return the current normalized direction toward the sun as a new Vec3.
+/// @param obj TimeOfDay3D handle; invalid handles trap.
+/// @return New GC-managed Vec3 direction, or NULL when Vec3 allocation fails.
 void *rt_timeofday3d_get_sun_direction(void *obj) {
     double dir[3] = {0.0, 1.0, 0.0};
     rt_timeofday3d_get_sun_direction_raw(obj, dir);
@@ -229,6 +292,9 @@ void *rt_timeofday3d_get_sun_direction(void *obj) {
 ///   direction plus an elevation-keyed warm-low/white-noon color curve (off below
 ///   the horizon); the sky and probe refresh only when the sun has moved more
 ///   than RefreshDegrees since the last refresh (IBL/capture cost throttle).
+/// @param obj TimeOfDay3D handle; invalid handles trap and are ignored.
+/// @param dt Positive finite scaled simulation delta in seconds; invalid values do not advance time.
+/// @param canvas Optional Canvas3D handle on which a refreshed procedural sky is installed.
 void rt_timeofday3d_advance(void *obj, double dt, void *canvas) {
     rt_timeofday3d *tod = timeofday3d_checked(obj, "TimeOfDay3D.Advance: invalid clock");
     if (!tod)

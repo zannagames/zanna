@@ -3,6 +3,16 @@
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
 //
+/// @file rt_gui_atspi_linux.c
+/// @brief Implements the Linux AT-SPI D-Bus accessibility projection.
+///
+/// @details
+/// The bridge snapshots the retained widget tree on the GUI thread, publishes
+/// immutable node metadata through dynamically loaded GIO interfaces on a
+/// private worker context, and marshals requested actions back to the GUI
+/// thread. Missing GIO or accessibility-bus services leave the headless
+/// semantic tree operational without adding a product dependency.
+///
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/graphics/gui/rt_gui_atspi_linux.c
@@ -317,6 +327,9 @@ static const char *const g_rt_gui_atspi_xml_parts[] = {
     NULL,
 };
 
+/// @brief Emit an opt-in AT-SPI diagnostic for one bridge stage.
+/// @param stage Stable description of the operation that failed.
+/// @param error Optional borrowed GIO error supplying additional text.
 static void rt_gui_atspi_diagnostic(const char *stage, const GError *error) {
     if (getenv("ZANNA_ATSPI_DIAGNOSTICS"))
         (void)fprintf(stderr,
@@ -326,6 +339,9 @@ static void rt_gui_atspi_diagnostic(const char *stage, const GError *error) {
                       error && error->message ? error->message : "");
 }
 
+/// @brief Map a Zanna accessible role to its stable AT-SPI role identifier.
+/// @param role Zanna role to translate.
+/// @return AT-SPI role value, defaulting to application for invalid input.
 static uint32_t rt_gui_atspi_role(vg_accessible_role_t role) {
     static const uint32_t roles[VG_ACCESSIBLE_ROLE_COUNT] = {
         39, 75, 69, 99, 29, 43, 7, 44, 79, 79, 11, 31, 32, 65, 91,
@@ -334,6 +350,9 @@ static uint32_t rt_gui_atspi_role(vg_accessible_role_t role) {
     return role >= 0 && role < VG_ACCESSIBLE_ROLE_COUNT ? roles[role] : 39;
 }
 
+/// @brief Infer the accessible name exported for a widget snapshot.
+/// @param widget Borrowed live widget.
+/// @return Borrowed explicit or control-derived name; may be NULL.
 static const char *rt_gui_atspi_node_name(const vg_widget_t *widget) {
     if (widget->accessibility.name)
         return widget->accessibility.name;
@@ -363,6 +382,9 @@ static const char *rt_gui_atspi_node_name(const vg_widget_t *widget) {
     }
 }
 
+/// @brief Check whether a widget is enabled through its full ancestor chain.
+/// @param widget Borrowed widget to inspect.
+/// @return 1 when every node in the chain is enabled, otherwise 0.
 static int rt_gui_atspi_effectively_enabled(const vg_widget_t *widget) {
     for (const vg_widget_t *cursor = widget; cursor; cursor = cursor->parent)
         if (!cursor->enabled)
@@ -370,10 +392,16 @@ static int rt_gui_atspi_effectively_enabled(const vg_widget_t *widget) {
     return 1;
 }
 
+/// @brief Round a finite toolkit coordinate to the nearest signed integer.
+/// @param value Coordinate value to round.
+/// @return Nearest integer using symmetric half-away-from-zero behavior.
 static int32_t rt_gui_atspi_round(float value) {
     return value >= 0.0f ? (int32_t)(value + 0.5f) : (int32_t)(value - 0.5f);
 }
 
+/// @brief Count UTF-8 code points up to the AT-SPI signed range.
+/// @param text Borrowed NUL-terminated UTF-8 text; may be NULL.
+/// @return Code-point count saturated at `INT32_MAX`.
 static int32_t rt_gui_atspi_utf8_count(const char *text) {
     int32_t count = 0;
     if (!text)
@@ -384,6 +412,9 @@ static int32_t rt_gui_atspi_utf8_count(const char *text) {
     return count;
 }
 
+/// @brief Populate optional Action, Text, and Value snapshot fields for a widget.
+/// @param node Mutable destination node initialized for @p widget.
+/// @param widget Borrowed live widget supplying interface state.
 static void rt_gui_atspi_snapshot_interfaces(rt_gui_atspi_node_t *node,
                                              const vg_widget_t *widget) {
     const char *text = NULL;
@@ -465,6 +496,11 @@ static void rt_gui_atspi_snapshot_interfaces(rt_gui_atspi_node_t *node,
         (void)snprintf(node->value_text, sizeof(node->value_text), "mixed");
 }
 
+/// @brief Copy one live widget's stable accessible state into a snapshot node.
+/// @param node Mutable destination node.
+/// @param bridge Borrowed bridge that owns the resulting snapshot.
+/// @param widget Borrowed live widget to copy.
+/// @param index Preorder node index used to select the root object path.
 static void rt_gui_atspi_snapshot_node(rt_gui_atspi_node_t *node,
                                        rt_gui_atspi_bridge_t *bridge,
                                        const vg_widget_t *widget,
@@ -538,6 +574,10 @@ static void rt_gui_atspi_snapshot_node(rt_gui_atspi_node_t *node,
         node->states[node->state_count++] = 41;
 }
 
+/// @brief Build an iterative visible-tree snapshot and parent/child index storage.
+/// @param bridge Bridge receiving ownership of the allocated snapshot arrays.
+/// @param root Borrowed live semantic root.
+/// @return 1 after a complete non-empty snapshot, otherwise 0.
 static int rt_gui_atspi_build_snapshot(rt_gui_atspi_bridge_t *bridge, vg_widget_t *root) {
     size_t capacity = 64;
     size_t stack_count = 0;
@@ -620,6 +660,9 @@ static int rt_gui_atspi_build_snapshot(rt_gui_atspi_bridge_t *bridge, vg_widget_
     return 1;
 }
 
+/// @brief Dynamically resolve the complete GIO surface required by the bridge.
+/// @details Any missing library or symbol clears the process API table so later attachment remains
+///          a deterministic no-op.
 static void rt_gui_atspi_load_once(void) {
     const char *names[] = {"libgio-2.0.so.0", "libgio-2.0.so"};
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]) && !g_rt_gui_atspi_api.library; ++i)
@@ -680,6 +723,9 @@ static void rt_gui_atspi_load_once(void) {
 #undef RT_ATSPI_LOAD
 }
 
+/// @brief Return the standard AT-SPI not-implemented D-Bus error for a method.
+/// @param invocation Borrowed method invocation to complete.
+/// @param method Borrowed method name included in the diagnostic message.
 static void rt_gui_atspi_return_error(GDBusMethodInvocation *invocation, const char *method) {
     char message[160];
     (void)snprintf(message, sizeof(message), "AT-SPI method %s is unavailable for this object", method);
@@ -687,6 +733,13 @@ static void rt_gui_atspi_return_error(GDBusMethodInvocation *invocation, const c
         invocation, "org.a11y.atspi.Error.NotImplemented", message);
 }
 
+/// @brief Return a snapshot node's extents in screen or parent-relative coordinates.
+/// @param node Borrowed immutable snapshot node.
+/// @param coordinate_type AT-SPI coordinate system; value 2 selects parent-relative coordinates.
+/// @param x Receives the left coordinate.
+/// @param y Receives the top coordinate.
+/// @param width Receives the width.
+/// @param height Receives the height.
 static void rt_gui_atspi_node_extents(const rt_gui_atspi_node_t *node,
                                       uint32_t coordinate_type,
                                       int32_t *x,
@@ -704,10 +757,18 @@ static void rt_gui_atspi_node_extents(const rt_gui_atspi_node_t *node,
     }
 }
 
+/// @brief Retain one child value from a D-Bus parameter tuple.
+/// @param parameters Borrowed tuple variant.
+/// @param index Zero-based child index.
+/// @return Retained child variant, or NULL when unavailable.
 static GVariant *rt_gui_atspi_child(GVariant *parameters, size_t index) {
     return g_rt_gui_atspi_api.variant_get_child_value(parameters, index);
 }
 
+/// @brief Read and release one signed 32-bit D-Bus parameter.
+/// @param parameters Borrowed tuple variant.
+/// @param index Zero-based child index.
+/// @return Decoded value, or 0 when the child is unavailable.
 static int32_t rt_gui_atspi_parameter_i32(GVariant *parameters, size_t index) {
     GVariant *value = rt_gui_atspi_child(parameters, index);
     int32_t result = value ? g_rt_gui_atspi_api.variant_get_int32(value) : 0;
@@ -716,6 +777,10 @@ static int32_t rt_gui_atspi_parameter_i32(GVariant *parameters, size_t index) {
     return result;
 }
 
+/// @brief Read and release one unsigned 32-bit D-Bus parameter.
+/// @param parameters Borrowed tuple variant.
+/// @param index Zero-based child index.
+/// @return Decoded value, or 0 when the child is unavailable.
 static uint32_t rt_gui_atspi_parameter_u32(GVariant *parameters, size_t index) {
     GVariant *value = rt_gui_atspi_child(parameters, index);
     uint32_t result = value ? g_rt_gui_atspi_api.variant_get_uint32(value) : 0;
@@ -724,11 +789,17 @@ static uint32_t rt_gui_atspi_parameter_u32(GVariant *parameters, size_t index) {
     return result;
 }
 
+/// @brief Return the bridge connection's unique D-Bus name.
+/// @param node Borrowed snapshot node whose bridge supplies the connection.
+/// @return Borrowed unique name, or an empty string when unavailable.
 static const char *rt_gui_atspi_unique(const rt_gui_atspi_node_t *node) {
     const char *unique = g_rt_gui_atspi_api.connection_get_unique_name(node->bridge->connection);
     return unique ? unique : "";
 }
 
+/// @brief Build an AT-SPI object-reference array for a node's children.
+/// @param node Borrowed snapshot node.
+/// @return Newly constructed array variant, or NULL on builder failure.
 static GVariant *rt_gui_atspi_reference_array(const rt_gui_atspi_node_t *node) {
     GVariantBuilder *builder = g_rt_gui_atspi_api.variant_builder_new((const void *)"a(so)");
     if (!builder)
@@ -743,11 +814,17 @@ static GVariant *rt_gui_atspi_reference_array(const rt_gui_atspi_node_t *node) {
     return result;
 }
 
+/// @brief Build an AT-SPI state-set variant from a snapshot node.
+/// @param node Borrowed snapshot node.
+/// @return Newly constructed fixed-array variant.
 static GVariant *rt_gui_atspi_state_array(const rt_gui_atspi_node_t *node) {
     return g_rt_gui_atspi_api.variant_new_fixed_array(
         (const void *)"u", node->states, node->state_count, sizeof(node->states[0]));
 }
 
+/// @brief Construct an empty GVariant array of a requested signature.
+/// @param type Borrowed GVariant array type string.
+/// @return Newly constructed empty array variant, or NULL on builder failure.
 static GVariant *rt_gui_atspi_empty_array(const char *type) {
     GVariantBuilder *builder = g_rt_gui_atspi_api.variant_builder_new((const void *)type);
     if (!builder)
@@ -757,6 +834,9 @@ static GVariant *rt_gui_atspi_empty_array(const char *type) {
     return result;
 }
 
+/// @brief Return the stable English AT-SPI role name for a numeric role.
+/// @param role AT-SPI role identifier.
+/// @return Borrowed static role name, or `"unknown"`.
 static const char *rt_gui_atspi_role_name(uint32_t role) {
     switch (role) {
         case 2: return "alert";
@@ -793,6 +873,11 @@ static const char *rt_gui_atspi_role_name(uint32_t role) {
     }
 }
 
+/// @brief Find the deepest snapshotted descendant containing a screen-space point.
+/// @param node Borrowed subtree root.
+/// @param x Screen-space X coordinate.
+/// @param y Screen-space Y coordinate.
+/// @return Borrowed deepest matching node, or NULL when the point misses the subtree.
 static const rt_gui_atspi_node_t *rt_gui_atspi_at_point(const rt_gui_atspi_node_t *node,
                                                         int32_t x,
                                                         int32_t y) {
@@ -811,6 +896,10 @@ static const rt_gui_atspi_node_t *rt_gui_atspi_at_point(const rt_gui_atspi_node_
     return match;
 }
 
+/// @brief Locate a code-point offset within a NUL-terminated UTF-8 string.
+/// @param text Borrowed UTF-8 string; NULL is treated as empty.
+/// @param offset Non-negative code-point offset.
+/// @return Borrowed pointer to the selected byte or the terminating NUL.
 static const char *rt_gui_atspi_utf8_offset(const char *text, int32_t offset) {
     const unsigned char *cursor = (const unsigned char *)(text ? text : "");
     int32_t index = 0;
@@ -823,6 +912,10 @@ static const char *rt_gui_atspi_utf8_offset(const char *text, int32_t offset) {
     return (const char *)cursor;
 }
 
+/// @brief Decode the UTF-8 character at a code-point offset.
+/// @param text Borrowed UTF-8 string.
+/// @param offset Non-negative code-point offset.
+/// @return Unicode scalar value in the signed runtime range, or 0 when unavailable/invalid.
 static int32_t rt_gui_atspi_utf8_character(const char *text, int32_t offset) {
     const unsigned char *cursor = (const unsigned char *)rt_gui_atspi_utf8_offset(text, offset);
     if (!*cursor)
@@ -846,12 +939,21 @@ static int32_t rt_gui_atspi_utf8_character(const char *text, int32_t offset) {
     return result <= INT32_MAX ? (int32_t)result : 0;
 }
 
+/// @brief Classify a character for AT-SPI word-boundary grouping.
+/// @param character Unicode scalar value.
+/// @return Non-zero for ASCII identifier characters or non-ASCII characters.
 static int rt_gui_atspi_word_character(int32_t character) {
     return character >= 128 || (character >= '0' && character <= '9') ||
            (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
            character == '_';
 }
 
+/// @brief Resolve an AT-SPI text granularity around a character offset.
+/// @param node Borrowed text-bearing snapshot node.
+/// @param offset Requested code-point offset.
+/// @param granularity AT-SPI character, word, sentence, or line granularity.
+/// @param start Receives the inclusive normalized code-point offset.
+/// @param end Receives the exclusive normalized code-point offset.
 static void rt_gui_atspi_text_range(const rt_gui_atspi_node_t *node,
                                     int32_t offset,
                                     uint32_t granularity,
@@ -895,6 +997,11 @@ static void rt_gui_atspi_text_range(const rt_gui_atspi_node_t *node,
     }
 }
 
+/// @brief Return a bounded UTF-8 substring and its code-point range to D-Bus.
+/// @param invocation Borrowed method invocation to complete.
+/// @param node Borrowed text-bearing snapshot node.
+/// @param start Inclusive code-point offset.
+/// @param end Exclusive code-point offset.
 static void rt_gui_atspi_return_text_range(GDBusMethodInvocation *invocation,
                                            const rt_gui_atspi_node_t *node,
                                            int32_t start,
@@ -917,6 +1024,12 @@ enum {
     RT_GUI_ATSPI_REQUEST_VALUE = 3,
 };
 
+/// @brief Queue one GUI-thread action and wait briefly for its completion result.
+/// @param bridge Bridge whose synchronized request slot is used.
+/// @param widget_id Stable target widget ID.
+/// @param kind Action, caret, or value request kind.
+/// @param value Numeric request payload.
+/// @return GUI-thread result, or 0 when busy or timed out.
 static int rt_gui_atspi_request_values(rt_gui_atspi_bridge_t *bridge,
                                        uint64_t widget_id,
                                        int kind,
@@ -951,10 +1064,18 @@ static int rt_gui_atspi_request_values(rt_gui_atspi_bridge_t *bridge,
     return result;
 }
 
+/// @brief Submit a GUI-thread request using a snapshot node's guarded identity.
+/// @param node Snapshot node naming the target widget and bridge.
+/// @param kind Action, caret, or value request kind.
+/// @param value Numeric request payload.
+/// @return GUI-thread result, or 0 when unavailable.
 static int rt_gui_atspi_request(rt_gui_atspi_node_t *node, int kind, double value) {
     return rt_gui_atspi_request_values(node->bridge, node->widget_id, kind, value);
 }
 
+/// @brief Find a snapshot node's zero-based index among its parent's children.
+/// @param node Borrowed snapshot node.
+/// @return Child index, or -1 for the root or inconsistent storage.
 static int32_t rt_gui_atspi_index_in_parent(const rt_gui_atspi_node_t *node) {
     if (node->parent_index < 0)
         return -1;
@@ -965,6 +1086,9 @@ static int32_t rt_gui_atspi_index_in_parent(const rt_gui_atspi_node_t *node) {
     return -1;
 }
 
+/// @brief Serialize every snapshot node into the AT-SPI cache item schema.
+/// @param bridge Borrowed bridge containing immutable snapshot nodes.
+/// @return Newly constructed cache-item array variant, or NULL on builder failure.
 static GVariant *rt_gui_atspi_cache_items(const rt_gui_atspi_bridge_t *bridge) {
     const char *unique = g_rt_gui_atspi_api.connection_get_unique_name(bridge->connection);
     GVariantBuilder *items =
@@ -1015,6 +1139,15 @@ static GVariant *rt_gui_atspi_cache_items(const rt_gui_atspi_bridge_t *bridge) {
     return result;
 }
 
+/// @brief Dispatch one AT-SPI method call against immutable snapshot state.
+/// @param connection Borrowed D-Bus connection; currently unused.
+/// @param sender Borrowed sender name; currently unused.
+/// @param path Borrowed object path; registration already selected @p data.
+/// @param interface_name Borrowed AT-SPI interface name.
+/// @param method Borrowed method name.
+/// @param parameters Borrowed method parameter tuple.
+/// @param invocation Borrowed invocation completed by this callback.
+/// @param data Borrowed registered snapshot node.
 static void rt_gui_atspi_method(GDBusConnection *connection,
                                 const char *sender,
                                 const char *path,
@@ -1303,6 +1436,15 @@ static void rt_gui_atspi_method(GDBusConnection *connection,
     }
 }
 
+/// @brief Materialize one readable AT-SPI property from immutable snapshot state.
+/// @param connection Borrowed D-Bus connection; currently unused.
+/// @param sender Borrowed sender name; currently unused.
+/// @param path Borrowed object path; registration already selected @p data.
+/// @param interface_name Borrowed AT-SPI interface name.
+/// @param property Borrowed property name.
+/// @param error Optional error destination; currently unused.
+/// @param data Borrowed registered snapshot node.
+/// @return Newly constructed property variant, or NULL for an unsupported property.
 static GVariant *rt_gui_atspi_get_property(GDBusConnection *connection,
                                            const char *sender,
                                            const char *path,
@@ -1372,6 +1514,16 @@ static GVariant *rt_gui_atspi_get_property(GDBusConnection *connection,
     return NULL;
 }
 
+/// @brief Apply one writable AT-SPI property through bridge or GUI-thread state.
+/// @param connection Borrowed D-Bus connection; currently unused.
+/// @param sender Borrowed sender name; currently unused.
+/// @param path Borrowed object path; registration already selected @p data.
+/// @param interface_name Borrowed AT-SPI interface name.
+/// @param property Borrowed property name.
+/// @param value Borrowed replacement value.
+/// @param error Optional error destination; currently unused.
+/// @param data Borrowed registered snapshot node.
+/// @return Non-zero when the property was accepted, otherwise 0.
 static int rt_gui_atspi_set_property(GDBusConnection *connection,
                                      const char *sender,
                                      const char *path,
@@ -1406,6 +1558,9 @@ static const rt_gdbus_interface_vtable_t g_rt_gui_atspi_vtable = {
     {NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL},
 };
 
+/// @brief Publish worker initialization completion and wake the attaching thread.
+/// @param bridge Bridge whose synchronized readiness fields are updated.
+/// @param started Non-zero when the private D-Bus main loop can run.
 static void rt_gui_atspi_signal_ready(rt_gui_atspi_bridge_t *bridge, int started) {
     pthread_mutex_lock(&bridge->mutex);
     bridge->started = started;
@@ -1414,11 +1569,16 @@ static void rt_gui_atspi_signal_ready(rt_gui_atspi_bridge_t *bridge, int started
     pthread_mutex_unlock(&bridge->mutex);
 }
 
+/// @brief Mark the bridge started from the first idle turn of its private context.
+/// @param data Borrowed bridge pointer.
+/// @return 0 so the one-shot idle source is removed.
 static int rt_gui_atspi_signal_loop_running(void *data) {
     rt_gui_atspi_signal_ready(data, 1);
     return 0;
 }
 
+/// @brief Concatenate the split AT-SPI introspection document.
+/// @return Malloc-owned NUL-terminated XML, or NULL on overflow/allocation failure.
 static char *rt_gui_atspi_xml(void) {
     size_t total = 1;
     for (size_t i = 0; g_rt_gui_atspi_xml_parts[i]; ++i) {
@@ -1440,6 +1600,9 @@ static char *rt_gui_atspi_xml(void) {
     return xml;
 }
 
+/// @brief Discover the accessibility bus, register snapshot objects, and run the private loop.
+/// @param data Borrowed bridge whose worker-owned GIO resources are initialized and released.
+/// @return Always NULL after the loop exits or initialization fails.
 static void *rt_gui_atspi_worker(void *data) {
     rt_gui_atspi_bridge_t *bridge = data;
     rt_gui_atspi_api_t *api = &g_rt_gui_atspi_api;
@@ -1645,6 +1808,12 @@ static void *rt_gui_atspi_worker(void *data) {
     return NULL;
 }
 
+/// @brief Snapshot and publish one GUI window on the AT-SPI accessibility bus.
+/// @details Existing projection for @p window is detached first. Attachment initializes
+///          synchronization primitives, starts the private GIO worker, and registers the bridge
+///          globally only after the worker confirms a successful registry embed.
+/// @param window Borrowed live ZannaGFX window used as the bridge key.
+/// @param root Borrowed live semantic root to snapshot.
 void rt_gui_atspi_linux_attach(vgfx_window_t window, vg_widget_t *root) {
     if (!window || !root)
         return;
@@ -1709,6 +1878,10 @@ void rt_gui_atspi_linux_attach(vgfx_window_t window, vg_widget_t *root) {
     pthread_mutex_unlock(&g_rt_gui_atspi_list_mutex);
 }
 
+/// @brief Remove and destroy the AT-SPI bridge for a window.
+/// @details Pending requests are failed, test-request waiters drain, the worker loop is stopped and
+///          joined, and all bridge-owned snapshot and synchronization storage is released.
+/// @param window Borrowed window whose projection is removed.
 void rt_gui_atspi_linux_detach(vgfx_window_t window) {
     pthread_mutex_lock(&g_rt_gui_atspi_list_mutex);
     rt_gui_atspi_bridge_t **link = &g_rt_gui_atspi_bridges;
@@ -1739,6 +1912,9 @@ void rt_gui_atspi_linux_detach(vgfx_window_t window) {
     free(bridge);
 }
 
+/// @brief Emit a visible-data change for a snapshotted widget and mark the bridge dirty.
+/// @param window Borrowed window whose bridge is searched.
+/// @param widget Borrowed changed widget; may be NULL when only rebuild invalidation is needed.
 void rt_gui_atspi_linux_notify(vgfx_window_t window, vg_widget_t *widget) {
     pthread_mutex_lock(&g_rt_gui_atspi_list_mutex);
     for (rt_gui_atspi_bridge_t *bridge = g_rt_gui_atspi_bridges; bridge;
@@ -1774,6 +1950,10 @@ void rt_gui_atspi_linux_notify(vgfx_window_t window, vg_widget_t *widget) {
     pthread_mutex_unlock(&g_rt_gui_atspi_list_mutex);
 }
 
+/// @brief Iteratively find a live widget by immutable ID.
+/// @param root Borrowed tree root.
+/// @param id Widget ID to locate.
+/// @return Borrowed matching widget, or NULL on absence/allocation failure.
 static vg_widget_t *rt_gui_atspi_find_widget(vg_widget_t *root, uint64_t id) {
     size_t count = 0;
     size_t capacity = 64;
@@ -1805,6 +1985,9 @@ static vg_widget_t *rt_gui_atspi_find_widget(vg_widget_t *root, uint64_t id) {
     return NULL;
 }
 
+/// @brief Execute one worker-originated accessibility action on the GUI thread.
+/// @param bridge Bridge containing the synchronized pending request slot.
+/// @param root Borrowed current semantic root used to resolve the guarded widget ID.
 static void rt_gui_atspi_process_request(rt_gui_atspi_bridge_t *bridge, vg_widget_t *root) {
     pthread_mutex_lock(&bridge->mutex);
     if (!bridge->request_pending) {
@@ -1862,6 +2045,9 @@ static void rt_gui_atspi_process_request(rt_gui_atspi_bridge_t *bridge, vg_widge
     }
 }
 
+/// @brief Service pending requests and rebuild a dirty immutable AT-SPI snapshot.
+/// @param window Borrowed window whose bridge is synchronized.
+/// @param root Borrowed current semantic root.
 void rt_gui_atspi_linux_sync(vgfx_window_t window, vg_widget_t *root) {
     int dirty = 0;
     rt_gui_atspi_bridge_t *matched = NULL;
@@ -1884,6 +2070,9 @@ void rt_gui_atspi_linux_sync(vgfx_window_t window, vg_widget_t *root) {
     }
 }
 
+/// @brief Return the number of nodes in a window's current AT-SPI snapshot.
+/// @param window Borrowed window used as the bridge key.
+/// @return Snapshot node count, or 0 when no bridge is attached.
 size_t rt_gui_atspi_linux_snapshot_count(vgfx_window_t window) {
     size_t count = 0;
     pthread_mutex_lock(&g_rt_gui_atspi_list_mutex);
@@ -1898,6 +2087,9 @@ size_t rt_gui_atspi_linux_snapshot_count(vgfx_window_t window) {
     return count;
 }
 
+/// @brief Materialize the current cache array and return its item count.
+/// @param window Borrowed window used as the bridge key.
+/// @return Cache item count, or 0 when no bridge/array is available.
 size_t rt_gui_atspi_linux_cache_item_count(vgfx_window_t window) {
     size_t count = 0;
     pthread_mutex_lock(&g_rt_gui_atspi_list_mutex);
@@ -1916,6 +2108,12 @@ size_t rt_gui_atspi_linux_cache_item_count(vgfx_window_t window) {
     return count;
 }
 
+/// @brief Submit a guarded accessibility request through the synchronous bridge test seam.
+/// @param window Borrowed window used as the bridge key.
+/// @param widget_id Stable snapshot widget ID.
+/// @param kind Action, caret, or value request kind.
+/// @param value Numeric request payload.
+/// @return GUI-thread request result, or 0 for invalid/unavailable input.
 int rt_gui_atspi_linux_test_request(vgfx_window_t window,
                                     uint64_t widget_id,
                                     int kind,
@@ -1948,6 +2146,11 @@ int rt_gui_atspi_linux_test_request(vgfx_window_t window,
     return result;
 }
 
+/// @brief Emit an AT-SPI live-region announcement for a snapshotted widget.
+/// @param window Borrowed window whose bridge owns the widget snapshot.
+/// @param widget Borrowed announcement source widget.
+/// @param text Borrowed non-empty UTF-8 announcement text.
+/// @param mode Polite or assertive live-region urgency; off is ignored.
 void rt_gui_atspi_linux_announce(vgfx_window_t window,
                                  vg_widget_t *widget,
                                  const char *text,

@@ -23,6 +23,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file rt_gui_controls.c
+/// @brief Implements runtime bindings for dropdown, slider, progress-bar, and list-box controls.
+///
+/// @details
+/// Graphics-enabled functions validate runtime handles and translate managed
+/// strings and scalar values into widget-layer operations. The headless branch
+/// retains the same ABI with neutral return values and no side effects.
+
 #include "rt_gui_internal.h"
 #include "rt_platform.h"
 #include "rt_seq.h"
@@ -35,6 +43,8 @@
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 /// @brief Resolve a parent-container handle to its widget (file-local copy).
+/// @param parent Candidate parent handle, or `NULL` for a detached control.
+/// @return Borrowed parent widget, or `NULL` for a null or invalid handle.
 static vg_widget_t *rt_widget_parent_or_null_if_invalid(void *parent) {
     vg_widget_t *parent_widget = rt_gui_widget_parent_container_from_handle(parent);
     if (parent && !parent_widget)
@@ -42,21 +52,30 @@ static vg_widget_t *rt_widget_parent_or_null_if_invalid(void *parent) {
     return parent_widget;
 }
 
+/// @brief Validate and cast a runtime handle to a live Dropdown.
+/// @param handle Candidate runtime widget handle.
+/// @return Borrowed Dropdown pointer, or `NULL` for an invalid or wrong-type handle.
 static vg_dropdown_t *rt_dropdown_checked(void *handle) {
     return (vg_dropdown_t *)rt_gui_widget_handle_checked_type(handle, VG_WIDGET_DROPDOWN);
 }
 
 /// @brief Safe-cast a handle to a live Slider widget, or NULL.
+/// @param handle Candidate runtime widget handle.
+/// @return Borrowed Slider pointer, or `NULL` for invalid input.
 static vg_slider_t *rt_slider_checked(void *handle) {
     return (vg_slider_t *)rt_gui_widget_handle_checked_type(handle, VG_WIDGET_SLIDER);
 }
 
 /// @brief Safe-cast a handle to a live ProgressBar widget, or NULL.
+/// @param handle Candidate runtime widget handle.
+/// @return Borrowed ProgressBar pointer, or `NULL` for invalid input.
 static vg_progressbar_t *rt_progressbar_checked(void *handle) {
     return (vg_progressbar_t *)rt_gui_widget_handle_checked_type(handle, VG_WIDGET_PROGRESS);
 }
 
 /// @brief Safe-cast a handle to a live ListBox widget, or NULL.
+/// @param handle Candidate runtime widget handle.
+/// @return Borrowed ListBox pointer, or `NULL` for invalid input.
 static vg_listbox_t *rt_listbox_checked(void *handle) {
     return (vg_listbox_t *)rt_gui_widget_handle_checked_type(handle, VG_WIDGET_LISTBOX);
 }
@@ -66,6 +85,8 @@ static vg_listbox_t *rt_listbox_checked(void *handle) {
 //=============================================================================
 
 /// @brief Create a dropdown (combo box) widget — a button that pops a list of choices.
+/// @param parent Parent-container handle, or `NULL` for a detached widget.
+/// @return New Dropdown handle, or `NULL` for an invalid parent or allocation failure.
 void *rt_dropdown_new(void *parent) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *parent_widget = rt_widget_parent_or_null_if_invalid(parent);
@@ -77,6 +98,9 @@ void *rt_dropdown_new(void *parent) {
 }
 
 /// @brief Add a selectable item to a dropdown list.
+/// @param dropdown Dropdown widget handle.
+/// @param text Runtime display text copied into the widget.
+/// @return Zero-based index of the new item, or `-1` for an invalid handle.
 int64_t rt_dropdown_add_item(void *dropdown, rt_string text) {
     RT_ASSERT_MAIN_THREAD();
     vg_dropdown_t *dd = rt_dropdown_checked(dropdown);
@@ -89,6 +113,8 @@ int64_t rt_dropdown_add_item(void *dropdown, rt_string text) {
 }
 
 /// @brief Remove an item from a dropdown by index.
+/// @param dropdown Dropdown widget handle.
+/// @param index Zero-based item index; invalid values are ignored.
 void rt_dropdown_remove_item(void *dropdown, int64_t index) {
     RT_ASSERT_MAIN_THREAD();
     vg_dropdown_t *dd = rt_dropdown_checked(dropdown);
@@ -98,6 +124,7 @@ void rt_dropdown_remove_item(void *dropdown, int64_t index) {
 }
 
 /// @brief Remove all items from a dropdown, leaving it empty.
+/// @param dropdown Dropdown widget handle; invalid handles are ignored.
 void rt_dropdown_clear(void *dropdown) {
     RT_ASSERT_MAIN_THREAD();
     vg_dropdown_t *dd = rt_dropdown_checked(dropdown);
@@ -107,6 +134,8 @@ void rt_dropdown_clear(void *dropdown) {
 }
 
 /// @brief Programmatically select a dropdown item by index.
+/// @param dropdown Dropdown widget handle.
+/// @param index Zero-based item index, or the widget's supported no-selection value.
 void rt_dropdown_set_selected(void *dropdown, int64_t index) {
     RT_ASSERT_MAIN_THREAD();
     vg_dropdown_t *dd = rt_dropdown_checked(dropdown);
@@ -116,6 +145,8 @@ void rt_dropdown_set_selected(void *dropdown, int64_t index) {
 }
 
 /// @brief Get the index of the currently selected dropdown item (-1 if none).
+/// @param dropdown Dropdown widget handle.
+/// @return Zero-based selected index, or `-1` when absent or invalid.
 int64_t rt_dropdown_get_selected(void *dropdown) {
     RT_ASSERT_MAIN_THREAD();
     vg_dropdown_t *dd = rt_dropdown_checked(dropdown);
@@ -125,6 +156,8 @@ int64_t rt_dropdown_get_selected(void *dropdown) {
 }
 
 /// @brief Get the selected text of the dropdown.
+/// @param dropdown Dropdown widget handle.
+/// @return Owned selected text, or an empty runtime string when absent or invalid.
 rt_string rt_dropdown_get_selected_text(void *dropdown) {
     RT_ASSERT_MAIN_THREAD();
     vg_dropdown_t *dd = rt_dropdown_checked(dropdown);
@@ -137,6 +170,8 @@ rt_string rt_dropdown_get_selected_text(void *dropdown) {
 }
 
 /// @brief Set the placeholder of the dropdown.
+/// @param dropdown Dropdown widget handle.
+/// @param placeholder Runtime placeholder text copied into widget storage.
 void rt_dropdown_set_placeholder(void *dropdown, rt_string placeholder) {
     RT_ASSERT_MAIN_THREAD();
     vg_dropdown_t *dd = rt_dropdown_checked(dropdown);
@@ -172,7 +207,9 @@ int64_t rt_dropdown_get_revision(void *dropdown) {
 //=============================================================================
 
 /// @brief Create a slider widget for picking a numeric value within a range.
+/// @param parent Parent-container handle, or `NULL` for a detached widget.
 /// @param horizontal Non-zero for left-right slider, zero for top-bottom.
+/// @return New Slider handle, or `NULL` for an invalid parent or allocation failure.
 void *rt_slider_new(void *parent, int64_t horizontal) {
     RT_ASSERT_MAIN_THREAD();
     vg_slider_orientation_t orient = horizontal ? VG_SLIDER_HORIZONTAL : VG_SLIDER_VERTICAL;
@@ -186,6 +223,8 @@ void *rt_slider_new(void *parent, int64_t horizontal) {
 }
 
 /// @brief Set the value of the slider.
+/// @param slider Slider widget handle.
+/// @param value Finite numeric value, sanitized to the supported widget range.
 void rt_slider_set_value(void *slider, double value) {
     RT_ASSERT_MAIN_THREAD();
     vg_slider_t *sl = rt_slider_checked(slider);
@@ -197,6 +236,8 @@ void rt_slider_set_value(void *slider, double value) {
 }
 
 /// @brief Get the value of the slider.
+/// @param slider Slider widget handle.
+/// @return Current numeric value, or `0.0` for an invalid handle.
 double rt_slider_get_value(void *slider) {
     RT_ASSERT_MAIN_THREAD();
     vg_slider_t *sl = rt_slider_checked(slider);
@@ -206,6 +247,9 @@ double rt_slider_get_value(void *slider) {
 }
 
 /// @brief Set the range of the slider.
+/// @param slider Slider widget handle.
+/// @param min_val Finite lower endpoint; swapped with @p max_val when greater.
+/// @param max_val Finite upper endpoint.
 void rt_slider_set_range(void *slider, double min_val, double max_val) {
     RT_ASSERT_MAIN_THREAD();
     vg_slider_t *sl = rt_slider_checked(slider);
@@ -224,6 +268,8 @@ void rt_slider_set_range(void *slider, double min_val, double max_val) {
 }
 
 /// @brief Set the step of the slider.
+/// @param slider Slider widget handle.
+/// @param step Requested non-negative step size.
 void rt_slider_set_step(void *slider, double step) {
     RT_ASSERT_MAIN_THREAD();
     vg_slider_t *sl = rt_slider_checked(slider);
@@ -257,6 +303,8 @@ int64_t rt_slider_get_revision(void *slider) {
 //=============================================================================
 
 /// @brief Create a horizontal progress bar (0.0–1.0 fill range).
+/// @param parent Parent-container handle, or `NULL` for a detached widget.
+/// @return New ProgressBar handle, or `NULL` for an invalid parent or allocation failure.
 void *rt_progressbar_new(void *parent) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *parent_widget = rt_widget_parent_or_null_if_invalid(parent);
@@ -269,6 +317,8 @@ void *rt_progressbar_new(void *parent) {
 }
 
 /// @brief Set the value of the progressbar.
+/// @param progress ProgressBar widget handle.
+/// @param value Fill fraction clamped to `[0.0,1.0]`; non-finite values become zero.
 void rt_progressbar_set_value(void *progress, double value) {
     RT_ASSERT_MAIN_THREAD();
     vg_progressbar_t *pb = rt_progressbar_checked(progress);
@@ -279,6 +329,8 @@ void rt_progressbar_set_value(void *progress, double value) {
 }
 
 /// @brief Get the value of the progressbar.
+/// @param progress ProgressBar widget handle.
+/// @return Current fill fraction, or `0.0` for an invalid handle.
 double rt_progressbar_get_value(void *progress) {
     RT_ASSERT_MAIN_THREAD();
     vg_progressbar_t *pb = rt_progressbar_checked(progress);
@@ -318,6 +370,8 @@ void rt_progressbar_show_percentage(void *progress, int64_t show) {
 //=============================================================================
 
 /// @brief Create an empty scrollable list-box widget.
+/// @param parent Parent-container handle, or `NULL` for a detached widget.
+/// @return New ListBox handle, or `NULL` for an invalid parent or allocation failure.
 void *rt_listbox_new(void *parent) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *parent_widget = rt_widget_parent_or_null_if_invalid(parent);
@@ -329,6 +383,9 @@ void *rt_listbox_new(void *parent) {
 }
 
 /// @brief Append `text` as a new list-box item; returns the new item handle.
+/// @param listbox ListBox widget handle.
+/// @param text Runtime display text copied into the new row.
+/// @return Managed subhandle for the new item, or `NULL` on invalid input or failure.
 void *rt_listbox_add_item(void *listbox, rt_string text) {
     RT_ASSERT_MAIN_THREAD();
     vg_listbox_t *lb = rt_listbox_checked(listbox);
@@ -341,6 +398,8 @@ void *rt_listbox_add_item(void *listbox, rt_string text) {
 }
 
 /// @brief Remove an item from the listbox.
+/// @param listbox Owning ListBox widget handle.
+/// @param item Live item subhandle owned by @p listbox.
 void rt_listbox_remove_item(void *listbox, void *item) {
     RT_ASSERT_MAIN_THREAD();
     vg_listbox_t *lb = rt_listbox_checked(listbox);
@@ -352,6 +411,7 @@ void rt_listbox_remove_item(void *listbox, void *item) {
 }
 
 /// @brief Remove all entries from the listbox.
+/// @param listbox ListBox widget handle; invalid handles are ignored.
 void rt_listbox_clear(void *listbox) {
     RT_ASSERT_MAIN_THREAD();
     vg_listbox_t *lb = rt_listbox_checked(listbox);
@@ -362,6 +422,8 @@ void rt_listbox_clear(void *listbox) {
 }
 
 /// @brief Programmatically select a listbox item by handle.
+/// @param listbox Owning ListBox widget handle.
+/// @param item Item subhandle to select, or `NULL` to clear selection.
 void rt_listbox_select(void *listbox, void *item) {
     RT_ASSERT_MAIN_THREAD();
     vg_listbox_t *lb = rt_listbox_checked(listbox);
@@ -374,6 +436,8 @@ void rt_listbox_select(void *listbox, void *item) {
 }
 
 /// @brief Return the currently-selected listbox item handle (NULL when none).
+/// @param listbox ListBox widget handle.
+/// @return Managed subhandle for the selected retained item, or `NULL`.
 void *rt_listbox_get_selected(void *listbox) {
     RT_ASSERT_MAIN_THREAD();
     vg_listbox_t *lb = rt_listbox_checked(listbox);
@@ -383,6 +447,8 @@ void *rt_listbox_get_selected(void *listbox) {
 }
 
 /// @brief Get the number of items in the listbox.
+/// @param listbox ListBox widget handle.
+/// @return Retained or virtual row count, saturated at `INT64_MAX`; zero when invalid.
 int64_t rt_listbox_get_count(void *listbox) {
     RT_ASSERT_MAIN_THREAD();
     vg_listbox_t *lb = rt_listbox_checked(listbox);
@@ -393,6 +459,8 @@ int64_t rt_listbox_get_count(void *listbox) {
 }
 
 /// @brief Get the selected index of the listbox.
+/// @param listbox ListBox widget handle.
+/// @return Zero-based selected row index, or `-1` when absent, invalid, or unrepresentable.
 int64_t rt_listbox_get_selected_index(void *listbox) {
     RT_ASSERT_MAIN_THREAD();
     vg_listbox_t *lb = rt_listbox_checked(listbox);
@@ -407,6 +475,8 @@ int64_t rt_listbox_get_selected_index(void *listbox) {
 }
 
 /// @brief Select a listbox item by its zero-based index.
+/// @param listbox ListBox widget handle.
+/// @param index Zero-based retained or virtual row index.
 void rt_listbox_select_index(void *listbox, int64_t index) {
     RT_ASSERT_MAIN_THREAD();
     vg_listbox_t *lb = rt_listbox_checked(listbox);
@@ -422,6 +492,7 @@ void rt_listbox_select_index(void *listbox, int64_t index) {
 }
 
 /// @brief Scroll to the first listbox row without changing selection.
+/// @param listbox ListBox widget handle; invalid handles are ignored.
 void rt_listbox_scroll_to_top(void *listbox) {
     RT_ASSERT_MAIN_THREAD();
     vg_listbox_t *lb = rt_listbox_checked(listbox);
@@ -430,6 +501,7 @@ void rt_listbox_scroll_to_top(void *listbox) {
 }
 
 /// @brief Scroll to the last listbox row without changing selection.
+/// @param listbox ListBox widget handle; invalid handles are ignored.
 void rt_listbox_scroll_to_bottom(void *listbox) {
     RT_ASSERT_MAIN_THREAD();
     vg_listbox_t *lb = rt_listbox_checked(listbox);
@@ -438,6 +510,8 @@ void rt_listbox_scroll_to_bottom(void *listbox) {
 }
 
 /// @brief Enable or disable Ctrl/Shift multi-row selection.
+/// @param listbox ListBox widget handle.
+/// @param enabled Non-zero to permit multiple selected rows; zero to retain at most one.
 void rt_listbox_set_multi_select(void *listbox, int64_t enabled) {
     RT_ASSERT_MAIN_THREAD();
     vg_listbox_t *lb = rt_listbox_checked(listbox);
@@ -489,6 +563,14 @@ void rt_listbox_set_multi_select(void *listbox, int64_t enabled) {
     vg_listbox_select(lb, keep);
 }
 
+/// @brief Append one selected row's text to a newline-delimited dynamic buffer.
+/// @param[in,out] buffer Address of the allocated output buffer.
+/// @param[in,out] length Current byte length, updated after the append.
+/// @param[in,out] capacity Current allocation capacity, expanded as needed.
+/// @param[in,out] first Whether this is the first row; updated to false on success.
+/// @param text Row text bytes; may be `NULL` when @p text_len is zero.
+/// @param text_len Number of row-text bytes to append.
+/// @return `true` on success; `false` for invalid state, overflow, or allocation failure.
 static bool rt_listbox_append_selected_text(char **buffer,
                                             size_t *length,
                                             size_t *capacity,
@@ -527,6 +609,8 @@ static bool rt_listbox_append_selected_text(char **buffer,
 }
 
 /// @brief Return selected row text joined by newlines.
+/// @param listbox ListBox widget handle.
+/// @return Owned newline-delimited selected text, or an empty runtime string when none.
 rt_string rt_listbox_get_selected_text(void *listbox) {
     RT_ASSERT_MAIN_THREAD();
     vg_listbox_t *lb = rt_listbox_checked(listbox);
@@ -580,6 +664,9 @@ rt_string rt_listbox_get_selected_text(void *listbox) {
 }
 
 /// @brief Return byte-exact data for selected retained rows, in row order.
+/// @param listbox ListBox widget handle.
+/// @return New owned sequence of selected row data; empty for invalid or virtual lists, or `NULL`
+///         if sequence allocation fails.
 void *rt_listbox_get_selected_data(void *listbox) {
     RT_ASSERT_MAIN_THREAD();
     void *result = rt_seq_new_owned();
@@ -603,6 +690,8 @@ void *rt_listbox_get_selected_data(void *listbox) {
 }
 
 /// @brief Check if the listbox selection changed since the last call (edge-triggered).
+/// @param listbox ListBox widget handle.
+/// @return `1` once after an unreported selection revision; otherwise `0`.
 int64_t rt_listbox_was_selection_changed(void *listbox) {
     RT_ASSERT_MAIN_THREAD();
     vg_listbox_t *lb = rt_listbox_checked(listbox);
@@ -650,6 +739,8 @@ int64_t rt_listbox_get_revision(void *listbox) {
 }
 
 /// @brief Get the display text of a listbox item.
+/// @param item Live ListBox item subhandle.
+/// @return Owned display text, or an empty runtime string for invalid input.
 rt_string rt_listbox_item_get_text(void *item) {
     RT_ASSERT_MAIN_THREAD();
     if (!item)
@@ -663,6 +754,8 @@ rt_string rt_listbox_item_get_text(void *item) {
 }
 
 /// @brief Update the display text of a listbox item.
+/// @param item Live ListBox item subhandle.
+/// @param text Runtime text copied into item storage.
 void rt_listbox_item_set_text(void *item, rt_string text) {
     RT_ASSERT_MAIN_THREAD();
     if (!item)
@@ -683,6 +776,8 @@ void rt_listbox_item_set_text(void *item, rt_string text) {
 }
 
 /// @brief Attach arbitrary string data to a listbox item (replaces previous data).
+/// @param item Live ListBox item subhandle.
+/// @param data Runtime string copied into owned item data, or null to clear it.
 void rt_listbox_item_set_data(void *item, rt_string data) {
     RT_ASSERT_MAIN_THREAD();
     if (!item)
@@ -700,6 +795,8 @@ void rt_listbox_item_set_data(void *item, rt_string data) {
 }
 
 /// @brief Retrieve the string data previously attached to a listbox item.
+/// @param item Live ListBox item subhandle.
+/// @return Owned copy of attached data, or an empty runtime string when absent or invalid.
 rt_string rt_listbox_item_get_data(void *item) {
     RT_ASSERT_MAIN_THREAD();
     if (!item)
@@ -713,6 +810,8 @@ rt_string rt_listbox_item_get_data(void *item) {
 }
 
 /// @brief Override a listbox item's text color.
+/// @param item Live ListBox item subhandle.
+/// @param color Packed widget-layer text color.
 void rt_listbox_item_set_text_color(void *item, int64_t color) {
     RT_ASSERT_MAIN_THREAD();
     if (!item)
@@ -724,6 +823,9 @@ void rt_listbox_item_set_text_color(void *item, int64_t color) {
 }
 
 /// @brief Set the font of the listbox.
+/// @param listbox ListBox widget handle.
+/// @param font Live runtime font handle.
+/// @param size Requested point size, sanitized to the supported range.
 void rt_listbox_set_font(void *listbox, void *font, double size) {
     RT_ASSERT_MAIN_THREAD();
     vg_listbox_t *lb = rt_listbox_checked(listbox);
@@ -741,12 +843,17 @@ void rt_listbox_set_font(void *listbox, void *font, double size) {
 #else /* !ZANNA_ENABLE_GRAPHICS */
 
 /// @brief Stub: graphics disabled — returns NULL; no dropdown widget is created.
+/// @param parent Ignored parent handle.
+/// @return Always `NULL`.
 void *rt_dropdown_new(void *parent) {
     (void)parent;
     return NULL;
 }
 
 /// @brief Add a selectable item to a dropdown list.
+/// @param dropdown Ignored Dropdown handle.
+/// @param text Ignored item text.
+/// @return Always `-1`.
 int64_t rt_dropdown_add_item(void *dropdown, rt_string text) {
     (void)dropdown;
     (void)text;
@@ -754,35 +861,46 @@ int64_t rt_dropdown_add_item(void *dropdown, rt_string text) {
 }
 
 /// @brief Remove an item from a dropdown by index.
+/// @param dropdown Ignored Dropdown handle.
+/// @param index Ignored item index.
 void rt_dropdown_remove_item(void *dropdown, int64_t index) {
     (void)dropdown;
     (void)index;
 }
 
 /// @brief Remove all items from a dropdown, leaving it empty.
+/// @param dropdown Ignored Dropdown handle.
 void rt_dropdown_clear(void *dropdown) {
     (void)dropdown;
 }
 
 /// @brief Programmatically select a dropdown item by index.
+/// @param dropdown Ignored Dropdown handle.
+/// @param index Ignored item index.
 void rt_dropdown_set_selected(void *dropdown, int64_t index) {
     (void)dropdown;
     (void)index;
 }
 
 /// @brief Get the index of the currently selected dropdown item (-1 if none).
+/// @param dropdown Ignored Dropdown handle.
+/// @return Always `-1`.
 int64_t rt_dropdown_get_selected(void *dropdown) {
     (void)dropdown;
     return -1;
 }
 
 /// @brief Get the selected text of the dropdown.
+/// @param dropdown Ignored Dropdown handle.
+/// @return Empty runtime string.
 rt_string rt_dropdown_get_selected_text(void *dropdown) {
     (void)dropdown;
     return rt_str_empty();
 }
 
 /// @brief Set the placeholder of the dropdown.
+/// @param dropdown Ignored Dropdown handle.
+/// @param placeholder Ignored placeholder text.
 void rt_dropdown_set_placeholder(void *dropdown, rt_string placeholder) {
     (void)dropdown;
     (void)placeholder;
@@ -805,6 +923,9 @@ int64_t rt_dropdown_get_revision(void *dropdown) {
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no slider widget is created.
+/// @param parent Ignored parent handle.
+/// @param horizontal Ignored orientation flag.
+/// @return Always `NULL`.
 void *rt_slider_new(void *parent, int64_t horizontal) {
     (void)parent;
     (void)horizontal;
@@ -812,18 +933,25 @@ void *rt_slider_new(void *parent, int64_t horizontal) {
 }
 
 /// @brief Set the value of the slider.
+/// @param slider Ignored Slider handle.
+/// @param value Ignored numeric value.
 void rt_slider_set_value(void *slider, double value) {
     (void)slider;
     (void)value;
 }
 
 /// @brief Get the value of the slider.
+/// @param slider Ignored Slider handle.
+/// @return Always `0.0`.
 double rt_slider_get_value(void *slider) {
     (void)slider;
     return 0.0;
 }
 
 /// @brief Set the range of the slider.
+/// @param slider Ignored Slider handle.
+/// @param min_val Ignored lower endpoint.
+/// @param max_val Ignored upper endpoint.
 void rt_slider_set_range(void *slider, double min_val, double max_val) {
     (void)slider;
     (void)min_val;
@@ -831,6 +959,8 @@ void rt_slider_set_range(void *slider, double min_val, double max_val) {
 }
 
 /// @brief Set the step of the slider.
+/// @param slider Ignored Slider handle.
+/// @param step Ignored step size.
 void rt_slider_set_step(void *slider, double step) {
     (void)slider;
     (void)step;
@@ -853,30 +983,41 @@ int64_t rt_slider_get_revision(void *slider) {
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no progress bar widget is created.
+/// @param parent Ignored parent handle.
+/// @return Always `NULL`.
 void *rt_progressbar_new(void *parent) {
     (void)parent;
     return NULL;
 }
 
 /// @brief Set the value of the progressbar.
+/// @param progress Ignored ProgressBar handle.
+/// @param value Ignored fill fraction.
 void rt_progressbar_set_value(void *progress, double value) {
     (void)progress;
     (void)value;
 }
 
 /// @brief Get the value of the progressbar.
+/// @param progress Ignored ProgressBar handle.
+/// @return Always `0.0`.
 double rt_progressbar_get_value(void *progress) {
     (void)progress;
     return 0.0;
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no list box widget is created.
+/// @param parent Ignored parent handle.
+/// @return Always `NULL`.
 void *rt_listbox_new(void *parent) {
     (void)parent;
     return NULL;
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no list item is added.
+/// @param listbox Ignored ListBox handle.
+/// @param text Ignored row text.
+/// @return Always `NULL`.
 void *rt_listbox_add_item(void *listbox, rt_string text) {
     (void)listbox;
     (void)text;
@@ -884,75 +1025,98 @@ void *rt_listbox_add_item(void *listbox, rt_string text) {
 }
 
 /// @brief Remove an item from the listbox.
+/// @param listbox Ignored ListBox handle.
+/// @param item Ignored item subhandle.
 void rt_listbox_remove_item(void *listbox, void *item) {
     (void)listbox;
     (void)item;
 }
 
 /// @brief Remove all entries from the listbox.
+/// @param listbox Ignored ListBox handle.
 void rt_listbox_clear(void *listbox) {
     (void)listbox;
 }
 
 /// @brief Programmatically select a listbox item by handle.
+/// @param listbox Ignored ListBox handle.
+/// @param item Ignored item subhandle.
 void rt_listbox_select(void *listbox, void *item) {
     (void)listbox;
     (void)item;
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no selection exists without a list box.
+/// @param listbox Ignored ListBox handle.
+/// @return Always `NULL`.
 void *rt_listbox_get_selected(void *listbox) {
     (void)listbox;
     return NULL;
 }
 
 /// @brief Get the number of items in the listbox.
+/// @param listbox Ignored ListBox handle.
+/// @return Always `0`.
 int64_t rt_listbox_get_count(void *listbox) {
     (void)listbox;
     return 0;
 }
 
 /// @brief Get the selected index of the listbox.
+/// @param listbox Ignored ListBox handle.
+/// @return Always `-1`.
 int64_t rt_listbox_get_selected_index(void *listbox) {
     (void)listbox;
     return -1;
 }
 
 /// @brief Select a listbox item by its zero-based index.
+/// @param listbox Ignored ListBox handle.
+/// @param index Ignored row index.
 void rt_listbox_select_index(void *listbox, int64_t index) {
     (void)listbox;
     (void)index;
 }
 
 /// @brief Stub: graphics disabled — no listbox scroll state exists.
+/// @param listbox Ignored ListBox handle.
 void rt_listbox_scroll_to_top(void *listbox) {
     (void)listbox;
 }
 
 /// @brief Stub: graphics disabled — no listbox scroll state exists.
+/// @param listbox Ignored ListBox handle.
 void rt_listbox_scroll_to_bottom(void *listbox) {
     (void)listbox;
 }
 
 /// @brief Stub: graphics disabled — no listbox selection exists.
+/// @param listbox Ignored ListBox handle.
+/// @param enabled Ignored multi-selection flag.
 void rt_listbox_set_multi_select(void *listbox, int64_t enabled) {
     (void)listbox;
     (void)enabled;
 }
 
 /// @brief Stub: graphics disabled — no selected row text exists.
+/// @param listbox Ignored ListBox handle.
+/// @return Empty runtime string.
 rt_string rt_listbox_get_selected_text(void *listbox) {
     (void)listbox;
     return rt_str_empty();
 }
 
 /// @brief Stub: graphics disabled — no selected retained-row data exists.
+/// @param listbox Ignored ListBox handle.
+/// @return New empty owned sequence, or `NULL` if sequence allocation fails.
 void *rt_listbox_get_selected_data(void *listbox) {
     (void)listbox;
     return rt_seq_new_owned();
 }
 
 /// @brief Check if the listbox selection changed since the last call (edge-triggered).
+/// @param listbox Ignored ListBox handle.
+/// @return Always `0`.
 int64_t rt_listbox_was_selection_changed(void *listbox) {
     (void)listbox;
     return 0;
@@ -983,36 +1147,49 @@ int64_t rt_listbox_get_revision(void *listbox) {
 }
 
 /// @brief Get the display text of a listbox item.
+/// @param item Ignored item subhandle.
+/// @return Empty runtime string.
 rt_string rt_listbox_item_get_text(void *item) {
     (void)item;
     return rt_str_empty();
 }
 
 /// @brief Update the display text of a listbox item.
+/// @param item Ignored item subhandle.
+/// @param text Ignored display text.
 void rt_listbox_item_set_text(void *item, rt_string text) {
     (void)item;
     (void)text;
 }
 
 /// @brief Attach arbitrary string data to a listbox item (replaces previous data).
+/// @param item Ignored item subhandle.
+/// @param data Ignored row data.
 void rt_listbox_item_set_data(void *item, rt_string data) {
     (void)item;
     (void)data;
 }
 
 /// @brief Retrieve the string data previously attached to a listbox item.
+/// @param item Ignored item subhandle.
+/// @return Empty runtime string.
 rt_string rt_listbox_item_get_data(void *item) {
     (void)item;
     return rt_str_empty();
 }
 
 /// @brief Stub: graphics disabled — no listbox item exists.
+/// @param item Ignored item subhandle.
+/// @param color Ignored packed color.
 void rt_listbox_item_set_text_color(void *item, int64_t color) {
     (void)item;
     (void)color;
 }
 
 /// @brief Set the font of the listbox.
+/// @param listbox Ignored ListBox handle.
+/// @param font Ignored font handle.
+/// @param size Ignored point size.
 void rt_listbox_set_font(void *listbox, void *font, double size) {
     (void)listbox;
     (void)font;

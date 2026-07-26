@@ -1361,6 +1361,8 @@ RT_FUNC(WidgetIsDragOver,          rt_widget_is_drag_over,          "Zanna.GUI.W
 RT_FUNC(WidgetWasDropped,          rt_widget_was_dropped,           "Zanna.GUI.Widget.WasDropped",          "i1(obj)")
 RT_FUNC(WidgetGetDropType,         rt_widget_get_drop_type,         "Zanna.GUI.Widget.GetDropType",         "str(obj)")
 RT_FUNC(WidgetGetDropData,         rt_widget_get_drop_data,         "Zanna.GUI.Widget.GetDropData",         "str(obj)")
+RT_FUNC(WidgetGetDropX,            rt_widget_get_drop_x,            "Zanna.GUI.Widget.GetDropX",            "f64(obj)")
+RT_FUNC(WidgetGetDropY,            rt_widget_get_drop_y,            "Zanna.GUI.Widget.GetDropY",            "f64(obj)")
 RT_FUNC(AppWasFileDropped,         rt_app_was_file_dropped,         "Zanna.GUI.App.WasFileDropped",         "i1(obj)")
 RT_FUNC(AppGetDroppedFileCount,    rt_app_get_dropped_file_count,   "Zanna.GUI.App.GetDroppedFileCount",    "i64(obj)")
 RT_FUNC(AppGetDroppedFile,         rt_app_get_dropped_file,         "Zanna.GUI.App.GetDroppedFile",         "str(obj,i64)")

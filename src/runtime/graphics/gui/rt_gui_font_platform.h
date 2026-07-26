@@ -23,6 +23,13 @@
 //        docs/adr/0107-gui-theme-accessibility-input-and-render-policy.md
 //
 //===----------------------------------------------------------------------===//
+
+/// @file rt_gui_font_platform.h
+/// @brief Declares the dependency-free platform adapter for proportional system UI fonts.
+///
+/// @details
+/// The narrow interface transfers ownership of successfully parsed fonts while
+/// avoiding GUI initialization and backend-specific type dependencies.
 #pragma once
 
 #include <stdbool.h>

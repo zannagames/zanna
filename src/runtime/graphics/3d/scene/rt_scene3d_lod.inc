@@ -1,8 +1,16 @@
 //===----------------------------------------------------------------------===//
 // Part of the Zanna project, under the GNU GPL v3. See LICENSE.
-// File: src/runtime/graphics/3d/scene/rt_scene3d_lod.inc  (#included from rt_scene3d.c; not a
-// standalone translation unit) Purpose: Scene3D per-node level-of-detail (LOD) management
+// File: src/runtime/graphics/3d/scene/rt_scene3d_lod.inc
+// Purpose: Scene3D per-node level-of-detail and impostor management.
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements distance/error-based mesh LODs and billboard impostors for SceneNode3D.
+/// @details This implementation fragment is included by `rt_scene3d.c`; it is not a
+///   standalone translation unit. Nodes retain registered LOD meshes and generated
+///   impostor resources, reset per-view selection state after configuration changes,
+///   and invalidate spatial bounds when the drawable set changes.
+
 /*==========================================================================
  * LOD — Level of Detail per SceneNode3D
  *=========================================================================*/
@@ -14,6 +22,9 @@
 ///   thresholds replace the existing mesh instead of creating ambiguous ties. The
 ///   mesh is retained here and released by `rt_scene_node3d_clear_lod` so
 ///   callers may drop their local reference immediately after adding.
+/// @param obj Borrowed SceneNode3D handle.
+/// @param distance Non-negative world-space selection threshold; non-finite input becomes zero.
+/// @param mesh Borrowed Mesh3D handle retained by the node.
 void rt_scene_node3d_add_lod(void *obj, double distance, void *mesh) {
     rt_scene_node3d *node = scene_node3d_checked(obj);
     int32_t lod_count;
@@ -79,7 +90,10 @@ void rt_scene_node3d_add_lod(void *obj, double distance, void *mesh) {
     scene3d_mark_spatial_dirty(node->owner_scene);
 }
 
-/// @brief Enable or disable screen-error selection over authored LOD entries.
+/// @brief Enable or disable projected screen-error selection over authored LOD entries.
+/// @param obj Borrowed SceneNode3D handle.
+/// @param enabled Nonzero to use automatic screen-error LOD selection.
+/// @param screen_error_px Desired pixel-error limit clamped to the supported range.
 void rt_scene_node3d_set_auto_lod(void *obj, int8_t enabled, double screen_error_px) {
     rt_scene_node3d *node = scene_node3d_checked(obj);
     if (!node)
@@ -96,6 +110,11 @@ void rt_scene_node3d_set_auto_lod(void *obj, int8_t enabled, double screen_error
 }
 
 /// @brief Build a camera-facing local XY quad with a UV window (impostor frames).
+/// @param node Borrowed source node whose mesh radius determines the quad height.
+/// @param aspect Width-to-height ratio for one texture frame.
+/// @param u0 Inclusive horizontal texture-coordinate start.
+/// @param u1 Inclusive horizontal texture-coordinate end.
+/// @return New Mesh3D handle owned by the caller, or `NULL` on allocation failure.
 static void *scene3d_new_impostor_quad(rt_scene_node3d *node, double aspect, double u0, double u1) {
     double diameter = 1.0;
     double width;
@@ -131,6 +150,7 @@ static void *scene3d_new_impostor_quad(rt_scene_node3d *node, double aspect, dou
 }
 
 /// @brief Release a node's multi-frame impostor mesh set (single-frame slots untouched).
+/// @param node Borrowed node whose retained frame meshes and native pointer array are cleared.
 static void scene3d_clear_impostor_frames(rt_scene_node3d *node) {
     if (!node)
         return;
@@ -145,6 +165,9 @@ static void scene3d_clear_impostor_frames(rt_scene_node3d *node) {
 }
 
 /// @brief Build a camera-facing local XY quad used by SetImpostor.
+/// @param node Borrowed source node whose mesh radius determines the quad height.
+/// @param pixels Borrowed Pixels handle whose dimensions determine the aspect ratio.
+/// @return New Mesh3D handle owned by the caller, or `NULL` on invalid input/allocation failure.
 static void *scene3d_new_impostor_mesh(rt_scene_node3d *node, void *pixels) {
     double aspect = 1.0;
     double diameter = 1.0;
@@ -189,6 +212,12 @@ static void *scene3d_new_impostor_mesh(rt_scene_node3d *node, void *pixels) {
 }
 
 /// @brief Bind or clear a generated textured impostor proxy for distant draws.
+/// @details Passing `NULL` for @p pixels clears all retained impostor resources.
+///   Otherwise this creates and owns an unlit, double-sided quad and material
+///   textured by the retained pixel image.
+/// @param obj Borrowed SceneNode3D handle.
+/// @param distance Non-negative world-space impostor threshold; non-finite input becomes zero.
+/// @param pixels Borrowed Pixels handle retained by the node, or `NULL` to clear.
 void rt_scene_node3d_set_impostor(void *obj, double distance, void *pixels) {
     rt_scene_node3d *node = scene_node3d_checked(obj);
     void *mesh;
@@ -245,6 +274,10 @@ void rt_scene_node3d_set_impostor(void *obj, double distance, void *pixels) {
 ///   `i * 2*pi/frames` (frame 0 looks down -Z toward the node). The draw path picks
 ///   the frame whose capture yaw is nearest the camera bearing. Passing NULL pixels
 ///   or frames < 2 falls back to `SetImpostor` semantics.
+/// @param obj Borrowed SceneNode3D handle.
+/// @param distance Non-negative world-space impostor threshold.
+/// @param pixels Borrowed horizontal-strip Pixels handle retained by the node.
+/// @param frames Number of equal-width views, clamped to at most 64.
 void rt_scene_node3d_set_impostor_frames(void *obj, double distance, void *pixels, int64_t frames) {
     rt_scene_node3d *node = scene_node3d_checked(obj);
     if (!node)
@@ -315,6 +348,8 @@ void rt_scene_node3d_set_impostor_frames(void *obj, double distance, void *pixel
 }
 
 /// @brief Last impostor frame index the draw path selected (0 for single-frame).
+/// @param obj Borrowed SceneNode3D handle.
+/// @return Zero-based selected frame, or zero for an invalid node/single-frame impostor.
 int64_t rt_scene_node3d_get_impostor_frame_index(void *obj) {
     rt_scene_node3d *node = scene_node3d_checked(obj);
     return node ? (int64_t)node->impostor_frame_index : 0;
@@ -323,6 +358,7 @@ int64_t rt_scene_node3d_get_impostor_frame_index(void *obj) {
 /// @brief Release every registered LOD mesh on this node and reset the count.
 /// @details Preserves the underlying `lod_levels` allocation so subsequent
 ///   `add_lod` calls can reuse it without reallocating.
+/// @param obj Borrowed SceneNode3D handle.
 void rt_scene_node3d_clear_lod(void *obj) {
     rt_scene_node3d *node = scene_node3d_checked(obj);
     int32_t lod_count;
@@ -337,6 +373,8 @@ void rt_scene_node3d_clear_lod(void *obj) {
 }
 
 /// @brief Number of LOD levels currently registered on this node.
+/// @param obj Borrowed SceneNode3D handle.
+/// @return Safe non-negative LOD count, or zero for an invalid node.
 int64_t rt_scene_node3d_get_lod_count(void *obj) {
     rt_scene_node3d *node = scene_node3d_checked(obj);
     if (!node)
@@ -346,6 +384,8 @@ int64_t rt_scene_node3d_get_lod_count(void *obj) {
 }
 
 /// @brief Distance threshold (in world units) for the LOD at `index`.
+/// @param obj Borrowed SceneNode3D handle.
+/// @param index Zero-based LOD index.
 /// @return Ascending-sorted threshold, or 0.0 for an out-of-range index or
 ///   null node; 0.0 is a safe sentinel because LOD 0 (if present) would
 ///   normally specify a non-zero distance anyway.
@@ -365,6 +405,8 @@ double rt_scene_node3d_get_lod_distance(void *obj, int64_t index) {
 }
 
 /// @brief Borrowed pointer to the mesh registered at LOD `index`.
+/// @param obj Borrowed SceneNode3D handle.
+/// @param index Zero-based LOD index.
 /// @return The mesh or NULL; ownership stays with the scene node.
 void *rt_scene_node3d_get_lod_mesh(void *obj, int64_t index) {
     rt_scene_node3d *node = scene_node3d_checked(obj);
@@ -379,6 +421,9 @@ void *rt_scene_node3d_get_lod_mesh(void *obj, int64_t index) {
 }
 
 /// @brief Toggle resident state for the mesh backing the @p index-th LOD entry.
+/// @param obj Borrowed SceneNode3D handle.
+/// @param index Zero-based LOD index.
+/// @param resident Nonzero to make the Mesh3D payload resident.
 void rt_scene_node3d_set_lod_resident(void *obj, int64_t index, int8_t resident) {
     rt_scene_node3d *node = scene_node3d_checked(obj);
     int32_t lod_count;
@@ -396,6 +441,9 @@ void rt_scene_node3d_set_lod_resident(void *obj, int64_t index, int8_t resident)
 }
 
 /// @brief Return whether the @p index-th LOD mesh payload is resident.
+/// @param obj Borrowed SceneNode3D handle.
+/// @param index Zero-based LOD index.
+/// @return Nonzero when the indexed valid Mesh3D is resident, otherwise zero.
 int8_t rt_scene_node3d_get_lod_resident(void *obj, int64_t index) {
     rt_scene_node3d *node = scene_node3d_checked(obj);
     int32_t lod_count;
@@ -411,6 +459,9 @@ int8_t rt_scene_node3d_get_lod_resident(void *obj, int64_t index) {
 }
 
 /// @brief Estimated resident payload bytes for the @p index-th LOD mesh.
+/// @param obj Borrowed SceneNode3D handle.
+/// @param index Zero-based LOD index.
+/// @return Non-negative resident byte estimate, or zero for an invalid node/index/mesh.
 int64_t rt_scene_node3d_get_lod_resident_bytes(void *obj, int64_t index) {
     rt_scene_node3d *node = scene_node3d_checked(obj);
     int32_t lod_count;

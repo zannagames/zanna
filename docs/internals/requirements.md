@@ -41,7 +41,7 @@ Zanna project. It serves as the definitive specification for the Zanna C++ syste
 
 | Platform Type | Supported | Notes |
 |---------------|-----------|-------|
-| **Host (where vcpp runs)** | macOS (ARM64, x86-64), Linux (x86-64, ARM64) | Development environments |
+| **Host (where vcpp runs)** | macOS (ARM64), Linux (x86-64, ARM64) | Development environments |
 | **Target (code vcpp generates)** | **AArch64 only** | Zanna OS target |
 
 | Target Property | Value |

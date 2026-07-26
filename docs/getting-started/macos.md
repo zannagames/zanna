@@ -6,7 +6,7 @@ last-verified: 2026-07-23
 
 # Getting Started on macOS
 
-This guide walks you through installing and running the Zanna compiler toolchain on macOS (Intel or Apple Silicon).
+This guide walks you through installing and running the Zanna compiler toolchain on macOS (Apple Silicon).
 
 ---
 

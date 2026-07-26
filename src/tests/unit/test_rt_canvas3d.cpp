@@ -7132,7 +7132,12 @@ static void test_canvas_offscreen_constructor_contract() {
     EXPECT_TRUE(raw->render_target_owner == target && raw->render_target != nullptr,
                 "NewOffscreen retains and binds the explicit RenderTarget3D");
 
+    /* GPU backends encode the clear inside a frame; the software path also
+     * accepts the same sequence, so both run one minimal 2D frame. */
     rt_canvas3d_clear(canvas, 0.25, 0.5, 0.75);
+    rt_canvas3d_begin_2d(canvas);
+    rt_canvas3d_end(canvas);
+    rt_canvas3d_flip(canvas);
     auto *shot = (pixels_view_t *)rt_canvas3d_screenshot(canvas);
     EXPECT_TRUE(shot != nullptr && shot->data != nullptr,
                 "windowless Canvas3D.Screenshot reads the active target");
@@ -7227,13 +7232,30 @@ static void test_canvas_offscreen_accelerated_constructor_contract() {
                     "an accelerated offscreen backend must not report fallback");
     }
 
+    /* GPU backends encode the clear inside a frame; the software path also
+     * accepts the same sequence, so both run one minimal 2D frame. */
     rt_canvas3d_clear(canvas, 0.25, 0.5, 0.75);
+    rt_canvas3d_begin_2d(canvas);
+    rt_canvas3d_end(canvas);
+    rt_canvas3d_flip(canvas);
     auto *shot = (pixels_view_t *)rt_canvas3d_screenshot(canvas);
     EXPECT_TRUE(shot != nullptr && shot->data != nullptr && shot->w == 96 && shot->h == 64,
                 "accelerated offscreen readback returns target-sized pixels");
     if (is_software && shot && shot->data) {
         EXPECT_TRUE(shot->data[0] == 0x3F7FBFFFu,
                     "software-fallback clear stays byte-deterministic");
+    }
+    if (!is_software && shot && shot->data) {
+        /* A real headless GPU context (ADR 0191) must round-trip the clear
+         * color through the render target's GPU→CPU sync. GPU rasterizers
+         * may round channels differently, so allow ±2 per 8-bit channel. */
+        const uint32_t px = shot->data[0];
+        const int r = (int)((px >> 24) & 0xFFu);
+        const int g = (int)((px >> 16) & 0xFFu);
+        const int b = (int)((px >> 8) & 0xFFu);
+        EXPECT_TRUE(std::abs(r - 0x3F) <= 2 && std::abs(g - 0x7F) <= 2 &&
+                        std::abs(b - 0xBF) <= 2,
+                    "headless GPU clear reads back the requested color");
     }
     PASS();
 }

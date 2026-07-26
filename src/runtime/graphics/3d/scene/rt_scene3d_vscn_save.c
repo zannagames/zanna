@@ -26,6 +26,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements deterministic JSON/Base64 serialization of VSCN scene assets.
+/// @details The serializer interns shared runtime resources by pointer, emits
+///   endian-stable binary payloads, selects the minimum required VSCN version,
+///   and writes complete output atomically after all validation succeeds.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_box.h"
@@ -57,8 +63,11 @@
 #include <string.h>
 
 typedef struct {
+    /// Borrowed unique runtime pointers in insertion order.
     void **items;
+    /// Number of populated pointers.
     int32_t count;
+    /// Allocated pointer capacity.
     int32_t capacity;
 } vscn_ptr_table_t;
 
@@ -96,6 +105,10 @@ static const char vscn_base64_chars[] =
 /// `=` padding is appended for inputs whose length is not a
 /// multiple of 3. Caller owns the buffer (`free`); writes the
 /// length sans NUL into `*out_len` if non-NULL.
+/// @param data Borrowed raw bytes.
+/// @param len Number of readable bytes.
+/// @param out_len Optional output receiving encoded character count.
+/// @return Caller-owned NUL-terminated Base64 string, or `NULL` on overflow/failure.
 static char *vscn_base64_encode(const uint8_t *data, size_t len, size_t *out_len) {
     if (!data && len > 0)
         return NULL;
@@ -135,6 +148,9 @@ static char *vscn_base64_encode(const uint8_t *data, size_t len, size_t *out_len
 }
 
 /// @brief Encode IEEE-754 float values in explicit little-endian order before Base64.
+/// @param values Borrowed finite/raw float array.
+/// @param count Number of readable values.
+/// @return Caller-owned NUL-terminated Base64 string, or `NULL`.
 static char *vscn_base64_encode_f32_le(const float *values, size_t count) {
     uint8_t *bytes;
     char *encoded;
@@ -157,6 +173,9 @@ static char *vscn_base64_encode_f32_le(const float *values, size_t count) {
 }
 
 /// @brief Encode IEEE-754 double values in explicit little-endian order before Base64.
+/// @param values Borrowed finite/raw double array.
+/// @param count Number of readable values.
+/// @return Caller-owned NUL-terminated Base64 string, or `NULL`.
 static char *vscn_base64_encode_f64_le(const double *values, size_t count) {
     uint8_t *bytes;
     char *encoded;
@@ -177,6 +196,7 @@ static char *vscn_base64_encode_f64_le(const double *values, size_t count) {
 }
 
 /// @brief Reset a pointer table — free its backing array and zero counts.
+/// @param table Borrowed mutable pointer table.
 static void vscn_free_ptr_table(vscn_ptr_table_t *table) {
     if (!table)
         return;
@@ -191,6 +211,8 @@ static void vscn_free_ptr_table(vscn_ptr_table_t *table) {
 /// Provides O(n) interning of asset pointers so the saver can
 /// emit each shared mesh / material / texture exactly once and
 /// reference it by index from elsewhere in the JSON.
+/// @param table Borrowed mutable pointer-interning table.
+/// @param item Borrowed non-NULL runtime pointer.
 /// @return Existing or newly-assigned index, or -1 on alloc failure / NULL inputs.
 static int vscn_ptr_table_index_or_add(vscn_ptr_table_t *table, void *item) {
     if (!table || !item)
@@ -217,6 +239,9 @@ static int vscn_ptr_table_index_or_add(vscn_ptr_table_t *table, void *item) {
 }
 
 /// @brief Find an already-collected pointer without mutating table order.
+/// @param table Borrowed pointer table.
+/// @param item Borrowed pointer to locate.
+/// @return Zero-based index, or `-1` when absent/invalid.
 static int vscn_ptr_table_index(const vscn_ptr_table_t *table, const void *item) {
     if (!table || !item)
         return -1;
@@ -228,6 +253,9 @@ static int vscn_ptr_table_index(const vscn_ptr_table_t *table, const void *item)
 }
 
 /// @brief Write `depth` levels of two-space indentation into `indent` (NUL-terminated).
+/// @param indent Output character buffer.
+/// @param indent_cap Buffer capacity including terminator.
+/// @param depth Non-negative logical nesting depth.
 static void vscn_make_indent(char *indent, size_t indent_cap, int depth) {
     size_t count;
     if (!indent || indent_cap == 0)
@@ -241,6 +269,9 @@ static void vscn_make_indent(char *indent, size_t indent_cap, int depth) {
 
 /// @brief Ensure `*buf` has at least `needed` bytes of capacity, doubling (starting at
 ///   4096) until it fits. @return 1 on success, 0 on alloc failure.
+/// @param buf Address of caller-owned allocation.
+/// @param cap In/out byte capacity.
+/// @param needed Minimum required byte capacity.
 static int vscn_reserve(char **buf, size_t *cap, size_t needed) {
     char *nb;
     size_t new_cap;
@@ -268,6 +299,11 @@ static int vscn_reserve(char **buf, size_t *cap, size_t needed) {
 
 /// @brief Append `src_len` raw bytes to the growing `*buf` (reserving capacity first and
 ///   keeping the buffer NUL-terminated). @return 1 on success, 0 on overflow/alloc failure.
+/// @param buf Address of caller-owned allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @param src Borrowed source bytes.
+/// @param src_len Number of bytes to append.
 static int vscn_append_raw(char **buf, size_t *len, size_t *cap, const char *src, size_t src_len) {
     if (!buf || !len || !cap || (!src && src_len > 0))
         return 0;
@@ -286,10 +322,20 @@ static int vscn_append_raw(char **buf, size_t *len, size_t *cap, const char *src
 /// @details Formats directly into the buffer and retries after growing it if
 ///   the current capacity is too small. Avoids `vsnprintf(NULL, 0)` because
 ///   that path corrupts floating-point varargs on MSVC ARM64.
+/// @param buf Address of caller-owned allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @param fmt Borrowed printf-style format followed by matching arguments.
 /// @return 1 on success, 0 if `vsnprintf` fails or realloc is denied.
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((format(printf, 4, 5)))
 #endif
+/// @brief Append printf-formatted text to a growable NUL-terminated buffer.
+/// @param buf Address of caller-owned allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @param fmt Borrowed printf-style format followed by matching arguments.
+/// @return Nonzero on success, otherwise zero.
 static int vscn_append(char **buf, size_t *len, size_t *cap, const char *fmt, ...) {
     if (!buf || !len || !cap || !fmt)
         return 0;
@@ -327,6 +373,11 @@ static int vscn_append(char **buf, size_t *len, size_t *cap, const char *fmt, ..
 /// `\n`, `\r`, `\t`) for ASCII control characters and `\u00XX`
 /// for any other sub-0x20 byte. Bytes >= 0x20 are passed through
 /// verbatim — JSON allows raw UTF-8.
+/// @param buf Address of caller-owned output allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @param text Borrowed NUL-terminated UTF-8 string; `NULL` emits empty.
+/// @return Nonzero after successful escaped append, otherwise zero.
 static int vscn_append_json_string(char **buf, size_t *len, size_t *cap, const char *text) {
     if (!vscn_append_raw(buf, len, cap, "\"", 1))
         return 0;
@@ -383,6 +434,8 @@ static int vscn_append_json_string(char **buf, size_t *len, size_t *cap, const c
 /// The save algorithm runs collection over the whole scene before
 /// any serialisation so each shared asset gets a stable index
 /// referenced from every material that uses it.
+/// @param texture_ref Borrowed candidate Pixels or TextureAsset3D handle.
+/// @return Borrowed serializable texture reference, or `NULL`.
 static void *vscn_material_texture_ref(void *texture_ref) {
     const uint8_t *source = NULL;
     uint64_t source_size = 0;
@@ -400,6 +453,8 @@ static void *vscn_material_texture_ref(void *texture_ref) {
 
 /// @brief True if a cubemap has all six faces present and square at its declared face size
 ///   (i.e. it can be serialized into a .vscn asset).
+/// @param cubemap Borrowed candidate Cubemap3D payload.
+/// @return Nonzero when all six face images are complete and dimensionally consistent.
 static int vscn_cubemap_is_serializable(rt_cubemap3d *cubemap) {
     if (!rt_g3d_has_class(cubemap, RT_G3D_CUBEMAP3D_CLASS_ID) || cubemap->face_size <= 0 ||
         cubemap->face_size > INT32_MAX)
@@ -413,6 +468,8 @@ static int vscn_cubemap_is_serializable(rt_cubemap3d *cubemap) {
 }
 
 /// @brief Return a material's environment cubemap only when present and serializable, else NULL.
+/// @param material Borrowed Material3D payload.
+/// @return Borrowed serializable Cubemap3D payload, or `NULL`.
 static rt_cubemap3d *vscn_material_env_map(rt_material3d *material) {
     rt_cubemap3d *cubemap = material ? (rt_cubemap3d *)material->env_map : NULL;
     return vscn_cubemap_is_serializable(cubemap) ? cubemap : NULL;
@@ -420,6 +477,9 @@ static rt_cubemap3d *vscn_material_env_map(rt_material3d *material) {
 
 /// @brief Register a material's referenced textures and environment cubemap into the save
 ///   context's dedup tables; returns 0 on allocation failure, 1 on success (or nothing to do).
+/// @param material Borrowed Material3D payload.
+/// @param ctx Borrowed mutable save context.
+/// @return Nonzero after complete dependency collection, otherwise zero.
 static int vscn_collect_material_assets(rt_material3d *material, vscn_save_context_t *ctx) {
     void *texture;
     rt_cubemap3d *cubemap;
@@ -460,6 +520,9 @@ static int vscn_collect_material_assets(rt_material3d *material, vscn_save_conte
 }
 
 /// @brief Register one validated material and all texture/cubemap dependencies.
+/// @param material Borrowed optional Material3D payload.
+/// @param ctx Borrowed mutable save context.
+/// @return Nonzero after complete collection or a NULL no-op.
 static int vscn_collect_material(rt_material3d *material, vscn_save_context_t *ctx) {
     if (!material)
         return 1;
@@ -468,6 +531,9 @@ static int vscn_collect_material(rt_material3d *material, vscn_save_context_t *c
 }
 
 /// @brief Register one validated mesh and its attached skeleton.
+/// @param mesh Borrowed optional Mesh3D payload.
+/// @param ctx Borrowed mutable save context.
+/// @return Nonzero after complete collection or a NULL no-op.
 static int vscn_collect_mesh(rt_mesh3d *mesh, vscn_save_context_t *ctx) {
     if (!mesh)
         return 1;
@@ -480,6 +546,9 @@ static int vscn_collect_mesh(rt_mesh3d *mesh, vscn_save_context_t *ctx) {
 }
 
 /// @brief Collect mesh / material / texture references from a node subtree without recursion.
+/// @param node Borrowed subtree root.
+/// @param ctx Borrowed mutable save context.
+/// @return Nonzero when every referenced asset is valid and interned.
 static int vscn_collect_node_assets(rt_scene_node3d *node, vscn_save_context_t *ctx) {
     rt_scene_node3d **stack = NULL;
     size_t count = 0;
@@ -598,6 +667,9 @@ static int vscn_collect_node_assets(rt_scene_node3d *node, vscn_save_context_t *
 }
 
 /// @brief Validate and seed every shared table from a complete SceneAsset view before tree walks.
+/// @param view Borrowed complete asset inventory.
+/// @param ctx Borrowed zero-initialized mutable save context.
+/// @return Nonzero when every inventory entry/reference is valid and collected.
 static int vscn_collect_asset_view(const rt_vscn_asset_save_view *view, vscn_save_context_t *ctx) {
     if (!view || !ctx || view->scene_count <= 0 || view->scene_count > 65536 || !view->scenes ||
         view->mesh_count < 0 || view->material_count < 0 || view->skeleton_count < 0 ||
@@ -676,6 +748,13 @@ static int vscn_collect_asset_view(const rt_vscn_asset_save_view *view, vscn_sav
 }
 
 /// @brief Emit one original texture reference as exact source bytes or canonical RGBA8.
+/// @param texture_ref Borrowed validated texture reference.
+/// @param buf Address of output allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @param depth JSON indentation depth.
+/// @param version Selected VSCN output version.
+/// @return Nonzero on success, otherwise zero.
 static int vscn_serialize_texture(
     void *texture_ref, char **buf, size_t *len, size_t *cap, int depth, int version) {
     char indent[64];
@@ -758,6 +837,13 @@ static int vscn_serialize_texture(
 }
 
 /// @brief Emit a cubemap as six texture-index references (px/nx/py/ny/pz/nz).
+/// @param cubemap Borrowed serializable Cubemap3D payload.
+/// @param ctx Borrowed save context containing stable texture indices.
+/// @param buf Address of output allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @param depth JSON indentation depth.
+/// @return Nonzero on success, otherwise zero.
 static int vscn_serialize_cubemap(rt_cubemap3d *cubemap,
                                   vscn_save_context_t *ctx,
                                   char **buf,
@@ -785,6 +871,13 @@ static int vscn_serialize_cubemap(rt_cubemap3d *cubemap,
 }
 
 /// @brief Emit a material as JSON: PBR parameters + texture-index references for each map.
+/// @param material Borrowed validated Material3D payload.
+/// @param ctx Borrowed save context containing stable resource indices.
+/// @param buf Address of output allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @param depth JSON indentation depth.
+/// @return Nonzero on success, otherwise zero.
 static int vscn_serialize_material(rt_material3d *material,
                                    vscn_save_context_t *ctx,
                                    char **buf,
@@ -934,6 +1027,11 @@ static int vscn_serialize_material(rt_material3d *material,
 }
 
 /// @brief Append a mesh's complete VSCN v4+ morph-target block, if attached.
+/// @param mesh Borrowed validated Mesh3D payload.
+/// @param buf Address of output allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @return Nonzero when absent or serialized successfully, otherwise zero.
 static int vscn_serialize_mesh_morph_targets(rt_mesh3d *mesh,
                                              char **buf,
                                              size_t *len,
@@ -1005,6 +1103,13 @@ static int vscn_serialize_mesh_morph_targets(rt_mesh3d *mesh,
 }
 
 /// @brief Emit a mesh as JSON: vertex/index buffers as base64 + the layout descriptor.
+/// @param mesh Borrowed validated Mesh3D payload.
+/// @param ctx Borrowed save context containing stable skeleton indices.
+/// @param buf Address of output allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @param depth JSON indentation depth.
+/// @return Nonzero on success, otherwise zero.
 static int vscn_serialize_mesh(
     rt_mesh3d *mesh, vscn_save_context_t *ctx, char **buf, size_t *len, size_t *cap, int depth) {
     char indent[64];
@@ -1097,8 +1202,14 @@ static int vscn_serialize_mesh(
     }
 }
 
-/// @brief Emit exact tagged gameplay metadata while preserving scalar kinds.
 /// @brief Emit one node's sorted tagged-metadata object body ("{...}").
+/// @details Integer values use canonical decimal strings to avoid JSON-number precision loss.
+/// @param node Borrowed node owning the sorted metadata table.
+/// @param buf Address of output allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @param indent Borrowed indentation prefix.
+/// @return Nonzero on success, otherwise zero.
 static int vscn_serialize_metadata_object(
     const rt_scene_node3d *node, char **buf, size_t *len, size_t *cap, const char *indent) {
     if (!node->metadata || node->metadata_count > RT_SCENE_NODE3D_MAX_METADATA_ENTRIES ||
@@ -1172,6 +1283,13 @@ static int vscn_serialize_metadata_object(
     return vscn_append(buf, len, cap, "%s  }", indent);
 }
 
+/// @brief Emit one node's optional tagged gameplay-metadata member.
+/// @param node Borrowed SceneNode3D payload.
+/// @param buf Address of output allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @param indent Borrowed indentation prefix.
+/// @return Nonzero on success or absent metadata, otherwise zero.
 static int vscn_serialize_node_metadata(
     const rt_scene_node3d *node, char **buf, size_t *len, size_t *cap, const char *indent) {
     if (!node || node->metadata_count <= 0)
@@ -1184,6 +1302,11 @@ static int vscn_serialize_node_metadata(
 /// @brief Emit document-level root metadata ("  \"metadata\": {...},\n").
 /// @details Root metadata carries scene-scoped conventions (bake.*, env.*;
 ///          ADR 0188) and shares the v6 tagged format and loader path.
+/// @param root Borrowed scene root.
+/// @param buf Address of output allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @return Nonzero on success or absent metadata, otherwise zero.
 static int vscn_save_emit_root_metadata(
     const rt_scene_node3d *root, char **buf, size_t *len, size_t *cap) {
     if (!root || root->metadata_count <= 0)
@@ -1196,6 +1319,13 @@ static int vscn_save_emit_root_metadata(
 }
 
 /// @brief Emit the fields of one scene node, leaving its JSON object open for children.
+/// @param node Borrowed validated SceneNode3D payload.
+/// @param ctx Borrowed save context containing stable resource indices.
+/// @param buf Address of output allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @param depth JSON indentation depth.
+/// @return Nonzero on success, otherwise zero.
 static int vscn_serialize_node_fields(rt_scene_node3d *node,
                                       vscn_save_context_t *ctx,
                                       char **buf,
@@ -1469,6 +1599,13 @@ static int vscn_serialize_node_fields(rt_scene_node3d *node,
 /// @details The explicit frame stack makes the format-depth limit independent of the C call stack.
 /// A root node occupies level one; save and load therefore accept exactly the same maximum
 /// nesting.
+/// @param node Borrowed subtree root.
+/// @param ctx Borrowed save context containing stable resource indices.
+/// @param buf Address of output allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @param depth Initial JSON indentation depth.
+/// @return Nonzero after iterative subtree serialization, otherwise zero.
 static int vscn_serialize_node(rt_scene_node3d *node,
                                vscn_save_context_t *ctx,
                                char **buf,
@@ -1556,6 +1693,7 @@ static int vscn_serialize_node(rt_scene_node3d *node,
 /// by index. Output is pretty-printed for diff-friendliness.
 /// @return 1 on success, 0 on any failure (open, alloc, write).
 /// @brief Free the four shared-asset pointer tables collected for a save (every failure exit).
+/// @param ctx Borrowed mutable save context whose native pointer arrays are released.
 static void vscn_save_free_ctx(vscn_save_context_t *ctx) {
     vscn_free_ptr_table(&ctx->meshes);
     vscn_free_ptr_table(&ctx->materials);
@@ -1566,6 +1704,8 @@ static void vscn_save_free_ctx(vscn_save_context_t *ctx) {
 }
 
 /// @brief True when the texture table contains at least one still-valid exact source container.
+/// @param ctx Borrowed populated save context.
+/// @return Nonzero when any collected TextureAsset3D preserves encoded source bytes.
 static int vscn_save_has_source_texture(const vscn_save_context_t *ctx) {
     if (!ctx)
         return 0;
@@ -1581,6 +1721,10 @@ static int vscn_save_has_source_texture(const vscn_save_context_t *ctx) {
 }
 
 /// @brief Emit the `"textures": [ ... ],` array. @return 1 on success, 0 on append failure.
+/// @param buf Address of output allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @param ctx Borrowed populated save context.
 static int vscn_save_emit_textures(char **buf, size_t *len, size_t *cap, vscn_save_context_t *ctx) {
     if (!vscn_append(buf, len, cap, "  \"textures\": [\n"))
         return 0;
@@ -1595,6 +1739,10 @@ static int vscn_save_emit_textures(char **buf, size_t *len, size_t *cap, vscn_sa
 }
 
 /// @brief Emit the `"cubemaps": [ ... ],` array. @return 1 on success, 0 on append failure.
+/// @param buf Address of output allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @param ctx Borrowed populated save context.
 static int vscn_save_emit_cubemaps(char **buf, size_t *len, size_t *cap, vscn_save_context_t *ctx) {
     if (!vscn_append(buf, len, cap, "  \"cubemaps\": [\n"))
         return 0;
@@ -1609,6 +1757,10 @@ static int vscn_save_emit_cubemaps(char **buf, size_t *len, size_t *cap, vscn_sa
 }
 
 /// @brief Emit the `"materials": [ ... ],` array. @return 1 on success, 0 on append failure.
+/// @param buf Address of output allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @param ctx Borrowed populated save context.
 static int vscn_save_emit_materials(char **buf,
                                     size_t *len,
                                     size_t *cap,
@@ -1627,6 +1779,11 @@ static int vscn_save_emit_materials(char **buf,
 
 /// @brief Emit the v3 `"skeletons": [ ... ],` array (structured JSON per bone so
 ///   the file survives internal struct changes). Empty table emits nothing.
+/// @param buf Address of output allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @param ctx Borrowed populated save context.
+/// @return Nonzero on success, otherwise zero.
 static int vscn_save_emit_skeletons(char **buf,
                                     size_t *len,
                                     size_t *cap,
@@ -1672,6 +1829,11 @@ static int vscn_save_emit_skeletons(char **buf,
 /// @brief Emit the v3 `"animations": [ ... ],` array. Channels serialize their
 ///   keyframe arrays as raw little-endian structs tagged with a format name so
 ///   the loader can reject layout drift.
+/// @param buf Address of output allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @param ctx Borrowed populated save context.
+/// @return Nonzero on success, otherwise zero.
 static int vscn_save_emit_animations(char **buf,
                                      size_t *len,
                                      size_t *cap,
@@ -1726,6 +1888,11 @@ static int vscn_save_emit_animations(char **buf,
 }
 
 /// @brief Emit complete VSCN v5 node/object/morph/camera animation clips.
+/// @param buf Address of output allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @param ctx Borrowed populated save context.
+/// @return Nonzero on success, otherwise zero.
 static int vscn_save_emit_node_animations(char **buf,
                                           size_t *len,
                                           size_t *cap,
@@ -1837,6 +2004,11 @@ static int vscn_save_emit_node_animations(char **buf,
 }
 
 /// @brief Emit the deduplicated VSCN v5 Camera3D table.
+/// @param buf Address of output allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @param ctx Borrowed populated save context.
+/// @return Nonzero on success, otherwise zero.
 static int vscn_save_emit_cameras(char **buf, size_t *len, size_t *cap, vscn_save_context_t *ctx) {
     if (!vscn_append(buf, len, cap, "  \"cameras\": [\n"))
         return 0;
@@ -1880,6 +2052,11 @@ static int vscn_save_emit_cameras(char **buf, size_t *len, size_t *cap, vscn_sav
 }
 
 /// @brief Emit ordered VSCN v5 material-variant display names.
+/// @param buf Address of output allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @param ctx Borrowed populated save context.
+/// @return Nonzero on success, otherwise zero.
 static int vscn_save_emit_variant_names(char **buf,
                                         size_t *len,
                                         size_t *cap,
@@ -1896,6 +2073,10 @@ static int vscn_save_emit_variant_names(char **buf,
 }
 
 /// @brief Emit the `"meshes": [ ... ],` array. @return 1 on success, 0 on append failure.
+/// @param buf Address of output allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @param ctx Borrowed populated save context.
 static int vscn_save_emit_meshes(char **buf, size_t *len, size_t *cap, vscn_save_context_t *ctx) {
     if (!vscn_append(buf, len, cap, "  \"meshes\": [\n"))
         return 0;
@@ -1910,6 +2091,11 @@ static int vscn_save_emit_meshes(char **buf, size_t *len, size_t *cap, vscn_save
 
 /// @brief Emit the closing `"nodes": [ ... ]` array (root's children; root is implicit).
 /// @return 1 on success, 0 on append failure.
+/// @param buf Address of output allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @param ctx Borrowed populated save context.
+/// @param root Borrowed implicit scene root whose children are emitted.
 static int vscn_save_emit_nodes(
     char **buf, size_t *len, size_t *cap, vscn_save_context_t *ctx, rt_scene_node3d *root) {
     int32_t child_count = scene3d_node_child_count(root);
@@ -1932,6 +2118,12 @@ static int vscn_save_emit_nodes(
 }
 
 /// @brief Emit one synthetic scene root's children as a nested node array.
+/// @param buf Address of output allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @param ctx Borrowed populated save context.
+/// @param root Borrowed synthetic scene root.
+/// @return Nonzero on success, otherwise zero.
 static int vscn_save_emit_scene_node_array(
     char **buf, size_t *len, size_t *cap, vscn_save_context_t *ctx, rt_scene_node3d *root) {
     int32_t child_count = scene3d_node_child_count(root);
@@ -1952,6 +2144,11 @@ static int vscn_save_emit_scene_node_array(
 }
 
 /// @brief Emit ordered VSCN v5 immutable scenes and their camera memberships.
+/// @param buf Address of output allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @param ctx Borrowed populated asset-mode save context.
+/// @return Nonzero on success, otherwise zero.
 static int vscn_save_emit_scenes(char **buf, size_t *len, size_t *cap, vscn_save_context_t *ctx) {
     if (!ctx->scenes || ctx->scene_count <= 0 || !vscn_append(buf, len, cap, "  \"scenes\": [\n"))
         return 0;
@@ -1976,6 +2173,10 @@ static int vscn_save_emit_scenes(char **buf, size_t *len, size_t *cap, vscn_save
 }
 
 /// @brief Atomically publish a completed VSCN text buffer at @p filepath.
+/// @param filepath Borrowed UTF-8 destination path.
+/// @param buf Borrowed complete serialized bytes.
+/// @param len Number of bytes to write.
+/// @return `1` after atomic replacement, otherwise `0`.
 static int64_t vscn_write_atomic(const char *filepath, const char *buf, size_t len) {
     FILE *file;
     char *tmp_path = NULL;
@@ -2009,6 +2210,9 @@ static int64_t vscn_write_atomic(const char *filepath, const char *buf, size_t l
 }
 
 /// @brief Serialize a complete imported SceneAsset as VSCN v5.
+/// @param view Borrowed complete imported asset inventory.
+/// @param path Borrowed runtime-string destination path.
+/// @return `1` on successful atomic save, otherwise `0`.
 int64_t rt_vscn_save_asset_view(const rt_vscn_asset_save_view *view, rt_string path) {
     vscn_save_context_t ctx = {0};
     char *buf = NULL;
@@ -2052,6 +2256,9 @@ int64_t rt_vscn_save_asset_view(const rt_vscn_asset_save_view *view, rt_string p
 /// @details Shared by the file and text save endpoints (ADR 0190) so version
 ///          selection and byte output are identical on both paths. On success
 ///          the caller owns the malloc'd @p *out_buf and must free it.
+/// @param scene Borrowed validated Scene3D payload with a root.
+/// @param out_buf Output receiving the caller-owned serialized allocation.
+/// @param out_len Output receiving exact byte length.
 /// @return 1 on success, 0 on collection or append failure.
 static int scene3d_build_vscn_text(rt_scene3d *scene, char **out_buf, size_t *out_len) {
     vscn_save_context_t ctx = {0};
@@ -2117,6 +2324,8 @@ static int scene3d_build_vscn_text(rt_scene3d *scene, char **out_buf, size_t *ou
 }
 
 /// @brief Serialize the scene to a .vscn file. @return 1 on success, 0 on failure.
+/// @param scene_obj Borrowed Scene3D handle.
+/// @param path Borrowed runtime-string destination path.
 int64_t rt_scene3d_save(void *scene_obj, rt_string path) {
     if (!scene_obj || !path)
         return 0;
@@ -2144,6 +2353,8 @@ int64_t rt_scene3d_save(void *scene_obj, rt_string path) {
 ///          version-selection rules and the 64 MB VSCN budget. Returns the
 ///          shared empty string on any failure, matching the 2D
 ///          SceneDocument.ToJson convention; no filesystem access occurs.
+/// @param scene_obj Borrowed Scene3D handle.
+/// @return New canonical runtime string, or the shared empty string on failure.
 rt_string rt_scene3d_save_text(void *scene_obj) {
     if (!scene_obj)
         return rt_str_empty();

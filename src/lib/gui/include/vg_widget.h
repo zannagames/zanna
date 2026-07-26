@@ -464,6 +464,8 @@ struct vg_widget {
     bool _was_dropped;         ///< Runtime: a drop occurred on this widget this frame.
     char *_drop_received_type; ///< Runtime: type of the last drop (owned).
     char *_drop_received_data; ///< Runtime: data of the last drop (owned).
+    float _drop_received_x;    ///< Runtime: pointer x when the drop landed.
+    float _drop_received_y;    ///< Runtime: pointer y when the drop landed.
 
     // Tooltip
     char *tooltip_text; ///< Tooltip text associated with this widget (owned, may be NULL).

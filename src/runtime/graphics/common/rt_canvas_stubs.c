@@ -69,6 +69,10 @@ void *rt_canvas_new(rt_string title, int64_t width, int64_t height) {
 }
 
 /// @brief Stub: graphics disabled — returns 0; no canvas handle can be valid without graphics.
+///
+/// @param canvas Candidate Canvas handle (ignored).
+///
+/// @return `0`.
 int8_t rt_canvas_is_handle(void *canvas) {
     (void)canvas;
     return 0;
@@ -960,6 +964,11 @@ void rt_canvas_polygon_frame(void *canvas, void *points, int64_t count, int64_t 
     RT_GRAPHICS_TRAP_VOID("Canvas.PolygonFrame: graphics support not compiled in");
 }
 
+/// @brief Trapping stub for drawing the open polyline stored in a path object.
+///
+/// @param canvas Canvas handle (ignored before trapping).
+/// @param path   Path2D-style vertex collection (ignored before trapping).
+/// @param color  Packed color (ignored before trapping).
 void rt_canvas_polyline_path(void *canvas, void *path, int64_t color) {
     (void)canvas;
     (void)path;
@@ -967,6 +976,11 @@ void rt_canvas_polyline_path(void *canvas, void *path, int64_t color) {
     RT_GRAPHICS_TRAP_VOID("Canvas.PolylinePath: graphics support not compiled in");
 }
 
+/// @brief Trapping stub for filling the closed polygon stored in a path object.
+///
+/// @param canvas Canvas handle (ignored before trapping).
+/// @param path   Path2D-style vertex collection (ignored before trapping).
+/// @param color  Packed color (ignored before trapping).
 void rt_canvas_polygon_path(void *canvas, void *path, int64_t color) {
     (void)canvas;
     (void)path;
@@ -974,6 +988,11 @@ void rt_canvas_polygon_path(void *canvas, void *path, int64_t color) {
     RT_GRAPHICS_TRAP_VOID("Canvas.PolygonPath: graphics support not compiled in");
 }
 
+/// @brief Trapping stub for outlining the closed polygon stored in a path object.
+///
+/// @param canvas Canvas handle (ignored before trapping).
+/// @param path   Path2D-style vertex collection (ignored before trapping).
+/// @param color  Packed color (ignored before trapping).
 void rt_canvas_polygon_frame_path(void *canvas, void *path, int64_t color) {
     (void)canvas;
     (void)path;
@@ -1233,12 +1252,20 @@ double rt_canvas_get_scale(void *canvas) {
 }
 
 /// @brief Stub for `Canvas.GetWindowX`.
+///
+/// @param canvas Canvas handle (ignored before trapping).
+///
+/// @return Never returns normally.
 int64_t rt_canvas_get_window_x(void *canvas) {
     (void)canvas;
     RT_GRAPHICS_TRAP_RET("Canvas.GetWindowX: graphics support not compiled in", 0);
 }
 
 /// @brief Stub for `Canvas.GetWindowY`.
+///
+/// @param canvas Canvas handle (ignored before trapping).
+///
+/// @return Never returns normally.
 int64_t rt_canvas_get_window_y(void *canvas) {
     (void)canvas;
     RT_GRAPHICS_TRAP_RET("Canvas.GetWindowY: graphics support not compiled in", 0);
@@ -1337,6 +1364,8 @@ int8_t rt_canvas_is_maximized(void *canvas) {
 }
 
 /// @brief Maximize operation.
+///
+/// @param canvas Canvas handle (ignored before trapping).
 void rt_canvas_maximize(void *canvas) {
     (void)canvas;
     RT_GRAPHICS_TRAP_VOID("Canvas.Maximize: graphics support not compiled in");
@@ -1351,12 +1380,16 @@ int8_t rt_canvas_is_minimized(void *canvas) {
 }
 
 /// @brief Minimize operation.
+///
+/// @param canvas Canvas handle (ignored before trapping).
 void rt_canvas_minimize(void *canvas) {
     (void)canvas;
     RT_GRAPHICS_TRAP_VOID("Canvas.Minimize: graphics support not compiled in");
 }
 
 /// @brief Restore operation.
+///
+/// @param canvas Canvas handle (ignored before trapping).
 void rt_canvas_restore(void *canvas) {
     (void)canvas;
     RT_GRAPHICS_TRAP_VOID("Canvas.Restore: graphics support not compiled in");
@@ -1371,12 +1404,17 @@ int8_t rt_canvas_is_focused(void *canvas) {
 }
 
 /// @brief Focus operation.
+///
+/// @param canvas Canvas handle (ignored before trapping).
 void rt_canvas_focus(void *canvas) {
     (void)canvas;
     RT_GRAPHICS_TRAP_VOID("Canvas.Focus: graphics support not compiled in");
 }
 
 /// @brief Close the prevent.
+///
+/// @param canvas  Canvas handle (ignored before trapping).
+/// @param prevent Non-zero to suppress close requests (ignored before trapping).
 void rt_canvas_prevent_close(void *canvas, int64_t prevent) {
     (void)canvas;
     (void)prevent;
@@ -1395,12 +1433,20 @@ void rt_canvas_get_monitor_size(void *canvas, int64_t *w, int64_t *h) {
 }
 
 /// @brief Stub for `Canvas.GetMonitorWidth`.
+///
+/// @param canvas Canvas handle (ignored before trapping).
+///
+/// @return Never returns normally.
 int64_t rt_canvas_get_monitor_width(void *canvas) {
     (void)canvas;
     RT_GRAPHICS_TRAP_RET("Canvas.GetMonitorWidth: graphics support not compiled in", 0);
 }
 
 /// @brief Stub for `Canvas.GetMonitorHeight`.
+///
+/// @param canvas Canvas handle (ignored before trapping).
+///
+/// @return Never returns normally.
 int64_t rt_canvas_get_monitor_height(void *canvas) {
     (void)canvas;
     RT_GRAPHICS_TRAP_RET("Canvas.GetMonitorHeight: graphics support not compiled in", 0);

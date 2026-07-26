@@ -27,6 +27,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_vegetation3d.c
+ * @brief Implements deterministic terrain scattering, wind animation, LOD culling, and drawing.
+ *
+ * Vegetation instances share one cross-billboard mesh and material. A persistent CSR grid narrows
+ * per-frame work to cells intersecting the camera's far radius, after which stable hash thinning
+ * and scale fading build a compact instanced draw batch.
+ */
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_vegetation3d.h"
@@ -124,36 +133,54 @@ typedef struct {
 } rt_vegetation3d;
 
 /// @brief Return @p value when finite, else @p fallback. Sanitizes scalar inputs.
+/// @param value Candidate scalar.
+/// @param fallback Replacement for non-finite input.
+/// @return @p value when finite, otherwise @p fallback.
 static double vegetation_finite_or(double value, double fallback) {
     return rt_world3d_finite_or(value, fallback);
 }
 
 /// @brief Clamp a positive vegetation scalar to a bounded finite range.
+/// @param value Candidate positive scalar.
+/// @param fallback Replacement for invalid or nonpositive input.
+/// @param max_value Inclusive upper limit.
+/// @return Sanitized positive scalar.
 static double vegetation_positive_or(double value, double fallback, double max_value) {
     return rt_world3d_clamp_positive_or(value, fallback, max_value);
 }
 
 /// @brief Clamp a non-negative vegetation scalar to a bounded finite range.
+/// @param value Candidate nonnegative scalar.
+/// @param max_value Inclusive upper limit.
+/// @return Sanitized scalar in `[0, max_value]`.
 static double vegetation_nonnegative_or(double value, double max_value) {
     return rt_world3d_clamp_nonnegative(value, max_value);
 }
 
 /// @brief Clamp a signed vegetation scalar to a bounded finite range.
+/// @param value Candidate signed scalar.
+/// @param fallback Replacement for non-finite input.
+/// @param max_abs Inclusive absolute-value limit.
+/// @return Sanitized scalar in `[-max_abs, max_abs]`.
 static double vegetation_abs_or(double value, double fallback, double max_abs) {
     return rt_world3d_clamp_abs_or(value, fallback, max_abs);
 }
 
 /// @brief Drop one GC reference held in `*slot` and clear the slot. NULL-safe.
+/// @param slot Address of the retained-reference slot.
 static void vegetation3d_release_ref(void **slot) {
     rt_g3d_ref_slot_release(slot);
 }
 
 /// @brief Return true when @p pixels is a live Pixels object.
+/// @param pixels Candidate runtime object.
+/// @return Nonzero when @p pixels is a valid live Pixels handle.
 static int vegetation3d_is_pixels_handle(void *pixels) {
     return rt_pixels_checked_impl_or_null(pixels) != NULL;
 }
 
 /// @brief Release a retained Pixels slot only if it still points at Pixels.
+/// @param slot Address of the retained Pixels slot.
 static void vegetation3d_release_pixels_slot(void **slot) {
     if (!slot || !*slot)
         return;
@@ -165,6 +192,7 @@ static void vegetation3d_release_pixels_slot(void **slot) {
 }
 
 /// @brief Release a retained Mesh3D slot only if it still points at Mesh3D.
+/// @param slot Address of the retained Mesh3D slot.
 static void vegetation3d_release_mesh_slot(void **slot) {
     if (!slot || !*slot)
         return;
@@ -176,6 +204,7 @@ static void vegetation3d_release_mesh_slot(void **slot) {
 }
 
 /// @brief Release a retained Material3D slot only if it still points at Material3D.
+/// @param slot Address of the retained Material3D slot.
 static void vegetation3d_release_material_slot(void **slot) {
     if (!slot || !*slot)
         return;
@@ -187,6 +216,8 @@ static void vegetation3d_release_material_slot(void **slot) {
 }
 
 /// @brief Retain-then-release swap into a Pixels slot. Safe on self-assign.
+/// @param slot Address of the retained Pixels slot to update.
+/// @param value New Pixels handle, or NULL to clear the slot.
 static void vegetation3d_assign_pixels_ref(void **slot, void *value) {
     if (!slot)
         return;
@@ -201,15 +232,21 @@ static void vegetation3d_assign_pixels_ref(void **slot, void *value) {
 }
 
 /// @brief Return a Mesh3D slot only when its private handle is still valid.
+/// @param ref Candidate private mesh handle.
+/// @return Borrowed typed Mesh3D pointer, or NULL when invalid.
 static rt_mesh3d *vegetation3d_mesh_ref(void *ref) {
     return rt_g3d_has_class(ref, RT_G3D_MESH3D_CLASS_ID) ? (rt_mesh3d *)ref : NULL;
 }
 
 /// @brief Return a Material3D slot only when its private handle is still valid.
+/// @param ref Candidate private material handle.
+/// @return Borrowed typed Material3D pointer, or NULL when invalid.
 static rt_material3d *vegetation3d_material_ref(void *ref) {
     return rt_g3d_has_class(ref, RT_G3D_MATERIAL3D_CLASS_ID) ? (rt_material3d *)ref : NULL;
 }
 
+/// @brief Mark a blade material double-sided so crossed grass planes render from either face.
+/// @param mat Material3D to update; NULL is accepted.
 static void vegetation3d_enable_double_sided_material(rt_material3d *mat) {
     if (!mat)
         return;
@@ -219,6 +256,8 @@ static void vegetation3d_enable_double_sided_material(rt_material3d *mat) {
 /// @brief Integer avalanche hash used for stable vegetation LOD thinning.
 /// @details The input combines the blade index and quantized position so thinning stays stable
 ///   across frames but does not keep every Nth blade in a visible grid/banding pattern.
+/// @param x Input bits to avalanche.
+/// @return Deterministically mixed 32-bit hash.
 static uint32_t vegetation3d_hash_u32(uint32_t x) {
     x ^= x >> 16;
     x *= 0x7feb352du;
@@ -234,6 +273,10 @@ static uint32_t vegetation3d_hash_u32(uint32_t x) {
 ///   fixed value against a density threshold that falls with distance makes the kept set strictly
 ///   shrink as the camera recedes — each blade winks out at exactly one radius instead of whole
 ///   cohorts swapping in and out at stride boundaries.
+/// @param index Stable blade index.
+/// @param bx Quantized blade x coordinate input.
+/// @param bz Quantized blade z coordinate input.
+/// @return Stable pseudorandom value in the half-open interval `[0, 1)`.
 static float vegetation3d_lod_hash01(int32_t index, float bx, float bz) {
     uint32_t qx = (uint32_t)((int32_t)lrintf(bx * 16.0f));
     uint32_t qz = (uint32_t)((int32_t)lrintf(bz * 16.0f));
@@ -246,6 +289,10 @@ static float vegetation3d_lod_hash01(int32_t index, float bx, float bz) {
 /// @details A single full-strength sine makes thin billboard grass read like it has two hard
 ///   endpoints. Blending slower spatially-offset waves keeps the public strength value intact
 ///   while making nearby blades drift through the sway instead of moving in lockstep.
+/// @param phase Base temporal and spatial phase.
+/// @param bx Blade x coordinate.
+/// @param bz Blade z coordinate.
+/// @return Finite layered wave amplitude.
 static double vegetation3d_wind_wave(double phase, double bx, double bz) {
     double primary = sin(phase);
     double broad = sin(phase * 0.37 + bx * 0.021 - bz * 0.017);
@@ -255,6 +302,7 @@ static double vegetation3d_wind_wave(double phase, double bx, double bz) {
 }
 
 /// @brief Release and clear corrupted retained resource slots.
+/// @param v Vegetation system whose density, mesh, and material handles are repaired.
 static void vegetation3d_repair_resource_handles(rt_vegetation3d *v) {
     if (!v)
         return;
@@ -267,6 +315,7 @@ static void vegetation3d_repair_resource_handles(rt_vegetation3d *v) {
 }
 
 /// @brief Free the spatial cull grid and mark it for rebuild.
+/// @param v Vegetation system owning the CSR grid arrays.
 static void vegetation3d_free_grid(rt_vegetation3d *v) {
     if (!v)
         return;
@@ -280,6 +329,7 @@ static void vegetation3d_free_grid(rt_vegetation3d *v) {
 }
 
 /// @brief Free all population buffers and reset the population/visible counters.
+/// @param v Vegetation system whose blade and visible-set allocations are cleared.
 static void vegetation3d_clear_population_buffers(rt_vegetation3d *v) {
     if (!v)
         return;
@@ -303,6 +353,7 @@ static void vegetation3d_clear_population_buffers(rt_vegetation3d *v) {
 ///   `visible_transforms` (this frame's culled subset). All three are
 ///   plain float allocations — nothing inside them owns downstream refs,
 ///   so the finalize is just three `free`s plus pointer nulling.
+/// @param obj Vegetation3D runtime object being finalized; NULL is accepted.
 static void vegetation3d_finalizer(void *obj) {
     rt_vegetation3d *v = (rt_vegetation3d *)obj;
     if (!v)
@@ -314,6 +365,9 @@ static void vegetation3d_finalizer(void *obj) {
 }
 
 /// @brief Build the cross-billboard blade mesh (2 perpendicular quads).
+/// @param mesh Mesh3D receiving eight vertices and four triangles.
+/// @param w Positive blade width.
+/// @param h Positive blade height.
 static void build_blade_mesh(void *mesh, double w, double h) {
     if (!mesh)
         return;
@@ -344,6 +398,8 @@ static void build_blade_mesh(void *mesh, double w, double h) {
 ///   runs for a given seed — important for authoring workflows where an
 ///   artist tunes a seed to get a specific look. Not suitable for anything
 ///   cryptographic, but statistically adequate for even-ish scattering.
+/// @param state Address of the mutable non-cryptographic RNG state.
+/// @return Next 32-bit pseudorandom value, or zero when @p state is NULL.
 static uint32_t lcg_next(uint32_t *state) {
     if (!state)
         return 0u;
@@ -352,6 +408,8 @@ static uint32_t lcg_next(uint32_t *state) {
 }
 
 /// @brief Mix a user/default seed into the non-zero 32-bit LCG state space.
+/// @param seed Signed user or internal seed bits.
+/// @return Deterministically mixed nonzero 32-bit LCG state.
 static uint32_t vegetation3d_seed_from_i64(int64_t seed) {
     uint64_t x = (uint64_t)seed;
     x ^= x >> 33;
@@ -366,6 +424,7 @@ static uint32_t vegetation3d_seed_from_i64(int64_t seed) {
 /// @brief Generate a non-zero default scatter seed for a new vegetation object.
 /// @details Uses a process-local monotonic counter so separate Vegetation3D instances no longer
 ///   share identical layouts unless the author explicitly calls `SetSeed`.
+/// @return Nonzero default scatter seed.
 static uint32_t vegetation3d_next_default_seed(void) {
     static int64_t counter = INT64_C(0x51ED270B);
     int64_t old = rt_atomic_fetch_add_i64(&counter, INT64_C(0x1E3779B97F4A7C1), __ATOMIC_RELAXED);
@@ -373,6 +432,8 @@ static uint32_t vegetation3d_next_default_seed(void) {
 }
 
 /// @brief Repair count/buffer invariants before update/draw work touches flat arrays.
+/// @param v Vegetation system whose flat-buffer counts and handles are repaired.
+/// @return 1 after repair, or 0 when @p v is NULL.
 static int vegetation3d_repair_state(rt_vegetation3d *v) {
     if (!v)
         return 0;
@@ -409,6 +470,8 @@ static int vegetation3d_repair_state(rt_vegetation3d *v) {
 }
 
 /// @brief True if a transform matrix is finite and inside the vegetation world range.
+/// @param m Sixteen-float row-major transform to validate.
+/// @return Nonzero when all matrix components are finite and bounded.
 static int vegetation3d_matrix_is_drawable(const float *m) {
     if (!m)
         return 0;
@@ -420,6 +483,7 @@ static int vegetation3d_matrix_is_drawable(const float *m) {
 }
 
 /// @brief Remove invalid visible matrices before handing the batch to Canvas3D.
+/// @param v Vegetation system whose visible transform prefix is compacted in place.
 static void vegetation3d_compact_visible(rt_vegetation3d *v) {
     if (!v || !v->visible_transforms || v->visible_count <= 0) {
         if (v)
@@ -442,6 +506,8 @@ static void vegetation3d_compact_visible(rt_vegetation3d *v) {
 /// an unlit textured material (if `blade_texture` is non-NULL — opacity comes from the texture).
 /// Defaults: 0.4×1.2 blades with 30% size variation, wind speed 2.0 / strength 0.15 / turbulence
 /// 0.5, LOD near=40 / far=100 world units. Traps on allocation failure.
+/// @param blade_texture Optional Pixels texture retained by the generated unlit material.
+/// @return New GC-managed Vegetation3D handle, or NULL after validation or allocation failure.
 void *rt_vegetation3d_new(void *blade_texture) {
     if (blade_texture && !vegetation3d_is_pixels_handle(blade_texture)) {
         rt_trap("Vegetation3D.New: blade_texture must be Pixels");
@@ -511,6 +577,8 @@ void *rt_vegetation3d_new(void *blade_texture) {
 
 /// @brief Attach a Pixels density map. During `_populate`, each candidate blade rolls against the
 /// red channel of the corresponding pixel — higher R = denser vegetation. NULL = uniform density.
+/// @param obj Vegetation3D handle; invalid handles are ignored.
+/// @param pixels Nonempty Pixels density map to retain, or NULL for uniform density.
 void rt_vegetation3d_set_density_map(void *obj, void *pixels) {
     rt_vegetation3d *v =
         (rt_vegetation3d *)rt_g3d_checked_or_null(obj, RT_G3D_VEGETATION3D_CLASS_ID);
@@ -530,6 +598,10 @@ void rt_vegetation3d_set_density_map(void *obj, void *pixels) {
 /// @brief Configure wind animation. `speed` scales time, `strength` is the maximum top-of-blade
 /// shear in world units, `turbulence` controls how much the wind phase varies across the field
 /// (higher = more chaotic, less synchronized waving).
+/// @param obj Vegetation3D handle; invalid handles are ignored.
+/// @param speed Signed temporal wave speed, bounded to the supported range.
+/// @param strength Nonnegative maximum blade shear in world units.
+/// @param turbulence Nonnegative spatial phase variation.
 void rt_vegetation3d_set_wind_params(void *obj, double speed, double strength, double turbulence) {
     if (!obj)
         return;
@@ -545,6 +617,9 @@ void rt_vegetation3d_set_wind_params(void *obj, double speed, double strength, d
 /// @brief Set LOD thresholds. Within `near_dist` all blades render; between near and far they
 /// progressively thin (skip every 1..5 instances based on distance ratio); beyond `far_dist`
 /// blades are hard-culled. Larger near = denser foreground at higher GPU cost.
+/// @param obj Vegetation3D handle; invalid handles are ignored.
+/// @param near_dist Full-density radius in world units.
+/// @param far_dist Hard-cull radius, sanitized to remain greater than @p near_dist.
 void rt_vegetation3d_set_lod_distances(void *obj, double near_dist, double far_dist) {
     if (!obj)
         return;
@@ -571,6 +646,10 @@ void rt_vegetation3d_set_lod_distances(void *obj, double near_dist, double far_d
 /// @brief Reset blade dimensions and rebuild the shared mesh. `variation` ∈ [0,1] randomizes per-
 /// blade scale at populate time. Already-populated blades retain their previous random scale —
 /// call `_populate` again to apply the new variation factor.
+/// @param obj Vegetation3D handle; invalid handles are ignored.
+/// @param width Positive cross-billboard width.
+/// @param height Positive cross-billboard height.
+/// @param variation Per-instance scale variation clamped to `[0, 1]`.
 void rt_vegetation3d_set_blade_size(void *obj, double width, double height, double variation) {
     if (!obj)
         return;
@@ -607,6 +686,8 @@ void rt_vegetation3d_set_blade_size(void *obj, double width, double height, doub
 /// @details The seed is stored on the Vegetation3D object; calling Populate repeatedly after the
 ///   same seed produces the same candidate sequence, while different objects no longer default to
 ///   the same hardcoded layout.
+/// @param obj Vegetation3D handle; invalid handles are ignored.
+/// @param seed User seed mixed into the nonzero 32-bit scatter state.
 void rt_vegetation3d_set_seed(void *obj, int64_t seed) {
     rt_vegetation3d *v =
         (rt_vegetation3d *)rt_g3d_checked_or_null(obj, RT_G3D_VEGETATION3D_CLASS_ID);
@@ -616,6 +697,12 @@ void rt_vegetation3d_set_seed(void *obj, int64_t seed) {
 }
 
 /// @brief Build a row-major 4x4 transform: translate(x,y,z) * rotateY(angle) * scale(s).
+/// @param out Sixteen-float output matrix.
+/// @param x World-space x translation.
+/// @param y World-space y translation.
+/// @param z World-space z translation.
+/// @param angle Y-axis rotation in radians.
+/// @param s Positive uniform scale.
 static void build_transform(float *out, double x, double y, double z, double angle, double s) {
     if (!out)
         return;
@@ -654,6 +741,9 @@ static void build_transform(float *out, double x, double y, double z, double ang
 /// within terrain bounds (2-unit margin), filtered by the density map's R channel if set, and
 /// snapped to terrain height. Each blade gets a random Y rotation and per-blade scale variation
 /// (±size_variation). Reallocates the transform/position buffers and resets `total_count`.
+/// @param obj Vegetation3D handle; invalid handles are ignored.
+/// @param terrain Terrain3D handle supplying validated extents and sampled heights.
+/// @param count Maximum candidate blade count; zero clears the current population.
 void rt_vegetation3d_populate(void *obj, void *terrain, int64_t count) {
     rt_vegetation3d *v =
         (rt_vegetation3d *)rt_g3d_checked_or_null(obj, RT_G3D_VEGETATION3D_CLASS_ID);
@@ -787,6 +877,8 @@ void rt_vegetation3d_populate(void *obj, void *terrain, int64_t count) {
 ///   Blades with non-finite positions are left out of every cell; they were already invisible to
 ///   the culling pass. Returns 0 (grid unavailable, callers fall back to the linear walk) on
 ///   allocation failure or degenerate extents.
+/// @param v Vegetation system whose current population is bucketed.
+/// @return 1 when a usable grid is installed, otherwise 0.
 static int vegetation3d_rebuild_grid(rt_vegetation3d *v) {
     vegetation3d_free_grid(v);
     if (!v || v->total_count <= 0 || !v->positions)
@@ -917,6 +1009,9 @@ typedef struct {
 /// @details Large LOD radii combined with a near-degenerate grid extent can produce coordinates
 ///   outside the int32 range. Clamping in double precision avoids an undefined narrowing conversion
 ///   that can otherwise turn an upper cell bound negative and skip the entire culling walk.
+/// @param coordinate Continuous cell-space coordinate.
+/// @param cell_count Number of cells on the axis.
+/// @return Valid cell index in `[0, cell_count - 1]`.
 static int32_t vegetation3d_clamp_grid_cell(double coordinate, int32_t cell_count) {
     if (cell_count <= 1 || isnan(coordinate) || coordinate <= 0.0)
         return 0;
@@ -926,6 +1021,9 @@ static int32_t vegetation3d_clamp_grid_cell(double coordinate, int32_t cell_coun
 }
 
 /// @brief Cull, thin, fade, and wind-shear one blade, appending it to the visible buffer.
+/// @param v Vegetation system containing source and destination transform buffers.
+/// @param i Source blade index.
+/// @param p Sanitized frame-constant culling and wind parameters.
 static void vegetation3d_collect_blade(rt_vegetation3d *v,
                                        int32_t i,
                                        const vegetation3d_update_params *p) {
@@ -1027,6 +1125,11 @@ static void vegetation3d_collect_blade(rt_vegetation3d *v,
 /// transform (bending blade tops). Culling iterates only the spatial-grid cells within `lod_far`
 /// of the camera, so per-frame cost scales with the visible set, not the total population.
 /// `camY` is unused — culling is XZ-only.
+/// @param obj Vegetation3D handle; invalid handles are ignored.
+/// @param dt Nonnegative finite simulation delta, clamped to one second.
+/// @param camX Camera world-space x coordinate.
+/// @param camY Camera world-space y coordinate; currently unused.
+/// @param camZ Camera world-space z coordinate.
 void rt_vegetation3d_update(void *obj, double dt, double camX, double camY, double camZ) {
     (void)camY;
     rt_vegetation3d *v =
@@ -1144,6 +1247,8 @@ void rt_vegetation3d_update(void *obj, double dt, double camX, double camY, doub
 /// @details Marks the blade material double-sided so grass renders from both sides without
 ///          mutating canvas-level culling state. No-op when called outside a frame, when the
 ///          backend is missing, or when nothing is visible.
+/// @param canvas_obj Canvas3D handle receiving the instanced batch.
+/// @param veg_obj Vegetation3D handle supplying shared geometry and visible transforms.
 void rt_canvas3d_draw_vegetation(void *canvas_obj, void *veg_obj) {
     if (!canvas_obj || !veg_obj)
         return;

@@ -1391,6 +1391,30 @@ set_tests_properties(zia_zannastudio_scene_history PROPERTIES
         LABELS "zia;zannastudio;scene"
         TIMEOUT 60)
 
+add_test(NAME zia_zannastudio_scene_context_menus
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/scene_context_menu_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
+set_tests_properties(zia_zannastudio_scene_context_menus PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;scene;requires_display"
+        TIMEOUT 120)
+
+add_test(NAME zia_zannastudio_scene_dnd
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/scene_dnd_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
+set_tests_properties(zia_zannastudio_scene_dnd PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;scene;requires_display"
+        TIMEOUT 180)
+
+add_test(NAME zia_zannastudio_scene_inline_rename
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/scene_inline_rename_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
+set_tests_properties(zia_zannastudio_scene_inline_rename PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;scene;requires_display"
+        TIMEOUT 120)
+
 add_test(NAME zia_zannastudio_scene2d_large_map
         COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/scene2d_large_map_probe.zia"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")

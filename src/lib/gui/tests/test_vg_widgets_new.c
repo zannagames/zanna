@@ -545,6 +545,115 @@ TEST(scrollview_contains_descendants_that_manage_their_own_clip) {
     vgfx_destroy_window(win);
 }
 
+TEST(treeview_inline_edit_commit_cancel_lifecycle) {
+    /* Inline rename: begin overlays a focused editor pre-filled with the
+     * caller's text; Enter commits exactly once with the edited text; Escape
+     * cancels without a commit edge; blur commits. */
+    vgfx_window_params_t params = {
+        .width = 240, .height = 120, .title = "tree", .fps = 0, .resizable = 0};
+    vgfx_window_t win = vgfx_create_window(&params);
+    ASSERT_NOT_NULL(win);
+
+    vg_treeview_t *tree = vg_treeview_create(NULL);
+    ASSERT_NOT_NULL(tree);
+    vg_widget_arrange(&tree->base, 0.0f, 0.0f, 240.0f, 120.0f);
+    vg_tree_node_t *node =
+        vg_treeview_add_node(tree, vg_treeview_get_root(tree), "Box 0 [mesh]");
+    ASSERT_NOT_NULL(node);
+
+    /* Begin pre-fills the raw name, shows and focuses the editor. */
+    ASSERT(vg_treeview_begin_edit(tree, node, "Box 0"));
+    ASSERT(vg_treeview_is_editing(tree));
+    ASSERT_NOT_NULL(tree->edit_input);
+    ASSERT(tree->edit_input->base.visible);
+    ASSERT(tree->edit_input->base.state & VG_STATE_FOCUSED);
+    ASSERT(strcmp(vg_textinput_get_text(tree->edit_input), "Box 0") == 0);
+
+    /* Type a replacement and press Enter: one commit edge with the text. */
+    vg_textinput_set_text(tree->edit_input, "Tower");
+    vg_event_t enter = {0};
+    enter.type = VG_EVENT_KEY_DOWN;
+    enter.key.key = VG_KEY_ENTER;
+    ASSERT(vg_event_send(&tree->edit_input->base, &enter));
+    vg_widget_paint(&tree->base, win); /* paint is the poll point */
+    ASSERT(!vg_treeview_is_editing(tree));
+    ASSERT(vg_treeview_was_edit_committed(tree));
+    ASSERT(!vg_treeview_was_edit_committed(tree)); /* consumed */
+    ASSERT(strcmp(vg_treeview_get_edit_text(tree), "Tower") == 0);
+    ASSERT(vg_treeview_get_edited_node(tree) == node);
+
+    /* Escape cancels without latching a commit. */
+    ASSERT(vg_treeview_begin_edit(tree, node, "Box 0"));
+    vg_event_t esc = {0};
+    esc.type = VG_EVENT_KEY_DOWN;
+    esc.key.key = VG_KEY_ESCAPE;
+    ASSERT(vg_event_send(&tree->base, &esc));
+    ASSERT(!vg_treeview_is_editing(tree));
+    ASSERT(!vg_treeview_was_edit_committed(tree));
+
+    /* Focus loss commits on the next paint. */
+    ASSERT(vg_treeview_begin_edit(tree, node, "Box 0"));
+    vg_widget_set_focus(NULL);
+    vg_widget_paint(&tree->base, win);
+    ASSERT(!vg_treeview_is_editing(tree));
+    ASSERT(vg_treeview_was_edit_committed(tree));
+
+    vg_widget_destroy(&tree->base);
+    vgfx_destroy_window(win);
+}
+
+TEST(spinner_value_scrub_adjusts_and_latches_finish_edge) {
+    /* A horizontal drag on the value area scrubs the value continuously and
+     * latches one finished edge on release; a click without movement falls
+     * back to click-to-edit. */
+    vg_spinner_t *spinner = vg_spinner_create(NULL);
+    ASSERT_NOT_NULL(spinner);
+    vg_spinner_set_range(spinner, -1000.0, 1000.0);
+    vg_spinner_set_step(spinner, 1.0);
+    vg_spinner_set_value(spinner, 10.0);
+    vg_widget_arrange(&spinner->base, 0.0f, 0.0f, 120.0f, 28.0f);
+
+    vg_event_t down = {0};
+    down.type = VG_EVENT_MOUSE_DOWN;
+    down.mouse.x = 20.0f;
+    down.mouse.y = 14.0f;
+    down.mouse.screen_x = 20.0f;
+    down.mouse.screen_y = 14.0f;
+    ASSERT(vg_event_send(&spinner->base, &down));
+    ASSERT(!spinner->editing);
+    ASSERT(spinner->scrub_candidate);
+
+    vg_event_t move = {0};
+    move.type = VG_EVENT_MOUSE_MOVE;
+    move.mouse.x = 60.0f; /* +40px at step 1.0 and factor 0.5 => +20 */
+    move.mouse.y = 14.0f;
+    move.mouse.screen_x = 60.0f;
+    move.mouse.screen_y = 14.0f;
+    ASSERT(vg_event_send(&spinner->base, &move));
+    ASSERT(spinner->scrubbing);
+    ASSERT(vg_spinner_get_value(spinner) > 29.999 && vg_spinner_get_value(spinner) < 30.001);
+
+    vg_event_t up = {0};
+    up.type = VG_EVENT_MOUSE_UP;
+    up.mouse.x = 60.0f;
+    up.mouse.y = 14.0f;
+    up.mouse.screen_x = 60.0f;
+    up.mouse.screen_y = 14.0f;
+    ASSERT(vg_event_send(&spinner->base, &up));
+    ASSERT(!spinner->scrubbing);
+    ASSERT(!spinner->editing);
+    ASSERT(vg_spinner_was_scrub_finished(spinner));
+    ASSERT(!vg_spinner_was_scrub_finished(spinner)); /* consumed */
+
+    /* A press released without crossing the threshold begins text editing. */
+    ASSERT(vg_event_send(&spinner->base, &down));
+    ASSERT(vg_event_send(&spinner->base, &up));
+    ASSERT(spinner->editing);
+    ASSERT(!vg_spinner_was_scrub_finished(spinner));
+
+    vg_widget_destroy(&spinner->base);
+}
+
 TEST(textinput_single_line_measures_bounded_natural_width) {
     /* Regression: a single-line input that claims the entire available width
      * at measure time poisons parents that sum intrinsic child widths — every
@@ -1239,6 +1348,8 @@ int main(void) {
     RUN(scroll_content_remeasures_narrower_after_pane_shrinks);
     RUN(textinput_single_line_measures_bounded_natural_width);
     RUN(scrollview_contains_descendants_that_manage_their_own_clip);
+    RUN(treeview_inline_edit_commit_cancel_lifecycle);
+    RUN(spinner_value_scrub_adjusts_and_latches_finish_edge);
     RUN(image_opacity_and_stretch_affect_framebuffer);
     RUN(image_atomic_upload_and_region_update);
     RUN(image_bilinear_filter_and_scaled_cache);

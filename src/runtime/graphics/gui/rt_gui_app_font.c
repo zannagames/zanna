@@ -3,6 +3,15 @@
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
 //
+/// @file rt_gui_app_font.c
+/// @brief Implements GUI application font propagation and deferred reclamation.
+///
+/// @details
+/// Font replacement walks retained and detached widget surfaces, preserves
+/// role-specific typography, and retires displaced fonts by render generation.
+/// Collection destroys a retired font only after a safe frame boundary and
+/// after every known application surface has released its reference.
+///
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/graphics/gui/rt_gui_app_font.c
@@ -367,6 +376,9 @@ void rt_gui_apply_font_to_widget(vg_widget_t *widget, vg_font_t *font, float siz
 /// @details Dispatches on widget->type to access the correct font field for
 ///          each widget kind. Widgets whose type is not in the switch are
 ///          assumed not to track fonts (returns 0).
+/// @param widget Borrowed widget to inspect.
+/// @param font Candidate font handle.
+/// @return 1 when the widget references @p font, otherwise 0.
 static int rt_gui_widget_uses_font(vg_widget_t *widget, vg_font_t *font) {
     if (!widget || !font)
         return 0;
@@ -426,6 +438,9 @@ static int rt_gui_widget_uses_font(vg_widget_t *widget, vg_font_t *font) {
 /// @details Short-circuits at the first match so the full tree is not always
 ///          walked. Used by `rt_gui_app_uses_font` to scan dialogs and the root
 ///          widget tree.
+/// @param widget Borrowed subtree root.
+/// @param font Candidate font handle.
+/// @return 1 when any widget in the subtree references @p font, otherwise 0.
 static int rt_gui_widget_tree_uses_font(vg_widget_t *widget, vg_font_t *font) {
     if (!widget || !font)
         return 0;

@@ -23,6 +23,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file rt_gui_image.c
+/// @brief Implements Image, FloatingPanel, and GroupBox runtime bindings.
+///
+/// @details
+/// Image operations convert packed runtime pixels to byte RGBA with validated,
+/// atomic uploads. Container operations preserve widget-tree ownership while
+/// translating public logical geometry, and headless definitions retain the ABI.
+
 #include "rt_gui_internal.h"
 #include "rt_pixels.h"
 #include "rt_platform.h"
@@ -33,6 +41,8 @@
 /// @details Three-state contract: a NULL handle returns NULL (legitimate top-level
 ///          placement); a valid handle returns its container widget; a non-NULL
 ///          handle that fails to resolve also returns NULL.
+/// @param parent Candidate parent-container handle.
+/// @return Borrowed parent widget, or `NULL` for a null or invalid handle.
 static vg_widget_t *rt_widget_parent_or_null_if_invalid(void *parent) {
     vg_widget_t *parent_widget = rt_gui_widget_parent_container_from_handle(parent);
     if (parent && !parent_widget)
@@ -41,6 +51,8 @@ static vg_widget_t *rt_widget_parent_or_null_if_invalid(void *parent) {
 }
 
 /// @brief Safe-cast a handle to a live Image widget, or NULL.
+/// @param handle Candidate runtime widget handle.
+/// @return Borrowed Image pointer, or `NULL` for invalid input.
 static vg_image_t *rt_image_checked(void *handle) {
     return (vg_image_t *)rt_gui_widget_handle_checked_type(handle, VG_WIDGET_IMAGE);
 }
@@ -48,6 +60,11 @@ static vg_image_t *rt_image_checked(void *handle) {
 /// @brief Atomically upload caller-converted straight RGBA bytes into an Image widget.
 /// @details This internal media fast path performs no conversion allocation. The lower Image
 ///          copies into reusable owned storage and preserves its old pixels on validation or OOM.
+/// @param image Live Image widget handle.
+/// @param rgba Borrowed interleaved RGBA source bytes.
+/// @param width Positive source width.
+/// @param height Positive source height.
+/// @return `1` after a successful atomic upload; otherwise `0`.
 int rt_gui_image_try_set_rgba_bytes(void *image,
                                     const uint8_t *rgba,
                                     int64_t width,
@@ -64,6 +81,8 @@ int rt_gui_image_try_set_rgba_bytes(void *image,
 //=============================================================================
 
 /// @brief Create an image widget — displays a Pixels object as a static image.
+/// @param parent Parent-container handle, or `NULL` for a detached widget.
+/// @return New Image handle, or `NULL` for invalid parent or allocation failure.
 void *rt_image_new(void *parent) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *parent_widget = rt_widget_parent_or_null_if_invalid(parent);
@@ -142,6 +161,10 @@ static int rt_image_set_from_pixels_object(vg_image_t *image,
 }
 
 /// @brief Set the pixels of the image.
+/// @param image Image widget handle.
+/// @param pixels Runtime Pixels object, or `NULL` to clear the image.
+/// @param width Requested crop width; non-positive values use source width.
+/// @param height Requested crop height; non-positive values use source height.
 void rt_image_set_pixels(void *image, void *pixels, int64_t width, int64_t height) {
     RT_ASSERT_MAIN_THREAD();
     rt_image_set_from_pixels_object(rt_image_checked(image), pixels, width, height);
@@ -150,6 +173,11 @@ void rt_image_set_pixels(void *image, void *pixels, int64_t width, int64_t heigh
 /// @brief Atomically upload a Pixels object and report whether it completed.
 /// @details NULL source objects are rejected so callers cannot accidentally clear a valid image;
 ///          the legacy SetPixels entry point retains its NULL-clears compatibility behavior.
+/// @param image Image widget handle.
+/// @param pixels Runtime Pixels source object.
+/// @param width Requested crop width; non-positive values use source width.
+/// @param height Requested crop height; non-positive values use source height.
+/// @return `1` on successful upload; otherwise `0`.
 int64_t rt_image_try_set_pixels(void *image, void *pixels, int64_t width, int64_t height) {
     RT_ASSERT_MAIN_THREAD();
     if (!pixels)
@@ -160,6 +188,15 @@ int64_t rt_image_try_set_pixels(void *image, void *pixels, int64_t width, int64_
 /// @brief Convert and atomically copy a rectangular Pixels region into an existing image.
 /// @details Rectangle arithmetic is validated before allocating or touching image state. Only the
 ///          requested source region is converted, which bounds transient memory to width*height*4.
+/// @param image Image widget handle.
+/// @param pixels Runtime Pixels source object.
+/// @param source_x Source rectangle X coordinate.
+/// @param source_y Source rectangle Y coordinate.
+/// @param width Positive region width.
+/// @param height Positive region height.
+/// @param dest_x Destination image X coordinate.
+/// @param dest_y Destination image Y coordinate.
+/// @return `1` after an atomic update; otherwise `0`.
 int64_t rt_image_update_region(void *image,
                                void *pixels,
                                int64_t source_x,
@@ -221,6 +258,7 @@ int64_t rt_image_update_region(void *image,
 }
 
 /// @brief Clear the image widget's pixel data, showing nothing.
+/// @param image Image widget handle; invalid handles are ignored.
 void rt_image_clear(void *image) {
     RT_ASSERT_MAIN_THREAD();
     vg_image_t *img = rt_image_checked(image);
@@ -230,6 +268,8 @@ void rt_image_clear(void *image) {
 }
 
 /// @brief Set the scale mode of the image.
+/// @param image Image widget handle.
+/// @param mode Scale-mode ordinal clamped to the supported range.
 void rt_image_set_scale_mode(void *image, int64_t mode) {
     RT_ASSERT_MAIN_THREAD();
     vg_image_t *img = rt_image_checked(image);
@@ -239,6 +279,8 @@ void rt_image_set_scale_mode(void *image, int64_t mode) {
 }
 
 /// @brief Select nearest or bilinear image resizing.
+/// @param image Image widget handle.
+/// @param filter Public image-filter ordinal; unsupported values select nearest.
 void rt_image_set_filter(void *image, int64_t filter) {
     RT_ASSERT_MAIN_THREAD();
     vg_image_t *img = rt_image_checked(image);
@@ -250,6 +292,8 @@ void rt_image_set_filter(void *image, int64_t filter) {
 }
 
 /// @brief Return the current image resize filter, defaulting to nearest for invalid handles.
+/// @param image Image widget handle.
+/// @return Current public filter ordinal, or nearest for invalid input.
 int64_t rt_image_get_filter(void *image) {
     RT_ASSERT_MAIN_THREAD();
     vg_image_t *img = rt_image_checked(image);
@@ -257,6 +301,8 @@ int64_t rt_image_get_filter(void *image) {
 }
 
 /// @brief Set the opacity of the image.
+/// @param image Image widget handle.
+/// @param opacity Alpha multiplier clamped to `[0,1]`; non-finite values become one.
 void rt_image_set_opacity(void *image, double opacity) {
     RT_ASSERT_MAIN_THREAD();
     vg_image_t *img = rt_image_checked(image);
@@ -270,6 +316,8 @@ void rt_image_set_opacity(void *image, double opacity) {
 /// @details Interactive canvases (scene viewports) enable this so shortcut
 ///          ownership follows the clicked surface; presentation images keep
 ///          the default. Pair with the base widget's Focus/IsFocused.
+/// @param image Image widget handle.
+/// @param focusable Non-zero to participate in keyboard focus.
 void rt_image_set_focusable(void *image, int8_t focusable) {
     RT_ASSERT_MAIN_THREAD();
     vg_image_t *img = rt_image_checked(image);
@@ -316,6 +364,8 @@ int64_t rt_image_load_file(void *image, rt_string path) {
 /// Used for tool palettes, inspectors, and side panels that the
 /// user can reposition. `root` is the top-level app handle that
 /// owns the panel's draw layer.
+/// @param root Root parent-container or application handle.
+/// @return New FloatingPanel handle, or `NULL` for invalid input or allocation failure.
 void *rt_floatingpanel_new(void *root) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *parent_widget = rt_gui_widget_parent_container_from_handle(root);
@@ -328,12 +378,15 @@ void *rt_floatingpanel_new(void *root) {
 }
 
 /// @brief Validate a handle as a live FloatingPanel (NULL if not).
+/// @param panel Candidate FloatingPanel handle.
+/// @return Borrowed live panel pointer, or `NULL` for invalid input.
 static vg_floatingpanel_t *rt_floatingpanel_checked(void *panel) {
     vg_floatingpanel_t *fp = (vg_floatingpanel_t *)panel;
     return vg_floatingpanel_is_live(fp) ? fp : NULL;
 }
 
 /// @brief Destroy a floating panel and its overlay children.
+/// @param panel FloatingPanel handle; invalid handles are ignored.
 void rt_floatingpanel_destroy(void *panel) {
     RT_ASSERT_MAIN_THREAD();
     vg_floatingpanel_t *fp = rt_floatingpanel_checked(panel);
@@ -342,6 +395,9 @@ void rt_floatingpanel_destroy(void *panel) {
 }
 
 /// @brief Set the floating panel position from public logical coordinates.
+/// @param panel FloatingPanel handle.
+/// @param x Logical horizontal coordinate.
+/// @param y Logical vertical coordinate.
 void rt_floatingpanel_set_position(void *panel, double x, double y) {
     RT_ASSERT_MAIN_THREAD();
     vg_floatingpanel_t *fp = rt_floatingpanel_checked(panel);
@@ -352,6 +408,7 @@ void rt_floatingpanel_set_position(void *panel, double x, double y) {
 }
 
 /// @brief Center a floating panel within its parent (root) bounds.
+/// @param panel FloatingPanel handle; invalid handles are ignored.
 void rt_floatingpanel_center_in_parent(void *panel) {
     RT_ASSERT_MAIN_THREAD();
     vg_floatingpanel_t *fp = rt_floatingpanel_checked(panel);
@@ -360,6 +417,9 @@ void rt_floatingpanel_center_in_parent(void *panel) {
 }
 
 /// @brief Set floating panel dimensions from public logical lengths.
+/// @param panel FloatingPanel handle.
+/// @param w Logical width.
+/// @param h Logical height.
 void rt_floatingpanel_set_size(void *panel, double w, double h) {
     RT_ASSERT_MAIN_THREAD();
     vg_floatingpanel_t *fp = rt_floatingpanel_checked(panel);
@@ -370,6 +430,8 @@ void rt_floatingpanel_set_size(void *panel, double w, double h) {
 }
 
 /// @brief Show or hide a floating panel overlay.
+/// @param panel FloatingPanel handle.
+/// @param visible Non-zero to show the panel.
 void rt_floatingpanel_set_visible(void *panel, int64_t visible) {
     RT_ASSERT_MAIN_THREAD();
     vg_floatingpanel_t *fp = rt_floatingpanel_checked(panel);
@@ -378,6 +440,8 @@ void rt_floatingpanel_set_visible(void *panel, int64_t visible) {
 }
 
 /// @brief Add a child widget to a floating panel's content area.
+/// @param panel FloatingPanel handle.
+/// @param child Live widget handle whose parent and app association may change.
 void rt_floatingpanel_add_child(void *panel, void *child) {
     RT_ASSERT_MAIN_THREAD();
     vg_floatingpanel_t *fp = rt_floatingpanel_checked(panel);
@@ -394,6 +458,9 @@ void rt_floatingpanel_add_child(void *panel, void *child) {
 }
 
 /// @brief Create a titled "card" group box attached to @p parent.
+/// @param parent Parent-container handle, or `NULL` for a detached widget.
+/// @param title Runtime title copied into widget storage.
+/// @return New GroupBox handle, or `NULL` for invalid parent or allocation failure.
 void *rt_groupbox_new(void *parent, rt_string title) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *parent_widget = rt_gui_widget_parent_container_from_handle(parent);
@@ -408,6 +475,7 @@ void *rt_groupbox_new(void *parent, rt_string title) {
 }
 
 /// @brief Destroy a group box and its children.
+/// @param gb GroupBox handle; invalid handles are ignored.
 void rt_groupbox_destroy(void *gb) {
     RT_ASSERT_MAIN_THREAD();
     vg_groupbox_t *g = (vg_groupbox_t *)rt_gui_widget_handle_checked_type(gb, VG_WIDGET_GROUPBOX);
@@ -416,6 +484,8 @@ void rt_groupbox_destroy(void *gb) {
 }
 
 /// @brief Replace the group box title text.
+/// @param gb GroupBox handle.
+/// @param title Runtime title copied into widget storage.
 void rt_groupbox_set_title(void *gb, rt_string title) {
     RT_ASSERT_MAIN_THREAD();
     vg_groupbox_t *g = (vg_groupbox_t *)rt_gui_widget_handle_checked_type(gb, VG_WIDGET_GROUPBOX);
@@ -427,6 +497,8 @@ void rt_groupbox_set_title(void *gb, rt_string title) {
 }
 
 /// @brief Add a control as a child of the group box.
+/// @param gb GroupBox handle.
+/// @param child Live widget handle whose parent and app association may change.
 void rt_groupbox_add_child(void *gb, void *child) {
     RT_ASSERT_MAIN_THREAD();
     vg_groupbox_t *g = (vg_groupbox_t *)rt_gui_widget_handle_checked_type(gb, VG_WIDGET_GROUPBOX);
@@ -445,6 +517,11 @@ void rt_groupbox_add_child(void *gb, void *child) {
 #else /* !ZANNA_ENABLE_GRAPHICS */
 
 /// @brief Stub: graphics disabled — no internal RGBA upload can succeed.
+/// @param image Ignored Image handle.
+/// @param rgba Ignored RGBA source bytes.
+/// @param width Ignored source width.
+/// @param height Ignored source height.
+/// @return Always `0`.
 int rt_gui_image_try_set_rgba_bytes(void *image,
                                     const uint8_t *rgba,
                                     int64_t width,
@@ -457,12 +534,18 @@ int rt_gui_image_try_set_rgba_bytes(void *image,
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no image widget is created.
+/// @param parent Ignored parent handle.
+/// @return Always `NULL`.
 void *rt_image_new(void *parent) {
     (void)parent;
     return NULL;
 }
 
 /// @brief Set the pixels of the image.
+/// @param image Ignored Image handle.
+/// @param pixels Ignored Pixels object.
+/// @param width Ignored width.
+/// @param height Ignored height.
 void rt_image_set_pixels(void *image, void *pixels, int64_t width, int64_t height) {
     (void)image;
     (void)pixels;
@@ -471,6 +554,11 @@ void rt_image_set_pixels(void *image, void *pixels, int64_t width, int64_t heigh
 }
 
 /// @brief Stub: graphics disabled — no image upload can succeed.
+/// @param image Ignored Image handle.
+/// @param pixels Ignored Pixels object.
+/// @param width Ignored width.
+/// @param height Ignored height.
+/// @return Always `0`.
 int64_t rt_image_try_set_pixels(void *image, void *pixels, int64_t width, int64_t height) {
     (void)image;
     (void)pixels;
@@ -480,6 +568,15 @@ int64_t rt_image_try_set_pixels(void *image, void *pixels, int64_t width, int64_
 }
 
 /// @brief Stub: graphics disabled — no image region can be updated.
+/// @param image Ignored Image handle.
+/// @param pixels Ignored Pixels object.
+/// @param source_x Ignored source X coordinate.
+/// @param source_y Ignored source Y coordinate.
+/// @param width Ignored region width.
+/// @param height Ignored region height.
+/// @param dest_x Ignored destination X coordinate.
+/// @param dest_y Ignored destination Y coordinate.
+/// @return Always `0`.
 int64_t rt_image_update_region(void *image,
                                void *pixels,
                                int64_t source_x,
@@ -500,41 +597,55 @@ int64_t rt_image_update_region(void *image,
 }
 
 /// @brief Clear the image widget's pixel data, showing nothing.
+/// @param image Ignored Image handle.
 void rt_image_clear(void *image) {
     (void)image;
 }
 
 /// @brief Set the scale mode of the image.
+/// @param image Ignored Image handle.
+/// @param mode Ignored scale mode.
 void rt_image_set_scale_mode(void *image, int64_t mode) {
     (void)image;
     (void)mode;
 }
 
 /// @brief Stub: graphics disabled — image filtering has no target.
+/// @param image Ignored Image handle.
+/// @param filter Ignored filter ordinal.
 void rt_image_set_filter(void *image, int64_t filter) {
     (void)image;
     (void)filter;
 }
 
 /// @brief Stub: graphics disabled — nearest is the stable default filter.
+/// @param image Ignored Image handle.
+/// @return `RT_IMAGE_FILTER_NEAREST`.
 int64_t rt_image_get_filter(void *image) {
     (void)image;
     return RT_IMAGE_FILTER_NEAREST;
 }
 
 /// @brief Set the opacity of the image.
+/// @param image Ignored Image handle.
+/// @param opacity Ignored opacity.
 void rt_image_set_opacity(void *image, double opacity) {
     (void)image;
     (void)opacity;
 }
 
 /// @brief Stub: graphics disabled — no image can take focus.
+/// @param image Ignored Image handle.
+/// @param focusable Ignored focusability flag.
 void rt_image_set_focusable(void *image, int8_t focusable) {
     (void)image;
     (void)focusable;
 }
 
 /// @brief Load image file stub (graphics disabled).
+/// @param image Ignored Image handle.
+/// @param path Ignored file path.
+/// @return Always `0`.
 int64_t rt_image_load_file(void *image, rt_string path) {
     (void)image;
     (void)path;
@@ -542,17 +653,23 @@ int64_t rt_image_load_file(void *image, rt_string path) {
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no floating panel is created.
+/// @param root Ignored root handle.
+/// @return Always `NULL`.
 void *rt_floatingpanel_new(void *root) {
     (void)root;
     return NULL;
 }
 
 /// @brief Destroy floating panel stub (graphics disabled).
+/// @param panel Ignored FloatingPanel handle.
 void rt_floatingpanel_destroy(void *panel) {
     (void)panel;
 }
 
 /// @brief Set the position of the floatingpanel.
+/// @param panel Ignored FloatingPanel handle.
+/// @param x Ignored horizontal coordinate.
+/// @param y Ignored vertical coordinate.
 void rt_floatingpanel_set_position(void *panel, double x, double y) {
     (void)panel;
     (void)x;
@@ -560,11 +677,15 @@ void rt_floatingpanel_set_position(void *panel, double x, double y) {
 }
 
 /// @brief Stub: graphics disabled — no floating panel to center.
+/// @param panel Ignored FloatingPanel handle.
 void rt_floatingpanel_center_in_parent(void *panel) {
     (void)panel;
 }
 
 /// @brief Set the width and height of a floating panel.
+/// @param panel Ignored FloatingPanel handle.
+/// @param w Ignored width.
+/// @param h Ignored height.
 void rt_floatingpanel_set_size(void *panel, double w, double h) {
     (void)panel;
     (void)w;
@@ -572,18 +693,25 @@ void rt_floatingpanel_set_size(void *panel, double w, double h) {
 }
 
 /// @brief Show or hide a floating panel overlay.
+/// @param panel Ignored FloatingPanel handle.
+/// @param visible Ignored visibility flag.
 void rt_floatingpanel_set_visible(void *panel, int64_t visible) {
     (void)panel;
     (void)visible;
 }
 
 /// @brief Add a child widget to a floating panel's content area.
+/// @param panel Ignored FloatingPanel handle.
+/// @param child Ignored child handle.
 void rt_floatingpanel_add_child(void *panel, void *child) {
     (void)panel;
     (void)child;
 }
 
 /// @brief Stub: graphics disabled — no group box is created.
+/// @param parent Ignored parent handle.
+/// @param title Ignored title.
+/// @return Always `NULL`.
 void *rt_groupbox_new(void *parent, rt_string title) {
     (void)parent;
     (void)title;
@@ -591,17 +719,22 @@ void *rt_groupbox_new(void *parent, rt_string title) {
 }
 
 /// @brief Destroy group box stub (graphics disabled).
+/// @param gb Ignored GroupBox handle.
 void rt_groupbox_destroy(void *gb) {
     (void)gb;
 }
 
 /// @brief Set group box title stub (graphics disabled).
+/// @param gb Ignored GroupBox handle.
+/// @param title Ignored title.
 void rt_groupbox_set_title(void *gb, rt_string title) {
     (void)gb;
     (void)title;
 }
 
 /// @brief Add child to group box stub (graphics disabled).
+/// @param gb Ignored GroupBox handle.
+/// @param child Ignored child handle.
 void rt_groupbox_add_child(void *gb, void *child) {
     (void)gb;
     (void)child;

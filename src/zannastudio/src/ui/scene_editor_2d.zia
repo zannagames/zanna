@@ -80,6 +80,7 @@ bind "scene_hierarchy_search";
 bind "scene_history";
 bind "scene_layout_2d";
 bind "scene_camera_lighting_2d";
+bind "property_rows";
 bind "scene_property_inspector_2d";
 bind "scene_tile_behavior_2d";
 bind "scene_selection";
@@ -247,8 +248,7 @@ class SceneEditor2D {
     expose GUI.HBox objectPositionRow;
     expose GUI.HBox objectArrangeRow;
     expose GUI.Label objectPropertyLabel;
-    expose GUI.HBox objectPropertyValueRow;
-    expose GUI.HBox objectPropertyButtons;
+    expose property_rows.PropertyRows objectProperties;
     expose GUI.GroupBox componentAssetHost;
     expose GUI.Button objectTabButton;
     expose GUI.Button sceneTabButton;
@@ -302,12 +302,6 @@ class SceneEditor2D {
     expose GUI.Button objectDownButton;
     expose GUI.Dropdown objectArrangeDropdown;
     expose GUI.Button arrangeObjectButton;
-    expose GUI.ListBox objectPropertyList;
-    expose GUI.TextInput objectPropertyKeyInput;
-    expose GUI.Dropdown objectPropertyTypeDropdown;
-    expose GUI.TextInput objectPropertyValueInput;
-    expose GUI.Button newObjectPropertyButton;
-    expose GUI.Button setObjectPropertyButton;
     expose GUI.Button removeObjectPropertyButton;
     expose scene_component_palette.SceneComponentPalette componentPalette;
     expose scene_component_authoring_controller.SceneComponentAuthoringController
@@ -438,8 +432,6 @@ class SceneEditor2D {
         objectPositionRow = null;
         objectArrangeRow = null;
         objectPropertyLabel = null;
-        objectPropertyValueRow = null;
-        objectPropertyButtons = null;
         componentAssetHost = null;
         objectTabButton = null;
         sceneTabButton = null;
@@ -495,12 +487,7 @@ class SceneEditor2D {
         objectDownButton = null;
         objectArrangeDropdown = null;
         arrangeObjectButton = null;
-        objectPropertyList = null;
-        objectPropertyKeyInput = null;
-        objectPropertyTypeDropdown = null;
-        objectPropertyValueInput = null;
-        newObjectPropertyButton = null;
-        setObjectPropertyButton = null;
+        objectProperties = null;
         removeObjectPropertyButton = null;
         componentPalette =
             new scene_component_palette.SceneComponentPalette();
@@ -740,6 +727,10 @@ class SceneEditor2D {
         // focus, so arrow nudges, Delete, Duplicate, and Escape belong to
         // the canvas the user is actually working in.
         canvasImage.SetFocusable(true);
+        // Assets dragged from the project browser drop onto the canvas to
+        // create sprite objects at the drop cell (Phase 1.2).
+        canvasImage.SetDropTarget(true);
+        canvasImage.SetAcceptedDropTypes("zanna/asset");
         canvasImage.SetTooltip(
             "Paint or erase freehand, drag Rectangle, click Fill or Pick; "
             + "Escape cancels captured tile gestures. In Select mode click or "
@@ -961,35 +952,19 @@ class SceneEditor2D {
 
         objectPropertyLabel =
             GUI.Label.New(objectTabHost, "Object properties");
-        objectPropertyList = GUI.ListBox.New(objectTabHost);
-        objectPropertyList.SetAccessibleName("Selected object properties");
-        objectPropertyList.SetPreferredSize(0.0, 112.0);
-        objectPropertyKeyInput = GUI.TextInput.New(objectTabHost);
-        objectPropertyKeyInput.SetPlaceholder("Property key");
-        objectPropertyValueRow = GUI.HBox.New();
-        objectPropertyValueRow.SetSpacing(4.0);
-        objectTabHost.AddChild(objectPropertyValueRow);
-        objectPropertyTypeDropdown = GUI.Dropdown.New(objectPropertyValueRow);
-        objectPropertyTypeDropdown.AddItem("String");
-        objectPropertyTypeDropdown.AddItem("Integer");
-        objectPropertyTypeDropdown.AddItem("Float");
-        objectPropertyTypeDropdown.AddItem("Boolean");
-        objectPropertyTypeDropdown.AddItem("Null");
-        objectPropertyTypeDropdown.SetSelected(PROPERTY_TYPE_STRING);
-        objectPropertyValueInput = GUI.TextInput.New(objectPropertyValueRow);
-        objectPropertyValueInput.SetPlaceholder("Property value");
-        objectPropertyValueInput.SetFlex(1.0);
-        objectPropertyButtons = GUI.HBox.New();
-        objectPropertyButtons.SetSpacing(4.0);
-        objectTabHost.AddChild(objectPropertyButtons);
-        newObjectPropertyButton = GUI.Button.New(objectPropertyButtons, "New");
-        newObjectPropertyButton.SetTooltip("Clear the fields to add a property");
-        setObjectPropertyButton = GUI.Button.New(objectPropertyButtons, "Set");
-        setObjectPropertyButton.SetTooltip(
-            "Create or update this typed property on the current selection");
-        removeObjectPropertyButton = GUI.Button.New(objectPropertyButtons, "Remove");
+        objectProperties = new property_rows.PropertyRows();
+        objectProperties.Setup(
+            objectTabHost,
+            ["String", "Integer", "Float", "Boolean", "Null"],
+            "New property",
+            "object property");
+        // Batch mode keeps one explicit remove-by-key affordance beside the
+        // shared draft row; single-object rows remove through their own ×.
+        removeObjectPropertyButton =
+            GUI.Button.New(objectTabHost, "Remove");
         removeObjectPropertyButton.SetTooltip(
             "Remove this property from the current selection");
+        removeObjectPropertyButton.SetVisible(false);
 
         componentPalette.Setup(
             objectTabHost,
@@ -4868,12 +4843,7 @@ class SceneEditor2D {
         objectDownButton.SetEnabled(enabled);
         objectArrangeDropdown.SetEnabled(enabled);
         arrangeObjectButton.SetEnabled(enabled);
-        objectPropertyList.SetEnabled(enabled);
-        objectPropertyKeyInput.SetEnabled(enabled);
-        objectPropertyTypeDropdown.SetEnabled(enabled);
-        objectPropertyValueInput.SetEnabled(enabled);
-        newObjectPropertyButton.SetEnabled(enabled);
-        setObjectPropertyButton.SetEnabled(enabled);
+        objectProperties.SetEnabled(enabled);
         removeObjectPropertyButton.SetEnabled(enabled);
         objectTypeInput.SetEnabled(enabled);
         objectIdInput.SetEnabled(enabled);
@@ -4933,7 +4903,11 @@ class SceneEditor2D {
             toolbarStatus.SetText("Position edit canceled");
             return false;
         }
-        if editingFocused { return false; }
+        // A completed value scrub commits its gesture immediately, mirroring
+        // canvas-drag release; typed edits still commit when focus leaves.
+        var scrubFinished = objectXSpinner.WasScrubFinished()
+            or objectYSpinner.WasScrubFinished();
+        if editingFocused and scrubFinished == false { return false; }
         objectTransformDraftActive = false;
         return CommitScene("Moved object");
     }
@@ -4973,10 +4947,10 @@ class SceneEditor2D {
         objectPositionRow.SetVisible(objectScope);
         objectArrangeRow.SetVisible(objectScope);
         objectPropertyLabel.SetVisible(objectScope);
-        objectPropertyList.SetVisible(objectScope);
-        objectPropertyKeyInput.SetVisible(objectScope);
-        objectPropertyValueRow.SetVisible(objectScope);
-        objectPropertyButtons.SetVisible(objectScope);
+        objectProperties.host.SetVisible(objectScope);
+        objectProperties.addButton.SetVisible(objectScope);
+        removeObjectPropertyButton.SetVisible(
+            objectScope and selectedObjects.count() > 1);
         // X/Y edits commit live and the id/type fields commit on Enter, so
         // the explicit Apply is retired from the visible surface.
         applyObjectButton.SetVisible(false);
@@ -5274,19 +5248,19 @@ class SceneEditor2D {
         if scene == null { return false; }
         sceneProperties.Pump(scene);
         selectedSceneProperty = sceneProperties.selectedProperty;
-        var setRequested = sceneProperties.TakeSetRequested();
-        var removeRequested = sceneProperties.TakeRemoveRequested();
         var changed = false;
-        if setRequested {
+        var commitRow = sceneProperties.TakeCommitRow();
+        if commitRow >= 0 {
             changed = SetSceneProperty(
-                sceneProperties.SelectedKey(),
-                sceneProperties.keyInput.Text,
-                sceneProperties.SelectedKind(),
-                sceneProperties.valueInput.Text);
+                sceneProperties.CanonicalKeyAt(commitRow),
+                sceneProperties.KeyTextAt(commitRow),
+                sceneProperties.KindTokenAt(commitRow),
+                sceneProperties.ValueTextAt(commitRow));
         }
-        if removeRequested {
+        var removeRow = sceneProperties.TakeRemoveRow();
+        if removeRow >= 0 {
             changed = RemoveSceneProperty(
-                sceneProperties.SelectedKey()) or changed;
+                sceneProperties.CanonicalKeyAt(removeRow)) or changed;
         }
         return changed;
     }
@@ -5706,37 +5680,22 @@ class SceneEditor2D {
 
         var value = field.defaultText;
         selectedObjectProperty = -1;
-        objectPropertyList.SelectIndex(-1);
         if selectedObjects.count() == 1 and selectedObject >= 0
            and selectedObject < scene.ObjectCount()
-           and scene.ObjectHas(selectedObject, field.key) {
-            var index = 0;
-            while index < objectPropertyKeys.count() {
-                if objectPropertyKeys.get(index) == field.key {
-                    selectedObjectProperty = index;
-                    objectPropertyList.SelectIndex(index);
-                    break;
-                }
-                index = index + 1;
-            }
-            if scene.ObjectPropertyKind(selectedObject, field.key)
-               == scene_component_schema.ValueKind(field.kind) {
-                value = PropertyValueText(
-                    selectedObject,
-                    field.key,
-                    scene_component_schema.ValueKind(field.kind));
-            }
+           and scene.ObjectHas(selectedObject, field.key)
+           and scene.ObjectPropertyKind(selectedObject, field.key)
+              == scene_component_schema.ValueKind(field.kind) {
+            value = PropertyValueText(
+                selectedObject,
+                field.key,
+                scene_component_schema.ValueKind(field.kind));
         }
 
-        objectPropertyKeyInput.SetText(field.key);
-        SelectPropertyType(scene_component_schema.ValueKind(field.kind));
-        objectPropertyValueInput.SetText(value);
-        UpdatePropertyValueControl();
-        if field.kind == "null" {
-            objectPropertyKeyInput.Focus();
-        } else {
-            objectPropertyValueInput.Focus();
-        }
+        StageObjectPropertyDraft(
+            field.key,
+            scene_component_schema.ValueKind(field.kind),
+            value,
+            field.kind == "null");
         if field.kind == "asset" {
             componentAssetBrowser.SetExtensions(
                 file_utils.AssetKindListExtensions(field.assetKinds));
@@ -5774,15 +5733,14 @@ class SceneEditor2D {
         var portable = scene_asset_browser.PortableReferencePath(
             assetPath, documentPath);
         if portable == "" { return; }
-        objectPropertyKeyInput.SetText(field.key);
-        SelectPropertyType(
-            scene_component_schema.ValueKind(field.kind));
-        objectPropertyValueInput.SetText(portable);
-        UpdatePropertyValueControl();
-        objectPropertyValueInput.Focus();
+        StageObjectPropertyDraft(
+            field.key,
+            scene_component_schema.ValueKind(field.kind),
+            portable,
+            false);
         detailLabel.SetText(
             "Staged " + portable + " into " + field.label
-            + ". Save the property draft to commit one undoable edit.");
+            + ". Press Enter on the row to commit one undoable edit.");
     }
 
     /// @brief Keep multi-object layout affordances selection-count truthful.
@@ -5809,29 +5767,30 @@ class SceneEditor2D {
     }
 
     hide func RefreshObjectProperties() {
-        objectPropertyList.Clear();
         objectPropertyKeys = [];
+        selectedObjectProperty = -1;
         var hasSelection = scene != null and selectedObject >= 0
             and selectedObject < scene.ObjectCount()
             and selectedObjects.count() > 0;
         var hasObject = hasSelection and selectedObjects.count() == 1;
         var hasBatch = hasSelection and selectedObjects.count() > 1;
-        objectPropertyList.SetEnabled(hasObject);
-        newObjectPropertyButton.SetEnabled(hasSelection);
-        setObjectPropertyButton.SetEnabled(hasSelection);
-        objectPropertyKeyInput.SetEnabled(hasSelection);
-        objectPropertyTypeDropdown.SetEnabled(hasSelection);
+        removeObjectPropertyButton.SetVisible(hasBatch);
         if hasBatch {
-            objectPropertyList.AddItem(
-                "Batch edit " + selectedObjects.count()
-                + " selected objects");
-            selectedObjectProperty = -1;
-            RefreshObjectPropertyFields();
+            // One shared draft row batch-edits the whole selection: commit
+            // sets the typed value on every object, the explicit button
+            // removes its key from every object.
+            var count = selectedObjects.count();
+            objectProperties.SetRows([], [], []);
+            objectProperties.EnsureDraftRow();
+            objectProperties.addButton.SetEnabled(false);
+            removeObjectPropertyButton.SetText("Remove from " + count);
+            removeObjectPropertyButton.SetEnabled(true);
             return;
         }
+        objectProperties.addButton.SetEnabled(hasObject);
         if hasObject == false {
-            selectedObjectProperty = -1;
-            RefreshObjectPropertyFields();
+            objectProperties.SetRows([], [], []);
+            objectProperties.SetEnabled(false);
             return;
         }
 
@@ -5841,74 +5800,19 @@ class SceneEditor2D {
         if visible > MAX_INSPECTOR_PROPERTIES {
             visible = MAX_INSPECTOR_PROPERTIES;
         }
+        var rowKinds: List[Integer] = [];
+        var rowValues: List[String] = [];
         var index = 0;
         while index < visible {
             var key = Seq.GetStr(keys, index);
             var kind = scene.ObjectPropertyKind(selectedObject, key);
             objectPropertyKeys.add(key);
-            objectPropertyList.AddItem(
-                key + "  [" + kind + "] = "
-                + PropertyPreview(PropertyValueText(
-                    selectedObject, key, kind), kind));
+            rowKinds.add(PropertyKindIndex(kind));
+            rowValues.add(PropertyValueText(selectedObject, key, kind));
             index = index + 1;
         }
-        if total > visible {
-            objectPropertyList.AddItem(
-                "… " + (total - visible) + " more properties not shown");
-        }
-        if selectedObjectProperty >= objectPropertyKeys.count() {
-            selectedObjectProperty = -1;
-        }
-        if selectedObjectProperty >= 0 {
-            objectPropertyList.SelectIndex(selectedObjectProperty);
-        }
-        RefreshObjectPropertyFields();
-    }
-
-    hide func RefreshObjectPropertyFields() {
-        var hasSelection = scene != null and selectedObject >= 0
-            and selectedObject < scene.ObjectCount()
-            and selectedObjects.count() > 0;
-        var hasObject = hasSelection and selectedObjects.count() == 1;
-        var hasBatch = hasSelection and selectedObjects.count() > 1;
-        var hasProperty = hasObject and selectedObjectProperty >= 0
-            and selectedObjectProperty < objectPropertyKeys.count();
-        removeObjectPropertyButton.SetText("Remove");
-        setObjectPropertyButton.SetText("Set");
-        removeObjectPropertyButton.SetEnabled(hasProperty or hasBatch);
-        objectPropertyKeyInput.SetEnabled(hasSelection);
-        objectPropertyTypeDropdown.SetEnabled(hasSelection);
-        setObjectPropertyButton.SetEnabled(hasSelection);
-        if hasBatch {
-            var count = selectedObjects.count();
-            setObjectPropertyButton.SetText("Set on " + count);
-            removeObjectPropertyButton.SetText("Remove from " + count);
-            objectPropertyKeyInput.SetText("");
-            objectPropertyKeyInput.SetPlaceholder(
-                "Property key for " + count + " objects");
-            objectPropertyTypeDropdown.SetSelected(PROPERTY_TYPE_STRING);
-            objectPropertyValueInput.SetText("");
-            objectPropertyValueInput.SetPlaceholder("Shared property value");
-            objectPropertyValueInput.SetEnabled(true);
-            return;
-        }
-        objectPropertyKeyInput.SetPlaceholder("Property key");
-        if hasProperty == false {
-            objectPropertyKeyInput.SetText("");
-            objectPropertyTypeDropdown.SetSelected(PROPERTY_TYPE_STRING);
-            objectPropertyValueInput.SetText("");
-            objectPropertyValueInput.SetPlaceholder("Property value");
-            objectPropertyValueInput.SetEnabled(hasSelection);
-            return;
-        }
-
-        var key = objectPropertyKeys.get(selectedObjectProperty);
-        var kind = scene.ObjectPropertyKind(selectedObject, key);
-        objectPropertyKeyInput.SetText(key);
-        SelectPropertyType(kind);
-        objectPropertyValueInput.SetText(
-            PropertyValueText(selectedObject, key, kind));
-        UpdatePropertyValueControl();
+        objectProperties.SetRows(objectPropertyKeys, rowKinds, rowValues);
+        objectProperties.SetEnabled(true);
     }
 
     hide func PropertyValueText(index: Integer,
@@ -5939,55 +5843,59 @@ class SceneEditor2D {
         return preview;
     }
 
-    hide func PropertyKindFromDropdown() -> String {
-        if objectPropertyTypeDropdown.Selected == PROPERTY_TYPE_INT {
-            return "int";
-        }
-        if objectPropertyTypeDropdown.Selected == PROPERTY_TYPE_FLOAT {
-            return "float";
-        }
-        if objectPropertyTypeDropdown.Selected == PROPERTY_TYPE_BOOL {
-            return "bool";
-        }
-        if objectPropertyTypeDropdown.Selected == PROPERTY_TYPE_NULL {
-            return "null";
-        }
+    hide func PropertyKindToken(index: Integer) -> String {
+        if index == PROPERTY_TYPE_INT { return "int"; }
+        if index == PROPERTY_TYPE_FLOAT { return "float"; }
+        if index == PROPERTY_TYPE_BOOL { return "bool"; }
+        if index == PROPERTY_TYPE_NULL { return "null"; }
         return "string";
     }
 
-    hide func SelectPropertyType(kind: String) {
-        var selected = PROPERTY_TYPE_STRING;
-        if kind == "int" { selected = PROPERTY_TYPE_INT; }
-        if kind == "float" { selected = PROPERTY_TYPE_FLOAT; }
-        if kind == "bool" { selected = PROPERTY_TYPE_BOOL; }
-        if kind == "null" { selected = PROPERTY_TYPE_NULL; }
-        objectPropertyTypeDropdown.SetSelected(selected);
-    }
-
-    hide func UpdatePropertyValueControl() {
-        var isNull = PropertyKindFromDropdown() == "null";
-        objectPropertyValueInput.SetEnabled(isNull == false);
-        if isNull {
-            objectPropertyValueInput.SetText("");
-            objectPropertyValueInput.SetPlaceholder("Null has no value");
-        } else {
-            objectPropertyValueInput.SetPlaceholder("Property value");
-        }
+    hide func PropertyKindIndex(kind: String) -> Integer {
+        if kind == "int" { return PROPERTY_TYPE_INT; }
+        if kind == "float" { return PROPERTY_TYPE_FLOAT; }
+        if kind == "bool" { return PROPERTY_TYPE_BOOL; }
+        if kind == "null" { return PROPERTY_TYPE_NULL; }
+        return PROPERTY_TYPE_STRING;
     }
 
     hide func SelectObjectPropertyByKey(key: String) {
         var index = 0;
         while index < objectPropertyKeys.count() {
             if objectPropertyKeys.get(index) == key {
-                selectedObjectProperty = index;
-                objectPropertyList.SelectIndex(index);
-                RefreshObjectPropertyFields();
+                var row = objectProperties.rows.get(index);
+                row.valueInput.Focus();
                 return;
             }
             index = index + 1;
         }
-        selectedObjectProperty = -1;
-        RefreshObjectPropertyFields();
+    }
+
+    /// @brief Prefill one existing or draft property row and focus it.
+    hide func StageObjectPropertyDraft(key: String,
+                                       kind: String,
+                                       value: String,
+                                       focusKey: Boolean) {
+        var index = 0;
+        while index < objectPropertyKeys.count() {
+            if objectPropertyKeys.get(index) == key {
+                var row = objectProperties.rows.get(index);
+                row.kindDropdown.SetSelected(PropertyKindIndex(kind));
+                row.valueInput.SetText(value);
+                if focusKey { row.keyInput.Focus(); }
+                else { row.valueInput.Focus(); }
+                return;
+            }
+            index = index + 1;
+        }
+        objectProperties.AddDraftRow();
+        var draft = objectProperties.rows.get(
+            objectProperties.rows.count() - 1);
+        draft.keyInput.SetText(key);
+        draft.kindDropdown.SetSelected(PropertyKindIndex(kind));
+        draft.valueInput.SetText(value);
+        if focusKey { draft.keyInput.Focus(); }
+        else { draft.valueInput.Focus(); }
     }
 
     hide func RestoreSceneSnapshot(snapshot: String) {
@@ -6141,6 +6049,10 @@ class SceneEditor2D {
             changed = ApplyObjectHierarchyDrop(
                 sourceIndex, targetIndex, dropPosition) or changed;
         }
+        if objectTree.WasEditCommitted() {
+            changed = ApplyObjectRename() or changed;
+        }
+        PumpObjectRename();
         if objectParentDropdown.WasChanged() {
             UpdateObjectParentControlAvailability();
         }
@@ -6149,38 +6061,10 @@ class SceneEditor2D {
                 SelectedObjectParentTargetIndex()) or changed;
         }
         if addObjectButton.WasClicked() {
-            var x = 0;
-            var y = 0;
-            if selectedCellX >= 0 {
-                x = selectedCellX * scene.TileWidth;
-                y = selectedCellY * scene.TileHeight;
-            }
-            var objectIndex = AddSceneObject(
-                "entity",
-                UniqueObjectId("object-" + (scene.ObjectCount() + 1)),
-                x,
-                y);
-            if objectIndex >= 0 { changed = true; }
+            changed = CreateRootObjectAtSelection() >= 0 or changed;
         }
-        if addChildObjectButton.WasClicked()
-           and selectedObjects.count() == 1
-           and selectedObject >= 0
-           and selectedObject < scene.ObjectCount() {
-            var childParent = selectedObject;
-            var childX = scene.ObjectX(childParent);
-            var childY = scene.ObjectY(childParent);
-            if selectedCellX >= 0 and selectedCellY >= 0 {
-                childX = selectedCellX * scene.TileWidth;
-                childY = selectedCellY * scene.TileHeight;
-            }
-            var childIndex = AddSceneChildObject(
-                childParent,
-                "entity",
-                UniqueObjectId(
-                    "object-" + (scene.ObjectCount() + 1)),
-                childX,
-                childY);
-            if childIndex >= 0 { changed = true; }
+        if addChildObjectButton.WasClicked() {
+            changed = CreateChildObjectUnderSelection() >= 0 or changed;
         }
         var applyRequested = applyObjectButton.WasClicked();
         if objectTypeInput.WasSubmitted() { applyRequested = true; }
@@ -6205,87 +6089,46 @@ class SceneEditor2D {
             changed = ArrangeSelectedSceneObjects(
                 objectArrangeDropdown.Selected) or changed;
         }
-        if objectUpButton.WasClicked()
-           and selectedObjects.count() == 1 {
-            var previousSibling =
-                PreviousObjectSibling(selectedObject);
-            if previousSibling >= 0 {
-                changed = ApplyObjectHierarchyDrop(
-                    selectedObject,
-                    previousSibling,
-                    0) or changed;
-            }
+        if objectUpButton.WasClicked() {
+            changed = MoveSelectedObjectEarlier() or changed;
         }
-        if objectDownButton.WasClicked()
-           and selectedObjects.count() == 1 {
-            var nextSibling = NextObjectSibling(selectedObject);
-            if nextSibling >= 0 {
-                changed = ApplyObjectHierarchyDrop(
-                    selectedObject,
-                    nextSibling,
-                    2) or changed;
-            }
+        if objectDownButton.WasClicked() {
+            changed = MoveSelectedObjectLater() or changed;
         }
         if removeObjectButton.WasClicked() and selectedObject >= 0 {
             changed = RemoveSelectedSceneObjects() or changed;
         }
-        if objectPropertyList.WasSelectionChanged() {
-            var propertyIndex = objectPropertyList.SelectedIndex;
-            if propertyIndex >= 0
-               and propertyIndex < objectPropertyKeys.count() {
-                selectedObjectProperty = propertyIndex;
-            } else {
-                selectedObjectProperty = -1;
-            }
-            RefreshObjectPropertyFields();
-        }
-        if newObjectPropertyButton.WasClicked() {
-            selectedObjectProperty = -1;
-            objectPropertyList.SelectIndex(-1);
-            RefreshObjectPropertyFields();
-            objectPropertyKeyInput.Focus();
-        }
-        if objectPropertyTypeDropdown.WasChanged() {
-            UpdatePropertyValueControl();
-        }
-        var setPropertyRequested = setObjectPropertyButton.WasClicked();
-        if objectPropertyKeyInput.WasSubmitted() {
-            setPropertyRequested = true;
-        }
-        if objectPropertyValueInput.WasSubmitted() {
-            setPropertyRequested = true;
-        }
-        if setPropertyRequested and selectedObjects.count() > 1 {
+        objectProperties.Pump();
+        var propertyCommitRow = objectProperties.TakeCommitRow();
+        if propertyCommitRow >= 0 and selectedObjects.count() > 1 {
             changed = SetSelectedSceneObjectProperty(
-                objectPropertyKeyInput.Text,
-                PropertyKindFromDropdown(),
-                objectPropertyValueInput.Text) or changed;
-        } else if setPropertyRequested and selectedObjects.count() == 1
+                objectProperties.KeyTextAt(propertyCommitRow),
+                PropertyKindToken(
+                    objectProperties.KindIndexAt(propertyCommitRow)),
+                objectProperties.ValueTextAt(propertyCommitRow)) or changed;
+        } else if propertyCommitRow >= 0 and selectedObjects.count() == 1
                   and selectedObject >= 0 {
-            var previousKey = "";
-            if selectedObjectProperty >= 0
-               and selectedObjectProperty < objectPropertyKeys.count() {
-                previousKey = objectPropertyKeys.get(selectedObjectProperty);
-            }
             changed = SetSceneObjectProperty(
                 selectedObject,
-                previousKey,
-                objectPropertyKeyInput.Text,
-                PropertyKindFromDropdown(),
-                objectPropertyValueInput.Text) or changed;
+                objectProperties.CanonicalKeyAt(propertyCommitRow),
+                objectProperties.KeyTextAt(propertyCommitRow),
+                PropertyKindToken(
+                    objectProperties.KindIndexAt(propertyCommitRow)),
+                objectProperties.ValueTextAt(propertyCommitRow)) or changed;
         }
-        if removeObjectPropertyButton.WasClicked()
-           and selectedObjects.count() > 1 {
-            changed = RemoveSelectedSceneObjectProperty(
-                objectPropertyKeyInput.Text) or changed;
-        } else if removeObjectPropertyButton.WasClicked()
-                  and selectedObjects.count() == 1
-                  and selectedObject >= 0
-                  and selectedObjectProperty >= 0
-                  and selectedObjectProperty < objectPropertyKeys.count() {
+        var propertyRemoveRow = objectProperties.TakeRemoveRow();
+        if propertyRemoveRow >= 0 and selectedObjects.count() == 1
+           and selectedObject >= 0 {
             changed = RemoveSceneObjectProperty(
                 selectedObject,
-                objectPropertyKeys.get(selectedObjectProperty)) or changed;
+                objectProperties.CanonicalKeyAt(
+                    propertyRemoveRow)) or changed;
+        }
+        if removeObjectPropertyButton.WasClicked()
+           and selectedObjects.count() > 1
+           and objectProperties.RowCount() > 0 {
+            changed = RemoveSelectedSceneObjectProperty(
+                objectProperties.KeyTextAt(0)) or changed;
         }
         return changed;
     }
@@ -6551,6 +6394,12 @@ class SceneEditor2D {
 
     /// @brief Apply the current mouse tool to one bounded scene cell.
     hide func PumpCanvas() -> Boolean {
+        if canvasImage != null and canvasImage.WasDropped() {
+            return CreateSpriteObjectFromDrop(
+                canvasImage.GetDropData(),
+                canvasImage.GetDropX(),
+                canvasImage.GetDropY()) >= 0;
+        }
         if canvasMarqueeActive {
             if Input.Keyboard.WasPressed(Input.Key.Escape) {
                 CancelCanvasMarquee();
@@ -6833,6 +6682,224 @@ class SceneEditor2D {
                 + deltaX + ", " + deltaY);
         }
         return changed;
+    }
+
+    /// @brief F2 begins an inline object-id rename of the single selection.
+    /// @details The row editor pre-fills the raw id (rows decorate the label
+    ///          with the type). Enter or focus loss commits through
+    ///          ApplyObjectRename; Escape cancels.
+    hide func PumpObjectRename() {
+        if Input.Keyboard.WasPressed(Input.Key.F2) == false { return; }
+        if SceneSelectionCommandsOwnFocus() == false { return; }
+        BeginRenameSelectedObject();
+    }
+
+    /// @brief Begin an inline rename of the single selected object's row.
+    /// @details Shared by the F2 shortcut and the hierarchy context menu.
+    /// @return True when the row editor opened.
+    expose func BeginRenameSelectedObject() -> Boolean {
+        if objectTree == null or scene == null { return false; }
+        if objectTree.IsEditing() { return false; }
+        if selectedObjects.count() != 1 { return false; }
+        if selectedObject < 0
+           or selectedObject >= objectTreeNodes.count()
+           or objectTreeNodes.get(selectedObject) == null {
+            return false;
+        }
+        return objectTree.BeginEditNode(
+            objectTreeNodes.get(selectedObject),
+            scene.ObjectId(selectedObject));
+    }
+
+    /// @brief Create one root entity at the selected cell (or the origin).
+    /// @details Shared by the Add Root button and the hierarchy context menu;
+    ///          one undoable transaction through AddSceneObject.
+    /// @return The new object index, or -1 when nothing was created.
+    expose func CreateRootObjectAtSelection() -> Integer {
+        if scene == null { return -1; }
+        var x = 0;
+        var y = 0;
+        if selectedCellX >= 0 {
+            x = selectedCellX * scene.TileWidth;
+            y = selectedCellY * scene.TileHeight;
+        }
+        return AddSceneObject(
+            "entity",
+            UniqueObjectId("object-" + (scene.ObjectCount() + 1)),
+            x,
+            y);
+    }
+
+    /// @brief Create one child entity beneath the single selected object.
+    /// @details Shared by the Add Child button and the hierarchy context
+    ///          menu; one undoable transaction through AddSceneChildObject.
+    /// @return The new object index, or -1 when nothing was created.
+    expose func CreateChildObjectUnderSelection() -> Integer {
+        if scene == null or selectedObjects.count() != 1
+           or selectedObject < 0
+           or selectedObject >= scene.ObjectCount() {
+            return -1;
+        }
+        var childParent = selectedObject;
+        var childX = scene.ObjectX(childParent);
+        var childY = scene.ObjectY(childParent);
+        if selectedCellX >= 0 and selectedCellY >= 0 {
+            childX = selectedCellX * scene.TileWidth;
+            childY = selectedCellY * scene.TileHeight;
+        }
+        return AddSceneChildObject(
+            childParent,
+            "entity",
+            UniqueObjectId("object-" + (scene.ObjectCount() + 1)),
+            childX,
+            childY);
+    }
+
+    /// @brief The scene cell at one physical point, or -1 outside the canvas.
+    expose func CanvasCellAtPointX(pointX: Number) -> Integer {
+        return CanvasCellAtPoint(pointX, 0.0, true);
+    }
+
+    /// @brief The scene row at one physical point, or -1 outside the canvas.
+    expose func CanvasCellAtPointY(pointY: Number) -> Integer {
+        return CanvasCellAtPoint(0.0, pointY, false);
+    }
+
+    /// @brief Shared point-to-cell math mirroring the canvas hit path.
+    /// @details Validates only the queried axis: each caller resolves one
+    ///          axis at a time, so the other point argument is a dummy.
+    hide func CanvasCellAtPoint(pointX: Number,
+                                pointY: Number,
+                                horizontal: Boolean) -> Integer {
+        if scene == null or canvasImage == null
+           or displayCellSize <= 0 {
+            return -1;
+        }
+        if horizontal {
+            var relativeX = PhysicalPointerToUi(pointX)
+                - canvasImage.GetScreenX();
+            var contentX = Convert.NumToInt(relativeX) + viewOriginX;
+            if contentX < 0 { return -1; }
+            var cellX = contentX / displayCellSize;
+            if cellX >= scene.Width { return -1; }
+            return cellX;
+        }
+        var relativeY = PhysicalPointerToUi(pointY)
+            - canvasImage.GetScreenY();
+        var contentY = Convert.NumToInt(relativeY) + viewOriginY;
+        if contentY < 0 { return -1; }
+        var cellY = contentY / displayCellSize;
+        if cellY >= scene.Height { return -1; }
+        return cellY;
+    }
+
+    /// @brief Create one sprite object from a dropped image asset.
+    /// @details One undoable transaction: the object and its editor.sprite
+    ///          reference commit together. The drop lands at the recorded
+    ///          drop point's cell; non-image assets are refused.
+    /// @param assetPath Absolute workspace path of the dropped asset.
+    /// @param dropX Physical pointer x recorded when the drop landed.
+    /// @param dropY Physical pointer y recorded when the drop landed.
+    /// @return The new object index, or -1 when nothing was created.
+    expose func CreateSpriteObjectFromDrop(assetPath: String,
+                                           dropX: Number,
+                                           dropY: Number) -> Integer {
+        if scene == null or assetPath == "" { return -1; }
+        if scene_asset_browser.AssetExtensionAllowed(
+               assetPath,
+               scene_asset_browser.NormalizeAssetExtensions(
+                   ".png,.jpg,.jpeg,.bmp,.gif")) == false {
+            detailLabel.SetText(
+                "Only image assets can drop onto the canvas as sprites.");
+            return -1;
+        }
+        var cellX = CanvasCellAtPointX(dropX);
+        var cellY = CanvasCellAtPointY(dropY);
+        if cellX < 0 or cellY < 0 {
+            detailLabel.SetText(
+                "Drop the asset over a scene cell to place a sprite.");
+            return -1;
+        }
+        var documentPath = "";
+        if currentDoc != null { documentPath = currentDoc.filePath; }
+        var portable = scene_asset_browser.PortableReferencePath(
+            assetPath, documentPath);
+        if portable == "" {
+            detailLabel.SetText(
+                "The dropped asset has no portable project reference.");
+            return -1;
+        }
+        var objectId = UniqueObjectId(
+            "sprite-" + (scene.ObjectCount() + 1));
+        var previousSelection = selectedObjects;
+        var previousPrimary = selectedObject;
+        var objectIndex = scene.AddObject(
+            "sprite", objectId,
+            cellX * scene.TileWidth, cellY * scene.TileHeight);
+        if objectIndex < 0 { return -1; }
+        scene.ObjectSetStr(objectIndex, "editor.sprite", portable);
+        selectedObject = objectIndex;
+        selectedObjects = scene_selection.Single(
+            objectIndex, scene.ObjectCount());
+        if CommitScene("Dropped sprite " + objectId) == false {
+            scene.RemoveObject(objectIndex);
+            selectedObject = previousPrimary;
+            selectedObjects = previousSelection;
+            detailLabel.SetText(
+                "The dropped sprite could not be committed.");
+            RefreshInspector();
+            return -1;
+        }
+        detailLabel.SetText("");
+        RefreshInspector();
+        renderDirty = true;
+        return objectIndex;
+    }
+
+    /// @brief Move the single selected object before its previous sibling.
+    /// @details Shared by the Up button and the hierarchy context menu.
+    expose func MoveSelectedObjectEarlier() -> Boolean {
+        if selectedObjects.count() != 1 { return false; }
+        var previousSibling = PreviousObjectSibling(selectedObject);
+        if previousSibling < 0 { return false; }
+        return ApplyObjectHierarchyDrop(selectedObject, previousSibling, 0);
+    }
+
+    /// @brief Move the single selected object after its next sibling.
+    /// @details Shared by the Down button and the hierarchy context menu.
+    expose func MoveSelectedObjectLater() -> Boolean {
+        if selectedObjects.count() != 1 { return false; }
+        var nextSibling = NextObjectSibling(selectedObject);
+        if nextSibling < 0 { return false; }
+        return ApplyObjectHierarchyDrop(selectedObject, nextSibling, 2);
+    }
+
+    /// @brief Switch the active canvas tool as workspace-only state.
+    /// @details Shared by the toolbar buttons and the canvas context menu.
+    expose func SetToolMode(nextMode: Integer) {
+        mode = ClampInt(nextMode, MODE_SELECT, MODE_PICKER);
+        UpdateModeButtons();
+    }
+
+    /// @brief Apply a committed inline object-id rename as one undoable edit.
+    /// @details The edited row's data carries the object index, so a selection
+    ///          change between commit and consumption cannot retarget the
+    ///          rename. UpdateSceneObject owns emptiness, uniqueness, model
+    ///          acceptance, rollback, and the single history entry.
+    hide func ApplyObjectRename() -> Boolean {
+        var edited = objectTree.GetEditedNodeOption();
+        if edited.IsSome == false { return false; }
+        var index = Parse.IntOr(
+            GUI.TreeView.Node.GetData(edited.Unwrap()), -1);
+        if index < 0 or index >= scene.ObjectCount() { return false; }
+        var nextId = Str.Trim(objectTree.GetEditText());
+        if nextId == "" or nextId == scene.ObjectId(index) { return false; }
+        return UpdateSceneObject(
+            index,
+            scene.ObjectType(index),
+            nextId,
+            scene.ObjectX(index),
+            scene.ObjectY(index));
     }
 
     /// @brief Return whether scene selection shortcuts belong to this surface.

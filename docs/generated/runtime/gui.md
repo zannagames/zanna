@@ -1020,6 +1020,8 @@ stale handles follow the documented empty/no-op contract.
 | <a id="zanna-gui-widget-wasdropped"></a>`WasDropped` | `i1()` | `Zanna.GUI.Widget.WasDropped` |
 | <a id="zanna-gui-widget-getdroptype"></a>`GetDropType` | `str()` | `Zanna.GUI.Widget.GetDropType` |
 | <a id="zanna-gui-widget-getdropdata"></a>`GetDropData` | `str()` | `Zanna.GUI.Widget.GetDropData` |
+| <a id="zanna-gui-widget-getdropx"></a>`GetDropX` | `f64()` | `Zanna.GUI.Widget.GetDropX` |
+| <a id="zanna-gui-widget-getdropy"></a>`GetDropY` | `f64()` | `Zanna.GUI.Widget.GetDropY` |
 
 <a id="zanna-gui-label"></a>
 ### `Zanna.GUI.Label`
@@ -1224,6 +1226,12 @@ Constructor: `Zanna.GUI.TreeView.New`
 | <a id="zanna-gui-treeview-getdroptargetdata"></a>`GetDropTargetData` | `str()` | `Zanna.GUI.TreeView.GetDropTargetData` |
 | <a id="zanna-gui-treeview-getdropposition"></a>`GetDropPosition` | `i64()` | `Zanna.GUI.TreeView.GetDropPosition` |
 | <a id="zanna-gui-treeview-cleardrop"></a>`ClearDrop` | `void()` | `Zanna.GUI.TreeView.ClearDrop` |
+| <a id="zanna-gui-treeview-begineditnode"></a>`BeginEditNode` | `i1(obj,str)` | `Zanna.GUI.TreeView.BeginEditNode` |
+| <a id="zanna-gui-treeview-isediting"></a>`IsEditing` | `i1()` | `Zanna.GUI.TreeView.IsEditing` |
+| <a id="zanna-gui-treeview-waseditcommitted"></a>`WasEditCommitted` | `i1()` | `Zanna.GUI.TreeView.WasEditCommitted` |
+| <a id="zanna-gui-treeview-getedittext"></a>`GetEditText` | `str()` | `Zanna.GUI.TreeView.GetEditText` |
+| <a id="zanna-gui-treeview-geteditednodeoption"></a>`GetEditedNodeOption` | `obj<Zanna.Option>()` | `Zanna.GUI.TreeView.GetEditedNodeOption` |
+| <a id="zanna-gui-treeview-canceledit"></a>`CancelEdit` | `void()` | `Zanna.GUI.TreeView.CancelEdit` |
 | <a id="zanna-gui-treeview-setvirtualmodel"></a>`SetVirtualModel` | `i1(obj)` | `Zanna.GUI.TreeView.SetVirtualModel` |
 | <a id="zanna-gui-treeview-clearvirtualmodel"></a>`ClearVirtualModel` | `void()` | `Zanna.GUI.TreeView.ClearVirtualModel` |
 | <a id="zanna-gui-treeview-new"></a>`New` | `obj(obj)` | `Zanna.GUI.TreeView.New` |
@@ -1864,6 +1872,7 @@ Constructor: `Zanna.GUI.Spinner.New`
 | <a id="zanna-gui-spinner-setdecimals"></a>`SetDecimals` | `void(i64)` | `Zanna.GUI.Spinner.SetDecimals` |
 | <a id="zanna-gui-spinner-waschanged"></a>`WasChanged` | `i1()` | `Zanna.GUI.Spinner.WasChanged` |
 | <a id="zanna-gui-spinner-wassubmitted"></a>`WasSubmitted` | `i1()` | `Zanna.GUI.Spinner.WasSubmitted` |
+| <a id="zanna-gui-spinner-wasscrubfinished"></a>`WasScrubFinished` | `i1()` | `Zanna.GUI.Spinner.WasScrubFinished` |
 | <a id="zanna-gui-spinner-getrevision"></a>`GetRevision` | `i64()` | `Zanna.GUI.Spinner.GetRevision` |
 | <a id="zanna-gui-spinner-new"></a>`New` | `obj(obj)` | `Zanna.GUI.Spinner.New` |
 
@@ -2657,6 +2666,12 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.TreeView.GetDropTargetData` | `str(obj)` | `rt_treeview_get_drop_target_data` |
 | `Zanna.GUI.TreeView.GetDropPosition` | `i64(obj)` | `rt_treeview_get_drop_position` |
 | `Zanna.GUI.TreeView.ClearDrop` | `void(obj)` | `rt_treeview_clear_drop` |
+| `Zanna.GUI.TreeView.BeginEditNode` | `i1(obj,obj,str)` | `rt_treeview_begin_edit_node` |
+| `Zanna.GUI.TreeView.IsEditing` | `i1(obj)` | `rt_treeview_is_editing` |
+| `Zanna.GUI.TreeView.WasEditCommitted` | `i1(obj)` | `rt_treeview_was_edit_committed` |
+| `Zanna.GUI.TreeView.GetEditText` | `str(obj)` | `rt_treeview_get_edit_text` |
+| `Zanna.GUI.TreeView.GetEditedNodeOption` | `obj<Zanna.Option>(obj)` | `rt_treeview_get_edited_node_option` |
+| `Zanna.GUI.TreeView.CancelEdit` | `void(obj)` | `rt_treeview_cancel_edit` |
 | `Zanna.GUI.TreeView.Node.GetText` | `str(obj)` | `rt_treeview_node_get_text` |
 | `Zanna.GUI.TreeView.Node.SetText` | `void(obj,str)` | `rt_treeview_node_set_text` |
 | `Zanna.GUI.TreeView.Node.SetIcon` | `void(obj,str)` | `rt_treeview_node_set_icon` |
@@ -2881,6 +2896,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.Spinner.SetDecimals` | `void(obj,i64)` | `rt_spinner_set_decimals` |
 | `Zanna.GUI.Spinner.WasChanged` | `i1(obj)` | `rt_spinner_was_changed` |
 | `Zanna.GUI.Spinner.WasSubmitted` | `i1(obj)` | `rt_spinner_was_submitted` |
+| `Zanna.GUI.Spinner.WasScrubFinished` | `i1(obj)` | `rt_spinner_was_scrub_finished` |
 | `Zanna.GUI.Spinner.GetRevision` | `i64(obj)` | `rt_spinner_get_revision` |
 | `Zanna.GUI.ColorSwatch.New` | `obj(obj,i64)` | `rt_colorswatch_new` |
 | `Zanna.GUI.ColorSwatch.SetColor` | `void(obj,i64)` | `rt_colorswatch_set_color` |
@@ -3520,6 +3536,8 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.Widget.WasDropped` | `i1(obj)` | `rt_widget_was_dropped` |
 | `Zanna.GUI.Widget.GetDropType` | `str(obj)` | `rt_widget_get_drop_type` |
 | `Zanna.GUI.Widget.GetDropData` | `str(obj)` | `rt_widget_get_drop_data` |
+| `Zanna.GUI.Widget.GetDropX` | `f64(obj)` | `rt_widget_get_drop_x` |
+| `Zanna.GUI.Widget.GetDropY` | `f64(obj)` | `rt_widget_get_drop_y` |
 | `Zanna.GUI.App.WasFileDropped` | `i1(obj)` | `rt_app_was_file_dropped` |
 | `Zanna.GUI.App.GetDroppedFileCount` | `i64(obj)` | `rt_app_get_dropped_file_count` |
 | `Zanna.GUI.App.GetDroppedFile` | `str(obj,i64)` | `rt_app_get_dropped_file` |

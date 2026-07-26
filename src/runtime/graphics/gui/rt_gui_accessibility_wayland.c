@@ -3,6 +3,15 @@
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
 //
+/// @file rt_gui_accessibility_wayland.c
+/// @brief Implements Wayland-safe desktop preferences and AT-SPI accessibility forwarding.
+///
+/// @details
+/// This adapter reads process environment hints and the desktop settings portal
+/// without opening an X11 connection. Semantic-tree lifecycle, changes, and
+/// live-region announcements are forwarded to the shared Linux AT-SPI bridge;
+/// all native and toolkit handles remain borrowed.
+///
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/graphics/gui/rt_gui_accessibility_wayland.c
@@ -24,6 +33,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Search text for an ASCII substring without regard to letter case.
+/// @param text NUL-terminated text to inspect; may be NULL.
+/// @param needle Non-empty NUL-terminated substring; may be NULL.
+/// @return 1 when @p needle occurs in @p text, otherwise 0.
 static int rt_gui_wayland_contains_ascii(const char *text, const char *needle) {
     if (!text || !needle || !needle[0])
         return 0;
@@ -41,6 +54,9 @@ static int rt_gui_wayland_contains_ascii(const char *text, const char *needle) {
     return 0;
 }
 
+/// @brief Query high contrast from toolkit environment hints and the desktop portal.
+/// @param window Borrowed Wayland window; unused because the settings are process-wide.
+/// @return 1 when an available desktop hint requests high contrast, otherwise 0.
 int32_t rt_gui_accessibility_platform_high_contrast(vgfx_window_t window) {
     (void)window;
     if (rt_gui_wayland_contains_ascii(getenv("GTK_THEME"), "contrast") ||
@@ -53,6 +69,9 @@ int32_t rt_gui_accessibility_platform_high_contrast(vgfx_window_t window) {
                : 0;
 }
 
+/// @brief Query reduced motion from GTK's animation hint and the desktop portal.
+/// @param window Borrowed Wayland window; unused because the settings are process-wide.
+/// @return 1 when interface animations are explicitly disabled, otherwise 0.
 int32_t rt_gui_accessibility_platform_reduced_motion(vgfx_window_t window) {
     (void)window;
     const char *value = getenv("GTK_ENABLE_ANIMATIONS");
@@ -67,6 +86,9 @@ int32_t rt_gui_accessibility_platform_reduced_motion(vgfx_window_t window) {
                : 0;
 }
 
+/// @brief Query dark appearance from toolkit environment hints and the desktop portal.
+/// @param window Borrowed Wayland window; unused because the settings are process-wide.
+/// @return 1 when an available desktop hint requests dark appearance, otherwise 0.
 int32_t rt_gui_accessibility_platform_prefers_dark(vgfx_window_t window) {
     (void)window;
     if (rt_gui_wayland_contains_ascii(getenv("GTK_THEME"), "dark") ||
@@ -80,22 +102,38 @@ int32_t rt_gui_accessibility_platform_prefers_dark(vgfx_window_t window) {
                : 0;
 }
 
+/// @brief Attach the shared Linux AT-SPI projection to a Wayland semantic tree.
+/// @param window Borrowed Wayland window associated with the tree.
+/// @param root Borrowed semantic root to project.
 void rt_gui_accessibility_platform_attach(vgfx_window_t window, vg_widget_t *root) {
     rt_gui_atspi_linux_attach(window, root);
 }
 
+/// @brief Detach the shared Linux AT-SPI projection for a Wayland window.
+/// @param window Borrowed Wayland window whose projection is removed.
 void rt_gui_accessibility_platform_detach(vgfx_window_t window) {
     rt_gui_atspi_linux_detach(window);
 }
 
+/// @brief Forward a semantic-node change to the shared Linux AT-SPI projection.
+/// @param window Borrowed Wayland window associated with the tree.
+/// @param widget Borrowed semantic widget whose exported state changed.
 void rt_gui_accessibility_platform_notify(vgfx_window_t window, vg_widget_t *widget) {
     rt_gui_atspi_linux_notify(window, widget);
 }
 
+/// @brief Reconcile the shared Linux AT-SPI projection with the semantic tree.
+/// @param window Borrowed Wayland window associated with the tree.
+/// @param root Borrowed semantic root to project.
 void rt_gui_accessibility_platform_sync(vgfx_window_t window, vg_widget_t *root) {
     rt_gui_atspi_linux_sync(window, root);
 }
 
+/// @brief Forward a live-region announcement to the shared Linux AT-SPI projection.
+/// @param window Borrowed Wayland window associated with the tree.
+/// @param widget Borrowed semantic widget that originated the announcement.
+/// @param text Borrowed UTF-8 announcement text.
+/// @param mode Requested live-region urgency.
 void rt_gui_accessibility_platform_announce(vgfx_window_t window,
                                             vg_widget_t *widget,
                                             const char *text,

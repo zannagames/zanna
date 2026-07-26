@@ -36,10 +36,10 @@
 
 namespace {
 
-constexpr std::size_t kExpectedFunctionCount = 1124;
+constexpr std::size_t kExpectedFunctionCount = 1133;
 constexpr std::size_t kExpectedClassCount = 79;
 constexpr std::size_t kExpectedPropertyCount = 110;
-constexpr std::size_t kExpectedMethodCount = 1015;
+constexpr std::size_t kExpectedMethodCount = 1024;
 
 /// @brief Test whether a canonical runtime name belongs to the GUI boundary.
 /// @param name Function or class name from the live runtime registry.
@@ -212,7 +212,7 @@ int main() {
 
     // Set after deliberate review of every registry row. Any future mismatch prints the new value
     // and requires an explicit count/signature/class-binding review before this constant changes.
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0xb067d830d8624e4b);
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x948426252073da6b);
     if (hash.value() != kExpectedManifestHash) {
         std::cerr << "FAIL: GUI ABI manifest changed; reviewed hash is 0x" << std::hex
                   << hash.value() << '\n';

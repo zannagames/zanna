@@ -86,8 +86,8 @@ ilrun program.il
 
 Zanna builds and runs on:
 
-- **macOS** (Apple Silicon and Intel)
-- **Linux** (x86-64)
+- **macOS** (Apple Silicon)
+- **Linux** (x86-64 and AArch64)
 - **Windows** (x86-64)
 
 Native code generation targets x86-64 (System V and Windows x64 ABIs) and AArch64.

@@ -1630,6 +1630,17 @@ typedef struct vg_spinner {
     bool up_pressed;   ///< Is up button pressed
     bool down_pressed; ///< Is down button pressed
 
+    // Value-area drag scrubbing. A press arms a candidate; crossing the drag
+    // threshold turns the gesture into a horizontal value scrub (Shift =
+    // coarse, Ctrl/Alt = fine), while releasing before the threshold falls
+    // back to click-to-edit. The finished edge is latched for poll consumers
+    // that coalesce one scrub gesture into one history entry.
+    bool scrub_candidate;     ///< Value-area press awaiting the drag threshold
+    bool scrubbing;           ///< Horizontal drag is adjusting the value
+    float scrub_start_x;      ///< Widget-local x at the candidate press
+    double scrub_start_value; ///< Value at the candidate press
+    bool scrub_finished;      ///< Latched edge: a scrub gesture completed
+
     // Callbacks
     vg_spinner_callback_t on_change;
     void *on_change_data;
@@ -1662,6 +1673,14 @@ void vg_spinner_set_indeterminate(vg_spinner_t *spinner, bool indeterminate);
 /// @param spinner Spinner widget.
 /// @return true only while the mixed-value presentation is active.
 bool vg_spinner_is_indeterminate(const vg_spinner_t *spinner);
+
+/// @brief Consume the latched value-scrub completion edge.
+/// @details A scrub is a horizontal drag on the value area that adjusts the
+///          value continuously; the edge lets poll consumers coalesce one
+///          gesture into one committed edit, mirroring drag-release commits.
+/// @param spinner Spinner widget.
+/// @return true exactly once per completed scrub gesture.
+bool vg_spinner_was_scrub_finished(vg_spinner_t *spinner);
 
 /// @brief Set the allowed value range.
 /// @param spinner Spinner widget.

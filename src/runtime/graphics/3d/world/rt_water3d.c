@@ -23,6 +23,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_water3d.c
+ * @brief Implements animated grid water with legacy sine or multi-wave Gerstner deformation.
+ *
+ * Water3D retains a reusable mesh and material, updates analytic normals on the CPU, supports
+ * texture/normal/environment bindings, and can skip off-range grid rebuilds while preserving wave
+ * phase.
+ */
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_water3d.h"
@@ -141,21 +150,27 @@ typedef struct {
 } rt_water3d;
 
 /// @brief Validate @p obj as a Water3D handle and return its typed pointer (NULL on mismatch).
+/// @param obj Candidate runtime object handle.
+/// @return Typed Water3D pointer, or NULL when the handle is invalid or has the wrong class.
 static rt_water3d *water3d_checked(void *obj) {
     return (rt_water3d *)rt_g3d_checked_or_null(obj, RT_G3D_WATER3D_CLASS_ID);
 }
 
 /// @brief Return non-zero when @p pixels is a live `Zanna.Graphics.Pixels` handle.
+/// @param pixels Candidate runtime object.
+/// @return Nonzero when @p pixels is a valid live Pixels handle.
 static int water3d_is_pixels_handle(void *pixels) {
     return rt_pixels_checked_impl_or_null(pixels) != NULL;
 }
 
 /// @brief Drop one reference and zero the slot. Idempotent on null/empty slots.
+/// @param slot Address of the retained-reference slot.
 static void water3d_release_ref(void **slot) {
     rt_g3d_ref_slot_release(slot);
 }
 
 /// @brief Release a retained Pixels slot only if it still points at a valid Pixels object.
+/// @param slot Address of the retained Pixels slot.
 static void water3d_release_pixels_slot(void **slot) {
     if (!slot || !*slot)
         return;
@@ -170,12 +185,14 @@ static void water3d_release_pixels_slot(void **slot) {
 /// @details Isolated contract tests link Water3D without the full renderer/material module. The
 ///   optional symbol keeps those tests on the legacy draw fallback while real runtime builds still
 ///   preserve the no-canvas-cull-mutation rendering path.
+/// @param material Material3D handle to mark double-sided.
 static void water3d_enable_double_sided_material(void *material) {
     if (material && rt_material3d_set_double_sided)
         rt_material3d_set_double_sided(material, 1);
 }
 
 /// @brief Release a retained mesh slot only if it still points at a Mesh3D object.
+/// @param slot Address of the retained Mesh3D slot.
 static void water3d_release_mesh_slot(void **slot) {
     if (!slot || !*slot)
         return;
@@ -187,6 +204,7 @@ static void water3d_release_mesh_slot(void **slot) {
 }
 
 /// @brief Release a retained material slot only if it still points at a Material3D object.
+/// @param slot Address of the retained Material3D slot.
 static void water3d_release_material_slot(void **slot) {
     if (!slot || !*slot)
         return;
@@ -198,6 +216,7 @@ static void water3d_release_material_slot(void **slot) {
 }
 
 /// @brief Release a retained cubemap slot only if it still points at a Cubemap3D object.
+/// @param slot Address of the retained CubeMap3D slot.
 static void water3d_release_env_map_slot(void **slot) {
     if (!slot || !*slot)
         return;
@@ -209,6 +228,8 @@ static void water3d_release_env_map_slot(void **slot) {
 }
 
 /// @brief Retain-then-release assignment for Pixels slots, clearing corrupt old slots safely.
+/// @param slot Address of the retained Pixels slot to update.
+/// @param value New Pixels handle, or NULL to clear the slot.
 static void water3d_assign_pixels_ref(void **slot, void *value) {
     if (!slot)
         return;
@@ -223,6 +244,8 @@ static void water3d_assign_pixels_ref(void **slot, void *value) {
 }
 
 /// @brief Retain-then-release assignment for Cubemap3D slots, clearing corrupt old slots safely.
+/// @param slot Address of the retained CubeMap3D slot to update.
+/// @param value New complete CubeMap3D handle, or NULL to clear the slot.
 static void water3d_assign_env_map_ref(void **slot, void *value) {
     if (!slot)
         return;
@@ -239,27 +262,43 @@ static void water3d_assign_env_map_ref(void **slot, void *value) {
 
 /// @brief Clamp a double to the `[0, 1]` range — used for water knobs like transparency,
 ///   reflectivity, and wave amplitude that are physical [0, 1] scalars.
+/// @param value Candidate normalized scalar.
+/// @return Finite value clamped to `[0, 1]`.
 static double water3d_clamp01(double value) {
     return rt_world3d_clamp01(value);
 }
 
 /// @brief Clamp a strictly-positive parameter to `(0, max_value]`; non-finite or ≤0 maps to
 /// `fallback`.
+/// @param value Candidate positive parameter.
+/// @param fallback Replacement for invalid or nonpositive input.
+/// @param max_value Inclusive upper bound.
+/// @return Sanitized positive value.
 static double water3d_clamp_positive_or(double value, double fallback, double max_value) {
     return rt_world3d_clamp_positive_or(value, fallback, max_value);
 }
 
 /// @brief Clamp `value` into `[-max_abs, max_abs]`, substituting `fallback` when not finite.
+/// @param value Candidate signed parameter.
+/// @param fallback Replacement for non-finite input.
+/// @param max_abs Inclusive absolute-value bound.
+/// @return Sanitized signed value.
 static double water3d_clamp_abs_or(double value, double fallback, double max_abs) {
     return rt_world3d_clamp_abs_or(value, fallback, max_abs);
 }
 
 /// @brief Clamp `value` into `[0, max_value]`; non-finite or negative input maps to 0.
+/// @param value Candidate nonnegative parameter.
+/// @param max_value Inclusive upper bound.
+/// @return Sanitized nonnegative value.
 static double water3d_clamp_nonnegative(double value, double max_value) {
     return rt_world3d_clamp_nonnegative(value, max_value);
 }
 
 /// @brief Normalize a 2D wave direction robustly, accepting huge finite components.
+/// @param x Address of the direction x component.
+/// @param z Address of the direction z component.
+/// @return Nonzero when a finite nonzero direction was normalized.
 static int water3d_normalize_dir2(double *x, double *z) {
     if (!x || !z)
         return 0;
@@ -279,6 +318,7 @@ static int water3d_normalize_dir2(double *x, double *z) {
 }
 
 /// @brief Release corrupted cached resources so update can recreate valid ones.
+/// @param w Water surface whose retained graphics handles are repaired.
 static void water3d_repair_resource_handles(rt_water3d *w) {
     if (!w)
         return;
@@ -300,6 +340,10 @@ static void water3d_repair_resource_handles(rt_water3d *w) {
 /// @brief Ensure the retained water mesh has enough storage for a direct vertex/index rewrite.
 /// @details Water3D is included in isolated contract tests without the full Mesh3D implementation,
 ///   so this keeps the allocation path local while preserving the same internal buffer layout.
+/// @param mesh Retained Mesh3D whose direct-write buffers may be grown.
+/// @param vertex_capacity Required vertex capacity.
+/// @param index_capacity Required index capacity.
+/// @return Nonzero when both capacities are available, otherwise zero after trapping on failure.
 static int water3d_mesh_reserve(rt_mesh3d *mesh,
                                 uint32_t vertex_capacity,
                                 uint32_t index_capacity) {
@@ -349,6 +393,8 @@ static int water3d_mesh_reserve(rt_mesh3d *mesh,
 }
 
 /// @brief Clamp one stored wave and return whether it can contribute to mesh deformation.
+/// @param wv Stored wave parameters to sanitize in place.
+/// @return Nonzero when the wave has a valid direction, positive amplitude, and positive frequency.
 static int water3d_sanitize_wave(water_wave_t *wv) {
     if (!wv)
         return 0;
@@ -361,6 +407,7 @@ static int water3d_sanitize_wave(water_wave_t *wv) {
 }
 
 /// @brief GC finalizer: release every retained graphics resource (textures, mesh, material).
+/// @param obj Water3D runtime object being finalized; NULL is accepted.
 static void water3d_finalizer(void *obj) {
     rt_water3d *w = (rt_water3d *)obj;
     if (!w)
@@ -417,6 +464,8 @@ void *rt_water3d_new(double width, double depth) {
 }
 
 /// @brief Set the base Y-coordinate (world height) of the water plane.
+/// @param obj Water3D handle; invalid handles are ignored.
+/// @param y Finite world-space height, clamped to the supported range.
 void rt_water3d_set_height(void *obj, double y) {
     rt_water3d *w = water3d_checked(obj);
     if (w) {
@@ -430,6 +479,10 @@ void rt_water3d_set_height(void *obj, double y) {
 ///   sit at the world origin (e.g. one spanning [0,size]) would leave the water
 ///   misaligned and under-resolved. Setting the centre re-centres the surface
 ///   over the terrain and keeps its resolution on the visible area.
+/// @param obj Water3D handle; invalid handles are ignored.
+/// @param x World-space center x coordinate.
+/// @param y World-space base height.
+/// @param z World-space center z coordinate.
 void rt_water3d_set_position(void *obj, double x, double y, double z) {
     rt_water3d *w = water3d_checked(obj);
     if (w) {
@@ -441,6 +494,10 @@ void rt_water3d_set_position(void *obj, double x, double y, double z) {
 }
 
 /// @brief Configure the sinusoidal wave animation parameters.
+/// @param obj Water3D handle; invalid handles are ignored.
+/// @param speed Signed temporal phase speed.
+/// @param amplitude Nonnegative vertical displacement amplitude.
+/// @param frequency Nonnegative spatial angular frequency.
 void rt_water3d_set_wave_params(void *obj, double speed, double amplitude, double frequency) {
     rt_water3d *w = water3d_checked(obj);
     if (!w)
@@ -452,6 +509,11 @@ void rt_water3d_set_wave_params(void *obj, double speed, double amplitude, doubl
 }
 
 /// @brief Set the base tint color and transparency of the water surface.
+/// @param obj Water3D handle; invalid handles are ignored.
+/// @param r Red channel, clamped to `[0, 1]`.
+/// @param g Green channel, clamped to `[0, 1]`.
+/// @param b Blue channel, clamped to `[0, 1]`.
+/// @param a Alpha channel, clamped to `[0, 1]`.
 void rt_water3d_set_color(void *obj, double r, double g, double b, double a) {
     rt_water3d *w = water3d_checked(obj);
     if (!w)
@@ -463,6 +525,8 @@ void rt_water3d_set_color(void *obj, double r, double g, double b, double a) {
 }
 
 /// @brief Set surface texture for water.
+/// @param obj Water3D handle; invalid handles are ignored.
+/// @param pixels Pixels texture to retain, or NULL to clear the binding.
 void rt_water3d_set_texture(void *obj, void *pixels) {
     rt_water3d *w = water3d_checked(obj);
     if (!w)
@@ -477,6 +541,8 @@ void rt_water3d_set_texture(void *obj, void *pixels) {
 }
 
 /// @brief Set normal map for wave detail.
+/// @param obj Water3D handle; invalid handles are ignored.
+/// @param pixels Pixels normal map to retain, or NULL to clear the binding.
 void rt_water3d_set_normal_map(void *obj, void *pixels) {
     rt_water3d *w = water3d_checked(obj);
     if (!w)
@@ -491,6 +557,8 @@ void rt_water3d_set_normal_map(void *obj, void *pixels) {
 }
 
 /// @brief Set environment cubemap for reflections.
+/// @param obj Water3D handle; invalid handles are ignored.
+/// @param cubemap Complete CubeMap3D handle to retain, or NULL to clear reflections.
 void rt_water3d_set_env_map(void *obj, void *cubemap) {
     rt_water3d *w = water3d_checked(obj);
     if (!w)
@@ -512,6 +580,8 @@ void rt_water3d_set_env_map(void *obj, void *cubemap) {
 }
 
 /// @brief Set reflectivity [0.0-1.0] for environment mapping.
+/// @param obj Water3D handle; invalid handles are ignored.
+/// @param r Reflectivity clamped to `[0, 1]`; it is applied only while an environment map exists.
 void rt_water3d_set_reflectivity(void *obj, double r) {
     rt_water3d *w = water3d_checked(obj);
     if (!w)
@@ -527,6 +597,8 @@ void rt_water3d_set_reflectivity(void *obj, double r) {
 ///   @p distance from the water rectangle, `Update` advances wave time but
 ///   skips the per-vertex grid rebuild (the dominant cost). 0 disables the
 ///   gate. Non-finite/negative values clamp to 0.
+/// @param obj Water3D handle; invalid handles are ignored.
+/// @param distance Nonnegative camera-to-surface gate distance in world units.
 void rt_water3d_set_sim_distance(void *obj, double distance) {
     rt_water3d *w = water3d_checked(obj);
     if (!w)
@@ -539,12 +611,16 @@ void rt_water3d_set_sim_distance(void *obj, double distance) {
 }
 
 /// @brief `Water3D.get_SimDistance` — current simulation gate distance (0 = off).
+/// @param obj Water3D handle.
+/// @return Configured nonnegative gate distance, or zero for an invalid handle.
 double rt_water3d_get_sim_distance(void *obj) {
     rt_water3d *w = water3d_checked(obj);
     return w ? w->sim_distance : 0.0;
 }
 
 /// @brief Set grid resolution (clamped to [8, 256]).
+/// @param obj Water3D handle; invalid handles are ignored.
+/// @param res Number of quads per grid axis, clamped to `[8, 256]`.
 void rt_water3d_set_resolution(void *obj, int64_t res) {
     rt_water3d *w = water3d_checked(obj);
     if (!w)
@@ -560,6 +636,12 @@ void rt_water3d_set_resolution(void *obj, int64_t res) {
 }
 
 /// @brief Add a Gerstner wave to the water.
+/// @param obj Water3D handle; invalid handles are ignored.
+/// @param dirX Propagation-direction x component.
+/// @param dirZ Propagation-direction z component.
+/// @param speed Signed temporal phase speed.
+/// @param amplitude Nonnegative vertical displacement amplitude.
+/// @param wavelength Positive wavelength in world units.
 void rt_water3d_add_wave(
     void *obj, double dirX, double dirZ, double speed, double amplitude, double wavelength) {
     rt_water3d *w = water3d_checked(obj);
@@ -588,6 +670,7 @@ void rt_water3d_add_wave(
 }
 
 /// @brief Remove all Gerstner waves.
+/// @param obj Water3D handle; invalid handles are ignored.
 void rt_water3d_clear_waves(void *obj) {
     rt_water3d *w = water3d_checked(obj);
     if (w) {
@@ -599,6 +682,17 @@ void rt_water3d_clear_waves(void *obj) {
 
 /// @brief Fill the (grid+1)^2 water vertices: position, Gerstner/legacy wave height, analytic
 ///        normal, and UVs. Pure transform of @p w into @p mesh; see rt_water3d_update.
+/// @param w Water surface containing wave and placement parameters.
+/// @param mesh Mesh3D with writable storage for the full vertex grid.
+/// @param grid Number of quads per axis.
+/// @param row Number of vertices per row, equal to @p grid plus one.
+/// @param hx Half the water width.
+/// @param hz Half the water depth.
+/// @param step_x World-space x distance between adjacent vertices.
+/// @param step_z World-space z distance between adjacent vertices.
+/// @param inv_grid Reciprocal grid resolution used for UVs.
+/// @param wave_valid Per-wave flags identifying sanitized contributing waves.
+/// @param wave_time_phase Per-wave range-reduced temporal phases.
 static void water3d_fill_vertices(rt_water3d *w,
                                   rt_mesh3d *mesh,
                                   int32_t grid,
@@ -703,6 +797,9 @@ static void water3d_fill_vertices(rt_water3d *w,
 }
 
 /// @brief Emit the 2*grid*grid triangle indices for the water grid (two triangles per cell).
+/// @param mesh Mesh3D with writable storage for all grid indices.
+/// @param grid Number of quads per axis.
+/// @param row Number of vertices per row.
 static void water3d_fill_indices(rt_mesh3d *mesh, int32_t grid, int32_t row) {
     uint32_t out_index = 0;
     for (int gz = 0; gz < grid; gz++) {
@@ -719,6 +816,7 @@ static void water3d_fill_indices(rt_mesh3d *mesh, int32_t grid, int32_t row) {
 }
 
 /// @brief Create the water material on first use or refresh its color/alpha/texture/env bindings.
+/// @param w Water surface owning material state and retained texture bindings.
 /// @return 0 when the material could not be allocated (caller aborts without clearing mesh_dirty).
 static int water3d_update_material(rt_water3d *w) {
     if (!w->material) {
@@ -879,8 +977,11 @@ void rt_water3d_update(void *obj, double dt) {
 ///          submerged camera angle still show geometry without mutating canvas-wide culling.
 ///          Does nothing if
 ///          the mesh/material haven't been built yet (i.e. `update` was never called) or
-///          if `canvas` / `obj` are NULL. The `camera` argument is accepted for API
-///          symmetry with other draw functions but currently unused.
+///          if `canvas` / `obj` are NULL. When available, @p camera supplies the last observed
+///          position used by distance-gated simulation updates.
+/// @param canvas Canvas3D handle receiving the water draw.
+/// @param obj Water3D handle supplying current mesh and material state.
+/// @param camera Optional Camera3D handle used to update the simulation-distance reference point.
 void rt_canvas3d_draw_water(void *canvas, void *obj, void *camera) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(canvas);
     rt_water3d *w = water3d_checked(obj);

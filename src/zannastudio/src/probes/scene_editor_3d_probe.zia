@@ -802,10 +802,9 @@ func main() {
        or editor.flatNodes.get(childIndex).MetadataGetBool(
               "active", false) == false
        or editor.flatNodes.get(childIndex).MetadataKind("target") != "null"
-       or editor.metadataInspector.list.Count != 5
-       or editor.metadataInspector.keyInput.IsEnabled() == false
-       or editor.metadataInspector.typeDropdown.IsEnabled() == false
-       or editor.metadataInspector.setButton.IsEnabled() == false {
+       or editor.metadataInspector.rows.RowCount() != 5
+       or editor.metadataInspector.keys.count() != 5
+       or editor.metadataInspector.rows.addButton.IsEnabled() == false {
         fail(shell, tempPath,
              "typed node-metadata inspector did not commit exact gameplay data");
         return;
@@ -835,45 +834,36 @@ func main() {
     }
 
     // Drain programmatic hierarchy-selection events from the preceding direct
-    // edit calls before simulating a user metadata-row selection.
+    // edit calls, then focus one row by key: presentation-only, so content,
+    // history, and revision stay untouched across a tab round trip.
     editor.Pump(sceneDoc);
+    var tabMetadataContent = sceneDoc.content;
+    var tabMetadataRevision = editor.GetRevision();
     editor.metadataInspector.SelectByKey(
         editor.flatNodes.get(childIndex), "health");
     editor.Pump(sceneDoc);
-    if editor.selectedNodeMetadata < 0
-       or editor.metadataInspector.SelectedKey() != "health" {
-        fail(shell, tempPath,
-             "node-metadata selection was not captured for its scene tab");
-        return;
-    }
-    var tabMetadataContent = sceneDoc.content;
-    editor.Pump(otherSceneDoc);
     if sceneDoc.content != tabMetadataContent
-       or sceneDoc.scene3DWorkspace.selectedNodeMetadata < 0 {
+       or editor.GetRevision() != tabMetadataRevision {
         fail(shell, tempPath,
-             "switching away rewrote 3D metadata content or workspace state");
+             "focusing a metadata row changed content or history");
         return;
     }
-    if editor.selectedNodeMetadata != -1
-       or editor.metadataInspector.SelectedKey() != "" {
+    editor.Pump(otherSceneDoc);
+    if sceneDoc.content != tabMetadataContent {
         fail(shell, tempPath,
-             "node-metadata selection leaked into another 3D tab");
+             "switching away rewrote 3D metadata content");
         return;
     }
     editor.Pump(sceneDoc);
-    if editor.metadataInspector.SelectedKey() != "health" {
+    if editor.metadataInspector.keys.count() != 5
+       or editor.metadataInspector.rows.RowCount() != 5
+       or sceneDoc.content != tabMetadataContent {
         fail(shell, tempPath,
-             "node-metadata selection was not restored with its scene tab "
-             + "(row=" + editor.selectedNodeMetadata
-             + ", key=\"" + editor.metadataInspector.SelectedKey()
-             + "\", node=" + editor.selectedIndex
-             + ", selection=" + editor.selectedIndices.count()
-             + ", savedRow="
-             + sceneDoc.scene3DWorkspace.selectedNodeMetadata
-             + ", sameContent=" + (sceneDoc.content == tabMetadataContent)
-             + ", liveKind=\""
-             + editor.flatNodes.get(childIndex).MetadataKind("health")
-             + "\", rows=" + editor.metadataInspector.keys.count() + ")");
+             "metadata rows were not rebuilt with their scene tab "
+             + "(rows=" + editor.metadataInspector.rows.RowCount()
+             + ", keys=" + editor.metadataInspector.keys.count()
+             + ", sameContent="
+             + (sceneDoc.content == tabMetadataContent) + ")");
         return;
     }
 
@@ -1093,11 +1083,20 @@ func main() {
     editor.componentPalette.SelectComponent("enemy-spawn");
     editor.SelectSceneNodes(singleComponentSelection, childIndex);
     editor.componentPalette.SelectField("health");
+    var healthRow = -1;
+    var metaScan = 0;
+    while metaScan < editor.metadataInspector.keys.count() {
+        if editor.metadataInspector.keys.get(metaScan) == "health" {
+            healthRow = metaScan;
+        }
+        metaScan = metaScan + 1;
+    }
     if editor.componentPalette.editFieldButton.IsEnabled() == false
        or editor.EditSelectedComponentField() == false
-       or editor.metadataInspector.keyInput.Text != "health"
-       or editor.metadataInspector.SelectedKind() != "int"
-       or editor.metadataInspector.valueInput.Text != "125"
+       or healthRow < 0
+       or editor.metadataInspector.KeyTextAt(healthRow) != "health"
+       or editor.metadataInspector.KindTokenAt(healthRow) != "int"
+       or editor.metadataInspector.ValueTextAt(healthRow) != "125"
        or sceneDoc.content != metadataContent {
         sceneDoc.filePath = previousComponentScenePath;
         componentProject.CloseProject();

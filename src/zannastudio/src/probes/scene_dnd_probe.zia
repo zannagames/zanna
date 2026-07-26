@@ -1,0 +1,267 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_dnd_probe.zia
+// Purpose: Verify typed asset drag-and-drop into the scene surfaces.
+// Key invariants:
+//   - Dragging a project image from the asset browser onto the 2D canvas
+//     creates one sprite object at the drop cell with a portable
+//     editor.sprite reference, as exactly one undoable transaction.
+//   - Dropping a non-image asset onto the canvas is refused without history.
+//   - Dropping a 3D scene asset onto the 3D viewport imports it through the
+//     standard one-transaction import path.
+// Ownership/Lifetime:
+//   - The probe owns temp project dirs, one hidden AppShell per editor, and
+//     one input harness; everything is destroyed or removed at exit.
+// Links: zannastudio/src/ui/scene_asset_browser.zia,
+//        zannastudio/src/ui/scene_editor_2d.zia,
+//        zannastudio/src/ui/scene_editor_3d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_dnd_probe;
+
+// ============================================================================
+// MODULE: scene_dnd_probe
+// PURPOSE: Pin the cross-widget drag contract end to end through the real
+//          compositor drag path: press a browser row, cross the threshold,
+//          release over a scene surface.
+//
+// WHERE-THIS-FITS: The dock system pins widget-level DnD mechanics; this
+//          probe owns the scene wirings built on the same typed payloads.
+//
+// TEACHING-NOTE: The asset list populates from the project file cache, so
+//          the probe pumps until rows appear before pressing one.
+// ============================================================================
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_2d";
+bind "../ui/scene_editor_3d";
+
+bind Convert = Zanna.Core.Convert;
+bind Color = Zanna.Graphics.Color;
+bind Dir = Zanna.IO.Dir;
+bind File = Zanna.IO.File;
+bind GUI = Zanna.GUI;
+bind Path = Zanna.IO.Path;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Str = Zanna.String;
+bind TempFile = Zanna.IO.TempFile;
+bind Terminal = Zanna.Terminal;
+
+func HarnessCoordinate(shell: app_shell.AppShell,
+                       logical: Number) -> Integer {
+    var scale = shell.app.GetEffectiveScale();
+    if scale <= 0.0 { scale = 1.0; }
+    return Convert.NumToInt(logical * scale + 0.999999);
+}
+
+func removeTempDir(path: String) {
+    if path != "" { Dir.RemoveAll(path); }
+}
+
+func Fail(shell: app_shell.AppShell,
+          harness: GUI.TestHarness,
+          tempDir: String,
+          reason: String) {
+    if harness != null { harness.UnbindApp(); }
+    if shell != null { shell.Destroy(); }
+    removeTempDir(tempDir);
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func main() {
+    // Temp project with one tiny image asset and one saved 3D scene asset.
+    var tempDir = TempFile.CreateDirWithPrefix("zannastudio_dnd_");
+    var spritePath = Path.Join(tempDir, "hero.png");
+    var sprite = Pixels.New(4, 4);
+    sprite.DrawBox(0, 0, 4, 4, Color.RGB(255, 0, 0));
+    if Pixels.SavePng(sprite, spritePath) != 1 {
+        removeTempDir(tempDir);
+        Terminal.Say("RESULT: fail sprite fixture");
+        return;
+    }
+    var notesPath = Path.Join(tempDir, "notes.txt");
+    File.WriteAllText(notesPath, "not an image\n");
+
+    // ------------------------------------------------------------------ 2D
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Scene DnD Probe", 1240, 800);
+    var editor2d = new scene_editor_2d.SceneEditor2D();
+    editor2d.Setup(shell.workbench.scene2DHost, shell.app);
+    var project = new project_manager.ProjectManager();
+    if project.OpenFolder(tempDir) == false {
+        Fail(shell, null, tempDir, "temp project open");
+        return;
+    }
+    editor2d.SetWorkspaceContext(project);
+    var documents = new document_manager.DocumentManager();
+    var doc2d = documents.NewScene2DDocument();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_2D);
+    editor2d.Activate(doc2d);
+    editor2d.Pump(doc2d);
+    shell.Poll();
+    shell.Render();
+
+    // The component asset browser lives on the Object tab and is scoped to
+    // a selection, so create and select one object before opening it.
+    if editor2d.AddSceneObject("anchor", "anchor", 0, 0) != 0 {
+        Fail(shell, null, tempDir, "2D anchor fixture");
+        return;
+    }
+    editor2d.SelectSceneObjects([0], 0);
+    editor2d.Pump(doc2d);
+    shell.Poll();
+    shell.Render();
+    editor2d.componentAssetBrowser.SetExtensions(".png");
+    editor2d.componentAssetBrowser.Open();
+    var warm = 0;
+    while warm < 240
+          and editor2d.componentAssetBrowser.assetList.Count == 0 {
+        editor2d.Pump(doc2d);
+        shell.Poll();
+        shell.Render();
+        warm = warm + 1;
+    }
+    if editor2d.componentAssetBrowser.assetList.Count == 0 {
+        Fail(shell, null, tempDir, "asset cache did not surface hero.png");
+        return;
+    }
+    editor2d.componentAssetBrowser.assetList.SelectIndex(0);
+    editor2d.Pump(doc2d);
+    shell.Poll();
+    shell.Render();
+
+    var harness = GUI.TestHarness.New();
+    if harness.BindApp(shell.app) == false {
+        Fail(shell, null, tempDir, "2D bind");
+        return;
+    }
+    // The asset browser sits low in the inspector column: reveal it first,
+    // exactly as a user would scroll to it before dragging.
+    editor2d.inspectorScroll.ScrollTo(
+        editor2d.componentAssetBrowser.assetList);
+    editor2d.Pump(doc2d);
+    shell.Poll();
+    shell.Render();
+
+    var objectsBefore = editor2d.scene.ObjectCount();
+    var undoBefore = editor2d.undoStack.count();
+    var listX = HarnessCoordinate(
+        shell,
+        editor2d.componentAssetBrowser.assetList.GetScreenX() + 40.0);
+    var listY = HarnessCoordinate(
+        shell,
+        editor2d.componentAssetBrowser.assetList.GetScreenY() + 12.0);
+    var canvasX = HarnessCoordinate(
+        shell, editor2d.canvasImage.GetScreenX() + 40.0);
+    var canvasY = HarnessCoordinate(
+        shell, editor2d.canvasImage.GetScreenY() + 40.0);
+
+    // Real drag: press the row, cross the threshold, release on the canvas.
+    harness.SendMouse("move", listX, listY, 0);
+    harness.SendMouse("down", listX, listY, 0);
+    harness.DispatchPending();
+    editor2d.Pump(doc2d);
+    shell.Poll();
+    shell.Render();
+    harness.SendMouse("move", listX + 24, listY + 8, 0);
+    harness.SendMouse("move", canvasX, canvasY, 0);
+    harness.SendMouse("up", canvasX, canvasY, 0);
+    harness.DispatchPending();
+    editor2d.Pump(doc2d);
+    shell.Poll();
+    shell.Render();
+    editor2d.Pump(doc2d);
+
+    if editor2d.scene.ObjectCount() != objectsBefore + 1 {
+        Fail(shell, harness, tempDir,
+             "asset drop did not create one object (count="
+             + editor2d.scene.ObjectCount() + ")");
+        return;
+    }
+    var dropped = editor2d.scene.ObjectCount() - 1;
+    if editor2d.scene.ObjectType(dropped) != "sprite"
+       or editor2d.scene.ObjectGetStr(dropped, "editor.sprite", "") == "" {
+        Fail(shell, harness, tempDir,
+             "dropped sprite lost its type or editor.sprite reference");
+        return;
+    }
+    if editor2d.undoStack.count() != undoBefore + 1 {
+        Fail(shell, harness, tempDir,
+             "sprite drop was not exactly one undoable transaction");
+        return;
+    }
+
+    // A non-image drop is refused without touching history.
+    var refusedContent = doc2d.content;
+    if editor2d.CreateSpriteObjectFromDrop(notesPath, canvasX, canvasY) != -1
+       or doc2d.content != refusedContent
+       or editor2d.undoStack.count() != undoBefore + 1 {
+        Fail(shell, harness, tempDir, "non-image drop was not refused");
+        return;
+    }
+    harness.UnbindApp();
+    shell.Destroy();
+
+    // ------------------------------------------------------------------ 3D
+    shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Scene DnD Probe 3D", 1240, 800);
+    var editor3d = new scene_editor_3d.SceneEditor3D();
+    editor3d.Setup(shell.workbench.scene3DHost, shell.app);
+    editor3d.SetWorkspaceContext(project);
+    var doc3d = documents.NewScene3DDocument();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_3D);
+    editor3d.Activate(doc3d);
+    editor3d.Pump(doc3d);
+    shell.Poll();
+    shell.Render();
+
+    // The viewport accepts typed drops; a saved scene asset imports through
+    // the standard path when dropped (invoked via the drop handler's public
+    // effect: node count grows by the asset's nodes in one transaction).
+    if editor3d.AddEmptyNode("Anchor", -1) < 0 {
+        Fail(shell, null, tempDir, "3D fixture node");
+        return;
+    }
+    var assetScenePath = Path.Join(tempDir, "prop.scene3d");
+    File.WriteAllText(assetScenePath, editor3d.scene.SaveToText());
+    if File.Exists(assetScenePath) == false {
+        Fail(shell, null, tempDir, "3D asset fixture write");
+        return;
+    }
+    editor3d.Pump(doc3d);
+    shell.Poll();
+    shell.Render();
+    var nodesBefore = editor3d.flatNodes.count();
+    var undo3dBefore = editor3d.undoStack.count();
+    if editor3d.ImportAssetDrop(assetScenePath) == false {
+        Fail(shell, null, tempDir, "3D dropped-asset import failed");
+        return;
+    }
+    editor3d.Pump(doc3d);
+    if editor3d.flatNodes.count() <= nodesBefore
+       or editor3d.undoStack.count() != undo3dBefore + 1 {
+        Fail(shell, null, tempDir,
+             "3D asset import was not one growing transaction");
+        return;
+    }
+
+    // A non-3D asset drop is refused by the extension gate without history.
+    if editor3d.ImportAssetDrop(notesPath) != false
+       or editor3d.undoStack.count() != undo3dBefore + 1 {
+        Fail(shell, null, tempDir, "3D non-asset drop was not refused");
+        return;
+    }
+    shell.Destroy();
+    removeTempDir(tempDir);
+    Terminal.Say("RESULT: ok");
+}

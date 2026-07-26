@@ -150,6 +150,7 @@ bind Color = Zanna.Graphics.Color;
 bind Vec3 = Zanna.Math.Vec3;
 bind Quat = Zanna.Math.Quat;
 bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
 bind Math = Zanna.Math;
 bind Convert = Zanna.Core.Convert;
 bind Input = Zanna.Input;
@@ -198,6 +199,7 @@ final FLY_FAST_MULTIPLIER: Number = 4.0;
 final FLY_MIN_SPEED_MULTIPLIER: Number = 0.1;
 final FLY_MAX_SPEED_MULTIPLIER: Number = 10.0;
 final VIEWPORT_DOUBLE_CLICK_MS: Integer = 400;
+final MARQUEE_THRESHOLD_SQUARED_3D: Integer = 16;
 final VIEWPORT_DOUBLE_CLICK_RADIUS_SQUARED: Integer = 64;
 
 final VIEWPORT_MODE_SHADED: Integer = 0;
@@ -557,6 +559,23 @@ class ProjectedPoint {
     }
 }
 
+/// @brief One node subtree's screen-projected world-bounds rectangle.
+class ScreenBounds3D {
+    expose Integer minX;
+    expose Integer minY;
+    expose Integer maxX;
+    expose Integer maxY;
+    expose Boolean visible;
+
+    expose func init() {
+        minX = 0;
+        minY = 0;
+        maxX = 0;
+        maxY = 0;
+        visible = false;
+    }
+}
+
 /// @brief Persistent visual editor for one active VSCN document.
 class SceneEditor3D {
     hide GUI.App guiApp;
@@ -841,6 +860,16 @@ class SceneEditor3D {
     hide Integer lastViewportClickX;
     hide Integer lastViewportClickY;
     hide Integer lastViewportClickMs;
+    expose Integer hoveredViewportNode;
+    hide Boolean marqueeCandidate;
+    hide Boolean marqueeActive;
+    hide Boolean marqueeCancelled;
+    hide Boolean marqueeAdditive;
+    hide Boolean marqueeToggle;
+    hide Integer marqueeStartX;
+    hide Integer marqueeStartY;
+    hide Integer marqueeEndX;
+    hide Integer marqueeEndY;
 
     expose func init() {
         guiApp = null;
@@ -1133,6 +1162,16 @@ class SceneEditor3D {
         lastViewportClickX = 0;
         lastViewportClickY = 0;
         lastViewportClickMs = 0;
+        hoveredViewportNode = -1;
+        marqueeCandidate = false;
+        marqueeActive = false;
+        marqueeCancelled = false;
+        marqueeAdditive = false;
+        marqueeToggle = false;
+        marqueeStartX = 0;
+        marqueeStartY = 0;
+        marqueeEndX = 0;
+        marqueeEndY = 0;
     }
 
     /// @brief Build the editor into WorkbenchShell.scene3DHost.
@@ -1322,6 +1361,10 @@ class SceneEditor3D {
         // keyboard focus, so W/E/R/F, Escape, Delete, and Duplicate belong
         // to the viewport the user is actually working in.
         viewportImage.SetFocusable(true);
+        // Project assets and library materials drop onto the viewport
+        // (Phase 1.2): 3D assets import, materials apply to the node hit.
+        viewportImage.SetDropTarget(true);
+        viewportImage.SetAcceptedDropTypes("zanna/asset,zanna/material");
         viewportImage.SetTooltip(
             "Click visible meshes to select; Shift adds and Ctrl/Cmd toggles. "
             + "Drag colored transform handles. Middle/right-drag to orbit, "
@@ -1695,6 +1738,9 @@ class SceneEditor3D {
         materialLibraryList = GUI.ListBox.New(materialLibraryGroup);
         materialLibraryList.SetPreferredSize(0.0, 110.0);
         materialLibraryList.SetAccessibleName("Project library materials");
+        // The selected library material drags onto viewport meshes.
+        materialLibraryList.SetDraggable(true);
+        materialLibraryList.SetDragData("zanna/material", "");
         var materialLibraryNameRow = GUI.HBox.New();
         materialLibraryNameRow.SetSpacing(4.0);
         materialLibraryGroup.AddChild(materialLibraryNameRow);
@@ -1981,23 +2027,29 @@ class SceneEditor3D {
             changed = ApplyHierarchyDrop(
                 sourceIndex, targetIndex, dropPosition) or changed;
         }
+        if hierarchyTree.WasEditCommitted() {
+            changed = ApplyHierarchyRename() or changed;
+        }
+        changed = PumpViewportDrops() or changed;
         var metadataNode = SelectedNode();
         metadataInspector.Pump(metadataNode);
         selectedNodeMetadata = metadataInspector.selectedProperty;
-        if metadataInspector.TakeSetRequested()
+        var metadataCommitRow = metadataInspector.TakeCommitRow();
+        if metadataCommitRow >= 0
            and selectedIndices.count() == 1 {
             changed = SetNodeMetadata(
                 selectedIndex,
-                metadataInspector.SelectedKey(),
-                metadataInspector.keyInput.Text,
-                metadataInspector.SelectedKind(),
-                metadataInspector.valueInput.Text) or changed;
+                metadataInspector.CanonicalKeyAt(metadataCommitRow),
+                metadataInspector.KeyTextAt(metadataCommitRow),
+                metadataInspector.KindTokenAt(metadataCommitRow),
+                metadataInspector.ValueTextAt(metadataCommitRow)) or changed;
         }
-        if metadataInspector.TakeRemoveRequested()
+        var metadataRemoveRow = metadataInspector.TakeRemoveRow();
+        if metadataRemoveRow >= 0
            and selectedIndices.count() == 1 {
             changed = RemoveNodeMetadata(
                 selectedIndex,
-                metadataInspector.SelectedKey()) or changed;
+                metadataInspector.CanonicalKeyAt(metadataRemoveRow)) or changed;
         }
         changed = PumpComponentControls() or changed;
         if parentDropdown.WasChanged() {
@@ -2229,6 +2281,10 @@ class SceneEditor3D {
         var switchingDocument = currentDoc != doc;
         lastViewportClickNode = -1;
         lastViewportClickMs = 0;
+        hoveredViewportNode = -1;
+        marqueeCandidate = false;
+        marqueeActive = false;
+        marqueeCancelled = false;
         if currentDoc != null { CaptureWorkspaceState(); }
         if preserveHistory == false {
             var savedState = doc.scene3DWorkspace;
@@ -5202,6 +5258,15 @@ class SceneEditor3D {
         if materialLibraryList.WasSelectionChanged() {
             materialLibraryOverwriteArmed = false;
             UpdateMaterialLibraryControls();
+            var dragName = "";
+            if materialLibrary != null and materialLibrary.valid
+               and materialLibraryList.SelectedIndex >= 0
+               and materialLibraryList.SelectedIndex
+                   < materialLibrary.entries.count() {
+                dragName = materialLibrary.entries.get(
+                    materialLibraryList.SelectedIndex).name;
+            }
+            materialLibraryList.SetDragData("zanna/material", dragName);
         }
     }
 
@@ -5924,7 +5989,7 @@ class SceneEditor3D {
         GUI.Toast.Error("3D scene edit rolled back");
     }
 
-    hide func AddPrimitive(kind: Integer, asChild: Boolean) -> Boolean {
+    expose func AddPrimitive(kind: Integer, asChild: Boolean) -> Boolean {
         if scene == null { return false; }
         if asChild
            and ParentAcceptsAuthoredChildren(SelectedNode()) == false {
@@ -8235,7 +8300,14 @@ class SceneEditor3D {
             toolbarStatus.SetText("Transform edit canceled");
             return false;
         }
-        if editingFocused { return false; }
+        // A completed value scrub commits its gesture immediately, mirroring
+        // gizmo-drag release; typed edits still commit when focus leaves.
+        var scrubFinished = positionX.WasScrubFinished()
+            or positionY.WasScrubFinished() or positionZ.WasScrubFinished()
+            or rotationX.WasScrubFinished() or rotationY.WasScrubFinished()
+            or rotationZ.WasScrubFinished() or scaleX.WasScrubFinished()
+            or scaleY.WasScrubFinished() or scaleZ.WasScrubFinished();
+        if editingFocused and scrubFinished == false { return false; }
         transformDraftActive = false;
         return CommitScene("Edited node transform");
     }
@@ -8643,7 +8715,7 @@ class SceneEditor3D {
         }
     }
 
-    hide func FrameAll() {
+    expose func FrameAll() {
         if flatNodes.count() == 0 {
             viewScale = 28;
             viewTargetX = 0.0;
@@ -8692,7 +8764,7 @@ class SceneEditor3D {
             (available * 0.38) / furthest), 4, 120);
     }
 
-    hide func FrameSelected() {
+    expose func FrameSelected() {
         selectedIndices = scene_selection.Normalize(
             selectedIndices, flatNodes.count(), selectedIndex);
         if selectedIndices.count() == 0 { return; }
@@ -9256,13 +9328,241 @@ class SceneEditor3D {
             var direction = viewportRenderCamera.ScreenToRay(
                 mouseX, mouseY,
                 renderedViewportWidth, renderedViewportHeight) as Vec3;
-            var hit = scene.RaycastNodes(
+            var hit = scene.RaycastNodesPrecise(
                 origin, direction, viewportRenderCamera.FarPlane)
                 as SceneNode;
             var hitIndex = FindFlatIndex(hit);
             if hitIndex >= 0 { return hitIndex; }
         }
         return ViewportMarkerAt(mouseX, mouseY);
+    }
+
+    /// @brief Return whether either Alt key is held (overlap cycling).
+    hide func ViewportAltDown() -> Boolean {
+        return Input.Keyboard.IsDown(Input.Key.LeftAlt)
+            or Input.Keyboard.IsDown(Input.Key.RightAlt);
+    }
+
+    /// @brief Alt-click: cycle through every triangle hit under the pointer.
+    /// @details Walks the ray front to back by re-casting just past each
+    ///          triangle hit (Zia cannot type Seq elements, so the sorted
+    ///          RaycastNodesPreciseAll list stays a runtime-level surface);
+    ///          the pick after the current primary wins, wrapping, so
+    ///          repeated Alt-clicks walk through stacked geometry.
+    /// @return The flattened node index to select, or @p fallback.
+    expose func CycleViewportNodeAt(mouseX: Integer,
+                                  mouseY: Integer,
+                                  fallback: Integer) -> Integer {
+        if scene == null or ConfigureViewportCamera() == false {
+            return fallback;
+        }
+        var castOrigin = viewportRenderCamera.ScreenToRayOrigin(
+            mouseX, mouseY,
+            renderedViewportWidth, renderedViewportHeight) as Vec3;
+        var direction = viewportRenderCamera.ScreenToRay(
+            mouseX, mouseY,
+            renderedViewportWidth, renderedViewportHeight) as Vec3;
+        var remaining = viewportRenderCamera.FarPlane;
+        var indices: List[Integer] = [];
+        var attempts = 0;
+        while attempts < 32 and remaining > 0.0 {
+            var node = scene.RaycastNodesPrecise(
+                castOrigin, direction, remaining) as SceneNode;
+            if node == null { break; }
+            var flat = ResolveInstanceOwnerIndex(FindFlatIndex(node));
+            if flat >= 0
+               and scene_selection.Contains(indices, flat) == false {
+                indices.add(flat);
+            }
+            var hit = scene.RaycastPreciseHit(
+                castOrigin, direction, remaining) as RayHit3D;
+            if hit == null { break; }
+            var step = hit.Distance + 0.001;
+            if step <= 0.0 { break; }
+            castOrigin = Vec3.New(
+                castOrigin.X + direction.X * step,
+                castOrigin.Y + direction.Y * step,
+                castOrigin.Z + direction.Z * step);
+            remaining = remaining - step;
+            attempts = attempts + 1;
+        }
+        if indices.count() == 0 { return fallback; }
+        var currentAt = -1;
+        var primary = ResolveInstanceOwnerIndex(selectedIndex);
+        var i = 0;
+        while i < indices.count() {
+            if indices.get(i) == primary { currentAt = i; }
+            i = i + 1;
+        }
+        var next = currentAt + 1;
+        if next >= indices.count() { next = 0; }
+        return indices.get(next);
+    }
+
+    /// @brief Project one node subtree's world bounds to a screen rectangle.
+    /// @details Transforms the eight subtree-local AABB corners through the
+    ///          node's world matrix and projects each through the shared
+    ///          viewport camera. Any behind-eye corner marks the bounds
+    ///          invisible because mirrored projections would inflate rects.
+    hide func NodeScreenBounds(node: SceneNode) -> ScreenBounds3D {
+        var bounds = new ScreenBounds3D();
+        if node == null { return bounds; }
+        var localMin = node.BoundsMin as Vec3;
+        var localMax = node.BoundsMax as Vec3;
+        var world = node.WorldMatrix;
+        var corner = 0;
+        while corner < 8 {
+            var x = localMin.X;
+            if corner / 4 == 1 { x = localMax.X; }
+            var y = localMin.Y;
+            if (corner / 2) - (corner / 4) * 2 == 1 { y = localMax.Y; }
+            var z = localMin.Z;
+            if corner - (corner / 2) * 2 == 1 { z = localMax.Z; }
+            var worldCorner = world.TransformPoint(Vec3.New(x, y, z)) as Vec3;
+            var point = Project(worldCorner.X, worldCorner.Y, worldCorner.Z);
+            if point.visible == false { return new ScreenBounds3D(); }
+            if corner == 0 {
+                bounds.minX = point.x;
+                bounds.maxX = point.x;
+                bounds.minY = point.y;
+                bounds.maxY = point.y;
+            } else {
+                if point.x < bounds.minX { bounds.minX = point.x; }
+                if point.x > bounds.maxX { bounds.maxX = point.x; }
+                if point.y < bounds.minY { bounds.minY = point.y; }
+                if point.y > bounds.maxY { bounds.maxY = point.y; }
+            }
+            corner = corner + 1;
+        }
+        bounds.visible = true;
+        return bounds;
+    }
+
+    /// @brief Apply the completed marquee rectangle to the selection.
+    /// @details Nodes whose projected world bounds intersect the rectangle
+    ///          are selected with the 2D marquee vocabulary: replace by
+    ///          default, Shift adds, Ctrl/Cmd toggles. Workspace-only.
+    hide func ApplyMarqueeSelection() {
+        var rectMinX = marqueeStartX;
+        var rectMaxX = marqueeEndX;
+        if rectMaxX < rectMinX {
+            rectMinX = marqueeEndX;
+            rectMaxX = marqueeStartX;
+        }
+        var rectMinY = marqueeStartY;
+        var rectMaxY = marqueeEndY;
+        if rectMaxY < rectMinY {
+            rectMinY = marqueeEndY;
+            rectMaxY = marqueeStartY;
+        }
+        var hits: List[Integer] = [];
+        var i = 0;
+        while i < flatNodes.count() {
+            var bounds = NodeScreenBounds(flatNodes.get(i));
+            if bounds.visible
+               and bounds.minX <= rectMaxX and bounds.maxX >= rectMinX
+               and bounds.minY <= rectMaxY and bounds.maxY >= rectMinY {
+                var resolved = ResolveInstanceOwnerIndex(i);
+                if resolved >= 0
+                   and scene_selection.Contains(hits, resolved) == false {
+                    hits.add(resolved);
+                }
+            }
+            i = i + 1;
+        }
+        var current = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        var next: List[Integer] = [];
+        var nextPrimary = -1;
+        if marqueeToggle {
+            i = 0;
+            while i < current.count() {
+                if scene_selection.Contains(hits, current.get(i)) == false {
+                    next.add(current.get(i));
+                }
+                i = i + 1;
+            }
+            i = 0;
+            while i < hits.count() {
+                if scene_selection.Contains(current, hits.get(i)) == false {
+                    next.add(hits.get(i));
+                }
+                i = i + 1;
+            }
+        } else if marqueeAdditive {
+            next = current;
+            i = 0;
+            while i < hits.count() {
+                if scene_selection.Contains(next, hits.get(i)) == false {
+                    next.add(hits.get(i));
+                }
+                i = i + 1;
+            }
+        } else {
+            next = hits;
+        }
+        if next.count() > 0 {
+            nextPrimary = next.get(next.count() - 1);
+            if scene_selection.Contains(next, selectedIndex) {
+                nextPrimary = selectedIndex;
+            }
+        }
+        SelectSceneNodes(next, nextPrimary);
+    }
+
+    /// @brief Track an armed or active marquee drag; true consumes the frame.
+    /// @details Runs before shortcut pumps so a marquee Escape cancels the
+    ///          gesture without also clearing the selection, and before the
+    ///          hover early-out so drags that leave the widget stay live.
+    hide func PumpMarquee() -> Boolean {
+        if marqueeCandidate == false or viewportImage == null {
+            return false;
+        }
+        if Input.Keyboard.WasPressed(Input.Key.Escape)
+           and marqueeCancelled == false {
+            if marqueeActive {
+                marqueeActive = false;
+                renderDirty = true;
+            }
+            // Keep swallowing input until the button releases so the
+            // cancelled gesture's release never becomes a blank click.
+            marqueeCancelled = true;
+            return true;
+        }
+        var mouseX = Convert.NumToInt(
+            PhysicalPointerToUi(Input.Mouse.X())
+            - viewportImage.GetScreenX());
+        var mouseY = Convert.NumToInt(
+            PhysicalPointerToUi(Input.Mouse.Y())
+            - viewportImage.GetScreenY());
+        if Input.Mouse.IsDown(Input.Mouse.ButtonLeft) {
+            if marqueeCancelled { return true; }
+            if mouseX != marqueeEndX or mouseY != marqueeEndY {
+                marqueeEndX = mouseX;
+                marqueeEndY = mouseY;
+                if marqueeActive { renderDirty = true; }
+            }
+            if marqueeActive == false {
+                var dx = marqueeEndX - marqueeStartX;
+                var dy = marqueeEndY - marqueeStartY;
+                if dx * dx + dy * dy
+                   > MARQUEE_THRESHOLD_SQUARED_3D {
+                    marqueeActive = true;
+                    renderDirty = true;
+                }
+            }
+            return marqueeActive;
+        }
+        marqueeCandidate = false;
+        if marqueeCancelled {
+            marqueeCancelled = false;
+            return true;
+        }
+        if marqueeActive == false { return false; }
+        marqueeActive = false;
+        ApplyMarqueeSelection();
+        renderDirty = true;
+        return true;
     }
 
     /// @brief Apply replace, additive, toggle, or blank viewport selection.
@@ -9371,10 +9671,16 @@ class SceneEditor3D {
             PumpFlyFrame();
             return false;
         }
+        if PumpMarquee() { return false; }
         PumpGizmoShortcuts();
+        PumpHierarchyRename();
         if viewportImage == null or viewportImage.IsHovered() == false {
             if gizmoHoverAxis != GIZMO_AXIS_NONE {
                 gizmoHoverAxis = GIZMO_AXIS_NONE;
+                renderDirty = true;
+            }
+            if hoveredViewportNode != -1 {
+                hoveredViewportNode = -1;
                 renderDirty = true;
             }
             return false;
@@ -9429,6 +9735,14 @@ class SceneEditor3D {
             gizmoHoverAxis = hoveredAxis;
             renderDirty = true;
         }
+        var hoveredNode = -1;
+        if hoveredAxis == GIZMO_AXIS_NONE {
+            hoveredNode = ViewportNodeAt(mouseX, mouseY);
+        }
+        if hoveredNode != hoveredViewportNode {
+            hoveredViewportNode = hoveredNode;
+            renderDirty = true;
+        }
         if Input.Mouse.WasPressed(Input.Mouse.ButtonLeft) {
             FocusActiveGizmoButton();
         }
@@ -9437,10 +9751,26 @@ class SceneEditor3D {
             BeginGizmoDrag(hoveredAxis);
             return false;
         }
+        if Input.Mouse.WasPressed(Input.Mouse.ButtonLeft)
+           and hoveredAxis == GIZMO_AXIS_NONE {
+            // Arm a marquee candidate: it activates only past the drag
+            // threshold, so plain clicks keep flowing to the click path.
+            marqueeCandidate = true;
+            marqueeActive = false;
+            marqueeStartX = mouseX;
+            marqueeStartY = mouseY;
+            marqueeEndX = mouseX;
+            marqueeEndY = mouseY;
+            marqueeAdditive = ViewportShiftDown();
+            marqueeToggle = ViewportPrimaryModifierDown();
+        }
         if Input.Mouse.WasClicked(Input.Mouse.ButtonLeft) == false {
             return false;
         }
         var best = ViewportNodeAt(mouseX, mouseY);
+        if ViewportAltDown() {
+            best = CycleViewportNodeAt(mouseX, mouseY, best);
+        }
         var doubleClick = RegisterViewportClick(best, mouseX, mouseY);
         ApplyViewportSelection(
             best,
@@ -9453,6 +9783,103 @@ class SceneEditor3D {
             renderDirty = true;
         }
         return false;
+    }
+
+    /// @brief Consume viewport drops: import 3D assets, apply materials.
+    hide func PumpViewportDrops() -> Boolean {
+        if viewportImage == null or scene == null { return false; }
+        if viewportImage.WasDropped() == false { return false; }
+        var dropType = viewportImage.GetDropType();
+        var dropData = viewportImage.GetDropData();
+        if dropType == "zanna/material" {
+            return ApplyMaterialDropAt(
+                viewportImage.GetDropX(), viewportImage.GetDropY());
+        }
+        return ImportAssetDrop(dropData);
+    }
+
+    /// @brief Import one dropped 3D asset through the standard import path.
+    /// @details Shared by the viewport drop pump and the DnD probe: the
+    ///          extension gate refuses non-3D assets before any import work.
+    expose func ImportAssetDrop(assetPath: String) -> Boolean {
+        if assetPath == "" { return false; }
+        if scene_asset_browser.AssetExtensionAllowed(
+               assetPath,
+               scene_asset_browser.NormalizeAssetExtensions(
+                   ".scene3d,.vscn,.gltf,.glb,.fbx,.obj,.stl")) == false {
+            toolbarStatus.SetText(
+                "Only 3D assets can drop into the viewport.");
+            return false;
+        }
+        return ImportAssetPath(assetPath);
+    }
+
+    /// @brief Apply the selected library material to the node under the drop.
+    hide func ApplyMaterialDropAt(dropX: Number, dropY: Number) -> Boolean {
+        var mouseX = Convert.NumToInt(
+            PhysicalPointerToUi(dropX)
+            - viewportImage.GetScreenX());
+        var mouseY = Convert.NumToInt(
+            PhysicalPointerToUi(dropY)
+            - viewportImage.GetScreenY());
+        var node = ViewportNodeAt(mouseX, mouseY);
+        if node < 0 {
+            toolbarStatus.SetText(
+                "Drop the material onto a visible mesh.");
+            return false;
+        }
+        SelectSceneNodes([node], node);
+        return ApplyLibraryMaterialToSelection();
+    }
+
+    /// @brief F2 begins an inline hierarchy rename of the single selection.
+    /// @details The row editor pre-fills the raw node name (rows decorate the
+    ///          label with kind badges). Enter or focus loss commits through
+    ///          ApplyHierarchyRename as one undoable edit; Escape cancels.
+    hide func PumpHierarchyRename() {
+        if Input.Keyboard.WasPressed(Input.Key.F2) == false { return; }
+        if SceneSelectionCommandsOwnFocus() == false { return; }
+        BeginRenameSelected();
+    }
+
+    /// @brief Begin an inline rename of the single selected node's row.
+    /// @details Shared by the F2 shortcut and the hierarchy context menu.
+    /// @return True when the row editor opened.
+    expose func BeginRenameSelected() -> Boolean {
+        if hierarchyTree == null or scene == null { return false; }
+        if hierarchyTree.IsEditing() { return false; }
+        if selectedIndices.count() != 1 { return false; }
+        if selectedIndex < 0
+           or selectedIndex >= hierarchyTreeNodes.count()
+           or hierarchyTreeNodes.get(selectedIndex) == null {
+            return false;
+        }
+        var node = SelectedNode();
+        if node == null { return false; }
+        return hierarchyTree.BeginEditNode(
+            hierarchyTreeNodes.get(selectedIndex), node.Name);
+    }
+
+    /// @brief Apply a committed inline hierarchy rename as one undoable edit.
+    /// @details The edited row's data carries its flat index, so a selection
+    ///          change between commit and consumption cannot retarget the
+    ///          rename. Empty and unchanged names are no-ops.
+    hide func ApplyHierarchyRename() -> Boolean {
+        var edited = hierarchyTree.GetEditedNodeOption();
+        if edited.IsSome == false { return false; }
+        var index = Parse.IntOr(
+            GUI.TreeView.Node.GetData(edited.Unwrap()), -1);
+        if index < 0 or index >= flatNodes.count() { return false; }
+        var node = flatNodes.get(index);
+        if node == null { return false; }
+        var nextName = Str.Trim(hierarchyTree.GetEditText());
+        if nextName == "" or nextName == node.Name { return false; }
+        node.Name = nextName;
+        if CommitScene("Renamed node to " + nextName) == false {
+            return false;
+        }
+        RefreshHierarchy(node);
+        return true;
     }
 
     /// @brief Apply conventional transform shortcuts only while viewport owns focus.
@@ -10943,6 +11370,7 @@ class SceneEditor3D {
                 i = i + 1;
             }
             DrawRouteOverlays();
+            DrawSelectionFeedback();
         }
 
         DrawCameraPreviewInset();
@@ -11008,6 +11436,78 @@ class SceneEditor3D {
     }
 
     /// @brief Draw a mode-specific endpoint so tools are distinguishable.
+    /// @brief Draw four short corner brackets around one screen rectangle.
+    /// @details The cheap screen-space stand-in for a mesh silhouette until
+    ///          the GPU outline pass lands (deferral recorded in status).
+    hide func DrawCornerBrackets(bounds: ScreenBounds3D, color: Integer) {
+        if viewportPixels == null { return; }
+        var width = bounds.maxX - bounds.minX;
+        var height = bounds.maxY - bounds.minY;
+        var arm = 10;
+        if width / 3 < arm { arm = width / 3; }
+        if height / 3 < arm { arm = height / 3; }
+        if arm < 3 { arm = 3; }
+        viewportPixels.DrawLine(
+            bounds.minX, bounds.minY, bounds.minX + arm, bounds.minY, color);
+        viewportPixels.DrawLine(
+            bounds.minX, bounds.minY, bounds.minX, bounds.minY + arm, color);
+        viewportPixels.DrawLine(
+            bounds.maxX, bounds.minY, bounds.maxX - arm, bounds.minY, color);
+        viewportPixels.DrawLine(
+            bounds.maxX, bounds.minY, bounds.maxX, bounds.minY + arm, color);
+        viewportPixels.DrawLine(
+            bounds.minX, bounds.maxY, bounds.minX + arm, bounds.maxY, color);
+        viewportPixels.DrawLine(
+            bounds.minX, bounds.maxY, bounds.minX, bounds.maxY - arm, color);
+        viewportPixels.DrawLine(
+            bounds.maxX, bounds.maxY, bounds.maxX - arm, bounds.maxY, color);
+        viewportPixels.DrawLine(
+            bounds.maxX, bounds.maxY, bounds.maxX, bounds.maxY - arm, color);
+    }
+
+    /// @brief Draw hover/selection bounds brackets and the marquee band.
+    /// @details Selected mesh nodes get bracket outlines (primary amber,
+    ///          others cyan); the hovered unselected mesh gets a subtle
+    ///          bracket; an active marquee draws its live rectangle.
+    hide func DrawSelectionFeedback() {
+        if viewportPixels == null { return; }
+        var i = 0;
+        while i < flatNodes.count() {
+            var isSelected =
+                scene_selection.Contains(selectedIndices, i);
+            var isHovered = i == hoveredViewportNode;
+            if (isSelected or isHovered)
+               and flatNodes.get(i).Mesh != null {
+                var bounds = NodeScreenBounds(flatNodes.get(i));
+                if bounds.visible {
+                    var color = Color.RGB(96, 110, 126);
+                    if isSelected { color = Color.RGB(104, 220, 255); }
+                    if i == selectedIndex {
+                        color = Color.RGB(255, 195, 78);
+                    }
+                    DrawCornerBrackets(bounds, color);
+                }
+            }
+            i = i + 1;
+        }
+        if marqueeActive {
+            var x = marqueeStartX;
+            var y = marqueeStartY;
+            var width = marqueeEndX - marqueeStartX;
+            var height = marqueeEndY - marqueeStartY;
+            if width < 0 {
+                x = marqueeEndX;
+                width = 0 - width;
+            }
+            if height < 0 {
+                y = marqueeEndY;
+                height = 0 - height;
+            }
+            viewportPixels.DrawFrame(
+                x, y, width + 1, height + 1, Color.RGB(120, 190, 255));
+        }
+    }
+
     hide func DrawGizmoHandle(point: ProjectedPoint,
                               color: Integer) {
         if gizmoMode == GIZMO_MODE_SCALE {

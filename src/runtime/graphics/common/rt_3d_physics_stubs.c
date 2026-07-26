@@ -365,37 +365,63 @@ void *rt_world3d_new(double gx, double gy, double gz) {
     return NULL;
 }
 
-/// @brief Step the world3d.
+/// @brief Silently discard a request to advance a graphics-disabled physics world.
+///
+/// @param w  Physics3DWorld handle (ignored).
+/// @param dt Simulation interval in seconds (ignored).
 void rt_world3d_step(void *w, double dt) {
     (void)w;
     (void)dt;
 }
 
-/// @brief Add an element to the world3d.
+/// @brief Silently discard a request to add a body to a graphics-disabled physics world.
+///
+/// @param w Physics3DWorld handle (ignored).
+/// @param b Body3D handle to add (ignored).
 void rt_world3d_add(void *w, void *b) {
     (void)w;
     (void)b;
 }
 
+/// @brief Report that a body cannot be added to a graphics-disabled physics world.
+///
+/// @param w Physics3DWorld handle (ignored).
+/// @param b Body3D handle to add (ignored).
+///
+/// @return `0`, indicating that the body was not added.
 int8_t rt_world3d_try_add(void *w, void *b) {
     (void)w;
     (void)b;
     return 0;
 }
 
-/// @brief Remove an entry from the world3d.
+/// @brief Silently discard a request to remove a body from a graphics-disabled physics world.
+///
+/// @param w Physics3DWorld handle (ignored).
+/// @param b Body3D handle to remove (ignored).
 void rt_world3d_remove(void *w, void *b) {
     (void)w;
     (void)b;
 }
 
-/// @brief Return the count of elements in the world3d.
+/// @brief Return the fallback body count for a graphics-disabled physics world.
+///
+/// @param w Physics3DWorld handle (ignored).
+///
+/// @return `0`.
 int64_t rt_world3d_body_count(void *w) {
     (void)w;
     return 0;
 }
 
 /// @brief Stub for `Physics3DWorld.StepFixed`.
+///
+/// @param w         Physics3DWorld handle (ignored).
+/// @param dt        Accumulated frame interval in seconds (ignored).
+/// @param fixed_dt  Requested fixed simulation interval in seconds (ignored).
+/// @param max_steps Maximum fixed steps allowed for this call (ignored).
+///
+/// @return `0`, indicating that no simulation steps ran.
 int64_t rt_world3d_step_fixed(void *w, double dt, double fixed_dt, int64_t max_steps) {
     (void)w;
     (void)dt;
@@ -405,102 +431,167 @@ int64_t rt_world3d_step_fixed(void *w, double dt, double fixed_dt, int64_t max_s
 }
 
 /// @brief Stub for `Physics3DWorld.FixedStepAlpha`.
+///
+/// @param w Physics3DWorld handle (ignored).
+///
+/// @return `0.0`, the fallback interpolation alpha.
 double rt_world3d_get_fixed_step_alpha(void *w) {
     (void)w;
     return 0.0;
 }
 
 /// @brief Stub for `Physics3DWorld.DroppedFixedSteps`.
+///
+/// @param w Physics3DWorld handle (ignored).
+///
+/// @return `0`, because the stub never schedules or drops fixed steps.
 int64_t rt_world3d_get_dropped_fixed_steps(void *w) {
     (void)w;
     return 0;
 }
 
 /// @brief Stub for `Physics3DWorld.LastCcdRequestedSubsteps`.
+///
+/// @param w Physics3DWorld handle (ignored).
+///
+/// @return `0`, because no continuous-collision pass ran.
 int64_t rt_world3d_get_last_ccd_requested_substeps(void *w) {
     (void)w;
     return 0;
 }
 
 /// @brief Stub for `Physics3DWorld.LastCcdSubsteps`.
+///
+/// @param w Physics3DWorld handle (ignored).
+///
+/// @return `0`, because no continuous-collision substeps ran.
 int64_t rt_world3d_get_last_ccd_substeps(void *w) {
     (void)w;
     return 0;
 }
 
 /// @brief Stub for `Physics3DWorld.CcdSubstepClampedCount`.
+///
+/// @param w Physics3DWorld handle (ignored).
+///
+/// @return `0`, because the stub never clamps CCD substeps.
 int64_t rt_world3d_get_ccd_substep_clamped_count(void *w) {
     (void)w;
     return 0;
 }
 
 /// @brief Stub for `Physics3DWorld.SolverIterations`.
+///
+/// @param w Physics3DWorld handle (ignored).
+///
+/// @return `0`, the fallback velocity-solver iteration count.
 int64_t rt_world3d_get_solver_iterations(void *w) {
     (void)w;
     return 0;
 }
 
 /// @brief Stub for `Physics3DWorld.SolverIterations` setter.
+///
+/// @param w          Physics3DWorld handle (ignored).
+/// @param iterations Requested velocity-solver iteration count (ignored).
 void rt_world3d_set_solver_iterations(void *w, int64_t iterations) {
     (void)w;
     (void)iterations;
 }
 
 /// @brief Stub for `Physics3DWorld.PositionIterations`.
+///
+/// @param w Physics3DWorld handle (ignored).
+///
+/// @return `0`, the fallback position-solver iteration count.
 int64_t rt_world3d_get_position_iterations(void *w) {
     (void)w;
     return 0;
 }
 
 /// @brief Stub for `Physics3DWorld.PositionIterations` setter.
+///
+/// @param w          Physics3DWorld handle (ignored).
+/// @param iterations Requested position-solver iteration count (ignored).
 void rt_world3d_set_position_iterations(void *w, int64_t iterations) {
     (void)w;
     (void)iterations;
 }
 
 /// @brief Stub for `Physics3DWorld.ContactBeta`.
+///
+/// @param w Physics3DWorld handle (ignored).
+///
+/// @return `0.0`, the fallback contact stabilization factor.
 double rt_world3d_get_contact_beta(void *w) {
     (void)w;
     return 0.0;
 }
 
 /// @brief Stub for `Physics3DWorld.ContactBeta` setter.
+///
+/// @param w    Physics3DWorld handle (ignored).
+/// @param beta Requested contact stabilization factor (ignored).
 void rt_world3d_set_contact_beta(void *w, double beta) {
     (void)w;
     (void)beta;
 }
 
 /// @brief Stub for `Physics3DWorld.RestitutionThreshold`.
+///
+/// @param w Physics3DWorld handle (ignored).
+///
+/// @return `0.0`, the fallback restitution velocity threshold.
 double rt_world3d_get_restitution_threshold(void *w) {
     (void)w;
     return 0.0;
 }
 
 /// @brief Stub for `Physics3DWorld.RestitutionThreshold` setter.
+///
+/// @param w         Physics3DWorld handle (ignored).
+/// @param threshold Requested restitution velocity threshold (ignored).
 void rt_world3d_set_restitution_threshold(void *w, double threshold) {
     (void)w;
     (void)threshold;
 }
 
 /// @brief Stub for `Physics3DWorld.LastSolverIslandCount`.
+///
+/// @param w Physics3DWorld handle (ignored).
+///
+/// @return `0`, because no solver islands were processed.
 int64_t rt_world3d_get_last_solver_island_count(void *w) {
     (void)w;
     return 0;
 }
 
 /// @brief Stub for `Physics3DWorld.LastSolverActiveBodyCount`.
+///
+/// @param w Physics3DWorld handle (ignored).
+///
+/// @return `0`, because no active bodies were processed.
 int64_t rt_world3d_get_last_solver_active_body_count(void *w) {
     (void)w;
     return 0;
 }
 
 /// @brief Stub for `Physics3DWorld.LastSolverContactCount`.
+///
+/// @param w Physics3DWorld handle (ignored).
+///
+/// @return `0`, because no contacts were solved.
 int64_t rt_world3d_get_last_solver_contact_count(void *w) {
     (void)w;
     return 0;
 }
 
-/// @brief Set the gravity of the world3d.
+/// @brief Silently discard a gravity update for a graphics-disabled physics world.
+///
+/// @param w  Physics3DWorld handle (ignored).
+/// @param gx Gravity acceleration along X (ignored).
+/// @param gy Gravity acceleration along Y (ignored).
+/// @param gz Gravity acceleration along Z (ignored).
 void rt_world3d_set_gravity(void *w, double gx, double gy, double gz) {
     (void)w;
     (void)gx;
@@ -744,6 +835,8 @@ void *rt_world3d_get_exit_event(void *w, int64_t i) {
 /// @brief Stub for `Physics3DWorld.ClearCollisionEvents`.
 ///
 /// Silent no-op stub.
+///
+/// @param w Physics3DWorld handle (ignored).
 void rt_world3d_clear_collision_events(void *w) {
     (void)w;
 }
@@ -1001,11 +1094,21 @@ int64_t rt_physics_hit_list3d_get_count(void *list) {
     return 0;
 }
 
+/// @brief Return the fallback untruncated hit count from a multi-hit query.
+///
+/// @param list Physics3DHitList handle (ignored).
+///
+/// @return `0`, because the stub contains no hits before truncation.
 int64_t rt_physics_hit_list3d_get_total_count(void *list) {
     (void)list;
     return 0;
 }
 
+/// @brief Report whether a graphics-disabled multi-hit query was truncated.
+///
+/// @param list Physics3DHitList handle (ignored).
+///
+/// @return `0`, indicating that the empty fallback list was not truncated.
 int8_t rt_physics_hit_list3d_get_truncated(void *list) {
     (void)list;
     return 0;
@@ -1372,6 +1475,13 @@ double rt_spring_joint3d_get_rest_length(void *j) {
 ///        constraint that allows relative angular motion around `axis`.
 ///
 /// Trapping stub.
+///
+/// @param a      First Body3D handle (ignored before trapping).
+/// @param b      Second Body3D handle (ignored before trapping).
+/// @param anchor World-space hinge anchor (ignored before trapping).
+/// @param axis   World-space hinge axis (ignored before trapping).
+///
+/// @return Never returns normally.
 void *rt_hinge_joint3d_new(void *a, void *b, void *anchor, void *axis) {
     (void)a;
     (void)b;
@@ -1381,6 +1491,12 @@ void *rt_hinge_joint3d_new(void *a, void *b, void *anchor, void *axis) {
     return NULL;
 }
 
+/// @brief Silently discard a hinge-motor configuration in a graphics-disabled build.
+///
+/// @param joint           HingeJoint3D handle (ignored).
+/// @param enabled         Non-zero to enable the motor (ignored).
+/// @param target_velocity Requested angular velocity (ignored).
+/// @param max_impulse     Maximum motor impulse (ignored).
 void rt_hinge_joint3d_set_motor(void *joint,
                                 int8_t enabled,
                                 double target_velocity,
@@ -1391,11 +1507,21 @@ void rt_hinge_joint3d_set_motor(void *joint,
     (void)max_impulse;
 }
 
+/// @brief Return the fallback relative angle for a graphics-disabled hinge joint.
+///
+/// @param joint HingeJoint3D handle (ignored).
+///
+/// @return `0.0` radians.
 double rt_hinge_joint3d_get_angle(void *joint) {
     (void)joint;
     return 0.0;
 }
 
+/// @brief Silently discard angular limits for a graphics-disabled hinge joint.
+///
+/// @param joint     HingeJoint3D handle (ignored).
+/// @param min_angle Minimum permitted relative angle in radians (ignored).
+/// @param max_angle Maximum permitted relative angle in radians (ignored).
 void rt_hinge_joint3d_set_limits(void *joint, double min_angle, double max_angle) {
     (void)joint;
     (void)min_angle;
@@ -1406,6 +1532,12 @@ void rt_hinge_joint3d_set_limits(void *joint, double min_angle, double max_angle
 ///        constraint between bodies `a` and `b`.
 ///
 /// Trapping stub.
+///
+/// @param a          First Body3D handle (ignored before trapping).
+/// @param b          Second Body3D handle (ignored before trapping).
+/// @param max_length Maximum separation permitted by the rope (ignored before trapping).
+///
+/// @return Never returns normally.
 void *rt_rope_joint3d_new(void *a, void *b, double max_length) {
     (void)a;
     (void)b;
@@ -1415,12 +1547,19 @@ void *rt_rope_joint3d_new(void *a, void *b, double max_length) {
 }
 
 /// @brief Stub for `RopeJoint3D.MaxLength`.
+///
+/// @param j RopeJoint3D handle (ignored).
+///
+/// @return `0.0`, the fallback maximum length.
 double rt_rope_joint3d_get_max_length(void *j) {
     (void)j;
     return 0.0;
 }
 
 /// @brief Stub for `RopeJoint3D.MaxLength` setter.
+///
+/// @param j          RopeJoint3D handle (ignored).
+/// @param max_length Requested maximum separation (ignored).
 void rt_rope_joint3d_set_max_length(void *j, double max_length) {
     (void)j;
     (void)max_length;
@@ -1430,6 +1569,13 @@ void rt_rope_joint3d_set_max_length(void *j, double max_length) {
 ///        frame constraint between two bodies.
 ///
 /// Trapping stub.
+///
+/// @param a       First Body3D handle (ignored before trapping).
+/// @param b       Second Body3D handle (ignored before trapping).
+/// @param frame_a Constraint frame in the first body's local space (ignored before trapping).
+/// @param frame_b Constraint frame in the second body's local space (ignored before trapping).
+///
+/// @return Never returns normally.
 void *rt_sixdof_joint3d_new(void *a, void *b, void *frame_a, void *frame_b) {
     (void)a;
     (void)b;
@@ -1440,6 +1586,10 @@ void *rt_sixdof_joint3d_new(void *a, void *b, void *frame_a, void *frame_b) {
 }
 
 /// @brief Stub for `SixDofJoint3D.SetLinearLimits`.
+///
+/// @param j   SixDofJoint3D handle (ignored).
+/// @param min Vec3 lower translation limits (ignored).
+/// @param max Vec3 upper translation limits (ignored).
 void rt_sixdof_joint3d_set_linear_limits(void *j, void *min, void *max) {
     (void)j;
     (void)min;
@@ -1447,12 +1597,22 @@ void rt_sixdof_joint3d_set_linear_limits(void *j, void *min, void *max) {
 }
 
 /// @brief Stub for `SixDofJoint3D.SetAngularLimits`.
+///
+/// @param j   SixDofJoint3D handle (ignored).
+/// @param min Vec3 lower angular limits in radians (ignored).
+/// @param max Vec3 upper angular limits in radians (ignored).
 void rt_sixdof_joint3d_set_angular_limits(void *j, void *min, void *max) {
     (void)j;
     (void)min;
     (void)max;
 }
 
+/// @brief Silently discard a linear-motor configuration for a graphics-disabled six-DOF joint.
+///
+/// @param j           SixDofJoint3D handle (ignored).
+/// @param enabled     Non-zero to enable the motor (ignored).
+/// @param velocity    Vec3 target linear velocity (ignored).
+/// @param max_impulse Maximum motor impulse (ignored).
 void rt_sixdof_joint3d_set_linear_motor(void *j,
                                         int8_t enabled,
                                         void *velocity,
@@ -1812,100 +1972,142 @@ void rt_collider3d_get_child_transform_raw(
     }
 }
 
-/// @brief Stub for `Collider3D.SampleHeightfield(x, z)` raw query — for
-///        heightfield colliders, would normally sample the surface height
-///        and surface normal at the local-space `(x, z)` point.
-///
-/// Silent stub: writes a flat ground default (height 0, normal +Y) to the
-/// out-parameters and returns `0` (no hit). The flat default lets callers
-/// use the values for layout math without further checks.
-///
-/// @param collider   Heightfield Collider3D handle (ignored).
-/// @param local_x    Local-space X to sample (ignored).
-/// @param local_z    Local-space Z to sample (ignored).
-/// @param height_out Receives surface height (defaults to `0.0`).
-/// @param normal_out `double[3]` receives surface normal (defaults to +Y).
-///
-/// @return `0` (sample missed / outside heightfield bounds).
 /// @brief Silent stub for `Collider3D.set_Friction` — no-op.
+///
+/// @param collider Collider3D handle (ignored).
+/// @param friction Friction override to assign (ignored).
 void rt_collider3d_set_friction(void *collider, double friction) {
     (void)collider;
     (void)friction;
 }
 
 /// @brief Silent stub for `Collider3D.get_Friction` — no-op; returns -1.
+///
+/// @param collider Collider3D handle (ignored).
+///
+/// @return `-1.0`, indicating that the collider has no friction override.
 double rt_collider3d_get_friction(void *collider) {
     (void)collider;
     return -1.0;
 }
 
 /// @brief Silent stub for `Collider3D.set_Restitution` — no-op.
+///
+/// @param collider    Collider3D handle (ignored).
+/// @param restitution Restitution override to assign (ignored).
 void rt_collider3d_set_restitution(void *collider, double restitution) {
     (void)collider;
     (void)restitution;
 }
 
 /// @brief Silent stub for `Collider3D.get_Restitution` — no-op; returns -1.
+///
+/// @param collider Collider3D handle (ignored).
+///
+/// @return `-1.0`, indicating that the collider has no restitution override.
 double rt_collider3d_get_restitution(void *collider) {
     (void)collider;
     return -1.0;
 }
 
 /// @brief Silent stub for `Collider3D.set_SurfaceType` — no-op.
+///
+/// @param collider     Collider3D handle (ignored).
+/// @param surface_type Application-defined surface type identifier (ignored).
 void rt_collider3d_set_surface_type(void *collider, int64_t surface_type) {
     (void)collider;
     (void)surface_type;
 }
 
 /// @brief Silent stub for `Collider3D.get_SurfaceType` — no-op; returns 0.
+///
+/// @param collider Collider3D handle (ignored).
+///
+/// @return `0`, the default surface type.
 int64_t rt_collider3d_get_surface_type(void *collider) {
     (void)collider;
     return 0;
 }
 
 /// @brief Silent stub for the effective-friction resolver — no-op; body value.
+///
+/// @param collider      Collider3D handle whose optional override would be consulted (ignored).
+/// @param body_friction Owning body's friction coefficient.
+///
+/// @return `body_friction` unchanged.
 double rt_collider3d_effective_friction_raw(void *collider, double body_friction) {
     (void)collider;
     return body_friction;
 }
 
 /// @brief Silent stub for the effective-restitution resolver — no-op; body value.
+///
+/// @param collider         Collider3D handle whose optional override would be consulted (ignored).
+/// @param body_restitution Owning body's restitution coefficient.
+///
+/// @return `body_restitution` unchanged.
 double rt_collider3d_effective_restitution_raw(void *collider, double body_restitution) {
     (void)collider;
     return body_restitution;
 }
 
 /// @brief Silent stub for `Physics3DBody.set_UserData` — no-op.
+///
+/// @param body  Body3D handle (ignored).
+/// @param value Application-defined integer payload (ignored).
 void rt_body3d_set_user_data(void *body, int64_t value) {
     (void)body;
     (void)value;
 }
 
 /// @brief Silent stub for `Physics3DBody.get_UserData` — no-op; returns 0.
+///
+/// @param body Body3D handle (ignored).
+///
+/// @return `0`, the default user payload.
 int64_t rt_body3d_get_user_data(void *body) {
     (void)body;
     return 0;
 }
 
 /// @brief Silent stub for `PhysicsHit3D.get_SurfaceType` — no-op; returns 0.
+///
+/// @param hit Physics3DHit handle (ignored).
+///
+/// @return `0`, the default surface type.
 int64_t rt_physics_hit3d_get_surface_type(void *hit) {
     (void)hit;
     return 0;
 }
 
 /// @brief Silent stub for `CollisionEvent3D.get_SurfaceTypeA` — no-op; returns 0.
+///
+/// @param event CollisionEvent3D handle (ignored).
+///
+/// @return `0`, the default surface type for body A.
 int64_t rt_collision_event3d_get_surface_type_a(void *event) {
     (void)event;
     return 0;
 }
 
 /// @brief Silent stub for `CollisionEvent3D.get_SurfaceTypeB` — no-op; returns 0.
+///
+/// @param event CollisionEvent3D handle (ignored).
+///
+/// @return `0`, the default surface type for body B.
 int64_t rt_collision_event3d_get_surface_type_b(void *event) {
     (void)event;
     return 0;
 }
 
 /// @brief Silent stub for the internal heightfield hole-mask installer — no-op; returns 0.
+///
+/// @param collider Heightfield Collider3D handle (ignored).
+/// @param mask     Per-cell hole mask (ignored).
+/// @param cells_x  Number of cells along the local X axis (ignored).
+/// @param cells_z  Number of cells along the local Z axis (ignored).
+///
+/// @return `0`, indicating that the mask was not installed.
 int8_t rt_collider3d_heightfield_set_holes_raw(void *collider,
                                                const uint8_t *mask,
                                                int32_t cells_x,
@@ -1917,6 +2119,19 @@ int8_t rt_collider3d_heightfield_set_holes_raw(void *collider,
     return 0;
 }
 
+/// @brief Return the flat fallback sample for a graphics-disabled heightfield collider.
+///
+/// Would normally sample the surface height and normal at local-space
+/// coordinates `(local_x, local_z)`. The stub writes height `0` and normal
+/// `+Y` when the corresponding output buffers are present.
+///
+/// @param collider   Heightfield Collider3D handle (ignored).
+/// @param local_x    Local-space X coordinate (ignored).
+/// @param local_z    Local-space Z coordinate (ignored).
+/// @param height_out Optional scalar output receiving `0.0`.
+/// @param normal_out Optional `double[3]` output receiving `(0, 1, 0)`.
+///
+/// @return `0`, indicating that no in-bounds heightfield sample was found.
 int8_t rt_collider3d_sample_heightfield_raw(
     void *collider, double local_x, double local_z, double *height_out, double *normal_out) {
     (void)collider;
@@ -2062,6 +2277,12 @@ void *rt_body3d_get_position(void *o) {
     return NULL;
 }
 
+/// @brief Silently discard a scale update for a graphics-disabled rigid body.
+///
+/// @param o Body3D handle (ignored).
+/// @param x Scale factor along X (ignored).
+/// @param y Scale factor along Y (ignored).
+/// @param z Scale factor along Z (ignored).
 void rt_body3d_set_scale(void *o, double x, double y, double z) {
     (void)o;
     (void)x;
@@ -2069,6 +2290,11 @@ void rt_body3d_set_scale(void *o, double x, double y, double z) {
     (void)z;
 }
 
+/// @brief Return the unavailable scale vector for a graphics-disabled rigid body.
+///
+/// @param o Body3D handle (ignored).
+///
+/// @return `NULL`.
 void *rt_body3d_get_scale(void *o) {
     (void)o;
     return NULL;
@@ -2100,6 +2326,15 @@ void *rt_body3d_get_orientation(void *o) {
     return NULL;
 }
 
+/// @brief Write the fallback pose for a graphics-disabled rigid body.
+///
+/// The fallback is zero translation, identity quaternion rotation, and unit
+/// scale. Each output buffer is optional.
+///
+/// @param o            Body3D handle (ignored).
+/// @param position_out Optional `double[3]` output receiving `(0, 0, 0)`.
+/// @param rotation_out Optional `double[4]` output receiving `(0, 0, 0, 1)`.
+/// @param scale_out    Optional `double[3]` output receiving `(1, 1, 1)`.
 void rt_body3d_get_pose_raw(void *o,
                             double *position_out,
                             double *rotation_out,
@@ -2200,6 +2435,15 @@ void rt_body3d_apply_force(void *o, double fx, double fy, double fz) {
     (void)fz;
 }
 
+/// @brief Silently discard a force applied at a world-space point.
+///
+/// @param o  Body3D handle (ignored).
+/// @param fx Force component along X (ignored).
+/// @param fy Force component along Y (ignored).
+/// @param fz Force component along Z (ignored).
+/// @param px Application point X coordinate (ignored).
+/// @param py Application point Y coordinate (ignored).
+/// @param pz Application point Z coordinate (ignored).
 void rt_body3d_apply_force_at_point(
     void *o, double fx, double fy, double fz, double px, double py, double pz) {
     (void)o;
@@ -2228,6 +2472,15 @@ void rt_body3d_apply_impulse(void *o, double ix, double iy, double iz) {
     (void)iz;
 }
 
+/// @brief Silently discard an impulse applied at a world-space point.
+///
+/// @param o  Body3D handle (ignored).
+/// @param ix Impulse component along X (ignored).
+/// @param iy Impulse component along Y (ignored).
+/// @param iz Impulse component along Z (ignored).
+/// @param px Application point X coordinate (ignored).
+/// @param py Application point Y coordinate (ignored).
+/// @param pz Application point Z coordinate (ignored).
 void rt_body3d_apply_impulse_at_point(
     void *o, double ix, double iy, double iz, double px, double py, double pz) {
     (void)o;
@@ -2908,6 +3161,11 @@ void rt_trigger3d_set_bounds(
 /// @brief Stub for `Cloth3D.NewChain` — would allocate a verlet chain.
 ///
 /// Traps: graphics support not compiled in.
+///
+/// @param segments     Number of simulated chain segments (ignored before trapping).
+/// @param total_length End-to-end chain length (ignored before trapping).
+///
+/// @return This stub traps before returning; `NULL` is supplied as the macro fallback.
 void *rt_cloth3d_new_chain(int64_t segments, double total_length) {
     (void)segments;
     (void)total_length;
@@ -2917,6 +3175,13 @@ void *rt_cloth3d_new_chain(int64_t segments, double total_length) {
 /// @brief Stub for `Cloth3D.NewPatch` — would allocate a verlet patch grid.
 ///
 /// Traps: graphics support not compiled in.
+///
+/// @param w      Number of grid points or divisions along the patch width (ignored).
+/// @param h      Number of grid points or divisions along the patch height (ignored).
+/// @param width  Physical patch width (ignored).
+/// @param height Physical patch height (ignored).
+///
+/// @return This stub traps before returning; `NULL` is supplied as the macro fallback.
 void *rt_cloth3d_new_patch(int64_t w, int64_t h, double width, double height) {
     (void)w;
     (void)h;
@@ -2926,66 +3191,109 @@ void *rt_cloth3d_new_patch(int64_t w, int64_t h, double width, double height) {
 }
 
 /// @brief Stub for `Cloth3D.get_Damping`. Silent stub returning `0`.
+///
+/// @param cloth Cloth3D handle (ignored).
+///
+/// @return `0.0`.
 double rt_cloth3d_get_damping(void *cloth) {
     (void)cloth;
     return 0.0;
 }
 
 /// @brief Stub for `Cloth3D.set_Damping`. Silent no-op stub.
+///
+/// @param cloth   Cloth3D handle (ignored).
+/// @param damping Velocity damping coefficient (ignored).
 void rt_cloth3d_set_damping(void *cloth, double damping) {
     (void)cloth;
     (void)damping;
 }
 
 /// @brief Stub for `Cloth3D.get_Iterations`. Silent stub returning `0`.
+///
+/// @param cloth Cloth3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_cloth3d_get_iterations(void *cloth) {
     (void)cloth;
     return 0;
 }
 
 /// @brief Stub for `Cloth3D.set_Iterations`. Silent no-op stub.
+///
+/// @param cloth      Cloth3D handle (ignored).
+/// @param iterations Constraint-solver iteration count (ignored).
 void rt_cloth3d_set_iterations(void *cloth, int64_t iterations) {
     (void)cloth;
     (void)iterations;
 }
 
 /// @brief Stub for `Cloth3D.get_GravityScale`. Silent stub returning `0`.
+///
+/// @param cloth Cloth3D handle (ignored).
+///
+/// @return `0.0`.
 double rt_cloth3d_get_gravity_scale(void *cloth) {
     (void)cloth;
     return 0.0;
 }
 
 /// @brief Stub for `Cloth3D.set_GravityScale`. Silent no-op stub.
+///
+/// @param cloth Cloth3D handle (ignored).
+/// @param scale Gravity multiplier (ignored).
 void rt_cloth3d_set_gravity_scale(void *cloth, double scale) {
     (void)cloth;
     (void)scale;
 }
 
 /// @brief Stub for `Cloth3D.get_WindResponse`. Silent stub returning `0`.
+///
+/// @param cloth Cloth3D handle (ignored).
+///
+/// @return `0.0`.
 double rt_cloth3d_get_wind_response(void *cloth) {
     (void)cloth;
     return 0.0;
 }
 
 /// @brief Stub for `Cloth3D.set_WindResponse`. Silent no-op stub.
+///
+/// @param cloth    Cloth3D handle (ignored).
+/// @param response Wind-force response coefficient (ignored).
 void rt_cloth3d_set_wind_response(void *cloth, double response) {
     (void)cloth;
     (void)response;
 }
 
 /// @brief Stub for `Cloth3D.get_PointCount`. Silent stub returning `0`.
+///
+/// @param cloth Cloth3D handle (ignored).
+///
+/// @return `0`, because the stub contains no simulated points.
 int64_t rt_cloth3d_get_point_count(void *cloth) {
     (void)cloth;
     return 0;
 }
 
 /// @brief Stub for `Cloth3D.Pin`. Silent no-op stub returning the handle.
+///
+/// @param cloth Cloth3D handle.
+/// @param index Point index to pin (ignored).
+///
+/// @return `cloth` unchanged.
 void *rt_cloth3d_pin(void *cloth, int64_t index) {
     (void)index;
     return cloth;
 }
 
 /// @brief Stub for `Cloth3D.AddSphere`. Silent no-op stub returning the handle.
+///
+/// @param cloth  Cloth3D handle.
+/// @param center Vec3 collision-sphere center (ignored).
+/// @param radius Collision-sphere radius (ignored).
+///
+/// @return `cloth` unchanged.
 void *rt_cloth3d_add_sphere(void *cloth, void *center, double radius) {
     (void)center;
     (void)radius;
@@ -2993,6 +3301,13 @@ void *rt_cloth3d_add_sphere(void *cloth, void *center, double radius) {
 }
 
 /// @brief Stub for `Cloth3D.AddCapsule`. Silent no-op stub returning the handle.
+///
+/// @param cloth  Cloth3D handle.
+/// @param a      Vec3 capsule-axis start (ignored).
+/// @param b      Vec3 capsule-axis end (ignored).
+/// @param radius Capsule radius (ignored).
+///
+/// @return `cloth` unchanged.
 void *rt_cloth3d_add_capsule(void *cloth, void *a, void *b, double radius) {
     (void)a;
     (void)b;
@@ -3001,6 +3316,10 @@ void *rt_cloth3d_add_capsule(void *cloth, void *a, void *b, double radius) {
 }
 
 /// @brief Stub for `Cloth3D.SetWind`. Silent no-op stub.
+///
+/// @param cloth     Cloth3D handle (ignored).
+/// @param direction Vec3 wind direction (ignored).
+/// @param strength  Wind magnitude (ignored).
 void rt_cloth3d_set_wind(void *cloth, void *direction, double strength) {
     (void)cloth;
     (void)direction;
@@ -3008,6 +3327,11 @@ void rt_cloth3d_set_wind(void *cloth, void *direction, double strength) {
 }
 
 /// @brief Stub for `Cloth3D.GetPoint`. Silent stub returning `NULL`.
+///
+/// @param cloth Cloth3D handle (ignored).
+/// @param index Simulated point index (ignored).
+///
+/// @return `NULL`.
 void *rt_cloth3d_get_point(void *cloth, int64_t index) {
     (void)cloth;
     (void)index;
@@ -3015,12 +3339,23 @@ void *rt_cloth3d_get_point(void *cloth, int64_t index) {
 }
 
 /// @brief Stub for `Cloth3D.BindMesh`. Silent no-op stub returning the handle.
+///
+/// @param cloth Cloth3D handle.
+/// @param mesh  Mesh3D handle to deform (ignored).
+///
+/// @return `cloth` unchanged.
 void *rt_cloth3d_bind_mesh(void *cloth, void *mesh) {
     (void)mesh;
     return cloth;
 }
 
 /// @brief Stub for `Cloth3D.BindBoneChain`. Silent no-op stub returning the handle.
+///
+/// @param cloth     Cloth3D handle.
+/// @param animator  NodeAnimator3D or animation-controller handle (ignored).
+/// @param root_bone Name of the simulated chain's root bone (ignored).
+///
+/// @return `cloth` unchanged.
 void *rt_cloth3d_bind_bone_chain(void *cloth, void *animator, rt_string root_bone) {
     (void)animator;
     (void)root_bone;
@@ -3028,18 +3363,27 @@ void *rt_cloth3d_bind_bone_chain(void *cloth, void *animator, rt_string root_bon
 }
 
 /// @brief Stub for `Cloth3D.Step`. Silent no-op stub.
+///
+/// @param cloth Cloth3D handle (ignored).
+/// @param dt    Simulation interval in seconds (ignored).
 void rt_cloth3d_step(void *cloth, double dt) {
     (void)cloth;
     (void)dt;
 }
 
 /// @brief Stub for `World3D.AddCloth`. Silent no-op stub.
+///
+/// @param world World3D handle (ignored).
+/// @param cloth Cloth3D handle to add (ignored).
 void rt_game3d_world_add_cloth(void *world, void *cloth) {
     (void)world;
     (void)cloth;
 }
 
 /// @brief Stub for `World3D.RemoveCloth`. Silent no-op stub.
+///
+/// @param world World3D handle (ignored).
+/// @param cloth Cloth3D handle to remove (ignored).
 void rt_game3d_world_remove_cloth(void *world, void *cloth) {
     (void)world;
     (void)cloth;
@@ -3048,36 +3392,63 @@ void rt_game3d_world_remove_cloth(void *world, void *cloth) {
 /* Physics3DWorld query-config, CCD counters, and traversal probes */
 
 /// @brief Stub for `Physics3DWorld.get_MaxQueryHits`. Silent stub returning 0.
+///
+/// @param w Physics3DWorld handle (ignored).
+///
+/// @return `0`, the fallback query-result capacity.
 int64_t rt_world3d_get_max_query_hits(void *w) {
     (void)w;
     return 0;
 }
 
 /// @brief Stub for `Physics3DWorld.SetMaxQueryHits`. Silent no-op stub.
+///
+/// @param w        Physics3DWorld handle (ignored).
+/// @param max_hits Maximum results to retain per query (ignored).
 void rt_world3d_set_max_query_hits(void *w, int64_t max_hits) {
     (void)w;
     (void)max_hits;
 }
 
 /// @brief Stub for `Physics3DWorld.get_CcdToiCount`. Silent stub returning 0.
+///
+/// @param w Physics3DWorld handle (ignored).
+///
+/// @return `0`, because no time-of-impact events were processed.
 int64_t rt_world3d_get_ccd_toi_count(void *w) {
     (void)w;
     return 0;
 }
 
 /// @brief Stub for `Physics3DWorld.get_CcdSubstepClampedBodyCount`. Silent stub returning 0.
+///
+/// @param w Physics3DWorld handle (ignored).
+///
+/// @return `0`, because no bodies reached the CCD substep limit.
 int64_t rt_world3d_get_ccd_substep_clamped_body_count(void *w) {
     (void)w;
     return 0;
 }
 
 /// @brief Stub for `Physics3DWorld.get_LastCcdClampedBodyCount`. Silent stub returning 0.
+///
+/// @param w Physics3DWorld handle (ignored).
+///
+/// @return `0`, because the most recent nonexistent step clamped no bodies.
 int64_t rt_world3d_get_last_ccd_clamped_body_count(void *w) {
     (void)w;
     return 0;
 }
 
 /// @brief Stub for `Physics3DWorld.ProbeClearance`. Silent stub returning false.
+///
+/// @param w        Physics3DWorld handle (ignored).
+/// @param position Vec3 capsule or character position (ignored).
+/// @param radius   Probe radius (ignored).
+/// @param height   Required clearance height (ignored).
+/// @param mask     Collision-layer mask (ignored).
+///
+/// @return `0`, indicating that clearance was not established.
 int8_t rt_world3d_probe_clearance(
     void *w, void *position, double radius, double height, int64_t mask) {
     (void)w;
@@ -3089,6 +3460,16 @@ int8_t rt_world3d_probe_clearance(
 }
 
 /// @brief Stub for `Physics3DWorld.ProbeLedge`. Silent stub returning NULL (no ledge).
+///
+/// @param w          Physics3DWorld handle (ignored).
+/// @param position   Vec3 probe origin (ignored).
+/// @param forward    Vec3 horizontal probe direction (ignored).
+/// @param max_height Maximum ledge height above the origin (ignored).
+/// @param min_height Minimum ledge height above the origin (ignored).
+/// @param reach      Forward probe distance (ignored).
+/// @param mask       Collision-layer mask (ignored).
+///
+/// @return `NULL`, indicating that no ledge was found.
 void *rt_world3d_probe_ledge(void *w,
                              void *position,
                              void *forward,
@@ -3107,6 +3488,16 @@ void *rt_world3d_probe_ledge(void *w,
 }
 
 /// @brief Stub for `Physics3DWorld.ProbeVault`. Silent stub returning NULL (no vault).
+///
+/// @param w          Physics3DWorld handle (ignored).
+/// @param position   Vec3 probe origin (ignored).
+/// @param forward    Vec3 horizontal probe direction (ignored).
+/// @param max_height Maximum vaultable obstacle height (ignored).
+/// @param max_depth  Maximum vaultable obstacle depth (ignored).
+/// @param reach      Forward probe distance (ignored).
+/// @param mask       Collision-layer mask (ignored).
+///
+/// @return `NULL`, indicating that no vault opportunity was found.
 void *rt_world3d_probe_vault(void *w,
                              void *position,
                              void *forward,
@@ -3127,6 +3518,11 @@ void *rt_world3d_probe_vault(void *w,
 /* Character3D configuration and state accessors */
 
 /// @brief Stub for `Character3D.TrySetHeight`. Silent stub returning false.
+///
+/// @param c      Character3D handle (ignored).
+/// @param height Requested capsule height (ignored).
+///
+/// @return `0`, indicating that the resize could not be applied.
 int8_t rt_character3d_try_set_height(void *c, double height) {
     (void)c;
     (void)height;
@@ -3134,60 +3530,96 @@ int8_t rt_character3d_try_set_height(void *c, double height) {
 }
 
 /// @brief Stub for `Character3D.set_Height`. Silent no-op stub.
+///
+/// @param c      Character3D handle (ignored).
+/// @param height Requested capsule height (ignored).
 void rt_character3d_set_height(void *c, double height) {
     (void)c;
     (void)height;
 }
 
 /// @brief Stub for `Character3D.get_Height`. Silent stub returning 0.
+///
+/// @param c Character3D handle (ignored).
+///
+/// @return `0.0`.
 double rt_character3d_get_height(void *c) {
     (void)c;
     return 0.0;
 }
 
 /// @brief Stub for `Character3D.set_PushStrength`. Silent no-op stub.
+///
+/// @param c        Character3D handle (ignored).
+/// @param strength Impulse or force multiplier for pushed dynamic bodies (ignored).
 void rt_character3d_set_push_strength(void *c, double strength) {
     (void)c;
     (void)strength;
 }
 
 /// @brief Stub for `Character3D.get_PushStrength`. Silent stub returning 0.
+///
+/// @param c Character3D handle (ignored).
+///
+/// @return `0.0`.
 double rt_character3d_get_push_strength(void *c) {
     (void)c;
     return 0.0;
 }
 
 /// @brief Stub for `Character3D.set_CollideDynamic`. Silent no-op stub.
+///
+/// @param c       Character3D handle (ignored).
+/// @param enabled Non-zero to collide with dynamic rigid bodies (ignored).
 void rt_character3d_set_collide_dynamic(void *c, int8_t enabled) {
     (void)c;
     (void)enabled;
 }
 
 /// @brief Stub for `Character3D.get_CollideDynamic`. Silent stub returning false.
+///
+/// @param c Character3D handle (ignored).
+///
+/// @return `0`.
 int8_t rt_character3d_get_collide_dynamic(void *c) {
     (void)c;
     return 0;
 }
 
 /// @brief Stub for `Character3D.set_RidePlatforms`. Silent no-op stub.
+///
+/// @param c       Character3D handle (ignored).
+/// @param enabled Non-zero to inherit moving-platform displacement (ignored).
 void rt_character3d_set_ride_platforms(void *c, int8_t enabled) {
     (void)c;
     (void)enabled;
 }
 
 /// @brief Stub for `Character3D.get_RidePlatforms`. Silent stub returning false.
+///
+/// @param c Character3D handle (ignored).
+///
+/// @return `0`.
 int8_t rt_character3d_get_ride_platforms(void *c) {
     (void)c;
     return 0;
 }
 
 /// @brief Stub for `Character3D.IsSliding`. Silent stub returning false.
+///
+/// @param c Character3D handle (ignored).
+///
+/// @return `0`, indicating that the character is not sliding.
 int8_t rt_character3d_is_sliding(void *c) {
     (void)c;
     return 0;
 }
 
 /// @brief Stub for `Character3D.GetGroundBody`. Silent stub returning NULL.
+///
+/// @param c Character3D handle (ignored).
+///
+/// @return `NULL`.
 void *rt_character3d_get_ground_body(void *c) {
     (void)c;
     return NULL;
@@ -3196,60 +3628,98 @@ void *rt_character3d_get_ground_body(void *c) {
 /* Ragdoll3D */
 
 /// @brief Stub for `Ragdoll3D.New`. Silent stub returning NULL.
+///
+/// @param skeleton Skeleton3D handle used to derive bodies and joints (ignored).
+///
+/// @return `NULL`.
 void *rt_ragdoll3d_from_skeleton(void *skeleton) {
     (void)skeleton;
     return NULL;
 }
 
 /// @brief Stub for `Ragdoll3D.get_TotalMass`. Silent stub returning 0.
+///
+/// @param r Ragdoll3D handle (ignored).
+///
+/// @return `0.0`.
 double rt_ragdoll3d_get_total_mass(void *r) {
     (void)r;
     return 0.0;
 }
 
 /// @brief Stub for `Ragdoll3D.set_TotalMass`. Silent no-op stub.
+///
+/// @param r    Ragdoll3D handle (ignored).
+/// @param mass Requested aggregate ragdoll mass (ignored).
 void rt_ragdoll3d_set_total_mass(void *r, double mass) {
     (void)r;
     (void)mass;
 }
 
 /// @brief Stub for `Ragdoll3D.get_RadiusScale`. Silent stub returning 0.
+///
+/// @param r Ragdoll3D handle (ignored).
+///
+/// @return `0.0`.
 double rt_ragdoll3d_get_radius_scale(void *r) {
     (void)r;
     return 0.0;
 }
 
 /// @brief Stub for `Ragdoll3D.set_RadiusScale`. Silent no-op stub.
+///
+/// @param r     Ragdoll3D handle (ignored).
+/// @param scale Collider-radius multiplier (ignored).
 void rt_ragdoll3d_set_radius_scale(void *r, double scale) {
     (void)r;
     (void)scale;
 }
 
 /// @brief Stub for `Ragdoll3D.get_MinBoneLength`. Silent stub returning 0.
+///
+/// @param r Ragdoll3D handle (ignored).
+///
+/// @return `0.0`.
 double rt_ragdoll3d_get_min_bone_length(void *r) {
     (void)r;
     return 0.0;
 }
 
 /// @brief Stub for `Ragdoll3D.set_MinBoneLength`. Silent no-op stub.
+///
+/// @param r      Ragdoll3D handle (ignored).
+/// @param length Minimum skeleton-bone length eligible for a rigid body (ignored).
 void rt_ragdoll3d_set_min_bone_length(void *r, double length) {
     (void)r;
     (void)length;
 }
 
 /// @brief Stub for `Ragdoll3D.get_BodyCount`. Silent stub returning 0.
+///
+/// @param r Ragdoll3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_ragdoll3d_get_body_count(void *r) {
     (void)r;
     return 0;
 }
 
 /// @brief Stub for `Ragdoll3D.get_Active`. Silent stub returning false.
+///
+/// @param r Ragdoll3D handle (ignored).
+///
+/// @return `0`.
 int8_t rt_ragdoll3d_get_active(void *r) {
     (void)r;
     return 0;
 }
 
 /// @brief Stub for `Ragdoll3D.SetJointLimits`. Silent no-op stub.
+///
+/// @param ragdoll   Ragdoll3D handle (ignored).
+/// @param bone_name Skeleton bone whose joint limits should change (ignored).
+/// @param swing_deg Maximum swing angle in degrees (ignored).
+/// @param twist_deg Maximum twist angle in degrees (ignored).
 void rt_ragdoll3d_set_joint_limits(void *ragdoll,
                                    rt_string bone_name,
                                    double swing_deg,
@@ -3261,6 +3731,11 @@ void rt_ragdoll3d_set_joint_limits(void *ragdoll,
 }
 
 /// @brief Stub for `Ragdoll3D.Activate`. Silent no-op stub.
+///
+/// @param r        Ragdoll3D handle (ignored).
+/// @param world    Physics3DWorld that would receive the ragdoll bodies (ignored).
+/// @param skeleton Skeleton3D pose source (ignored).
+/// @param node     Scene node whose transform would anchor the ragdoll (ignored).
 void rt_ragdoll3d_activate(void *r, void *world, void *skeleton, void *node) {
     (void)r;
     (void)world;
@@ -3269,12 +3744,19 @@ void rt_ragdoll3d_activate(void *r, void *world, void *skeleton, void *node) {
 }
 
 /// @brief Stub for `Ragdoll3D.Deactivate`. Silent no-op stub.
+///
+/// @param r             Ragdoll3D handle (ignored).
+/// @param blend_seconds Duration of the blend back to animation (ignored).
 void rt_ragdoll3d_deactivate(void *r, double blend_seconds) {
     (void)r;
     (void)blend_seconds;
 }
 
 /// @brief Stub for `Ragdoll3D.SetPowered`. Silent no-op stub.
+///
+/// @param r        Ragdoll3D handle (ignored).
+/// @param enabled  Non-zero to enable powered pose matching (ignored).
+/// @param strength Pose-matching drive strength (ignored).
 void rt_ragdoll3d_set_powered(void *r, int64_t enabled, double strength) {
     (void)r;
     (void)enabled;
@@ -3282,12 +3764,20 @@ void rt_ragdoll3d_set_powered(void *r, int64_t enabled, double strength) {
 }
 
 /// @brief Stub for `Ragdoll3D.Step`. Silent no-op stub.
+///
+/// @param r  Ragdoll3D handle (ignored).
+/// @param dt Simulation interval in seconds (ignored).
 void rt_ragdoll3d_step(void *r, double dt) {
     (void)r;
     (void)dt;
 }
 
 /// @brief Stub for `Ragdoll3D.GetBody`. Silent stub returning NULL.
+///
+/// @param ragdoll   Ragdoll3D handle (ignored).
+/// @param bone_name Skeleton bone whose generated body is requested (ignored).
+///
+/// @return `NULL`.
 void *rt_ragdoll3d_get_body(void *ragdoll, rt_string bone_name) {
     (void)ragdoll;
     (void)bone_name;
@@ -3295,6 +3785,22 @@ void *rt_ragdoll3d_get_body(void *ragdoll, rt_string bone_name) {
 }
 
 /// @brief Stub for the C-internal closest-hit raw raycast. Silent stub returning NULL.
+///
+/// Writes `-1.0` to `out_distance` when the output pointer is non-NULL.
+///
+/// @param world        Physics3DWorld handle (ignored).
+/// @param ox           Ray-origin X coordinate (ignored).
+/// @param oy           Ray-origin Y coordinate (ignored).
+/// @param oz           Ray-origin Z coordinate (ignored).
+/// @param dx           Ray-direction X component (ignored).
+/// @param dy           Ray-direction Y component (ignored).
+/// @param dz           Ray-direction Z component (ignored).
+/// @param max_distance Maximum ray distance (ignored).
+/// @param mask         Collision-layer mask (ignored).
+/// @param ignore_body  Optional Body3D handle to exclude (ignored).
+/// @param out_distance Optional output receiving `-1.0`.
+///
+/// @return `NULL`, indicating that no body was hit.
 void *rt_world3d_raycast_closest_body_raw(void *world,
                                           double ox,
                                           double oy,
@@ -3324,6 +3830,11 @@ void *rt_world3d_raycast_closest_body_raw(void *world,
 /* Vehicle3D */
 
 /// @brief Stub for `Vehicle3D.New`. Silent stub returning NULL.
+///
+/// @param world   Physics3DWorld that would simulate the vehicle (ignored).
+/// @param chassis Body3D chassis handle (ignored).
+///
+/// @return `NULL`.
 void *rt_vehicle3d_new(void *world, void *chassis) {
     (void)world;
     (void)chassis;
@@ -3331,6 +3842,19 @@ void *rt_vehicle3d_new(void *world, void *chassis) {
 }
 
 /// @brief Stub for `Vehicle3D.AddWheel`. Silent stub returning -1.
+///
+/// @param vehicle         Vehicle3D handle (ignored).
+/// @param x               Wheel connection X coordinate in chassis space (ignored).
+/// @param y               Wheel connection Y coordinate in chassis space (ignored).
+/// @param z               Wheel connection Z coordinate in chassis space (ignored).
+/// @param radius          Wheel radius (ignored).
+/// @param suspension_rest Suspension rest length (ignored).
+/// @param stiffness       Suspension spring stiffness (ignored).
+/// @param damping         Suspension damping coefficient (ignored).
+/// @param steers          Non-zero if steering input rotates this wheel (ignored).
+/// @param driven          Non-zero if drive force is applied to this wheel (ignored).
+///
+/// @return `-1`, indicating that no wheel was added.
 int64_t rt_vehicle3d_add_wheel(void *vehicle,
                                double x,
                                double y,
@@ -3355,6 +3879,11 @@ int64_t rt_vehicle3d_add_wheel(void *vehicle,
 }
 
 /// @brief Stub for `Vehicle3D.SetInput`. Silent no-op stub.
+///
+/// @param vehicle  Vehicle3D handle (ignored).
+/// @param throttle Normalized throttle input (ignored).
+/// @param brake    Normalized brake input (ignored).
+/// @param steer    Normalized steering input (ignored).
 void rt_vehicle3d_set_input(void *vehicle, double throttle, double brake, double steer) {
     (void)vehicle;
     (void)throttle;
@@ -3363,24 +3892,37 @@ void rt_vehicle3d_set_input(void *vehicle, double throttle, double brake, double
 }
 
 /// @brief Stub for `Vehicle3D.SetDriveForce`. Silent no-op stub.
+///
+/// @param vehicle Vehicle3D handle (ignored).
+/// @param newtons Maximum drive force in newtons (ignored).
 void rt_vehicle3d_set_drive_force(void *vehicle, double newtons) {
     (void)vehicle;
     (void)newtons;
 }
 
 /// @brief Stub for `Vehicle3D.SetBrakeForce`. Silent no-op stub.
+///
+/// @param vehicle Vehicle3D handle (ignored).
+/// @param newtons Maximum brake force in newtons (ignored).
 void rt_vehicle3d_set_brake_force(void *vehicle, double newtons) {
     (void)vehicle;
     (void)newtons;
 }
 
 /// @brief Stub for `Vehicle3D.SetMaxSteer`. Silent no-op stub.
+///
+/// @param vehicle Vehicle3D handle (ignored).
+/// @param degrees Maximum steering angle in degrees (ignored).
 void rt_vehicle3d_set_max_steer(void *vehicle, double degrees) {
     (void)vehicle;
     (void)degrees;
 }
 
 /// @brief Stub for `Vehicle3D.SetGrip`. Silent no-op stub.
+///
+/// @param vehicle      Vehicle3D handle (ignored).
+/// @param longitudinal Longitudinal tire-grip coefficient (ignored).
+/// @param lateral      Lateral tire-grip coefficient (ignored).
 void rt_vehicle3d_set_grip(void *vehicle, double longitudinal, double lateral) {
     (void)vehicle;
     (void)longitudinal;
@@ -3388,30 +3930,49 @@ void rt_vehicle3d_set_grip(void *vehicle, double longitudinal, double lateral) {
 }
 
 /// @brief Stub for `Vehicle3D.SetCollisionMask`. Silent no-op stub.
+///
+/// @param vehicle Vehicle3D handle (ignored).
+/// @param mask    Collision-layer mask used by wheel queries (ignored).
 void rt_vehicle3d_set_collision_mask(void *vehicle, int64_t mask) {
     (void)vehicle;
     (void)mask;
 }
 
 /// @brief Stub for `Vehicle3D.Step`. Silent no-op stub.
+///
+/// @param vehicle Vehicle3D handle (ignored).
+/// @param dt      Simulation interval in seconds (ignored).
 void rt_vehicle3d_step(void *vehicle, double dt) {
     (void)vehicle;
     (void)dt;
 }
 
 /// @brief Stub for `Vehicle3D.get_Speed`. Silent stub returning 0.
+///
+/// @param vehicle Vehicle3D handle (ignored).
+///
+/// @return `0.0`.
 double rt_vehicle3d_get_speed(void *vehicle) {
     (void)vehicle;
     return 0.0;
 }
 
 /// @brief Stub for `Vehicle3D.get_WheelCount`. Silent stub returning 0.
+///
+/// @param vehicle Vehicle3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_vehicle3d_get_wheel_count(void *vehicle) {
     (void)vehicle;
     return 0;
 }
 
 /// @brief Stub for `Vehicle3D.WheelInContact`. Silent stub returning false.
+///
+/// @param vehicle Vehicle3D handle (ignored).
+/// @param index   Wheel index (ignored).
+///
+/// @return `0`, indicating that the wheel has no ground contact.
 int8_t rt_vehicle3d_wheel_in_contact(void *vehicle, int64_t index) {
     (void)vehicle;
     (void)index;
@@ -3419,6 +3980,11 @@ int8_t rt_vehicle3d_wheel_in_contact(void *vehicle, int64_t index) {
 }
 
 /// @brief Stub for `Vehicle3D.WheelTravel`. Silent stub returning 0.
+///
+/// @param vehicle Vehicle3D handle (ignored).
+/// @param index   Wheel index (ignored).
+///
+/// @return `0.0`.
 double rt_vehicle3d_wheel_travel(void *vehicle, int64_t index) {
     (void)vehicle;
     (void)index;
@@ -3426,6 +3992,11 @@ double rt_vehicle3d_wheel_travel(void *vehicle, int64_t index) {
 }
 
 /// @brief Stub for `Vehicle3D.WheelLoad`. Silent stub returning 0.
+///
+/// @param vehicle Vehicle3D handle (ignored).
+/// @param index   Wheel index (ignored).
+///
+/// @return `0.0`.
 double rt_vehicle3d_wheel_load(void *vehicle, int64_t index) {
     (void)vehicle;
     (void)index;
@@ -3436,6 +4007,11 @@ double rt_vehicle3d_wheel_load(void *vehicle, int64_t index) {
  * defs whose implementations compile only in graphics-enabled builds. */
 
 /// @brief Trapping stub for `Collider3D.NewConvexHullReduced` (graphics-disabled build).
+///
+/// @param o  Mesh3D or vertex-data handle used to form the hull (ignored before trapping).
+/// @param a1 Requested hull-reduction limit or quality setting (ignored before trapping).
+///
+/// @return This stub traps before returning; `NULL` is supplied as the macro fallback.
 void *rt_collider3d_new_convex_hull_reduced(void *o, int64_t a1) {
     (void)o;
     (void)a1;
@@ -3443,6 +4019,15 @@ void *rt_collider3d_new_convex_hull_reduced(void *o, int64_t a1) {
 }
 
 /// @brief Silent fallback stub for `Ray3D.IntersectTriangleCull` (graphics-disabled build).
+///
+/// @param o  Vec3 ray origin (ignored).
+/// @param a1 Vec3 ray direction (ignored).
+/// @param a2 Vec3 triangle vertex zero (ignored).
+/// @param a3 Vec3 triangle vertex one (ignored).
+/// @param a4 Vec3 triangle vertex two (ignored).
+/// @param a5 Non-zero to enable back-face culling (ignored).
+///
+/// @return `0.0`, the graphics-disabled fallback distance.
 double rt_ray3d_intersect_triangle_cull(
     void *o, void *a1, void *a2, void *a3, void *a4, int8_t a5) {
     (void)o;

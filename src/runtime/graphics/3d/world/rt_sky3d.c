@@ -20,6 +20,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_sky3d.c
+ * @brief Implements deterministic procedural-sky cubemap generation for Canvas3D.
+ *
+ * Sky radiance is evaluated on the CPU from sun direction, turbidity, and ground albedo. Explicit
+ * updates regenerate a six-face cubemap and install it through the normal skybox path so fog and
+ * image-based lighting observe the same environment.
+ */
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_sky3d.h"
@@ -55,6 +64,8 @@ typedef struct rt_sky3d {
     void *cubemap; /* retained generated CubeMap3D */
 } rt_sky3d;
 
+/// @brief Release the generated cubemap retained by a Sky3D object.
+/// @param obj Sky3D runtime object being finalized; NULL is accepted.
 static void sky3d_finalize(void *obj) {
     rt_sky3d *sky = (rt_sky3d *)obj;
     if (sky && sky->cubemap && rt_obj_release_check0(sky->cubemap))
@@ -63,6 +74,8 @@ static void sky3d_finalize(void *obj) {
         sky->cubemap = NULL;
 }
 
+/// @brief Allocate a procedural sky with clear-day defaults and a dirty 64-pixel cubemap.
+/// @return New GC-managed Sky3D handle, or NULL after trapping on allocation failure.
 void *rt_sky3d_new(void) {
     rt_sky3d *sky = (rt_sky3d *)rt_obj_new_i64(RT_G3D_SKY3D_CLASS_ID, (int64_t)sizeof(rt_sky3d));
     if (!sky) {
@@ -86,6 +99,10 @@ void *rt_sky3d_new(void) {
     return sky;
 }
 
+/// @brief Validate a runtime handle as Sky3D and trap with caller-supplied context on failure.
+/// @param obj Candidate runtime object handle.
+/// @param method Trap message identifying the calling API.
+/// @return Typed Sky3D pointer, or NULL when validation fails.
 static rt_sky3d *sky3d_checked(void *obj, const char *method) {
     rt_sky3d *sky = (rt_sky3d *)rt_g3d_checked_or_null(obj, RT_G3D_SKY3D_CLASS_ID);
     if (!sky)
@@ -93,6 +110,10 @@ static rt_sky3d *sky3d_checked(void *obj, const char *method) {
     return sky;
 }
 
+/// @brief Set and normalize the direction from the scene toward the sun.
+/// @param obj Sky3D handle; invalid handles trap and are ignored.
+/// @param direction Vec3 handle containing the new direction; invalid or near-zero vectors are
+/// ignored.
 void rt_sky3d_set_sun_direction(void *obj, void *direction) {
     rt_sky3d *sky = sky3d_checked(obj, "Sky3D.SetSunDirection: invalid sky");
     if (!sky || !direction || rt_obj_class_id(direction) != RT_VEC3_CLASS_ID)
@@ -107,6 +128,9 @@ void rt_sky3d_set_sun_direction(void *obj, void *direction) {
     sky->dirty = 1;
 }
 
+/// @brief Set the atmospheric turbidity controlling horizon haze and sun-halo width.
+/// @param obj Sky3D handle; invalid handles trap and are ignored.
+/// @param turbidity Requested turbidity, clamped to `[1, 10]`; non-finite values are ignored.
 void rt_sky3d_set_turbidity(void *obj, double turbidity) {
     rt_sky3d *sky = sky3d_checked(obj, "Sky3D.set_Turbidity: invalid sky");
     if (!sky || !isfinite(turbidity))
@@ -121,11 +145,19 @@ void rt_sky3d_set_turbidity(void *obj, double turbidity) {
     }
 }
 
+/// @brief Return the current atmospheric turbidity.
+/// @param obj Sky3D handle; invalid handles trap.
+/// @return Turbidity in `[1, 10]`, or zero when validation fails.
 double rt_sky3d_get_turbidity(void *obj) {
     rt_sky3d *sky = sky3d_checked(obj, "Sky3D.get_Turbidity: invalid sky");
     return sky ? sky->turbidity : 0.0;
 }
 
+/// @brief Set the RGB albedo used to shade the cubemap's ground hemisphere.
+/// @param obj Sky3D handle; invalid handles trap and are ignored.
+/// @param r Red albedo component, clamped to `[0, 1]`.
+/// @param g Green albedo component, clamped to `[0, 1]`.
+/// @param b Blue albedo component, clamped to `[0, 1]`.
 void rt_sky3d_set_ground_albedo(void *obj, double r, double g, double b) {
     rt_sky3d *sky = sky3d_checked(obj, "Sky3D.SetGroundAlbedo: invalid sky");
     if (!sky)
@@ -136,6 +168,9 @@ void rt_sky3d_set_ground_albedo(void *obj, double r, double g, double b) {
     sky->dirty = 1;
 }
 
+/// @brief Set the square pixel resolution generated for each cubemap face.
+/// @param obj Sky3D handle; invalid handles trap and are ignored.
+/// @param resolution Requested face dimension, clamped to `[16, 256]`.
 void rt_sky3d_set_resolution(void *obj, int64_t resolution) {
     rt_sky3d *sky = sky3d_checked(obj, "Sky3D.set_Resolution: invalid sky");
     if (!sky)
@@ -150,11 +185,17 @@ void rt_sky3d_set_resolution(void *obj, int64_t resolution) {
     }
 }
 
+/// @brief Return the configured cubemap-face resolution.
+/// @param obj Sky3D handle; invalid handles trap.
+/// @return Face dimension in pixels, or zero when validation fails.
 int64_t rt_sky3d_get_resolution(void *obj) {
     rt_sky3d *sky = sky3d_checked(obj, "Sky3D.get_Resolution: invalid sky");
     return sky ? sky->resolution : 0;
 }
 
+/// @brief Report whether authored sky parameters require cubemap regeneration.
+/// @param obj Sky3D handle; invalid handles trap.
+/// @return 1 when the generated cubemap is stale, otherwise 0.
 int8_t rt_sky3d_get_dirty(void *obj) {
     rt_sky3d *sky = sky3d_checked(obj, "Sky3D.get_Dirty: invalid sky");
     return sky ? sky->dirty : 0;
@@ -165,6 +206,9 @@ int8_t rt_sky3d_get_dirty(void *obj) {
 ///   zenith/horizon gradient whose colors follow sun elevation (blue day, warm
 ///   sunset band near the sun azimuth, near-black night), a Mie-inspired sun
 ///   halo, a splatted sun disc, and a constant ground-albedo hemisphere.
+/// @param sky Sky parameters controlling the analytic model.
+/// @param dir Normalized outward sample direction.
+/// @param out Three-element output array receiving linear RGB radiance.
 static void sky3d_radiance(const rt_sky3d *sky, const double dir[3], double out[3]) {
     double sun_elev = sky->sun_dir[1]; /* sin(elevation) */
     double day = sun_elev <= -0.15 ? 0.0 : (sun_elev >= 0.25 ? 1.0 : (sun_elev + 0.15) / 0.40);
@@ -211,6 +255,10 @@ static void sky3d_radiance(const rt_sky3d *sky, const double dir[3], double out[
 }
 
 /// @brief Map a face texel to its outward direction (CubeMap3D face order).
+/// @param face Cubemap face index: positive/negative x, y, then z.
+/// @param u Horizontal face coordinate in `[-1, 1]`.
+/// @param v Vertical face coordinate in `[-1, 1]`.
+/// @param out Three-element output array receiving the normalized direction.
 static void sky3d_face_dir(int face, double u, double v, double out[3]) {
     /* u, v in [-1, 1]; faces: +X, -X, +Y, -Y, +Z, -Z. */
     switch (face) {
@@ -255,6 +303,8 @@ static void sky3d_face_dir(int face, double u, double v, double out[3]) {
 /// @details Installing through the normal skybox path re-triggers the existing lazy
 ///   IBL rebuild, so environment lighting follows the sky for free. Passing a NULL
 ///   canvas regenerates without installing (tests/tooling).
+/// @param obj Sky3D handle; invalid handles trap.
+/// @param canvas Optional Canvas3D handle that receives the generated cubemap as its skybox.
 /// @return 1 when a (re)generated cubemap is available.
 int8_t rt_sky3d_update(void *obj, void *canvas) {
     rt_sky3d *sky = sky3d_checked(obj, "Sky3D.Update: invalid sky");
@@ -310,6 +360,9 @@ int8_t rt_sky3d_update(void *obj, void *canvas) {
 }
 
 /// @brief Retained generated cubemap (NULL before the first Update).
+/// @param obj Sky3D handle; invalid handles trap.
+/// @return Retained CubeMap3D handle for the generated sky, or NULL before generation or on invalid
+/// input. The caller owns the returned reference.
 void *rt_sky3d_get_cubemap(void *obj) {
     rt_sky3d *sky = sky3d_checked(obj, "Sky3D.get_Cubemap: invalid sky");
     if (!sky || !sky->cubemap)

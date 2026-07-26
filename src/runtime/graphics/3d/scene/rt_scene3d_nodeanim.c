@@ -14,6 +14,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements imported node-animation clips and SceneNode3D channel playback.
+/// @details Clips deep-copy bounded keyframe data; animators retain clips, cache
+///   resolved subtree targets, reuse sampling/traversal scratch storage, and apply
+///   validated TRS, morph-weight, and camera-property channels deterministically.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_animcontroller3d.h"
@@ -58,6 +64,7 @@
  *=========================================================================*/
 
 /// @brief Release a retained rt_string slot only if it still points at an rt_string handle.
+/// @param slot Address of the retained runtime-string handle.
 static void node_anim_release_string_slot(rt_string *slot) {
     if (!slot || !*slot)
         return;
@@ -69,6 +76,7 @@ static void node_anim_release_string_slot(rt_string *slot) {
 }
 
 /// @brief Release a retained NodeAnimation3D slot only if the handle still has that class.
+/// @param slot Address of the retained clip pointer.
 static void node_anim_release_clip_slot(rt_node_animation3d **slot) {
     if (!slot || !*slot)
         return;
@@ -80,6 +88,7 @@ static void node_anim_release_clip_slot(rt_node_animation3d **slot) {
 }
 
 /// @brief Compact an animator's clip table after private-state corruption.
+/// @param animator Borrowed animator whose valid retained clips are compacted in place.
 static void node_animator_repair_clips(rt_node_animator3d *animator) {
     int32_t count;
     int32_t write = 0;
@@ -103,7 +112,6 @@ static void node_animator_repair_clips(rt_node_animator3d *animator) {
     animator->playing = animator->playing ? 1 : 0;
 }
 
-/// @brief Clear per-animator resolved-target cache entries without touching retained clips.
 /// @brief Store @p target in the animator's channel-target cache slot,
 ///   retaining it and releasing any previous occupant.
 /// @details Cached targets are STRONG references: a playing clip may outlive a
@@ -112,6 +120,9 @@ static void node_animator_repair_clips(rt_node_animator3d *animator) {
 ///   cached pointer stays valid until the cache slot is overwritten, cleared,
 ///   or the animator is finalized — the descendant re-check in
 ///   node_anim_resolve_target then safely rejects detached nodes.
+/// @param animator Borrowed animator owning the target-cache allocation.
+/// @param channel_index Zero-based cache slot.
+/// @param target Borrowed target retained into the slot, or `NULL` to clear it.
 static void node_animator_cache_store(rt_node_animator3d *animator,
                                       int32_t channel_index,
                                       rt_scene_node3d *target) {
@@ -128,6 +139,8 @@ static void node_animator_cache_store(rt_node_animator3d *animator,
         rt_obj_free(previous);
 }
 
+/// @brief Clear retained resolved-target cache entries without touching retained clips.
+/// @param animator Borrowed animator whose cache entries and cache key are reset.
 static void node_animator_clear_target_cache(rt_node_animator3d *animator) {
     if (!animator)
         return;
@@ -146,6 +159,9 @@ static void node_animator_clear_target_cache(rt_node_animator3d *animator) {
 }
 
 /// @brief Ensure the per-animator channel-target cache can address @p channel_count channels.
+/// @param animator Borrowed animator whose native cache allocation may grow.
+/// @param channel_count Positive minimum pointer capacity.
+/// @return Nonzero when sufficient cache storage is available, otherwise zero.
 static int node_animator_ensure_target_cache(rt_node_animator3d *animator, int32_t channel_count) {
     rt_scene_node3d **next;
     int32_t next_capacity;
@@ -176,6 +192,9 @@ static int node_animator_ensure_target_cache(rt_node_animator3d *animator, int32
 }
 
 /// @brief Ensure a reusable float scratch buffer can hold @p width sampled channel values.
+/// @param animator Borrowed animator owning the scratch allocation.
+/// @param width Positive number of float lanes required.
+/// @return Zeroed animator-owned buffer of at least @p width floats, or `NULL`.
 static float *node_animator_sample_scratch(rt_node_animator3d *animator, int32_t width) {
     float *next;
     int32_t next_capacity;
@@ -203,6 +222,10 @@ static float *node_animator_sample_scratch(rt_node_animator3d *animator, int32_t
 }
 
 /// @brief Push a node onto an animator-owned traversal stack, growing it if needed.
+/// @param animator Borrowed animator owning the stack allocation.
+/// @param count In/out populated stack count.
+/// @param node Borrowed node to append.
+/// @return Nonzero after append, otherwise zero on invalid input, overflow, or allocation failure.
 static int node_animator_stack_push(rt_node_animator3d *animator,
                                     size_t *count,
                                     rt_scene_node3d *node) {
@@ -232,6 +255,8 @@ static int node_animator_stack_push(rt_node_animator3d *animator,
 }
 
 /// @brief Return a C string only for live rt_string handles.
+/// @param value Borrowed candidate runtime-string handle.
+/// @return Borrowed NUL-terminated contents, or `NULL`.
 static const char *node_anim_cstr_or_null(rt_string value) {
     return (value && rt_string_is_handle(value)) ? rt_string_cstr(value) : NULL;
 }
@@ -240,6 +265,7 @@ static const char *node_anim_cstr_or_null(rt_string value) {
 ///        frees every channel's target name plus its times / values / in-tangent /
 ///        out-tangent buffers. Only CUBICSPLINE channels have live tangent buffers;
 ///        LINEAR / STEP leave those pointers NULL and `free(NULL)` is a no-op.
+/// @param obj Owned NodeAnimation3D payload being finalized.
 static void rt_node_animation3d_finalize(void *obj) {
     rt_node_animation3d *anim = (rt_node_animation3d *)obj;
     int32_t channel_count;
@@ -267,6 +293,8 @@ static void rt_node_animation3d_finalize(void *obj) {
 ///          can't hand us a zero-length clip that would divide-by-zero during
 ///          looping playback. Looping is enabled by default — callers that want a
 ///          single-shot playback flip `looping` after construction.
+/// @param name Borrowed clip-name string retained by the new clip.
+/// @param duration Positive duration in seconds, sanitized and capped to the safe range.
 /// @return Opaque clip handle, or NULL and traps on allocation failure.
 void *rt_node_animation3d_new(rt_string name, double duration) {
     rt_node_animation3d *anim = (rt_node_animation3d *)rt_obj_new_i64(
@@ -295,6 +323,8 @@ void *rt_node_animation3d_new(rt_string name, double duration) {
 ///          uninitialized channel memory can't leak into the finalizer's free path.
 ///          Leaves the existing array untouched on allocation failure so callers can
 ///          continue using whatever was already there.
+/// @param anim Borrowed clip whose native channel allocation may grow.
+/// @param needed Non-negative minimum channel capacity.
 /// @return 1 on success (including no-op), 0 on allocation failure.
 static int node_animation_reserve_channels(rt_node_animation3d *anim, int32_t needed) {
     if (!anim || needed < 0)
@@ -313,6 +343,15 @@ static int node_animation_reserve_channels(rt_node_animation3d *anim, int32_t ne
 ///     is always within size_t range.
 ///   - All value samples (and, for CUBICSPLINE, both tangent sets) must be finite;
 ///     non-finite values would produce NaN transforms that corrupt the scene graph.
+/// @param path One `RT_NODE_ANIM_PATH_*` property identifier.
+/// @param key_count Claimed number of keyframes.
+/// @param value_width Claimed float-component count per key.
+/// @param times Borrowed keyframe-time array.
+/// @param values Borrowed packed output-value array.
+/// @param in_tangents Borrowed packed incoming tangents for cubic interpolation.
+/// @param out_tangents Borrowed packed outgoing tangents for cubic interpolation.
+/// @param step Nonzero when equal adjacent key times are permitted.
+/// @param cubic Nonzero when both tangent arrays are required and validated.
 /// @return 1 if all data passes validation, 0 on any violation.
 static int node_animation_validate_channel_data(int64_t path,
                                                 int64_t key_count,
@@ -363,6 +402,8 @@ static int node_animation_validate_channel_data(int64_t path,
 }
 
 /// @brief Cheap per-frame guard for channels that may have been privately corrupted after import.
+/// @param channel Borrowed channel descriptor and sample-storage pointers.
+/// @return Nonzero when bounded structural invariants permit safe runtime sampling.
 static int node_anim_channel_runtime_valid(const rt_node_anim_channel3d *channel) {
     int64_t value_count;
     if (!channel || !channel->target_name || !channel->times || !channel->values ||
@@ -418,6 +459,16 @@ static int node_anim_channel_runtime_valid(const rt_node_anim_channel3d *channel
 ///          The implementation deep-copies the times array (as `double`), the values
 ///          array, and — for CUBICSPLINE channels — the two tangent arrays, so the
 ///          caller can free the source buffers immediately after this returns.
+/// @param obj Borrowed NodeAnimation3D handle.
+/// @param target_name Borrowed nonempty target name retained by the channel.
+/// @param path One `RT_NODE_ANIM_PATH_*` property identifier.
+/// @param interpolation One `RT_NODE_ANIM_INTERP_*` mode.
+/// @param key_count Positive bounded number of keyframes.
+/// @param value_width Positive bounded float-component count per key.
+/// @param times Borrowed array of @p key_count time samples.
+/// @param values Borrowed packed output samples.
+/// @param in_tangents Borrowed packed incoming tangents for cubic interpolation.
+/// @param out_tangents Borrowed packed outgoing tangents for cubic interpolation.
 /// @return The zero-based index of the new channel, or -1 on validation / allocation
 ///         failure.
 static int64_t node_animation_add_channel_impl(void *obj,
@@ -575,6 +626,9 @@ int64_t rt_node_animation3d_add_cubic_channel(void *obj,
 
 /// @brief Bind animation channel @p channel_index to scene-node @p node_index; an out-of-range
 ///   channel index is ignored, and an invalid @p node_index unbinds the channel (sets it to -1).
+/// @param obj Borrowed NodeAnimation3D handle.
+/// @param channel_index Zero-based channel index.
+/// @param node_index Stable imported source-node index, or an invalid value to unbind.
 void rt_node_animation3d_set_channel_target_node_index(void *obj,
                                                        int64_t channel_index,
                                                        int64_t node_index) {
@@ -602,6 +656,7 @@ void rt_node_animation3d_set_channel_target_node_index(void *obj,
 ///   while the animator is still alive, and are released precisely when the animator
 ///   itself is collected. The root node pointer is NOT released — the animator borrows
 ///   that reference from the scene, so releasing it here would cause a double-free.
+/// @param obj Owned NodeAnimator3D payload being finalized.
 static void rt_node_animator3d_finalize(void *obj) {
     rt_node_animator3d *animator = (rt_node_animator3d *)obj;
     int32_t clip_count;
@@ -676,6 +731,8 @@ void *rt_node_animator3d_new_from_clips(void **clips, int64_t clip_count) {
 }
 
 /// @brief Allocate a NodeAnimator3D that owns a single NodeAnimation3D clip.
+/// @param clip Borrowed NodeAnimation3D handle retained by the new animator.
+/// @return New owned NodeAnimator3D handle, or `NULL` after invalid-input/allocation failure.
 void *rt_node_animator3d_new(void *clip) {
     void *clips[1];
     if (!rt_g3d_has_class(clip, RT_G3D_NODEANIMATION3D_CLASS_ID)) {
@@ -687,6 +744,8 @@ void *rt_node_animator3d_new(void *clip) {
 }
 
 /// @brief Get a NodeAnimation3D's name, or an empty string for invalid handles.
+/// @param obj Borrowed NodeAnimation3D handle.
+/// @return Borrowed clip-name runtime string, or an empty runtime string.
 rt_string rt_node_animation3d_get_name(void *obj) {
     rt_node_animation3d *anim =
         (rt_node_animation3d *)rt_g3d_checked_or_null(obj, RT_G3D_NODEANIMATION3D_CLASS_ID);
@@ -694,6 +753,8 @@ rt_string rt_node_animation3d_get_name(void *obj) {
 }
 
 /// @brief Get a NodeAnimation3D's duration in seconds, clamped to the runtime-safe range.
+/// @param obj Borrowed NodeAnimation3D handle.
+/// @return Non-negative duration capped at `NODE_ANIM_TIME_MAX`, or zero.
 double rt_node_animation3d_get_duration(void *obj) {
     rt_node_animation3d *anim =
         (rt_node_animation3d *)rt_g3d_checked_or_null(obj, RT_G3D_NODEANIMATION3D_CLASS_ID);
@@ -704,6 +765,8 @@ double rt_node_animation3d_get_duration(void *obj) {
 }
 
 /// @brief Get the number of valid channels retained by a NodeAnimation3D clip.
+/// @param obj Borrowed NodeAnimation3D handle.
+/// @return Safe non-negative channel count, or zero for invalid input.
 int64_t rt_node_animation3d_get_channel_count(void *obj) {
     rt_node_animation3d *anim =
         (rt_node_animation3d *)rt_g3d_checked_or_null(obj, RT_G3D_NODEANIMATION3D_CLASS_ID);
@@ -711,11 +774,16 @@ int64_t rt_node_animation3d_get_channel_count(void *obj) {
 }
 
 /// @brief Validate and downcast a NodeAnimator3D handle without trapping.
+/// @param obj Borrowed candidate runtime handle.
+/// @return Borrowed typed payload on a class match, otherwise `NULL`.
 static rt_node_animator3d *node_animator_ref(void *obj) {
     return (rt_node_animator3d *)rt_g3d_checked_or_null(obj, RT_G3D_NODEANIMATOR3D_CLASS_ID);
 }
 
 /// @brief Validate and downcast a NodeAnimator3D handle, trapping public API misuse.
+/// @param obj Borrowed candidate runtime handle.
+/// @param method Borrowed trap message emitted for an invalid handle.
+/// @return Borrowed typed payload, or `NULL` after trapping.
 static rt_node_animator3d *node_animator_checked(void *obj, const char *method) {
     rt_node_animator3d *animator = node_animator_ref(obj);
     if (!animator)
@@ -724,6 +792,8 @@ static rt_node_animator3d *node_animator_checked(void *obj, const char *method) 
 }
 
 /// @brief Number of clips retained by a NodeAnimator3D.
+/// @param obj Borrowed NodeAnimator3D handle.
+/// @return Safe non-negative clip count, or zero after invalid-handle trapping.
 int64_t rt_node_animator3d_get_clip_count(void *obj) {
     rt_node_animator3d *animator =
         node_animator_checked(obj, "NodeAnimator3D.ClipCount: invalid animator");
@@ -732,6 +802,9 @@ int64_t rt_node_animator3d_get_clip_count(void *obj) {
 }
 
 /// @brief Borrow a clip retained by a NodeAnimator3D.
+/// @param obj Borrowed NodeAnimator3D handle.
+/// @param index Zero-based clip index.
+/// @return Borrowed validated NodeAnimation3D handle, or `NULL`.
 void *rt_node_animator3d_get_clip(void *obj, int64_t index) {
     rt_node_animator3d *animator =
         node_animator_checked(obj, "NodeAnimator3D.GetClip: invalid animator");
@@ -744,12 +817,17 @@ void *rt_node_animator3d_get_clip(void *obj, int64_t index) {
 }
 
 /// @brief Get the name of a clip retained by a NodeAnimator3D.
+/// @param obj Borrowed NodeAnimator3D handle.
+/// @param index Zero-based clip index.
+/// @return Borrowed clip-name runtime string, or an empty runtime string.
 rt_string rt_node_animator3d_get_clip_name(void *obj, int64_t index) {
     void *clip = rt_node_animator3d_get_clip(obj, index);
     return rt_node_animation3d_get_name(clip);
 }
 
 /// @brief Get the currently selected clip name.
+/// @param obj Borrowed NodeAnimator3D handle.
+/// @return Borrowed selected clip-name string, or an empty runtime string.
 rt_string rt_node_animator3d_get_current_clip(void *obj) {
     rt_node_animator3d *animator =
         node_animator_checked(obj, "NodeAnimator3D.CurrentClip: invalid animator");
@@ -763,6 +841,9 @@ rt_string rt_node_animator3d_get_current_clip(void *obj) {
 }
 
 /// @brief Select a clip by name and restart playback from time zero.
+/// @param obj Borrowed NodeAnimator3D handle.
+/// @param name Borrowed exact clip-name runtime string; invalid strings select empty.
+/// @return Nonzero when a matching clip was selected, otherwise zero.
 int8_t rt_node_animator3d_play(void *obj, rt_string name) {
     rt_node_animator3d *animator =
         node_animator_checked(obj, "NodeAnimator3D.Play: invalid animator");
@@ -786,6 +867,7 @@ int8_t rt_node_animator3d_play(void *obj, rt_string name) {
 }
 
 /// @brief Stop a NodeAnimator3D without clearing its selected clip.
+/// @param obj Borrowed NodeAnimator3D handle.
 void rt_node_animator3d_stop(void *obj) {
     rt_node_animator3d *animator =
         node_animator_checked(obj, "NodeAnimator3D.Stop: invalid animator");
@@ -794,6 +876,8 @@ void rt_node_animator3d_stop(void *obj) {
 }
 
 /// @brief Set global playback speed, accepting negative values for reverse playback.
+/// @param obj Borrowed NodeAnimator3D handle.
+/// @param speed Playback multiplier sanitized and clamped to the supported range.
 void rt_node_animator3d_set_speed(void *obj, double speed) {
     rt_node_animator3d *animator =
         node_animator_checked(obj, "NodeAnimator3D.SetSpeed: invalid animator");
@@ -809,6 +893,8 @@ void rt_node_animator3d_set_speed(void *obj, double speed) {
 }
 
 /// @brief Get the global playback speed multiplier.
+/// @param obj Borrowed NodeAnimator3D handle.
+/// @return Finite playback multiplier, defaulting to `1.0`.
 double rt_node_animator3d_get_speed(void *obj) {
     rt_node_animator3d *animator =
         node_animator_checked(obj, "NodeAnimator3D.Speed: invalid animator");
@@ -816,6 +902,8 @@ double rt_node_animator3d_get_speed(void *obj) {
 }
 
 /// @brief Set the current playback time, sanitized to a finite non-negative value.
+/// @param obj Borrowed NodeAnimator3D handle.
+/// @param time Requested seconds clamped to the supported time range.
 void rt_node_animator3d_set_time(void *obj, double time) {
     rt_node_animator3d *animator =
         node_animator_checked(obj, "NodeAnimator3D.SetTime: invalid animator");
@@ -831,6 +919,8 @@ void rt_node_animator3d_set_time(void *obj, double time) {
 }
 
 /// @brief Get the current playback time.
+/// @param obj Borrowed NodeAnimator3D handle.
+/// @return Finite playback time, or zero for invalid/corrupt state.
 double rt_node_animator3d_get_time(void *obj) {
     rt_node_animator3d *animator =
         node_animator_checked(obj, "NodeAnimator3D.Time: invalid animator");
@@ -838,6 +928,8 @@ double rt_node_animator3d_get_time(void *obj) {
 }
 
 /// @brief Whether the animator is actively advancing time.
+/// @param obj Borrowed NodeAnimator3D handle.
+/// @return Canonical playing flag, or zero after invalid-handle trapping.
 int8_t rt_node_animator3d_get_playing(void *obj) {
     rt_node_animator3d *animator =
         node_animator_checked(obj, "NodeAnimator3D.Playing: invalid animator");
@@ -1104,6 +1196,10 @@ static void node_anim_sample_channel(const rt_node_anim_channel3d *channel,
 /// @details A glTF node can expand into several primitive child nodes during import. Each
 ///   primitive owns its own MorphTarget3D object, so weights must be copied to every morphed mesh
 ///   under the animated node rather than only the first morph payload encountered.
+/// @param animator Borrowed animator providing reusable traversal storage.
+/// @param node Borrowed subtree root receiving the sampled weights.
+/// @param weights Borrowed array of sampled weight values.
+/// @param weight_count Positive number of readable weights.
 static void node_anim_apply_weights_recursive(rt_node_animator3d *animator,
                                               rt_scene_node3d *node,
                                               const float *weights,
@@ -1140,6 +1236,9 @@ static void node_anim_apply_weights_recursive(rt_node_animator3d *animator,
 }
 
 /// @brief Whether @p node lies in @p root's subtree (walks parent links up to root).
+/// @param root Borrowed prospective ancestor.
+/// @param node Borrowed node whose parent chain is searched.
+/// @return Nonzero when @p root is @p node or one of its ancestors.
 static int scene_node_is_descendant_of(rt_scene_node3d *root, rt_scene_node3d *node) {
     while (node) {
         if (node == root)
@@ -1151,6 +1250,10 @@ static int scene_node_is_descendant_of(rt_scene_node3d *root, rt_scene_node3d *n
 
 /// @brief Depth-first search the subtree rooted at @p root for the node whose import index
 ///   equals @p import_index (used to bind animation channels to imported nodes); NULL if none.
+/// @param animator Borrowed animator providing reusable traversal storage.
+/// @param root Borrowed subtree root.
+/// @param import_index Non-negative stable imported node index.
+/// @return Borrowed matching node, or `NULL`.
 static rt_scene_node3d *node_anim_find_by_import_index(rt_node_animator3d *animator,
                                                        rt_scene_node3d *root,
                                                        int32_t import_index) {
@@ -1182,6 +1285,11 @@ static rt_scene_node3d *node_anim_find_by_import_index(rt_node_animator3d *anima
 /// @details Caches the resolved node on the channel keyed by the target name, so repeated frames
 /// skip
 ///          the by-name search unless the name changes.
+/// @param animator Borrowed animator owning the resolved-target cache.
+/// @param root Borrowed animation subtree root.
+/// @param channel Borrowed channel containing an import index or target name.
+/// @param channel_index Zero-based channel/cache index.
+/// @return Borrowed matching descendant retained by the cache, or `NULL`.
 static rt_scene_node3d *node_anim_resolve_target(rt_node_animator3d *animator,
                                                  rt_scene_node3d *root,
                                                  rt_node_anim_channel3d *channel,
@@ -1234,8 +1342,10 @@ static rt_scene_node3d *node_anim_resolve_target(rt_node_animator3d *animator,
 ///   allocation. The heap buffer is always freed before returning.
 ///   SCALE values are sanitised through `scene3d_scale_or_unit` to avoid degenerate
 ///   inverse matrices when an asset provides a near-zero scale keyframe.
+/// @param animator Borrowed animator providing cache and sample scratch storage.
 /// @param root    Root of the scene subtree searched for the target node.
 /// @param channel Channel to sample; must have a valid target_name.
+/// @param channel_index Zero-based channel/cache index.
 /// @param time    Playback time in seconds.
 static void node_anim_apply_channel(rt_node_animator3d *animator,
                                     rt_scene_node3d *root,
@@ -1418,6 +1528,8 @@ void node_animator_update(rt_node_animator3d *animator, double dt) {
 }
 
 /// @brief Public wrapper that advances a NodeAnimator3D by @p dt seconds.
+/// @param obj Borrowed NodeAnimator3D handle.
+/// @param dt Finite positive frame delta in seconds; other values do not advance time.
 void rt_node_animator3d_update(void *obj, double dt) {
     rt_node_animator3d *animator =
         node_animator_checked(obj, "NodeAnimator3D.Update: invalid animator");

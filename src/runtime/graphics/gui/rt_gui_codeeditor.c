@@ -3,6 +3,15 @@
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
 //
+/// @file rt_gui_codeeditor.c
+/// @brief Implements runtime bindings for CodeEditor state, editing, geometry, and buffers.
+///
+/// @details
+/// The graphics-enabled path validates editor and buffer handles, translates
+/// runtime strings and pixel data, exposes retained gutter/folding/cursor state,
+/// and reports bounded performance counters. Graphics-disabled definitions
+/// preserve the public ABI with deterministic inert results.
+///
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/graphics/rt_gui_codeeditor.c
@@ -102,6 +111,8 @@ static void *rt_codeeditor_perf_stats_map(uint64_t total_height_scans,
 //=============================================================================
 
 /// @brief `CodeEditor.SetShowLineNumbers(show)` — toggle the line-number gutter.
+/// @param editor CodeEditor widget handle.
+/// @param show Non-zero to show line numbers; zero to hide them.
 void rt_codeeditor_set_show_line_numbers(void *editor, int64_t show) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -111,6 +122,8 @@ void rt_codeeditor_set_show_line_numbers(void *editor, int64_t show) {
 }
 
 /// @brief `CodeEditor.GetShowLineNumbers` — read the line-number visibility flag.
+/// @param editor CodeEditor widget handle.
+/// @return 1 when line numbers are visible, otherwise 0.
 int64_t rt_codeeditor_get_show_line_numbers(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -122,6 +135,8 @@ int64_t rt_codeeditor_get_show_line_numbers(void *editor) {
 ///
 /// Internally stored as pixels (`width * char_width`) so layout doesn't
 /// have to keep recomputing it.
+/// @param editor CodeEditor widget handle.
+/// @param width Requested logical gutter width; non-positive values restore automatic sizing.
 void rt_codeeditor_set_line_number_width(void *editor, int64_t width) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -137,6 +152,8 @@ void rt_codeeditor_set_line_number_width(void *editor, int64_t width) {
 /// into the RGBA byte order vg expects. Validates dimensions to
 /// guard against integer overflow (W*H*4 > SIZE_MAX). Traps on
 /// allocation failure.
+/// @param pixels Runtime Pixels handle; NULL produces an empty icon.
+/// @return Owned toolkit icon value, or `VG_ICON_NONE` on invalid input/failure.
 static vg_icon_t rt_codeeditor_icon_from_pixels(void *pixels) {
     vg_icon_t icon = {0};
     if (!pixels)
@@ -199,6 +216,10 @@ static vg_icon_t rt_codeeditor_icon_from_pixels(void *pixels) {
 /// the same line+slot replaces the existing icon. Geometric growth
 /// for the icons array. Default per-slot tint colors are red/orange/
 /// red/blue.
+/// @param editor CodeEditor widget handle.
+/// @param line Zero-based source line.
+/// @param pixels Runtime Pixels handle, or NULL to clear the slot.
+/// @param slot Gutter icon channel.
 void rt_codeeditor_set_gutter_icon(void *editor, int64_t line, void *pixels, int64_t slot) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -255,6 +276,10 @@ void rt_codeeditor_set_gutter_icon(void *editor, int64_t line, void *pixels, int
 /// @brief `CodeEditor.SetGutterBar(line, colorRGB, slot)` — add/update a change
 ///        bar (thin vertical bar at the gutter's left edge) on a line. Used for
 ///        SCM diff markers; coexists with disc icons in other slots.
+/// @param editor CodeEditor widget handle.
+/// @param line Zero-based source line.
+/// @param color Packed RGB bar color.
+/// @param slot Gutter channel used to identify replacement state.
 void rt_codeeditor_set_gutter_bar(void *editor, int64_t line, int64_t color, int64_t slot) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -297,6 +322,9 @@ void rt_codeeditor_set_gutter_bar(void *editor, int64_t line, int64_t color, int
 /// @brief `CodeEditor.ClearGutterIcon(line, slot)` — remove one icon entry.
 ///
 /// Swap-with-last compaction. No-op if no matching icon exists.
+/// @param editor CodeEditor widget handle.
+/// @param line Zero-based source line.
+/// @param slot Gutter channel to clear.
 void rt_codeeditor_clear_gutter_icon(void *editor, int64_t line, int64_t slot) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -323,6 +351,8 @@ void rt_codeeditor_clear_gutter_icon(void *editor, int64_t line, int64_t slot) {
 ///
 /// In-place compaction by writing kept entries to `[0..w)` and clearing
 /// the trailing slots. Useful for "clear all breakpoints" type ops.
+/// @param editor CodeEditor widget handle.
+/// @param slot Gutter channel to clear across all lines.
 void rt_codeeditor_clear_all_gutter_icons(void *editor, int64_t slot) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -354,6 +384,8 @@ void rt_codeeditor_clear_all_gutter_icons(void *editor, int64_t slot) {
 /// through, so we can't route clicks to the right editor here. A
 /// future refactor would pass the editor through; until then, gutter
 /// state is per-editor and updated directly inside the widget code.
+/// @param line Ignored legacy zero-based line.
+/// @param slot Ignored legacy gutter slot.
 void rt_gui_set_gutter_click(int64_t line, int64_t slot) {
     RT_ASSERT_MAIN_THREAD();
     // Legacy global entry point — forwards to a per-editor setter.
@@ -375,6 +407,8 @@ void rt_gui_clear_gutter_click(void) {
 /// Returns the latched click flag once and clears the click payload. Callers
 /// that need the click line or slot should read those coordinates before
 /// consuming the edge flag.
+/// @param editor CodeEditor widget handle.
+/// @return 1 once when a gutter click is pending, otherwise 0.
 int64_t rt_codeeditor_was_gutter_clicked(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -421,6 +455,8 @@ void *rt_codeeditor_take_gutter_click(void *editor) {
 ///
 /// Returns -1 for NULL receiver or no pending gutter click. The payload is
 /// available until `WasGutterClicked` consumes the edge flag.
+/// @param editor CodeEditor widget handle.
+/// @return Zero-based clicked line, or -1 when no click is pending.
 int64_t rt_codeeditor_get_gutter_clicked_line(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce || !ce->gutter_clicked || ce->gutter_clicked_line < 0)
@@ -429,6 +465,8 @@ int64_t rt_codeeditor_get_gutter_clicked_line(void *editor) {
 }
 
 /// @brief `CodeEditor.GetGutterClickedSlot` — slot index of the most recent click.
+/// @param editor CodeEditor widget handle.
+/// @return Clicked gutter slot, or -1 when no click is pending.
 int64_t rt_codeeditor_get_gutter_clicked_slot(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce || !ce->gutter_clicked || ce->gutter_clicked_slot < 0)
@@ -440,6 +478,8 @@ int64_t rt_codeeditor_get_gutter_clicked_slot(void *editor) {
 ///
 /// The fold gutter sits next to the line-number gutter and shows
 /// triangle indicators next to foldable regions.
+/// @param editor CodeEditor widget handle.
+/// @param show Non-zero to show fold indicators; zero to hide them.
 void rt_codeeditor_set_show_fold_gutter(void *editor, int64_t show) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -459,6 +499,9 @@ void rt_codeeditor_set_show_fold_gutter(void *editor, int64_t show) {
 /// Existing regions with the same start line are updated in place. Overlapping
 /// regions with different starts are ignored so hidden-line and navigation math
 /// never has to reconcile ambiguous fold ownership.
+/// @param editor CodeEditor widget handle.
+/// @param start_line Zero-based first line of the fold.
+/// @param end_line Zero-based inclusive final line.
 void rt_codeeditor_add_fold_region(void *editor, int64_t start_line, int64_t end_line) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -506,6 +549,8 @@ void rt_codeeditor_add_fold_region(void *editor, int64_t start_line, int64_t end
 ///
 /// Identified by the start line. Swap-with-last compaction. No-op if
 /// no region starts at the given line.
+/// @param editor CodeEditor widget handle.
+/// @param start_line Zero-based fold start to remove.
 void rt_codeeditor_remove_fold_region(void *editor, int64_t start_line) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -521,6 +566,7 @@ void rt_codeeditor_remove_fold_region(void *editor, int64_t start_line) {
 }
 
 /// @brief `CodeEditor.ClearFoldRegions` — drop every registered fold region.
+/// @param editor CodeEditor widget handle.
 void rt_codeeditor_clear_fold_regions(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -533,6 +579,8 @@ void rt_codeeditor_clear_fold_regions(void *editor) {
 }
 
 /// @brief `CodeEditor.Fold(line)` — collapse the region starting at `line`.
+/// @param editor CodeEditor widget handle.
+/// @param line Zero-based fold start line.
 void rt_codeeditor_fold(void *editor, int64_t line) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -548,6 +596,8 @@ void rt_codeeditor_fold(void *editor, int64_t line) {
 }
 
 /// @brief `CodeEditor.Unfold(line)` — expand the region starting at `line`.
+/// @param editor CodeEditor widget handle.
+/// @param line Zero-based fold start line.
 void rt_codeeditor_unfold(void *editor, int64_t line) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -563,6 +613,8 @@ void rt_codeeditor_unfold(void *editor, int64_t line) {
 }
 
 /// @brief `CodeEditor.ToggleFold(line)` — flip the folded state of one region.
+/// @param editor CodeEditor widget handle.
+/// @param line Zero-based fold start line.
 void rt_codeeditor_toggle_fold(void *editor, int64_t line) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -578,6 +630,9 @@ void rt_codeeditor_toggle_fold(void *editor, int64_t line) {
 }
 
 /// @brief `CodeEditor.IsFolded(line)` — true iff the region starting at `line` is collapsed.
+/// @param editor CodeEditor widget handle.
+/// @param line Zero-based fold start line.
+/// @return 1 when the matching region is folded, otherwise 0.
 int64_t rt_codeeditor_is_folded(void *editor, int64_t line) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -591,6 +646,7 @@ int64_t rt_codeeditor_is_folded(void *editor, int64_t line) {
 }
 
 /// @brief `CodeEditor.FoldAll` — collapse every fold region.
+/// @param editor CodeEditor widget handle.
 void rt_codeeditor_fold_all(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -601,6 +657,7 @@ void rt_codeeditor_fold_all(void *editor) {
 }
 
 /// @brief `CodeEditor.UnfoldAll` — expand every fold region.
+/// @param editor CodeEditor widget handle.
 void rt_codeeditor_unfold_all(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -617,6 +674,8 @@ void rt_codeeditor_unfold_all(void *editor) {
 /// a fold region from the start of the indented block to the line where
 /// indentation drops back. Blank lines extend the fold (don't break it).
 /// Replaces any manually-added regions. No effect if the buffer is empty.
+/// @param editor CodeEditor widget handle.
+/// @param enable Non-zero to enable indentation-derived regions.
 void rt_codeeditor_set_auto_fold_detection(void *editor, int64_t enable) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -704,6 +763,9 @@ void rt_codeeditor_set_auto_fold_detection(void *editor, int64_t enable) {
 /// Negative coordinates clamp to 0; out-of-bounds line clamps to the
 /// last line; out-of-bounds column clamps to the line's length. Used
 /// before storing user-supplied cursor positions to avoid OOB reads.
+/// @param ce Borrowed live CodeEditor.
+/// @param line In/out zero-based line.
+/// @param col In/out zero-based column.
 static void rt_codeeditor_clamp_position(vg_codeeditor_t *ce, int *line, int *col) {
     if (!ce || !line || !col || ce->line_count <= 0)
         return;
@@ -723,6 +785,8 @@ static void rt_codeeditor_clamp_position(vg_codeeditor_t *ce, int *line, int *co
 ///
 /// Always 1 + extras; the primary cursor is always present. Returns 1
 /// for NULL receiver to match the "at least one cursor" invariant.
+/// @param editor CodeEditor widget handle.
+/// @return Number of active cursors, at least 1.
 int64_t rt_codeeditor_get_cursor_count(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -757,6 +821,9 @@ static bool rt_codeeditor_cursor_exists_at(const vg_codeeditor_t *ce, int line, 
 /// indices 1, 2, … Position is clamped to a valid buffer position and
 /// duplicate cursor positions are ignored. Geometric growth doubles capacity
 /// starting at 4.
+/// @param editor CodeEditor widget handle.
+/// @param line Zero-based source line.
+/// @param col Zero-based character column.
 void rt_codeeditor_add_cursor(void *editor, int64_t line, int64_t col) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -789,6 +856,8 @@ void rt_codeeditor_add_cursor(void *editor, int64_t line, int64_t col) {
 /// Index 0 (primary) cannot be removed (that cursor is intrinsic to
 /// the editor). Indices 1+ refer to entries in the `extra_cursors`
 /// array. Shifts remaining cursors down to keep the array dense.
+/// @param editor CodeEditor widget handle.
+/// @param index Cursor index; zero is ignored.
 void rt_codeeditor_remove_cursor(void *editor, int64_t index) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -809,6 +878,7 @@ void rt_codeeditor_remove_cursor(void *editor, int64_t index) {
 ///
 /// Primary cursor stays. Useful for "Escape" key handling in
 /// multi-cursor editing modes.
+/// @param editor CodeEditor widget handle.
 void rt_codeeditor_clear_extra_cursors(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -824,6 +894,9 @@ void rt_codeeditor_clear_extra_cursors(void *editor) {
 ///
 /// Index 0 is the primary cursor; 1+ are extras. Out-of-range
 /// returns 0 (defensive default).
+/// @param editor CodeEditor widget handle.
+/// @param index Zero-based cursor index.
+/// @return Zero-based line, or 0 for invalid input.
 int64_t rt_codeeditor_get_cursor_line_at(void *editor, int64_t index) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -839,6 +912,9 @@ int64_t rt_codeeditor_get_cursor_line_at(void *editor, int64_t index) {
 }
 
 /// @brief `CodeEditor.GetCursorColAt(index)` — column of the i-th cursor.
+/// @param editor CodeEditor widget handle.
+/// @param index Zero-based cursor index.
+/// @return Zero-based character column, or 0 for invalid input.
 int64_t rt_codeeditor_get_cursor_col_at(void *editor, int64_t index) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -855,16 +931,22 @@ int64_t rt_codeeditor_get_cursor_col_at(void *editor, int64_t index) {
 }
 
 /// @brief `CodeEditor.CursorLine` — convenience for the primary cursor's line.
+/// @param editor CodeEditor widget handle.
+/// @return Primary cursor's zero-based line.
 int64_t rt_codeeditor_get_cursor_line(void *editor) {
     return rt_codeeditor_get_cursor_line_at(editor, 0);
 }
 
 /// @brief `CodeEditor.CursorCol` — convenience for the primary cursor's column.
+/// @param editor CodeEditor widget handle.
+/// @return Primary cursor's zero-based character column.
 int64_t rt_codeeditor_get_cursor_col(void *editor) {
     return rt_codeeditor_get_cursor_col_at(editor, 0);
 }
 
 /// @brief `CodeEditor.ScrollTopLine` — source line nearest the viewport top.
+/// @param editor CodeEditor widget handle.
+/// @return Zero-based top source line, or 0 for an invalid handle.
 int64_t rt_codeeditor_get_scroll_top_line(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -873,6 +955,8 @@ int64_t rt_codeeditor_get_scroll_top_line(void *editor) {
 }
 
 /// @brief Set `CodeEditor.ScrollTopLine`.
+/// @param editor CodeEditor widget handle.
+/// @param line Requested zero-based top source line.
 void rt_codeeditor_set_scroll_top_line(void *editor, int64_t line) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -886,6 +970,10 @@ void rt_codeeditor_set_scroll_top_line(void *editor, int64_t line) {
 /// Index 0 routes to the underlying widget's `set_cursor` (which also
 /// scrolls the viewport). Index 1+ updates the extras directly.
 /// Position is clamped; selection is cleared.
+/// @param editor CodeEditor widget handle.
+/// @param index Zero-based cursor index.
+/// @param line Zero-based source line.
+/// @param col Zero-based character column.
 void rt_codeeditor_set_cursor_position_at(void *editor, int64_t index, int64_t line, int64_t col) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -915,6 +1003,12 @@ void rt_codeeditor_set_cursor_position_at(void *editor, int64_t index, int64_t l
 /// index moves to the end of the selection (matching standard
 /// editor behavior where shift+click extends from the existing
 /// cursor to the click position).
+/// @param editor CodeEditor widget handle.
+/// @param index Zero-based cursor index.
+/// @param start_line Zero-based selection start line.
+/// @param start_col Zero-based selection start character column.
+/// @param end_line Zero-based selection end line.
+/// @param end_col Zero-based selection end character column.
 void rt_codeeditor_set_cursor_selection(void *editor,
                                         int64_t index,
                                         int64_t start_line,
@@ -958,6 +1052,9 @@ void rt_codeeditor_set_cursor_selection(void *editor,
 ///
 /// Index 0 reads the editor's main `has_selection` flag; extras keep
 /// their own per-cursor flag set by `SetCursorSelection`.
+/// @param editor CodeEditor widget handle.
+/// @param index Zero-based cursor index.
+/// @return 1 when that cursor has a non-empty selection, otherwise 0.
 int64_t rt_codeeditor_cursor_has_selection(void *editor, int64_t index) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -974,6 +1071,9 @@ int64_t rt_codeeditor_cursor_has_selection(void *editor, int64_t index) {
 
 /// @brief Fetch the selection range for cursor @p index (0 = primary caret,
 ///        ≥1 = extra multi-cursor) into @p out.
+/// @param editor CodeEditor widget handle.
+/// @param index Zero-based cursor index.
+/// @param out Receives the normalized byte-column selection.
 /// @return true if that cursor has an active selection; false otherwise.
 static bool rt_codeeditor_get_selection_at(void *editor, int64_t index, vg_selection_t *out) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
@@ -999,6 +1099,9 @@ static bool rt_codeeditor_get_selection_at(void *editor, int64_t index, vg_selec
 }
 
 /// @brief `CodeEditor.GetSelectionStartLineAt(index)` — normalized selection start line.
+/// @param editor CodeEditor widget handle.
+/// @param index Zero-based cursor index.
+/// @return Zero-based start line, or 0 when no selection exists.
 int64_t rt_codeeditor_get_selection_start_line_at(void *editor, int64_t index) {
     vg_selection_t selection;
     if (!rt_codeeditor_get_selection_at(editor, index, &selection))
@@ -1007,6 +1110,9 @@ int64_t rt_codeeditor_get_selection_start_line_at(void *editor, int64_t index) {
 }
 
 /// @brief `CodeEditor.GetSelectionStartColAt(index)` — normalized selection start column.
+/// @param editor CodeEditor widget handle.
+/// @param index Zero-based cursor index.
+/// @return Zero-based character column, or 0 when no selection exists.
 int64_t rt_codeeditor_get_selection_start_col_at(void *editor, int64_t index) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     vg_selection_t selection;
@@ -1016,6 +1122,9 @@ int64_t rt_codeeditor_get_selection_start_col_at(void *editor, int64_t index) {
 }
 
 /// @brief `CodeEditor.GetSelectionEndLineAt(index)` — normalized selection end line.
+/// @param editor CodeEditor widget handle.
+/// @param index Zero-based cursor index.
+/// @return Zero-based end line, or 0 when no selection exists.
 int64_t rt_codeeditor_get_selection_end_line_at(void *editor, int64_t index) {
     vg_selection_t selection;
     if (!rt_codeeditor_get_selection_at(editor, index, &selection))
@@ -1024,6 +1133,9 @@ int64_t rt_codeeditor_get_selection_end_line_at(void *editor, int64_t index) {
 }
 
 /// @brief `CodeEditor.GetSelectionEndColAt(index)` — normalized selection end column.
+/// @param editor CodeEditor widget handle.
+/// @param index Zero-based cursor index.
+/// @return Zero-based character column, or 0 when no selection exists.
 int64_t rt_codeeditor_get_selection_end_col_at(void *editor, int64_t index) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     vg_selection_t selection;
@@ -1036,6 +1148,7 @@ int64_t rt_codeeditor_get_selection_end_col_at(void *editor, int64_t index) {
 // `vg_codeeditor_*` widget API. NULL receiver is a no-op (or zero return).
 
 /// @brief `CodeEditor.Undo` — pop one entry from the undo stack.
+/// @param editor CodeEditor widget handle.
 void rt_codeeditor_undo(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (ce)
@@ -1043,6 +1156,7 @@ void rt_codeeditor_undo(void *editor) {
 }
 
 /// @brief `CodeEditor.Redo` — re-apply one undone entry.
+/// @param editor CodeEditor widget handle.
 void rt_codeeditor_redo(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (ce)
@@ -1050,6 +1164,8 @@ void rt_codeeditor_redo(void *editor) {
 }
 
 /// @brief `CodeEditor.CanUndo` — true when the undo stack has an available entry.
+/// @param editor CodeEditor widget handle.
+/// @return 1 when undo is available, otherwise 0.
 int64_t rt_codeeditor_can_undo(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1058,6 +1174,8 @@ int64_t rt_codeeditor_can_undo(void *editor) {
 }
 
 /// @brief `CodeEditor.CanRedo` — true when the redo stack has an available entry.
+/// @param editor CodeEditor widget handle.
+/// @return 1 when redo is available, otherwise 0.
 int64_t rt_codeeditor_can_redo(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1066,6 +1184,8 @@ int64_t rt_codeeditor_can_redo(void *editor) {
 }
 
 /// @brief `CodeEditor.Copy` — copy selection to the system clipboard. Returns 1 on success.
+/// @param editor CodeEditor widget handle.
+/// @return 1 on success, otherwise 0.
 int64_t rt_codeeditor_copy(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1074,6 +1194,8 @@ int64_t rt_codeeditor_copy(void *editor) {
 }
 
 /// @brief `CodeEditor.Cut` — copy selection then delete. Returns 1 on success.
+/// @param editor CodeEditor widget handle.
+/// @return 1 on success, otherwise 0.
 int64_t rt_codeeditor_cut(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1082,6 +1204,8 @@ int64_t rt_codeeditor_cut(void *editor) {
 }
 
 /// @brief `CodeEditor.Paste` — insert clipboard text at cursor. Returns 1 on success.
+/// @param editor CodeEditor widget handle.
+/// @return 1 on success, otherwise 0.
 int64_t rt_codeeditor_paste(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1090,6 +1214,7 @@ int64_t rt_codeeditor_paste(void *editor) {
 }
 
 /// @brief `CodeEditor.SelectAll` — selection from buffer start to end.
+/// @param editor CodeEditor widget handle.
 void rt_codeeditor_select_all(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (ce)
@@ -1097,6 +1222,8 @@ void rt_codeeditor_select_all(void *editor) {
 }
 
 /// @brief `CodeEditor.SetTabSize` — set tab width in spaces.
+/// @param editor CodeEditor widget handle.
+/// @param size Tab width clamped to 1 through 16 spaces.
 void rt_codeeditor_set_tab_size(void *editor, int64_t size) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1110,6 +1237,8 @@ void rt_codeeditor_set_tab_size(void *editor, int64_t size) {
 }
 
 /// @brief `CodeEditor.GetTabSize` — return tab width in spaces.
+/// @param editor CodeEditor widget handle.
+/// @return Tab width, or 0 for an invalid handle.
 int64_t rt_codeeditor_get_tab_size(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1118,6 +1247,8 @@ int64_t rt_codeeditor_get_tab_size(void *editor) {
 }
 
 /// @brief `CodeEditor.SetInsertSpaces` — choose soft tabs vs hard tabs.
+/// @param editor CodeEditor widget handle.
+/// @param enabled Non-zero for spaces; zero for tab characters.
 void rt_codeeditor_set_insert_spaces(void *editor, int64_t enabled) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1126,6 +1257,8 @@ void rt_codeeditor_set_insert_spaces(void *editor, int64_t enabled) {
 }
 
 /// @brief `CodeEditor.GetInsertSpaces` — return soft-tab setting.
+/// @param editor CodeEditor widget handle.
+/// @return 1 when inserting spaces, otherwise 0.
 int64_t rt_codeeditor_get_insert_spaces(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1134,6 +1267,8 @@ int64_t rt_codeeditor_get_insert_spaces(void *editor) {
 }
 
 /// @brief `CodeEditor.SetWordWrap` — toggle display-only word wrapping.
+/// @param editor CodeEditor widget handle.
+/// @param enabled Non-zero to wrap visual rows; zero for horizontal scrolling.
 void rt_codeeditor_set_word_wrap(void *editor, int64_t enabled) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1145,6 +1280,8 @@ void rt_codeeditor_set_word_wrap(void *editor, int64_t enabled) {
 }
 
 /// @brief Enable or disable ligature shaping for one editor (ADR 0137).
+/// @param editor CodeEditor widget handle.
+/// @param enabled Non-zero to enable ligature shaping.
 void rt_codeeditor_set_ligatures_enabled(void *editor, int64_t enabled) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1153,12 +1290,16 @@ void rt_codeeditor_set_ligatures_enabled(void *editor, int64_t enabled) {
 }
 
 /// @brief Return whether one editor renders ligatures.
+/// @param editor CodeEditor widget handle.
+/// @return 1 when ligatures are enabled, otherwise 0.
 int64_t rt_codeeditor_get_ligatures_enabled(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     return ce && vg_codeeditor_get_ligatures_enabled(ce) ? 1 : 0;
 }
 
 /// @brief `CodeEditor.GetWordWrap` — return display-only word wrapping state.
+/// @param editor CodeEditor widget handle.
+/// @return 1 when word wrapping is enabled, otherwise 0.
 int64_t rt_codeeditor_get_word_wrap(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1168,6 +1309,8 @@ int64_t rt_codeeditor_get_word_wrap(void *editor) {
 
 /// @brief `CodeEditor.SetWhitespaceMode` — set space/tab marker rendering
 ///        (0=none, 1=boundary, 2=all). Out-of-range values clamp to none.
+/// @param editor CodeEditor widget handle.
+/// @param mode Whitespace rendering mode.
 void rt_codeeditor_set_whitespace_mode(void *editor, int64_t mode) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1179,6 +1322,8 @@ void rt_codeeditor_set_whitespace_mode(void *editor, int64_t mode) {
 }
 
 /// @brief `CodeEditor.GetWhitespaceMode` — return the whitespace marker mode.
+/// @param editor CodeEditor widget handle.
+/// @return Current whitespace rendering mode, or 0 for an invalid handle.
 int64_t rt_codeeditor_get_whitespace_mode(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1187,6 +1332,8 @@ int64_t rt_codeeditor_get_whitespace_mode(void *editor) {
 }
 
 /// @brief `CodeEditor.SetShowIndentGuides` — toggle faint indentation guides.
+/// @param editor CodeEditor widget handle.
+/// @param enabled Non-zero to render indentation guides.
 void rt_codeeditor_set_show_indent_guides(void *editor, int64_t enabled) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1196,6 +1343,8 @@ void rt_codeeditor_set_show_indent_guides(void *editor, int64_t enabled) {
 }
 
 /// @brief `CodeEditor.GetShowIndentGuides` — return the indent-guide setting.
+/// @param editor CodeEditor widget handle.
+/// @return 1 when indentation guides are visible, otherwise 0.
 int64_t rt_codeeditor_get_show_indent_guides(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1240,6 +1389,8 @@ int64_t rt_codeeditor_get_read_only(void *editor) {
 ///          fold's start line itself stays visible — it carries the fold-icon
 ///          glyph and shows the collapsed-summary text — so the check is
 ///          asymmetric on purpose.
+/// @param ce Borrowed CodeEditor.
+/// @param line Zero-based source line.
 /// @return 1 if the line is currently hidden by an active fold, 0 otherwise.
 static int rt_codeeditor_line_is_hidden(const vg_codeeditor_t *ce, int line) {
     if (!ce)
@@ -1261,6 +1412,8 @@ static int rt_codeeditor_line_is_hidden(const vg_codeeditor_t *ce, int line) {
 ///          the *outermost* containing fold's start line (smallest
 ///          `start_line` of any fold whose range covers `line`), so nested
 ///          folds collapse correctly to the topmost visible anchor.
+/// @param ce Borrowed CodeEditor.
+/// @param line Possibly hidden or out-of-range source line.
 /// @return Clamped visible line index suitable for cursor / scroll math.
 static int rt_codeeditor_visible_anchor_line(const vg_codeeditor_t *ce, int line) {
     if (!ce || ce->line_count <= 0)
@@ -1291,6 +1444,8 @@ static int rt_codeeditor_visible_anchor_line(const vg_codeeditor_t *ce, int line
 ///          "no wrap budget — emit the full line as one row"). When word-wrap
 ///          is on, returns at least 1 even for absurdly narrow viewports so
 ///          the caller's division never trips on a zero divisor.
+/// @param ce Borrowed CodeEditor.
+/// @param content_width Available text width in pixels.
 /// @return Characters per row (>= 1 with word-wrap on; 0 with word-wrap off).
 static int rt_codeeditor_chars_per_row(const vg_codeeditor_t *ce, float content_width) {
     if (!ce || !ce->word_wrap || ce->char_width <= 0.0f)
@@ -1307,6 +1462,9 @@ static int rt_codeeditor_chars_per_row(const vg_codeeditor_t *ce, float content_
 ///          single-row fallback) when word-wrap is off, when the line is
 ///          empty, or when the chars-per-row computation produces 0 (so
 ///          callers always get a positive row count for any in-range line).
+/// @param ce Borrowed CodeEditor.
+/// @param line Zero-based source line.
+/// @param content_width Available text width in pixels.
 /// @return Row count; always >= 1 for valid lines.
 static int rt_codeeditor_wrapped_rows_for_line(const vg_codeeditor_t *ce,
                                                int line,
@@ -1332,6 +1490,9 @@ static int rt_codeeditor_wrapped_rows_for_line(const vg_codeeditor_t *ce,
 ///          the editor; cursor positioning, scrollbar math, and hit-testing
 ///          all sum these counts to convert between source-line space and
 ///          screen-row space.
+/// @param ce Borrowed CodeEditor.
+/// @param line Zero-based source line.
+/// @param content_width Available text width in pixels.
 /// @return Visual row count for the line (0 if hidden, >= 1 otherwise).
 static int rt_codeeditor_visual_rows_for_line(const vg_codeeditor_t *ce,
                                               int line,
@@ -1359,6 +1520,7 @@ static int rt_codeeditor_visual_rows_for_line(const vg_codeeditor_t *ce,
 ///          The pass cap defends against pathological cases where the cap
 ///          line height makes the test oscillate; bounded iteration is
 ///          better than risking an infinite loop in the paint path.
+/// @param ce Borrowed mutable CodeEditor whose width cache may be refreshed.
 /// @return Pixel width available for text after gutter and (if needed) scrollbar.
 /// @note The converged width is cached on the editor and invalidated by layout
 ///       generation, widget width/height, and word-wrap state. This avoids
@@ -1423,6 +1585,12 @@ static float rt_codeeditor_content_draw_width(vg_codeeditor_t *ce) {
 ///          back to the actual last row's trailing position.
 ///          When word-wrap is off (chars_per_row == 0), `row_index` stays 0
 ///          and `col_in_row == col`. Out parameters may be NULL.
+/// @param ce Borrowed CodeEditor.
+/// @param content_width Available text width in pixels.
+/// @param line Zero-based source line.
+/// @param col Zero-based byte column.
+/// @param out_row_index Optional destination for wrapped row within the line.
+/// @param out_col_in_row Optional destination for column within the wrapped row.
 static void rt_codeeditor_visual_offset_for_position(const vg_codeeditor_t *ce,
                                                      float content_width,
                                                      int line,
@@ -1468,6 +1636,10 @@ static void rt_codeeditor_visual_offset_for_position(const vg_codeeditor_t *ce,
 ///          callers passing an out-of-range or fold-hidden line still get
 ///          a meaningful row number rather than triggering OOB reads on
 ///          the per-line iteration.
+/// @param ce Borrowed CodeEditor.
+/// @param content_width Available text width in pixels.
+/// @param line Zero-based source line.
+/// @param col Zero-based byte column.
 /// @return Absolute visual row index (always >= 0).
 static int rt_codeeditor_visual_row_for_position(const vg_codeeditor_t *ce,
                                                  float content_width,
@@ -1498,6 +1670,11 @@ static int rt_codeeditor_visual_row_for_position(const vg_codeeditor_t *ce,
 ///          array accumulating visual row counts (accounting for word-wrap) until the
 ///          target visual row is consumed, then uses `rt_codeeditor_visual_offset_for_position`
 ///          to find the exact sub-line offset within the found logical line.
+/// @param ce Borrowed CodeEditor.
+/// @param content_width Available text width in pixels.
+/// @param visual_row Zero-based absolute visual row.
+/// @param out_line Optional destination for the source line.
+/// @param out_row_in_line Optional destination for wrapped row within the source line.
 static void rt_codeeditor_locate_visual_row(const vg_codeeditor_t *ce,
                                             float content_width,
                                             int visual_row,
@@ -1541,6 +1718,8 @@ static void rt_codeeditor_locate_visual_row(const vg_codeeditor_t *ce,
 /// @brief Get the screen-absolute X pixel coordinate of the primary cursor.
 /// @details Combines the widget's screen-space origin, gutter width, and
 ///          cursor column × character width.
+/// @param editor CodeEditor widget handle.
+/// @return Absolute caret X coordinate, or 0 for an invalid handle.
 int64_t rt_codeeditor_get_cursor_pixel_x(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1564,6 +1743,8 @@ int64_t rt_codeeditor_get_cursor_pixel_x(void *editor) {
 /// @brief Get the screen-absolute Y pixel coordinate of the primary cursor.
 /// @details Combines the widget's screen-space origin with the cursor's
 ///          visible line offset scaled by line height.
+/// @param editor CodeEditor widget handle.
+/// @return Absolute caret Y coordinate, or 0 for an invalid handle.
 int64_t rt_codeeditor_get_cursor_pixel_y(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1580,6 +1761,9 @@ int64_t rt_codeeditor_get_cursor_pixel_y(void *editor) {
 }
 
 /// @brief Return the 0-based editor line at a screen-absolute Y coordinate.
+/// @param editor CodeEditor widget handle.
+/// @param y Absolute screen Y coordinate.
+/// @return Zero-based source line, or -1 when unavailable.
 int64_t rt_codeeditor_get_line_at_pixel(void *editor, int64_t y) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1604,6 +1788,10 @@ int64_t rt_codeeditor_get_line_at_pixel(void *editor, int64_t y) {
 }
 
 /// @brief Return the 0-based editor column at a screen-absolute X/Y coordinate.
+/// @param editor CodeEditor widget handle.
+/// @param x Absolute screen X coordinate.
+/// @param y Absolute screen Y coordinate.
+/// @return Zero-based byte column clamped to the selected line, or -1 when unavailable.
 int64_t rt_codeeditor_get_col_at_pixel(void *editor, int64_t x, int64_t y) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1646,6 +1834,8 @@ int64_t rt_codeeditor_get_col_at_pixel(void *editor, int64_t x, int64_t y) {
 }
 
 /// @brief Insert text at the primary cursor position.
+/// @param editor CodeEditor widget handle.
+/// @param text Runtime string to insert.
 void rt_codeeditor_insert_at_cursor(void *editor, rt_string text) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce || !text)
@@ -1661,6 +1851,9 @@ void rt_codeeditor_insert_at_cursor(void *editor, rt_string text) {
 ///        into the inserted text. Captures the pre-insert position, inserts, then advances by
 ///        the offset (counting newlines) and sets the cursor — so the caret lands inside a
 ///        multi-line insertion without the caller walking the text by hand.
+/// @param editor CodeEditor widget handle.
+/// @param text Runtime string to insert.
+/// @param caret_offset Number of inserted Unicode characters before the final caret.
 void rt_codeeditor_insert_and_place_cursor(void *editor, rt_string text, int64_t caret_offset) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce || !text)
@@ -1676,6 +1869,9 @@ void rt_codeeditor_insert_and_place_cursor(void *editor, rt_string text, int64_t
     rt_codeeditor_set_cursor_position_at(editor, 0, line, col);
 }
 
+/// @brief Classify a byte as part of an identifier-oriented editor word.
+/// @param c Byte to classify.
+/// @return Non-zero for ASCII alphanumerics, underscore, or any non-ASCII byte.
 static int rt_codeeditor_identifier_byte(unsigned char c) {
     return isalnum(c) || c == '_' || c >= 0x80;
 }
@@ -1684,6 +1880,8 @@ static int rt_codeeditor_identifier_byte(unsigned char c) {
 /// @details Scans left and right from cursor_col over ASCII identifier bytes
 ///          plus non-ASCII UTF-8 continuation/lead bytes so multibyte words
 ///          are not split in the middle.
+/// @param editor CodeEditor widget handle.
+/// @return Owned word text, or an empty runtime string when unavailable.
 rt_string rt_codeeditor_get_word_at_cursor(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1710,6 +1908,8 @@ rt_string rt_codeeditor_get_word_at_cursor(void *editor) {
 /// @brief Replace the identifier word under the primary cursor with new_text.
 /// @details Selects the same word range that get_word_at_cursor() would return,
 ///          then inserts the replacement via vg_codeeditor_insert_text.
+/// @param editor CodeEditor widget handle.
+/// @param new_text Runtime replacement string.
 void rt_codeeditor_replace_word_at_cursor(void *editor, rt_string new_text) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1740,6 +1940,9 @@ void rt_codeeditor_replace_word_at_cursor(void *editor, rt_string new_text) {
 }
 
 /// @brief Return the text of a single line (0-based index).
+/// @param editor CodeEditor widget handle.
+/// @param line_index Zero-based logical line index.
+/// @return Owned line text, or an empty runtime string for an invalid handle or index.
 rt_string rt_codeeditor_get_line(void *editor, int64_t line_index) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1751,6 +1954,7 @@ rt_string rt_codeeditor_get_line(void *editor, int64_t line_index) {
 }
 
 /// @brief Clear low-level editor performance counters.
+/// @param editor CodeEditor widget handle whose counters should be reset.
 void rt_codeeditor_reset_perf_stats(void *editor) {
     RT_ASSERT_MAIN_THREAD();
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
@@ -1782,6 +1986,8 @@ void *rt_codeeditor_get_perf_stats(void *editor) {
 }
 
 /// @brief Return full-buffer materialization count.
+/// @param editor CodeEditor widget handle.
+/// @return Saturated signed count of full-buffer text copies, or zero for an invalid handle.
 int64_t rt_codeeditor_get_full_text_copy_count(void *editor) {
     RT_ASSERT_MAIN_THREAD();
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
@@ -1792,6 +1998,8 @@ int64_t rt_codeeditor_get_full_text_copy_count(void *editor) {
 }
 
 /// @brief Return aggregate line visits from layout/scroll visual-row scans.
+/// @param editor CodeEditor widget handle.
+/// @return Saturated sum of the four layout scan counters, or zero for an invalid handle.
 int64_t rt_codeeditor_get_layout_linear_scan_count(void *editor) {
     RT_ASSERT_MAIN_THREAD();
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
@@ -1815,6 +2023,8 @@ int64_t rt_codeeditor_get_layout_linear_scan_count(void *editor) {
 }
 
 /// @brief Return syntax-highlighter invocation count.
+/// @param editor CodeEditor widget handle.
+/// @return Saturated syntax-highlight invocation count, or zero for an invalid handle.
 int64_t rt_codeeditor_get_syntax_highlight_call_count(void *editor) {
     RT_ASSERT_MAIN_THREAD();
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
@@ -1825,6 +2035,8 @@ int64_t rt_codeeditor_get_syntax_highlight_call_count(void *editor) {
 }
 
 /// @brief Return cached syntax-state line scan count.
+/// @param editor CodeEditor widget handle.
+/// @return Saturated syntax-state scan count, or zero for an invalid handle.
 int64_t rt_codeeditor_get_syntax_state_line_scan_count(void *editor) {
     RT_ASSERT_MAIN_THREAD();
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
@@ -1835,6 +2047,8 @@ int64_t rt_codeeditor_get_syntax_state_line_scan_count(void *editor) {
 }
 
 /// @brief Return highlight span checks performed during paint.
+/// @param editor CodeEditor widget handle.
+/// @return Saturated highlight-span check count, or zero for an invalid handle.
 int64_t rt_codeeditor_get_highlight_span_check_count(void *editor) {
     RT_ASSERT_MAIN_THREAD();
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
@@ -1845,6 +2059,8 @@ int64_t rt_codeeditor_get_highlight_span_check_count(void *editor) {
 }
 
 /// @brief Return bytes copied by full-buffer materializations.
+/// @param editor CodeEditor widget handle.
+/// @return Saturated byte count, or zero for an invalid handle.
 int64_t rt_codeeditor_get_full_text_copy_byte_count(void *editor) {
     RT_ASSERT_MAIN_THREAD();
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
@@ -1869,12 +2085,15 @@ typedef struct rt_editorbuffer_data {
 } rt_editorbuffer_data_t;
 
 /// @brief Authenticate an EditorBuffer handle via its magic tag.
+/// @param handle Candidate runtime EditorBuffer object.
+/// @return Validated buffer wrapper, or `NULL` when the handle is absent or has the wrong tag.
 static rt_editorbuffer_data_t *rt_editorbuffer_checked(void *handle) {
     rt_editorbuffer_data_t *d = (rt_editorbuffer_data_t *)handle;
     return (d && d->magic == RT_EDITORBUFFER_MAGIC) ? d : NULL;
 }
 
 /// @brief GC finalizer: free the owned buffer if it was never attached.
+/// @param obj EditorBuffer wrapper being finalized.
 static void rt_editorbuffer_finalize(void *obj) {
     rt_editorbuffer_data_t *d = rt_editorbuffer_checked(obj);
     if (!d)
@@ -1887,6 +2106,8 @@ static void rt_editorbuffer_finalize(void *obj) {
 }
 
 /// @brief Wrap a detached buffer in a GC handle (takes ownership).
+/// @param buf Detached editor buffer whose ownership transfers to the wrapper.
+/// @return New managed EditorBuffer handle, or `NULL` if allocation fails.
 static void *rt_editorbuffer_wrap(vg_editor_buffer_t *buf) {
     rt_editorbuffer_data_t *d = (rt_editorbuffer_data_t *)rt_obj_new_i64(
         0, (int64_t)sizeof(rt_editorbuffer_data_t));
@@ -1901,6 +2122,8 @@ static void *rt_editorbuffer_wrap(vg_editor_buffer_t *buf) {
 }
 
 /// @brief `EditorBuffer.New` — detached buffer initialised from text.
+/// @param text Initial document contents; a null runtime string creates an empty buffer.
+/// @return New managed EditorBuffer handle, or `NULL` when allocation fails.
 void *rt_editorbuffer_new(rt_string text) {
     RT_ASSERT_MAIN_THREAD();
     char *ctext = rt_string_to_gui_cstr(text);
@@ -1913,6 +2136,8 @@ void *rt_editorbuffer_new(rt_string text) {
 }
 
 /// @brief `EditorBuffer.get_Text` — full document text.
+/// @param handle EditorBuffer handle to query.
+/// @return Owned document text, or an empty runtime string for an invalid or consumed handle.
 rt_string rt_editorbuffer_get_text(void *handle) {
     RT_ASSERT_MAIN_THREAD();
     rt_editorbuffer_data_t *d = rt_editorbuffer_checked(handle);
@@ -1927,6 +2152,8 @@ rt_string rt_editorbuffer_get_text(void *handle) {
 }
 
 /// @brief `EditorBuffer.get_Revision` — content revision.
+/// @param handle EditorBuffer handle to query.
+/// @return Current content revision, or zero for an invalid or consumed handle.
 int64_t rt_editorbuffer_get_revision(void *handle) {
     RT_ASSERT_MAIN_THREAD();
     rt_editorbuffer_data_t *d = rt_editorbuffer_checked(handle);
@@ -1936,6 +2163,8 @@ int64_t rt_editorbuffer_get_revision(void *handle) {
 }
 
 /// @brief `EditorBuffer.IsModified`.
+/// @param handle EditorBuffer handle to query.
+/// @return `1` when the detached document is modified; otherwise `0`.
 int64_t rt_editorbuffer_is_modified(void *handle) {
     RT_ASSERT_MAIN_THREAD();
     rt_editorbuffer_data_t *d = rt_editorbuffer_checked(handle);
@@ -1945,6 +2174,7 @@ int64_t rt_editorbuffer_is_modified(void *handle) {
 }
 
 /// @brief `EditorBuffer.ClearModified`.
+/// @param handle EditorBuffer handle whose modified flag should be cleared.
 void rt_editorbuffer_clear_modified(void *handle) {
     RT_ASSERT_MAIN_THREAD();
     rt_editorbuffer_data_t *d = rt_editorbuffer_checked(handle);
@@ -1955,6 +2185,9 @@ void rt_editorbuffer_clear_modified(void *handle) {
 /// @brief `CodeEditor.AttachBuffer` — swap the editor's document for @p bufHandle
 ///        and return the editor's previous document as a new EditorBuffer. The
 ///        passed buffer is consumed.
+/// @param editor CodeEditor widget receiving the detached document.
+/// @param bufHandle EditorBuffer handle consumed by a successful swap.
+/// @return Managed handle for the editor's previous document, or `NULL` on invalid input or failure.
 void *rt_codeeditor_attach_buffer(void *editor, void *bufHandle) {
     RT_ASSERT_MAIN_THREAD();
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
@@ -1986,24 +2219,34 @@ void *rt_codeeditor_attach_buffer(void *editor, void *bufHandle) {
 
 
 /// @brief Stub: `CodeEditor.SetShowLineNumbers` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param show Ignored visibility flag.
 void rt_codeeditor_set_show_line_numbers(void *editor, int64_t show) {
     (void)editor;
     (void)show;
 }
 
 /// @brief Stub: returns the default visible line-number state in headless builds.
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `1`, matching the graphical editor default.
 int64_t rt_codeeditor_get_show_line_numbers(void *editor) {
     (void)editor;
     return 1;
 }
 
 /// @brief Stub: `CodeEditor.SetLineNumberWidth` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param width Ignored gutter width.
 void rt_codeeditor_set_line_number_width(void *editor, int64_t width) {
     (void)editor;
     (void)width;
 }
 
 /// @brief Stub: `CodeEditor.SetGutterIcon` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param line Ignored zero-based line index.
+/// @param pixels Ignored pixel buffer handle.
+/// @param slot Ignored gutter slot.
 void rt_codeeditor_set_gutter_icon(void *editor, int64_t line, void *pixels, int64_t slot) {
     (void)editor;
     (void)line;
@@ -2012,6 +2255,10 @@ void rt_codeeditor_set_gutter_icon(void *editor, int64_t line, void *pixels, int
 }
 
 /// @brief Stub: `CodeEditor.SetGutterBar` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param line Ignored zero-based line index.
+/// @param color Ignored packed bar color.
+/// @param slot Ignored gutter slot.
 void rt_codeeditor_set_gutter_bar(void *editor, int64_t line, int64_t color, int64_t slot) {
     (void)editor;
     (void)line;
@@ -2020,6 +2267,9 @@ void rt_codeeditor_set_gutter_bar(void *editor, int64_t line, int64_t color, int
 }
 
 /// @brief Stub: `CodeEditor.ClearGutterIcon` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param line Ignored zero-based line index.
+/// @param slot Ignored gutter slot.
 void rt_codeeditor_clear_gutter_icon(void *editor, int64_t line, int64_t slot) {
     (void)editor;
     (void)line;
@@ -2027,12 +2277,16 @@ void rt_codeeditor_clear_gutter_icon(void *editor, int64_t line, int64_t slot) {
 }
 
 /// @brief Stub: `CodeEditor.ClearAllGutterIcons` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param slot Ignored gutter slot.
 void rt_codeeditor_clear_all_gutter_icons(void *editor, int64_t slot) {
     (void)editor;
     (void)slot;
 }
 
 /// @brief Stub: internal gutter-click injection is a no-op without graphics.
+/// @param line Ignored clicked line index.
+/// @param slot Ignored clicked gutter slot.
 void rt_gui_set_gutter_click(int64_t line, int64_t slot) {
     (void)line;
     (void)slot;
@@ -2042,12 +2296,16 @@ void rt_gui_set_gutter_click(int64_t line, int64_t slot) {
 void rt_gui_clear_gutter_click(void) {}
 
 /// @brief Stub: returns 0 (no gutter can be clicked in headless builds).
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `0`.
 int64_t rt_codeeditor_was_gutter_clicked(void *editor) {
     (void)editor;
     return 0;
 }
 
 /// @brief Stub: return an empty atomic gutter-click snapshot without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @return New Map containing `clicked=false`, `line=-1`, and `slot=-1`, or `NULL` on OOM.
 void *rt_codeeditor_take_gutter_click(void *editor) {
     (void)editor;
     void *result = rt_map_new();
@@ -2060,24 +2318,33 @@ void *rt_codeeditor_take_gutter_click(void *editor) {
 }
 
 /// @brief Stub: returns -1 (no gutter click available in headless builds).
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `-1`.
 int64_t rt_codeeditor_get_gutter_clicked_line(void *editor) {
     (void)editor;
     return -1;
 }
 
 /// @brief Stub: returns -1 (no gutter click available in headless builds).
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `-1`.
 int64_t rt_codeeditor_get_gutter_clicked_slot(void *editor) {
     (void)editor;
     return -1;
 }
 
 /// @brief Stub: `CodeEditor.SetShowFoldGutter` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param show Ignored visibility flag.
 void rt_codeeditor_set_show_fold_gutter(void *editor, int64_t show) {
     (void)editor;
     (void)show;
 }
 
 /// @brief Stub: `CodeEditor.AddFoldRegion` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param start_line Ignored first line of the fold region.
+/// @param end_line Ignored last line of the fold region.
 void rt_codeeditor_add_fold_region(void *editor, int64_t start_line, int64_t end_line) {
     (void)editor;
     (void)start_line;
@@ -2085,35 +2352,47 @@ void rt_codeeditor_add_fold_region(void *editor, int64_t start_line, int64_t end
 }
 
 /// @brief Stub: `CodeEditor.RemoveFoldRegion` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param start_line Ignored fold-region start line.
 void rt_codeeditor_remove_fold_region(void *editor, int64_t start_line) {
     (void)editor;
     (void)start_line;
 }
 
 /// @brief Stub: `CodeEditor.ClearFoldRegions` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
 void rt_codeeditor_clear_fold_regions(void *editor) {
     (void)editor;
 }
 
 /// @brief Stub: `CodeEditor.Fold` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param line Ignored fold-region line.
 void rt_codeeditor_fold(void *editor, int64_t line) {
     (void)editor;
     (void)line;
 }
 
 /// @brief Stub: `CodeEditor.Unfold` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param line Ignored fold-region line.
 void rt_codeeditor_unfold(void *editor, int64_t line) {
     (void)editor;
     (void)line;
 }
 
 /// @brief Stub: `CodeEditor.ToggleFold` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param line Ignored fold-region line.
 void rt_codeeditor_toggle_fold(void *editor, int64_t line) {
     (void)editor;
     (void)line;
 }
 
 /// @brief Stub: returns 0 (no fold state exists in headless builds).
+/// @param editor Ignored CodeEditor handle.
+/// @param line Ignored fold-region line.
+/// @return Always `0`.
 int64_t rt_codeeditor_is_folded(void *editor, int64_t line) {
     (void)editor;
     (void)line;
@@ -2121,28 +2400,37 @@ int64_t rt_codeeditor_is_folded(void *editor, int64_t line) {
 }
 
 /// @brief Stub: `CodeEditor.FoldAll` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
 void rt_codeeditor_fold_all(void *editor) {
     (void)editor;
 }
 
 /// @brief Stub: `CodeEditor.UnfoldAll` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
 void rt_codeeditor_unfold_all(void *editor) {
     (void)editor;
 }
 
 /// @brief Stub: `CodeEditor.SetAutoFoldDetection` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param enable Ignored automatic-detection flag.
 void rt_codeeditor_set_auto_fold_detection(void *editor, int64_t enable) {
     (void)editor;
     (void)enable;
 }
 
 /// @brief Stub: returns the primary cursor count in headless builds.
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `1`, representing the primary cursor.
 int64_t rt_codeeditor_get_cursor_count(void *editor) {
     (void)editor;
     return 1;
 }
 
 /// @brief Stub: `CodeEditor.AddCursor` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param line Ignored zero-based line.
+/// @param col Ignored zero-based character column.
 void rt_codeeditor_add_cursor(void *editor, int64_t line, int64_t col) {
     (void)editor;
     (void)line;
@@ -2150,17 +2438,23 @@ void rt_codeeditor_add_cursor(void *editor, int64_t line, int64_t col) {
 }
 
 /// @brief Stub: `CodeEditor.RemoveCursor` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param index Ignored cursor index.
 void rt_codeeditor_remove_cursor(void *editor, int64_t index) {
     (void)editor;
     (void)index;
 }
 
 /// @brief Stub: `CodeEditor.ClearExtraCursors` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
 void rt_codeeditor_clear_extra_cursors(void *editor) {
     (void)editor;
 }
 
 /// @brief Stub: returns 0 (no cursor state in headless builds).
+/// @param editor Ignored CodeEditor handle.
+/// @param index Ignored cursor index.
+/// @return Always `0`.
 int64_t rt_codeeditor_get_cursor_line_at(void *editor, int64_t index) {
     (void)editor;
     (void)index;
@@ -2168,6 +2462,9 @@ int64_t rt_codeeditor_get_cursor_line_at(void *editor, int64_t index) {
 }
 
 /// @brief Stub: returns 0 (no cursor state in headless builds).
+/// @param editor Ignored CodeEditor handle.
+/// @param index Ignored cursor index.
+/// @return Always `0`.
 int64_t rt_codeeditor_get_cursor_col_at(void *editor, int64_t index) {
     (void)editor;
     (void)index;
@@ -2175,30 +2472,42 @@ int64_t rt_codeeditor_get_cursor_col_at(void *editor, int64_t index) {
 }
 
 /// @brief Stub: returns 0 (no cursor state in headless builds).
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `0`.
 int64_t rt_codeeditor_get_cursor_line(void *editor) {
     (void)editor;
     return 0;
 }
 
 /// @brief Stub: returns 0 (no cursor state in headless builds).
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `0`.
 int64_t rt_codeeditor_get_cursor_col(void *editor) {
     (void)editor;
     return 0;
 }
 
 /// @brief Stub: returns 0 (no scroll state in headless builds).
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `0`.
 int64_t rt_codeeditor_get_scroll_top_line(void *editor) {
     (void)editor;
     return 0;
 }
 
 /// @brief Stub: `CodeEditor.ScrollTopLine` setter is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param line Ignored top logical line.
 void rt_codeeditor_set_scroll_top_line(void *editor, int64_t line) {
     (void)editor;
     (void)line;
 }
 
 /// @brief Stub: `CodeEditor.SetCursorPositionAt` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param index Ignored cursor index.
+/// @param line Ignored zero-based line.
+/// @param col Ignored zero-based character column.
 void rt_codeeditor_set_cursor_position_at(void *editor, int64_t index, int64_t line, int64_t col) {
     (void)editor;
     (void)index;
@@ -2207,6 +2516,12 @@ void rt_codeeditor_set_cursor_position_at(void *editor, int64_t index, int64_t l
 }
 
 /// @brief Stub: `CodeEditor.SetCursorSelection` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param index Ignored cursor index.
+/// @param start_line Ignored selection-start line.
+/// @param start_col Ignored selection-start character column.
+/// @param end_line Ignored selection-end line.
+/// @param end_col Ignored selection-end character column.
 void rt_codeeditor_set_cursor_selection(void *editor,
                                         int64_t index,
                                         int64_t start_line,
@@ -2222,6 +2537,9 @@ void rt_codeeditor_set_cursor_selection(void *editor,
 }
 
 /// @brief Stub: returns 0 (no selection exists in headless builds).
+/// @param editor Ignored CodeEditor handle.
+/// @param index Ignored cursor index.
+/// @return Always `0`.
 int64_t rt_codeeditor_cursor_has_selection(void *editor, int64_t index) {
     (void)editor;
     (void)index;
@@ -2229,6 +2547,9 @@ int64_t rt_codeeditor_cursor_has_selection(void *editor, int64_t index) {
 }
 
 /// @brief Stub: returns 0 (no selection exists in headless builds).
+/// @param editor Ignored CodeEditor handle.
+/// @param index Ignored cursor index.
+/// @return Always `0`.
 int64_t rt_codeeditor_get_selection_start_line_at(void *editor, int64_t index) {
     (void)editor;
     (void)index;
@@ -2236,6 +2557,9 @@ int64_t rt_codeeditor_get_selection_start_line_at(void *editor, int64_t index) {
 }
 
 /// @brief Stub: returns 0 (no selection exists in headless builds).
+/// @param editor Ignored CodeEditor handle.
+/// @param index Ignored cursor index.
+/// @return Always `0`.
 int64_t rt_codeeditor_get_selection_start_col_at(void *editor, int64_t index) {
     (void)editor;
     (void)index;
@@ -2243,6 +2567,9 @@ int64_t rt_codeeditor_get_selection_start_col_at(void *editor, int64_t index) {
 }
 
 /// @brief Stub: returns 0 (no selection exists in headless builds).
+/// @param editor Ignored CodeEditor handle.
+/// @param index Ignored cursor index.
+/// @return Always `0`.
 int64_t rt_codeeditor_get_selection_end_line_at(void *editor, int64_t index) {
     (void)editor;
     (void)index;
@@ -2250,6 +2577,9 @@ int64_t rt_codeeditor_get_selection_end_line_at(void *editor, int64_t index) {
 }
 
 /// @brief Stub: returns 0 (no selection exists in headless builds).
+/// @param editor Ignored CodeEditor handle.
+/// @param index Ignored cursor index.
+/// @return Always `0`.
 int64_t rt_codeeditor_get_selection_end_col_at(void *editor, int64_t index) {
     (void)editor;
     (void)index;
@@ -2257,147 +2587,195 @@ int64_t rt_codeeditor_get_selection_end_col_at(void *editor, int64_t index) {
 }
 
 /// @brief Stub: `CodeEditor.Undo` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
 void rt_codeeditor_undo(void *editor) {
     (void)editor;
 }
 
 /// @brief Stub: `CodeEditor.Redo` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
 void rt_codeeditor_redo(void *editor) {
     (void)editor;
 }
 
 /// @brief Stub: returns 0 (no undo history in headless builds).
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `0`.
 int64_t rt_codeeditor_can_undo(void *editor) {
     (void)editor;
     return 0;
 }
 
 /// @brief Stub: returns 0 (no redo history in headless builds).
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `0`.
 int64_t rt_codeeditor_can_redo(void *editor) {
     (void)editor;
     return 0;
 }
 
 /// @brief Stub: returns 0 (clipboard unavailable without graphics).
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `0` to report that no text was copied.
 int64_t rt_codeeditor_copy(void *editor) {
     (void)editor;
     return 0;
 }
 
 /// @brief Stub: returns 0 (clipboard unavailable without graphics).
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `0` to report that no text was cut.
 int64_t rt_codeeditor_cut(void *editor) {
     (void)editor;
     return 0;
 }
 
 /// @brief Stub: returns 0 (clipboard unavailable without graphics).
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `0` to report that no text was pasted.
 int64_t rt_codeeditor_paste(void *editor) {
     (void)editor;
     return 0;
 }
 
 /// @brief Stub: `CodeEditor.SelectAll` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
 void rt_codeeditor_select_all(void *editor) {
     (void)editor;
 }
 
 /// @brief Stub: `CodeEditor.SetTabSize` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param size Ignored tab width.
 void rt_codeeditor_set_tab_size(void *editor, int64_t size) {
     (void)editor;
     (void)size;
 }
 
 /// @brief Stub: returns 0 (no tab size state in headless builds).
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `0`.
 int64_t rt_codeeditor_get_tab_size(void *editor) {
     (void)editor;
     return 0;
 }
 
 /// @brief Stub: `CodeEditor.SetInsertSpaces` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param enabled Ignored insert-spaces flag.
 void rt_codeeditor_set_insert_spaces(void *editor, int64_t enabled) {
     (void)editor;
     (void)enabled;
 }
 
 /// @brief Stub: returns 1 so headless preference probes match the editor default.
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `1`.
 int64_t rt_codeeditor_get_insert_spaces(void *editor) {
     (void)editor;
     return 1;
 }
 
 /// @brief Stub: `CodeEditor.SetWordWrap` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param enabled Ignored word-wrap flag.
 void rt_codeeditor_set_word_wrap(void *editor, int64_t enabled) {
     (void)editor;
     (void)enabled;
 }
 
 /// @brief Graphics-disabled ligature setter stub.
+/// @param editor Ignored CodeEditor handle.
+/// @param enabled Ignored ligature flag.
 void rt_codeeditor_set_ligatures_enabled(void *editor, int64_t enabled) {
     (void)editor;
     (void)enabled;
 }
 
 /// @brief Graphics-disabled ligature getter stub.
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `1`, matching the graphical editor default.
 int64_t rt_codeeditor_get_ligatures_enabled(void *editor) {
     (void)editor;
     return 1;
 }
 
 /// @brief Stub: returns 0 (no word-wrap state in headless builds).
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `0`.
 int64_t rt_codeeditor_get_word_wrap(void *editor) {
     (void)editor;
     return 0;
 }
 
 /// @brief Stub: `CodeEditor.SetWhitespaceMode` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param mode Ignored whitespace display mode.
 void rt_codeeditor_set_whitespace_mode(void *editor, int64_t mode) {
     (void)editor;
     (void)mode;
 }
 
 /// @brief Stub: returns 0 (no whitespace mode in headless builds).
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `0`.
 int64_t rt_codeeditor_get_whitespace_mode(void *editor) {
     (void)editor;
     return 0;
 }
 
 /// @brief Stub: `CodeEditor.SetShowIndentGuides` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param enabled Ignored indent-guide visibility flag.
 void rt_codeeditor_set_show_indent_guides(void *editor, int64_t enabled) {
     (void)editor;
     (void)enabled;
 }
 
 /// @brief Stub: returns 1 so headless probes match the editor default (guides on).
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `1`.
 int64_t rt_codeeditor_get_show_indent_guides(void *editor) {
     (void)editor;
     return 1;
 }
 
 /// @brief Stub: `CodeEditor.SetReadOnly` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param enabled Ignored read-only flag.
 void rt_codeeditor_set_read_only(void *editor, int64_t enabled) {
     (void)editor;
     (void)enabled;
 }
 
 /// @brief Stub: returns 0 (headless CodeEditor storage is not editable anyway).
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `0`.
 int64_t rt_codeeditor_get_read_only(void *editor) {
     (void)editor;
     return 0;
 }
 
 /// @brief Stub: returns 0 (no pixel cursor position without graphics).
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `0`.
 int64_t rt_codeeditor_get_cursor_pixel_x(void *editor) {
     (void)editor;
     return 0;
 }
 
 /// @brief Stub: returns 0 (no pixel cursor position without graphics).
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `0`.
 int64_t rt_codeeditor_get_cursor_pixel_y(void *editor) {
     (void)editor;
     return 0;
 }
 
 /// @brief Stub: returns -1 (no hit-testing without graphics).
+/// @param editor Ignored CodeEditor handle.
+/// @param y Ignored vertical pixel coordinate.
+/// @return Always `-1`.
 int64_t rt_codeeditor_get_line_at_pixel(void *editor, int64_t y) {
     (void)editor;
     (void)y;
@@ -2405,6 +2783,10 @@ int64_t rt_codeeditor_get_line_at_pixel(void *editor, int64_t y) {
 }
 
 /// @brief Stub: returns -1 (no hit-testing without graphics).
+/// @param editor Ignored CodeEditor handle.
+/// @param x Ignored horizontal pixel coordinate.
+/// @param y Ignored vertical pixel coordinate.
+/// @return Always `-1`.
 int64_t rt_codeeditor_get_col_at_pixel(void *editor, int64_t x, int64_t y) {
     (void)editor;
     (void)x;
@@ -2413,12 +2795,17 @@ int64_t rt_codeeditor_get_col_at_pixel(void *editor, int64_t x, int64_t y) {
 }
 
 /// @brief Stub: `CodeEditor.InsertAtCursor` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param text Ignored runtime text.
 void rt_codeeditor_insert_at_cursor(void *editor, rt_string text) {
     (void)editor;
     (void)text;
 }
 
 /// @brief Stub: graphics disabled — no editor to insert into.
+/// @param editor Ignored CodeEditor handle.
+/// @param text Ignored runtime text.
+/// @param caret_offset Ignored caret offset within the text.
 void rt_codeeditor_insert_and_place_cursor(void *editor, rt_string text, int64_t caret_offset) {
     (void)editor;
     (void)text;
@@ -2426,18 +2813,25 @@ void rt_codeeditor_insert_and_place_cursor(void *editor, rt_string text, int64_t
 }
 
 /// @brief Stub: returns empty string (no word-at-cursor without graphics).
+/// @param editor Ignored CodeEditor handle.
+/// @return Empty runtime string.
 rt_string rt_codeeditor_get_word_at_cursor(void *editor) {
     (void)editor;
     return rt_str_empty();
 }
 
 /// @brief Stub: `CodeEditor.ReplaceWordAtCursor` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param new_text Ignored replacement text.
 void rt_codeeditor_replace_word_at_cursor(void *editor, rt_string new_text) {
     (void)editor;
     (void)new_text;
 }
 
 /// @brief Stub: returns empty string (no line content without graphics).
+/// @param editor Ignored CodeEditor handle.
+/// @param line_index Ignored zero-based line index.
+/// @return Empty runtime string.
 rt_string rt_codeeditor_get_line(void *editor, int64_t line_index) {
     (void)editor;
     (void)line_index;
@@ -2445,6 +2839,7 @@ rt_string rt_codeeditor_get_line(void *editor, int64_t line_index) {
 }
 
 /// @brief Stub: `CodeEditor.ResetPerfStats` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
 void rt_codeeditor_reset_perf_stats(void *editor) {
     (void)editor;
 }
@@ -2461,61 +2856,90 @@ void *rt_codeeditor_get_perf_stats(void *editor) {
 }
 
 /// @brief Stub: returns 0 without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `0`.
 int64_t rt_codeeditor_get_full_text_copy_count(void *editor) {
     (void)editor;
     return 0;
 }
 
 /// @brief Stub: returns 0 without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `0`.
 int64_t rt_codeeditor_get_layout_linear_scan_count(void *editor) {
     (void)editor;
     return 0;
 }
 
 /// @brief Stub: returns 0 without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `0`.
 int64_t rt_codeeditor_get_syntax_highlight_call_count(void *editor) {
     (void)editor;
     return 0;
 }
 
 /// @brief Stub: returns 0 without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `0`.
 int64_t rt_codeeditor_get_syntax_state_line_scan_count(void *editor) {
     (void)editor;
     return 0;
 }
 
 /// @brief Stub: returns 0 without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `0`.
 int64_t rt_codeeditor_get_highlight_span_check_count(void *editor) {
     (void)editor;
     return 0;
 }
 
 /// @brief Stub: returns 0 without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `0`.
 int64_t rt_codeeditor_get_full_text_copy_byte_count(void *editor) {
     (void)editor;
     return 0;
 }
 
 /// @brief Stubs: EditorBuffer is unavailable without graphics.
+/// @param text Ignored initial document text.
+/// @return Always `NULL`.
 void *rt_editorbuffer_new(rt_string text) {
     (void)text;
     return NULL;
 }
+/// @brief Return empty text because EditorBuffer is unavailable without graphics.
+/// @param handle Ignored EditorBuffer handle.
+/// @return Empty runtime string.
 rt_string rt_editorbuffer_get_text(void *handle) {
     (void)handle;
     return rt_str_empty();
 }
+/// @brief Return the neutral revision because EditorBuffer is unavailable without graphics.
+/// @param handle Ignored EditorBuffer handle.
+/// @return Always `0`.
 int64_t rt_editorbuffer_get_revision(void *handle) {
     (void)handle;
     return 0;
 }
+/// @brief Report an unmodified buffer because EditorBuffer is unavailable without graphics.
+/// @param handle Ignored EditorBuffer handle.
+/// @return Always `0`.
 int64_t rt_editorbuffer_is_modified(void *handle) {
     (void)handle;
     return 0;
 }
+/// @brief Ignore a modified-state reset because EditorBuffer is unavailable without graphics.
+/// @param handle Ignored EditorBuffer handle.
 void rt_editorbuffer_clear_modified(void *handle) {
     (void)handle;
 }
+/// @brief Reject buffer attachment because CodeEditor is unavailable without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param bufHandle Ignored EditorBuffer handle.
+/// @return Always `NULL`.
 void *rt_codeeditor_attach_buffer(void *editor, void *bufHandle) {
     (void)editor;
     (void)bufHandle;

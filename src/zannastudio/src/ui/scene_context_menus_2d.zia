@@ -1,0 +1,188 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_context_menus_2d.zia
+// Purpose: Right-click context menus for the 2D object hierarchy and canvas.
+// Key invariants:
+//   - Every action routes through existing SceneEditor2D transaction methods,
+//     so a right-click can never bypass validation, history, or dirty state.
+//   - Item enablement mirrors the selection contract each time a menu opens.
+//   - Canvas tool picks are workspace-only and never touch scene JSON.
+// Ownership/Lifetime:
+//   - main.zia owns one instance; GUI owns the menu widgets after Setup.
+// Links: zannastudio/src/ui/scene_editor_2d.zia,
+//        zannastudio/src/ui/scene_context_menus_3d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_context_menus_2d;
+
+bind "scene_editor_2d";
+
+bind GUI = Zanna.GUI;
+bind Input = Zanna.Input;
+
+// ============================================================================
+// MODULE: scene_context_menus_2d
+// PURPOSE: One narrow bridge from right-click gestures to the 2D editor's
+//          established object and tool actions.
+//
+// WHERE-THIS-FITS: The app-level dispatcher owns explorer/tab/editor menus;
+//          scene surfaces own theirs here so the mega-editor module does not
+//          grow presentation plumbing.
+//
+// TEACHING-NOTE: Tool picks mutate only workspace state; object actions each
+//          commit through the editor as exactly one undoable transaction.
+// ============================================================================
+
+/// @brief Right-click menus for the 2D Objects pane and canvas surface.
+class SceneContextMenus2D {
+    expose GUI.ContextMenu hierarchyMenu;
+    expose GUI.ContextMenu canvasMenu;
+    expose GUI.MenuItem hierarchyAddRoot;
+    expose GUI.MenuItem hierarchyAddChild;
+    expose GUI.MenuItem hierarchyRename;
+    expose GUI.MenuItem hierarchyDuplicate;
+    expose GUI.MenuItem hierarchyRemove;
+    expose GUI.MenuItem hierarchyMoveEarlier;
+    expose GUI.MenuItem hierarchyMoveLater;
+    expose GUI.MenuItem canvasToolSelect;
+    expose GUI.MenuItem canvasToolPaint;
+    expose GUI.MenuItem canvasToolErase;
+    expose GUI.MenuItem canvasToolRectangle;
+    expose GUI.MenuItem canvasToolFill;
+    expose GUI.MenuItem canvasToolPick;
+
+    expose func init() {
+        hierarchyMenu = null;
+        canvasMenu = null;
+        hierarchyAddRoot = null;
+        hierarchyAddChild = null;
+        hierarchyRename = null;
+        hierarchyDuplicate = null;
+        hierarchyRemove = null;
+        hierarchyMoveEarlier = null;
+        hierarchyMoveLater = null;
+        canvasToolSelect = null;
+        canvasToolPaint = null;
+        canvasToolErase = null;
+        canvasToolRectangle = null;
+        canvasToolFill = null;
+        canvasToolPick = null;
+    }
+
+    /// @brief Build both menus once with persistent item handles.
+    expose func Setup() {
+        hierarchyMenu = GUI.ContextMenu.New();
+        hierarchyAddRoot = hierarchyMenu.AddItem("Add Root Object");
+        hierarchyAddChild = hierarchyMenu.AddItem("Add Child Object");
+        hierarchyMenu.AddSeparator();
+        hierarchyRename = hierarchyMenu.AddItemWithShortcut("Rename", "F2");
+        hierarchyDuplicate = hierarchyMenu.AddItem("Duplicate");
+        hierarchyRemove = hierarchyMenu.AddItem("Remove");
+        hierarchyMenu.AddSeparator();
+        hierarchyMoveEarlier = hierarchyMenu.AddItem("Move Earlier");
+        hierarchyMoveLater = hierarchyMenu.AddItem("Move Later");
+
+        canvasMenu = GUI.ContextMenu.New();
+        canvasToolSelect = canvasMenu.AddItem("Select Tool");
+        canvasToolPaint = canvasMenu.AddItem("Paint Tool");
+        canvasToolErase = canvasMenu.AddItem("Erase Tool");
+        canvasToolRectangle = canvasMenu.AddItem("Rectangle Tool");
+        canvasToolFill = canvasMenu.AddItem("Fill Tool");
+        canvasToolPick = canvasMenu.AddItem("Pick Tool");
+    }
+
+    /// @brief Route right-clicks to a menu and dispatch clicked items.
+    /// @param editor Active 2D editor whose transactions the items call.
+    /// @return True when one item committed a canonical scene change.
+    expose func Pump(editor: scene_editor_2d.SceneEditor2D) -> Boolean {
+        if hierarchyMenu == null or editor == null { return false; }
+        if editor.scene != null and Input.Mouse.WasClicked(1) {
+            PumpOpen(editor);
+        }
+        return PumpActions(editor);
+    }
+
+    /// @brief Show the surface-appropriate menu for a completed right-click.
+    hide func PumpOpen(editor: scene_editor_2d.SceneEditor2D) {
+        var x = Input.Mouse.X();
+        var y = Input.Mouse.Y();
+        if editor.objectTree != null
+           and editor.objectTree.IsVisible()
+           and editor.objectTree.IsHovered() {
+            var row = editor.objectTree.GetNodeAt(x, y);
+            if row != null { editor.objectTree.Select(row); }
+            ConfigureHierarchyItems(editor);
+            hierarchyMenu.Show(x, y);
+            return;
+        }
+        if editor.canvasImage != null
+           and editor.canvasImage.IsVisible()
+           and editor.canvasImage.IsHovered() {
+            canvasMenu.Show(x, y);
+        }
+    }
+
+    /// @brief Mirror the selection contract onto hierarchy item enablement.
+    hide func ConfigureHierarchyItems(editor: scene_editor_2d.SceneEditor2D) {
+        var count = editor.selectedObjects.count();
+        hierarchyAddChild.SetEnabled(count == 1);
+        hierarchyRename.SetEnabled(count == 1);
+        hierarchyDuplicate.SetEnabled(count > 0);
+        hierarchyRemove.SetEnabled(count > 0);
+        hierarchyMoveEarlier.SetEnabled(count == 1);
+        hierarchyMoveLater.SetEnabled(count == 1);
+    }
+
+    /// @brief Dispatch clicked items through the editor's transaction surface.
+    hide func PumpActions(editor: scene_editor_2d.SceneEditor2D) -> Boolean {
+        if editor.scene == null { return false; }
+        var changed = false;
+        if hierarchyAddRoot.WasClicked() {
+            changed = editor.CreateRootObjectAtSelection() >= 0 or changed;
+        }
+        if hierarchyAddChild.WasClicked()
+           and editor.selectedObjects.count() == 1 {
+            changed = editor.CreateChildObjectUnderSelection() >= 0 or changed;
+        }
+        if hierarchyRename.WasClicked() {
+            editor.BeginRenameSelectedObject();
+        }
+        if hierarchyDuplicate.WasClicked() {
+            changed = editor.DuplicateSelectedSceneObjects() > 0 or changed;
+        }
+        if hierarchyRemove.WasClicked() {
+            changed = editor.RemoveSelectedSceneObjects() or changed;
+        }
+        if hierarchyMoveEarlier.WasClicked() {
+            changed = editor.MoveSelectedObjectEarlier() or changed;
+        }
+        if hierarchyMoveLater.WasClicked() {
+            changed = editor.MoveSelectedObjectLater() or changed;
+        }
+        if canvasToolSelect.WasClicked() {
+            editor.SetToolMode(scene_editor_2d.MODE_SELECT);
+        }
+        if canvasToolPaint.WasClicked() {
+            editor.SetToolMode(scene_editor_2d.MODE_PAINT);
+        }
+        if canvasToolErase.WasClicked() {
+            editor.SetToolMode(scene_editor_2d.MODE_ERASE);
+        }
+        if canvasToolRectangle.WasClicked() {
+            editor.SetToolMode(scene_editor_2d.MODE_RECTANGLE);
+        }
+        if canvasToolFill.WasClicked() {
+            editor.SetToolMode(scene_editor_2d.MODE_FILL);
+        }
+        if canvasToolPick.WasClicked() {
+            editor.SetToolMode(scene_editor_2d.MODE_PICKER);
+        }
+        return changed;
+    }
+}

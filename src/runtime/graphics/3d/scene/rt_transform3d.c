@@ -21,6 +21,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements a sanitized TRS value with a lazily rebuilt row-major matrix.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_transform3d.h"
@@ -80,6 +83,8 @@ typedef struct {
 } rt_transform3d;
 
 /// @brief Validate @p obj as a Transform3D handle and return its typed pointer (NULL on mismatch).
+/// @param obj Borrowed candidate handle.
+/// @return Borrowed Transform3D payload, or `NULL`.
 static rt_transform3d *transform3d_checked(void *obj) {
     return (rt_transform3d *)rt_g3d_checked_or_null(obj, RT_G3D_TRANSFORM3D_CLASS_ID);
 }
@@ -88,12 +93,18 @@ static rt_transform3d *transform3d_checked(void *obj) {
 /// @details Local copy of the pattern from rt_scene3d.c. Used to sanitize all
 ///   incoming transform component values (position, scale) so NaN/Inf from
 ///   caller errors cannot propagate into the TRS matrix.
+/// @param value Candidate scalar.
+/// @param fallback Non-finite replacement.
+/// @return Finite value or @p fallback.
 static double transform3d_finite_or(double value, double fallback) {
     return isfinite(value) ? value : fallback;
 }
 
 /// @brief Clamp `value` into `[-TRANSFORM3D_ABS_MAX, TRANSFORM3D_ABS_MAX]`, substituting `fallback`
 /// when not finite.
+/// @param value Candidate scalar.
+/// @param fallback Non-finite replacement.
+/// @return Finite clamped scalar.
 static double transform3d_clamp_abs_or(double value, double fallback) {
     value = transform3d_finite_or(value, fallback);
     if (value > TRANSFORM3D_ABS_MAX)
@@ -106,6 +117,8 @@ static double transform3d_clamp_abs_or(double value, double fallback) {
 /// @brief Return @p value if finite, or 1.0 as a safe identity scale.
 /// @details Finite zero scale is intentional and must be preserved so callers
 ///   can collapse one or more axes. Only non-finite values are replaced.
+/// @param value Candidate scale component.
+/// @return Finite clamped component or unit fallback.
 static double transform3d_scale_or_unit(double value) {
     if (!isfinite(value))
         return 1.0;
@@ -117,6 +130,7 @@ static double transform3d_scale_or_unit(double value) {
 }
 
 /// @brief Sanitize a position-like vector in place.
+/// @param v Mutable three-component vector.
 static void transform3d_sanitize_position3(double *v) {
     if (!v)
         return;
@@ -126,6 +140,7 @@ static void transform3d_sanitize_position3(double *v) {
 }
 
 /// @brief Sanitize a scale-like vector in place, preserving finite negative and zero scales.
+/// @param v Mutable three-component scale.
 static void transform3d_sanitize_scale3(double *v) {
     if (!v)
         return;
@@ -135,6 +150,9 @@ static void transform3d_sanitize_scale3(double *v) {
 }
 
 /// @brief Read a Vec3 handle into a clamped raw vector.
+/// @param obj Borrowed candidate Vec3.
+/// @param out Output receiving three components.
+/// @return Nonzero on successful validation/read.
 static int transform3d_read_vec3_clamped(void *obj, double *out) {
     if (!out || !rt_g3d_is_vec3(obj))
         return 0;
@@ -145,6 +163,8 @@ static int transform3d_read_vec3_clamped(void *obj, double *out) {
 }
 
 /// @brief Robustly normalize a raw Vec3 without overflowing on very large finite inputs.
+/// @param v Mutable three-component vector.
+/// @return Nonzero after normalization.
 static int transform3d_normalize_vec3(double *v) {
     double max_abs;
     double sx;
@@ -226,6 +246,8 @@ static void transform3d_quat_normalize(double *q) {
 }
 
 /// @brief Return true when every cached matrix lane is finite.
+/// @param m Borrowed sixteen-lane matrix.
+/// @return Nonzero when all lanes are finite.
 static int transform3d_matrix_is_finite(const double *m) {
     if (!m)
         return 0;
@@ -237,6 +259,7 @@ static int transform3d_matrix_is_finite(const double *m) {
 }
 
 /// @brief Re-apply component invariants before exposing getters or rebuilding the matrix.
+/// @param xf Borrowed mutable transform payload.
 static void transform3d_repair_components(rt_transform3d *xf) {
     if (!xf || xf->components_clean)
         return;
@@ -247,6 +270,8 @@ static void transform3d_repair_components(rt_transform3d *xf) {
 }
 
 /// @brief Square root helper for rotation extraction, treating tiny negative drift as zero.
+/// @param value Candidate radicand.
+/// @return Square root for positive finite input, otherwise zero.
 static double transform3d_sqrt_nonnegative(double value) {
     if (!isfinite(value) || value <= 0.0)
         return 0.0;
@@ -258,12 +283,17 @@ static double transform3d_sqrt_nonnegative(double value) {
 ///   inline inside the struct and get freed with the object body. The finalizer
 ///   still needs to exist so the GC sees this type as "finalizable" rather than
 ///   plain bytes — useful for uniform lifecycle tracing across 3D object types.
+/// @param obj Transform payload being finalized.
 static void transform3d_finalizer(void *obj) {
     (void)obj;
 }
 
 /// @brief Build TRS matrix from position, quaternion, scale.
 /// Mirrors rt_scene3d.c:build_trs_matrix exactly.
+/// @param pos Borrowed position or `NULL`.
+/// @param quat Borrowed quaternion or `NULL`.
+/// @param scl Borrowed scale or `NULL`.
+/// @param out Output receiving sixteen row-major lanes.
 static void build_trs(const double *pos, const double *quat, const double *scl, double *out) {
     double p[3] = {pos ? pos[0] : 0.0, pos ? pos[1] : 0.0, pos ? pos[2] : 0.0};
     double q[4] = {quat ? quat[0] : 0.0, quat ? quat[1] : 0.0, quat ? quat[2] : 0.0,
@@ -309,6 +339,7 @@ static void build_trs(const double *pos, const double *quat, const double *scl, 
 ///   mutations are O(1). The invariant is: after this call returns,
 ///   `xf->matrix` equals `T * R * S` built from the current component
 ///   fields, and `xf->dirty == 0`.
+/// @param xf Borrowed mutable transform payload.
 static void ensure_matrix(rt_transform3d *xf) {
     transform3d_repair_components(xf);
     if (!xf->dirty && transform3d_matrix_is_finite(xf->matrix))
@@ -348,6 +379,10 @@ void *rt_transform3d_new(void) {
 }
 
 /// @brief Set the position component of the transform (marks matrix dirty).
+/// @param obj Borrowed Transform3D handle.
+/// @param x Position X.
+/// @param y Position Y.
+/// @param z Position Z.
 void rt_transform3d_set_position(void *obj, double x, double y, double z) {
     rt_transform3d *xf = transform3d_checked(obj);
     if (!xf)
@@ -360,6 +395,8 @@ void rt_transform3d_set_position(void *obj, double x, double y, double z) {
 }
 
 /// @brief Get the current position as a new Vec3 (returns origin if NULL).
+/// @param obj Borrowed Transform3D handle.
+/// @return New owned position Vec3.
 void *rt_transform3d_get_position(void *obj) {
     rt_transform3d *xf = transform3d_checked(obj);
     if (!xf)
@@ -369,6 +406,8 @@ void *rt_transform3d_get_position(void *obj) {
 }
 
 /// @brief Set the rotation from a quaternion (x,y,z,w), marks matrix dirty.
+/// @param obj Borrowed Transform3D handle.
+/// @param quat Borrowed Quat normalized on assignment.
 void rt_transform3d_set_rotation(void *obj, void *quat) {
     rt_transform3d *xf = transform3d_checked(obj);
     if (!xf || !rt_g3d_is_quat(quat))
@@ -383,6 +422,8 @@ void rt_transform3d_set_rotation(void *obj, void *quat) {
 }
 
 /// @brief Get the current rotation as a new Quat (returns identity if NULL).
+/// @param obj Borrowed Transform3D handle.
+/// @return New owned normalized Quat.
 void *rt_transform3d_get_rotation(void *obj) {
     rt_transform3d *xf = transform3d_checked(obj);
     if (!xf)
@@ -395,6 +436,10 @@ void *rt_transform3d_get_rotation(void *obj) {
 /// @details Converts pitch/yaw/roll to a quaternion internally. ZYX order means
 ///          yaw is applied first, then pitch, then roll — matching common
 ///          game engine conventions for character/camera orientation.
+/// @param obj Borrowed Transform3D handle.
+/// @param pitch Finite X rotation in degrees.
+/// @param yaw Finite Y rotation in degrees.
+/// @param roll Finite Z rotation in degrees.
 void rt_transform3d_set_euler(void *obj, double pitch, double yaw, double roll) {
     rt_transform3d *xf = transform3d_checked(obj);
     if (!xf)
@@ -423,6 +468,10 @@ void rt_transform3d_set_euler(void *obj, double pitch, double yaw, double roll) 
 }
 
 /// @brief Set non-uniform scale factors for each axis (marks matrix dirty).
+/// @param obj Borrowed Transform3D handle.
+/// @param x Scale X.
+/// @param y Scale Y.
+/// @param z Scale Z.
 void rt_transform3d_set_scale(void *obj, double x, double y, double z) {
     rt_transform3d *xf = transform3d_checked(obj);
     if (!xf)
@@ -435,6 +484,8 @@ void rt_transform3d_set_scale(void *obj, double x, double y, double z) {
 }
 
 /// @brief Get the current scale as a new Vec3 (returns (1,1,1) if NULL).
+/// @param obj Borrowed Transform3D handle.
+/// @return New owned scale Vec3.
 void *rt_transform3d_get_scale(void *obj) {
     rt_transform3d *xf = transform3d_checked(obj);
     if (!xf)
@@ -446,6 +497,8 @@ void *rt_transform3d_get_scale(void *obj) {
 /// @brief Get the combined TRS matrix as a new Mat4 (lazily recomputed if dirty).
 /// @details The matrix is built as Translate * Rotate * Scale in row-major order,
 ///          matching the scene graph convention. Returns identity if NULL.
+/// @param obj Borrowed Transform3D handle.
+/// @return New owned Mat4 containing the resolved transform.
 void *rt_transform3d_get_matrix(void *obj) {
     rt_transform3d *xf = transform3d_checked(obj);
     if (!xf)
@@ -470,6 +523,8 @@ void *rt_transform3d_get_matrix(void *obj) {
 }
 
 /// @brief Add a displacement vector to the current position (incremental move).
+/// @param obj Borrowed Transform3D handle.
+/// @param delta Borrowed displacement Vec3.
 void rt_transform3d_translate(void *obj, void *delta) {
     rt_transform3d *xf = transform3d_checked(obj);
     if (!xf || !rt_g3d_is_vec3(delta))
@@ -489,6 +544,9 @@ void rt_transform3d_translate(void *obj, void *delta) {
 /// @details Builds a quaternion from the axis-angle, then left-multiplies it
 ///          onto the current rotation: current = new_rot * current. The axis
 ///          vector is normalized internally.
+/// @param obj Borrowed Transform3D handle.
+/// @param axis Borrowed non-degenerate axis Vec3.
+/// @param angle Finite rotation angle in radians.
 void rt_transform3d_rotate(void *obj, void *axis, double angle) {
     rt_transform3d *xf = transform3d_checked(obj);
     double axis_raw[3];

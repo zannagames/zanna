@@ -13,6 +13,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements coherent keyboard, mouse, and gamepad snapshots for Game3D.
+/// @details Input3D can query shared device state before its first update, then
+///          latches all key/button edges, pointer deltas, wheel motion, and
+///          bound-pad stick axes for deterministic per-frame reuse. Higher-level
+///          movement and look helpers apply radial deadzones, response curves,
+///          normalization, and configurable sensitivity without mutating the
+///          captured snapshot.
+
 #include "rt_animcontroller3d.h"
 #include "rt_asset.h"
 #include "rt_audio.h"
@@ -63,6 +72,8 @@
 #include <string.h>
 
 /// @brief Allocate an Input3D handle with default look sensitivity; traps on OOM.
+/// @return A newly allocated Input3D with no gamepad binding or snapshot, or
+///         NULL after allocation failure.
 void *rt_game3d_input_new(void) {
     rt_game3d_input *input =
         (rt_game3d_input *)rt_obj_new_i64(RT_G3D_GAME3D_INPUT_CLASS_ID, (int64_t)sizeof(*input));
@@ -78,6 +89,8 @@ void *rt_game3d_input_new(void) {
 }
 
 /// @brief Get the per-object look sensitivity (0 on invalid handle).
+/// @param obj Input3D runtime handle.
+/// @return The finite non-negative bounded mouse-look sensitivity, or zero when invalid.
 double rt_game3d_input_get_look_sensitivity(void *obj) {
     rt_game3d_input *input =
         game3d_input_checked(obj, "Game3D.Input3D.get_LookSensitivity: invalid input");
@@ -88,6 +101,9 @@ double rt_game3d_input_get_look_sensitivity(void *obj) {
 }
 
 /// @brief Set the look sensitivity (negative/non-finite values reset to the default).
+/// @param obj Input3D runtime handle.
+/// @param sensitivity Requested mouse-delta scale; invalid/negative input selects
+///                    0.01 and extreme values are capped.
 void rt_game3d_input_set_look_sensitivity(void *obj, double sensitivity) {
     rt_game3d_input *input =
         game3d_input_checked(obj, "Game3D.Input3D.set_LookSensitivity: invalid input");
@@ -100,6 +116,8 @@ void rt_game3d_input_set_look_sensitivity(void *obj, double sensitivity) {
 /// @brief Roll input edge state forward one frame; the shared device state is polled
 ///   by the canvas, then copied here so each Input3D object observes a coherent
 ///   per-frame snapshot even if later polling mutates the process-wide state.
+/// @param obj Input3D runtime handle.
+/// @post Snapshot-aware queries use the copied state until the next update.
 void rt_game3d_input_update(void *obj) {
     rt_game3d_input *input = game3d_input_checked(obj, "Game3D.Input3D.update: invalid input");
     if (!input)
@@ -136,19 +154,28 @@ void rt_game3d_input_update(void *obj) {
     input->has_snapshot = 1;
 }
 
-/// @brief True while `key` is held this frame (queries shared keyboard state).
+/// @brief True while `key` is held in the current snapshot or live keyboard state.
+/// @param obj Input3D runtime handle.
+/// @param key Runtime keyboard code.
+/// @return Non-zero while held, otherwise zero.
 int8_t rt_game3d_input_is_down(void *obj, int64_t key) {
     rt_game3d_input *input = game3d_input_checked(obj, "Game3D.Input3D.isDown: invalid input");
     return game3d_input_key_down(input, key);
 }
 
 /// @brief True on the frame `key` transitions to down.
+/// @param obj Input3D runtime handle.
+/// @param key Runtime keyboard code.
+/// @return Non-zero for a captured or live down edge, otherwise zero.
 int8_t rt_game3d_input_pressed(void *obj, int64_t key) {
     rt_game3d_input *input = game3d_input_checked(obj, "Game3D.Input3D.pressed: invalid input");
     return game3d_input_key_pressed(input, key);
 }
 
 /// @brief True on the frame `key` transitions to up.
+/// @param obj Input3D runtime handle.
+/// @param key Runtime keyboard code.
+/// @return Non-zero for a captured or live up edge, otherwise zero.
 int8_t rt_game3d_input_released(void *obj, int64_t key) {
     rt_game3d_input *input = game3d_input_checked(obj, "Game3D.Input3D.released: invalid input");
     return game3d_input_key_released(input, key);
@@ -156,18 +183,26 @@ int8_t rt_game3d_input_released(void *obj, int64_t key) {
 
 /// @brief Get this frame's raw mouse movement delta as a Vec2.
 /// @details Sub-pixel precise while relative (raw) mouse mode is active.
+/// @param obj Input3D runtime handle.
+/// @return A newly allocated Vec2 containing snapshot-aware fractional X/Y deltas.
 void *rt_game3d_input_mouse_delta(void *obj) {
     rt_game3d_input *input = game3d_input_checked(obj, "Game3D.Input3D.mouseDelta: invalid input");
     return rt_vec2_new(game3d_input_mouse_fdx(input), game3d_input_mouse_fdy(input));
 }
 
 /// @brief True while mouse `button` is held this frame.
+/// @param obj Input3D runtime handle.
+/// @param button Runtime mouse-button code.
+/// @return Non-zero while held in the current snapshot or live state.
 int8_t rt_game3d_input_mouse_button(void *obj, int64_t button) {
     rt_game3d_input *input = game3d_input_checked(obj, "Game3D.Input3D.mouseButton: invalid input");
     return game3d_input_mouse_down(input, button);
 }
 
 /// @brief True on the frame mouse `button` transitions to down.
+/// @param obj Input3D runtime handle.
+/// @param button Runtime mouse-button code.
+/// @return Non-zero for a captured or live down edge, otherwise zero.
 int8_t rt_game3d_input_mouse_pressed(void *obj, int64_t button) {
     rt_game3d_input *input =
         game3d_input_checked(obj, "Game3D.Input3D.mousePressed: invalid input");
@@ -175,6 +210,8 @@ int8_t rt_game3d_input_mouse_pressed(void *obj, int64_t button) {
 }
 
 /// @brief Get this frame's mouse wheel scroll delta along Y.
+/// @param obj Input3D runtime handle.
+/// @return The snapshot-aware fractional vertical wheel displacement.
 double rt_game3d_input_wheel_y(void *obj) {
     rt_game3d_input *input = game3d_input_checked(obj, "Game3D.Input3D.wheelY: invalid input");
     return game3d_input_wheel_y_snapshot(input);
@@ -183,6 +220,10 @@ double rt_game3d_input_wheel_y(void *obj) {
 /// @brief Compute a normalized WASD/arrow move axis from the input state into x/z components.
 /// @details Combines the held direction keys into a unit-ish 2D vector for character/camera
 /// movement.
+/// @param input Input3D snapshot; NULL falls back to live keyboard state and no pad.
+/// @param[out] out_x Optional destination for strafe input.
+/// @param[out] out_y Optional destination for vertical Space/modifier input.
+/// @param[out] out_z Optional destination for forward/back input.
 void game3d_input_move_axis_components(rt_game3d_input *input,
                                        double *out_x,
                                        double *out_y,
@@ -237,6 +278,8 @@ void game3d_input_move_axis_components(rt_game3d_input *input,
 
 /// @brief Build the WASD/arrow/space/shift movement axis as a Vec3
 ///   (x = strafe, y = up/down, z = forward/back); see header.
+/// @param obj Input3D runtime handle.
+/// @return A newly allocated normalized Vec3 combining keyboard and bound left-stick input.
 void *rt_game3d_input_move_axis(void *obj) {
     double x = 0.0;
     double y = 0.0;
@@ -250,6 +293,8 @@ void *rt_game3d_input_move_axis(void *obj) {
 /// @details Sub-pixel precise in relative mouse mode; merges the bound
 ///          gamepad's right stick (response curve x^1.8, per-frame contribution
 ///          scaled by the pad look sensitivity).
+/// @param obj Input3D runtime handle.
+/// @return A newly allocated bounded Vec2 combining scaled mouse and right-stick deltas.
 void *rt_game3d_input_look_axis(void *obj) {
     rt_game3d_input *input = game3d_input_checked(obj, "Game3D.Input3D.lookAxis: invalid input");
     double s =
@@ -281,12 +326,14 @@ void *rt_game3d_input_look_axis(void *obj) {
 }
 
 /// @brief Capture and hide the OS cursor for relative mouse-look.
+/// @param obj Input3D runtime handle, validated before changing global mouse state.
 void rt_game3d_input_capture_mouse(void *obj) {
     (void)game3d_input_checked(obj, "Game3D.Input3D.captureMouse: invalid input");
     rt_mouse_capture();
 }
 
 /// @brief Release the captured cursor back to the OS.
+/// @param obj Input3D runtime handle, validated before changing global mouse state.
 void rt_game3d_input_release_mouse(void *obj) {
     (void)game3d_input_checked(obj, "Game3D.Input3D.releaseMouse: invalid input");
     rt_mouse_release();
@@ -296,12 +343,17 @@ void rt_game3d_input_release_mouse(void *obj) {
 /// @details Convenience over Mouse.SetRelativeMode: enabling captures the
 ///          cursor and requests native raw motion; LookAxis/MouseDelta become
 ///          unbounded and sub-pixel. Disabling releases the capture.
+/// @param obj Input3D runtime handle, validated before changing global mouse state.
+/// @param enabled Non-zero to enable relative mode, zero to disable it.
 void rt_game3d_input_set_relative_look(void *obj, int8_t enabled) {
     (void)game3d_input_checked(obj, "Game3D.Input3D.setRelativeLook: invalid input");
     rt_mouse_set_relative_mode(enabled);
 }
 
 /// @brief Bind a gamepad index into MoveAxis/LookAxis (-1 unbinds).
+/// @param obj Input3D runtime handle.
+/// @param pad Non-negative gamepad index, or any negative value to unbind and
+///            clear the captured pad state immediately.
 void rt_game3d_input_bind_pad(void *obj, int64_t pad) {
     rt_game3d_input *input = game3d_input_checked(obj, "Game3D.Input3D.bindPad: invalid input");
     if (!input)
@@ -317,6 +369,8 @@ void rt_game3d_input_bind_pad(void *obj, int64_t pad) {
 }
 
 /// @brief Currently bound gamepad index (-1 when unbound).
+/// @param obj Input3D runtime handle.
+/// @return The configured gamepad index, or -1 when unbound or invalid.
 int64_t rt_game3d_input_get_pad_bound(void *obj) {
     rt_game3d_input *input =
         game3d_input_checked(obj, "Game3D.Input3D.get_PadBound: invalid input");
@@ -324,6 +378,9 @@ int64_t rt_game3d_input_get_pad_bound(void *obj) {
 }
 
 /// @brief Set the right-stick look sensitivity (degrees per frame at full tilt).
+/// @param obj Input3D runtime handle.
+/// @param sensitivity Requested finite non-negative scale, capped at 20;
+///                    invalid values select zero.
 void rt_game3d_input_set_pad_look_sensitivity(void *obj, double sensitivity) {
     rt_game3d_input *input =
         game3d_input_checked(obj, "Game3D.Input3D.setPadLookSensitivity: invalid input");
@@ -333,6 +390,8 @@ void rt_game3d_input_set_pad_look_sensitivity(void *obj, double sensitivity) {
 }
 
 /// @brief Get the right-stick look sensitivity.
+/// @param obj Input3D runtime handle.
+/// @return The configured per-frame scale, or zero when invalid.
 double rt_game3d_input_get_pad_look_sensitivity(void *obj) {
     rt_game3d_input *input =
         game3d_input_checked(obj, "Game3D.Input3D.get_PadLookSensitivity: invalid input");

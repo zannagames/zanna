@@ -17,9 +17,23 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements VSCN Material3D scalar, sampler, and resource-reference parsing.
+/// @details This fragment is included after the loader's JSON accessors. It
+///   sanitizes every published numeric/material mode and binds only validated
+///   staged texture and cubemap table entries through retaining setters.
+
+/// @brief Setter signature for one retained Material3D texture slot.
 typedef void (*vscn_material_texture_setter_fn)(void *material, void *texture);
+
+/// @brief Setter signature for one retained Material3D cubemap slot.
 typedef void (*vscn_material_cubemap_setter_fn)(void *material, void *cubemap);
 
+/// @brief Parse and clamp a four-component material color array when present.
+/// @param material_obj Borrowed parsed JSON material object.
+/// @param key Borrowed color-member name.
+/// @param out_rgba In/out four-component destination/default.
+/// @param hi Inclusive per-component upper bound.
 static void vscn_parse_material_color4(void *material_obj,
                                        const char *key,
                                        double out_rgba[4],
@@ -33,6 +47,11 @@ static void vscn_parse_material_color4(void *material_obj,
     }
 }
 
+/// @brief Parse and clamp a three-component material color array when present.
+/// @param material_obj Borrowed parsed JSON material object.
+/// @param key Borrowed color-member name.
+/// @param out_rgb In/out three-component destination/default.
+/// @param hi Inclusive per-component upper bound.
 static void vscn_parse_material_color3(void *material_obj,
                                        const char *key,
                                        double out_rgb[3],
@@ -45,6 +64,9 @@ static void vscn_parse_material_color3(void *material_obj,
     }
 }
 
+/// @brief Parse bounded scalar render state and material modes.
+/// @param material_obj Borrowed parsed JSON material object.
+/// @param material Borrowed mutable Material3D payload initialized with defaults.
 static void vscn_parse_material_scalars(void *material_obj, rt_material3d *material) {
     material->shininess = vscn_nonnegative_or(
         vjson_f64(material_obj, "shininess", material->shininess), material->shininess);
@@ -84,6 +106,9 @@ static void vscn_parse_material_scalars(void *material_obj, rt_material3d *mater
         material->shading_model = 0;
 }
 
+/// @brief Parse up to twelve sanitized custom shader parameters.
+/// @param material_obj Borrowed parsed JSON material object.
+/// @param material Borrowed mutable Material3D payload initialized with defaults.
 static void vscn_parse_material_custom_params(void *material_obj, rt_material3d *material) {
     void *arr = vjson_get(material_obj, "customParams");
     for (int i = 0; i < 12; i++) {
@@ -93,6 +118,10 @@ static void vscn_parse_material_custom_params(void *material_obj, rt_material3d 
     }
 }
 
+/// @brief Parse per-slot UV transforms, wrapping, filtering, and anisotropy.
+/// @param material_obj Borrowed parsed JSON material object.
+/// @param material Borrowed mutable Material3D payload initialized with defaults.
+/// @return Nonzero when the optional slot array is absent or structurally valid.
 static int vscn_parse_material_texture_slots(void *material_obj, rt_material3d *material) {
     void *arr = vjson_get(material_obj, "textureSlots");
     if (!arr)
@@ -154,6 +183,14 @@ static int vscn_parse_material_texture_slots(void *material_obj, rt_material3d *
     return 1;
 }
 
+/// @brief Resolve one optional texture-table index and publish it through a retaining setter.
+/// @param material_obj Borrowed parsed JSON material object.
+/// @param key Borrowed texture-index member name.
+/// @param material Borrowed destination Material3D payload.
+/// @param textures Borrowed complete staged texture table.
+/// @param tex_count Number of readable texture slots.
+/// @param setter Non-NULL retaining setter for the destination material slot.
+/// @return Nonzero for an absent or valid complete reference, otherwise zero.
 static int vscn_bind_material_texture_ref(void *material_obj,
                                           const char *key,
                                           rt_material3d *material,
@@ -169,6 +206,14 @@ static int vscn_bind_material_texture_ref(void *material_obj,
     return 1;
 }
 
+/// @brief Resolve one optional cubemap-table index and publish it through a retaining setter.
+/// @param material_obj Borrowed parsed JSON material object.
+/// @param key Borrowed cubemap-index member name.
+/// @param material Borrowed destination Material3D payload.
+/// @param cubemaps Borrowed complete staged cubemap table.
+/// @param cubemap_count Number of readable cubemap slots.
+/// @param setter Non-NULL retaining setter for the destination material slot.
+/// @return Nonzero for an absent or valid complete reference, otherwise zero.
 static int vscn_bind_material_cubemap_ref(void *material_obj,
                                           const char *key,
                                           rt_material3d *material,
@@ -184,6 +229,14 @@ static int vscn_bind_material_cubemap_ref(void *material_obj,
     return 1;
 }
 
+/// @brief Bind every serialized texture and environment-map reference on a material.
+/// @param material_obj Borrowed parsed JSON material object.
+/// @param material Borrowed destination Material3D payload.
+/// @param textures Borrowed complete staged texture table.
+/// @param tex_count Number of readable texture slots.
+/// @param cubemaps Borrowed complete staged cubemap table.
+/// @param cubemap_count Number of readable cubemap slots.
+/// @return Nonzero only when every optional reference is absent or valid.
 static int vscn_bind_material_refs(void *material_obj,
                                    rt_material3d *material,
                                    void **textures,

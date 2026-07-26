@@ -30,6 +30,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_particles3d.c
+ * @brief Implements deterministic 3D particle emission, simulation, and billboard rendering.
+ *
+ * Particle state is advanced with bounded fixed time steps, while rendering supports sorted
+ * alpha billboards, additive billboards, velocity stretching, and CPU-expanded ribbon trails.
+ * Runtime handles and retained graphics resources are validated defensively at API boundaries.
+ */
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_particles3d.h"
@@ -164,21 +173,27 @@ static uint32_t particles3d_next_seed(void) {
 }
 
 /// @brief Validate @p obj as a Particles3D handle and return its typed pointer (NULL on mismatch).
+/// @param obj Candidate runtime object handle.
+/// @return Typed particle-system pointer, or NULL when @p obj is invalid or has the wrong class.
 static rt_particles3d *particles3d_checked(void *obj) {
     return (rt_particles3d *)rt_g3d_checked_or_null(obj, RT_G3D_PARTICLES3D_CLASS_ID);
 }
 
 /// @brief Drop one retained object ref and clear the slot.
+/// @param slot Address of the retained-reference slot to release; NULL is accepted.
 static void particles3d_release_ref(void **slot) {
     rt_g3d_ref_slot_release(slot);
 }
 
 /// @brief Return true when @p texture is a live Pixels object.
+/// @param texture Candidate Pixels runtime object.
+/// @return Nonzero when @p texture is a valid live Pixels object, otherwise zero.
 static int particles3d_texture_valid(void *texture) {
     return rt_pixels_checked_impl_or_null(texture) != NULL;
 }
 
 /// @brief Release a retained Pixels slot only if it still points at Pixels.
+/// @param slot Address of the texture slot; invalid unowned contents are cleared without release.
 static void particles3d_release_texture_slot(void **slot) {
     if (!slot || !*slot)
         return;
@@ -190,6 +205,7 @@ static void particles3d_release_texture_slot(void **slot) {
 }
 
 /// @brief Release a retained Material3D slot only if it still points at Material3D.
+/// @param slot Address of the material slot; invalid unowned contents are cleared without release.
 static void particles3d_release_material_slot(void **slot) {
     if (!slot || !*slot)
         return;
@@ -201,6 +217,8 @@ static void particles3d_release_material_slot(void **slot) {
 }
 
 /// @brief Retain-then-release assignment for the particle texture slot.
+/// @param slot Address of the retained texture slot to update.
+/// @param value New Pixels handle, or NULL to clear the slot.
 static void particles3d_assign_texture_ref(void **slot, void *value) {
     if (!slot || *slot == value)
         return;
@@ -210,6 +228,7 @@ static void particles3d_assign_texture_ref(void **slot, void *value) {
 }
 
 /// @brief Clear corrupted retained refs before update/draw/finalize paths use them.
+/// @param ps Particle system whose texture and material slots are repaired.
 static void particles3d_repair_refs(rt_particles3d *ps) {
     if (!ps)
         return;
@@ -237,6 +256,8 @@ static void particles3d_repair_refs(rt_particles3d *ps) {
 /// state. Deterministic for a given seed so two runs of the same emitter replay the
 /// same spawn distribution — useful for reproducible recordings and unit tests.
 /// Period is 2^32 - 1; fast enough to invoke many times per particle-spawn.
+/// @param ps Particle system whose nonzero PRNG state is advanced.
+/// @return Next deterministic 32-bit pseudorandom value.
 static uint32_t xorshift32(rt_particles3d *ps) {
     if (!ps)
         return 0xA341316Cu;
@@ -251,11 +272,17 @@ static uint32_t xorshift32(rt_particles3d *ps) {
 }
 
 /// @brief Random float in [0, 1).
+/// @param ps Particle system supplying the PRNG state.
+/// @return Uniform pseudorandom value in the half-open interval `[0, 1)`.
 static float randf(rt_particles3d *ps) {
     return (float)(xorshift32(ps) & 0x00FFFFFF) / (float)0x01000000;
 }
 
 /// @brief Random float in [lo, hi].
+/// @param ps Particle system supplying the PRNG state.
+/// @param lo Requested lower bound; invalid and negative values are sanitized.
+/// @param hi Requested upper bound; invalid and negative values are sanitized.
+/// @return Uniform pseudorandom value between the sanitized, ordered bounds.
 static float rand_range(rt_particles3d *ps, double lo, double hi) {
     if (!isfinite(lo) || lo < 0.0)
         lo = 0.0;
@@ -281,6 +308,8 @@ static float rand_range(rt_particles3d *ps, double lo, double hi) {
 /// normalized to `[0, 1]`. Used to translate user-facing `int64` colour params into the
 /// float vector format the mixer/renderer expects. Alpha is not part of the packed
 /// format — callers manage alpha separately.
+/// @param packed Packed `0xRRGGBB` color value.
+/// @param rgb Three-element output array receiving normalized red, green, and blue channels.
 static void unpack_color(int64_t packed, float *rgb) {
     rgb[0] = (float)((packed >> 16) & 0xFF) / 255.0f;
     rgb[1] = (float)((packed >> 8) & 0xFF) / 255.0f;
@@ -290,11 +319,18 @@ static void unpack_color(int64_t packed, float *rgb) {
 /// @brief Return `value` if it is finite, otherwise return `fallback`.
 /// @details Used by all particle setters for position, gravity, and direction
 ///   components to silently absorb NaN/Inf from user code without trapping.
+/// @param value Candidate floating-point value.
+/// @param fallback Replacement used when @p value is not finite.
+/// @return @p value when finite, otherwise @p fallback.
 static double particles_finite_or(double value, double fallback) {
     return isfinite(value) ? value : fallback;
 }
 
 /// @brief Clamp `value` into `[-max_abs, max_abs]`, substituting `fallback` when not finite.
+/// @param value Candidate floating-point value.
+/// @param fallback Replacement used when @p value is not finite.
+/// @param max_abs Inclusive absolute-value limit.
+/// @return Finite value constrained to the requested symmetric interval.
 static double particles_clamp_abs_or(double value, double fallback, double max_abs) {
     value = particles_finite_or(value, fallback);
     if (value > max_abs)
@@ -308,6 +344,8 @@ static double particles_clamp_abs_or(double value, double fallback, double max_a
 /// @details Applied to speeds, rates, sizes, and lifetimes that have no meaningful
 ///   negative value — negative inputs are treated as zero rather than as an error
 ///   so callers can pass unchecked user-supplied values.
+/// @param value Candidate nonnegative particle parameter.
+/// @return @p value clamped to the supported nonnegative parameter range, or zero if invalid.
 static double particles_nonnegative_or_zero(double value) {
     if (!isfinite(value) || value < 0.0)
         return 0.0;
@@ -319,6 +357,10 @@ static double particles_nonnegative_or_zero(double value) {
 /// @brief Clamp `value` to [lo, hi], converting NaN/Inf to `lo`.
 /// @details Used for bounded parameters like spread and alpha where the
 ///   valid range is bounded on both ends and NaN must be handled gracefully.
+/// @param value Candidate value to constrain.
+/// @param lo Inclusive lower bound and fallback for non-finite input.
+/// @param hi Inclusive upper bound.
+/// @return Value constrained to `[`@p lo`, `@p hi`]`.
 static double particles_clamp(double value, double lo, double hi) {
     if (!isfinite(value))
         return lo;
@@ -333,6 +375,9 @@ static double particles_clamp(double value, double lo, double hi) {
 /// with length below 1e-8f are left untouched so accumulated "tiny but non-zero" drift
 /// doesn't produce huge normalized outputs. Used by spawn-direction computation on cone,
 /// sphere, and disc emitters.
+/// @param x Address of the vector's x component.
+/// @param y Address of the vector's y component.
+/// @param z Address of the vector's z component.
 static void normalize3(float *x, float *y, float *z) {
     float max_component;
     if (!x || !y || !z)
@@ -356,6 +401,10 @@ static void normalize3(float *x, float *y, float *z) {
 
 /// @brief Generate a random direction within a cone of half-angle `spread`
 ///        around the given direction vector.
+/// @param ps Particle system supplying the deterministic PRNG state.
+/// @param dir Three-component cone axis.
+/// @param spread Cone half-angle in radians, clamped to `[0, pi]`.
+/// @param out Three-element output array receiving a normalized direction.
 static void random_cone_dir(rt_particles3d *ps, const double *dir, double spread, float *out) {
     if (!ps || !dir || !out)
         return;
@@ -434,6 +483,8 @@ static void random_cone_dir(rt_particles3d *ps, const double *dir, double spread
 
 /// @brief True if a particle's position, velocity, color, alpha and (non-negative)
 ///        size are all finite — used to drop corrupted particles before upload.
+/// @param p Particle state to validate.
+/// @return Nonzero when every simulation and render field is finite and within bounds.
 static int particle_state_is_finite(const vgfx3d_particle_t *p) {
     if (!p)
         return 0;
@@ -460,6 +511,7 @@ static int particle_state_is_finite(const vgfx3d_particle_t *p) {
 /// reference (if any), and drops the per-emitter cached material (built once and reused
 /// across frames per GFX-052). Each release-check is independent so a missing texture
 /// doesn't prevent material teardown or vice versa.
+/// @param obj Particles3D runtime object being finalized; NULL is accepted.
 static void rt_particles3d_finalize(void *obj) {
     rt_particles3d *ps = (rt_particles3d *)obj;
     if (!ps)
@@ -519,9 +571,12 @@ static void rt_particles3d_finalize(void *obj) {
 /// memory ceiling — the pool is calloc'd up front so spawn/kill cost stays O(1) with no
 /// re-allocation. Defaults are tuned for a generic sparkle: upward cone emit, ~17° spread,
 /// 1-3 u/s speed, 0.5-1.5 s lifetime, 0.2 → 0.05 size taper, 9.8 u/s² gravity, white colour,
-/// 1.0 → 0.0 alpha fade, rate 20 /s, alpha-blend mode, point-source emitter. The PRNG state is
-/// mixed with the instance pointer so two emitters constructed in the same tick produce
-/// different (but each individually deterministic) spawn distributions.
+/// 1.0 → 0.0 alpha fade, rate 20 /s, alpha-blend mode, point-source emitter. Each emitter receives
+/// a nonzero seed from a process-local monotonic sequence; callers can override it for reproducible
+/// spawn distributions.
+/// @param max_particles Maximum number of concurrent live particles, from 1 through 100000.
+/// @return New GC-managed Particles3D handle, or NULL after trapping on invalid input or allocation
+/// failure.
 void *rt_particles3d_new(int64_t max_particles) {
     if (max_particles <= 0 || max_particles > 100000) {
         rt_trap("Particles3D.New: max_particles must be 1-100000");
@@ -622,6 +677,10 @@ void *rt_particles3d_new(int64_t max_particles) {
 
 /// @brief Set the emitter origin in world space. New particles spawn at this point (offset by
 /// the emitter shape if non-point).
+/// @param o Particles3D handle; invalid handles are ignored.
+/// @param x World-space x coordinate, clamped to the supported world range.
+/// @param y World-space y coordinate, clamped to the supported world range.
+/// @param z World-space z coordinate, clamped to the supported world range.
 void rt_particles3d_set_position(void *o, double x, double y, double z) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
@@ -633,6 +692,11 @@ void rt_particles3d_set_position(void *o, double x, double y, double z) {
 
 /// @brief Set the average emit direction (normalized internally) and cone half-angle in radians.
 /// spread=0 means perfectly aligned, spread=PI means full sphere.
+/// @param o Particles3D handle; invalid handles are ignored.
+/// @param dx Emit-axis x component.
+/// @param dy Emit-axis y component.
+/// @param dz Emit-axis z component.
+/// @param spread Cone half-angle in radians, or degrees when greater than pi and at most 180.
 void rt_particles3d_set_direction(void *o, double dx, double dy, double dz, double spread) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
@@ -668,6 +732,9 @@ void rt_particles3d_set_direction(void *o, double dx, double dy, double dz, doub
 }
 
 /// @brief Set the per-particle initial speed range [mn, mx] in world-units/sec (uniform random).
+/// @param o Particles3D handle; invalid handles are ignored.
+/// @param mn First speed bound; negative or non-finite input becomes zero.
+/// @param mx Second speed bound; negative or non-finite input becomes zero.
 void rt_particles3d_set_speed(void *o, double mn, double mx) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
@@ -688,6 +755,9 @@ void rt_particles3d_set_speed(void *o, double mn, double mx) {
 }
 
 /// @brief Set the per-particle lifetime range [mn, mx] in seconds (uniform random per spawn).
+/// @param o Particles3D handle; invalid handles are ignored.
+/// @param mn First lifetime bound, clamped to the supported positive range.
+/// @param mx Second lifetime bound, clamped to the supported positive range.
 void rt_particles3d_set_lifetime(void *o, double mn, double mx) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
@@ -712,6 +782,9 @@ void rt_particles3d_set_lifetime(void *o, double mn, double mx) {
 }
 
 /// @brief Set the start and end size (interpolated by age) for each particle.
+/// @param o Particles3D handle; invalid handles are ignored.
+/// @param s Size at spawn, sanitized to the supported nonnegative range.
+/// @param e Size at expiration, sanitized to the supported nonnegative range.
 void rt_particles3d_set_size(void *o, double s, double e) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
@@ -721,6 +794,10 @@ void rt_particles3d_set_size(void *o, double s, double e) {
 }
 
 /// @brief Set the constant acceleration applied to every particle each frame (typical: (0,-9.8,0)).
+/// @param o Particles3D handle; invalid handles are ignored.
+/// @param gx World-space x acceleration.
+/// @param gy World-space y acceleration.
+/// @param gz World-space z acceleration.
 void rt_particles3d_set_gravity(void *o, double gx, double gy, double gz) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
@@ -730,9 +807,12 @@ void rt_particles3d_set_gravity(void *o, double gx, double gy, double gz) {
     p->gravity[2] = particles_clamp_abs_or(gz, 0.0, PARTICLES3D_PARAM_MAX);
 }
 
-/// @brief Set start (`sc`) and end (`ec`) colors as packed 0xRRGGBBAA. Each particle linearly
+/// @brief Set start (`sc`) and end (`ec`) colors as packed 0xRRGGBB. Each particle linearly
 /// interpolates between them based on age ratio. Alpha component is set separately via
 /// `_set_alpha`.
+/// @param o Particles3D handle; invalid handles are ignored.
+/// @param sc Packed `0xRRGGBB` color at spawn.
+/// @param ec Packed `0xRRGGBB` color at expiration.
 void rt_particles3d_set_color(void *o, int64_t sc, int64_t ec) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
@@ -743,6 +823,9 @@ void rt_particles3d_set_color(void *o, int64_t sc, int64_t ec) {
 
 /// @brief Set start (`sa`) and end (`ea`) alpha values [0, 1]. Common pattern: 1.0→0.0 for
 /// fade-out.
+/// @param o Particles3D handle; invalid handles are ignored.
+/// @param sa Alpha at spawn, clamped to `[0, 1]`.
+/// @param ea Alpha at expiration, clamped to `[0, 1]`.
 void rt_particles3d_set_alpha(void *o, double sa, double ea) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
@@ -753,6 +836,8 @@ void rt_particles3d_set_alpha(void *o, double sa, double ea) {
 
 /// @brief Set the spawn rate in particles per second. The accumulator pattern emits whole
 /// particles when ≥1 worth has accumulated, preserving fractional rates across frames.
+/// @param o Particles3D handle; invalid handles are ignored.
+/// @param r Requested particles per second, sanitized to the supported nonnegative range.
 void rt_particles3d_set_rate(void *o, double r) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
@@ -760,12 +845,12 @@ void rt_particles3d_set_rate(void *o, double r) {
     p->rate = particles_nonnegative_or_zero(r);
 }
 
-/// @brief Toggle additive blend mode (1 = additive for fire/glow, 0 = alpha blend for smoke).
-/// Additive skips the back-to-front sort since order doesn't affect the result.
 /// @brief Set the soft-particle fade distance in world units (0 disables).
 /// @details Particles fade out as their quads approach opaque geometry, hiding
 ///          the hard intersection line. Requires a backend with an opaque depth
 ///          snapshot (BackendSupports("soft-particles")); ignored elsewhere.
+/// @param o Particles3D handle; invalid handles are ignored.
+/// @param distance Fade distance in world units; non-finite or negative input disables softness.
 void rt_particles3d_set_softness(void *o, double distance) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
@@ -777,6 +862,11 @@ void rt_particles3d_set_softness(void *o, double distance) {
     p->softness = distance;
 }
 
+/// @brief Select additive or conventional alpha blending for particle billboards.
+/// @details Additive blending is suitable for fire and glow and skips back-to-front sorting because
+/// draw order does not affect the result. Alpha blending retains deterministic depth sorting.
+/// @param o Particles3D handle; invalid handles are ignored.
+/// @param a Nonzero to enable additive blending, zero to use alpha blending.
 void rt_particles3d_set_additive(void *o, int8_t a) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
@@ -786,6 +876,8 @@ void rt_particles3d_set_additive(void *o, int8_t a) {
 
 /// @brief Velocity-aligned billboard stretching: 0 = camera-facing quads,
 ///   k scales the quad length by (1 + k * |velocity|). Clamped to [0, 8].
+/// @param o Particles3D handle; invalid handles are ignored.
+/// @param k Nonnegative velocity-to-length scale, clamped to `[0, 8]`.
 void rt_particles3d_set_stretch(void *o, double k) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
@@ -801,6 +893,9 @@ void rt_particles3d_set_stretch(void *o, double k) {
 ///   emitted as a camera-facing strip that tapers and fades toward the tail.
 ///   @p lifetime_sec of history spread over @p segments control points (2..16);
 ///   lifetime <= 0 disables trails and frees the history storage.
+/// @param o Particles3D handle; invalid handles are ignored.
+/// @param lifetime_sec Seconds of trail history to retain; nonpositive values disable trails.
+/// @param segments Number of ring-buffer control points per particle, clamped to `[2, 16]`.
 void rt_particles3d_set_trail(void *o, double lifetime_sec, int64_t segments) {
     rt_particles3d *ps = particles3d_checked(o);
     if (!ps)
@@ -856,6 +951,8 @@ void rt_particles3d_set_trail(void *o, double lifetime_sec, int64_t segments) {
 
 /// @brief Swap-remove particle @p i, keeping the trail slot arrays in sync with
 ///   the pool's unstable removal so ribbons never jump between particles.
+/// @param ps Particle system containing the active pool and parallel trail arrays.
+/// @param i Live-particle index to remove.
 static void particles3d_swap_kill(rt_particles3d *ps, int32_t i) {
     int32_t last = --ps->count;
     ps->particles[i] = ps->particles[last];
@@ -913,6 +1010,8 @@ static vgfx3d_particle_t *particles3d_draw_particle_at(rt_particles3d *ps, int32
 }
 
 /// @brief Set the per-particle billboard texture. NULL produces solid color quads.
+/// @param o Particles3D handle; invalid handles are ignored.
+/// @param tex Pixels handle to retain, or NULL to remove the texture.
 void rt_particles3d_set_texture(void *o, void *tex) {
     rt_particles3d *ps = particles3d_checked(o);
     if (!ps)
@@ -926,6 +1025,8 @@ void rt_particles3d_set_texture(void *o, void *tex) {
 
 /// @brief Select the emitter volume: 0 = point (default), 1 = sphere (uniform interior),
 /// 2 = box. Combined with `_set_emitter_size` to control the spawn region.
+/// @param o Particles3D handle; invalid handles are ignored.
+/// @param s Shape identifier, clamped to point (0), sphere (1), or box (2).
 void rt_particles3d_set_emitter_shape(void *o, int64_t s) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
@@ -939,6 +1040,10 @@ void rt_particles3d_set_emitter_shape(void *o, int64_t s) {
 
 /// @brief Set the emitter shape's extent. For sphere: only sx is used (radius); for box: full
 /// half-extents per axis. Ignored for point emitter.
+/// @param o Particles3D handle; invalid handles are ignored.
+/// @param sx Nonnegative sphere radius or box x half-extent.
+/// @param sy Nonnegative box y half-extent.
+/// @param sz Nonnegative box z half-extent.
 void rt_particles3d_set_emitter_size(void *o, double sx, double sy, double sz) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
@@ -954,6 +1059,7 @@ void rt_particles3d_set_emitter_size(void *o, double sx, double sy, double sz) {
 
 /// @brief Begin emitting (continuous spawn at the configured rate). Existing live particles
 /// continue to update regardless of the emit flag.
+/// @param o Particles3D handle; invalid handles are ignored.
 void rt_particles3d_start(void *o) {
     rt_particles3d *p = particles3d_checked(o);
     if (p)
@@ -962,6 +1068,7 @@ void rt_particles3d_start(void *o) {
 
 /// @brief Stop continuous emission. Existing particles run to natural lifetime; for instant
 /// removal use `_clear`.
+/// @param o Particles3D handle; invalid handles are ignored.
 void rt_particles3d_stop(void *o) {
     rt_particles3d *p = particles3d_checked(o);
     if (p)
@@ -969,6 +1076,7 @@ void rt_particles3d_stop(void *o) {
 }
 
 /// @brief Kill every live particle and reset the spawn accumulator. Doesn't change emit state.
+/// @param o Particles3D handle; invalid handles are ignored.
 void rt_particles3d_clear(void *o) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
@@ -980,6 +1088,8 @@ void rt_particles3d_clear(void *o) {
 }
 
 /// @brief Number of particles currently alive.
+/// @param o Particles3D handle.
+/// @return Validated live-particle count, or zero for an invalid or corrupt handle.
 int64_t rt_particles3d_get_count(void *o) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p || !p->particles || p->max_particles <= 0 || p->count <= 0)
@@ -992,6 +1102,8 @@ int64_t rt_particles3d_get_count(void *o) {
 ///   depend on global construction order; setting an explicit seed makes the
 ///   stream reproducible for determinism-sensitive content and replays. Zero
 ///   maps to the non-zero xorshift fallback constant.
+/// @param o Particles3D handle; invalid handles are ignored.
+/// @param seed New 32-bit spawn seed; zero selects the built-in nonzero fallback.
 void rt_particles3d_set_seed(void *o, int64_t seed) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
@@ -1000,6 +1112,8 @@ void rt_particles3d_set_seed(void *o, int64_t seed) {
 }
 
 /// @brief `Particles3D.get_Seed` — current spawn PRNG state (checkpointable).
+/// @param o Particles3D handle.
+/// @return Current unsigned 32-bit PRNG state widened to `int64_t`, or zero for an invalid handle.
 int64_t rt_particles3d_get_seed(void *o) {
     rt_particles3d *p = particles3d_checked(o);
     return p ? (int64_t)p->prng_state : 0;
@@ -1007,6 +1121,8 @@ int64_t rt_particles3d_get_seed(void *o) {
 
 /// @brief Copy the emitter world position into @p out. Used by floating-origin rebase tests to
 ///   verify the emitter shifted; zeroed if the handle is invalid or @p out is NULL.
+/// @param o Particles3D handle.
+/// @param out Three-element output array; no data is written when NULL.
 void rt_particles3d_get_position(void *o, double out[3]) {
     rt_particles3d *p = particles3d_checked(o);
     if (!out)
@@ -1017,6 +1133,8 @@ void rt_particles3d_get_position(void *o, double out[3]) {
 }
 
 /// @brief Returns 1 if continuous emission is enabled (`_start` called, no subsequent `_stop`).
+/// @param o Particles3D handle.
+/// @return 1 when continuous emission is enabled, otherwise 0.
 int8_t rt_particles3d_get_emitting(void *o) {
     rt_particles3d *p = particles3d_checked(o);
     return p && p->emitting ? 1 : 0;
@@ -1101,6 +1219,7 @@ void rt_particles3d_reset_dropped_time(void *o) {
 /// is emitter-origin plus a per-shape offset. Velocity is randomised within the
 /// configured spread, then scaled to the speed range; lifetime gets a random value in
 /// the configured min..max window so the pool desynchronises naturally.
+/// @param ps Particle system receiving the new live particle.
 static void spawn_particle(rt_particles3d *ps) {
     if (!ps || !ps->particles || ps->max_particles <= 0)
         return;
@@ -1172,6 +1291,8 @@ static void spawn_particle(rt_particles3d *ps) {
 
 /// @brief Spawn `count` particles immediately (in addition to any continuous emission). Useful
 /// for explosions, sparks, one-shot effects.
+/// @param o Particles3D handle; invalid handles are ignored.
+/// @param count Requested number of particles; spawning stops when the fixed pool is full.
 void rt_particles3d_burst(void *o, int64_t count) {
     rt_particles3d *ps = particles3d_checked(o);
     if (!ps || count <= 0)
@@ -1194,6 +1315,10 @@ void rt_particles3d_burst(void *o, int64_t count) {
 
 /// @brief Internal floating-origin hook: subtract the world rebase delta from
 ///   the emitter origin and every live particle, preserving velocities/lifetimes.
+/// @param o Particles3D handle; invalid handles are ignored.
+/// @param dx World-origin x displacement to subtract.
+/// @param dy World-origin y displacement to subtract.
+/// @param dz World-origin z displacement to subtract.
 void rt_particles3d_rebase_origin(void *o, double dx, double dy, double dz) {
     rt_particles3d *ps = particles3d_checked(o);
     if (!ps)
@@ -1516,6 +1641,9 @@ typedef struct particle3d_sort_key {
 /// @brief Compare two particle sort keys for back-to-front order.
 /// @details Higher camera-space depth sorts first. Equal-depth ties use the stable particle index
 ///   so alpha ordering remains deterministic across platforms and frames.
+/// @param ka Left sort key.
+/// @param kb Right sort key.
+/// @return Negative when @p ka precedes @p kb, positive when it follows, or zero when identical.
 static int particle3d_sort_key_compare_desc(const particle3d_sort_key *ka,
                                             const particle3d_sort_key *kb) {
     if (!ka || !kb)
@@ -1577,6 +1705,11 @@ static void particles3d_insertion_sort_keys_desc(particle3d_sort_key *keys, int3
 /// @brief Merge two sorted particle-key runs from @p src into @p dst.
 /// @details Stable merge preserves index tie ordering and avoids libc qsort's indirect comparator
 ///   overhead for large alpha-blended emitters.
+/// @param src Source array containing both ordered runs.
+/// @param dst Destination array receiving the merged run.
+/// @param left Inclusive start index of the first run.
+/// @param mid Exclusive end of the first run and inclusive start of the second.
+/// @param right Exclusive end index of the second run.
 static void particles3d_merge_sort_run(const particle3d_sort_key *src,
                                        particle3d_sort_key *dst,
                                        int32_t left,
@@ -1639,6 +1772,10 @@ static void particles3d_sort_keys_back_to_front(particle3d_sort_key *keys,
 /// @brief Ensure the persistent particle-sort scratch buffer holds @p count keys.
 /// @details Returning failure aborts alpha particle rendering for the frame instead of silently
 ///   falling back to unsorted transparent quads, because that fallback causes obvious flicker.
+/// @param ps Particle system whose primary and scratch sort arrays may be grown.
+/// @param count Number of sort keys required by the pending draw.
+/// @return Nonzero when both arrays can hold @p count keys, otherwise zero after trapping on
+/// overflow or allocation failure.
 static int particles3d_ensure_sort_keys(rt_particles3d *ps, int32_t count) {
     void *grown;
     void *scratch_grown;
@@ -1673,12 +1810,16 @@ static int particles3d_ensure_sort_keys(rt_particles3d *ps, int32_t count) {
 }
 
 /// @brief Test hook: current persistent alpha-sort key capacity.
+/// @param o Particles3D handle.
+/// @return Current retained sort-key capacity, or zero for an invalid handle.
 int64_t rt_particles3d_test_sort_key_capacity(void *o) {
     rt_particles3d *ps = particles3d_checked(o);
     return ps ? ps->sort_key_capacity : 0;
 }
 
 /// @brief Test hook: number of persistent alpha-sort key buffer growth operations.
+/// @param o Particles3D handle.
+/// @return Number of successful persistent sort-buffer growth operations, or zero if invalid.
 uint64_t rt_particles3d_test_sort_key_grow_count(void *o) {
     rt_particles3d *ps = particles3d_checked(o);
     return ps ? ps->sort_key_grow_count : 0;
@@ -1730,6 +1871,8 @@ static int particles3d_ensure_instance_scratch(rt_particles3d *ps, int32_t count
 /// @brief Test hook returning the retained compact-instance scratch capacity.
 /// @details This is intentionally absent from the public runtime registry; contract tests use it
 ///   to prove that repeated hardware draws do not allocate or rebuild CPU billboard geometry.
+/// @param o Particles3D handle.
+/// @return Current compact-instance capacity, or zero for an invalid handle.
 int64_t rt_particles3d_test_instance_scratch_capacity(void *o) {
     rt_particles3d *ps = particles3d_checked(o);
     return ps ? ps->instance_scratch_capacity : 0;
@@ -1738,12 +1881,15 @@ int64_t rt_particles3d_test_instance_scratch_capacity(void *o) {
 /// @brief Test hook returning the number of compact-instance scratch growth operations.
 /// @details The counter changes only after a successful realloc and therefore distinguishes
 ///   retained-buffer reuse from per-frame scratch reconstruction.
+/// @param o Particles3D handle.
+/// @return Number of successful compact-instance scratch growth operations, or zero if invalid.
 uint64_t rt_particles3d_test_instance_scratch_grow_count(void *o) {
     rt_particles3d *ps = particles3d_checked(o);
     return ps ? ps->instance_scratch_grow_count : 0;
 }
 
 /// @brief Lazily create the system's shared unlit white particle material in @p *slot.
+/// @param slot Address of the retained material slot to validate or initialize.
 /// @return 1 if the slot holds a material (existing or newly made), 0 on allocation failure.
 static int particles3d_ensure_material(void **slot) {
     if (!slot)
@@ -1764,6 +1910,8 @@ static int particles3d_ensure_material(void **slot) {
 /// @details Fixed draw slots cover the common one/few camera draws per frame. When a caller draws
 ///   the same emitter more often in a frame, overflow slots grow once and are reused on later
 ///   frames instead of allocating canvas-owned transient buffers every draw.
+/// @param ps Particle system owning the overflow slot arrays.
+/// @param needed Number of overflow slots required for the current frame.
 /// @return 1 when the overflow slot table is large enough, 0 on overflow/allocation failure.
 static int particles3d_ensure_overflow_draw_slots(rt_particles3d *ps, int32_t needed) {
     int32_t old_capacity;
@@ -1829,6 +1977,17 @@ static int particles3d_ensure_overflow_draw_slots(rt_particles3d *ps, int32_t ne
 /// @brief Prepare one reusable draw slot's vertex/index buffers and material.
 /// @details Used by both fixed and overflow slot arrays. Vertex payloads are fully initialized by
 ///   the billboard/trail emitters, so this avoids a full-buffer zero-fill on every draw.
+/// @param draw_vertices Array of retained vertex-buffer pointers.
+/// @param draw_indices Array of retained index-buffer pointers.
+/// @param vertex_capacity Per-slot vertex capacities corresponding to @p draw_vertices.
+/// @param index_capacity Per-slot index capacities corresponding to @p draw_indices.
+/// @param draw_materials Array of retained material slots.
+/// @param slot Slot index to prepare.
+/// @param vert_count Number of vertices required.
+/// @param idx_count Number of indices required.
+/// @param out_vertices Receives the writable vertex buffer.
+/// @param out_indices Receives the writable index buffer.
+/// @param out_material Receives the retained material handle.
 /// @return 1 with output pointers assigned, 0 on allocation/material failure.
 static int particles3d_prepare_draw_slot(vgfx3d_vertex_t **draw_vertices,
                                          uint32_t **draw_indices,
@@ -1877,6 +2036,7 @@ static int particles3d_prepare_draw_slot(vgfx3d_vertex_t **draw_vertices,
 /// @details Particle quads do not use secondary UVs, tangents, or skinning, but the draw path may
 ///   still hash/copy the whole `vgfx3d_vertex_t`. Writing these fields explicitly keeps the
 ///   reusable draw buffer deterministic without a per-frame memset.
+/// @param v Vertex whose secondary attributes are initialized.
 static void particles3d_finalize_draw_vertex(vgfx3d_vertex_t *v) {
     if (!v)
         return;
@@ -1893,6 +2053,8 @@ static void particles3d_finalize_draw_vertex(vgfx3d_vertex_t *v) {
 }
 
 /// @brief Write one fully-initialized transparent degenerate vertex for unused trail capacity.
+/// @param v Destination vertex.
+/// @param forward Optional surface normal; the positive z axis is used when NULL.
 static void particles3d_write_degenerate_vertex(vgfx3d_vertex_t *v, const float forward[3]) {
     if (!v)
         return;
@@ -1913,6 +2075,14 @@ static void particles3d_write_degenerate_vertex(vgfx3d_vertex_t *v, const float 
 /// @details Uses fixed reusable slots first, then grows reusable overflow slots for additional
 ///          same-frame draws. @p out_canvas_owned is retained for the old cleanup contract and is
 ///          always false on success.
+/// @param ps Particle system owning reusable draw slots.
+/// @param canvas Active Canvas3D state whose frame serial scopes slot reuse.
+/// @param vert_count Number of CPU vertices required.
+/// @param idx_count Number of CPU indices required.
+/// @param out_vertices Receives writable vertex storage.
+/// @param out_indices Receives writable index storage.
+/// @param out_material Receives the material dedicated to this draw slot.
+/// @param out_canvas_owned Receives zero because successful storage is emitter-owned.
 /// @return 1 with the out-params set, 0 on invalid args or allocation failure.
 static int particles3d_acquire_draw_storage(rt_particles3d *ps,
                                             rt_canvas3d *canvas,
@@ -1968,6 +2138,8 @@ static int particles3d_acquire_draw_storage(rt_particles3d *ps,
 }
 
 /// @brief Build a row-major model matrix that translates by @p origin (identity rotation/scale).
+/// @param origin Three-component translation, or NULL for the identity matrix.
+/// @param out Sixteen-element output array receiving the row-major matrix.
 static void particles3d_origin_model_matrix(const double origin[3], double out[16]) {
     static const double identity[16] = {
         1.0,
@@ -1996,6 +2168,10 @@ static void particles3d_origin_model_matrix(const double origin[3], double out[1
 }
 
 /// @brief Normalize a 3-vector or replace it with a caller-provided fallback.
+/// @param v Three-component vector to sanitize and normalize.
+/// @param fx Fallback x component.
+/// @param fy Fallback y component.
+/// @param fz Fallback z component.
 static void particles3d_normalize3_or(float v[3], float fx, float fy, float fz) {
     if (!v) {
         return;
@@ -2131,6 +2307,9 @@ static void particles3d_write_compact_instance(const rt_particles3d *ps,
 ///   center/right/up/color record per particle and draw a retained unit quad. Software backends
 ///   reconstruct the same records into CPU vertices. Ribbon trails deliberately remain a separate
 ///   CPU-expanded mesh because each ribbon segment has independent endpoint width and alpha.
+/// @param o Particles3D handle; invalid handles are ignored.
+/// @param canvas3d Canvas3D handle or valid stack view receiving queued draw commands.
+/// @param camera Camera3D handle or valid stack view defining view axes and depth order.
 void rt_particles3d_draw(void *o, void *canvas3d, void *camera) {
     rt_particles3d *ps = particles3d_checked(o);
     rt_canvas3d *canvas = rt_canvas3d_checked_or_stack(canvas3d);

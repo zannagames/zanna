@@ -424,6 +424,151 @@ func main() {
         return;
     }
 
+    // --- Triangle-accurate picking extras (ADR 0193) --------------------
+    // Marquee, hover, and overlap cycling are workspace-only presentation.
+    editor.viewTargetX = 0.0;
+    editor.viewTargetY = 0.0;
+    editor.viewTargetZ = 0.0;
+    editor.SetViewProjection(false);
+    editor.SelectSceneNodes([], -1);
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    canonical = sceneDoc.content;
+    revision = editor.GetRevision();
+    undoCount = editor.undoStack.count();
+
+    // A real marquee drag: press empty space, cross the threshold, release.
+    // The rectangle covers both boxes' projected bounds but not the marker.
+    var rectLeft = centerX - 140;
+    var rectTop = centerY - 140;
+    var rectRight = centerX + 100;
+    var rectBottom = centerY + 100;
+    var pressX = HarnessCoordinate(
+        shell, editor.viewportImage.GetScreenX() + rectLeft);
+    var pressY = HarnessCoordinate(
+        shell, editor.viewportImage.GetScreenY() + rectTop);
+    var releaseX = HarnessCoordinate(
+        shell, editor.viewportImage.GetScreenX() + rectRight);
+    var releaseY = HarnessCoordinate(
+        shell, editor.viewportImage.GetScreenY() + rectBottom);
+    harness.SendMouse("move", pressX, pressY, 0);
+    harness.SendMouse("down", pressX, pressY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    harness.SendMouse("move", releaseX, releaseY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    harness.SendMouse("up", releaseX, releaseY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    if editor.selectedIndices.count() != 2
+       or scene_selection.Contains(editor.selectedIndices, 0) == false
+       or scene_selection.Contains(editor.selectedIndices, 1) == false
+       or scene_selection.Contains(editor.selectedIndices, emptyIndex)
+       or sceneDoc.content != canonical
+       or editor.GetRevision() != revision
+       or editor.undoStack.count() != undoCount {
+        Fail(shell, harness,
+             "marquee drag did not select exactly the covered boxes: count="
+             + editor.selectedIndices.count()
+             + " primary=" + editor.selectedIndex);
+        return;
+    }
+
+    // Escape cancels an active marquee without clearing the selection.
+    harness.SendMouse("move", pressX, pressY, 0);
+    harness.SendMouse("down", pressX, pressY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    harness.SendMouse(
+        "move", pressX + 60, pressY + 60, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    harness.SendKey("escape", 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    harness.SendMouse("up", pressX + 60, pressY + 60, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    if editor.selectedIndices.count() != 2
+       or sceneDoc.content != canonical {
+        Fail(shell, harness,
+             "marquee Escape cleared the selection or changed content: count="
+             + editor.selectedIndices.count());
+        return;
+    }
+
+    // Hover feedback follows the pointer without touching anything. The
+    // selection clears first so the primary node's gizmo cannot claim the
+    // sample point ahead of the hover query.
+    editor.SelectSceneNodes([], -1);
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    harness.SendMouse(
+        "move",
+        HarnessCoordinate(
+            shell, editor.viewportImage.GetScreenX() + meshX),
+        HarnessCoordinate(
+            shell, editor.viewportImage.GetScreenY() + centerY),
+        0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    if editor.hoveredViewportNode != 1 {
+        Fail(shell, harness,
+             "hovering the front box did not track the hovered node: hover="
+             + editor.hoveredViewportNode);
+        return;
+    }
+    shell.Poll();
+    shell.Render();
+    harness.SendMouse("move", pressX, pressY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    if editor.hoveredViewportNode != -1
+       or sceneDoc.content != canonical
+       or editor.GetRevision() != revision {
+        Fail(shell, harness,
+             "hover over empty space did not clear or mutated state: hover="
+             + editor.hoveredViewportNode);
+        return;
+    }
+    shell.Poll();
+    shell.Render();
+
+    // Overlap cycling walks front to back through stacked triangle hits.
+    editor.SelectSceneNodes([1], 1);
+    var cycled = editor.CycleViewportNodeAt(meshX, centerY, -1);
+    if cycled != 0 {
+        Fail(shell, harness,
+             "cycling from the front box did not reach the back box: got="
+             + cycled);
+        return;
+    }
+    editor.SelectSceneNodes([0], 0);
+    cycled = editor.CycleViewportNodeAt(meshX, centerY, -1);
+    if cycled != 1 {
+        Fail(shell, harness,
+             "cycling from the back box did not wrap to the front box: got="
+             + cycled);
+        return;
+    }
+
     harness.UnbindApp();
     shell.Destroy();
     Terminal.Say("RESULT: ok");

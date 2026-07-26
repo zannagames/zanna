@@ -37,56 +37,70 @@
 
 // Color constants — packed 0x00RRGGBB
 /// @brief Return the predefined red color constant.
+/// @return Packed `0x00FF0000`.
 int64_t rt_color_red(void) {
     return 0xFF0000;
 }
 
 /// @brief Return the predefined green color constant.
+/// @return Packed `0x0000FF00`.
 int64_t rt_color_green(void) {
     return 0x00FF00;
 }
 
 /// @brief Return the predefined blue color constant.
+/// @return Packed `0x000000FF`.
 int64_t rt_color_blue(void) {
     return 0x0000FF;
 }
 
 /// @brief Return the predefined white color constant.
+/// @return Packed `0x00FFFFFF`.
 int64_t rt_color_white(void) {
     return 0xFFFFFF;
 }
 
 /// @brief Return the predefined black color constant.
+/// @return Packed `0x00000000`.
 int64_t rt_color_black(void) {
     return 0x000000;
 }
 
 /// @brief Return the predefined yellow color constant.
+/// @return Packed `0x00FFFF00`.
 int64_t rt_color_yellow(void) {
     return 0xFFFF00;
 }
 
 /// @brief Return the predefined cyan color constant.
+/// @return Packed `0x0000FFFF`.
 int64_t rt_color_cyan(void) {
     return 0x00FFFF;
 }
 
 /// @brief Return the predefined magenta color constant.
+/// @return Packed `0x00FF00FF`.
 int64_t rt_color_magenta(void) {
     return 0xFF00FF;
 }
 
 /// @brief Return the predefined gray color constant.
+/// @return Packed `0x00808080`.
 int64_t rt_color_gray(void) {
     return 0x808080;
 }
 
 /// @brief Return the predefined orange color constant.
+/// @return Packed `0x00FFA500`.
 int64_t rt_color_orange(void) {
     return 0xFFA500;
 }
 
 /// @brief Construct a color from red, green, blue components (0-255).
+/// @param r Red channel, clamped to 0..255.
+/// @param g Green channel, clamped to 0..255.
+/// @param b Blue channel, clamped to 0..255.
+/// @return Packed `0x00RRGGBB`.
 int64_t rt_color_rgb(int64_t r, int64_t g, int64_t b) {
     uint8_t r8 = (r < 0) ? 0 : (r > 255) ? 255 : (uint8_t)r;
     uint8_t g8 = (g < 0) ? 0 : (g > 255) ? 255 : (uint8_t)g;
@@ -95,6 +109,11 @@ int64_t rt_color_rgb(int64_t r, int64_t g, int64_t b) {
 }
 
 /// @brief Construct a color from red, green, blue, alpha components (0-255).
+/// @param r Red channel, clamped to 0..255.
+/// @param g Green channel, clamped to 0..255.
+/// @param b Blue channel, clamped to 0..255.
+/// @param a Alpha channel, clamped to 0..255.
+/// @return Packed `0xAARRGGBB`.
 int64_t rt_color_rgba(int64_t r, int64_t g, int64_t b, int64_t a) {
     uint8_t r8 = (r < 0) ? 0 : (r > 255) ? 255 : (uint8_t)r;
     uint8_t g8 = (g < 0) ? 0 : (g > 255) ? 255 : (uint8_t)g;
@@ -104,7 +123,14 @@ int64_t rt_color_rgba(int64_t r, int64_t g, int64_t b, int64_t a) {
                      (uint32_t)b8);
 }
 
-/// @brief Hsl the from.
+/// @brief Construct a packed RGB color from HSL components.
+///
+/// Hue wraps modulo 360; saturation and lightness are clamped to 0..100.
+///
+/// @param h Hue in degrees.
+/// @param s Saturation percentage.
+/// @param l Lightness percentage.
+/// @return Packed `0x00RRGGBB`.
 int64_t rt_color_from_hsl(int64_t h, int64_t s, int64_t l) {
     h = ((h % 360) + 360) % 360;
     if (s < 0)
@@ -322,7 +348,13 @@ int64_t rt_color_from_hex(rt_string hex) {
     return (int64_t)val;
 }
 
-/// @brief Hex the to.
+/// @brief Format a packed color as an uppercase CSS-style hexadecimal string.
+///
+/// Colors with a non-zero alpha byte use `#RRGGBBAA`; colors with a zero
+/// alpha byte use `#RRGGBB`.
+///
+/// @param color Packed `0xAARRGGBB` color.
+/// @return An owned runtime string containing the formatted color.
 rt_string rt_color_to_hex(int64_t color) {
     char buf[10];
     int64_t a = (color >> 24) & 0xFF;

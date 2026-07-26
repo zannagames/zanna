@@ -8,7 +8,7 @@ last-verified: 2026-07-14
 
 When adding or modifying platform-sensitive functionality in Zanna, use this
 reference to identify every file that must be touched. The codebase targets
-**Windows (x86-64)**, **macOS (x86-64 + ARM64)**, and **Linux (x86-64)**.
+**Windows (x86-64)**, **macOS (ARM64 / Apple Silicon)**, and **Linux (x86-64 and AArch64)**.
 
 For a user-facing reference of runtime behavioral differences across platforms, see
 [platform-differences.md](platform-differences.md).

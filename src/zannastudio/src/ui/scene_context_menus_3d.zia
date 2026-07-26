@@ -1,0 +1,251 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_context_menus_3d.zia
+// Purpose: Right-click context menus for the 3D scene hierarchy and viewport.
+// Key invariants:
+//   - Every action routes through existing SceneEditor3D transaction methods,
+//     so a right-click can never bypass validation, history, or dirty state.
+//   - Menus never open over a fly gesture: the viewport menu requires a
+//     right-click released within a small movement threshold.
+//   - Item enablement mirrors the selection contract each time a menu opens.
+// Ownership/Lifetime:
+//   - main.zia owns one instance; GUI owns the menu widgets after Setup.
+// Links: zannastudio/src/ui/scene_editor_3d.zia,
+//        zannastudio/src/app/context_menu_dispatcher.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_context_menus_3d;
+
+bind "scene_editor_3d";
+
+bind GUI = Zanna.GUI;
+bind Input = Zanna.Input;
+
+// ============================================================================
+// MODULE: scene_context_menus_3d
+// PURPOSE: One narrow bridge from right-click gestures to the 3D editor's
+//          established creation, rename, duplication, deletion, and framing
+//          transactions.
+//
+// WHERE-THIS-FITS: The app-level dispatcher owns explorer/tab/editor menus;
+//          scene surfaces own theirs here so the mega-editor module does not
+//          grow presentation plumbing.
+//
+// TEACHING-NOTE: Fly-look also begins on the right button. The viewport menu
+//          therefore opens only when the button releases within a few pixels
+//          of its press, which is exactly the gesture fly treats as a no-op.
+// ============================================================================
+
+final VIEWPORT_CLICK_SLOP: Number = 3.0;
+
+/// @brief Right-click menus for the 3D hierarchy pane and viewport surface.
+class SceneContextMenus3D {
+    expose GUI.ContextMenu hierarchyMenu;
+    expose GUI.ContextMenu viewportMenu;
+    expose GUI.MenuItem hierarchyCreateEmpty;
+    expose GUI.MenuItem hierarchyCreateChild;
+    expose GUI.MenuItem hierarchyCreateBox;
+    expose GUI.MenuItem hierarchyCreateSphere;
+    expose GUI.MenuItem hierarchyCreatePlane;
+    expose GUI.MenuItem hierarchyCreateLight;
+    expose GUI.MenuItem hierarchyCreateCamera;
+    expose GUI.MenuItem hierarchyRename;
+    expose GUI.MenuItem hierarchyDuplicate;
+    expose GUI.MenuItem hierarchyDelete;
+    expose GUI.MenuItem hierarchyFrame;
+    expose GUI.MenuItem viewportCreateEmpty;
+    expose GUI.MenuItem viewportCreateBox;
+    expose GUI.MenuItem viewportCreateSphere;
+    expose GUI.MenuItem viewportCreatePlane;
+    expose GUI.MenuItem viewportCreateLight;
+    expose GUI.MenuItem viewportCreateCamera;
+    expose GUI.MenuItem viewportFrameSelected;
+    expose GUI.MenuItem viewportFrameAll;
+    hide Number rightDownX;
+    hide Number rightDownY;
+
+    expose func init() {
+        hierarchyMenu = null;
+        viewportMenu = null;
+        hierarchyCreateEmpty = null;
+        hierarchyCreateChild = null;
+        hierarchyCreateBox = null;
+        hierarchyCreateSphere = null;
+        hierarchyCreatePlane = null;
+        hierarchyCreateLight = null;
+        hierarchyCreateCamera = null;
+        hierarchyRename = null;
+        hierarchyDuplicate = null;
+        hierarchyDelete = null;
+        hierarchyFrame = null;
+        viewportCreateEmpty = null;
+        viewportCreateBox = null;
+        viewportCreateSphere = null;
+        viewportCreatePlane = null;
+        viewportCreateLight = null;
+        viewportCreateCamera = null;
+        viewportFrameSelected = null;
+        viewportFrameAll = null;
+        rightDownX = 0.0;
+        rightDownY = 0.0;
+    }
+
+    /// @brief Build both menus once with persistent item handles.
+    expose func Setup() {
+        hierarchyMenu = GUI.ContextMenu.New();
+        hierarchyCreateEmpty = hierarchyMenu.AddItem("Create Empty");
+        hierarchyCreateChild = hierarchyMenu.AddItem("Create Child");
+        hierarchyCreateBox = hierarchyMenu.AddItem("Create Box");
+        hierarchyCreateSphere = hierarchyMenu.AddItem("Create Sphere");
+        hierarchyCreatePlane = hierarchyMenu.AddItem("Create Plane");
+        hierarchyCreateLight = hierarchyMenu.AddItem("Create Light");
+        hierarchyCreateCamera = hierarchyMenu.AddItem("Create Camera");
+        hierarchyMenu.AddSeparator();
+        hierarchyRename = hierarchyMenu.AddItemWithShortcut("Rename", "F2");
+        hierarchyDuplicate = hierarchyMenu.AddItem("Duplicate");
+        hierarchyDelete = hierarchyMenu.AddItem("Delete");
+        hierarchyMenu.AddSeparator();
+        hierarchyFrame = hierarchyMenu.AddItemWithShortcut("Frame", "F");
+
+        viewportMenu = GUI.ContextMenu.New();
+        viewportCreateEmpty = viewportMenu.AddItem("Create Empty");
+        viewportCreateBox = viewportMenu.AddItem("Create Box");
+        viewportCreateSphere = viewportMenu.AddItem("Create Sphere");
+        viewportCreatePlane = viewportMenu.AddItem("Create Plane");
+        viewportCreateLight = viewportMenu.AddItem("Create Light");
+        viewportCreateCamera = viewportMenu.AddItem("Create Camera");
+        viewportMenu.AddSeparator();
+        viewportFrameSelected =
+            viewportMenu.AddItemWithShortcut("Frame Selected", "F");
+        viewportFrameAll = viewportMenu.AddItem("Frame All");
+    }
+
+    /// @brief Route right-clicks to a menu and dispatch clicked items.
+    /// @param editor Active 3D editor whose transactions the items call.
+    /// @return True when one item committed a canonical scene change.
+    expose func Pump(editor: scene_editor_3d.SceneEditor3D) -> Boolean {
+        if hierarchyMenu == null or editor == null { return false; }
+        if Input.Mouse.WasPressed(Input.Mouse.ButtonRight) {
+            rightDownX = Input.Mouse.X();
+            rightDownY = Input.Mouse.Y();
+        }
+        if editor.scene != null and Input.Mouse.WasClicked(1) {
+            PumpOpen(editor);
+        }
+        return PumpActions(editor);
+    }
+
+    /// @brief Show the surface-appropriate menu for a completed right-click.
+    hide func PumpOpen(editor: scene_editor_3d.SceneEditor3D) {
+        var x = Input.Mouse.X();
+        var y = Input.Mouse.Y();
+        if editor.hierarchyTree != null
+           and editor.hierarchyTree.IsVisible()
+           and editor.hierarchyTree.IsHovered() {
+            var row = editor.hierarchyTree.GetNodeAt(x, y);
+            if row != null { editor.hierarchyTree.Select(row); }
+            ConfigureHierarchyItems(editor);
+            hierarchyMenu.Show(x, y);
+            return;
+        }
+        if editor.viewportImage != null
+           and editor.viewportImage.IsVisible()
+           and editor.viewportImage.IsHovered() {
+            var dx = x - rightDownX;
+            var dy = y - rightDownY;
+            if dx < 0.0 { dx = 0.0 - dx; }
+            if dy < 0.0 { dy = 0.0 - dy; }
+            if dx > VIEWPORT_CLICK_SLOP or dy > VIEWPORT_CLICK_SLOP {
+                // The gesture was a fly-look drag, not a click.
+                return;
+            }
+            ConfigureViewportItems(editor);
+            viewportMenu.Show(x, y);
+        }
+    }
+
+    /// @brief Mirror the selection contract onto hierarchy item enablement.
+    hide func ConfigureHierarchyItems(editor: scene_editor_3d.SceneEditor3D) {
+        var count = editor.selectedIndices.count();
+        hierarchyCreateChild.SetEnabled(count == 1);
+        hierarchyRename.SetEnabled(count == 1);
+        hierarchyDuplicate.SetEnabled(count > 0);
+        hierarchyDelete.SetEnabled(count > 0);
+        hierarchyFrame.SetEnabled(true);
+    }
+
+    /// @brief Mirror the selection contract onto viewport item enablement.
+    hide func ConfigureViewportItems(editor: scene_editor_3d.SceneEditor3D) {
+        viewportFrameSelected.SetEnabled(editor.selectedIndices.count() > 0);
+        viewportFrameAll.SetEnabled(true);
+    }
+
+    /// @brief Dispatch clicked items through the editor's transaction surface.
+    hide func PumpActions(editor: scene_editor_3d.SceneEditor3D) -> Boolean {
+        if editor.scene == null { return false; }
+        var changed = false;
+        if hierarchyCreateEmpty.WasClicked()
+           or viewportCreateEmpty.WasClicked() {
+            changed = editor.AddEmptyNode(
+                "Node " + editor.scene.NodeCount, -1) >= 0 or changed;
+        }
+        if hierarchyCreateChild.WasClicked()
+           and editor.selectedIndices.count() == 1 {
+            changed = editor.AddEmptyNode(
+                "Node " + editor.scene.NodeCount,
+                editor.selectedIndex) >= 0 or changed;
+        }
+        if hierarchyCreateBox.WasClicked()
+           or viewportCreateBox.WasClicked() {
+            changed = editor.AddPrimitive(
+                scene_editor_3d.PRIMITIVE_BOX, false) or changed;
+        }
+        if hierarchyCreateSphere.WasClicked()
+           or viewportCreateSphere.WasClicked() {
+            changed = editor.AddPrimitive(
+                scene_editor_3d.PRIMITIVE_SPHERE, false) or changed;
+        }
+        if hierarchyCreatePlane.WasClicked()
+           or viewportCreatePlane.WasClicked() {
+            changed = editor.AddPrimitive(
+                scene_editor_3d.PRIMITIVE_PLANE, false) or changed;
+        }
+        if hierarchyCreateLight.WasClicked()
+           or viewportCreateLight.WasClicked() {
+            changed = editor.AddLightNode(
+                "Point Light " + editor.scene.NodeCount, -1) >= 0 or changed;
+        }
+        if hierarchyCreateCamera.WasClicked()
+           or viewportCreateCamera.WasClicked() {
+            changed = editor.AddCameraNode(
+                "Camera " + editor.scene.NodeCount, -1) >= 0 or changed;
+        }
+        if hierarchyRename.WasClicked() {
+            editor.BeginRenameSelected();
+        }
+        if hierarchyDuplicate.WasClicked() {
+            changed = editor.DuplicateSelectedNodes() > 0 or changed;
+        }
+        if hierarchyDelete.WasClicked() {
+            changed = editor.DeleteSelectedNodes() or changed;
+        }
+        if hierarchyFrame.WasClicked()
+           or viewportFrameSelected.WasClicked() {
+            if editor.selectedIndices.count() > 0 {
+                editor.FrameSelected();
+            } else {
+                editor.FrameAll();
+            }
+        }
+        if viewportFrameAll.WasClicked() {
+            editor.FrameAll();
+        }
+        return changed;
+    }
+}

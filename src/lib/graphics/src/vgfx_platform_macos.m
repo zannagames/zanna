@@ -638,6 +638,30 @@ static vgfx_key_t translate_keycode(unsigned short keycode,
                 return VGFX_KEY_UP;
             case NSDownArrowFunctionKey:
                 return VGFX_KEY_DOWN;
+            case NSF1FunctionKey:
+                return VGFX_KEY_F1;
+            case NSF2FunctionKey:
+                return VGFX_KEY_F2;
+            case NSF3FunctionKey:
+                return VGFX_KEY_F3;
+            case NSF4FunctionKey:
+                return VGFX_KEY_F4;
+            case NSF5FunctionKey:
+                return VGFX_KEY_F5;
+            case NSF6FunctionKey:
+                return VGFX_KEY_F6;
+            case NSF7FunctionKey:
+                return VGFX_KEY_F7;
+            case NSF8FunctionKey:
+                return VGFX_KEY_F8;
+            case NSF9FunctionKey:
+                return VGFX_KEY_F9;
+            case NSF10FunctionKey:
+                return VGFX_KEY_F10;
+            case NSF11FunctionKey:
+                return VGFX_KEY_F11;
+            case NSF12FunctionKey:
+                return VGFX_KEY_F12;
             default:
                 break;
         }

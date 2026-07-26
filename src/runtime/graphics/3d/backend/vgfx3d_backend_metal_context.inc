@@ -954,11 +954,6 @@ static void metal_create_shadow_resources(VGFXMetalContext *ctx,
 /// @return An opaque VGFXMetalContext* handle (cast to void*), or NULL if no Metal device or native
 ///   view is available.
 static void *metal_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
-    /* Headless contexts (ADR 0191 accelerated offscreen) are not implemented
-     * yet: the presentation layer requires a native view. Fail cleanly so the
-     * caller's software fallback engages instead of dereferencing NULL. */
-    if (!win)
-        return NULL;
     @autoreleasepool {
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
         if (!device) {
@@ -966,15 +961,24 @@ static void *metal_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
             return NULL;
         }
 
-        NSView *view = (__bridge NSView *)vgfx_get_native_view(win);
-        if (!view) {
-            NSLog(@ "[Metal] vgfx_get_native_view returned nil");
-            return NULL;
+        /* Headless contexts (ADR 0191 accelerated offscreen) have no window:
+         * the presentation layer is skipped entirely. Offscreen rendering
+         * flows through render targets and their existing GPU→CPU color
+         * sync, and every present/layer route already no-ops without a
+         * CAMetalLayer, so only windowed contexts require a native view. */
+        NSView *view = nil;
+        if (win) {
+            view = (__bridge NSView *)vgfx_get_native_view(win);
+            if (!view) {
+                NSLog(@ "[Metal] vgfx_get_native_view returned nil");
+                return NULL;
+            }
         }
 
         VGFXMetalContext *ctx = metal_create_context_base(device, win, w, h);
         metal_main_functions_t funcs;
-        metal_attach_layer_to_view(ctx, view, device);
+        if (view)
+            metal_attach_layer_to_view(ctx, view, device);
         if (!metal_create_command_queue_and_defaults(ctx, device) ||
             !metal_compile_main_library(ctx, device) || !metal_load_main_functions(ctx, &funcs) ||
             !metal_create_main_pipeline_states(ctx, device, &funcs))

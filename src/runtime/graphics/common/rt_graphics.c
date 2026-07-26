@@ -5,6 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
+/// @file rt_graphics.c
+/// @brief Preserves the legacy Canvas graphics translation-unit boundary.
+///
+/// @details
+/// Canvas lifecycle, primitive drawing, and advanced drawing implementations
+/// now live in focused translation units. This intentionally implementation-
+/// free source remains in the build for configurations that still reference
+/// the former umbrella unit directly.
+///
 // File: src/runtime/graphics/rt_graphics.c
 // Purpose: Umbrella translation unit for the Canvas graphics runtime. All
 //   implementations have been split into focused files:

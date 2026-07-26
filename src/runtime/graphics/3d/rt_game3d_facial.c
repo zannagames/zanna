@@ -25,6 +25,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements envelope lip sync, deterministic blinking, and eased gaze.
+/// @details LipSync3D attaches one facial-animation component to an Entity3D.
+///          It maps metered or injected amplitude through an attack/release
+///          envelope and soft-knee curve into up to four morph bindings, layers
+///          a seeded triangular blink envelope by maximum composition, and
+///          eases a LookAt IK solver toward or away from a sampled gaze target.
+
 #include "rt_animcontroller3d.h"
 #include "rt_audio.h"
 #include "rt_game3d.h"
@@ -51,6 +59,7 @@
 //=========================================================================
 
 /// @brief GC finalizer: release retained references.
+/// @param obj LipSync3D storage being finalized; NULL is ignored.
 static void game3d_lipsync_finalize(void *obj) {
     rt_game3d_lipsync *lipsync = (rt_game3d_lipsync *)obj;
     if (!lipsync)
@@ -71,6 +80,11 @@ static void game3d_lipsync_finalize(void *obj) {
 }
 
 /// @brief Create a facial component for @p entity_obj (attach stores it).
+/// @details Replaces any prior component after clearing its entity back-reference.
+///          The entity retains the new component while the returned creation
+///          reference remains owned by the caller.
+/// @param entity_obj Entity3D that receives the component.
+/// @return A newly allocated LipSync3D, or NULL after validation or allocation failure.
 void *rt_game3d_lipsync_new(void *entity_obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(entity_obj, "Game3D.LipSync3D.New: invalid entity");
@@ -103,6 +117,8 @@ void *rt_game3d_lipsync_new(void *entity_obj) {
 }
 
 /// @brief Entity accessor for the attached LipSync3D (NULL when none).
+/// @param obj Entity3D runtime handle.
+/// @return The validated retained LipSync3D pointer, or NULL.
 void *rt_game3d_entity_get_lipsync(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.get_lipSync: invalid entity");
@@ -114,6 +130,9 @@ void *rt_game3d_entity_get_lipsync(void *obj) {
 //=========================================================================
 
 /// @brief Fluent: bind the MorphTarget3D the shape bindings drive.
+/// @param obj LipSync3D runtime handle.
+/// @param morph MorphTarget3D to retain, or NULL to detach the current target.
+/// @return @p obj for fluent chaining; wrong runtime classes trap without mutation.
 void *rt_game3d_lipsync_bind_morph(void *obj, void *morph) {
     rt_game3d_lipsync *lipsync =
         game3d_lipsync_checked(obj, "Game3D.LipSync3D.bindMorph: invalid lip sync");
@@ -127,6 +146,11 @@ void *rt_game3d_lipsync_bind_morph(void *obj, void *morph) {
 }
 
 /// @brief Fluent: bind a mouth shape (up to 4) with a per-shape weight scale.
+/// @param obj LipSync3D runtime handle.
+/// @param shape_name Non-empty morph-target name retained for allocation-free ticks.
+/// @param weight_scale Per-shape multiplier finite-clamped to [0, 4].
+/// @return @p obj for fluent chaining; capacity and name errors trap without
+///         adding a binding.
 void *rt_game3d_lipsync_bind_mouth_shape(void *obj, rt_string shape_name, double weight_scale) {
     rt_game3d_lipsync *lipsync =
         game3d_lipsync_checked(obj, "Game3D.LipSync3D.bindMouthShape: invalid lip sync");
@@ -150,6 +174,8 @@ void *rt_game3d_lipsync_bind_mouth_shape(void *obj, rt_string shape_name, double
 }
 
 /// @brief Drive from a playing voice: enables metering and tracks its level.
+/// @param obj LipSync3D runtime handle.
+/// @param voice_id Audio voice identifier; negative values disable driving.
 void rt_game3d_lipsync_drive(void *obj, int64_t voice_id) {
     rt_game3d_lipsync *lipsync =
         game3d_lipsync_checked(obj, "Game3D.LipSync3D.drive: invalid lip sync");
@@ -163,6 +189,10 @@ void rt_game3d_lipsync_drive(void *obj, int64_t voice_id) {
 
 /// @brief Drive from an explicit level (0..1) — Dialogue3D/tests feed this
 ///   directly when no metered voice is available.
+/// @details The injected value raises the current envelope immediately; later
+///          ticks release it toward zero because no voice remains attached.
+/// @param obj LipSync3D runtime handle.
+/// @param level Raw amplitude finite-clamped to [0, 1]. Zero clears driving.
 void rt_game3d_lipsync_drive_level(void *obj, double level) {
     rt_game3d_lipsync *lipsync =
         game3d_lipsync_checked(obj, "Game3D.LipSync3D.driveLevel: invalid lip sync");
@@ -178,6 +208,9 @@ void rt_game3d_lipsync_drive_level(void *obj, double level) {
 }
 
 /// @brief Manual release: eases the mouth closed.
+/// @param obj LipSync3D runtime handle.
+/// @post Metering is disabled for the attached voice and subsequent ticks use
+///       the release time constant to approach zero.
 void rt_game3d_lipsync_stop(void *obj) {
     rt_game3d_lipsync *lipsync =
         game3d_lipsync_checked(obj, "Game3D.LipSync3D.stop: invalid lip sync");
@@ -190,6 +223,12 @@ void rt_game3d_lipsync_stop(void *obj) {
 }
 
 /// @brief Configure the procedural blink layer (seeded; deterministic).
+/// @param obj LipSync3D runtime handle.
+/// @param enabled Non-zero to schedule blink envelopes.
+/// @param shape_name Morph-target name to retain for blink output; NULL clears it.
+/// @param min_interval Requested positive minimum seconds between blinks.
+/// @param max_interval Requested positive maximum seconds, normalized not to
+///                     fall below the sanitized minimum.
 void rt_game3d_lipsync_set_blink(
     void *obj, int8_t enabled, rt_string shape_name, double min_interval, double max_interval) {
     rt_game3d_lipsync *lipsync =
@@ -218,12 +257,20 @@ void rt_game3d_lipsync_set_blink(
 }
 
 /// @brief Deterministic LCG step for blink intervals.
+/// @param lipsync Component whose private seed is advanced.
+/// @return A deterministic pseudo-random value in the inclusive range [0, 1].
 static double game3d_lipsync_random01(rt_game3d_lipsync *lipsync) {
     lipsync->blink_seed = lipsync->blink_seed * 6364136223846793005ull + 1442695040888963407ull;
     return (double)((lipsync->blink_seed >> 33) & 0x7FFFFFFF) / 2147483647.0;
 }
 
 /// @brief Gaze sugar: ease a LookAt IK solver toward the target (NULL clears).
+/// @details Vec3 targets are copied directly; Entity3D targets are sampled once
+///          at world position plus a default eye-height offset. The existing
+///          solver and target reference are retained while NULL merely eases
+///          solver weight back to zero.
+/// @param obj LipSync3D runtime handle.
+/// @param target Vec3, Entity3D, or NULL. Other runtime classes trap.
 void rt_game3d_lipsync_set_gaze(void *obj, void *target) {
     rt_game3d_lipsync *lipsync =
         game3d_lipsync_checked(obj, "Game3D.LipSync3D.setGaze: invalid lip sync");
@@ -261,6 +308,10 @@ void rt_game3d_lipsync_set_gaze(void *obj, void *target) {
 
 /// @brief Fluent: create the gaze LookAt solver on the entity's animator for a
 ///   named head bone and install it on the controller.
+/// @param obj LipSync3D runtime handle.
+/// @param bone_name Runtime string naming a bone in the attached animator skeleton.
+/// @return @p obj for fluent chaining; missing animation prerequisites or an
+///         unknown bone leave the prior solver unchanged.
 void *rt_game3d_lipsync_bind_head_bone(void *obj, rt_string bone_name) {
     rt_game3d_lipsync *lipsync =
         game3d_lipsync_checked(obj, "Game3D.LipSync3D.bindHeadBone: invalid lip sync");
@@ -293,12 +344,18 @@ void *rt_game3d_lipsync_bind_head_bone(void *obj, rt_string bone_name) {
 // Properties
 //=========================================================================
 
+/// @brief Report whether metered or injected lip-sync driving is active.
+/// @param obj LipSync3D runtime handle.
+/// @return Non-zero while driving, otherwise zero.
 int8_t rt_game3d_lipsync_get_driving(void *obj) {
     rt_game3d_lipsync *lipsync =
         game3d_lipsync_checked(obj, "Game3D.LipSync3D.get_driving: invalid lip sync");
     return lipsync ? lipsync->driving : 0;
 }
 
+/// @brief Return the current smoothed mouth envelope.
+/// @param obj LipSync3D runtime handle.
+/// @return The current nominal [0, 1] envelope, or zero when invalid.
 double rt_game3d_lipsync_get_level(void *obj) {
     rt_game3d_lipsync *lipsync =
         game3d_lipsync_checked(obj, "Game3D.LipSync3D.get_level: invalid lip sync");
@@ -310,6 +367,8 @@ double rt_game3d_lipsync_get_level(void *obj) {
 //=========================================================================
 
 /// @brief Advance one component: envelope, morph weights, blink, gaze ease.
+/// @param lipsync Component to advance; must be valid.
+/// @param dt Sanitized positive simulation step in seconds.
 static void game3d_lipsync_tick_one(rt_game3d_lipsync *lipsync, double dt) {
     /* Envelope follower toward the metered (or injected) level. */
     double target = 0.0;
@@ -382,6 +441,10 @@ static void game3d_lipsync_tick_one(rt_game3d_lipsync *lipsync, double dt) {
 }
 
 /// @brief World facial pass. See internal header.
+/// @details Iterates the bounded live entity registry after ragdoll sync and
+///          advances each attached, correctly typed LipSync3D exactly once.
+/// @param world World3D whose spawned entities are scanned; NULL is ignored.
+/// @param dt Frame duration in seconds, sanitized before component updates.
 void game3d_world_facial_tick(rt_game3d_world *world, double dt) {
     if (!world)
         return;

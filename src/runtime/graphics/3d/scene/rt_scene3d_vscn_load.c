@@ -27,6 +27,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements strict, transactional loading of JSON-based VSCN scene assets.
+/// @details The loader bounds untrusted counts and payload sizes, validates exact
+///   numeric and tagged metadata representations, decodes endian-stable buffers,
+///   rebuilds retained resources and node trees, resolves nested prefab references,
+///   and releases every partial object on failure.
+
 #include "rt_platform_feature.h"
 
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -65,10 +72,17 @@
 #define vscn_fseek(fp, off, whence) rt_file_stdio_seek64((fp), (off), (whence))
 #define vscn_ftell(fp) rt_file_stdio_tell64((fp))
 
+/// @brief Decode an encoded texture payload using a filename-selected built-in decoder.
+/// @param name Borrowed synthetic filename providing the container extension.
+/// @param data Borrowed encoded payload bytes.
+/// @param size Number of readable bytes.
+/// @return New owned decoded asset handle, or `NULL` on failure.
 extern void *rt_asset_decode_typed(const char *name, const uint8_t *data, size_t size);
 
 /// @brief Count the total number of nodes in the subtree rooted at `node` (inclusive).
 /// @details Iterative so adversarially deep loaded hierarchies cannot overflow the C stack.
+/// @param node Borrowed subtree root.
+/// @return Non-negative node count, `INT32_MAX` on overflow, or `-1` on allocation failure.
 static int32_t scene3d_count_subtree(const rt_scene_node3d *node) {
     if (!node)
         return 0;
@@ -138,6 +152,8 @@ static int32_t scene3d_count_subtree(const rt_scene_node3d *node) {
 
 /// @brief Decode a single base64 character to its 0-63 value.
 /// Returns -2 for `=` (padding sentinel) and -1 for any other invalid byte.
+/// @param c Candidate ASCII Base64 byte.
+/// @return Sextet value, `-2` for padding, or `-1` for invalid input.
 static int vscn_base64_digit_value(char c) {
     if (c >= 'A' && c <= 'Z')
         return c - 'A';
@@ -155,6 +171,8 @@ static int vscn_base64_digit_value(char c) {
 }
 
 /// @brief Record invalid base64 in @p field at byte @p offset.
+/// @param field Borrowed diagnostic field name, or `NULL` for `"data"`.
+/// @param offset Zero-based invalid input byte offset.
 static void vscn_set_base64_error(const char *field, size_t offset) {
     rt_asset_error_setf(RT_ASSET_ERROR_CORRUPT,
                         "Scene3D.Load: invalid base64 in %s at byte offset %zu",
@@ -168,6 +186,12 @@ static void vscn_set_base64_error(const char *field, size_t offset) {
 /// any non-alphabet bytes. Honours `=` padding to compute the
 /// exact output length. Returns a freshly-allocated buffer
 /// (caller `free`s) or NULL on error.
+/// @param data Borrowed encoded bytes.
+/// @param len Exact encoded byte count.
+/// @param out_len Optional output receiving decoded byte count.
+/// @param error_offset Optional output receiving the invalid encoded offset or `SIZE_MAX`.
+/// @return Caller-owned decoded allocation, including a one-byte allocation for empty input,
+///   or `NULL` for malformed input/allocation failure.
 static uint8_t *vscn_base64_decode_ex(const char *data,
                                       size_t len,
                                       size_t *out_len,
@@ -283,6 +307,11 @@ static uint8_t *vscn_base64_decode_ex(const char *data,
 }
 
 /// @brief Decode an exact f32 little-endian Base64 payload into host floats.
+/// @param data Borrowed Base64 text.
+/// @param len Encoded byte count.
+/// @param expected_count Exact number of finite floats required.
+/// @param field Borrowed diagnostic field name.
+/// @return Caller-owned host-float array, or `NULL` on malformed data, size mismatch, or failure.
 static float *vscn_base64_decode_f32_le(const char *data,
                                         size_t len,
                                         size_t expected_count,
@@ -329,6 +358,11 @@ static float *vscn_base64_decode_f32_le(const char *data,
 }
 
 /// @brief Decode an exact f64 little-endian Base64 payload into host doubles.
+/// @param data Borrowed Base64 text.
+/// @param len Encoded byte count.
+/// @param expected_count Exact number of finite doubles required.
+/// @param field Borrowed diagnostic field name.
+/// @return Caller-owned host-double array, or `NULL` on malformed data, size mismatch, or failure.
 static double *vscn_base64_decode_f64_le(const char *data,
                                          size_t len,
                                          size_t expected_count,
@@ -507,12 +541,17 @@ static int vscn_base64_decode_rgba_pixels_ex(const char *data,
 /// @details VSCN mesh payloads are tagged as little-endian; validating indices directly from
 ///          source bytes lets the loader reject corrupt buffers before allocating a destination
 ///          index array.
+/// @param data Borrowed pointer to at least four serialized bytes.
+/// @return Host-order unsigned 32-bit value.
 static uint32_t vscn_read_u32_le(const uint8_t *data) {
     return ((uint32_t)data[0]) | ((uint32_t)data[1] << 8) | ((uint32_t)data[2] << 16) |
            ((uint32_t)data[3] << 24);
 }
 
 /// @brief Validate that every serialized VSCN index is inside the loaded vertex range.
+/// @param indices_raw Borrowed packed little-endian index bytes.
+/// @param index_count Number of readable uint32 indices.
+/// @param vertex_count Exclusive valid vertex bound.
 /// @return 1 if all @p index_count little-endian uint32 indices are `< vertex_count`, else 0.
 static int vscn_indices_are_in_range(const uint8_t *indices_raw,
                                      uint32_t index_count,
@@ -530,6 +569,9 @@ static int vscn_indices_are_in_range(const uint8_t *indices_raw,
 /// @details On little-endian hosts this is equivalent to a memcpy, but spelling the conversion
 ///          here keeps VSCN index payloads portable if the runtime is built for a big-endian
 ///          target.
+/// @param dst Output array receiving host-order indices.
+/// @param src Borrowed packed little-endian index bytes.
+/// @param index_count Number of uint32 indices to copy.
 static void vscn_copy_indices_le(uint32_t *dst, const uint8_t *src, uint32_t index_count) {
     if (!dst || !src)
         return;
@@ -541,6 +583,8 @@ static void vscn_copy_indices_le(uint32_t *dst, const uint8_t *src, uint32_t ind
 ///
 /// Used by the loader to roll back partially-loaded resources
 /// when a later stage of `rt_scene3d_load` fails.
+/// @param items Owned native array of retained runtime handles.
+/// @param count Number of slots to release before freeing the array.
 static void vscn_release_loaded_refs(void **items, int count) {
     if (!items)
         return;
@@ -551,13 +595,17 @@ static void vscn_release_loaded_refs(void **items, int count) {
     free(items);
 }
 
-/// @brief Look up a JSON object member by C-string key. Returns NULL if absent.
+/// @brief Determine whether a parsed JSON value is a map payload.
+/// @param obj Borrowed candidate runtime value.
+/// @return Nonzero for a non-string Map payload.
 static int vjson_is_map(void *obj) {
     return obj && !rt_string_is_handle(obj) && rt_heap_is_payload(obj) &&
            rt_obj_class_id(obj) == RT_MAP_CLASS_ID;
 }
 
 /// @brief True if @p obj is a parsed-JSON array (a seq payload), not a string/map.
+/// @param obj Borrowed candidate runtime value.
+/// @return Nonzero for a non-string Seq payload.
 static int vjson_is_seq(void *obj) {
     return obj && !rt_string_is_handle(obj) && rt_heap_is_payload(obj) &&
            rt_obj_class_id(obj) == RT_SEQ_CLASS_ID;
@@ -565,6 +613,9 @@ static int vjson_is_seq(void *obj) {
 
 /// @brief Look up @p key in a parsed-JSON object; returns the value or NULL if @p obj is
 ///   not a map or the key is absent.
+/// @param obj Borrowed parsed JSON map.
+/// @param key Borrowed NUL-terminated member name.
+/// @return Borrowed member value, or `NULL`.
 static void *vjson_get(void *obj, const char *key) {
     rt_string runtime_key;
     void *value;
@@ -579,6 +630,9 @@ static void *vjson_get(void *obj, const char *key) {
 }
 
 /// @brief Distinguish an absent JSON member from a present explicit null.
+/// @param obj Borrowed parsed JSON map.
+/// @param key Borrowed NUL-terminated member name.
+/// @return Nonzero when the map contains @p key.
 static int vjson_has(void *obj, const char *key) {
     rt_string runtime_key;
     int present;
@@ -591,11 +645,16 @@ static int vjson_has(void *obj, const char *key) {
 }
 
 /// @brief Length of a JSON array, or 0 for NULL.
+/// @param seq Borrowed parsed JSON sequence.
+/// @return Non-negative sequence length, or zero for non-sequences.
 static int64_t vjson_len(void *seq) {
     return vjson_is_seq(seq) ? rt_seq_len(seq) : 0;
 }
 
 /// @brief Safely coerce a JSON double to int64 without invoking undefined conversion behavior.
+/// @param value Candidate finite double.
+/// @param out Output receiving the converted integer.
+/// @return Nonzero when @p value is finite and within the int64 conversion domain.
 static int vjson_double_to_i64_checked(double value, int64_t *out) {
     if (!out || !isfinite(value))
         return 0;
@@ -606,6 +665,9 @@ static int vjson_double_to_i64_checked(double value, int64_t *out) {
 }
 
 /// @brief Coerce a boxed JSON value to int64. Falls back to `def` for non-numeric or null.
+/// @param value Borrowed boxed JSON scalar.
+/// @param def Fallback for absent, invalid, or out-of-range values.
+/// @return Integer, safely converted double, Boolean as integer, or @p def.
 static int64_t vjson_value_i64(void *value, int64_t def) {
     if (!value)
         return def;
@@ -625,6 +687,9 @@ static int64_t vjson_value_i64(void *value, int64_t def) {
 
 /// @brief Read a JSON numeric value as an exact int64; rejects bools, non-finite doubles, and
 ///   fractional double values so index/count fields cannot be silently truncated.
+/// @param value Borrowed boxed JSON numeric scalar.
+/// @param out Output receiving the exact integer.
+/// @return Nonzero when the value is an integer or exactly integral in-range double.
 static int vjson_value_i64_exact(void *value, int64_t *out) {
     double number;
     if (!value || !out)
@@ -644,6 +709,11 @@ static int vjson_value_i64_exact(void *value, int64_t *out) {
 }
 
 /// @brief Read an object integer property exactly, defaulting only when the key is absent.
+/// @param obj Borrowed parsed JSON map.
+/// @param key Borrowed member name.
+/// @param def Default used only for an absent/null member.
+/// @param out Output receiving the exact integer or default.
+/// @return Nonzero unless a present value has the wrong/inexact representation.
 static int vjson_i64_exact(void *obj, const char *key, int64_t def, int64_t *out) {
     void *value;
     if (!out)
@@ -656,6 +726,11 @@ static int vjson_i64_exact(void *obj, const char *key, int64_t def, int64_t *out
 }
 
 /// @brief Read an object finite numeric property exactly, defaulting only when absent.
+/// @param obj Borrowed parsed JSON map.
+/// @param key Borrowed member name.
+/// @param def Default used only for an absent/null member.
+/// @param out Output receiving the finite numeric value or default.
+/// @return Nonzero unless a present value is non-numeric or non-finite.
 static int vjson_f64_exact(void *obj, const char *key, double def, double *out) {
     void *value;
     double number;
@@ -678,6 +753,11 @@ static int vjson_f64_exact(void *obj, const char *key, double def, double *out) 
 }
 
 /// @brief Read an array integer element exactly, defaulting only when the index is absent.
+/// @param arr Borrowed parsed JSON sequence.
+/// @param index Zero-based element index.
+/// @param def Default used for an absent/out-of-range element.
+/// @param out Output receiving the exact integer or default.
+/// @return Nonzero unless a present value has the wrong/inexact representation.
 static int vjson_arr_i64_exact(void *arr, int64_t index, int64_t def, int64_t *out) {
     if (!out)
         return 0;
@@ -688,6 +768,9 @@ static int vjson_arr_i64_exact(void *arr, int64_t index, int64_t def, int64_t *o
 }
 
 /// @brief Coerce a boxed JSON value to double. `def` for non-numeric or null.
+/// @param value Borrowed boxed JSON scalar.
+/// @param def Fallback for absent, invalid, or non-finite values.
+/// @return Numeric/Boolean value as a finite double, or @p def.
 static double vjson_value_f64(void *value, double def) {
     if (!value)
         return def;
@@ -706,24 +789,39 @@ static double vjson_value_f64(void *value, double def) {
 }
 
 /// @brief Read `obj[key]` as int64, defaulting to `def` if absent / wrong type.
+/// @param obj Borrowed parsed JSON map.
+/// @param key Borrowed member name.
+/// @param def Fallback value.
+/// @return Coerced integer member value or @p def.
 static int64_t vjson_i64(void *obj, const char *key, int64_t def) {
     void *value = vjson_get(obj, key);
     return vjson_value_i64(value, def);
 }
 
 /// @brief Read `obj[key]` as double, defaulting to `def` if absent / wrong type.
+/// @param obj Borrowed parsed JSON map.
+/// @param key Borrowed member name.
+/// @param def Fallback value.
+/// @return Coerced finite numeric member value or @p def.
 static double vjson_f64(void *obj, const char *key, double def) {
     void *value = vjson_get(obj, key);
     return vjson_value_f64(value, def);
 }
 
 /// @brief Read `obj[key]` as boolean (0/1), defaulting to `def`.
+/// @param obj Borrowed parsed JSON map.
+/// @param key Borrowed member name.
+/// @param def Fallback truth value.
+/// @return Canonical member truth value, or @p def when absent.
 static int8_t vjson_bool(void *obj, const char *key, int8_t def) {
     void *value = vjson_get(obj, key);
     return value ? (vjson_value_i64(value, def) ? 1 : 0) : def;
 }
 
 /// @brief Read `obj[key]` as a Zanna rt_string. NULL if missing or non-string.
+/// @param obj Borrowed parsed JSON map.
+/// @param key Borrowed member name.
+/// @return Borrowed runtime-string member, or `NULL`.
 static rt_string vjson_string_value(void *obj, const char *key) {
     void *value = vjson_get(obj, key);
     return rt_string_is_handle(value) ? (rt_string)value : NULL;
@@ -733,6 +831,10 @@ static rt_string vjson_string_value(void *obj, const char *key) {
 /// @details Unlike `strlen(rt_string_cstr(...))`, this uses the runtime string length so large
 ///          base64 payloads are not scanned only to discover their byte count. The returned
 ///          pointer remains borrowed from the rt_string and is valid for the parsed JSON lifetime.
+/// @param obj Borrowed parsed JSON map.
+/// @param key Borrowed member name.
+/// @param out_len Optional output receiving exact runtime-string byte length.
+/// @return Borrowed NUL-terminated string contents, or `NULL`.
 static const char *vjson_cstr_len(void *obj, const char *key, size_t *out_len) {
     if (out_len)
         *out_len = 0;
@@ -749,11 +851,18 @@ static const char *vjson_cstr_len(void *obj, const char *key, size_t *out_len) {
 
 /// @brief Read `obj[key]` as a borrowed C string. NULL if missing or non-string.
 /// The pointer remains valid only as long as the underlying rt_string lives.
+/// @param obj Borrowed parsed JSON map.
+/// @param key Borrowed member name.
+/// @return Borrowed NUL-terminated string contents, or `NULL`.
 static const char *vjson_cstr(void *obj, const char *key) {
     return vjson_cstr_len(obj, key, NULL);
 }
 
 /// @brief Array-form `arr[index]` as double with default. Useful for vec3/vec4 unpacking.
+/// @param arr Borrowed parsed JSON sequence.
+/// @param index Zero-based element index.
+/// @param def Fallback for an absent, invalid, or non-numeric element.
+/// @return Coerced finite numeric element or @p def.
 static double vjson_arr_f64(void *arr, int64_t index, double def) {
     if (!arr || index < 0 || index >= vjson_len(arr))
         return def;
@@ -762,6 +871,10 @@ static double vjson_arr_f64(void *arr, int64_t index, double def) {
 
 /// @brief Read an optional integer index reference (e.g. a mesh/material index) from
 ///   @p key into @p out_index. Missing key → -1 and success; a value < -1 → failure (0).
+/// @param obj Borrowed parsed JSON map.
+/// @param key Borrowed reference-member name.
+/// @param out_index Output receiving `-1` or the non-negative referenced index.
+/// @return Nonzero for an absent or valid exact index, otherwise zero.
 static int vscn_read_index_ref(void *obj, const char *key, int64_t *out_index) {
     void *value;
     int64_t index;
@@ -780,6 +893,9 @@ static int vscn_read_index_ref(void *obj, const char *key, int64_t *out_index) {
 }
 
 /// @brief Reverse of `vscn_serialize_texture` — rebuild a source asset or RGBA Pixels object.
+/// @param texture_obj Borrowed parsed JSON texture object.
+/// @param version Validated VSCN document version controlling entry representation.
+/// @return New owned TextureAsset3D/Pixels handle, or `NULL` on malformed data/failure.
 static void *vscn_parse_texture(void *texture_obj, int64_t version) {
     int64_t width;
     int64_t height;
@@ -888,6 +1004,10 @@ static void *vscn_parse_texture(void *texture_obj, int64_t version) {
 }
 
 /// @brief Reverse of `vscn_serialize_cubemap` — assemble a cubemap from texture-index references.
+/// @param cubemap_obj Borrowed parsed JSON cubemap object.
+/// @param textures Borrowed table of loaded texture handles.
+/// @param tex_count Number of readable texture slots.
+/// @return New owned Cubemap3D handle, or `NULL` for invalid references/failure.
 static rt_cubemap3d *vscn_parse_cubemap(void *cubemap_obj, void **textures, int tex_count) {
     void *faces_arr;
     void *faces[6];
@@ -920,6 +1040,12 @@ static rt_cubemap3d *vscn_parse_cubemap(void *cubemap_obj, void **textures, int 
 #include "rt_scene3d_vscn_material_parse.inc"
 
 /// @brief Reverse of `vscn_serialize_material` — restore PBR parameters and bind texture refs.
+/// @param material_obj Borrowed parsed JSON material object.
+/// @param textures Borrowed table of loaded texture handles.
+/// @param tex_count Number of readable texture slots.
+/// @param cubemaps Borrowed table of loaded Cubemap3D payloads.
+/// @param cubemap_count Number of readable cubemap slots.
+/// @return New owned Material3D payload, or `NULL` on malformed data/failure.
 static rt_material3d *vscn_parse_material(void *material_obj,
                                           void **textures,
                                           int tex_count,
@@ -950,6 +1076,10 @@ static rt_material3d *vscn_parse_material(void *material_obj,
 
 /// @brief Validate raw vertex payloads loaded from VSCN before they reach bounds, skinning, or
 ///   backend upload code.
+/// @param vertices Borrowed decoded vertex array.
+/// @param vertex_count Number of readable vertices.
+/// @param bone_count Number of valid skeleton palette entries.
+/// @return Nonzero when all numeric lanes, weights, and referenced bones are valid.
 static int vscn_vertex_payload_is_valid(const vgfx3d_vertex_t *vertices,
                                         uint32_t vertex_count,
                                         int32_t bone_count) {
@@ -983,6 +1113,9 @@ static int vscn_vertex_payload_is_valid(const vgfx3d_vertex_t *vertices,
 }
 
 /// @brief Parse and attach a complete VSCN v4+ morph-target block to @p mesh.
+/// @param mesh Borrowed destination Mesh3D payload.
+/// @param mesh_obj Borrowed parsed JSON mesh object.
+/// @return Nonzero when the optional block is absent or successfully attached.
 static int vscn_parse_mesh_morph_targets(rt_mesh3d *mesh, void *mesh_obj) {
     void *morph_obj = vjson_get(mesh_obj, "morphTargets");
     void *shapes;
@@ -1072,6 +1205,8 @@ fail:
 }
 
 /// @brief Reverse of `vscn_serialize_mesh` — decode base64 buffers and rebuild the mesh.
+/// @param mesh_obj Borrowed parsed JSON mesh object.
+/// @return New owned Mesh3D payload, or `NULL` on malformed data/failure.
 static rt_mesh3d *vscn_parse_mesh(void *mesh_obj) {
     rt_mesh3d *mesh;
     const char *vertex_format;
@@ -1333,6 +1468,8 @@ static rt_mesh3d *vscn_parse_mesh(void *mesh_obj) {
 /// @brief Parse one v3 skeleton object ({"bones": [{name,parent,bindLocal[16],
 ///   inverseBind[16]}...]}) into a retained Skeleton3D. Bones write directly into
 ///   the runtime struct so the serialized inverse-bind matrices round-trip exactly.
+/// @param skel_obj Borrowed parsed JSON skeleton object.
+/// @return New owned Skeleton3D handle, or `NULL` on malformed data/failure.
 static void *vscn_parse_skeleton(void *skel_obj) {
     void *bones_arr;
     int64_t bone_count;
@@ -1389,6 +1526,8 @@ fail:
 
 /// @brief Parse one v3 animation clip ({name,duration,looping,keyframeFormat,
 ///   channels:[{bone,keyCount,keyframesBase64}...]}) into a retained Animation3D.
+/// @param anim_obj Borrowed parsed JSON skeletal-animation object.
+/// @return New owned Animation3D handle, or `NULL` on malformed data/failure.
 static void *vscn_parse_animation(void *anim_obj) {
     const char *name;
     const char *format;
@@ -1456,6 +1595,8 @@ fail:
 }
 
 /// @brief Parse one complete VSCN v4+ node/object/morph/camera animation clip.
+/// @param animation_obj Borrowed parsed JSON node-animation object.
+/// @return New owned NodeAnimation3D handle, or `NULL` on malformed data/failure.
 static void *vscn_parse_node_animation(void *animation_obj) {
     const char *name;
     const char *format;
@@ -1586,6 +1727,8 @@ static void *vscn_parse_node_animation(void *animation_obj) {
 }
 
 /// @brief Parse one VSCN v4+ camera, preserving projection parameters and full view transform.
+/// @param camera_obj Borrowed parsed JSON camera object.
+/// @return New owned Camera3D handle, or `NULL` on malformed data/failure.
 static void *vscn_parse_camera(void *camera_obj) {
     void *eye;
     void *view;
@@ -1636,6 +1779,8 @@ fail:
 /// @details Reads type, direction, color, intensity, attenuation, and spot-cone
 ///          cosines from the vjson object. Defaults to a point light (type 1) when
 ///          the type field is absent or out of range [0–3].
+/// @param light_obj Borrowed parsed JSON light object.
+/// @return New owned Light3D payload, or `NULL` on malformed data/failure.
 static rt_light3d *vscn_parse_light(void *light_obj) {
     rt_light3d *light;
     void *arr;
@@ -1731,6 +1876,9 @@ fail:
 }
 
 /// @brief Parse one canonical decimal i64 without JSON-number precision loss.
+/// @param value Borrowed runtime string containing the canonical decimal representation.
+/// @param out Output receiving the exact signed 64-bit value.
+/// @return Nonzero when the complete string is canonical and in range.
 static int vscn_parse_metadata_i64(rt_string value, int64_t *out) {
     const char *text;
     int64_t length;
@@ -1773,6 +1921,10 @@ static int vscn_parse_metadata_i64(rt_string value, int64_t *out) {
 }
 
 /// @brief Parse a bounded tagged metadata map onto one newly-created node.
+/// @param node Borrowed destination SceneNode3D payload.
+/// @param node_obj Borrowed parsed JSON node object.
+/// @param version Validated VSCN version; metadata requires version 6 or newer.
+/// @return Nonzero when the optional map is absent or fully published, otherwise zero.
 static int vscn_parse_node_metadata(rt_scene_node3d *node, void *node_obj, int64_t version) {
     void *metadata;
     void *keys;
@@ -1855,6 +2007,17 @@ done:
 }
 
 /// @brief Parse one scene node's fields, leaving child attachment to the iterative tree walker.
+/// @param node_obj Borrowed parsed JSON node object.
+/// @param meshes Borrowed loaded Mesh3D table.
+/// @param mesh_count Number of readable mesh slots.
+/// @param materials Borrowed loaded Material3D table.
+/// @param material_count Number of readable material slots.
+/// @param variant_count Validated asset material-variant count.
+/// @param cameras Borrowed loaded Camera3D table.
+/// @param camera_count Number of readable camera slots.
+/// @param version Validated VSCN document version.
+/// @param io_error Optional output set nonzero for malformed data/failure.
+/// @return New owned detached SceneNode3D payload, or `NULL`.
 static rt_scene_node3d *vscn_parse_node_fields(void *node_obj,
                                                rt_mesh3d **meshes,
                                                int mesh_count,
@@ -2090,6 +2253,17 @@ static rt_scene_node3d *vscn_parse_node_fields(void *node_obj,
 }
 
 /// @brief Iteratively rebuild a scene-node subtree from JSON.
+/// @param node_obj Borrowed parsed JSON subtree root.
+/// @param meshes Borrowed loaded Mesh3D table.
+/// @param mesh_count Number of readable mesh slots.
+/// @param materials Borrowed loaded Material3D table.
+/// @param material_count Number of readable material slots.
+/// @param variant_count Validated asset material-variant count.
+/// @param cameras Borrowed loaded Camera3D table.
+/// @param camera_count Number of readable camera slots.
+/// @param version Validated VSCN document version.
+/// @param io_error Optional output set nonzero for malformed data/failure.
+/// @return New owned retained subtree root, or `NULL`.
 static rt_scene_node3d *vscn_parse_node(void *node_obj,
                                         rt_mesh3d **meshes,
                                         int mesh_count,
@@ -2233,6 +2407,16 @@ static char *vscn_read_file(const char *filepath, size_t *out_size) {
 }
 
 /// @brief Parse `nodes_arr` into scene-graph children of @p scene's root (no-op when array absent).
+/// @param target_root Borrowed destination SceneNode3D root.
+/// @param nodes_arr Borrowed optional parsed JSON node sequence.
+/// @param meshes Borrowed loaded Mesh3D table.
+/// @param mesh_count Number of readable mesh slots.
+/// @param materials Borrowed loaded Material3D table.
+/// @param material_count Number of readable material slots.
+/// @param variant_count Validated asset material-variant count.
+/// @param cameras Borrowed loaded Camera3D table.
+/// @param camera_count Number of readable camera slots.
+/// @param version Validated VSCN document version.
 /// @return 1 on success, 0 on a node parse failure (the offending node is released).
 static int vscn_load_nodes_into_root(rt_scene_node3d *target_root,
                                      void *nodes_arr,
@@ -2277,6 +2461,8 @@ static int vscn_load_nodes_into_root(rt_scene_node3d *target_root,
 }
 
 /// @brief Copy a NUL-terminated VSCN metadata string into native ownership.
+/// @param text Borrowed NUL-terminated source.
+/// @return Caller-owned exact copy, or `NULL` on invalid input/allocation failure.
 static char *vscn_strdup_cstr(const char *text) {
     size_t length;
     char *copy;
@@ -2308,18 +2494,31 @@ static char *vscn_strdup_cstr(const char *text) {
 #define VSCN_PREFAB_MAX_INSTANCES 4096
 
 typedef struct vscn_prefab_frame {
+    /// Borrowed canonical path for cycle detection.
     const char *canonical_path;
+    /// Borrowed enclosing reference frame.
     const struct vscn_prefab_frame *parent;
+    /// One-based nested prefab depth.
     int depth;
+    /// Borrowed shared remaining-instantiation budget.
     int32_t *instance_budget;
 } vscn_prefab_frame;
 
+/// @brief Parse owned VSCN JSON bytes while threading nested-prefab state.
+/// @param filepath Borrowed diagnostic/source path.
+/// @param json Owned NUL-terminated JSON allocation consumed on every path.
+/// @param file_size Exact JSON byte count excluding the terminator.
+/// @param prefab_stack Borrowed enclosing prefab frame, or `NULL`.
+/// @return New owned Scene3D/Model3D handle, or `NULL` on failure.
 static void *rt_scene3d_load_impl_from_buffer(const char *filepath,
                                               char *json,
                                               size_t file_size,
                                               const vscn_prefab_frame *prefab_stack);
 
 /// @brief Load one referenced scene file with the prefab stack threaded through.
+/// @param path Borrowed runtime-string file path.
+/// @param prefab_stack Borrowed current prefab-resolution frame.
+/// @return New owned loaded scene handle, or `NULL`.
 static void *vscn_prefab_load_file(rt_string path, const vscn_prefab_frame *prefab_stack) {
     const char *filepath;
     char *json = NULL;
@@ -2336,6 +2535,7 @@ static void *vscn_prefab_load_file(rt_string path, const vscn_prefab_frame *pref
 }
 
 /// @brief Mark one grafted subtree as transient instance content.
+/// @param node Borrowed subtree root.
 static void vscn_mark_instance_content(rt_scene_node3d *node) {
     if (!node)
         return;
@@ -2347,6 +2547,9 @@ static void vscn_mark_instance_content(rt_scene_node3d *node) {
 /// @brief Resolve and graft one prefab node's referenced content.
 /// @details Every guard failure leaves the node an empty placeholder with
 ///          its reference retained; the surrounding load still succeeds.
+/// @param node Borrowed placeholder node containing a retained prefab path.
+/// @param base_dir Borrowed directory against which relative references resolve.
+/// @param self_frame Borrowed current file's resolution frame and shared budget.
 static void vscn_graft_one_prefab(rt_scene_node3d *node,
                                   rt_string base_dir,
                                   const vscn_prefab_frame *self_frame) {
@@ -2418,6 +2621,9 @@ static void vscn_graft_one_prefab(rt_scene_node3d *node,
 }
 
 /// @brief Resolve every prefab reference in one freshly parsed scene.
+/// @param scene Borrowed freshly parsed Scene3D payload.
+/// @param filepath Borrowed source file path used to resolve relative references.
+/// @param parent_stack Borrowed enclosing prefab frame, or `NULL` at the top level.
 static void vscn_graft_prefabs(rt_scene3d *scene,
                                const char *filepath,
                                const vscn_prefab_frame *parent_stack) {
@@ -2490,6 +2696,11 @@ static void vscn_graft_prefabs(rt_scene3d *scene,
 /// @details Owns @p json (a NUL-terminated malloc buffer of @p file_size bytes) and frees it
 ///   on every path. @p filepath is used for diagnostics only — no file IO happens here, which
 ///   lets streaming commit worker-staged VSCN bytes without touching the disk on the main thread.
+/// @param filepath Borrowed diagnostic/source path, or `NULL` for memory input.
+/// @param json Owned NUL-terminated JSON allocation consumed on every path.
+/// @param file_size Exact JSON byte count excluding the terminator.
+/// @param prefab_stack Borrowed enclosing prefab frame, or `NULL`.
+/// @return New owned Scene3D/Model3D handle, or `NULL` after transactional rollback.
 static void *rt_scene3d_load_impl_from_buffer(const char *filepath,
                                               char *json,
                                               size_t file_size,
@@ -2860,6 +3071,9 @@ fail:
     return NULL;
 }
 
+/// @brief Read and parse one VSCN file without managing the public asset-error scope.
+/// @param path Borrowed runtime-string file path.
+/// @return New owned Scene3D/Model3D handle, or `NULL`.
 static void *rt_scene3d_load_impl(rt_string path) {
     const char *filepath;
     char *json = NULL;
@@ -2881,6 +3095,10 @@ static void *rt_scene3d_load_impl(rt_string path) {
 /// @details Copies @p text so the caller keeps ownership of its buffer. @p path is used for
 ///   diagnostics only. Returns NULL on parse failure with the asset-error state populated —
 ///   never traps, matching the recoverable-cell contract of the streaming loader.
+/// @param path Borrowed optional diagnostic/source path.
+/// @param text Borrowed JSON bytes copied before parsing.
+/// @param len Exact byte count excluding any caller terminator.
+/// @return New owned Scene3D/Model3D handle, or `NULL` after recoverable failure.
 void *rt_scene3d_load_from_memory(rt_string path, const char *text, size_t len) {
     rt_asset_error_begin_load();
     if (!text || len == 0) {
@@ -2911,6 +3129,9 @@ void *rt_scene3d_load_from_memory(rt_string path, const char *text, size_t len) 
     return scene;
 }
 
+/// @brief Load a VSCN scene or asset document from a filesystem path.
+/// @param path Borrowed non-NULL runtime-string file path.
+/// @return New owned Scene3D/Model3D handle, or `NULL` with asset-error state populated.
 void *rt_scene3d_load(rt_string path) {
     rt_asset_error_begin_load();
     if (!path) {

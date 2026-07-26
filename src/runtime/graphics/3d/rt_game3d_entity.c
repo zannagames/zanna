@@ -23,6 +23,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements Game3D Entity3D composition, hierarchy, transforms, and physics binding.
+/// @details Entity3D coordinates retained scene, render, animation, behavior,
+///          combat, and physics components around one SceneNode3D. The API
+///          preserves fluent return semantics, propagates selected properties to
+///          the node/body, rejects stale handles, and performs transactional
+///          rollback when hierarchy or physics registration cannot complete.
+
 #include "rt_animcontroller3d.h"
 #include "rt_asset.h"
 #include "rt_audio.h"
@@ -75,6 +83,11 @@
 #include <string.h>
 
 /// @brief Push an opaque SceneNode3D handle onto a growable traversal stack.
+/// @param[in,out] stack_io Address of the heap stack pointer.
+/// @param[in,out] count_io Address of the occupied-slot count.
+/// @param[in,out] capacity_io Address of the allocated-slot count.
+/// @param node Node to append; NULL is treated as a successful no-op.
+/// @return Non-zero on success, or zero when capacity growth overflows or allocation fails.
 static int game3d_node_stack_push(void ***stack_io,
                                   size_t *count_io,
                                   size_t *capacity_io,
@@ -104,6 +117,7 @@ static int game3d_node_stack_push(void ***stack_io,
 
 /// @brief GC finalizer for an entity: release child entities, node/mesh/material/body/anim/name
 ///   references it owns, then free the child array.
+/// @param obj Entity3D storage being finalized; NULL is ignored.
 static void game3d_entity_finalize(void *obj) {
     rt_game3d_entity *entity = (rt_game3d_entity *)obj;
     int32_t child_count;
@@ -147,6 +161,8 @@ static void game3d_entity_finalize(void *obj) {
 
 /// @brief Allocate a bare entity wrapping a fresh scene node, on the DYNAMIC layer
 ///   colliding with everything; installs the finalizer and traps on OOM.
+/// @return A newly allocated live Entity3D retaining a SceneNode3D and empty
+///         name, or NULL after entity/node allocation failure.
 void *rt_game3d_entity_new(void) {
     rt_game3d_entity *entity =
         (rt_game3d_entity *)rt_obj_new_i64(RT_G3D_GAME3D_ENTITY_CLASS_ID, (int64_t)sizeof(*entity));
@@ -173,6 +189,9 @@ void *rt_game3d_entity_new(void) {
 }
 
 /// @brief Allocate an entity and assign the given mesh and material. See header.
+/// @param mesh Mesh3D to retain and mirror onto the new node, or NULL.
+/// @param material Material3D to retain and mirror onto the new node, or NULL.
+/// @return A newly allocated Entity3D, or NULL when base entity allocation fails.
 void *rt_game3d_entity_of(void *mesh, void *material) {
     rt_game3d_entity *entity = (rt_game3d_entity *)rt_game3d_entity_new();
     if (!entity)
@@ -278,12 +297,17 @@ void *rt_game3d_entity_from_node(void *root) {
 }
 
 /// @brief Get the entity's stable id (0 if invalid or stale).
+/// @param obj Entity3D runtime handle.
+/// @return The positive world-assigned identifier, or zero before assignment or
+///         for an invalid/stale entity.
 int64_t rt_game3d_entity_get_id(void *obj) {
     rt_game3d_entity *entity = game3d_entity_checked(obj, "Game3D.Entity3D.get_Id: invalid entity");
     return entity && entity->id > 0 ? entity->id : 0;
 }
 
 /// @brief Get the entity's scene node (NULL if invalid).
+/// @param obj Entity3D runtime handle.
+/// @return The validated retained SceneNode3D pointer, or NULL.
 void *rt_game3d_entity_get_node(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.get_Node: invalid entity");
@@ -291,6 +315,8 @@ void *rt_game3d_entity_get_node(void *obj) {
 }
 
 /// @brief Get the entity's mesh (NULL if none/invalid).
+/// @param obj Entity3D runtime handle.
+/// @return The validated retained Mesh3D pointer, or NULL.
 void *rt_game3d_entity_get_mesh(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.get_Mesh: invalid entity");
@@ -298,11 +324,15 @@ void *rt_game3d_entity_get_mesh(void *obj) {
 }
 
 /// @brief Property setter for the mesh (delegates to the fluent setMesh).
+/// @param obj Entity3D runtime handle.
+/// @param mesh Mesh3D to retain, or NULL to clear the mesh.
 void rt_game3d_entity_set_mesh_prop(void *obj, void *mesh) {
     (void)rt_game3d_entity_set_mesh(obj, mesh);
 }
 
 /// @brief Get the entity's material (NULL if none/invalid).
+/// @param obj Entity3D runtime handle.
+/// @return The validated retained Material3D pointer, or NULL.
 void *rt_game3d_entity_get_material(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.get_Material: invalid entity");
@@ -310,11 +340,15 @@ void *rt_game3d_entity_get_material(void *obj) {
 }
 
 /// @brief Property setter for the material (delegates to the fluent setMaterial).
+/// @param obj Entity3D runtime handle.
+/// @param material Material3D to retain, or NULL to clear the material.
 void rt_game3d_entity_set_material_prop(void *obj, void *material) {
     (void)rt_game3d_entity_set_material(obj, material);
 }
 
 /// @brief Get the entity's physics body (NULL if unattached/invalid).
+/// @param obj Entity3D runtime handle.
+/// @return The validated retained Physics3DBody pointer, or NULL.
 void *rt_game3d_entity_get_body(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.get_Body: invalid entity");
@@ -322,6 +356,8 @@ void *rt_game3d_entity_get_body(void *obj) {
 }
 
 /// @brief Get the entity's animator (NULL if none/invalid).
+/// @param obj Entity3D runtime handle.
+/// @return The validated retained Animator3D pointer, or NULL.
 void *rt_game3d_entity_get_anim(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.get_Anim: invalid entity");
@@ -329,6 +365,9 @@ void *rt_game3d_entity_get_anim(void *obj) {
 }
 
 /// @brief Get the entity's collision layer (0 if invalid).
+/// @param obj Entity3D runtime handle.
+/// @return The stored single-bit layer, the dynamic fallback for corrupt state,
+///         or zero for an invalid/stale entity.
 int64_t rt_game3d_entity_get_layer(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.get_Layer: invalid entity");
@@ -337,11 +376,16 @@ int64_t rt_game3d_entity_get_layer(void *obj) {
 }
 
 /// @brief Property setter for the collision layer (delegates to setLayer).
+/// @param obj Entity3D runtime handle.
+/// @param layer Positive single-bit collision layer.
 void rt_game3d_entity_set_layer_prop(void *obj, int64_t layer) {
     (void)rt_game3d_entity_set_layer(obj, layer);
 }
 
 /// @brief Get a fresh LayerMask reflecting the entity's collision mask bits.
+/// @param obj Entity3D runtime handle.
+/// @return A newly allocated LayerMask copy, or NULL for an invalid/stale entity
+///         or allocation failure.
 void *rt_game3d_entity_get_collision_mask(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.get_CollisionMask: invalid entity");
@@ -349,11 +393,15 @@ void *rt_game3d_entity_get_collision_mask(void *obj) {
 }
 
 /// @brief Property setter for the collision mask (delegates to setCollisionMask).
+/// @param obj Entity3D runtime handle.
+/// @param mask LayerMask whose bits are copied into the entity and body.
 void rt_game3d_entity_set_collision_mask_prop(void *obj, void *mask) {
     (void)rt_game3d_entity_set_collision_mask(obj, mask);
 }
 
 /// @brief Get the entity's name, or "" if unset/invalid.
+/// @param obj Entity3D runtime handle.
+/// @return The retained runtime name string, or an empty runtime string.
 rt_string rt_game3d_entity_get_name(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.get_Name: invalid entity");
@@ -363,12 +411,19 @@ rt_string rt_game3d_entity_get_name(void *obj) {
 }
 
 /// @brief Property setter for the name (delegates to the fluent setName).
+/// @param obj Entity3D runtime handle.
+/// @param name Runtime string to retain; NULL is normalized to empty.
 void rt_game3d_entity_set_name_prop(void *obj, rt_string name) {
     (void)rt_game3d_entity_set_name(obj, name);
 }
 
 /// @brief Fluent: set local position (updating the node and any attached body) and
 ///   return the entity.
+/// @param obj Entity3D runtime handle.
+/// @param x Requested local X coordinate.
+/// @param y Requested local Y coordinate.
+/// @param z Requested local Z coordinate.
+/// @return @p obj for fluent chaining, including invalid/stale inputs.
 void *rt_game3d_entity_set_position(void *obj, double x, double y, double z) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.setPosition: invalid entity");
@@ -383,6 +438,9 @@ void *rt_game3d_entity_set_position(void *obj, double x, double y, double z) {
 }
 
 /// @brief Fluent: set local position from a Vec3; traps if `position` is not a Vec3.
+/// @param obj Entity3D runtime handle.
+/// @param position Vec3 supplying local coordinates.
+/// @return @p obj for fluent chaining; invalid vectors leave the transform unchanged.
 void *rt_game3d_entity_set_position_v(void *obj, void *position) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.setPositionV: invalid entity");
@@ -403,11 +461,20 @@ void *rt_game3d_entity_set_position_v(void *obj, void *position) {
 }
 
 /// @brief Fluent: set a uniform scale and return the entity.
+/// @param obj Entity3D runtime handle.
+/// @param scale Uniform local scale; invalid/near-zero values normalize through
+///              the shared scale sanitizer.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_entity_set_scale(void *obj, double scale) {
     return rt_game3d_entity_set_scale_xyz(obj, scale, scale, scale);
 }
 
 /// @brief Fluent: set a non-uniform XYZ scale on the node and return the entity.
+/// @param obj Entity3D runtime handle.
+/// @param x Local X scale.
+/// @param y Local Y scale.
+/// @param z Local Z scale.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_entity_set_scale_xyz(void *obj, double x, double y, double z) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.setScaleXYZ: invalid entity");
@@ -423,6 +490,11 @@ void *rt_game3d_entity_set_scale_xyz(void *obj, double x, double y, double z) {
 
 /// @brief Fluent: set rotation from Euler angles (degrees), converting to a quaternion;
 ///   returns the entity.
+/// @param obj Entity3D runtime handle.
+/// @param x_deg Local X-axis rotation in degrees.
+/// @param y_deg Local Y-axis rotation in degrees.
+/// @param z_deg Local Z-axis rotation in degrees.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_entity_set_rotation_euler(void *obj, double x_deg, double y_deg, double z_deg) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.setRotationEuler: invalid entity");
@@ -442,6 +514,9 @@ void *rt_game3d_entity_set_rotation_euler(void *obj, double x_deg, double y_deg,
 
 /// @brief Fluent: assign the mesh (validated as Mesh3D), mirror it onto the node, and
 ///   return the entity.
+/// @param obj Entity3D runtime handle.
+/// @param mesh Mesh3D to retain, or NULL to clear the entity and node mesh.
+/// @return @p obj for fluent chaining; wrong runtime classes trap without mutation.
 void *rt_game3d_entity_set_mesh(void *obj, void *mesh) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.setMesh: invalid entity");
@@ -462,6 +537,9 @@ void *rt_game3d_entity_set_mesh(void *obj, void *mesh) {
 
 /// @brief Fluent: assign the material (validated as Material3D), mirror it onto the
 ///   node, and return the entity.
+/// @param obj Entity3D runtime handle.
+/// @param material Material3D to retain, or NULL to clear the entity and node material.
+/// @return @p obj for fluent chaining; wrong runtime classes trap without mutation.
 void *rt_game3d_entity_set_material(void *obj, void *material) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.setMaterial: invalid entity");
@@ -484,6 +562,8 @@ void *rt_game3d_entity_set_material(void *obj, void *material) {
 ///   walked as an iterative depth-first traversal over an explicit heap stack (avoids
 ///   C-stack overflow on deep hierarchies). If no node in the subtree carries a mesh,
 ///   the mesh is assigned to `root` as a fallback. Traps on stack-allocation failure.
+/// @param root SceneNode3D at the root of the traversal; NULL is a no-op.
+/// @param mesh Mesh3D value assigned to matching nodes; may be NULL to clear them.
 /// @return Count of nodes that received the mesh (>= 1 when `root` is non-NULL).
 static int game3d_entity_set_mesh_subtree(void *root, void *mesh) {
     void **stack = NULL;
@@ -526,6 +606,8 @@ static int game3d_entity_set_mesh_subtree(void *root, void *mesh) {
 /// @brief Assign `material` to every node in the subtree rooted at `root`, walked as an
 ///   iterative depth-first traversal over an explicit heap stack (avoids C-stack overflow
 ///   on deep hierarchies). Traps on stack-allocation failure.
+/// @param root SceneNode3D at the root of the traversal; NULL is a no-op.
+/// @param material Material3D value assigned to every visited node; may be NULL.
 static void game3d_entity_set_material_subtree(void *root, void *material) {
     void **stack = NULL;
     size_t count = 0;
@@ -557,6 +639,9 @@ static void game3d_entity_set_material_subtree(void *root, void *material) {
 
 /// @brief Fluent: assign the mesh (validated as Mesh3D) to the entity and propagate it
 ///   to every mesh-bearing node of its scene-node subtree; returns the entity.
+/// @param obj Entity3D runtime handle.
+/// @param mesh Mesh3D to retain and propagate, or NULL to clear matching nodes.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_entity_set_mesh_recursive(void *obj, void *mesh) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.setMeshRecursive: invalid entity");
@@ -575,6 +660,9 @@ void *rt_game3d_entity_set_mesh_recursive(void *obj, void *mesh) {
 
 /// @brief Fluent: assign the material (validated as Material3D) to the entity and
 ///   propagate it to every node of its scene-node subtree; returns the entity.
+/// @param obj Entity3D runtime handle.
+/// @param material Material3D to retain and propagate, or NULL to clear the subtree.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_entity_set_material_recursive(void *obj, void *material) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.setMaterialRecursive: invalid entity");
@@ -592,6 +680,13 @@ void *rt_game3d_entity_set_material_recursive(void *obj, void *material) {
 }
 
 /// @brief Restore a previously valid body after attachBody failed partway through.
+/// @details Reinstates layer/mask and node binding, and for spawned entities
+///          ensures both the physics world and body index contain the prior body.
+///          A failed rollback clears the body slot and any node binding.
+/// @param entity Entity whose prior binding is restored.
+/// @param world Owning World3D, used only for spawned physics registration.
+/// @param old_body Previously retained Physics3DBody, or NULL to restore no body.
+/// @return Non-zero when the old state was restored, otherwise zero.
 static int game3d_entity_restore_body_binding(rt_game3d_entity *entity,
                                               rt_game3d_world *world,
                                               void *old_body) {
@@ -627,6 +722,13 @@ static int game3d_entity_restore_body_binding(rt_game3d_entity *entity,
 
 /// @brief Fluent: parent `child_obj` under this entity (retaining it and linking the
 ///   nodes), mark this entity a group, and return it.
+/// @details Rejects self-parenting, cycles, destroyed entities, and inconsistent
+///          spawned-world relationships. When the parent is spawned, an unspawned
+///          child subtree is registered transactionally; any node or world-spawn
+///          failure rolls back the entity and scene-node links.
+/// @param obj Parent Entity3D runtime handle.
+/// @param child_obj Child Entity3D to retain and reparent.
+/// @return @p obj for fluent chaining, including rejected operations.
 void *rt_game3d_entity_add_child(void *obj, void *child_obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.addChild: invalid entity");
@@ -710,6 +812,8 @@ void *rt_game3d_entity_add_child(void *obj, void *child_obj) {
 }
 
 /// @brief True if the entity is a group (explicitly flagged or has children).
+/// @param obj Entity3D runtime handle.
+/// @return Non-zero when explicitly grouped or currently owning children.
 int8_t rt_game3d_entity_is_group(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.isGroup: invalid entity");
@@ -718,6 +822,10 @@ int8_t rt_game3d_entity_is_group(void *obj) {
 
 /// @brief Fluent: assign the display name (NULL becomes ""), mirror it onto the node,
 ///   and return the entity.
+/// @param obj Entity3D runtime handle.
+/// @param name Runtime string to retain; NULL is normalized to empty.
+/// @return @p obj for fluent chaining.
+/// @post A spawned entity invalidates its world's name index.
 void *rt_game3d_entity_set_name(void *obj, rt_string name) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.setName: invalid entity");
@@ -736,6 +844,9 @@ void *rt_game3d_entity_set_name(void *obj, rt_string name) {
 
 /// @brief Fluent: set the collision layer (must be a single bit), propagate to the
 ///   body if any, and return the entity.
+/// @param obj Entity3D runtime handle.
+/// @param layer Positive single-bit collision layer.
+/// @return @p obj for fluent chaining; invalid layers trap without mutation.
 void *rt_game3d_entity_set_layer(void *obj, int64_t layer) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.setLayer: invalid entity");
@@ -756,6 +867,9 @@ void *rt_game3d_entity_set_layer(void *obj, int64_t layer) {
 
 /// @brief Fluent: copy a LayerMask's bits into the entity's collision mask, propagate
 ///   to the body if any, and return the entity.
+/// @param obj Entity3D runtime handle.
+/// @param mask_obj LayerMask whose bits are copied.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_entity_set_collision_mask(void *obj, void *mask_obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.setCollisionMask: invalid entity");
@@ -779,6 +893,11 @@ void *rt_game3d_entity_set_collision_mask(void *obj, void *mask_obj) {
 ///   world position, binds node↔body with the def's sync mode, and re-adds the body to
 ///   the physics world when the entity is already spawned. Passing NULL clears the body
 ///   binding. Traps if `body_or_def` is neither a Physics3DBody nor a BodyDef.
+/// @param obj Entity3D runtime handle.
+/// @param body_or_def Existing Physics3DBody, BodyDef to materialize, or NULL
+///                    to detach the current body.
+/// @return @p obj for fluent chaining. Failed physics insertion or index
+///         allocation restores the prior body, layer, mask, and node binding.
 void *rt_game3d_entity_attach_body(void *obj, void *body_or_def) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.attachBody: invalid entity");
@@ -868,6 +987,12 @@ void *rt_game3d_entity_attach_body(void *obj, void *body_or_def) {
 }
 
 /// @brief Apply a linear impulse to the entity's body; traps if it has no body.
+/// @param obj Entity3D runtime handle.
+/// @param x World-space impulse X component.
+/// @param y World-space impulse Y component.
+/// @param z World-space impulse Z component.
+/// @details Components are finite-clamped against a mass-scaled limit so the
+///          resulting velocity change stays within the controller speed envelope.
 void rt_game3d_entity_apply_impulse(void *obj, double x, double y, double z) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.applyImpulse: invalid entity");
@@ -893,6 +1018,10 @@ void rt_game3d_entity_apply_impulse(void *obj, double x, double y, double z) {
 }
 
 /// @brief Set the entity body's linear velocity; traps if it has no body.
+/// @param obj Entity3D runtime handle.
+/// @param x World-space velocity X component.
+/// @param y World-space velocity Y component.
+/// @param z World-space velocity Z component.
 void rt_game3d_entity_set_velocity(void *obj, double x, double y, double z) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.setVelocity: invalid entity");
@@ -910,6 +1039,9 @@ void rt_game3d_entity_set_velocity(void *obj, double x, double y, double z) {
 }
 
 /// @brief Get the entity's local position as a Vec3 (origin if no node).
+/// @param obj Entity3D runtime handle.
+/// @return A position Vec3 supplied by the node, or a newly allocated origin
+///         vector when no valid node is available.
 void *rt_game3d_entity_position(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.position: invalid entity");
@@ -918,6 +1050,9 @@ void *rt_game3d_entity_position(void *obj) {
 }
 
 /// @brief Get the entity's world-space position as a Vec3 (origin if no node).
+/// @param obj Entity3D runtime handle.
+/// @return A world-position Vec3 supplied by the node, or a newly allocated
+///         origin vector when no valid node is available.
 void *rt_game3d_entity_world_position(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.worldPosition: invalid entity");
@@ -927,6 +1062,9 @@ void *rt_game3d_entity_world_position(void *obj) {
 
 /// @brief Read an entity's world-space position into out x/y/z (resolving body or node as
 /// appropriate).
+/// @param entity Entity whose live SceneNode3D transform is queried.
+/// @param[out] out_pos Three-element destination, initialized to the origin
+///                     before validation and finite-clamped on success.
 /// @return 1 on success, 0 if the entity has no resolvable transform.
 int game3d_entity_world_position_components(rt_game3d_entity *entity, double out_pos[3]) {
     int8_t ok;
@@ -950,6 +1088,8 @@ int game3d_entity_world_position_components(rt_game3d_entity *entity, double out
 }
 
 /// @brief True if the entity is currently spawned into a world.
+/// @param obj Entity3D runtime handle; destroyed entities remain queryable.
+/// @return Non-zero when the spawned flag is set, otherwise zero.
 int8_t rt_game3d_entity_is_spawned(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked_allow_destroyed(obj, "Game3D.Entity3D.isSpawned: invalid entity");
@@ -957,6 +1097,8 @@ int8_t rt_game3d_entity_is_spawned(void *obj) {
 }
 
 /// @brief True if the entity has been despawned/destroyed.
+/// @param obj Entity3D runtime handle; destroyed entities remain queryable.
+/// @return Non-zero when the destroyed flag is set, otherwise zero.
 int8_t rt_game3d_entity_is_destroyed(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked_allow_destroyed(obj, "Game3D.Entity3D.isDestroyed: invalid entity");
@@ -970,6 +1112,14 @@ int8_t rt_game3d_entity_is_destroyed(void *obj) {
 ///   simulation step drives the child's world transform from the bone's
 ///   composited pose. Requires this entity to have an attached Animator3D
 ///   whose controller has a skeleton containing @p bone_name; traps otherwise.
+/// @param obj Parent Entity3D whose animator supplies the skeleton.
+/// @param child_obj Child Entity3D to parent and socket.
+/// @param bone_name Runtime string naming a skeleton bone.
+/// @param offset_x Bone-space X offset.
+/// @param offset_y Bone-space Y offset.
+/// @param offset_z Bone-space Z offset.
+/// @return @p obj for fluent chaining. Parenting or skeleton validation
+///         failures leave the socket unattached.
 void *rt_game3d_entity_attach_to_bone_offset(void *obj,
                                              void *child_obj,
                                              rt_string bone_name,
@@ -1014,6 +1164,10 @@ void *rt_game3d_entity_attach_to_bone_offset(void *obj,
 }
 
 /// @brief Attach a child entity to a named bone with no offset.
+/// @param obj Parent Entity3D whose animator supplies the skeleton.
+/// @param child_obj Child Entity3D to parent and socket.
+/// @param bone_name Runtime string naming a skeleton bone.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_entity_attach_to_bone(void *obj, void *child_obj, rt_string bone_name) {
     return rt_game3d_entity_attach_to_bone_offset(obj, child_obj, bone_name, 0.0, 0.0, 0.0);
 }
@@ -1022,6 +1176,9 @@ void *rt_game3d_entity_attach_to_bone(void *obj, void *child_obj, rt_string bone
 ///   animator skeleton against the owning world's physics. Returns the
 ///   Ragdoll3D handle, or NULL when the entity lacks an animator/skeleton,
 ///   node, or spawned world.
+/// @param obj Entity3D runtime handle.
+/// @return The cached active Ragdoll3D, or NULL when prerequisites or
+///         allocation/activation fail.
 void *rt_game3d_entity_enable_ragdoll(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.enableRagdoll: invalid entity");
@@ -1054,6 +1211,10 @@ void *rt_game3d_entity_enable_ragdoll(void *obj) {
 
 /// @brief Deactivate the entity's ragdoll (if any), blending back to animation
 ///   over @p blend_seconds. Returns true when a ragdoll was active.
+/// @param obj Entity3D runtime handle.
+/// @param blend_seconds Requested animation-recovery blend duration, forwarded
+///                      to Ragdoll3D.
+/// @return Non-zero when an active ragdoll was deactivated, otherwise zero.
 int8_t rt_game3d_entity_disable_ragdoll(void *obj, double blend_seconds) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.disableRagdoll: invalid entity");
@@ -1067,6 +1228,8 @@ int8_t rt_game3d_entity_disable_ragdoll(void *obj, double blend_seconds) {
 }
 
 /// @brief Get the entity's cached Ragdoll3D (NULL before enableRagdoll).
+/// @param obj Entity3D runtime handle.
+/// @return The validated cached Ragdoll3D pointer, or NULL.
 void *rt_game3d_entity_get_ragdoll(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.get_ragdoll: invalid entity");
@@ -1075,6 +1238,8 @@ void *rt_game3d_entity_get_ragdoll(void *obj) {
 
 /// @brief Remove this entity's bone-socket binding (installed by a parent's
 ///   AttachToBone); the entity keeps its last transform and stays parented.
+/// @param obj Entity3D runtime handle.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_entity_detach_from_bone(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.detachFromBone: invalid entity");
@@ -1086,6 +1251,10 @@ void *rt_game3d_entity_detach_from_bone(void *obj) {
 
 /// @brief Fluent: attach a Behavior3D that the world ticks each simulation
 ///   step, or pass null to detach the current behavior.
+/// @param obj Entity3D runtime handle.
+/// @param behavior Behavior3D to retain, or NULL to detach. Other runtime
+///                 classes trap without replacing the current behavior.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_entity_attach_behavior(void *obj, void *behavior) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.attachBehavior: invalid entity");
@@ -1100,6 +1269,8 @@ void *rt_game3d_entity_attach_behavior(void *obj, void *behavior) {
 }
 
 /// @brief The entity's attached Behavior3D (NULL if none).
+/// @param obj Entity3D runtime handle.
+/// @return The validated retained Behavior3D pointer, or NULL.
 void *rt_game3d_entity_get_behavior(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.getBehavior: invalid entity");

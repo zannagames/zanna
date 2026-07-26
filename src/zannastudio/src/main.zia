@@ -38,6 +38,8 @@ bind "ui/command_input";
 bind "ui/workspace_edit_preview";
 bind "ui/activity_bar";
 bind "ui/run_debug_view";
+bind "ui/scene_context_menus_2d";
+bind "ui/scene_context_menus_3d";
 bind "ui/scene_editor_2d";
 bind "ui/scene_editor_3d";
 bind "app/build_info";
@@ -575,9 +577,15 @@ func main() {
     engine.editor.Focus();
     var scene2DEditor = new scene_editor_2d.SceneEditor2D();
     scene2DEditor.Setup(shell.workbench.scene2DHost, shell.app);
+    var scene2DContextMenus =
+        new scene_context_menus_2d.SceneContextMenus2D();
+    scene2DContextMenus.Setup();
     scene2DEditor.SetWorkspaceContext(projMgr);
     var scene3DEditor = new scene_editor_3d.SceneEditor3D();
     scene3DEditor.Setup(shell.workbench.scene3DHost, shell.app);
+    var scene3DContextMenus =
+        new scene_context_menus_3d.SceneContextMenus3D();
+    scene3DContextMenus.Setup();
     scene3DEditor.SetWorkspaceContext(projMgr);
     // ADR 0191: the interactive viewport requests the platform GPU backend
     // (falling back to software truthfully). Probes never enable this, so
@@ -1013,7 +1021,17 @@ func main() {
                                  activeVisualDoc!.isModified);
                 shell.SetStatusRight(file_commands.DocStatusLabel(activeVisualDoc));
             }
+            if scene2DContextMenus.Pump(scene2DEditor) {
+                tabs.SetModified(docMgr.activeIndex,
+                                 activeVisualDoc!.isModified);
+                shell.SetStatusRight(file_commands.DocStatusLabel(activeVisualDoc));
+            }
             if scene3DEditor.Pump(activeVisualDoc) {
+                tabs.SetModified(docMgr.activeIndex,
+                                 activeVisualDoc!.isModified);
+                shell.SetStatusRight(file_commands.DocStatusLabel(activeVisualDoc));
+            }
+            if scene3DContextMenus.Pump(scene3DEditor) {
                 tabs.SetModified(docMgr.activeIndex,
                                  activeVisualDoc!.isModified);
                 shell.SetStatusRight(file_commands.DocStatusLabel(activeVisualDoc));

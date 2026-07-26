@@ -12,7 +12,7 @@ This document provides the complete specification for the Zanna C++ system compi
 
 | Aspect | Specification |
 |--------|---------------|
-| **Host Platforms** | macOS (ARM64, x86-64), Linux (x86-64, ARM64) |
+| **Host Platforms** | macOS (ARM64), Linux (x86-64, ARM64) |
 | **Target Platform** | AArch64 only |
 | **C++ Standard** | C++20 |
 | **C Standard** | C17 |

@@ -16,6 +16,14 @@
 //        misc/plans/gui_20260716/01-api-surface.md
 //
 //===----------------------------------------------------------------------===//
+
+/// @file rt_gui_constants.h
+/// @brief Declares stable scalar getters for typed constants in the public GUI runtime API.
+///
+/// @details
+/// The declarations group layout, accessibility, dialog, image, and sorting
+/// ordinals behind deterministic functions that remain available when graphics
+/// support is disabled.
 #pragma once
 
 #include <stdint.h>

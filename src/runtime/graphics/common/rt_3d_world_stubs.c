@@ -297,6 +297,8 @@ void rt_path3d_set_looping(void *p, int8_t l) {
 }
 
 /// @brief Remove all entries from the path3d.
+///
+/// @param p Path3D handle (ignored).
 void rt_path3d_clear(void *p) {
     (void)p;
 }
@@ -396,6 +398,8 @@ void rt_terrain3d_set_cpu_occlusion(void *t, int8_t enabled) {
 
 /// @brief Stub for `Terrain3D.CpuOcclusion` — returns whether CPU occlusion is enabled.
 ///
+/// @param t Terrain3D handle (ignored).
+///
 /// @return `0`.
 int8_t rt_terrain3d_get_cpu_occlusion(void *t) {
     (void)t;
@@ -403,48 +407,80 @@ int8_t rt_terrain3d_get_cpu_occlusion(void *t) {
 }
 
 /// @brief Stub for Terrain3D draw diagnostics; returns `0`.
+///
+/// @param t Terrain3D handle (ignored).
+///
+/// @return `0`, because no chunks were considered.
 int64_t rt_terrain3d_get_last_chunk_count(void *t) {
     (void)t;
     return 0;
 }
 
 /// @brief Stub for Terrain3D draw diagnostics; returns `0`.
+///
+/// @param t Terrain3D handle (ignored).
+///
+/// @return `0`, because no chunks were drawn.
 int64_t rt_terrain3d_get_last_drawn_chunk_count(void *t) {
     (void)t;
     return 0;
 }
 
 /// @brief Stub for Terrain3D draw diagnostics; returns `0`.
+///
+/// @param t Terrain3D handle (ignored).
+///
+/// @return `0`, because no chunks were rejected by the camera frustum.
 int64_t rt_terrain3d_get_last_frustum_culled_chunk_count(void *t) {
     (void)t;
     return 0;
 }
 
 /// @brief Stub for Terrain3D draw diagnostics; returns `0`.
+///
+/// @param t Terrain3D handle (ignored).
+///
+/// @return `0`, because no chunk requested an unavailable LOD mesh.
 int64_t rt_terrain3d_get_last_missing_lod_count(void *t) {
     (void)t;
     return 0;
 }
 
 /// @brief Stub for Terrain3D draw diagnostics; returns `0`.
+///
+/// @param t Terrain3D handle (ignored).
+///
+/// @return `0`, because no chunk LOD selection was clamped.
 int64_t rt_terrain3d_get_last_lod_clamped_chunk_count(void *t) {
     (void)t;
     return 0;
 }
 
 /// @brief Stub for Terrain3D draw diagnostics; returns `0`.
+///
+/// @param t Terrain3D handle (ignored).
+///
+/// @return `0`, because no LOD-zero chunks were drawn.
 int64_t rt_terrain3d_get_last_lod0_chunk_count(void *t) {
     (void)t;
     return 0;
 }
 
 /// @brief Stub for Terrain3D draw diagnostics; returns `0`.
+///
+/// @param t Terrain3D handle (ignored).
+///
+/// @return `0`, because no LOD-one chunks were drawn.
 int64_t rt_terrain3d_get_last_lod1_chunk_count(void *t) {
     (void)t;
     return 0;
 }
 
 /// @brief Stub for Terrain3D draw diagnostics; returns `0`.
+///
+/// @param t Terrain3D handle (ignored).
+///
+/// @return `0`, because no LOD-two chunks were drawn.
 int64_t rt_terrain3d_get_last_lod2_chunk_count(void *t) {
     (void)t;
     return 0;
@@ -507,6 +543,10 @@ void rt_terrain3d_set_splat_map(void *t, void *p) {
 }
 
 /// @brief Stub for `Terrain3D.SetSplatMapAt` — indexed splat map bind. Silent no-op stub.
+///
+/// @param t     Terrain3D handle (ignored).
+/// @param index Splat-map index (ignored).
+/// @param p     Pixels handle containing four layer weights (ignored).
 void rt_terrain3d_set_splat_map_at(void *t, int64_t index, void *p) {
     (void)t;
     (void)index;
@@ -514,6 +554,14 @@ void rt_terrain3d_set_splat_map_at(void *t, int64_t index, void *p) {
 }
 
 /// @brief Silent stub for `Terrain3D.SetHole` — no-op; returns -1 (no hole).
+///
+/// @param t     Terrain3D handle (ignored).
+/// @param x     World-space hole center or origin along X (ignored).
+/// @param z     World-space hole center or origin along Z (ignored).
+/// @param width Hole width along X (ignored).
+/// @param depth Hole depth along Z (ignored).
+///
+/// @return `-1`, the invalid hole index.
 int64_t rt_terrain3d_set_hole(void *t, double x, double z, double width, double depth) {
     (void)t;
     (void)x;
@@ -524,6 +572,11 @@ int64_t rt_terrain3d_set_hole(void *t, double x, double z, double width, double 
 }
 
 /// @brief Silent stub for `Terrain3D.RemoveHole` — no-op; returns 0.
+///
+/// @param t     Terrain3D handle (ignored).
+/// @param index Hole index to remove (ignored).
+///
+/// @return `0`, indicating that no hole was removed.
 int8_t rt_terrain3d_remove_hole(void *t, int64_t index) {
     (void)t;
     (void)index;
@@ -531,17 +584,31 @@ int8_t rt_terrain3d_remove_hole(void *t, int64_t index) {
 }
 
 /// @brief Stub for `Terrain3D.ClearHoles`. Silent no-op stub.
+///
+/// @param t Terrain3D handle (ignored).
 void rt_terrain3d_clear_holes(void *t) {
     (void)t;
 }
 
 /// @brief Silent stub for `Terrain3D.get_HoleCount` — no-op; returns 0.
+///
+/// @param t Terrain3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_terrain3d_get_hole_count(void *t) {
     (void)t;
     return 0;
 }
 
 /// @brief Silent stub for the internal hole-mask handoff — no-op; returns NULL.
+///
+/// Initializes each supplied cell-count output to zero.
+///
+/// @param t           Terrain3D handle (ignored).
+/// @param out_cells_x Optional output receiving the mask width in cells.
+/// @param out_cells_z Optional output receiving the mask depth in cells.
+///
+/// @return `NULL`.
 const uint8_t *rt_terrain3d_get_hole_mask_raw(void *t, int32_t *out_cells_x, int32_t *out_cells_z) {
     (void)t;
     if (out_cells_x)
@@ -552,6 +619,12 @@ const uint8_t *rt_terrain3d_get_hole_mask_raw(void *t, int32_t *out_cells_x, int
 }
 
 /// @brief Stub for `Terrain3D.SetSlopeLayer`. Silent no-op stub.
+///
+/// @param t             Terrain3D handle (ignored).
+/// @param layer         Material-layer index (ignored).
+/// @param min_slope_deg Lower slope angle in degrees (ignored).
+/// @param max_slope_deg Upper slope angle in degrees (ignored).
+/// @param sharpness     Transition sharpness at the range boundaries (ignored).
 void rt_terrain3d_set_slope_layer(
     void *t, int64_t layer, double min_slope_deg, double max_slope_deg, double sharpness) {
     (void)t;
@@ -562,6 +635,12 @@ void rt_terrain3d_set_slope_layer(
 }
 
 /// @brief Stub for `Terrain3D.SetHeightLayer`. Silent no-op stub.
+///
+/// @param t         Terrain3D handle (ignored).
+/// @param layer     Material-layer index (ignored).
+/// @param min_y     Minimum world-space height for the layer (ignored).
+/// @param max_y     Maximum world-space height for the layer (ignored).
+/// @param sharpness Transition sharpness at the range boundaries (ignored).
 void rt_terrain3d_set_height_layer(
     void *t, int64_t layer, double min_y, double max_y, double sharpness) {
     (void)t;
@@ -572,11 +651,18 @@ void rt_terrain3d_set_height_layer(
 }
 
 /// @brief Stub for `Terrain3D.RebuildSplatWeights`. Silent no-op stub.
+///
+/// @param t Terrain3D handle (ignored).
 void rt_terrain3d_rebuild_splat_weights(void *t) {
     (void)t;
 }
 
 /// @brief Silent stub for the internal splat-map inspection hook — no-op; returns NULL.
+///
+/// @param t     Terrain3D handle (ignored).
+/// @param index Splat-map index (ignored).
+///
+/// @return `NULL`.
 void *rt_terrain3d_get_splat_map_raw(void *t, int64_t index) {
     (void)t;
     (void)index;
@@ -672,6 +758,14 @@ void *rt_navmesh3d_build(void *m, double r, double h) {
 /// @brief Stub for `NavMesh3D.Bake` — would normally gather Scene3D mesh geometry.
 ///
 /// Silent stub returning NULL.
+///
+/// @param s     Scene3D containing source geometry (ignored).
+/// @param r     Agent radius (ignored).
+/// @param h     Agent height (ignored).
+/// @param slope Maximum walkable slope (ignored).
+/// @param cell  Navmesh rasterization cell size (ignored).
+///
+/// @return `NULL`.
 void *rt_navmesh3d_bake(void *s, double r, double h, double slope, double cell) {
     (void)s;
     (void)r;
@@ -684,6 +778,15 @@ void *rt_navmesh3d_bake(void *s, double r, double h, double slope, double cell) 
 /// @brief Stub for `NavMesh3D.BakeTiled` — tiled scene bake entry point.
 ///
 /// Silent stub returning NULL.
+///
+/// @param s     Scene3D containing source geometry (ignored).
+/// @param tile  Tile edge length in world units (ignored).
+/// @param r     Agent radius (ignored).
+/// @param h     Agent height (ignored).
+/// @param slope Maximum walkable slope (ignored).
+/// @param cell  Navmesh rasterization cell size (ignored).
+///
+/// @return `NULL`.
 void *rt_navmesh3d_bake_tiled(void *s, double tile, double r, double h, double slope, double cell) {
     (void)s;
     (void)tile;
@@ -771,6 +874,11 @@ int64_t rt_navmesh3d_get_triangle_count(void *n) {
     return 0;
 }
 
+/// @brief Return the fallback cost of the most recent absent navmesh path.
+///
+/// @param n NavMesh3D handle (ignored).
+///
+/// @return `0.0`.
 double rt_navmesh3d_get_last_path_cost(void *n) {
     (void)n;
     return 0.0;
@@ -808,6 +916,15 @@ int64_t rt_navmesh3d_get_offmesh_link_count(void *n) {
     return 0;
 }
 
+/// @brief Report that off-mesh link metadata was not updated.
+///
+/// @param n              NavMesh3D handle (ignored).
+/// @param index          Off-mesh link index (ignored).
+/// @param kind           Traversal-kind name, such as jump or ladder (ignored).
+/// @param traversal_cost Authored traversal cost (ignored).
+/// @param state_flags    Application-defined availability flags (ignored).
+///
+/// @return `0`.
 int8_t rt_navmesh3d_set_offmesh_link_metadata(
     void *n, int64_t index, rt_string kind, double traversal_cost, int64_t state_flags) {
     (void)n;
@@ -818,18 +935,36 @@ int8_t rt_navmesh3d_set_offmesh_link_metadata(
     return 0;
 }
 
+/// @brief Return the fallback traversal kind for an unavailable off-mesh link.
+///
+/// @param n     NavMesh3D handle (ignored).
+/// @param index Off-mesh link index (ignored).
+///
+/// @return An empty owned runtime string.
 rt_string rt_navmesh3d_get_offmesh_link_kind(void *n, int64_t index) {
     (void)n;
     (void)index;
     return rt_string_from_bytes("", 0);
 }
 
+/// @brief Return the fallback traversal cost for an unavailable off-mesh link.
+///
+/// @param n     NavMesh3D handle (ignored).
+/// @param index Off-mesh link index (ignored).
+///
+/// @return `0.0`.
 double rt_navmesh3d_get_offmesh_link_traversal_cost(void *n, int64_t index) {
     (void)n;
     (void)index;
     return 0.0;
 }
 
+/// @brief Return the fallback state flags for an unavailable off-mesh link.
+///
+/// @param n     NavMesh3D handle (ignored).
+/// @param index Off-mesh link index (ignored).
+///
+/// @return `0`.
 int64_t rt_navmesh3d_get_offmesh_link_state(void *n, int64_t index) {
     (void)n;
     (void)index;
@@ -839,6 +974,12 @@ int64_t rt_navmesh3d_get_offmesh_link_state(void *n, int64_t index) {
 /// @brief Stub for `NavMesh3D.AddObstacle` — would normally add an AABB carving obstacle.
 ///
 /// Silent stub returning `0`.
+///
+/// @param n   NavMesh3D handle (ignored).
+/// @param min Vec3 obstacle minimum corner (ignored).
+/// @param max Vec3 obstacle maximum corner (ignored).
+///
+/// @return `0`, indicating that no obstacle was added.
 int8_t rt_navmesh3d_add_obstacle(void *n, void *min, void *max) {
     (void)n;
     (void)min;
@@ -849,6 +990,11 @@ int8_t rt_navmesh3d_add_obstacle(void *n, void *min, void *max) {
 /// @brief Stub for `NavMesh3D.RemoveObstacle` — would normally remove an authored obstacle.
 ///
 /// Silent stub returning `0`.
+///
+/// @param n     NavMesh3D handle (ignored).
+/// @param index Obstacle index (ignored).
+///
+/// @return `0`, indicating that no obstacle was removed.
 int8_t rt_navmesh3d_remove_obstacle(void *n, int64_t index) {
     (void)n;
     (void)index;
@@ -858,6 +1004,13 @@ int8_t rt_navmesh3d_remove_obstacle(void *n, int64_t index) {
 /// @brief Stub for `NavMesh3D.UpdateObstacle` — would normally edit an authored obstacle.
 ///
 /// Silent stub returning `0`.
+///
+/// @param n     NavMesh3D handle (ignored).
+/// @param index Obstacle index (ignored).
+/// @param min   Vec3 updated minimum corner (ignored).
+/// @param max   Vec3 updated maximum corner (ignored).
+///
+/// @return `0`, indicating that no obstacle was updated.
 int8_t rt_navmesh3d_update_obstacle(void *n, int64_t index, void *min, void *max) {
     (void)n;
     (void)index;
@@ -869,11 +1022,24 @@ int8_t rt_navmesh3d_update_obstacle(void *n, int64_t index, void *min, void *max
 /// @brief Stub for `NavMesh3D.ObstacleCount` — number of authored coarse obstacles.
 ///
 /// Silent stub returning `0`.
+///
+/// @param n NavMesh3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_navmesh3d_get_obstacle_count(void *n) {
     (void)n;
     return 0;
 }
 
+/// @brief Report that a named navigation area was not assigned to an AABB.
+///
+/// @param n    NavMesh3D handle (ignored).
+/// @param min  Vec3 area minimum corner (ignored).
+/// @param max  Vec3 area maximum corner (ignored).
+/// @param area Area-kind name (ignored).
+/// @param cost Traversal-cost multiplier (ignored).
+///
+/// @return `0`.
 int8_t rt_navmesh3d_set_area(void *n, void *min, void *max, rt_string area, double cost) {
     (void)n;
     (void)min;
@@ -883,12 +1049,24 @@ int8_t rt_navmesh3d_set_area(void *n, void *min, void *max, rt_string area, doub
     return 0;
 }
 
+/// @brief Return the fallback area kind at a navmesh point.
+///
+/// @param n     NavMesh3D handle (ignored).
+/// @param point Vec3 world-space query point (ignored).
+///
+/// @return An empty owned runtime string.
 rt_string rt_navmesh3d_get_area(void *n, void *point) {
     (void)n;
     (void)point;
     return rt_string_from_bytes("", 0);
 }
 
+/// @brief Return the fallback traversal cost at a navmesh point.
+///
+/// @param n     NavMesh3D handle (ignored).
+/// @param point Vec3 world-space query point (ignored).
+///
+/// @return `0.0`.
 double rt_navmesh3d_get_traversal_cost(void *n, void *point) {
     (void)n;
     (void)point;
@@ -898,6 +1076,12 @@ double rt_navmesh3d_get_traversal_cost(void *n, void *point) {
 /// @brief Stub for `NavMesh3D.RebuildTile` — tile rebuild entry point.
 ///
 /// Silent stub returning `0`.
+///
+/// @param n      NavMesh3D handle (ignored).
+/// @param tile_x Tile coordinate along X (ignored).
+/// @param tile_z Tile coordinate along Z (ignored).
+///
+/// @return `0`, indicating that no tile was rebuilt.
 int8_t rt_navmesh3d_rebuild_tile(void *n, int64_t tile_x, int64_t tile_z) {
     (void)n;
     (void)tile_x;
@@ -1571,12 +1755,19 @@ void rt_vegetation3d_update(void *v, double dt, double cx, double cy, double cz)
 }
 
 /// @brief Stub for `Water3D.set_SimDistance`. Silent no-op stub.
+///
+/// @param water    Water3D handle (ignored).
+/// @param distance Maximum camera distance for water simulation (ignored).
 void rt_water3d_set_sim_distance(void *water, double distance) {
     (void)water;
     (void)distance;
 }
 
 /// @brief Stub for `Water3D.get_SimDistance`. Silent stub returning 0.
+///
+/// @param water Water3D handle (ignored).
+///
+/// @return `0.0`.
 double rt_water3d_get_sim_distance(void *water) {
     (void)water;
     return 0.0;
@@ -1586,6 +1777,10 @@ double rt_water3d_get_sim_distance(void *water) {
  * defs whose implementations compile only in graphics-enabled builds. */
 
 /// @brief Silent fallback stub for `NavAgent3D.get_LinkKind` (graphics-disabled build).
+///
+/// @param o NavAgent3D handle (ignored).
+///
+/// @return An empty owned runtime string.
 rt_string rt_navagent3d_get_link_kind(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("NavAgent3D.get_LinkKind: graphics support not compiled in",
@@ -1593,6 +1788,10 @@ rt_string rt_navagent3d_get_link_kind(void *o) {
 }
 
 /// @brief Silent fallback stub for `NavAgent3D.get_OnOffMeshLink` (graphics-disabled build).
+///
+/// @param o NavAgent3D handle (ignored).
+///
+/// @return `0`, indicating that the agent is not traversing an off-mesh link.
 int8_t rt_navagent3d_get_on_offmesh_link(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("NavAgent3D.get_OnOffMeshLink: graphics support not compiled in",
@@ -1600,6 +1799,10 @@ int8_t rt_navagent3d_get_on_offmesh_link(void *o) {
 }
 
 /// @brief Silent fallback stub for `NavMesh3D.get_HeuristicMode` (graphics-disabled build).
+///
+/// @param o NavMesh3D handle (ignored).
+///
+/// @return `0`, the fallback pathfinding heuristic mode.
 int64_t rt_navmesh3d_get_heuristic_mode(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("NavMesh3D.get_HeuristicMode: graphics support not compiled in",
@@ -1607,12 +1810,19 @@ int64_t rt_navmesh3d_get_heuristic_mode(void *o) {
 }
 
 /// @brief Silent fallback stub for `NavMesh3D.get_TileSize` (graphics-disabled build).
+///
+/// @param o NavMesh3D handle (ignored).
+///
+/// @return `0.0`.
 double rt_navmesh3d_get_tile_size(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("NavMesh3D.get_TileSize: graphics support not compiled in", 0.0);
 }
 
 /// @brief Trapping stub for `NavMesh3D.SetHeuristicMode` (graphics-disabled build).
+///
+/// @param o  NavMesh3D handle (ignored before trapping).
+/// @param a1 Pathfinding heuristic-mode value (ignored before trapping).
 void rt_navmesh3d_set_heuristic_mode(void *o, int64_t a1) {
     (void)o;
     (void)a1;

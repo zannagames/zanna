@@ -22,6 +22,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements persistent entity state, stream flags, and Game3D save snapshots.
+/// @details The persistence layer captures explicitly keyed entity poses and state
+/// tags, tracks per-cell stream flags and loaded-cell events, and encodes the
+/// bounded little-endian `VW3DSAV1` format beneath the platform SaveData directory.
+/// Snapshot validation is fail-closed and does not mutate live state.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_game3d.h"
@@ -51,6 +58,8 @@
  *=========================================================================*/
 
 /// @brief Entity-array count clamped to capacity (same guard the step loops use).
+/// @param world Borrowed world payload whose dense entity array is inspected.
+/// @return Safe number of readable entity slots, or zero when storage is absent.
 static int32_t persist3d_entity_count(const rt_game3d_world *world) {
     int32_t count = world->entity_count;
     if (count < 0 || count > world->entity_capacity)
@@ -59,6 +68,9 @@ static int32_t persist3d_entity_count(const rt_game3d_world *world) {
 }
 
 /// @brief Find a record slot by key, or -1.
+/// @param world Borrowed world containing the persistence store.
+/// @param key Non-empty null-terminated key to match.
+/// @return Zero-based record index, or `-1` when no key matches.
 static int32_t game3d_persist_find(rt_game3d_world *world, const char *key) {
     for (int32_t i = 0; i < world->persist_count; ++i) {
         const char *have =
@@ -70,6 +82,9 @@ static int32_t game3d_persist_find(rt_game3d_world *world, const char *key) {
 }
 
 /// @brief Find-or-append a record for @p key (retains the key on append).
+/// @param world Borrowed world whose record store may grow.
+/// @param key Borrowed non-empty runtime string; retained when a record is appended.
+/// @return Borrowed record slot, or `NULL` for an invalid key or allocation failure.
 static rt_game3d_persist_record *game3d_persist_upsert(rt_game3d_world *world, rt_string key) {
     const char *ckey = key ? rt_string_cstr(key) : NULL;
     if (!ckey || !*ckey)
@@ -96,6 +111,8 @@ static rt_game3d_persist_record *game3d_persist_upsert(rt_game3d_world *world, r
 }
 
 /// @brief Copy the entity's current world pose into its record.
+/// @param entity Borrowed live entity whose node pose and state tag are captured.
+/// @param[out] record Borrowed persistence record to overwrite.
 static void game3d_persist_capture_pose(rt_game3d_entity *entity,
                                         rt_game3d_persist_record *record) {
     void *node = game3d_entity_node_ref(entity);
@@ -120,6 +137,8 @@ static void game3d_persist_capture_pose(rt_game3d_entity *entity,
 ///          set_position) mirrors the full transform. The capture stores the world
 ///          rotation; persistent entities are top-level, so node-local == world here,
 ///          matching the position round-trip convention.
+/// @param entity Borrowed live entity to restore.
+/// @param record Borrowed alive record containing the saved pose and state tag.
 static void game3d_persist_apply_alive_record(rt_game3d_entity *entity,
                                               const rt_game3d_persist_record *record) {
     void *node = game3d_entity_node_ref(entity);
@@ -143,6 +162,9 @@ static void game3d_persist_apply_alive_record(rt_game3d_entity *entity,
 ///   session of this world), an alive record is applied to the entity
 ///   immediately; a dead record is left for the game to check via
 ///   World3D.GetPersistentAlive before spawning.
+/// @param obj Borrowed live Entity3D handle.
+/// @param key Borrowed non-empty game-stable key no longer than 255 bytes; retained on success.
+/// @return The original borrowed entity handle for fluent chaining, including on failure.
 void *rt_game3d_entity_set_persistent(void *obj, rt_string key) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.SetPersistent: invalid entity");
@@ -189,6 +211,8 @@ void *rt_game3d_entity_set_persistent(void *obj, rt_string key) {
 }
 
 /// @brief The entity's persistence key ("" when not persistent).
+/// @param obj Borrowed live Entity3D handle.
+/// @return New reference to the retained key, or the shared empty string when unset or invalid.
 rt_string rt_game3d_entity_get_persistent_key(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.get_PersistentKey: invalid entity");
@@ -198,6 +222,8 @@ rt_string rt_game3d_entity_get_persistent_key(void *obj) {
 }
 
 /// @brief Set the free-form persisted state tag.
+/// @param obj Borrowed live Entity3D handle.
+/// @param tag Caller-defined signed state value captured with the entity.
 void rt_game3d_entity_set_state_tag(void *obj, int64_t tag) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.SetStateTag: invalid entity");
@@ -206,6 +232,8 @@ void rt_game3d_entity_set_state_tag(void *obj, int64_t tag) {
 }
 
 /// @brief Get the free-form persisted state tag.
+/// @param obj Borrowed live Entity3D handle.
+/// @return Stored state tag, or zero for an invalid or stale entity.
 int64_t rt_game3d_entity_get_state_tag(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.get_StateTag: invalid entity");
@@ -214,6 +242,9 @@ int64_t rt_game3d_entity_get_state_tag(void *obj) {
 
 /// @brief True when the persistence record for @p key is alive (or absent —
 ///   an unseen key is not yet dead).
+/// @param obj Borrowed live World3D handle.
+/// @param key Borrowed non-empty persistence key to query.
+/// @return Nonzero for an absent or alive record; zero for a dead record or invalid input.
 int8_t rt_game3d_world_get_persistent_alive(void *obj, rt_string key) {
     rt_game3d_world *world =
         game3d_world_checked(obj, "Game3D.World3D.GetPersistentAlive: invalid world");
@@ -225,6 +256,9 @@ int8_t rt_game3d_world_get_persistent_alive(void *obj, rt_string key) {
 }
 
 /// @brief Last recorded world position for @p key (zero Vec3 when unknown).
+/// @param obj Borrowed live World3D handle.
+/// @param key Borrowed persistence key to query.
+/// @return New GC-managed Vec3 containing the saved position or zero vector.
 void *rt_game3d_world_get_persistent_position(void *obj, rt_string key) {
     rt_game3d_world *world =
         game3d_world_checked(obj, "Game3D.World3D.GetPersistentPosition: invalid world");
@@ -240,6 +274,8 @@ void *rt_game3d_world_get_persistent_position(void *obj, rt_string key) {
 }
 
 /// @brief Despawn hook: mark the entity's record dead with its final pose.
+/// @param world Borrowed world owning the persistence record.
+/// @param entity Borrowed entity being despawned; entities without keys are ignored.
 void game3d_persistence_on_despawn(rt_game3d_world *world, rt_game3d_entity *entity) {
     if (!world || !entity || !entity->persistent_key)
         return;
@@ -251,6 +287,7 @@ void game3d_persistence_on_despawn(rt_game3d_world *world, rt_game3d_entity *ent
 }
 
 /// @brief Per-step capture: refresh resident persistent entities' records.
+/// @param world Borrowed live world whose keyed resident entities are sampled.
 void game3d_persistence_tick(rt_game3d_world *world) {
     if (!world || world->persist_count <= 0)
         return;
@@ -268,6 +305,7 @@ void game3d_persistence_tick(rt_game3d_world *world) {
 }
 
 /// @brief Release the world's persistence store (world finalizer helper).
+/// @param world Borrowed world payload to clear; `NULL` is ignored.
 void game3d_persistence_release(rt_game3d_world *world) {
     if (!world)
         return;
@@ -284,6 +322,10 @@ void game3d_persistence_release(rt_game3d_world *world) {
  *=========================================================================*/
 
 /// @brief Set a per-cell integer flag (door-opened / chest-looted state).
+/// @param obj Borrowed WorldStream3D handle.
+/// @param cell Borrowed non-empty cell name, retained when a flag is appended.
+/// @param key Borrowed non-empty flag name, retained when a flag is appended.
+/// @param value Signed game-defined value to store.
 void rt_game3d_world_stream_set_cell_flag(void *obj, rt_string cell, rt_string key, int64_t value) {
     rt_game3d_world_stream *stream = (rt_game3d_world_stream *)rt_g3d_checked_or_null(
         obj, RT_G3D_GAME3D_WORLD_STREAM3D_CLASS_ID);
@@ -323,6 +365,10 @@ void rt_game3d_world_stream_set_cell_flag(void *obj, rt_string cell, rt_string k
 }
 
 /// @brief Get a per-cell integer flag (0 when unset).
+/// @param obj Borrowed WorldStream3D handle.
+/// @param cell Borrowed cell name.
+/// @param key Borrowed flag name.
+/// @return Stored flag value, or zero when absent or invalid.
 int64_t rt_game3d_world_stream_get_cell_flag(void *obj, rt_string cell, rt_string key) {
     rt_game3d_world_stream *stream = (rt_game3d_world_stream *)rt_g3d_checked_or_null(
         obj, RT_G3D_GAME3D_WORLD_STREAM3D_CLASS_ID);
@@ -340,6 +386,9 @@ int64_t rt_game3d_world_stream_get_cell_flag(void *obj, rt_string cell, rt_strin
 }
 
 /// @brief Streaming hook: record a just-loaded cell name for game polling.
+/// @details When the fixed event queue is full, releases and drops the oldest event.
+/// @param stream Borrowed WorldStream3D payload receiving the event.
+/// @param cell_name Borrowed cell name retained by the queue.
 void game3d_stream_push_loaded_event(rt_game3d_world_stream *stream, rt_string cell_name) {
     if (!stream || !cell_name)
         return;
@@ -355,6 +404,8 @@ void game3d_stream_push_loaded_event(rt_game3d_world_stream *stream, rt_string c
 }
 
 /// @brief Number of buffered loaded-cell events.
+/// @param obj Borrowed WorldStream3D handle.
+/// @return Current event count, or zero for an invalid handle.
 int64_t rt_game3d_world_stream_loaded_event_count(void *obj) {
     rt_game3d_world_stream *stream = (rt_game3d_world_stream *)rt_g3d_checked_or_null(
         obj, RT_G3D_GAME3D_WORLD_STREAM3D_CLASS_ID);
@@ -362,6 +413,9 @@ int64_t rt_game3d_world_stream_loaded_event_count(void *obj) {
 }
 
 /// @brief Cell name of buffered loaded-cell event @p index ("" out of range).
+/// @param obj Borrowed WorldStream3D handle.
+/// @param index Zero-based event index.
+/// @return New reference to the cell name, or the shared empty string when out of range.
 rt_string rt_game3d_world_stream_loaded_event(void *obj, int64_t index) {
     rt_game3d_world_stream *stream = (rt_game3d_world_stream *)rt_g3d_checked_or_null(
         obj, RT_G3D_GAME3D_WORLD_STREAM3D_CLASS_ID);
@@ -372,6 +426,7 @@ rt_string rt_game3d_world_stream_loaded_event(void *obj, int64_t index) {
 }
 
 /// @brief Clear the buffered loaded-cell events (games poll then clear).
+/// @param obj Borrowed WorldStream3D handle; invalid handles are ignored.
 void rt_game3d_world_stream_clear_loaded_events(void *obj) {
     rt_game3d_world_stream *stream = (rt_game3d_world_stream *)rt_g3d_checked_or_null(
         obj, RT_G3D_GAME3D_WORLD_STREAM3D_CLASS_ID);
@@ -383,6 +438,7 @@ void rt_game3d_world_stream_clear_loaded_events(void *obj) {
 }
 
 /// @brief Release stream persistence state (stream finalizer helper).
+/// @param stream Borrowed WorldStream3D payload whose flags and events are cleared.
 void game3d_stream_persistence_release(rt_game3d_world_stream *stream) {
     if (!stream)
         return;
@@ -403,6 +459,7 @@ void game3d_stream_persistence_release(rt_game3d_world_stream *stream) {
  * VW3DSAV1 snapshot
  *=========================================================================*/
 
+/// @brief Growable in-memory encoder with a sticky allocation-failure flag.
 typedef struct persist3d_writer {
     uint8_t *data;
     size_t size;
@@ -410,6 +467,10 @@ typedef struct persist3d_writer {
     int failed;
 } persist3d_writer;
 
+/// @brief Append raw bytes to a snapshot writer.
+/// @param[in,out] writer Writer whose storage grows as needed and whose failure flag is sticky.
+/// @param bytes Source byte range to copy.
+/// @param count Number of bytes to append.
 static void persist3d_write(persist3d_writer *writer, const void *bytes, size_t count) {
     if (writer->failed)
         return;
@@ -429,6 +490,9 @@ static void persist3d_write(persist3d_writer *writer, const void *bytes, size_t 
     writer->size += count;
 }
 
+/// @brief Encode an unsigned 32-bit integer in little-endian order.
+/// @param[in,out] writer Destination snapshot writer.
+/// @param value Integer value to append.
 static void persist3d_write_u32(persist3d_writer *writer, uint32_t value) {
     uint8_t bytes[4] = {(uint8_t)(value & 0xFF),
                         (uint8_t)((value >> 8) & 0xFF),
@@ -437,6 +501,9 @@ static void persist3d_write_u32(persist3d_writer *writer, uint32_t value) {
     persist3d_write(writer, bytes, 4);
 }
 
+/// @brief Encode a signed 64-bit integer in little-endian two's-complement order.
+/// @param[in,out] writer Destination snapshot writer.
+/// @param value Integer value to append.
 static void persist3d_write_i64(persist3d_writer *writer, int64_t value) {
     uint64_t raw = (uint64_t)value;
     uint8_t bytes[8];
@@ -445,12 +512,18 @@ static void persist3d_write_i64(persist3d_writer *writer, int64_t value) {
     persist3d_write(writer, bytes, 8);
 }
 
+/// @brief Encode an IEEE-754 double through its little-endian 64-bit representation.
+/// @param[in,out] writer Destination snapshot writer.
+/// @param value Floating-point value to append.
 static void persist3d_write_f64(persist3d_writer *writer, double value) {
     uint64_t raw;
     memcpy(&raw, &value, sizeof(raw));
     persist3d_write_i64(writer, (int64_t)raw);
 }
 
+/// @brief Encode a runtime string as a bounded length-prefixed byte sequence.
+/// @param[in,out] writer Destination snapshot writer.
+/// @param value Borrowed runtime string; `NULL` encodes as empty and excess bytes are truncated.
 static void persist3d_write_str(persist3d_writer *writer, rt_string value) {
     const char *text = value ? rt_string_cstr(value) : "";
     size_t len = strlen(text);
@@ -460,6 +533,7 @@ static void persist3d_write_str(persist3d_writer *writer, rt_string value) {
     persist3d_write(writer, text, len);
 }
 
+/// @brief Bounds-checked in-memory decoder with a sticky parse-failure flag.
 typedef struct persist3d_reader {
     const uint8_t *data;
     size_t size;
@@ -467,6 +541,11 @@ typedef struct persist3d_reader {
     int failed;
 } persist3d_reader;
 
+/// @brief Copy a fixed byte count from the current decoder cursor.
+/// @param[in,out] reader Reader whose cursor advances on success and whose failure flag is sticky.
+/// @param[out] out Destination byte range.
+/// @param count Number of bytes required.
+/// @return Nonzero on success; zero after truncation or an earlier parse failure.
 static int persist3d_read(persist3d_reader *reader, void *out, size_t count) {
     if (reader->failed || reader->cursor + count > reader->size) {
         reader->failed = 1;
@@ -477,6 +556,9 @@ static int persist3d_read(persist3d_reader *reader, void *out, size_t count) {
     return 1;
 }
 
+/// @brief Decode a little-endian unsigned 32-bit integer.
+/// @param[in,out] reader Source snapshot reader.
+/// @return Decoded value, or zero after a parse failure.
 static uint32_t persist3d_read_u32(persist3d_reader *reader) {
     uint8_t bytes[4] = {0};
     if (!persist3d_read(reader, bytes, 4))
@@ -485,6 +567,9 @@ static uint32_t persist3d_read_u32(persist3d_reader *reader) {
            ((uint32_t)bytes[3] << 24);
 }
 
+/// @brief Decode a little-endian signed 64-bit integer.
+/// @param[in,out] reader Source snapshot reader.
+/// @return Decoded value, or zero after a parse failure.
 static int64_t persist3d_read_i64(persist3d_reader *reader) {
     uint8_t bytes[8] = {0};
     if (!persist3d_read(reader, bytes, 8))
@@ -495,6 +580,9 @@ static int64_t persist3d_read_i64(persist3d_reader *reader) {
     return (int64_t)raw;
 }
 
+/// @brief Decode an IEEE-754 double from its little-endian 64-bit representation.
+/// @param[in,out] reader Source snapshot reader.
+/// @return Decoded floating-point value; callers inspect the reader or validate finiteness.
 static double persist3d_read_f64(persist3d_reader *reader) {
     int64_t raw = persist3d_read_i64(reader);
     double value;
@@ -504,6 +592,10 @@ static double persist3d_read_f64(persist3d_reader *reader) {
 }
 
 /// @brief Read a length-prefixed string into a bounded stack buffer.
+/// @param[in,out] reader Source snapshot reader.
+/// @param[out] out Destination buffer receiving a null-terminated key.
+/// @param out_size Available destination bytes including the terminator.
+/// @return Nonzero on success; zero when the length or remaining input is invalid.
 static int persist3d_read_key(persist3d_reader *reader, char *out, size_t out_size) {
     uint32_t len = persist3d_read_u32(reader);
     if (reader->failed || len > PERSIST3D_MAX_KEY || len + 1 > out_size) {
@@ -517,6 +609,8 @@ static int persist3d_read_key(persist3d_reader *reader, char *out, size_t out_si
 }
 
 /// @brief Validate a VW3DSAV1 buffer without applying it (fuzz surface).
+/// @param data Borrowed snapshot byte range.
+/// @param size Number of bytes in @p data; inputs larger than 64 MiB are rejected.
 /// @return 1 when the buffer parses cleanly, 0 otherwise. Never traps.
 int8_t rt_game3d_persistence_validate(const void *data, int64_t size) {
     if (!data || size < 16 || size > (int64_t)(64u * 1024u * 1024u))
@@ -563,6 +657,9 @@ int8_t rt_game3d_persistence_validate(const void *data, int64_t size) {
 
 /// @brief Compose "<data dir>/<slot>.vw3dsav"; NULL on invalid names (trapped
 ///   by rt_path_data_dir for the app component).
+/// @param app_name Borrowed application name used to resolve the platform data directory.
+/// @param slot Borrowed 1-to-64-character alphanumeric, hyphen, or underscore slot name.
+/// @return Heap path owned by the caller, or `NULL` for invalid input or allocation failure.
 static char *persist3d_slot_path(rt_string app_name, rt_string slot) {
     const char *cslot = slot ? rt_string_cstr(slot) : NULL;
     if (!cslot || !*cslot || strlen(cslot) > 64)
@@ -587,6 +684,9 @@ static char *persist3d_slot_path(rt_string app_name, rt_string slot) {
 }
 
 /// @brief Serialize the delta store to "<data dir>/<slot>.vw3dsav" atomically.
+/// @param obj Borrowed live World3D handle.
+/// @param app_name Borrowed application name used for the platform data directory.
+/// @param slot Borrowed validated save-slot name.
 /// @return 1 on success, 0 on any IO/encoding failure (no partial files).
 int8_t rt_game3d_world_save_state(void *obj, rt_string app_name, rt_string slot) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.SaveState: invalid world");
@@ -659,6 +759,9 @@ int8_t rt_game3d_world_save_state(void *obj, rt_string app_name, rt_string slot)
 
 /// @brief Load "<data dir>/<slot>.vw3dsav": replaces the delta store and cell
 ///   flags, re-poses/kills resident persistent entities, restores extras.
+/// @param obj Borrowed live World3D handle to restore.
+/// @param app_name Borrowed application name used for the platform data directory.
+/// @param slot Borrowed validated save-slot name.
 /// @return 1 on success; 0 on missing/corrupt file (state unchanged).
 int8_t rt_game3d_world_load_state(void *obj, rt_string app_name, rt_string slot) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.LoadState: invalid world");

@@ -546,6 +546,9 @@ Constructor: `Zanna.Graphics3D.SceneGraph.New`
 | <a id="zanna-graphics3d-scenegraph-queryaabb"></a>`QueryAABB` | `obj<Zanna.Collections.Seq>(obj,obj)` | `Zanna.Graphics3D.SceneGraph.QueryAABB` |
 | <a id="zanna-graphics3d-scenegraph-querysphere"></a>`QuerySphere` | `obj<Zanna.Collections.Seq>(obj,f64)` | `Zanna.Graphics3D.SceneGraph.QuerySphere` |
 | <a id="zanna-graphics3d-scenegraph-raycastnodes"></a>`RaycastNodes` | `obj<Zanna.Graphics3D.SceneNode>(obj,obj,f64)` | `Zanna.Graphics3D.SceneGraph.RaycastNodes` |
+| <a id="zanna-graphics3d-scenegraph-raycastnodesprecise"></a>`RaycastNodesPrecise` | `obj<Zanna.Graphics3D.SceneNode>(obj,obj,f64)` | `Zanna.Graphics3D.SceneGraph.RaycastNodesPrecise` |
+| <a id="zanna-graphics3d-scenegraph-raycastnodespreciseall"></a>`RaycastNodesPreciseAll` | `obj<Zanna.Collections.Seq>(obj,obj,f64)` | `Zanna.Graphics3D.SceneGraph.RaycastNodesPreciseAll` |
+| <a id="zanna-graphics3d-scenegraph-raycastprecisehit"></a>`RaycastPreciseHit` | `obj<Zanna.Graphics3D.RayHit3D>(obj,obj,f64)` | `Zanna.Graphics3D.SceneGraph.RaycastPreciseHit` |
 | <a id="zanna-graphics3d-scenegraph-setnodetransforms"></a>`SetNodeTransforms` | `void(obj,obj)` | `Zanna.Graphics3D.SceneGraph.SetNodeTransforms` |
 | <a id="zanna-graphics3d-scenegraph-addvisibilityzone"></a>`AddVisibilityZone` | `i64(str,obj,obj)` | `Zanna.Graphics3D.SceneGraph.AddVisibilityZone` |
 | <a id="zanna-graphics3d-scenegraph-addvisibilityportal"></a>`AddVisibilityPortal` | `i64(i64,i64,i1)` | `Zanna.Graphics3D.SceneGraph.AddVisibilityPortal` |
@@ -2744,6 +2747,9 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.SceneGraph.QueryAABB` | `obj<Zanna.Collections.Seq>(obj,obj,obj)` | `rt_scene3d_query_aabb` |
 | `Zanna.Graphics3D.SceneGraph.QuerySphere` | `obj<Zanna.Collections.Seq>(obj,obj,f64)` | `rt_scene3d_query_sphere` |
 | `Zanna.Graphics3D.SceneGraph.RaycastNodes` | `obj<Zanna.Graphics3D.SceneNode>(obj,obj,obj,f64)` | `rt_scene3d_raycast_nodes` |
+| `Zanna.Graphics3D.SceneGraph.RaycastNodesPrecise` | `obj<Zanna.Graphics3D.SceneNode>(obj,obj,obj,f64)` | `rt_scene3d_raycast_nodes_precise` |
+| `Zanna.Graphics3D.SceneGraph.RaycastNodesPreciseAll` | `obj<Zanna.Collections.Seq>(obj,obj,obj,f64)` | `rt_scene3d_raycast_nodes_precise_all` |
+| `Zanna.Graphics3D.SceneGraph.RaycastPreciseHit` | `obj<Zanna.Graphics3D.RayHit3D>(obj,obj,obj,f64)` | `rt_scene3d_raycast_precise_hit` |
 | `Zanna.Graphics3D.SceneGraph.AddVisibilityZone` | `i64(obj,str,obj,obj)` | `rt_scene3d_add_visibility_zone` |
 | `Zanna.Graphics3D.SceneGraph.AddVisibilityPortal` | `i64(obj,i64,i64,i1)` | `rt_scene3d_add_visibility_portal` |
 | `Zanna.Graphics3D.SceneGraph.Draw` | `void(obj,obj,obj)` | `rt_scene3d_draw` |

@@ -259,7 +259,21 @@ typedef enum {
     VGFX_KEY_HOME = 265,
     VGFX_KEY_END = 266,
     VGFX_KEY_PAGE_UP = 267,
-    VGFX_KEY_PAGE_DOWN = 268
+    VGFX_KEY_PAGE_DOWN = 268,
+
+    /* Function keys */
+    VGFX_KEY_F1 = 269,
+    VGFX_KEY_F2 = 270,
+    VGFX_KEY_F3 = 271,
+    VGFX_KEY_F4 = 272,
+    VGFX_KEY_F5 = 273,
+    VGFX_KEY_F6 = 274,
+    VGFX_KEY_F7 = 275,
+    VGFX_KEY_F8 = 276,
+    VGFX_KEY_F9 = 277,
+    VGFX_KEY_F10 = 278,
+    VGFX_KEY_F11 = 279,
+    VGFX_KEY_F12 = 280
 } vgfx_key_t;
 
 /// @brief Keyboard modifier flags

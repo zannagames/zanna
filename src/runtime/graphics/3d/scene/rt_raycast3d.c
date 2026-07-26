@@ -28,6 +28,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements finite, allocation-aware 3D ray and primitive intersection queries.
+/// @details Public queries validate boxed Vec3/Mat4/Mesh handles, normalize ray
+/// directions so reported distances use world units, and sanitize untrusted
+/// floating-point inputs. Mesh queries use a revision-keyed retained BVH with
+/// exact linear fallback for singular transforms or allocation failure.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_raycast3d.h"
@@ -40,11 +47,37 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Allocate a runtime object payload with a stable class identifier.
+/// @param class_id Runtime class identifier stored in the heap header.
+/// @param byte_size Payload size in bytes.
+/// @return New object payload, or `NULL` on allocation failure.
 extern void *rt_obj_new_i64(int64_t class_id, int64_t byte_size);
+
+/// @brief Install a finalizer on a runtime object.
+/// @param obj Borrowed object payload.
+/// @param fn Finalizer callback, or `NULL` to clear it.
 extern void rt_obj_set_finalizer(void *obj, void (*fn)(void *));
+
+/// @brief Allocate a boxed Vec3 with the supplied components.
+/// @param x X component.
+/// @param y Y component.
+/// @param z Z component.
+/// @return New Vec3 handle.
 extern void *rt_vec3_new(double x, double y, double z);
+
+/// @brief Read the X component of a boxed Vec3.
+/// @param v Borrowed Vec3 handle.
+/// @return Stored X component.
 extern double rt_vec3_x(void *v);
+
+/// @brief Read the Y component of a boxed Vec3.
+/// @param v Borrowed Vec3 handle.
+/// @return Stored Y component.
 extern double rt_vec3_y(void *v);
+
+/// @brief Read the Z component of a boxed Vec3.
+/// @param v Borrowed Vec3 handle.
+/// @return Stored Z component.
 extern double rt_vec3_z(void *v);
 
 #define EPSILON 1e-8
@@ -53,6 +86,10 @@ extern double rt_vec3_z(void *v);
 
 /// @brief Clamp a scalar into the closed range `[lo, hi]`. Used by the per-axis closest-
 /// point query and the box-projection paths that map an arbitrary point onto an AABB.
+/// @param v Candidate scalar.
+/// @param lo Lower bound; non-finite values become zero.
+/// @param hi Upper bound; non-finite values collapse to the lower bound.
+/// @return Finite scalar in the canonicalized closed interval.
 static double clampd(double v, double lo, double hi) {
     if (!isfinite(lo))
         lo = 0.0;
@@ -74,11 +111,15 @@ static double clampd(double v, double lo, double hi) {
 
 /// @brief Return non-zero if all three components of the raw double[3] vector are finite (not
 /// NaN/inf).
+/// @param v Borrowed three-component vector array.
+/// @return Nonzero when the pointer and all components are finite.
 static int vec3_is_finite_raw(const double *v) {
     return v && isfinite(v[0]) && isfinite(v[1]) && isfinite(v[2]);
 }
 
 /// @brief Clamp scene-ray coordinates to a broad finite runtime range.
+/// @param value Candidate coordinate.
+/// @return Finite coordinate in `[-RAYCAST3D_COORD_ABS_MAX, RAYCAST3D_COORD_ABS_MAX]`.
 static double raycast3d_saturate_coord(double value) {
     if (!isfinite(value))
         return 0.0;
@@ -90,6 +131,8 @@ static double raycast3d_saturate_coord(double value) {
 }
 
 /// @brief Clamp non-negative ray distances/radii to a finite runtime range.
+/// @param value Candidate distance or radius.
+/// @return Positive finite value capped at the runtime maximum, or zero when invalid.
 static double raycast3d_sanitize_distance(double value) {
     if (!isfinite(value) || value <= 0.0)
         return 0.0;
@@ -97,6 +140,8 @@ static double raycast3d_sanitize_distance(double value) {
 }
 
 /// @brief Sanitize a non-negative hit distance while preserving -1 as the miss sentinel.
+/// @param value Candidate hit distance.
+/// @return Finite capped distance, or `-1` for a miss or invalid value.
 static double raycast3d_sanitize_hit_distance(double value) {
     if (!isfinite(value) || value < 0.0)
         return -1.0;
@@ -104,6 +149,7 @@ static double raycast3d_sanitize_hit_distance(double value) {
 }
 
 /// @brief Sanitize an in-place raw vector.
+/// @param v Mutable three-component vector; `NULL` is accepted.
 static void vec3_sanitize_raw(double *v) {
     if (!v)
         return;
@@ -114,6 +160,9 @@ static void vec3_sanitize_raw(double *v) {
 
 /// @brief Read a boxed Vec3 handle into `out[3]`; returns 0 (and leaves caller to
 ///        reject) when `obj` is not a Vec3 or any component is non-finite.
+/// @param obj Borrowed opaque handle expected to contain a Vec3.
+/// @param out Output array receiving sanitized components.
+/// @return Nonzero when a finite Vec3 was read successfully.
 static int vec3_read_finite(void *obj, double *out) {
     if (!out || !rt_g3d_is_vec3(obj))
         return 0;
@@ -128,6 +177,8 @@ static int vec3_read_finite(void *obj, double *out) {
 
 /// @brief Normalize a vec3 in place; returns 0 (leaving @p v unchanged) if it is
 ///   non-finite or shorter than EPSILON, else 1.
+/// @param v Mutable three-component vector.
+/// @return Nonzero after successful normalization, otherwise zero.
 static int vec3_normalize_raw(double *v) {
     double len_sq;
     double inv_len;
@@ -144,6 +195,7 @@ static int vec3_normalize_raw(double *v) {
 }
 
 /// @brief Normalize a raw normal, falling back to +Y when invalid or degenerate.
+/// @param v Mutable three-component normal.
 static void vec3_normalize_or_up_raw(double *v) {
     if (!vec3_normalize_raw(v)) {
         v[0] = 0.0;
@@ -153,12 +205,18 @@ static void vec3_normalize_or_up_raw(double *v) {
 }
 
 /// @brief Allocate a Vec3 after applying the scene-raycast coordinate clamp.
+/// @param x Candidate X component.
+/// @param y Candidate Y component.
+/// @param z Candidate Z component.
+/// @return New sanitized Vec3 handle.
 static void *vec3_new_sanitized(double x, double y, double z) {
     return rt_vec3_new(
         raycast3d_saturate_coord(x), raycast3d_saturate_coord(y), raycast3d_saturate_coord(z));
 }
 
 /// @brief Checked cast of an opaque handle to a Mat4 payload; NULL on class mismatch.
+/// @param obj Borrowed opaque handle.
+/// @return Borrowed Mat4 payload on a valid class/heap match, otherwise `NULL`.
 static mat4_impl *raycast3d_mat4_checked(void *obj) {
     if (!obj)
         return NULL;
@@ -168,6 +226,8 @@ static mat4_impl *raycast3d_mat4_checked(void *obj) {
 }
 
 /// @brief True if all 16 lanes of a 4x4 double matrix are finite (no NaN/Inf).
+/// @param m Borrowed row-major 16-element matrix array.
+/// @return Nonzero when the pointer and all lanes are finite.
 static int mat4d_is_finite(const double *m) {
     if (!m)
         return 0;
@@ -180,6 +240,8 @@ static int mat4d_is_finite(const double *m) {
 
 /// @brief Canonicalize an AABB in place by swapping any axis where min > max,
 ///        so subsequent overlap/clamp tests can assume `mn[i] <= mx[i]`.
+/// @param mn Mutable three-component minimum corner.
+/// @param mx Mutable three-component maximum corner.
 static void aabb3d_canonicalize_raw(double *mn, double *mx) {
     if (!mn || !mx)
         return;
@@ -198,6 +260,10 @@ static void aabb3d_canonicalize_raw(double *mn, double *mx) {
 /// @details Projects @p point onto the line through a and b, clamps the projection
 ///   parameter to [0, 1] to stay within the segment, and writes the result to @p closest.
 ///   Degenerate (zero-length) segments collapse to point a. Used by capsule overlap tests.
+/// @param a Borrowed first segment endpoint.
+/// @param b Borrowed second segment endpoint.
+/// @param point Borrowed query point.
+/// @param closest Output array receiving the sanitized closest point.
 static void segment3d_closest_point_raw(const double *a,
                                         const double *b,
                                         const double *point,
@@ -233,6 +299,10 @@ static void segment3d_closest_point_raw(const double *a,
 /// (or inside) the box to the input point. Used by sphere-vs-AABB and capsule-vs-AABB
 /// overlap tests; takes raw double arrays so the inner-loop tests don't have to allocate
 /// throwaway Vec3 wrappers.
+/// @param mn Borrowed AABB minimum corner.
+/// @param mx Borrowed AABB maximum corner.
+/// @param point Borrowed query point.
+/// @param closest Output array receiving the sanitized closest point.
 static void aabb3d_clamp_point_raw(const double *mn,
                                    const double *mx,
                                    const double *point,
@@ -251,6 +321,10 @@ static void aabb3d_clamp_point_raw(const double *mn,
 }
 
 /// @brief Squared distance from point `p` to AABB [mn,mx] (0 when `p` is inside).
+/// @param mn Borrowed AABB minimum corner.
+/// @param mx Borrowed AABB maximum corner.
+/// @param p Borrowed query point.
+/// @return Finite squared distance, or `DBL_MAX` when arithmetic is invalid.
 static double point_aabb_distance_sq_raw(const double *mn, const double *mx, const double *p) {
     double c[3];
     aabb3d_clamp_point_raw(mn, mx, p, c);
@@ -264,6 +338,10 @@ static double point_aabb_distance_sq_raw(const double *mn, const double *mx, con
 }
 
 /// @brief Evaluate the parametric point `a + d*t` into `out[3]`.
+/// @param a Borrowed segment origin.
+/// @param d Borrowed segment displacement.
+/// @param t Segment parameter clamped to `[0, 1]`.
+/// @param out Output array receiving the sanitized point.
 static void segment_point_at_raw(const double *a, const double *d, double t, double *out) {
     double aa[3] = {a ? a[0] : 0.0, a ? a[1] : 0.0, a ? a[2] : 0.0};
     double dd[3] = {d ? d[0] : 0.0, d ? d[1] : 0.0, d ? d[2] : 0.0};
@@ -284,6 +362,11 @@ static void segment_point_at_raw(const double *a, const double *d, double t, dou
 ///          the minimum point-to-AABB distance over those samples and the
 ///          midpoints between consecutive samples. A sampling approximation that
 ///          is exact at the breakpoints where the nearest box feature changes.
+/// @param a Borrowed first segment endpoint.
+/// @param b Borrowed second segment endpoint.
+/// @param mn Borrowed AABB minimum corner.
+/// @param mx Borrowed AABB maximum corner.
+/// @return Finite minimum squared distance, or `DBL_MAX` when no valid value is produced.
 static double segment_aabb_distance_sq_raw(const double *a,
                                            const double *b,
                                            const double *mn,
@@ -367,6 +450,11 @@ static double segment_aabb_distance_sq_raw(const double *a,
 /// slab. Returns the smallest non-negative `t` (entry distance) or 0 when the ray
 /// originates inside the box; -1 when no intersection. The all-double signature lets
 /// hot inner loops skip Vec3 boxing.
+/// @param origin Borrowed raw ray origin.
+/// @param dir Borrowed non-degenerate raw ray direction.
+/// @param mn Borrowed AABB minimum corner.
+/// @param mx Borrowed AABB maximum corner.
+/// @return Non-negative parametric entry distance, or `-1` on a miss.
 static double rt_ray3d_intersect_aabb_raw(const double *origin,
                                           const double *dir,
                                           const double *mn,
@@ -416,6 +504,9 @@ static double rt_ray3d_intersect_aabb_raw(const double *origin,
 /// @brief Transform a 3-point through a 4×4 matrix as `M * (point, 1)`. Drops the w
 /// row (assumed identity for the affine transforms used here). Allocation-free wrapper
 /// used by ray-into-mesh-local-space conversion before triangle intersection tests.
+/// @param m Borrowed finite row-major 4-by-4 matrix.
+/// @param point Borrowed three-component point.
+/// @param out Output array receiving the transformed sanitized point.
 static void mat4_transform_point_raw(const double *m, const double *point, double *out) {
     double p[3] = {point ? point[0] : 0.0, point ? point[1] : 0.0, point ? point[2] : 0.0};
     double x;
@@ -443,6 +534,9 @@ static void mat4_transform_point_raw(const double *m, const double *point, doubl
 /// determinant (taken from the first row · first row of cofactors). Returns 0 on
 /// success, -1 when |det| < 1e-12 (singular). Used by raycast queries to bring a
 /// world-space ray into a mesh's local space for triangle intersection.
+/// @param m Borrowed finite row-major 4-by-4 matrix.
+/// @param out Output array receiving the inverse matrix.
+/// @return Zero on success, or `-1` for invalid, singular, or non-finite input.
 static int mat4d_invert(const double *m, double *out) {
     double inv[16];
     if (!out || !mat4d_is_finite(m))
@@ -502,10 +596,15 @@ static int mat4d_invert(const double *m, double *out) {
  * RayHit3D — result of ray-mesh intersection
  *=========================================================================*/
 
+/// @brief GC-managed world-space result of a mesh raycast.
 typedef struct {
+    /// Sanitized Euclidean distance from the world-space ray origin.
     double distance;
+    /// Sanitized world-space hit position.
     double point[3];
+    /// Unit world-space geometric face normal.
     double normal[3];
+    /// Deterministic source triangle index within the mesh.
     int64_t triangle_index;
 } rt_rayhit3d;
 
@@ -523,6 +622,13 @@ typedef struct {
 /// hits with `u`, `v`, or `1 - u - v` outside `[0, 1]`. The classic algorithm — no
 /// precomputation required, branch-light enough for tight inner loops over triangle
 /// soups.
+/// @param origin Borrowed boxed Vec3 ray origin.
+/// @param dir Borrowed boxed Vec3 direction, normalized internally.
+/// @param v0_obj Borrowed boxed Vec3 first triangle vertex.
+/// @param v1_obj Borrowed boxed Vec3 second triangle vertex.
+/// @param v2_obj Borrowed boxed Vec3 third triangle vertex.
+/// @param front_only Nonzero to reject triangles facing away from the ray.
+/// @return Euclidean hit distance, or `-1` for invalid input, a miss, or a culled face.
 static double ray3d_intersect_triangle_impl(
     void *origin, void *dir, void *v0_obj, void *v1_obj, void *v2_obj, int front_only) {
     double o[3];
@@ -586,6 +692,13 @@ static double ray3d_intersect_triangle_impl(
     return isfinite(t) && t >= 0.0 ? raycast3d_sanitize_hit_distance(t) : -1.0;
 }
 
+/// @brief Intersect a two-sided triangle with a ray using Möller–Trumbore.
+/// @param origin Borrowed boxed Vec3 ray origin.
+/// @param dir Borrowed boxed Vec3 direction, normalized internally.
+/// @param v0_obj Borrowed boxed Vec3 first triangle vertex.
+/// @param v1_obj Borrowed boxed Vec3 second triangle vertex.
+/// @param v2_obj Borrowed boxed Vec3 third triangle vertex.
+/// @return Euclidean hit distance, or `-1` for invalid input or a miss.
 double rt_ray3d_intersect_triangle(
     void *origin, void *dir, void *v0_obj, void *v1_obj, void *v2_obj) {
     return ray3d_intersect_triangle_impl(origin, dir, v0_obj, v1_obj, v2_obj, 0);
@@ -595,6 +708,13 @@ double rt_ray3d_intersect_triangle(
 /// @details With @p front_only non-zero, triangles whose winding faces away from the ray are
 ///          rejected — the natural mode for picking and line-of-sight queries where hits on a
 ///          mesh's interior faces are surprising. Zero preserves the two-sided behavior.
+/// @param origin Borrowed boxed Vec3 ray origin.
+/// @param dir Borrowed boxed Vec3 direction, normalized internally.
+/// @param v0_obj Borrowed boxed Vec3 first triangle vertex.
+/// @param v1_obj Borrowed boxed Vec3 second triangle vertex.
+/// @param v2_obj Borrowed boxed Vec3 third triangle vertex.
+/// @param front_only Nonzero to reject back-facing triangles.
+/// @return Euclidean hit distance, or `-1` for invalid input, a miss, or a culled face.
 double rt_ray3d_intersect_triangle_cull(
     void *origin, void *dir, void *v0_obj, void *v1_obj, void *v2_obj, int8_t front_only) {
     return ray3d_intersect_triangle_impl(origin, dir, v0_obj, v1_obj, v2_obj, front_only ? 1 : 0);
@@ -682,47 +802,51 @@ double rt_ray3d_intersect_sphere(void *origin, void *dir, void *center, double r
  * Ray-mesh intersection (retained BVH, AABB early-out, exact fallback)
  *=========================================================================*/
 
-/// @brief Test ray–mesh intersection through a retained triangle BVH.
-/// @details Performs a mesh AABB early-out, then lazily builds or reuses a local-space BVH keyed by
-///          geometry revision. When a transform is invertible, the ray is moved to object space
-///          once and traverses that tree. A singular transform or BVH allocation failure preserves
-///          the exact Möller–Trumbore triangle sweep. Returns a RayHit3D with world distance,
-///          position, normal, and deterministic source triangle index, or NULL on a miss.
-/// @param origin        Vec3 ray origin in world space.
-/// @param dir           Vec3 ray direction (need not be normalized).
-/// @param mesh_obj      Mesh handle to test against.
-/// @param transform_obj Optional Mat4 model transform (NULL = identity).
-/// @return Opaque RayHit3D handle, or NULL on miss.
 /// @brief Shared ray/mesh state for an intersection: the ray in both world and object space,
 ///        the optional model transform, and which space triangles are tested in.
 typedef struct {
+    /// Borrowed mesh payload whose geometry and retained BVH are queried.
     rt_mesh3d *m;
-    mat4_impl *transform;
+    /// Borrowed optional row-major model matrix; `NULL` means identity.
+    const double *model;
+    /// Whether a valid model transform was supplied.
     int has_transform;
+    /// Whether the inverse transform supports local-space traversal.
     int use_object_space;
+    /// Ray origin in object space, or world space for linear fallback.
     double obj_origin[3];
+    /// Ray direction in object space, or world space for linear fallback.
     double obj_dir[3];
+    /// Sanitized world-space ray origin.
     double world_origin[3];
+    /// Normalized world-space ray direction.
     double world_dir[3];
 } ray3d_mesh_ctx_t;
 
 /// @brief Closest-triangle result from the Möller–Trumbore sweep.
 typedef struct {
+    /// Smallest parametric distance found in the active test space.
     double best_t;
+    /// Deterministic source triangle index, or `-1` before a hit.
     int64_t best_tri;
+    /// Vertex indices for the closest triangle.
     uint32_t best_i0, best_i1, best_i2;
+    /// Closest hit position in mesh object space.
     double best_obj_point[3];
 } ray3d_mesh_hit_t;
 
-/// @brief Broad-phase: @return 1 if the ray misses the mesh AABB (transformed to world space when
-///        the ray is tested in world space), 0 if the narrow phase should run.
+/// @brief Determine whether the prepared ray misses the mesh broad-phase AABB.
+/// @details Transforms all eight local bounds corners when a singular model
+///          transform forces world-space triangle testing.
+/// @param ctx Borrowed prepared ray/mesh query state.
+/// @return Nonzero when the ray misses the bounds; zero when narrow phase should run.
 static int ray3d_mesh_misses_bounds(const ray3d_mesh_ctx_t *ctx) {
     rt_mesh3d *m = ctx->m;
     double bounds_min[3] = {m->aabb_min[0], m->aabb_min[1], m->aabb_min[2]};
     double bounds_max[3] = {m->aabb_max[0], m->aabb_max[1], m->aabb_max[2]};
     aabb3d_canonicalize_raw(bounds_min, bounds_max);
     if (ctx->has_transform && !ctx->use_object_space) {
-        const double *model = ctx->transform->m;
+        const double *model = ctx->model;
         double corners[8][3];
         double world_min[3] = {DBL_MAX, DBL_MAX, DBL_MAX};
         double world_max[3] = {-DBL_MAX, -DBL_MAX, -DBL_MAX};
@@ -772,11 +896,17 @@ static int ray3d_mesh_misses_bounds(const ray3d_mesh_ctx_t *ctx) {
 /// @details Interior nodes have non-negative `left`/`right` and `count == 0`; leaves instead store
 ///          `[start, start + count)` into the mesh-owned `raycast_bvh_tri_indices` array.
 typedef struct {
+    /// Local-space minimum bounds.
     float min[3];
+    /// Local-space maximum bounds.
     float max[3];
+    /// Left child index for an interior node.
     int32_t left;
+    /// Right child index for an interior node.
     int32_t right;
+    /// First triangle-permutation slot for a leaf.
     int32_t start;
+    /// Triangle count for a leaf; zero identifies an interior node.
     int32_t count;
 } ray3d_mesh_bvh_node_t;
 
@@ -1035,7 +1165,7 @@ static void ray3d_consider_mesh_triangle(const ray3d_mesh_ctx_t *ctx,
     vec3_sanitize_raw(b);
     vec3_sanitize_raw(c);
     if (ctx->has_transform && !ctx->use_object_space) {
-        const double *model = ctx->transform->m;
+        const double *model = ctx->model;
         mat4_transform_point_raw(model, a, a);
         mat4_transform_point_raw(model, b, b);
         mat4_transform_point_raw(model, c, c);
@@ -1096,6 +1226,7 @@ static void ray3d_consider_mesh_triangle(const ray3d_mesh_ctx_t *ctx,
 /// @brief Return the ray entry distance for one retained BVH node, or -1 on a miss.
 /// @param ctx Prepared object-space ray state.
 /// @param node Node whose local AABB should be tested.
+/// @return Non-negative object-space entry distance, or `-1` on a miss or invalid input.
 static double ray3d_bvh_node_entry(const ray3d_mesh_ctx_t *ctx, const ray3d_mesh_bvh_node_t *node) {
     double mn[3];
     double mx[3];
@@ -1185,6 +1316,8 @@ static int ray3d_find_closest_triangle(const ray3d_mesh_ctx_t *ctx, ray3d_mesh_h
 }
 
 /// @brief Build the RayHit3D result for a found triangle: world-space point, face normal, distance.
+/// @param ctx Borrowed prepared ray/mesh state.
+/// @param hd Borrowed validated closest-triangle record.
 /// @return The hit object, or NULL on allocation failure.
 static void *ray3d_build_mesh_hit(const ray3d_mesh_ctx_t *ctx, const ray3d_mesh_hit_t *hd) {
     rt_mesh3d *m = ctx->m;
@@ -1208,7 +1341,7 @@ static void *ray3d_build_mesh_hit(const ray3d_mesh_ctx_t *ctx, const ray3d_mesh_
         vec3_sanitize_raw(b);
         vec3_sanitize_raw(c);
         if (ctx->has_transform) {
-            const double *model = ctx->transform->m;
+            const double *model = ctx->model;
             mat4_transform_point_raw(model, a, a);
             mat4_transform_point_raw(model, b, b);
             mat4_transform_point_raw(model, c, c);
@@ -1271,80 +1404,249 @@ static void *ray3d_build_mesh_hit(const ray3d_mesh_ctx_t *ctx, const ray3d_mesh_
     return hit;
 }
 
-/// @brief Intersect a world-space ray (@p origin, @p dir) against a Mesh3D, optionally placed
-///   by @p transform_obj, by transforming the ray into mesh-local space and testing triangles.
-/// @return The nearest RayHit3D object, or NULL on a miss or invalid/degenerate inputs.
-void *rt_ray3d_intersect_mesh(void *origin, void *dir, void *mesh_obj, void *transform_obj) {
-    ray3d_mesh_ctx_t ctx = {0};
-    ray3d_mesh_hit_t hit_data;
-    double inv_model[16];
-    rt_mesh3d *m = (rt_mesh3d *)rt_g3d_checked_or_null(mesh_obj, RT_G3D_MESH3D_CLASS_ID);
-    mat4_impl *transform = NULL;
+/// @brief Box a RayHit3D from raw hit data for scene-level precise queries.
+/// @details Keeps the RayHit3D payload layout private to this file while the
+///          scene queries in rt_scene3d_query.c report triangle hits found
+///          through `rt_raycast3d_mesh_hit_raw`.
+/// @param distance Sanitized non-negative Euclidean world hit distance.
+/// @param point Borrowed world-space hit point.
+/// @param normal Borrowed normalized world-space face normal.
+/// @param triangle Winning triangle index within the hit mesh.
+/// @return New RayHit3D object, or `NULL` on invalid input or allocation failure.
+void *rt_raycast3d_build_hit(double distance,
+                             const double point[3],
+                             const double normal[3],
+                             int64_t triangle) {
+    rt_rayhit3d *hit;
+    if (!point || !normal)
+        return NULL;
+    hit = (rt_rayhit3d *)rt_obj_new_i64(RT_G3D_RAYHIT3D_CLASS_ID, (int64_t)sizeof(rt_rayhit3d));
+    if (!hit)
+        return NULL;
+    hit->distance = raycast3d_sanitize_hit_distance(distance);
+    hit->point[0] = point[0];
+    hit->point[1] = point[1];
+    hit->point[2] = point[2];
+    hit->normal[0] = normal[0];
+    hit->normal[1] = normal[1];
+    hit->normal[2] = normal[2];
+    vec3_sanitize_raw(hit->point);
+    vec3_normalize_or_up_raw(hit->normal);
+    hit->triangle_index = triangle;
+    return hit;
+}
 
-    if (!vec3_read_finite(origin, ctx.world_origin) || !vec3_read_finite(dir, ctx.world_dir) || !m)
-        return NULL;
+/// @brief Prepare the ray/mesh context and run the shared narrow phase.
+/// @details Sanitizes and normalizes the world ray, validates the mesh
+///          geometry, converts the ray into object space when the model
+///          matrix inverts (world-space exact fallback otherwise), applies
+///          the broad-phase AABB early-out, then finds the closest triangle.
+/// @param world_origin Borrowed finite world-space ray origin.
+/// @param world_dir Borrowed world-space direction, normalized internally.
+/// @param m Borrowed validated mesh payload.
+/// @param model Optional borrowed row-major model matrix; `NULL` = identity.
+/// @param ctx Output prepared query context.
+/// @param hit Output closest-triangle record.
+/// @return Nonzero when a triangle was hit and @p ctx / @p hit are valid.
+static int ray3d_mesh_query_raw(const double world_origin[3],
+                                const double world_dir[3],
+                                rt_mesh3d *m,
+                                const double *model,
+                                ray3d_mesh_ctx_t *ctx,
+                                ray3d_mesh_hit_t *hit) {
+    double inv_model[16];
+    if (!world_origin || !world_dir || !m || !ctx || !hit)
+        return 0;
+    memset(ctx, 0, sizeof(*ctx));
+    ctx->world_origin[0] = world_origin[0];
+    ctx->world_origin[1] = world_origin[1];
+    ctx->world_origin[2] = world_origin[2];
+    ctx->world_dir[0] = world_dir[0];
+    ctx->world_dir[1] = world_dir[1];
+    ctx->world_dir[2] = world_dir[2];
+    if (!vec3_is_finite_raw(ctx->world_origin) || !vec3_is_finite_raw(ctx->world_dir))
+        return 0;
     m->raycast_last_triangle_probe_count = 0;
-    if (!vec3_normalize_raw(ctx.world_dir))
-        return NULL;
-    if (transform_obj) {
-        transform = raycast3d_mat4_checked(transform_obj);
-        if (!transform || !mat4d_is_finite(transform->m))
-            return NULL;
-    }
+    if (!vec3_normalize_raw(ctx->world_dir))
+        return 0;
+    if (model && !mat4d_is_finite(model))
+        return 0;
     rt_mesh3d_repair_geometry_counts(m);
     if (rt_mesh3d_safe_vertex_count(m) == 0 || rt_mesh3d_safe_index_count(m) < 3)
-        return NULL;
+        return 0;
 
-    ctx.m = m;
-    ctx.transform = transform;
-    ctx.has_transform = (transform != NULL);
+    ctx->m = m;
+    ctx->model = model;
+    ctx->has_transform = (model != NULL);
 
     rt_mesh3d_refresh_bounds(m);
 
-    if (ctx.has_transform) {
-        const double *model = transform->m;
+    if (ctx->has_transform) {
         if (mat4d_invert(model, inv_model) == 0) {
-            double world_target[3] = {ctx.world_origin[0] + ctx.world_dir[0],
-                                      ctx.world_origin[1] + ctx.world_dir[1],
-                                      ctx.world_origin[2] + ctx.world_dir[2]};
+            double world_target[3] = {ctx->world_origin[0] + ctx->world_dir[0],
+                                      ctx->world_origin[1] + ctx->world_dir[1],
+                                      ctx->world_origin[2] + ctx->world_dir[2]};
             double obj_target[3];
-            mat4_transform_point_raw(inv_model, ctx.world_origin, ctx.obj_origin);
+            mat4_transform_point_raw(inv_model, ctx->world_origin, ctx->obj_origin);
             mat4_transform_point_raw(inv_model, world_target, obj_target);
-            ctx.obj_dir[0] = obj_target[0] - ctx.obj_origin[0];
-            ctx.obj_dir[1] = obj_target[1] - ctx.obj_origin[1];
-            ctx.obj_dir[2] = obj_target[2] - ctx.obj_origin[2];
-            vec3_sanitize_raw(ctx.obj_origin);
-            vec3_sanitize_raw(ctx.obj_dir);
-            if (vec3_is_finite_raw(ctx.obj_origin) && vec3_is_finite_raw(ctx.obj_dir)) {
-                double dir_len_sq = ctx.obj_dir[0] * ctx.obj_dir[0] +
-                                    ctx.obj_dir[1] * ctx.obj_dir[1] +
-                                    ctx.obj_dir[2] * ctx.obj_dir[2];
-                ctx.use_object_space = isfinite(dir_len_sq) && dir_len_sq >= EPSILON * EPSILON;
+            ctx->obj_dir[0] = obj_target[0] - ctx->obj_origin[0];
+            ctx->obj_dir[1] = obj_target[1] - ctx->obj_origin[1];
+            ctx->obj_dir[2] = obj_target[2] - ctx->obj_origin[2];
+            vec3_sanitize_raw(ctx->obj_origin);
+            vec3_sanitize_raw(ctx->obj_dir);
+            if (vec3_is_finite_raw(ctx->obj_origin) && vec3_is_finite_raw(ctx->obj_dir)) {
+                double dir_len_sq = ctx->obj_dir[0] * ctx->obj_dir[0] +
+                                    ctx->obj_dir[1] * ctx->obj_dir[1] +
+                                    ctx->obj_dir[2] * ctx->obj_dir[2];
+                ctx->use_object_space = isfinite(dir_len_sq) && dir_len_sq >= EPSILON * EPSILON;
             }
         }
     }
-    if (!ctx.use_object_space) {
-        ctx.obj_origin[0] = ctx.world_origin[0];
-        ctx.obj_origin[1] = ctx.world_origin[1];
-        ctx.obj_origin[2] = ctx.world_origin[2];
-        ctx.obj_dir[0] = ctx.world_dir[0];
-        ctx.obj_dir[1] = ctx.world_dir[1];
-        ctx.obj_dir[2] = ctx.world_dir[2];
+    if (!ctx->use_object_space) {
+        ctx->obj_origin[0] = ctx->world_origin[0];
+        ctx->obj_origin[1] = ctx->world_origin[1];
+        ctx->obj_origin[2] = ctx->world_origin[2];
+        ctx->obj_dir[0] = ctx->world_dir[0];
+        ctx->obj_dir[1] = ctx->world_dir[1];
+        ctx->obj_dir[2] = ctx->world_dir[2];
     }
-    vec3_sanitize_raw(ctx.obj_origin);
-    vec3_sanitize_raw(ctx.obj_dir);
+    vec3_sanitize_raw(ctx->obj_origin);
+    vec3_sanitize_raw(ctx->obj_dir);
     {
-        double obj_dir_len_sq = ctx.obj_dir[0] * ctx.obj_dir[0] + ctx.obj_dir[1] * ctx.obj_dir[1] +
-                                ctx.obj_dir[2] * ctx.obj_dir[2];
+        double obj_dir_len_sq = ctx->obj_dir[0] * ctx->obj_dir[0] +
+                                ctx->obj_dir[1] * ctx->obj_dir[1] +
+                                ctx->obj_dir[2] * ctx->obj_dir[2];
         if (!isfinite(obj_dir_len_sq) || obj_dir_len_sq < EPSILON * EPSILON)
-            return NULL;
+            return 0;
     }
 
-    if (ray3d_mesh_misses_bounds(&ctx))
+    if (ray3d_mesh_misses_bounds(ctx))
+        return 0;
+    return ray3d_find_closest_triangle(ctx, hit);
+}
+
+/// @brief Intersect a world-space ray against a transformed Mesh3D.
+/// @details Performs an AABB early-out, then lazily builds or reuses a
+///          local-space BVH keyed by geometry revision. Singular transforms and
+///          BVH allocation failures preserve an exact world-space linear sweep.
+/// @param origin Borrowed Vec3 ray origin in world space.
+/// @param dir Borrowed Vec3 direction, normalized internally.
+/// @param mesh_obj Borrowed Mesh3D handle to test.
+/// @param transform_obj Optional borrowed Mat4 model transform; `NULL` means identity.
+/// @return The nearest RayHit3D object, or NULL on a miss or invalid/degenerate inputs.
+void *rt_ray3d_intersect_mesh(void *origin, void *dir, void *mesh_obj, void *transform_obj) {
+    ray3d_mesh_ctx_t ctx;
+    ray3d_mesh_hit_t hit_data;
+    double world_origin[3];
+    double world_dir[3];
+    rt_mesh3d *m = (rt_mesh3d *)rt_g3d_checked_or_null(mesh_obj, RT_G3D_MESH3D_CLASS_ID);
+    mat4_impl *transform = NULL;
+
+    if (!vec3_read_finite(origin, world_origin) || !vec3_read_finite(dir, world_dir) || !m)
         return NULL;
-    if (!ray3d_find_closest_triangle(&ctx, &hit_data))
+    if (transform_obj) {
+        transform = raycast3d_mat4_checked(transform_obj);
+        if (!transform)
+            return NULL;
+    }
+    if (!ray3d_mesh_query_raw(
+            world_origin, world_dir, m, transform ? transform->m : NULL, &ctx, &hit_data))
         return NULL;
     return ray3d_build_mesh_hit(&ctx, &hit_data);
+}
+
+/// @brief Allocation-free triangle-accurate mesh hit for scene-level queries.
+/// @details Runs the same broad phase, BVH narrow phase, and fallbacks as
+///          `rt_ray3d_intersect_mesh` but takes raw doubles and reports the
+///          hit without building a RayHit3D. The world-space face normal is
+///          derived from the winning triangle exactly as the boxed query does.
+/// @param origin Borrowed finite world-space ray origin.
+/// @param dir Borrowed world-space direction, normalized internally.
+/// @param mesh Borrowed validated mesh payload.
+/// @param model Optional borrowed row-major world matrix; `NULL` = identity.
+/// @param max_distance Non-negative Euclidean hit cap; negative means uncapped.
+/// @param out_distance Optional output Euclidean world hit distance.
+/// @param out_triangle Optional output winning triangle index.
+/// @param out_point Optional output world-space hit point.
+/// @param out_normal Optional output normalized world-space face normal.
+/// @return Nonzero when a triangle hit within range was found.
+int rt_raycast3d_mesh_hit_raw(const double origin[3],
+                              const double dir[3],
+                              rt_mesh3d *mesh,
+                              const double *model,
+                              double max_distance,
+                              double *out_distance,
+                              int64_t *out_triangle,
+                              double *out_point,
+                              double *out_normal) {
+    ray3d_mesh_ctx_t ctx;
+    ray3d_mesh_hit_t hit;
+    double point[3];
+    double normal[3];
+    double distance;
+
+    if (!ray3d_mesh_query_raw(origin, dir, mesh, model, &ctx, &hit))
+        return 0;
+
+    if (ctx.has_transform && ctx.use_object_space) {
+        mat4_transform_point_raw(ctx.model, hit.best_obj_point, point);
+    } else {
+        point[0] = ctx.world_origin[0] + ctx.world_dir[0] * hit.best_t;
+        point[1] = ctx.world_origin[1] + ctx.world_dir[1] * hit.best_t;
+        point[2] = ctx.world_origin[2] + ctx.world_dir[2] * hit.best_t;
+    }
+    vec3_sanitize_raw(point);
+
+    distance = (point[0] - ctx.world_origin[0]) * ctx.world_dir[0] +
+               (point[1] - ctx.world_origin[1]) * ctx.world_dir[1] +
+               (point[2] - ctx.world_origin[2]) * ctx.world_dir[2];
+    distance = raycast3d_sanitize_hit_distance(distance);
+    if (distance < 0.0)
+        return 0;
+    if (max_distance >= 0.0 && distance > max_distance)
+        return 0;
+
+    if (out_normal) {
+        rt_mesh3d *m = ctx.m;
+        double a[3] = {m->vertices[hit.best_i0].pos[0],
+                       m->vertices[hit.best_i0].pos[1],
+                       m->vertices[hit.best_i0].pos[2]};
+        double b[3] = {m->vertices[hit.best_i1].pos[0],
+                       m->vertices[hit.best_i1].pos[1],
+                       m->vertices[hit.best_i1].pos[2]};
+        double c[3] = {m->vertices[hit.best_i2].pos[0],
+                       m->vertices[hit.best_i2].pos[1],
+                       m->vertices[hit.best_i2].pos[2]};
+        vec3_sanitize_raw(a);
+        vec3_sanitize_raw(b);
+        vec3_sanitize_raw(c);
+        if (ctx.has_transform) {
+            mat4_transform_point_raw(ctx.model, a, a);
+            mat4_transform_point_raw(ctx.model, b, b);
+            mat4_transform_point_raw(ctx.model, c, c);
+        }
+        {
+            double e1x = b[0] - a[0], e1y = b[1] - a[1], e1z = b[2] - a[2];
+            double e2x = c[0] - a[0], e2y = c[1] - a[1], e2z = c[2] - a[2];
+            normal[0] = e1y * e2z - e1z * e2y;
+            normal[1] = e1z * e2x - e1x * e2z;
+            normal[2] = e1x * e2y - e1y * e2x;
+        }
+        vec3_normalize_or_up_raw(normal);
+        out_normal[0] = normal[0];
+        out_normal[1] = normal[1];
+        out_normal[2] = normal[2];
+    }
+    if (out_distance)
+        *out_distance = distance;
+    if (out_triangle)
+        *out_triangle = hit.best_tri;
+    if (out_point) {
+        out_point[0] = point[0];
+        out_point[1] = point[1];
+        out_point[2] = point[2];
+    }
+    return 1;
 }
 
 /*==========================================================================
@@ -1352,6 +1654,10 @@ void *rt_ray3d_intersect_mesh(void *origin, void *dir, void *mesh_obj, void *tra
  *=========================================================================*/
 
 /// @brief Test whether two axis-aligned bounding boxes overlap.
+/// @param min_a Borrowed Vec3 minimum corner of box A.
+/// @param max_a Borrowed Vec3 maximum corner of box A.
+/// @param min_b Borrowed Vec3 minimum corner of box B.
+/// @param max_b Borrowed Vec3 maximum corner of box B.
 /// @return 1 if they overlap on all three axes, 0 otherwise.
 int8_t rt_aabb3d_overlaps(void *min_a, void *max_a, void *min_b, void *max_b) {
     double amin[3], amax[3], bmin[3], bmax[3];
@@ -1369,6 +1675,11 @@ int8_t rt_aabb3d_overlaps(void *min_a, void *max_a, void *min_b, void *max_b) {
 /// @brief Compute the minimum-axis penetration vector to separate two overlapping AABBs.
 /// @details Finds the axis with the smallest overlap and returns a push vector
 ///          along that axis. Returns (0,0,0) if the boxes do not overlap.
+/// @param min_a Borrowed Vec3 minimum corner of box A.
+/// @param max_a Borrowed Vec3 maximum corner of box A.
+/// @param min_b Borrowed Vec3 minimum corner of box B.
+/// @param max_b Borrowed Vec3 maximum corner of box B.
+/// @return New Vec3 that pushes A out of B along the minimum-overlap axis, or zero.
 void *rt_aabb3d_penetration(void *min_a, void *max_a, void *min_b, void *max_b) {
     double amin[3], amax[3], bmin[3], bmax[3];
     if (!vec3_read_finite(min_a, amin) || !vec3_read_finite(max_a, amax) ||
@@ -1411,12 +1722,16 @@ void *rt_aabb3d_penetration(void *min_a, void *max_a, void *min_b, void *max_b) 
  *=========================================================================*/
 
 /// @brief Get the distance along the ray to the hit point.
+/// @param hit Borrowed RayHit3D handle.
+/// @return Sanitized non-negative distance, or `-1` for an invalid handle.
 double rt_ray3d_hit_distance(void *hit) {
     rt_rayhit3d *h = (rt_rayhit3d *)rt_g3d_checked_or_null(hit, RT_G3D_RAYHIT3D_CLASS_ID);
     return h ? raycast3d_sanitize_hit_distance(h->distance) : -1.0;
 }
 
 /// @brief Get the world-space position of the hit point as a new Vec3.
+/// @param hit Borrowed RayHit3D handle.
+/// @return New sanitized Vec3, or the zero vector for an invalid handle.
 void *rt_ray3d_hit_point(void *hit) {
     rt_rayhit3d *h = (rt_rayhit3d *)rt_g3d_checked_or_null(hit, RT_G3D_RAYHIT3D_CLASS_ID);
     if (!h)
@@ -1425,6 +1740,8 @@ void *rt_ray3d_hit_point(void *hit) {
 }
 
 /// @brief Get the surface normal at the hit point as a new Vec3.
+/// @param hit Borrowed RayHit3D handle.
+/// @return New unit Vec3 normal, defaulting to positive Y for an invalid handle.
 void *rt_ray3d_hit_normal(void *hit) {
     rt_rayhit3d *h = (rt_rayhit3d *)rt_g3d_checked_or_null(hit, RT_G3D_RAYHIT3D_CLASS_ID);
     if (!h)
@@ -1437,6 +1754,8 @@ void *rt_ray3d_hit_normal(void *hit) {
 }
 
 /// @brief Get the index of the triangle that was hit (-1 if no hit).
+/// @param hit Borrowed RayHit3D handle.
+/// @return Source triangle index, or `-1` for an invalid handle.
 int64_t rt_ray3d_hit_triangle(void *hit) {
     rt_rayhit3d *h = (rt_rayhit3d *)rt_g3d_checked_or_null(hit, RT_G3D_RAYHIT3D_CLASS_ID);
     return h ? h->triangle_index : -1;
@@ -1447,6 +1766,11 @@ int64_t rt_ray3d_hit_triangle(void *hit) {
  *=========================================================================*/
 
 /// @brief Test whether two spheres overlap (distance < sum of radii).
+/// @param center_a Borrowed Vec3 center of sphere A.
+/// @param radius_a Radius of sphere A; invalid values sanitize to zero.
+/// @param center_b Borrowed Vec3 center of sphere B.
+/// @param radius_b Radius of sphere B; invalid values sanitize to zero.
+/// @return Nonzero when the closed sphere volumes overlap or touch.
 int8_t rt_sphere3d_overlaps(void *center_a, double radius_a, void *center_b, double radius_b) {
     double ca[3], cb[3];
     if (!vec3_read_finite(center_a, ca) || !vec3_read_finite(center_b, cb))
@@ -1462,6 +1786,11 @@ int8_t rt_sphere3d_overlaps(void *center_a, double radius_a, void *center_b, dou
 }
 
 /// @brief Compute the penetration vector to separate two overlapping spheres.
+/// @param center_a Borrowed Vec3 center of sphere A.
+/// @param radius_a Radius of sphere A; invalid values sanitize to zero.
+/// @param center_b Borrowed Vec3 center of sphere B.
+/// @param radius_b Radius of sphere B; invalid values sanitize to zero.
+/// @return New vector that pushes A out of B, or zero when disjoint or invalid.
 void *rt_sphere3d_penetration(void *center_a, double radius_a, void *center_b, double radius_b) {
     double ca[3], cb[3];
     if (!vec3_read_finite(center_a, ca) || !vec3_read_finite(center_b, cb))
@@ -1487,6 +1816,12 @@ void *rt_sphere3d_penetration(void *center_a, double radius_a, void *center_b, d
 }
 
 /// @brief Find the closest point on an AABB surface to a given point.
+/// @details Points inside the box project to the nearest face rather than being
+///          returned unchanged; points outside clamp independently to the box.
+/// @param aabb_min Borrowed Vec3 minimum box corner.
+/// @param aabb_max Borrowed Vec3 maximum box corner.
+/// @param point Borrowed Vec3 query point.
+/// @return New sanitized Vec3 on the box surface, or zero for invalid input.
 void *rt_aabb3d_closest_point(void *aabb_min, void *aabb_max, void *point) {
     double p[3], mn[3], mx[3];
     if (!vec3_read_finite(point, p) || !vec3_read_finite(aabb_min, mn) ||
@@ -1540,6 +1875,11 @@ void *rt_aabb3d_closest_point(void *aabb_min, void *aabb_max, void *point) {
 }
 
 /// @brief Test whether an AABB and a sphere overlap.
+/// @param aabb_min Borrowed Vec3 minimum box corner.
+/// @param aabb_max Borrowed Vec3 maximum box corner.
+/// @param center Borrowed Vec3 sphere center.
+/// @param radius Non-negative sphere radius.
+/// @return Nonzero when the closed shapes overlap or touch.
 int8_t rt_aabb3d_sphere_overlaps(void *aabb_min, void *aabb_max, void *center, double radius) {
     double p[3], mn[3], mx[3];
     if (!vec3_read_finite(center, p) || !vec3_read_finite(aabb_min, mn) ||
@@ -1565,6 +1905,10 @@ int8_t rt_aabb3d_sphere_overlaps(void *aabb_min, void *aabb_max, void *center, d
 /// stays on the segment, never on its infinite extension), and reconstructs the world
 /// position. Degenerate zero-length segments collapse to endpoint A. Used by capsule
 /// overlap tests and AI path-following.
+/// @param seg_a Borrowed Vec3 first segment endpoint.
+/// @param seg_b Borrowed Vec3 second segment endpoint.
+/// @param point Borrowed Vec3 query point.
+/// @return New sanitized Vec3 on the finite segment, or zero for invalid input.
 void *rt_segment3d_closest_point(void *seg_a, void *seg_b, void *point) {
     double a[3], b[3], p[3];
     double closest[3];
@@ -1579,6 +1923,12 @@ void *rt_segment3d_closest_point(void *seg_a, void *seg_b, void *point) {
 /// sphere intersects the capsule when the sphere centre is within `cap_radius +
 /// sphere_radius` of the closest point on the segment. Squared comparison avoids the
 /// sqrt.
+/// @param cap_a Borrowed Vec3 first capsule-axis endpoint.
+/// @param cap_b Borrowed Vec3 second capsule-axis endpoint.
+/// @param cap_radius Capsule radius; invalid values sanitize to zero.
+/// @param sphere_center Borrowed Vec3 sphere center.
+/// @param sphere_radius Sphere radius; invalid values sanitize to zero.
+/// @return Nonzero when the closed capsule and sphere overlap or touch.
 int8_t rt_capsule3d_sphere_overlaps(
     void *cap_a, void *cap_b, double cap_radius, void *sphere_center, double sphere_radius) {
     double a[3], b[3], c[3];
@@ -1602,6 +1952,12 @@ int8_t rt_capsule3d_sphere_overlaps(
 /// core segment by splitting the segment at box slab boundaries and checking each
 /// interval's quadratic minimum. The capsule overlaps when that exact segment-box
 /// distance is within the capsule radius.
+/// @param cap_a Borrowed Vec3 first capsule-axis endpoint.
+/// @param cap_b Borrowed Vec3 second capsule-axis endpoint.
+/// @param radius Capsule radius; invalid values sanitize to zero.
+/// @param aabb_min Borrowed Vec3 minimum box corner.
+/// @param aabb_max Borrowed Vec3 maximum box corner.
+/// @return Nonzero when the closed capsule and box overlap or touch.
 int8_t rt_capsule3d_aabb_overlaps(
     void *cap_a, void *cap_b, double radius, void *aabb_min, void *aabb_max) {
     double a[3], b[3], mn[3], mx[3];

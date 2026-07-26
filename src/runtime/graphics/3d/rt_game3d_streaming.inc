@@ -1,10 +1,42 @@
 //===----------------------------------------------------------------------===//
-// Part of the Zanna project, under the GNU GPL v3. See LICENSE.
-// File: src/runtime/graphics/3d/rt_game3d_streaming.inc  (#included from rt_game3d.c; not a
-// standalone translation unit) Purpose: Game3D WorldStream3D manifest parsing, cell/terrain
-// load-unload, and recompute
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
 //===----------------------------------------------------------------------===//
+//
+// File: src/runtime/graphics/3d/rt_game3d_streaming.inc
+// Purpose: Private WorldStream3D implementation included by rt_game3d.c —
+//   bounded manifest parsing, cell and terrain staging, load/unload selection,
+//   proxy and sidecar management, residency budgets, and stream telemetry.
+// Key invariants:
+//   - Manifest-derived counts, sizes, paths, and coordinates are validated
+//     before allocation or use.
+//   - Recompute order is deterministic by squared distance and manifest index.
+//   - Worker staging publishes mutations through the main-thread commit queue.
+// Ownership/Lifetime:
+//   - The enclosing WorldStream3D payload owns parsed arrays, staged resources,
+//     retained strings, proxies, terrain attachments, and candidate buffers.
+// Links: rt_game3d.c, rt_game3d_internal.h, rt_untrusted_count.h
+//
+//===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements private manifest-driven WorldStream3D residency management.
+/// @details This include is compiled as part of `rt_game3d.c`. It parses
+/// untrusted cell and terrain manifests, stages resources synchronously or on
+/// workers, commits them under frame and memory budgets, manages lower-cost
+/// proxies, and keeps load ordering and telemetry deterministic.
+
+/// @brief Measure a manifest string in bytes with a saturating signed result.
+/// @param value Borrowed runtime string, or `NULL`.
+/// @return Manifest byte length bounded to `INT64_MAX`.
 static int64_t game3d_stream_manifest_bytes(rt_string value);
+
+/// @brief Add two signed integers without overflow.
+/// @param a First addend.
+/// @param b Second addend.
+/// @return Saturated signed sum.
 static int64_t game3d_i64_saturating_add(int64_t a, int64_t b);
 
 #define game3d_stream_fseek(fp, off, whence) rt_file_stdio_seek64((fp), (off), (whence))
@@ -14,16 +46,23 @@ static int64_t game3d_i64_saturating_add(int64_t a, int64_t b);
 #define GAME3D_STREAM_BUDGET_EVICT_COOLDOWN 30
 
 /// @brief Whether a parsed JSON value is a map/object.
+/// @param obj Borrowed parsed JSON handle.
+/// @return Nonzero when @p obj has the runtime map class.
 static int game3d_json_is_map(void *obj) {
     return obj && rt_obj_class_id(obj) == RT_MAP_CLASS_ID;
 }
 
 /// @brief Whether a parsed JSON value is an array/sequence.
+/// @param obj Borrowed parsed JSON handle.
+/// @return Nonzero when @p obj has the runtime sequence class.
 static int game3d_json_is_seq(void *obj) {
     return obj && rt_obj_class_id(obj) == RT_SEQ_CLASS_ID;
 }
 
 /// @brief Look up @p key in a parsed JSON map (NULL if absent or not a map).
+/// @param map Borrowed parsed JSON map handle.
+/// @param key Null-terminated object key.
+/// @return Borrowed mapped value, or `NULL` when absent, invalid, or allocation fails.
 static void *game3d_json_get(void *map, const char *key) {
     if (!game3d_json_is_map(map) || !key)
         return NULL;
@@ -36,6 +75,9 @@ static void *game3d_json_get(void *map, const char *key) {
 }
 
 /// @brief Coerce a parsed JSON value to a double; returns 0 if it is not numeric.
+/// @param obj Borrowed boxed numeric candidate.
+/// @param[out] out Required destination written only after successful coercion.
+/// @return Nonzero for a boxed floating-point or integer value; otherwise zero.
 static int game3d_json_number(void *obj, double *out) {
     if (!out)
         return 0;
@@ -53,6 +95,10 @@ static int game3d_json_number(void *obj, double *out) {
 }
 
 /// @brief Read map[key] as an int64, returning @p fallback if absent or non-numeric.
+/// @param map Borrowed parsed JSON map handle.
+/// @param key Null-terminated object key.
+/// @param fallback Value returned for missing or non-numeric data.
+/// @return Decoded integer, a saturated conversion from finite floating point, or @p fallback.
 static int64_t game3d_json_i64_or(void *map, const char *key, int64_t fallback) {
     void *value = game3d_json_get(map, key);
     int64_t i = 0;
@@ -70,6 +116,10 @@ static int64_t game3d_json_i64_or(void *map, const char *key, int64_t fallback) 
 }
 
 /// @brief Read map[key] as a double, returning @p fallback if absent or non-numeric.
+/// @param map Borrowed parsed JSON map handle.
+/// @param key Null-terminated object key.
+/// @param fallback Value returned for missing, non-numeric, or non-finite data.
+/// @return Finite decoded number or @p fallback.
 static double game3d_json_f64_or(void *map, const char *key, double fallback) {
     double v = 0.0;
     if (game3d_json_number(game3d_json_get(map, key), &v) && isfinite(v))
@@ -78,6 +128,10 @@ static double game3d_json_f64_or(void *map, const char *key, double fallback) {
 }
 
 /// @brief Read map[key] as a boolean, accepting boxed bools and numeric 0/1 values.
+/// @param map Borrowed parsed JSON map handle.
+/// @param key Null-terminated object key.
+/// @param fallback Value returned for unsupported or missing data.
+/// @return Normalized zero or one from the decoded value, or @p fallback.
 static int8_t game3d_json_bool_or(void *map, const char *key, int8_t fallback) {
     void *value = game3d_json_get(map, key);
     int8_t b = 0;
@@ -93,6 +147,9 @@ static int8_t game3d_json_bool_or(void *map, const char *key, int8_t fallback) {
 }
 
 /// @brief Read map[key] as a borrowed string reference (NULL if absent or not a string).
+/// @param map Borrowed parsed JSON map handle.
+/// @param key Null-terminated object key.
+/// @return New reference to the runtime string, or `NULL` when absent or not a string.
 static rt_string game3d_json_string_ref(void *map, const char *key) {
     void *value = game3d_json_get(map, key);
     if (!value || !rt_string_is_handle(value))
@@ -101,6 +158,12 @@ static rt_string game3d_json_string_ref(void *map, const char *key) {
 }
 
 /// @brief Read map[key] as a 3-element number array into @p out, falling back to @p f on absence.
+/// @param map Borrowed parsed JSON map handle.
+/// @param key Null-terminated object key.
+/// @param[out] out Required three-component destination.
+/// @param fallback Optional three-component fallback; `NULL` selects zero.
+/// @return Nonzero when all three finite components were decoded; otherwise zero after writing the
+/// fallback.
 static int game3d_json_vec3_or(void *map,
                                const char *key,
                                double out[3],
@@ -127,6 +190,9 @@ static int game3d_json_vec3_or(void *map,
 /// @brief Read optional manifest text through the asset manager or filesystem without trapping.
 /// @details Packed/embedded asset lookup is tried first so `asset://` stream manifests work. The
 ///          byte cap is enforced for both sources; missing or oversized manifests return NULL.
+/// @param path Borrowed asset or UTF-8 filesystem path.
+/// @return New runtime string containing the bytes, or `NULL` when unavailable, oversized, or
+/// unreadable.
 static rt_string game3d_read_text_file_no_trap(rt_string path) {
     const char *cpath = path ? rt_string_cstr(path) : NULL;
     if (!cpath || cpath[0] == '\0')
@@ -181,6 +247,10 @@ static rt_string game3d_read_text_file_no_trap(rt_string path) {
 }
 
 /// @brief Validate an optional manifest count declaration against the manifest byte budget.
+/// @param root Borrowed parsed manifest object.
+/// @param key Null-terminated count-field name.
+/// @param manifest_bytes Total bytes available to justify the declared count.
+/// @return Nonzero when absent or within the untrusted-count bound; otherwise zero.
 static int game3d_stream_declared_count_ok(void *root, const char *key, size_t manifest_bytes) {
     if (!root || !key)
         return 0;
@@ -190,6 +260,8 @@ static int game3d_stream_declared_count_ok(void *root, const char *key, size_t m
 }
 
 /// @brief Whether @p path is absolute (leading '/' on POSIX, drive/UNC prefix on Windows).
+/// @param path Null-terminated UTF-8 path.
+/// @return Nonzero for an absolute POSIX, drive-prefixed, rooted, or UNC-style path.
 static int game3d_path_is_absolute(const char *path) {
     if (!path || path[0] == '\0')
         return 0;
@@ -206,6 +278,8 @@ static int game3d_path_is_absolute(const char *path) {
 /// @brief Return whether @p path begins with a URI-like scheme before any slash.
 /// @details Used to preserve `asset://...` manifest references while applying
 ///          filesystem traversal checks only to filesystem-style sidecars.
+/// @param path Null-terminated path or URI candidate.
+/// @return Nonzero when a syntactically valid scheme is followed by `://`.
 static int game3d_path_has_scheme(const char *path) {
     if (!path || !isalpha((unsigned char)path[0]))
         return 0;
@@ -223,6 +297,8 @@ static int game3d_path_has_scheme(const char *path) {
 /// @brief Return whether a filesystem-style path contains a parent-directory segment.
 /// @details Checks complete path segments separated by `/` or `\\`, so names
 ///          like `level..json` remain valid while `../level` and `a/../b` are rejected.
+/// @param path Null-terminated filesystem-style path.
+/// @return Nonzero when any complete segment is exactly `..`.
 static int game3d_path_has_parent_segment(const char *path) {
     const char *seg = path;
     if (!path)
@@ -244,6 +320,9 @@ static int game3d_path_has_parent_segment(const char *path) {
 /// @details Absolute references pass through; relative ones are joined to the manifest's folder so
 /// a
 ///          streaming manifest can reference sibling assets portably.
+/// @param manifest_path Borrowed path of the owning manifest.
+/// @param payload Borrowed resource reference from the manifest.
+/// @return New runtime-string reference containing an absolute/pass-through or joined path.
 static rt_string game3d_stream_resolve_manifest_path(rt_string manifest_path, rt_string payload) {
     const char *raw = payload ? rt_string_cstr(payload) : NULL;
     const char *manifest = manifest_path ? rt_string_cstr(manifest_path) : NULL;
@@ -273,6 +352,8 @@ static rt_string game3d_stream_resolve_manifest_path(rt_string manifest_path, rt
 
 /// @brief Resolve a manifest entry's "sidecar" (or fallback "binarySidecar") path against the
 /// manifest.
+/// @param entry Borrowed parsed cell or terrain entry.
+/// @param manifest_path Borrowed path of the owning manifest.
 /// @return Owned resolved path string, or an empty string when neither key is present.
 static rt_string game3d_json_resolved_sidecar_ref(void *entry, rt_string manifest_path) {
     rt_string raw = game3d_json_string_ref(entry, "sidecar");
@@ -293,6 +374,9 @@ static rt_string game3d_json_resolved_sidecar_ref(void *entry, rt_string manifes
 }
 
 /// @brief Return @p layer when it is a valid layer index, otherwise @p fallback.
+/// @param layer Candidate collision layer.
+/// @param fallback Replacement for an out-of-range layer.
+/// @return @p layer when valid; otherwise @p fallback.
 static int64_t game3d_stream_layer_or_valid(int64_t layer, int64_t fallback) {
     return game3d_valid_layer(layer) ? layer : fallback;
 }
@@ -305,6 +389,13 @@ static int64_t game3d_stream_layer_or_valid(int64_t layer, int64_t fallback) {
 ///          "collision" value or nested "collision.enabled"). Every out-pointer is optional; layer
 ///          and mask fall back to @p default_layer and all-bits when unspecified, and the matching
 ///          has-flag reports whether the manifest actually supplied a value.
+/// @param entry Borrowed parsed cell or terrain JSON object.
+/// @param default_layer Layer used when no valid manifest layer is present.
+/// @param[out] out_layer Optional resolved collision-layer destination.
+/// @param[out] out_has_layer Optional flag reporting an explicit valid layer.
+/// @param[out] out_mask Optional sanitized collision-mask destination.
+/// @param[out] out_has_mask Optional flag reporting an explicit mask.
+/// @param[out] out_enabled Optional normalized collision-enabled destination.
 static void game3d_stream_parse_collision_metadata(void *entry,
                                                    int64_t default_layer,
                                                    int64_t *out_layer,
@@ -354,6 +445,8 @@ static void game3d_stream_parse_collision_metadata(void *entry,
 
 /// @brief Read a manifest entry's "traversalCost", defaulting to 1.0 and clamping to the range (0,
 /// 1e6].
+/// @param entry Borrowed parsed cell or terrain JSON object.
+/// @return Positive finite traversal cost no greater than one million.
 static double game3d_stream_traversal_cost_or_default(void *entry) {
     double cost = game3d_json_f64_or(entry, "traversalCost", 1.0);
     if (!isfinite(cost) || cost <= 0.0)
@@ -364,6 +457,8 @@ static double game3d_stream_traversal_cost_or_default(void *entry) {
 }
 
 /// @brief Resident byte size attributed to a streaming cell (0 if not loaded).
+/// @param cell Borrowed cell record, or `NULL`.
+/// @return Positive measured or declared residency estimate, defaulting to 64 KiB.
 static int64_t game3d_stream_cell_bytes(const rt_game3d_stream_cell *cell) {
     if (!cell)
         return 64 * 1024;
@@ -375,6 +470,8 @@ static int64_t game3d_stream_cell_bytes(const rt_game3d_stream_cell *cell) {
 }
 
 /// @brief Resident byte size attributed to a streaming terrain tile (0 if not loaded).
+/// @param tile Borrowed terrain-tile record, or `NULL`.
+/// @return Saturated sum of resident and sidecar bytes, defaulting to 256 KiB.
 static int64_t game3d_stream_terrain_tile_bytes(const rt_game3d_stream_terrain_tile *tile) {
     if (!tile || tile->resident_bytes <= 0)
         return 256 * 1024;
@@ -384,6 +481,9 @@ static int64_t game3d_stream_terrain_tile_bytes(const rt_game3d_stream_terrain_t
 }
 
 /// @brief Squared distance from the stream center to a cell's center (drives load/unload ordering).
+/// @param stream Borrowed stream defining the current center.
+/// @param cell Borrowed manifest cell.
+/// @return Finite squared XZ distance, or `HUGE_VAL` for invalid or non-finite input.
 static double game3d_stream_cell_distance_sq(const rt_game3d_world_stream *stream,
                                              const rt_game3d_stream_cell *cell) {
     if (!stream || !cell || !isfinite(stream->center[0]) || !isfinite(stream->center[2]) ||
@@ -402,6 +502,9 @@ static double game3d_stream_cell_distance_sq(const rt_game3d_world_stream *strea
 }
 
 /// @brief Squared distance from the stream center to a terrain tile's center.
+/// @param stream Borrowed stream defining the current center.
+/// @param tile Borrowed manifest terrain tile.
+/// @return Finite squared XZ distance, or `HUGE_VAL` for invalid or non-finite input.
 static double game3d_stream_terrain_tile_distance_sq(const rt_game3d_world_stream *stream,
                                                      const rt_game3d_stream_terrain_tile *tile) {
     if (!stream || !tile || !isfinite(stream->center[0]) || !isfinite(stream->center[2]) ||
@@ -420,6 +523,8 @@ static double game3d_stream_terrain_tile_distance_sq(const rt_game3d_world_strea
 }
 
 /// @brief Sanitize a terrain axis scale to a positive finite value (defaulting when invalid).
+/// @param value Candidate scale component.
+/// @return Positive finite scale no greater than one million, defaulting to one.
 static double game3d_stream_terrain_axis_scale(double value) {
     if (!isfinite(value) || value <= 0.0)
         return 1.0;
@@ -429,6 +534,11 @@ static double game3d_stream_terrain_axis_scale(double value) {
 }
 
 /// @brief Compute the render-space bounds of a terrain tile from its manifest center + scale.
+/// @param tile Borrowed terrain-tile record, or `NULL` for unit bounds at the origin.
+/// @param[out] min_x Optional minimum X destination.
+/// @param[out] max_x Optional maximum X destination.
+/// @param[out] min_z Optional minimum Z destination.
+/// @param[out] max_z Optional maximum Z destination.
 static void game3d_stream_terrain_tile_bounds(const rt_game3d_stream_terrain_tile *tile,
                                               double *min_x,
                                               double *max_x,
@@ -455,6 +565,9 @@ static void game3d_stream_terrain_tile_bounds(const rt_game3d_stream_terrain_til
 }
 
 /// @brief Floating-point tolerance for deciding whether two tile edges touch.
+/// @param a Borrowed first terrain tile, or `NULL`.
+/// @param b Borrowed second terrain tile, or `NULL`.
+/// @return Finite tolerance scaled to the largest participating terrain sample spacing.
 static double game3d_stream_terrain_seam_tolerance(const rt_game3d_stream_terrain_tile *a,
                                                    const rt_game3d_stream_terrain_tile *b) {
     double tol = 0.00001;
@@ -479,21 +592,37 @@ static double game3d_stream_terrain_seam_tolerance(const rt_game3d_stream_terrai
 
 /// @brief Finite-aware approximate equality: true when both values are finite and within @p
 /// tolerance.
+/// @param a First value.
+/// @param b Second value.
+/// @param tolerance Maximum absolute difference.
+/// @return Nonzero only when both inputs are finite and within @p tolerance.
 static int game3d_stream_almost_equal(double a, double b, double tolerance) {
     return isfinite(a) && isfinite(b) && fabs(a - b) <= tolerance;
 }
 
 /// @brief True when two [min,max] ranges match end-to-end within @p tolerance (terrain seam test).
+/// @param a_min First range minimum.
+/// @param a_max First range maximum.
+/// @param b_min Second range minimum.
+/// @param b_max Second range maximum.
+/// @param tolerance Maximum endpoint difference.
+/// @return Nonzero when both range endpoints approximately match.
 static int game3d_stream_range_matches(
     double a_min, double a_max, double b_min, double b_max, double tolerance) {
     return game3d_stream_almost_equal(a_min, b_min, tolerance) &&
            game3d_stream_almost_equal(a_max, b_max, tolerance);
 }
 
+/// @brief Square a sanitized stream radius without producing a non-finite result.
+/// @param radius Candidate radius.
+/// @return Finite non-negative squared radius, saturating at `DBL_MAX`.
 static double game3d_stream_radius_sq(double radius);
 
 /// @brief qsort comparator ordering stream load candidates by ascending squared
 ///   distance, breaking ties by ascending index; NULL/non-finite distances sort last.
+/// @param lhs Borrowed pointer to the first load candidate.
+/// @param rhs Borrowed pointer to the second load candidate.
+/// @return Negative, zero, or positive according to deterministic load order.
 static int game3d_stream_load_candidate_cmp(const void *lhs, const void *rhs) {
     const rt_game3d_stream_load_candidate *a = (const rt_game3d_stream_load_candidate *)lhs;
     const rt_game3d_stream_load_candidate *b = (const rt_game3d_stream_load_candidate *)rhs;
@@ -512,17 +641,53 @@ static int game3d_stream_load_candidate_cmp(const void *lhs, const void *rhs) {
     return (ai > bi) - (ai < bi);
 }
 
+/// @brief Return the number of readable manifest cell slots.
+/// @param stream Borrowed stream payload.
+/// @return Cell count clamped to allocated capacity, or zero without valid storage.
 static int32_t game3d_world_stream_safe_cell_count(const rt_game3d_world_stream *stream);
+
+/// @brief Return the number of readable manifest terrain-tile slots.
+/// @param stream Borrowed stream payload.
+/// @return Terrain count clamped to allocated capacity, or zero without valid storage.
 static int32_t game3d_world_stream_safe_terrain_tile_count(const rt_game3d_world_stream *stream);
+
+/// @brief Release a cell's staged full-detail payload.
+/// @param cell Cell record whose staging fields are cleared.
+/// @param record_stale Nonzero to increment stale-result telemetry.
 static void game3d_stream_cell_drop_staged(rt_game3d_stream_cell *cell, int record_stale);
+
+/// @brief Release a terrain tile's staged payload.
+/// @param tile Terrain record whose staging fields are cleared.
+/// @param record_stale Nonzero to increment stale-result telemetry.
 static void game3d_stream_terrain_tile_drop_staged(rt_game3d_stream_terrain_tile *tile,
                                                    int record_stale);
+
+/// @brief Release a cell's staged proxy payload.
+/// @param cell Cell record whose proxy staging fields are cleared.
+/// @param record_stale Nonzero to increment stale-result telemetry.
 static void game3d_stream_cell_drop_staged_proxy(rt_game3d_stream_cell *cell, int record_stale);
+
+/// @brief Unload a resident cell proxy and release its scene/entity references.
+/// @param stream Borrowed owning stream.
+/// @param cell Cell record whose proxy is removed.
 static void game3d_world_stream_unload_cell_proxy(rt_game3d_world_stream *stream,
                                                   rt_game3d_stream_cell *cell);
+
+/// @brief Mark a cell proxy load as failed and apply retry bookkeeping.
+/// @param cell Cell record whose proxy request failed.
 static void game3d_stream_cell_proxy_failed(rt_game3d_stream_cell *cell);
+
+/// @brief Test whether a cell should be resident under current hysteresis.
+/// @param stream Borrowed stream defining center and radii.
+/// @param cell Borrowed cell record.
+/// @return Nonzero when the cell lies within its active threshold.
 static int game3d_stream_cell_desired(const rt_game3d_world_stream *stream,
                                       const rt_game3d_stream_cell *cell);
+
+/// @brief Test whether a terrain tile should be resident under current hysteresis.
+/// @param stream Borrowed stream defining center and radii.
+/// @param tile Borrowed terrain-tile record.
+/// @return Nonzero when the tile lies within its active threshold.
 static int game3d_stream_terrain_tile_desired(const rt_game3d_world_stream *stream,
                                               const rt_game3d_stream_terrain_tile *tile);
 
@@ -531,6 +696,10 @@ static int game3d_stream_terrain_tile_desired(const rt_game3d_world_stream *stre
 ///   object. Reusing them avoids per-update allocation churn while still allowing
 ///   manifests to grow after remount. Returns 0 on allocation failure; callers then
 ///   use the deterministic no-allocation scanner.
+/// @param[in,out] items Address of the stream-owned candidate-array pointer.
+/// @param[in,out] capacity Address of the current allocated entry capacity.
+/// @param needed Minimum entries required.
+/// @return Nonzero when existing or grown storage is usable; zero on allocation failure.
 static int game3d_stream_reserve_load_candidates(rt_game3d_stream_load_candidate **items,
                                                  int32_t *capacity,
                                                  int32_t needed) {
@@ -551,6 +720,11 @@ static int game3d_stream_reserve_load_candidates(rt_game3d_stream_load_candidate
 /// @details Used by the no-allocation nearest-first fallback. Distances are sanitized
 ///   to put non-finite values last, and index breaks ties so the ordering exactly
 ///   matches `game3d_stream_load_candidate_cmp`.
+/// @param distance_sq Candidate squared distance.
+/// @param index Candidate manifest index.
+/// @param previous_distance_sq Previously emitted squared distance.
+/// @param previous_index Previously emitted manifest index, or a negative sentinel.
+/// @return Nonzero when the candidate sorts strictly after the previous tuple.
 static int game3d_stream_candidate_after(double distance_sq,
                                          int32_t index,
                                          double previous_distance_sq,
@@ -569,6 +743,11 @@ static int game3d_stream_candidate_after(double distance_sq,
 }
 
 /// @brief Pick the next desired cell in sorted order without allocating or marking cells.
+/// @param stream Borrowed stream containing the manifest cells.
+/// @param previous_distance_sq Squared distance of the previously emitted cell.
+/// @param previous_index Index of the previously emitted cell, or a negative sentinel.
+/// @param[out] out_distance_sq Optional destination for the selected distance.
+/// @return Selected cell index, or `-1` when no later desired cell exists.
 static int32_t game3d_world_stream_pick_next_cell_noalloc(const rt_game3d_world_stream *stream,
                                                           double previous_distance_sq,
                                                           int32_t previous_index,
@@ -597,6 +776,11 @@ static int32_t game3d_world_stream_pick_next_cell_noalloc(const rt_game3d_world_
 }
 
 /// @brief Pick the next desired terrain tile in sorted order without allocating.
+/// @param stream Borrowed stream containing the manifest terrain tiles.
+/// @param previous_distance_sq Squared distance of the previously emitted tile.
+/// @param previous_index Index of the previously emitted tile, or a negative sentinel.
+/// @param[out] out_distance_sq Optional destination for the selected distance.
+/// @return Selected terrain index, or `-1` when no later desired tile exists.
 static int32_t game3d_world_stream_pick_next_terrain_noalloc(const rt_game3d_world_stream *stream,
                                                              double previous_distance_sq,
                                                              int32_t previous_index,
@@ -625,6 +809,7 @@ static int32_t game3d_world_stream_pick_next_terrain_noalloc(const rt_game3d_wor
 }
 
 /// @brief Increment a pending-work counter, saturating at INT64_MAX and ignoring NULL.
+/// @param[in,out] pending Optional counter to increment.
 static void game3d_stream_increment_pending(int64_t *pending) {
     if (!pending || *pending == INT64_MAX)
         return;
@@ -632,6 +817,8 @@ static void game3d_stream_increment_pending(int64_t *pending) {
 }
 
 /// @brief Number of stream cells safe to read from the private manifest array.
+/// @param stream Borrowed stream payload.
+/// @return Cell count clamped to allocated capacity, or zero without valid storage.
 static int32_t game3d_world_stream_safe_cell_count(const rt_game3d_world_stream *stream) {
     if (!stream || !stream->cells || stream->cell_count <= 0 || stream->cell_capacity <= 0)
         return 0;
@@ -639,6 +826,8 @@ static int32_t game3d_world_stream_safe_cell_count(const rt_game3d_world_stream 
 }
 
 /// @brief Number of terrain tiles safe to read from the private manifest array.
+/// @param stream Borrowed stream payload.
+/// @return Terrain count clamped to allocated capacity, or zero without valid storage.
 static int32_t game3d_world_stream_safe_terrain_tile_count(const rt_game3d_world_stream *stream) {
     if (!stream || !stream->terrain_tiles || stream->terrain_tile_count <= 0 ||
         stream->terrain_tile_capacity <= 0)
@@ -648,11 +837,16 @@ static int32_t game3d_world_stream_safe_terrain_tile_count(const rt_game3d_world
                : stream->terrain_tile_capacity;
 }
 
+/// @brief Clamp a signed telemetry counter to a non-negative value.
+/// @param value Candidate counter.
+/// @return @p value when positive; otherwise zero.
 static int64_t game3d_world_stream_nonnegative_i64(int64_t value) {
     return value > 0 ? value : 0;
 }
 
 /// @brief Resident cell telemetry, capped to parsed manifest size when array-backed.
+/// @param stream Borrowed stream payload.
+/// @return Non-negative resident-cell count capped to readable manifest slots.
 static int64_t game3d_world_stream_safe_resident_cell_count(const rt_game3d_world_stream *stream) {
     int64_t count = stream ? game3d_world_stream_nonnegative_i64(stream->resident_cell_count) : 0;
     if (stream && stream->cells_manifest_loaded) {
@@ -664,6 +858,8 @@ static int64_t game3d_world_stream_safe_resident_cell_count(const rt_game3d_worl
 }
 
 /// @brief Resident terrain telemetry, capped to parsed manifest size when array-backed.
+/// @param stream Borrowed stream payload.
+/// @return Non-negative resident-tile count capped to readable manifest slots.
 static int64_t game3d_world_stream_safe_resident_terrain_tile_count(
     const rt_game3d_world_stream *stream) {
     int64_t count =
@@ -678,6 +874,9 @@ static int64_t game3d_world_stream_safe_resident_terrain_tile_count(
 
 /// @brief True when a streaming cell lies within its activation radius. Resident cells
 ///   test against the larger unload radius, giving load/unload hysteresis.
+/// @param stream Borrowed stream defining the center and hysteresis radii.
+/// @param cell Borrowed manifest cell.
+/// @return Nonzero when the cell should remain or become resident.
 static int game3d_stream_cell_desired(const rt_game3d_world_stream *stream,
                                       const rt_game3d_stream_cell *cell) {
     if (!stream || !cell)
@@ -691,6 +890,9 @@ static int game3d_stream_cell_desired(const rt_game3d_world_stream *stream,
 
 /// @brief True when a terrain tile lies within its activation radius. Resident tiles
 ///   test against the larger unload radius, giving load/unload hysteresis.
+/// @param stream Borrowed stream defining the center and hysteresis radii.
+/// @param tile Borrowed manifest terrain tile.
+/// @return Nonzero when the tile should remain or become resident.
 static int game3d_stream_terrain_tile_desired(const rt_game3d_world_stream *stream,
                                               const rt_game3d_stream_terrain_tile *tile) {
     if (!stream || !tile)
@@ -704,6 +906,8 @@ static int game3d_stream_terrain_tile_desired(const rt_game3d_world_stream *stre
 }
 
 /// @brief Total resident bytes across all currently-loaded streaming cells.
+/// @param stream Borrowed stream payload.
+/// @return Saturated sum of manifest and resident cell bytes.
 static int64_t game3d_world_stream_resident_cell_bytes(const rt_game3d_world_stream *stream) {
     if (!stream)
         return 0;
@@ -716,16 +920,23 @@ static int64_t game3d_world_stream_resident_cell_bytes(const rt_game3d_world_str
     return bytes;
 }
 
+/// @brief Unload a resident terrain tile and all attached resources.
+/// @param stream Borrowed owning stream.
+/// @param tile Terrain record to unload.
 static void game3d_world_stream_unload_terrain_tile(rt_game3d_world_stream *stream,
                                                     rt_game3d_stream_terrain_tile *tile);
 
 /// @brief Return a terrain tile's runtime Terrain3D only when the private slot is still valid.
+/// @param tile Borrowed terrain-tile record.
+/// @return Borrowed live Terrain3D handle, or `NULL` when absent, stale, or non-resident.
 static void *game3d_stream_terrain_tile_terrain_ref(const rt_game3d_stream_terrain_tile *tile) {
     return tile && tile->resident ? rt_g3d_checked_or_null(tile->terrain, RT_G3D_TERRAIN3D_CLASS_ID)
                                   : NULL;
 }
 
 /// @brief Return a terrain tile's attached Game3D entity only when the private slot is valid.
+/// @param entity Borrowed opaque entity handle.
+/// @return Borrowed live Entity3D payload, or `NULL` when invalid or stale.
 static void *game3d_stream_terrain_tile_entity_ref(void *entity) {
     rt_game3d_entity *typed =
         (rt_game3d_entity *)rt_g3d_checked_or_null(entity, RT_G3D_GAME3D_ENTITY_CLASS_ID);
@@ -733,6 +944,8 @@ static void *game3d_stream_terrain_tile_entity_ref(void *entity) {
 }
 
 /// @brief Despawn/release collider and nav entities attached to a resident terrain tile.
+/// @param stream Borrowed owning stream, or `NULL` during detached cleanup.
+/// @param tile Terrain record whose spatial-source entities are removed.
 static void game3d_world_stream_detach_terrain_spatial_sources(
     rt_game3d_world_stream *stream, rt_game3d_stream_terrain_tile *tile) {
     if (!tile)
@@ -754,6 +967,7 @@ static void game3d_world_stream_detach_terrain_spatial_sources(
 }
 
 /// @brief Unload and free every terrain tile tracked by the stream.
+/// @param stream Borrowed stream payload to clear.
 static void game3d_world_stream_clear_terrain_tiles(rt_game3d_world_stream *stream) {
     if (!stream)
         return;
@@ -781,6 +995,8 @@ static void game3d_world_stream_clear_terrain_tiles(rt_game3d_world_stream *stre
 }
 
 /// @brief Unload a single terrain tile: detach its collider/nav source and release its resources.
+/// @param stream Borrowed owning stream, or `NULL` during detached cleanup.
+/// @param tile Terrain record to reset; `NULL` is ignored.
 static void game3d_world_stream_unload_terrain_tile(rt_game3d_world_stream *stream,
                                                     rt_game3d_stream_terrain_tile *tile) {
     if (!tile)
@@ -794,6 +1010,8 @@ static void game3d_world_stream_unload_terrain_tile(rt_game3d_world_stream *stre
 }
 
 /// @brief Advance past ASCII whitespace in a heightmap text buffer.
+/// @param p Current null-terminated parser position, or `NULL`.
+/// @return Pointer to the first non-space byte, end terminator, or `NULL`.
 static const char *game3d_heightmap_skip_space(const char *p) {
     while (p && *p && isspace((unsigned char)*p))
         ++p;
@@ -801,6 +1019,9 @@ static const char *game3d_heightmap_skip_space(const char *p) {
 }
 
 /// @brief Read the next whitespace-delimited token from a heightmap text buffer into @p out.
+/// @param[in,out] cursor Address of the current parser position, advanced on success.
+/// @param[out] out Destination buffer receiving a null-terminated token.
+/// @param out_size Available destination bytes including the terminator.
 /// @return 1 on success, 0 at end of input or if the token would overflow.
 static int game3d_heightmap_read_word(const char **cursor, char *out, size_t out_size) {
     if (!cursor || !*cursor || !out || out_size == 0)
@@ -820,6 +1041,9 @@ static int game3d_heightmap_read_word(const char **cursor, char *out, size_t out
 }
 
 /// @brief Read the next integer token from a heightmap text buffer (0 if none/invalid).
+/// @param[in,out] cursor Address of the current parser position, advanced on success.
+/// @param[out] out Required destination for the decoded signed integer.
+/// @return Nonzero on a complete in-range token; otherwise zero without advancing.
 static int game3d_heightmap_read_i64(const char **cursor, int64_t *out) {
     if (!cursor || !*cursor || !out)
         return 0;
@@ -836,6 +1060,9 @@ static int game3d_heightmap_read_i64(const char **cursor, int64_t *out) {
 }
 
 /// @brief Read the next floating-point token from a heightmap text buffer (0 if none/invalid).
+/// @param[in,out] cursor Address of the current parser position, advanced on success.
+/// @param[out] out Required destination for the decoded finite value.
+/// @return Nonzero on a complete finite token; otherwise zero without advancing.
 static int game3d_heightmap_read_f64(const char **cursor, double *out) {
     if (!cursor || !*cursor || !out)
         return 0;
@@ -852,6 +1079,8 @@ static int game3d_heightmap_read_f64(const char **cursor, double *out) {
 }
 
 /// @brief Map a normalized height value to a grayscale RGBA color for the heightmap preview image.
+/// @param h Height sample clamped to `[0, 1]`.
+/// @return Packed two-byte grayscale representation in the RG channels with opaque alpha.
 static uint32_t game3d_heightmap_sample_rgba(double h) {
     if (h < 0.0)
         h = 0.0;
@@ -864,6 +1093,10 @@ static uint32_t game3d_heightmap_sample_rgba(double h) {
 }
 
 /// @brief Map a destination heightmap sample to a source sample, preserving both endpoints.
+/// @param dst Destination sample index.
+/// @param dst_count Number of destination samples on the axis.
+/// @param src_count Number of source samples on the axis.
+/// @return Nearest bounded source index.
 static int64_t game3d_heightmap_resample_index(int64_t dst, int64_t dst_count, int64_t src_count) {
     int64_t numerator;
     int64_t denominator;
@@ -883,6 +1116,10 @@ static int64_t game3d_heightmap_resample_index(int64_t dst, int64_t dst_count, i
 }
 
 /// @brief Parse heightmap text into a malloc-owned POD sample grid (worker-safe: no rt objects).
+/// @param cursor Null-terminated `zanna-heightmap-v1` payload.
+/// @param[out] out_samples Receives caller-owned sample storage on success.
+/// @param[out] out_width Receives the decoded width.
+/// @param[out] out_depth Receives the decoded depth.
 /// @return 1 on success (caller owns *out_samples), 0 on a malformed payload.
 static int game3d_heightmap_parse_text(const char *cursor,
                                        double **out_samples,
@@ -935,6 +1172,12 @@ static int game3d_heightmap_parse_text(const char *cursor,
 }
 
 /// @brief Resample a POD height grid into a heightmap Pixels image (main thread only).
+/// @param samples Borrowed row-major normalized source samples.
+/// @param width Source grid width.
+/// @param depth Source grid depth.
+/// @param target_width Requested output width; invalid values use @p width.
+/// @param target_depth Requested output depth; invalid values use @p depth.
+/// @return New GC-managed Pixels handle, or `NULL` for invalid input or allocation failure.
 static void *game3d_heightmap_pixels_from_samples(const double *samples,
                                                   int64_t width,
                                                   int64_t depth,
@@ -964,6 +1207,10 @@ static void *game3d_heightmap_pixels_from_samples(const double *samples,
 /// image).
 /// @details Parses the text heightmap format (dimensions + height samples); returns NULL if the
 ///          sidecar is missing or malformed.
+/// @param path Borrowed asset or filesystem path.
+/// @param target_width Requested resampled image width.
+/// @param target_depth Requested resampled image depth.
+/// @return New GC-managed Pixels heightmap, or `NULL` when absent, malformed, or allocation fails.
 static void *game3d_load_heightmap_sidecar(rt_string path,
                                            int64_t target_width,
                                            int64_t target_depth) {
@@ -992,6 +1239,7 @@ static void *game3d_load_heightmap_sidecar(rt_string path,
 ///   cell sidecars. Missing, empty, or unreadable files are recoverable and simply
 ///   leave the tile with zero sidecar bytes. Any previous payload is freed first so
 ///   remounts and reloads do not leak memory.
+/// @param tile Terrain record whose owned sidecar buffer is replaced.
 static void game3d_stream_terrain_tile_load_sidecar(rt_game3d_stream_terrain_tile *tile) {
     if (!tile)
         return;
@@ -1014,6 +1262,8 @@ static void game3d_stream_terrain_tile_load_sidecar(rt_game3d_stream_terrain_til
 
 /// @brief Build the unique collider name for a terrain tile (used to register/find its physics
 /// collider).
+/// @param tile Borrowed terrain record supplying the base name.
+/// @return New runtime string containing the derived name, or a fallback constant reference.
 static rt_string game3d_terrain_collider_name(const rt_game3d_stream_terrain_tile *tile) {
     const char *base = tile && tile->name ? rt_string_cstr(tile->name) : "terrain_tile";
     const char *suffix = "_heightfield_collider";
@@ -1032,6 +1282,9 @@ static rt_string game3d_terrain_collider_name(const rt_game3d_stream_terrain_til
 }
 
 /// @brief Create and register a heightfield collider for a loaded terrain tile.
+/// @param stream Borrowed owning stream with a live world and physics service.
+/// @param tile Terrain record receiving the retained collider entity.
+/// @param heightmap Borrowed Pixels heightmap used to construct the collider.
 static void game3d_world_stream_attach_terrain_collider(rt_game3d_world_stream *stream,
                                                         rt_game3d_stream_terrain_tile *tile,
                                                         void *heightmap) {
@@ -1102,6 +1355,8 @@ static void game3d_world_stream_attach_terrain_collider(rt_game3d_world_stream *
 
 /// @brief Build the unique nav-source name for a terrain tile (used to register/find its nav
 /// geometry).
+/// @param tile Borrowed terrain record supplying the base name.
+/// @return New runtime string containing the derived name, or a fallback constant reference.
 static rt_string game3d_terrain_nav_source_name(const rt_game3d_stream_terrain_tile *tile) {
     const char *base = tile && tile->name ? rt_string_cstr(tile->name) : "terrain_tile";
     const char *suffix = "_navmesh_source";
@@ -1120,6 +1375,8 @@ static rt_string game3d_terrain_nav_source_name(const rt_game3d_stream_terrain_t
 }
 
 /// @brief Register a loaded terrain tile's geometry as a navmesh source for pathfinding.
+/// @param stream Borrowed owning stream with a live world and scene.
+/// @param tile Terrain record receiving the retained hidden nav-source entity.
 static void game3d_world_stream_attach_terrain_nav_source(rt_game3d_world_stream *stream,
                                                           rt_game3d_stream_terrain_tile *tile) {
     if (!stream || !tile)
@@ -1167,6 +1424,8 @@ static void game3d_world_stream_attach_terrain_nav_source(rt_game3d_world_stream
 }
 
 /// @brief Recreate collider/nav sources so they reflect the terrain's post-stitch height grid.
+/// @param stream Borrowed owning stream.
+/// @param tile Resident terrain record whose derived spatial sources are rebuilt.
 static void game3d_world_stream_refresh_terrain_spatial_sources(
     rt_game3d_world_stream *stream, rt_game3d_stream_terrain_tile *tile) {
     void *terrain = game3d_stream_terrain_tile_terrain_ref(tile);
@@ -1182,6 +1441,9 @@ static void game3d_world_stream_refresh_terrain_spatial_sources(
 }
 
 /// @brief Stitch a pair of resident terrain tiles when their full manifest edges touch.
+/// @param a First resident terrain record.
+/// @param b Second resident terrain record.
+/// @return Number of edge samples changed, or zero when the tiles do not share a full edge.
 static int64_t game3d_world_stream_stitch_terrain_pair(rt_game3d_stream_terrain_tile *a,
                                                        rt_game3d_stream_terrain_tile *b) {
     void *terrain_a = game3d_stream_terrain_tile_terrain_ref(a);
@@ -1217,6 +1479,9 @@ static int64_t game3d_world_stream_stitch_terrain_pair(rt_game3d_stream_terrain_
 }
 
 /// @brief Stitch @p tile against all currently resident terrain neighbors.
+/// @param stream Borrowed stream containing candidate neighbors.
+/// @param tile Newly resident terrain record.
+/// @return Saturated total number of edge samples changed.
 static int64_t game3d_world_stream_stitch_loaded_terrain_neighbors(
     rt_game3d_world_stream *stream, rt_game3d_stream_terrain_tile *tile) {
     if (!stream || !game3d_stream_terrain_tile_terrain_ref(tile))
@@ -1239,6 +1504,7 @@ static int64_t game3d_world_stream_stitch_loaded_terrain_neighbors(
 }
 
 /// @brief Refresh all resident streamed terrain collider/nav sources after seam changes.
+/// @param stream Borrowed stream whose resident terrain attachments are rebuilt.
 static void game3d_world_stream_refresh_all_terrain_spatial_sources(
     rt_game3d_world_stream *stream) {
     if (!stream)
@@ -1251,11 +1517,11 @@ static void game3d_world_stream_refresh_all_terrain_spatial_sources(
     }
 }
 
-/// @brief Load a terrain tile: read its heightmap, build the mesh, and attach collider + nav
-/// source.
-/// @return 1 on success, 0 on load failure (tile left unloaded).
 /// @brief Build and install a tile's Terrain3D from a prepared heightmap (shared core).
 /// @details Consumes nothing; @p heightmap is borrowed (may be NULL for a blank tile).
+/// @param stream Borrowed owning stream.
+/// @param tile Terrain record receiving the newly allocated Terrain3D.
+/// @param heightmap Borrowed Pixels heightmap, or `NULL` to allocate a blank grid.
 ///   Sidecar handling stays with the caller so staged bytes avoid main-thread file IO.
 /// @return 1 when the tile became resident.
 static int game3d_world_stream_install_terrain_tile(rt_game3d_world_stream *stream,
@@ -1307,6 +1573,8 @@ static int game3d_world_stream_install_terrain_tile(rt_game3d_world_stream *stre
 }
 
 /// @brief Stitch and re-register a freshly resident tile's spatial sources (shared tail).
+/// @param stream Borrowed owning stream.
+/// @param tile Newly resident terrain record.
 static void game3d_world_stream_finish_terrain_install(rt_game3d_world_stream *stream,
                                                        rt_game3d_stream_terrain_tile *tile) {
     int64_t stitched = game3d_world_stream_stitch_loaded_terrain_neighbors(stream, tile);
@@ -1316,6 +1584,10 @@ static void game3d_world_stream_finish_terrain_install(rt_game3d_world_stream *s
         game3d_world_stream_refresh_terrain_spatial_sources(stream, tile);
 }
 
+/// @brief Load a terrain tile synchronously from its heightmap and sidecar paths.
+/// @param stream Borrowed owning stream.
+/// @param tile Terrain record to load.
+/// @return Nonzero when already or newly resident; zero on load or allocation failure.
 static int game3d_world_stream_load_terrain_tile(rt_game3d_world_stream *stream,
                                                  rt_game3d_stream_terrain_tile *tile) {
     if (!tile)
@@ -1340,6 +1612,8 @@ static int game3d_world_stream_load_terrain_tile(rt_game3d_world_stream *stream,
 
 /// @brief Commit a worker-staged terrain tile: build the heightmap from staged POD
 ///   samples and install it with no main-thread file IO.
+/// @param stream Borrowed owning stream.
+/// @param tile Terrain record containing staged samples and sidecar bytes.
 /// @return 1 when the tile became resident.
 static int game3d_world_stream_commit_staged_terrain_tile(rt_game3d_world_stream *stream,
                                                           rt_game3d_stream_terrain_tile *tile) {
@@ -1383,6 +1657,7 @@ static int game3d_world_stream_commit_staged_terrain_tile(rt_game3d_world_stream
 /// @details Reads the whole referenced file as opaque cell metadata. A missing, empty,
 ///   or oversized sidecar is recoverable: the cell simply carries zero sidecar bytes
 ///   (no trap). Frees any previously loaded payload first so reloads stay idempotent.
+/// @param cell Cell record whose owned sidecar buffer is replaced.
 static void game3d_stream_cell_load_sidecar(rt_game3d_stream_cell *cell) {
     if (!cell)
         return;
@@ -1404,6 +1679,8 @@ static void game3d_stream_cell_load_sidecar(rt_game3d_stream_cell *cell) {
 }
 
 /// @brief Unload a streaming cell: despawn its spawned entities/nodes and release its scene.
+/// @param stream Borrowed owning stream, or `NULL` during detached cleanup.
+/// @param cell Cell record to reset.
 static void game3d_world_stream_unload_cell(rt_game3d_world_stream *stream,
                                             rt_game3d_stream_cell *cell) {
     if (!cell)
@@ -1424,6 +1701,7 @@ static void game3d_world_stream_unload_cell(rt_game3d_world_stream *stream,
 }
 
 /// @brief Fold a loaded sidecar payload into a resident cell's measured residency bytes.
+/// @param cell Resident cell record whose measured byte count is updated.
 static void game3d_stream_cell_add_sidecar_bytes(rt_game3d_stream_cell *cell) {
     if (!cell || cell->sidecar_bytes <= 0)
         return;
@@ -1433,6 +1711,9 @@ static void game3d_stream_cell_add_sidecar_bytes(rt_game3d_stream_cell *cell) {
 
 /// @brief Spawn a loaded cell scene into the world (shared by blocking and staged loads).
 /// @details Consumes @p scene (retained into the cell on success, released on failure).
+/// @param stream Borrowed owning stream.
+/// @param cell Cell record receiving the resident scene and root entity.
+/// @param scene Owned Scene3D reference consumed on every path.
 /// @return 1 when the cell became resident.
 static int game3d_world_stream_adopt_cell_scene(rt_game3d_world_stream *stream,
                                                 rt_game3d_stream_cell *cell,
@@ -1483,6 +1764,8 @@ static int game3d_world_stream_adopt_cell_scene(rt_game3d_world_stream *stream,
 }
 
 /// @brief Load a streaming cell: load its scene/model and spawn its content into the world.
+/// @param stream Borrowed owning stream.
+/// @param cell Cell record to load synchronously.
 /// @return 1 on success, 0 on load failure.
 static int game3d_world_stream_load_cell(rt_game3d_world_stream *stream,
                                          rt_game3d_stream_cell *cell) {
@@ -1507,6 +1790,8 @@ static int game3d_world_stream_load_cell(rt_game3d_world_stream *stream,
 /// @brief Commit a worker-staged cell payload: parse the staged VSCN text and spawn it.
 /// @details Consumes the staged payload on every path. A parse failure is recoverable —
 ///   the cell is skipped with a reload cooldown and a StreamStagingErrors diagnostic.
+/// @param stream Borrowed owning stream.
+/// @param cell Cell record containing staged scene text and sidecar bytes.
 /// @return 1 when the cell became resident.
 static int game3d_world_stream_commit_staged_cell(rt_game3d_world_stream *stream,
                                                   rt_game3d_stream_cell *cell) {
@@ -1539,6 +1824,7 @@ static int game3d_world_stream_commit_staged_cell(rt_game3d_world_stream *stream
 /// @brief Remeasure a loaded cell's entity hierarchy after mesh/texture residency changes.
 /// @details Loaded Scene3D roots are transactionally transferred into the spawned entity, so the
 ///   entity is authoritative. The retained source scene is consulted only as a defensive fallback.
+/// @param cell Resident cell record whose byte telemetry is refreshed.
 static void game3d_world_stream_refresh_cell_residency_bytes(rt_game3d_stream_cell *cell) {
     uint64_t measured;
     if (!cell || !cell->resident || !cell->entity)
@@ -1555,6 +1841,7 @@ static void game3d_world_stream_refresh_cell_residency_bytes(rt_game3d_stream_ce
 }
 
 /// @brief Unload and free every streaming cell tracked by the stream.
+/// @param stream Borrowed stream payload to clear.
 static void game3d_world_stream_clear_cells(rt_game3d_world_stream *stream) {
     if (!stream)
         return;
@@ -1582,6 +1869,8 @@ static void game3d_world_stream_clear_cells(rt_game3d_world_stream *stream) {
 
 /// @brief Parse the cells manifest (JSON) into the stream's cell table (name, center, path per
 /// cell).
+/// @param stream Borrowed stream whose retained manifest is parsed and whose prior table is
+/// replaced.
 /// @return 1 on success, 0 on a missing or malformed manifest.
 static int game3d_world_stream_parse_cells_manifest(rt_game3d_world_stream *stream) {
     if (!stream || !game3d_string_has_bytes(stream->cells_manifest))
@@ -1675,6 +1964,8 @@ static int game3d_world_stream_parse_cells_manifest(rt_game3d_world_stream *stre
 }
 
 /// @brief Parse the terrain manifest (JSON) into the stream's terrain-tile table.
+/// @param stream Borrowed stream whose retained manifest is parsed and whose prior table is
+/// replaced.
 /// @return 1 on success, 0 on a missing or malformed manifest.
 static int game3d_world_stream_parse_terrain_manifest(rt_game3d_world_stream *stream) {
     if (!stream || !game3d_string_has_bytes(stream->terrain_manifest))
@@ -1806,6 +2097,7 @@ static int game3d_world_stream_parse_terrain_manifest(rt_game3d_world_stream *st
 }
 
 /// @brief GC finalizer for WorldStream3D: release world and manifest references.
+/// @param obj Finalized WorldStream3D payload; `NULL` is ignored.
 static void game3d_world_stream_finalize(void *obj) {
     rt_game3d_world_stream *stream = (rt_game3d_world_stream *)obj;
     if (!stream)
@@ -1829,6 +2121,9 @@ static void game3d_world_stream_finalize(void *obj) {
 
 /// @brief Convert a world-space load/unload radius to a cell-count radius (ceil of radius /
 /// cell_size).
+/// @param radius World-space stream radius.
+/// @param cell_size Positive world-space cell size.
+/// @return Odd-square slot estimate, bounded to `INT64_MAX`.
 static int64_t game3d_stream_radius_slots(double radius, double cell_size) {
     if (!isfinite(radius) || radius <= 0.0)
         return 1;
@@ -1966,6 +2261,9 @@ static int64_t game3d_stream_manifest_bytes(rt_string value) {
 }
 
 /// @brief Saturating signed 64-bit addition (clamps to INT64_MIN/MAX instead of overflowing).
+/// @param a First addend.
+/// @param b Second addend.
+/// @return Saturated signed sum.
 static int64_t game3d_i64_saturating_add(int64_t a, int64_t b) {
     if (b > 0 && a > INT64_MAX - b)
         return INT64_MAX;
@@ -1975,6 +2273,9 @@ static int64_t game3d_i64_saturating_add(int64_t a, int64_t b) {
 }
 
 /// @brief Saturating signed 64-bit multiplication (clamps to INT64_MIN/MAX on overflow).
+/// @param a First non-negative factor.
+/// @param b Second non-negative factor.
+/// @return Saturated product, or zero when either factor is non-positive.
 static int64_t game3d_i64_saturating_mul(int64_t a, int64_t b) {
     if (a <= 0 || b <= 0)
         return 0;
@@ -1985,6 +2286,8 @@ static int64_t game3d_i64_saturating_mul(int64_t a, int64_t b) {
 
 /// @brief Compute this frame's streaming load budget (bytes) from the frame delta @p dt.
 /// @details Caps how much may be streamed per frame so loading spikes don't stall the simulation.
+/// @param dt Candidate frame delta in seconds.
+/// @return Integral per-frame work allowance from one through eight.
 static int64_t game3d_world_stream_update_load_budget(double dt) {
     if (!isfinite(dt) || dt <= 0.0)
         return 1;
@@ -1997,6 +2300,10 @@ static int64_t game3d_world_stream_update_load_budget(double dt) {
 }
 
 /// @brief True when adding @p cost to @p current stays within @p budget without signed overflow.
+/// @param current Non-negative cost already committed.
+/// @param budget Total budget, or a negative value for unlimited.
+/// @param cost Non-negative additional cost.
+/// @return Nonzero when the addition fits without overflow; otherwise zero.
 static int game3d_i64_budget_can_fit(int64_t current, int64_t budget, int64_t cost) {
     if (budget < 0)
         return 1;
@@ -2039,6 +2346,8 @@ static void *g_game3d_stream_stage_queue;
 static void *volatile g_game3d_stream_failed_stage_jobs;
 
 /// @brief malloc-duplicate a C string (workers must not touch rt_string refcounts).
+/// @param text Null-terminated source string, or `NULL`.
+/// @return Caller-owned duplicate, or `NULL` for null input or allocation failure.
 static char *game3d_stream_strdup(const char *text) {
     if (!text)
         return NULL;
@@ -2049,6 +2358,8 @@ static char *game3d_stream_strdup(const char *text) {
     return copy;
 }
 
+/// @brief Release the worker-produced buffers owned by a staging job.
+/// @param job Staging job whose text, height, and sidecar payloads are cleared.
 static void game3d_stream_stage_job_free_payload(rt_game3d_stream_stage_job *job) {
     if (!job)
         return;
@@ -2063,6 +2374,7 @@ static void game3d_stream_stage_job_free_payload(rt_game3d_stream_stage_job *job
 }
 
 /// @brief Free a job's paths and struct. Does NOT release the stream retain.
+/// @param job Staging job to destroy; `NULL` is ignored.
 static void game3d_stream_stage_job_free_shallow(rt_game3d_stream_stage_job *job) {
     if (!job)
         return;
@@ -2074,6 +2386,7 @@ static void game3d_stream_stage_job_free_shallow(rt_game3d_stream_stage_job *job
 
 /// @brief Commit-queue cancel hook: runs only at process teardown when the queue dies
 ///   with items still pending; frees the payload and drops the stream retain.
+/// @param user_data Owned staging-job pointer supplied to the commit queue.
 static void game3d_stream_stage_cancel(void *user_data) {
     rt_game3d_stream_stage_job *job = (rt_game3d_stream_stage_job *)user_data;
     if (!job)
@@ -2083,6 +2396,7 @@ static void game3d_stream_stage_cancel(void *user_data) {
 }
 
 /// @brief Publish a worker result to the allocation-free emergency stack.
+/// @param job Owned staging job whose stream retain will be released by the main-thread drain.
 static void game3d_stream_stage_publish_enqueue_failure(rt_game3d_stream_stage_job *job) {
     void *expected;
     if (!job)
@@ -2095,6 +2409,8 @@ static void game3d_stream_stage_publish_enqueue_failure(rt_game3d_stream_stage_j
 }
 
 /// @brief Drop a cell's staged payload without committing it (cancellation/unload path).
+/// @param cell Cell record whose staged buffers and flags are cleared.
+/// @param record_stale Nonzero to increment the stale-stage diagnostic when payload exists.
 static void game3d_stream_cell_drop_staged(rt_game3d_stream_cell *cell, int record_stale) {
     if (!cell)
         return;
@@ -2112,6 +2428,8 @@ static void game3d_stream_cell_drop_staged(rt_game3d_stream_cell *cell, int reco
 }
 
 /// @brief Drop a terrain tile's staged payload without committing it.
+/// @param tile Terrain record whose staged buffers and flags are cleared.
+/// @param record_stale Nonzero to increment the stale-stage diagnostic when payload exists.
 static void game3d_stream_terrain_tile_drop_staged(rt_game3d_stream_terrain_tile *tile,
                                                    int record_stale) {
     if (!tile)
@@ -2134,6 +2452,7 @@ static void game3d_stream_terrain_tile_drop_staged(rt_game3d_stream_terrain_tile
 /// @details Stale results (remounted stream, out-of-range index) are freed and counted;
 ///   staging errors start the same reload cooldown budget evictions use so a corrupt
 ///   payload cannot hot-loop worker reads every recompute pass.
+/// @param user_data Owned staging-job pointer delivered by the commit queue.
 static void game3d_stream_stage_commit(void *user_data) {
     rt_game3d_stream_stage_job *job = (rt_game3d_stream_stage_job *)user_data;
     if (!job)
@@ -2223,6 +2542,7 @@ static void game3d_stream_stage_drain_enqueue_failures(void) {
 /// @brief Worker-thread entry: read the payload files and parse heightmap text to POD.
 /// @details Touches no rt objects — file IO plus plain-C parsing only, then hands the
 ///   result to the main thread through the staging commit queue.
+/// @param user_data Owned staging-job pointer submitted to the worker pool.
 static void game3d_stream_stage_worker(void *user_data) {
     rt_game3d_stream_stage_job *job = (rt_game3d_stream_stage_job *)user_data;
     if (!job)
@@ -2273,6 +2593,7 @@ static void game3d_stream_stage_worker(void *user_data) {
 }
 
 /// @brief Lazily create the staging queue (and the shared async worker pool).
+/// @return Nonzero when both async runtime and commit queue are available.
 static int game3d_stream_stage_ensure_queue(void) {
     if (!game3d_asset_async_ensure_runtime())
         return 0;
@@ -2284,6 +2605,10 @@ static int game3d_stream_stage_ensure_queue(void) {
 }
 
 /// @brief Submit a staging job for a cell (kind 0) or terrain tile (kind 1).
+/// @param stream Borrowed stream retained by the submitted job.
+/// @param kind Payload kind: zero for a cell, one for terrain, or two for a proxy.
+/// @param index Valid manifest-array index for the selected kind.
+/// @param prefetched Nonzero when submitted speculatively rather than demanded.
 static void game3d_stream_stage_submit(rt_game3d_world_stream *stream,
                                        int32_t kind,
                                        int32_t index,
@@ -2354,6 +2679,8 @@ static void game3d_stream_stage_drain(void) {
 ///   residency the same hysteresis the load/unload radii give distance-bound residency, so
 ///   byte-count jitter or nearest-first reordering at the budget line cannot thrash a boundary
 ///   cell in and out every pass. Non-positive budgets stay strict (<0 unlimited, 0 evict-all).
+/// @param budget Configured residency budget in bytes.
+/// @return Budget plus a 12.5 percent hysteresis margin, saturated on overflow.
 static int64_t game3d_stream_budget_high_watermark(int64_t budget) {
     if (budget <= 0)
         return budget;
@@ -2361,6 +2688,8 @@ static int64_t game3d_stream_budget_high_watermark(int64_t budget) {
 }
 
 /// @brief Square a non-negative stream radius, saturating overflow and rejecting invalid radii.
+/// @param radius Candidate radius.
+/// @return Finite squared radius, `DBL_MAX` on overflow, or `-1` for invalid input.
 static double game3d_stream_radius_sq(double radius) {
     if (!isfinite(radius) || radius < 0.0)
         return -1.0;
@@ -2372,6 +2701,7 @@ static double game3d_stream_radius_sq(double radius) {
     return isfinite(sq) ? sq : DBL_MAX;
 }
 
+/// @brief Per-pass counters, gates, and budgets accumulated during stream reconciliation.
 typedef struct game3d_stream_recompute_state {
     int64_t load_budget;
     int64_t pending;
@@ -2391,6 +2721,9 @@ typedef struct game3d_stream_recompute_state {
 /// @brief True when a staged commit of @p cost bytes fits this pass's commit budget.
 /// @details Mirrors the commit-queue drain rule: a zero budget holds everything, and
 ///   an oversized first item commits alone so it can never deadlock the stream.
+/// @param state Borrowed recompute state containing the commit budget and total.
+/// @param cost Candidate staged payload cost in bytes.
+/// @return Nonzero when this payload may commit during the current pass.
 static int game3d_stream_commit_budget_allows(const game3d_stream_recompute_state *state,
                                               int64_t cost) {
     if (state->commit_budget < 0)
@@ -2407,6 +2740,8 @@ static int game3d_stream_commit_budget_allows(const game3d_stream_recompute_stat
 }
 
 /// @brief Record a commit slice's wall time into the stream's stall telemetry.
+/// @param stream Borrowed stream whose maximum stall sample is updated.
+/// @param t0_us Monotonic start timestamp in microseconds.
 static void game3d_stream_note_commit_slice(rt_game3d_world_stream *stream, int64_t t0_us) {
     int64_t t1_us = rt_clock_ticks_us();
     double ms = t1_us > t0_us ? (double)(t1_us - t0_us) / 1000.0 : 0.0;
@@ -2415,6 +2750,9 @@ static void game3d_stream_note_commit_slice(rt_game3d_world_stream *stream, int6
 }
 
 /// @brief True when @p cell falls inside the velocity-prefetch window (XZ plane).
+/// @param stream Borrowed stream defining center, velocity, and lookahead.
+/// @param cell Borrowed cell to test.
+/// @return Nonzero when asynchronous prefetch should stage the cell.
 static int game3d_stream_cell_in_prefetch_window(const rt_game3d_world_stream *stream,
                                                  const rt_game3d_stream_cell *cell) {
     if (!stream || !cell || stream->prefetch_lookahead <= 0.0 || !stream->async_streaming)
@@ -2439,6 +2777,9 @@ static int game3d_stream_cell_in_prefetch_window(const rt_game3d_world_stream *s
 }
 
 /// @brief True when @p tile falls inside the velocity-prefetch window (XZ plane).
+/// @param stream Borrowed stream defining center, velocity, and lookahead.
+/// @param tile Borrowed terrain tile to test.
+/// @return Nonzero when asynchronous prefetch should stage the tile.
 static int game3d_stream_terrain_tile_in_prefetch_window(
     const rt_game3d_world_stream *stream, const rt_game3d_stream_terrain_tile *tile) {
     if (!stream || !tile || stream->prefetch_lookahead <= 0.0 || !stream->async_streaming)
@@ -2465,6 +2806,8 @@ static int game3d_stream_terrain_tile_in_prefetch_window(
 /* ===== HLOD proxy ring (cell-level merged stand-ins) ====================== */
 
 /// @brief Drop a cell's staged proxy payload without committing it.
+/// @param cell Cell record whose staged proxy bytes and flag are cleared.
+/// @param record_stale Nonzero to count an existing payload as stale.
 static void game3d_stream_cell_drop_staged_proxy(rt_game3d_stream_cell *cell, int record_stale) {
     if (!cell)
         return;
@@ -2477,6 +2820,8 @@ static void game3d_stream_cell_drop_staged_proxy(rt_game3d_stream_cell *cell, in
 }
 
 /// @brief Effective HLOD proxy ring radius (explicit value or 4x the load radius).
+/// @param stream Borrowed stream payload.
+/// @return Configured positive proxy radius, four times load radius, or zero when invalid.
 static double game3d_stream_effective_proxy_radius(const rt_game3d_world_stream *stream) {
     if (!stream)
         return 0.0;
@@ -2486,6 +2831,9 @@ static double game3d_stream_effective_proxy_radius(const rt_game3d_world_stream 
 }
 
 /// @brief True when @p cell should hold (at least) its proxy at the current center.
+/// @param stream Borrowed stream defining the proxy ring and hysteresis.
+/// @param cell Borrowed cell with an optional proxy path.
+/// @return Nonzero when the cell lies within its proxy-residency threshold.
 static int game3d_stream_cell_proxy_desired(const rt_game3d_world_stream *stream,
                                             const rt_game3d_stream_cell *cell) {
     if (!stream || !cell || !cell->proxy_path)
@@ -2504,6 +2852,8 @@ static int game3d_stream_cell_proxy_desired(const rt_game3d_world_stream *stream
 }
 
 /// @brief Build "<cell-name>_proxy" for the spawned proxy subtree root.
+/// @param cell Borrowed cell supplying the base name.
+/// @return New runtime string containing the proxy name, or a fallback constant reference.
 static rt_string game3d_stream_cell_proxy_name(const rt_game3d_stream_cell *cell) {
     const char *base = cell && cell->name ? rt_string_cstr(cell->name) : "cell";
     const char *suffix = "_proxy";
@@ -2522,6 +2872,8 @@ static rt_string game3d_stream_cell_proxy_name(const rt_game3d_stream_cell *cell
 }
 
 /// @brief Despawn and release a cell's proxy subtree (idempotent).
+/// @param stream Borrowed owning stream, or `NULL` during detached cleanup.
+/// @param cell Cell record whose proxy fields are cleared.
 static void game3d_world_stream_unload_cell_proxy(rt_game3d_world_stream *stream,
                                                   rt_game3d_stream_cell *cell) {
     if (!cell)
@@ -2541,6 +2893,9 @@ static void game3d_world_stream_unload_cell_proxy(rt_game3d_world_stream *stream
 /// @brief Spawn a loaded proxy scene as the cell's render-only stand-in.
 /// @details Consumes @p scene. Proxies are render-only by construction: baked proxy
 ///   scenes carry a single mesh node, so no colliders or nav sources spawn with them.
+/// @param stream Borrowed owning stream.
+/// @param cell Cell record receiving the resident proxy.
+/// @param scene Owned proxy Scene3D reference consumed on every path.
 /// @return 1 when the proxy became resident.
 static int game3d_world_stream_adopt_cell_proxy_scene(rt_game3d_world_stream *stream,
                                                       rt_game3d_stream_cell *cell,
@@ -2585,6 +2940,7 @@ static int game3d_world_stream_adopt_cell_proxy_scene(rt_game3d_world_stream *st
 /// @brief A proxy payload failed to load/parse: disable the proxy for this cell.
 /// @details Recoverable — the cell keeps streaming at full residency exactly as a
 ///   proxy-less cell would; the failure is surfaced through StreamStagingErrors.
+/// @param cell Cell record whose proxy path and staged state are disabled.
 static void game3d_stream_cell_proxy_failed(rt_game3d_stream_cell *cell) {
     if (!cell)
         return;
@@ -2594,6 +2950,9 @@ static void game3d_stream_cell_proxy_failed(rt_game3d_stream_cell *cell) {
 }
 
 /// @brief Blocking-path proxy load (inline file IO).
+/// @param stream Borrowed owning stream.
+/// @param cell Cell record whose proxy path is loaded.
+/// @return Nonzero when already or newly proxy-resident; zero on load failure.
 static int game3d_world_stream_load_cell_proxy(rt_game3d_world_stream *stream,
                                                rt_game3d_stream_cell *cell) {
     if (!stream || !cell || !cell->proxy_path)
@@ -2609,6 +2968,9 @@ static int game3d_world_stream_load_cell_proxy(rt_game3d_world_stream *stream,
 }
 
 /// @brief Commit a worker-staged proxy payload (no main-thread file IO).
+/// @param stream Borrowed owning stream.
+/// @param cell Cell record containing staged proxy scene bytes.
+/// @return Nonzero when already or newly proxy-resident; zero on parse or spawn failure.
 static int game3d_world_stream_commit_staged_cell_proxy(rt_game3d_world_stream *stream,
                                                         rt_game3d_stream_cell *cell) {
     if (!stream || !cell || !cell->proxy_staged)
@@ -2630,6 +2992,10 @@ static int game3d_world_stream_commit_staged_cell_proxy(rt_game3d_world_stream *
 /// @brief Per-pass proxy ring reconciliation for one cell.
 /// @details Runs before the full-residency decision so a receding cell can swap
 ///   full→proxy in the same pass, and a fully-committed cell releases its proxy.
+/// @param stream Borrowed owning stream.
+/// @param[in,out] state Current recompute counters and async mode.
+/// @param cell Cell record whose proxy state is reconciled.
+/// @param full_desired Nonzero when the cell also lies inside the full-detail ring.
 static void game3d_world_stream_process_cell_proxy(rt_game3d_world_stream *stream,
                                                    game3d_stream_recompute_state *state,
                                                    rt_game3d_stream_cell *cell,
@@ -2670,6 +3036,11 @@ static void game3d_world_stream_process_cell_proxy(rt_game3d_world_stream *strea
     }
 }
 
+/// @brief Reconcile one desired full-detail cell against budgets, staging state, and cooldown.
+/// @param stream Borrowed owning stream.
+/// @param[in,out] state Current recompute counters, gates, and work allowance.
+/// @param cell Cell record to load, retain, or evict.
+/// @param budget Full-detail cell residency budget in bytes, or negative for unlimited.
 static void game3d_world_stream_process_cell(rt_game3d_world_stream *stream,
                                              game3d_stream_recompute_state *state,
                                              rt_game3d_stream_cell *cell,
@@ -2758,6 +3129,8 @@ static void game3d_world_stream_process_cell(rt_game3d_world_stream *stream,
 }
 
 /// @brief Reconcile manifest-backed scene cells and update resident cell counters.
+/// @param stream Borrowed stream whose cells are processed nearest-first.
+/// @param[in,out] state Current recompute state receiving cell and proxy telemetry.
 static void game3d_world_stream_recompute_cells(rt_game3d_world_stream *stream,
                                                 game3d_stream_recompute_state *state) {
     if (stream->cells_manifest_loaded) {
@@ -2858,6 +3231,12 @@ static void game3d_world_stream_recompute_cells(rt_game3d_world_stream *stream,
     }
 }
 
+/// @brief Reconcile one desired terrain tile against budgets, staging state, and cooldown.
+/// @param stream Borrowed owning stream.
+/// @param[in,out] state Current recompute counters, gates, and work allowance.
+/// @param tile Terrain record to load, retain, or evict.
+/// @param terrain_unlimited Nonzero when terrain is not constrained by remaining bytes.
+/// @param remaining_budget Terrain-specific residency allowance.
 static void game3d_world_stream_process_terrain_tile(rt_game3d_world_stream *stream,
                                                      game3d_stream_recompute_state *state,
                                                      rt_game3d_stream_terrain_tile *tile,
@@ -2950,6 +3329,10 @@ static void game3d_world_stream_process_terrain_tile(rt_game3d_world_stream *str
     }
 }
 
+/// @brief Reduce projected fallback terrain/cell counts until their estimated bytes fit.
+/// @param stream Borrowed stream supplying manifest byte costs.
+/// @param[in,out] state Recompute state whose projected counts and bytes are reduced.
+/// @param budget Total residency budget, or negative for unlimited.
 static void game3d_world_stream_clamp_projected_terrain(rt_game3d_world_stream *stream,
                                                         game3d_stream_recompute_state *state,
                                                         int64_t budget) {
@@ -2975,6 +3358,8 @@ static void game3d_world_stream_clamp_projected_terrain(rt_game3d_world_stream *
 }
 
 /// @brief Reconcile manifest-backed terrain tiles and update resident terrain counters.
+/// @param stream Borrowed stream whose terrain tiles are processed nearest-first.
+/// @param[in,out] state Current recompute state receiving terrain telemetry.
 static void game3d_world_stream_recompute_terrain(rt_game3d_world_stream *stream,
                                                   game3d_stream_recompute_state *state) {
     int64_t budget = stream->residency_budget_bytes;
@@ -3058,6 +3443,9 @@ static void game3d_world_stream_recompute_terrain(rt_game3d_world_stream *stream
 }
 
 /// @brief Apply final residency-budget clamping and publish telemetry counters.
+/// @param stream Borrowed stream whose public telemetry fields are updated.
+/// @param[in,out] state Completed recompute state, possibly cleared after a high-watermark
+/// violation.
 static void game3d_world_stream_commit_recompute(rt_game3d_world_stream *stream,
                                                  game3d_stream_recompute_state *state) {
     int64_t budget = stream->residency_budget_bytes;
@@ -3095,6 +3483,8 @@ static void game3d_world_stream_commit_recompute(rt_game3d_world_stream *stream,
 /// @details Loads nearest-first within the per-frame byte budget and the residency budget, and
 /// unloads
 ///          anything beyond the unload radius — the heart of the open-world streaming loop.
+/// @param stream Borrowed stream payload to reconcile.
+/// @param load_budget Maximum new loads or commits allowed this pass; negative means unlimited.
 static void game3d_world_stream_recompute(rt_game3d_world_stream *stream, int64_t load_budget) {
     if (!stream)
         return;
@@ -3111,6 +3501,8 @@ static void game3d_world_stream_recompute(rt_game3d_world_stream *stream, int64_
 /// @brief Update the smoothed center-velocity estimate used by prefetch.
 /// @details A jump larger than the unload radius is a teleport: the estimate resets so
 ///   a spurious velocity spike cannot prefetch phantom cells along the jump vector.
+/// @param stream Borrowed stream whose center history and velocity are updated.
+/// @param dt Positive elapsed time in seconds; non-positive values initialize history only.
 static void game3d_world_stream_update_velocity(rt_game3d_world_stream *stream, double dt) {
     if (!stream)
         return;
@@ -3149,6 +3541,7 @@ static void game3d_world_stream_update_velocity(rt_game3d_world_stream *stream, 
 
 /// @brief Stage-ahead pass: submit worker jobs for cells/tiles the moving center will
 ///   want within the prefetch lookahead, and publish the prefetch telemetry counter.
+/// @param stream Borrowed stream whose non-resident manifest entries are considered.
 static void game3d_world_stream_prefetch(rt_game3d_world_stream *stream) {
     if (!stream)
         return;
@@ -3240,6 +3633,8 @@ static int32_t game3d_proxy_gather_sources(void *root,
 }
 
 /// @brief Read a material's diffuse color as packed 0xRRGGBBAA (white when NULL).
+/// @param material Borrowed Material3D handle, or `NULL` for opaque white.
+/// @return Packed clamped diffuse color with an opaque alpha channel.
 static int64_t game3d_proxy_material_rgba(void *material) {
     double rgb[3] = {1.0, 1.0, 1.0};
     if (material) {
@@ -3258,6 +3653,9 @@ static int64_t game3d_proxy_material_rgba(void *material) {
 /// @brief Derive "<cell path minus its scene extension>_proxy.<same ext>".
 /// @details Cells may use the canonical `.scene3d` extension or the legacy
 ///          `.vscn` alias (ADR 0182); the proxy keeps the cell's spelling.
+/// @param cell_path Borrowed source cell path.
+/// @return New runtime string containing the derived proxy path, or `NULL` on invalid input or
+/// allocation failure.
 static rt_string game3d_proxy_default_path(rt_string cell_path) {
     const char *base = cell_path ? rt_string_cstr(cell_path) : NULL;
     if (!base)
@@ -3290,6 +3688,9 @@ static rt_string game3d_proxy_default_path(rt_string cell_path) {
 ///   source material's diffuse color into a small block atlas, and saves the result
 ///   next to the cell (or at the manifest "proxy" path when authored). Returns 1 on
 ///   success with the cell's proxy path/bytes updated for this session.
+/// @param obj Borrowed WorldStream3D handle.
+/// @param index Zero-based index of a currently resident manifest cell.
+/// @return Nonzero when a proxy scene was built and saved; otherwise zero.
 int8_t rt_game3d_world_stream_bake_cell_proxy(void *obj, int64_t index) {
     rt_game3d_world_stream *stream =
         game3d_world_stream_checked(obj, "Game3D.WorldStream3D.bakeCellProxy: invalid stream");
@@ -3467,6 +3868,9 @@ int8_t rt_game3d_world_stream_bake_cell_proxy(void *obj, int64_t index) {
 ///   off-screen RenderTarget3D, then installs the strip as a multi-frame impostor
 ///   on the proxy's mesh node, active beyond @p distance. Returns the number of
 ///   cells that received impostors.
+/// @param obj Borrowed WorldStream3D handle.
+/// @param distance Non-negative world-space activation distance for generated impostors.
+/// @return Number of resident cell proxies that received complete yaw-strip impostors.
 int64_t rt_game3d_world_stream_generate_impostors(void *obj, double distance) {
     rt_game3d_world_stream *stream =
         game3d_world_stream_checked(obj, "Game3D.WorldStream3D.generateImpostors: invalid stream");

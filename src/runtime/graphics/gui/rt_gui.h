@@ -3,6 +3,15 @@
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
 //
+/// @file rt_gui.h
+/// @brief Declares the public C ABI for retained GUI applications and widgets.
+///
+/// @details
+/// This header exposes opaque application, widget, font, layout, event,
+/// accessibility, editor, dialog, command, and language-service bridge
+/// handles. Parent/child ownership and runtime-managed return values let
+/// frontends use the GUI without depending on the lower toolkit's C types.
+///
 // File: src/runtime/graphics/gui/rt_gui.h
 // Purpose: Runtime bridge functions for the ZannaGUI widget library, providing widget creation,
 // layout, event handling, and rendering for GUI application development.
@@ -336,18 +345,32 @@ void rt_widget_set_tab_index(void *widget, int64_t idx);
 
 // BINDING-003: GuiWidget read accessors
 /// @brief Whether the widget is currently visible (1) or hidden (0).
+/// @param widget Widget handle.
+/// @return 1 when visible, otherwise 0, including for an invalid handle.
 int64_t rt_widget_is_visible(void *widget);
 /// @brief Whether the widget is currently enabled (1) or disabled (0).
+/// @param widget Widget handle.
+/// @return 1 when enabled, otherwise 0, including for an invalid handle.
 int64_t rt_widget_is_enabled(void *widget);
 /// @brief The widget's laid-out width in physical framebuffer pixels.
+/// @param widget Widget handle.
+/// @return Non-negative framebuffer width, or 0 for an invalid handle.
 int64_t rt_widget_get_width(void *widget);
 /// @brief The widget's laid-out height in physical framebuffer pixels.
+/// @param widget Widget handle.
+/// @return Non-negative framebuffer height, or 0 for an invalid handle.
 int64_t rt_widget_get_height(void *widget);
 /// @brief The widget's laid-out X position in physical framebuffer pixels.
+/// @param widget Widget handle.
+/// @return Parent-relative framebuffer X coordinate, or 0 for an invalid handle.
 int64_t rt_widget_get_x(void *widget);
 /// @brief The widget's laid-out Y position in physical framebuffer pixels.
+/// @param widget Widget handle.
+/// @return Parent-relative framebuffer Y coordinate, or 0 for an invalid handle.
 int64_t rt_widget_get_y(void *widget);
 /// @brief The widget's flex grow/shrink factor within its parent layout.
+/// @param widget Widget handle.
+/// @return Configured flex factor, or 0 for an invalid handle.
 double rt_widget_get_flex(void *widget);
 
 /// @brief Return the widget's parent-relative X coordinate in logical units.
@@ -677,6 +700,8 @@ void rt_label_set_font(void *label, void *font, double size);
 void rt_label_set_color(void *label, int64_t color);
 
 /// @brief Enable (1) or disable (0) word wrapping on a label.
+/// @param label Label widget handle.
+/// @param enabled Non-zero to enable wrapping; zero to keep text on one line.
 void rt_label_set_word_wrap(void *label, int64_t enabled);
 
 /// @brief Set (or clear) a named scalable vector icon before a label's text.
@@ -987,9 +1012,13 @@ int64_t rt_checkbox_is_checked(void *checkbox);
 void rt_checkbox_set_text(void *checkbox, rt_string text);
 
 /// @brief Set checkbox indeterminate state.
+/// @param checkbox Checkbox widget handle.
+/// @param indeterminate Non-zero to show the mixed state; zero to clear it.
 void rt_checkbox_set_indeterminate(void *checkbox, int64_t indeterminate);
 
 /// @brief Get checkbox indeterminate state.
+/// @param checkbox Checkbox widget handle.
+/// @return 1 when indeterminate, otherwise 0.
 int64_t rt_checkbox_is_indeterminate(void *checkbox);
 
 /// @brief Consume the checkbox's independent value-change edge.
@@ -1152,19 +1181,59 @@ void rt_treeview_set_drag_drop_enabled(void *tree, int64_t enabled);
 void rt_treeview_set_drag_drop_mode(void *tree, int64_t mode);
 
 /// @brief True while a completed drop is waiting to be consumed.
+/// @param tree TreeView widget handle.
+/// @return 1 when an unconsumed drop is latched, otherwise 0.
 int64_t rt_treeview_was_drop_received(void *tree);
 
 /// @brief Data string of the dragged node at the latched drop.
+/// @param tree TreeView widget handle.
+/// @return Owned source-node data, or an empty runtime string when no drop is latched.
 rt_string rt_treeview_get_drop_source_data(void *tree);
 
 /// @brief Data string of the target node at the latched drop.
+/// @param tree TreeView widget handle.
+/// @return Owned target-node data, or an empty runtime string when no drop is latched.
 rt_string rt_treeview_get_drop_target_data(void *tree);
 
 /// @brief Latched drop position (0=before, 1=into, 2=after).
+/// @param tree TreeView widget handle.
+/// @return Drop-position value, or the implementation's no-drop sentinel when unavailable.
 int64_t rt_treeview_get_drop_position(void *tree);
 
 /// @brief Consume the latched drop so the next drop can be observed.
+/// @param tree TreeView widget handle.
 void rt_treeview_clear_drop(void *tree);
+
+/// @brief Begin an inline edit of one row; Enter/blur commit, Escape cancels.
+/// @param tree TreeView widget handle.
+/// @param node Live node handle owned by @p tree.
+/// @param initial_text Editor contents at start.
+/// @return 1 when the edit began, otherwise 0.
+int64_t rt_treeview_begin_edit_node(void *tree, void *node, rt_string initial_text);
+
+/// @brief Whether an inline row edit is currently in progress.
+/// @param tree TreeView widget handle.
+/// @return 1 while an edit is active, otherwise 0.
+int64_t rt_treeview_is_editing(void *tree);
+
+/// @brief Consume the inline-edit commit edge (1 exactly once per commit).
+/// @param tree TreeView widget handle.
+/// @return 1 once after an unreported commit, otherwise 0.
+int64_t rt_treeview_was_edit_committed(void *tree);
+
+/// @brief Most recently committed inline-edit text (owned; empty when none).
+/// @param tree TreeView widget handle.
+/// @return Owned committed text, or an empty runtime string when none is available.
+rt_string rt_treeview_get_edit_text(void *tree);
+
+/// @brief Node whose inline edit most recently committed (owned Option).
+/// @param tree TreeView widget handle.
+/// @return Owned `Option[TreeNode]` containing the edited node when available.
+void *rt_treeview_get_edited_node_option(void *tree);
+
+/// @brief Cancel any inline edit in progress without committing.
+/// @param tree TreeView widget handle.
+void rt_treeview_cancel_edit(void *tree);
 
 /// @brief Check if selection changed since last call (polling pattern).
 /// @param tree TreeView widget handle.
@@ -1579,6 +1648,9 @@ int64_t rt_codeeditor_get_revision(void *editor);
 
 /// @brief Serialize buffered edit deltas after @p since_revision as compact JSON
 ///        for incremental language-service sync; "overflow" means full-sync.
+/// @param editor CodeEditor widget handle.
+/// @param since_revision Last content revision already held by the consumer.
+/// @return Owned compact JSON describing subsequent deltas or an overflow marker.
 rt_string rt_codeeditor_take_deltas(void *editor, int64_t since_revision);
 
 /// @brief Get the currently selected text.
@@ -1628,9 +1700,13 @@ void rt_codeeditor_clear_modified(void *editor);
 void rt_codeeditor_set_font(void *editor, void *font, double size);
 
 /// @brief Get the current font size of a code editor.
+/// @param editor CodeEditor widget handle.
+/// @return Current font size in pixels, or 0 when unavailable.
 double rt_codeeditor_get_font_size(void *editor);
 
 /// @brief Set only the font size of a code editor (font unchanged).
+/// @param editor CodeEditor widget handle.
+/// @param size Font size in pixels.
 void rt_codeeditor_set_font_size(void *editor, double size);
 
 //=========================================================================
@@ -1753,9 +1829,13 @@ void rt_progressbar_set_value(void *progress, double value);
 double rt_progressbar_get_value(void *progress);
 
 /// @brief Set progress bar style: 0=bar, 1=circular, 2=indeterminate.
+/// @param progress ProgressBar widget handle.
+/// @param style Style value: 0 for bar, 1 for circular, or 2 for indeterminate.
 void rt_progressbar_set_style(void *progress, int64_t style);
 
 /// @brief Enable or disable percentage text.
+/// @param progress ProgressBar widget handle.
+/// @param show Non-zero to display percentage text; zero to hide it.
 void rt_progressbar_show_percentage(void *progress, int64_t show);
 
 //=========================================================================
@@ -2082,60 +2162,99 @@ int64_t rt_colorpicker_get_revision(void *picker);
 void *rt_outputpane_new(void *parent);
 
 /// @brief Append text, parsing ANSI SGR escape sequences.
+/// @param pane OutputPane widget handle.
+/// @param text Text to append.
 void rt_outputpane_append(void *pane, rt_string text);
 
 /// @brief Append text as a complete line.
+/// @param pane OutputPane widget handle.
+/// @param text Line text to append before the line terminator.
 void rt_outputpane_append_line(void *pane, rt_string text);
 
 /// @brief Append a single explicitly styled segment.
+/// @param pane OutputPane widget handle.
+/// @param text Segment text.
+/// @param fg Foreground color value.
+/// @param bg Background color value.
+/// @param bold Non-zero to render the segment in bold.
 void rt_outputpane_append_styled(void *pane, rt_string text, int64_t fg, int64_t bg, int64_t bold);
 
 /// @brief Clear all retained output.
+/// @param pane OutputPane widget handle.
 void rt_outputpane_clear(void *pane);
 
 /// @brief Scroll to the first output line and lock auto-scroll.
+/// @param pane OutputPane widget handle.
 void rt_outputpane_scroll_to_top(void *pane);
 
 /// @brief Scroll to the latest output line and unlock auto-scroll.
+/// @param pane OutputPane widget handle.
 void rt_outputpane_scroll_to_bottom(void *pane);
 
 /// @brief Enable or disable auto-scroll on append.
+/// @param pane OutputPane widget handle.
+/// @param enabled Non-zero to follow newly appended output.
 void rt_outputpane_set_auto_scroll(void *pane, int64_t enabled);
 
 /// @brief Return selected output text.
+/// @param pane OutputPane widget handle.
+/// @return Owned selected text, or an empty runtime string when no selection exists.
 rt_string rt_outputpane_get_selection(void *pane);
 
 /// @brief Select all retained output text.
+/// @param pane OutputPane widget handle.
 void rt_outputpane_select_all(void *pane);
 
 /// @brief Set the retained line cap.
+/// @param pane OutputPane widget handle.
+/// @param max_lines Maximum retained line count.
 void rt_outputpane_set_max_lines(void *pane, int64_t max_lines);
 
 /// @brief Return the retained output line count.
+/// @param pane OutputPane widget handle.
+/// @return Number of currently retained lines.
 int64_t rt_outputpane_get_line_count(void *pane);
 
 /// @brief Set output pane font.
+/// @param pane OutputPane widget handle.
+/// @param font Font handle.
+/// @param size Font size in pixels.
 void rt_outputpane_set_font(void *pane, void *font, double size);
 
 /// @brief Pixel advance of one monospace character cell ("M"); 0 when no font/invalid.
+/// @param pane OutputPane widget handle.
+/// @return Character-cell advance in pixels, or 0 when unavailable.
 int64_t rt_outputpane_get_cell_width(void *pane);
 
 /// @brief Pixel height of one line; 0 when no font/invalid.
+/// @param pane OutputPane widget handle.
+/// @return Line height in pixels, or 0 when unavailable.
 int64_t rt_outputpane_get_cell_height(void *pane);
 
 /// @brief Pixel width of @p text in the pane's font; 0 when no font/empty/invalid.
+/// @param pane OutputPane widget handle.
+/// @param text Text to measure.
+/// @return Measured width in pixels, or 0 when unavailable.
 int64_t rt_outputpane_measure_text(void *pane, rt_string text);
 
 /// @brief Whole character columns that fit across the pane's width; 0 when no font/invalid.
+/// @param pane OutputPane widget handle.
+/// @return Number of complete character columns that fit, or 0 when unavailable.
 int64_t rt_outputpane_columns_for_width(void *pane);
 
 /// @brief Whole rows that fit down the pane's height; 0 when no font/invalid.
+/// @param pane OutputPane widget handle.
+/// @return Number of complete rows that fit, or 0 when unavailable.
 int64_t rt_outputpane_rows_for_height(void *pane);
 
 /// @brief Enable/disable interactive terminal mode (cursor model + keyboard capture).
+/// @param pane OutputPane widget handle.
+/// @param enabled Non-zero to enable terminal input handling.
 void rt_outputpane_set_terminal_mode(void *pane, int64_t enabled);
 
 /// @brief Drain queued terminal keystroke bytes (terminal mode).
+/// @param pane OutputPane widget handle.
+/// @return Owned string containing queued input bytes, or an empty string when none are queued.
 rt_string rt_outputpane_take_input(void *pane);
 
 //=========================================================================
@@ -2295,6 +2414,11 @@ int64_t rt_spinner_was_changed(void *spinner);
 /// @return 1 when an unreported valid Enter submission exists, otherwise 0.
 int64_t rt_spinner_was_submitted(void *spinner);
 
+/// @brief Consume the spinner's value-scrub completion edge (1 once per gesture).
+/// @param spinner Spinner widget handle.
+/// @return 1 once after an unreported scrub gesture completes, otherwise 0.
+int64_t rt_spinner_was_scrub_finished(void *spinner);
+
 /// @brief Return the spinner's non-consuming state revision.
 /// @param spinner Spinner widget handle.
 /// @return Monotonic signed revision, saturated at `INT64_MAX`, or zero if invalid.
@@ -2305,24 +2429,50 @@ int64_t rt_spinner_get_revision(void *spinner);
 //=========================================================================
 
 /// @brief Create a tabular data grid attached to an optional parent.
+/// @param parent Parent widget handle, or NULL for no parent.
+/// @return DataGrid widget handle.
 void *rt_datagrid_new(void *parent);
 /// @brief Set the column count (clears existing headers and cells).
+/// @param grid DataGrid widget handle.
+/// @param count Non-negative column count.
 void rt_datagrid_set_columns(void *grid, int64_t count);
 /// @brief Set a column header.
+/// @param grid DataGrid widget handle.
+/// @param col Zero-based column index.
+/// @param text Header text.
 void rt_datagrid_set_header(void *grid, int64_t col, rt_string text);
 /// @brief Set a cell's text, growing the row count as needed.
+/// @param grid DataGrid widget handle.
+/// @param row Zero-based row index.
+/// @param col Zero-based column index.
+/// @param text Cell text.
 void rt_datagrid_set_cell(void *grid, int64_t row, int64_t col, rt_string text);
 /// @brief Return a cell's text (empty string when out of range).
+/// @param grid DataGrid widget handle.
+/// @param row Zero-based row index.
+/// @param col Zero-based column index.
+/// @return Owned cell text, or an empty runtime string when out of range.
 rt_string rt_datagrid_get_cell(void *grid, int64_t row, int64_t col);
 /// @brief Remove all rows (columns and headers are kept).
+/// @param grid DataGrid widget handle.
 void rt_datagrid_clear(void *grid);
 /// @brief Set the header/cell font.
+/// @param grid DataGrid widget handle.
+/// @param font Font handle.
+/// @param size Font size in pixels.
 void rt_datagrid_set_font(void *grid, void *font, double size);
 /// @brief Auto-sized pixel width of a column; 0 when no font/out of range.
+/// @param grid DataGrid widget handle.
+/// @param col Zero-based column index.
+/// @return Column width in pixels, or 0 when unavailable.
 int64_t rt_datagrid_get_column_width(void *grid, int64_t col);
 /// @brief Number of populated rows.
+/// @param grid DataGrid widget handle.
+/// @return Number of populated rows, or 0 for an invalid handle.
 int64_t rt_datagrid_get_row_count(void *grid);
 /// @brief Number of columns.
+/// @param grid DataGrid widget handle.
+/// @return Number of configured columns, or 0 for an invalid handle.
 int64_t rt_datagrid_get_column_count(void *grid);
 
 /// @brief Set the first and maximum number of logical rows in the Grid viewport.
@@ -2493,40 +2643,74 @@ int64_t rt_datagrid_get_revision(void *grid);
 //=========================================================================
 
 /// @brief Create a caret-anchored filtered popup list attached to an optional parent.
+/// @param parent Parent widget handle, or NULL for no parent.
+/// @return PopupList widget handle.
 void *rt_popuplist_new(void *parent);
 /// @brief Append an item (host adds items in its preferred rank order).
+/// @param list PopupList widget handle.
+/// @param text Item text.
 void rt_popuplist_add_item(void *list, rt_string text);
 /// @brief Remove all items and reset filter/selection.
+/// @param list PopupList widget handle.
 void rt_popuplist_clear(void *list);
 /// @brief Set the case-insensitive substring filter.
+/// @param list PopupList widget handle.
+/// @param filter Filter text.
 void rt_popuplist_set_filter(void *list, rt_string filter);
 /// @brief Number of items currently visible (matching the filter).
+/// @param list PopupList widget handle.
+/// @return Number of items matching the current filter.
 int64_t rt_popuplist_visible_count(void *list);
 /// @brief Move the selection up one visible item.
+/// @param list PopupList widget handle.
 void rt_popuplist_navigate_up(void *list);
 /// @brief Move the selection down one visible item.
+/// @param list PopupList widget handle.
 void rt_popuplist_navigate_down(void *list);
 /// @brief Set the selection index within the visible items.
+/// @param list PopupList widget handle.
+/// @param index Zero-based visible-item index, or -1 to clear selection.
 void rt_popuplist_set_selected_index(void *list, int64_t index);
 /// @brief Selection index within the visible items, or -1 when none are visible.
+/// @param list PopupList widget handle.
+/// @return Zero-based visible-item index, or -1 when no item is selected.
 int64_t rt_popuplist_get_selected_index(void *list);
 /// @brief Text of the selected visible item (empty when none).
+/// @param list PopupList widget handle.
+/// @return Owned selected text, or an empty runtime string when none is selected.
 rt_string rt_popuplist_get_selected(void *list);
 /// @brief Mark the current selection accepted.
+/// @param list PopupList widget handle.
 void rt_popuplist_accept_selected(void *list);
 /// @brief Whether AcceptSelected was called since the last query (consume-on-read).
+/// @param list PopupList widget handle.
+/// @return 1 once after an acceptance, otherwise 0.
 int8_t rt_popuplist_was_accepted(void *list);
 /// @brief Set the popup's anchor (top-left) position.
+/// @param list PopupList widget handle.
+/// @param x Root-relative anchor X coordinate.
+/// @param y Root-relative anchor Y coordinate.
 void rt_popuplist_anchor_at(void *list, double x, double y);
 /// @brief Set the popup width.
+/// @param list PopupList widget handle.
+/// @param width Popup width in logical units.
 void rt_popuplist_set_width(void *list, double width);
 /// @brief Set the maximum number of visible rows.
+/// @param list PopupList widget handle.
+/// @param max_rows Maximum number of rows to display.
 void rt_popuplist_set_max_rows(void *list, int64_t max_rows);
 /// @brief Set the item font.
+/// @param list PopupList widget handle.
+/// @param font Font handle.
+/// @param size Font size in pixels.
 void rt_popuplist_set_font(void *list, void *font, double size);
 /// @brief Show or hide the popup.
+/// @param list PopupList widget handle.
+/// @param visible Non-zero to show the popup; zero to hide it.
 void rt_popuplist_set_visible(void *list, int64_t visible);
 /// @brief Whether the popup is currently visible.
+/// @param list PopupList widget handle.
+/// @return 1 when visible, otherwise 0.
 int8_t rt_popuplist_is_visible(void *list);
 
 //=========================================================================
@@ -3214,12 +3398,18 @@ void rt_app_activate(void *app);
 int64_t rt_app_is_focused(void *app);
 
 /// @brief Count of frames that took the full-window repaint path (plan 07).
+/// @param app GUI application handle.
+/// @return Number of full-window paint frames recorded.
 int64_t rt_app_get_paint_frames_full(void *app);
 
 /// @brief Count of frames that took the damage-region (partial) repaint path.
+/// @param app GUI application handle.
+/// @return Number of partial paint frames recorded.
 int64_t rt_app_get_paint_frames_partial(void *app);
 
 /// @brief Enable/disable damage-region rendering at runtime (0 forces full repaint).
+/// @param app GUI application handle.
+/// @param enabled Non-zero to allow partial painting; zero to force full repaint.
 void rt_app_set_partial_paint(void *app, int64_t enabled);
 
 /// @brief Enable or disable close prevention.
@@ -3233,12 +3423,19 @@ void rt_app_set_prevent_close(void *app, int64_t prevent);
 int64_t rt_app_was_close_requested(void *app);
 
 /// @brief Get the width of the monitor containing the window.
+/// @param app GUI application handle.
+/// @return Monitor width in pixels, or 0 when unavailable.
 int64_t rt_app_get_monitor_width(void *app);
 
 /// @brief Get the height of the monitor containing the window.
+/// @param app GUI application handle.
+/// @return Monitor height in pixels, or 0 when unavailable.
 int64_t rt_app_get_monitor_height(void *app);
 
 /// @brief Resize the OS window to the given dimensions.
+/// @param app GUI application handle.
+/// @param w Requested logical window width.
+/// @param h Requested logical window height.
 void rt_app_set_window_size(void *app, int64_t w, int64_t h);
 
 /// @brief Set the minimum native client/content size of the app window.
@@ -4297,17 +4494,29 @@ void rt_codeeditor_set_whitespace_mode(void *editor, int64_t mode);
 int64_t rt_codeeditor_get_whitespace_mode(void *editor);
 
 /// @brief `EditorBuffer.New` — detached per-document editor state from text.
+/// @param text Initial document text.
+/// @return Detached EditorBuffer handle.
 void *rt_editorbuffer_new(rt_string text);
 /// @brief `EditorBuffer.get_Text` — full document text.
+/// @param handle EditorBuffer handle.
+/// @return Owned full document text.
 rt_string rt_editorbuffer_get_text(void *handle);
 /// @brief `EditorBuffer.get_Revision` — content revision.
+/// @param handle EditorBuffer handle.
+/// @return Current content revision, or 0 when unavailable.
 int64_t rt_editorbuffer_get_revision(void *handle);
 /// @brief `EditorBuffer.IsModified`.
+/// @param handle EditorBuffer handle.
+/// @return 1 when content has changed since the modified flag was cleared, otherwise 0.
 int64_t rt_editorbuffer_is_modified(void *handle);
 /// @brief `EditorBuffer.ClearModified`.
+/// @param handle EditorBuffer handle.
 void rt_editorbuffer_clear_modified(void *handle);
 /// @brief `CodeEditor.AttachBuffer` — swap the editor's document for a buffer,
 ///        returning the previous document as a new EditorBuffer (buffer consumed).
+/// @param editor CodeEditor widget handle.
+/// @param bufHandle EditorBuffer handle consumed by the editor.
+/// @return Detached EditorBuffer handle containing the editor's previous document.
 void *rt_codeeditor_attach_buffer(void *editor, void *bufHandle);
 
 /// @brief Toggle faint vertical indentation guides.
@@ -4467,15 +4676,27 @@ void *rt_messagebox_prompt_option(rt_string title, rt_string message);
 void *rt_messagebox_new(rt_string title, rt_string message, int64_t type);
 
 /// @brief Create a custom info message box.
+/// @param title Dialog title.
+/// @param message Informational message.
+/// @return MessageBox handle.
 void *rt_messagebox_new_info(rt_string title, rt_string message);
 
 /// @brief Create a custom warning message box.
+/// @param title Dialog title.
+/// @param message Warning message.
+/// @return MessageBox handle.
 void *rt_messagebox_new_warning(rt_string title, rt_string message);
 
 /// @brief Create a custom error message box.
+/// @param title Dialog title.
+/// @param message Error message.
+/// @return MessageBox handle.
 void *rt_messagebox_new_error(rt_string title, rt_string message);
 
 /// @brief Create a custom question message box.
+/// @param title Dialog title.
+/// @param message Question text.
+/// @return MessageBox handle.
 void *rt_messagebox_new_question(rt_string title, rt_string message);
 
 /// @brief Add a button to a custom message box.
@@ -4656,12 +4877,15 @@ void *rt_filedialog_select_folder_option(rt_string title, rt_string default_path
 void *rt_filedialog_new(int64_t type);
 
 /// @brief Create a custom open-file dialog.
+/// @return FileDialog handle configured to open a file.
 void *rt_filedialog_new_open(void);
 
 /// @brief Create a custom save-file dialog.
+/// @return FileDialog handle configured to save a file.
 void *rt_filedialog_new_save(void);
 
 /// @brief Create a custom select-folder dialog.
+/// @return FileDialog handle configured to select a folder.
 void *rt_filedialog_new_folder(void);
 
 /// @brief Set the title of a file dialog.
@@ -4995,15 +5219,23 @@ rt_string rt_commandpalette_get_selected_command(void *palette);
 int64_t rt_commandpalette_was_command_selected(void *palette);
 
 /// @brief Current live query text (never NULL; "" when empty).
+/// @param palette CommandPalette handle.
+/// @return Owned current query text.
 rt_string rt_commandpalette_get_query(void *palette);
 
 /// @brief Query generation counter (bumped on every query change).
+/// @param palette CommandPalette handle.
+/// @return Monotonic query generation.
 int64_t rt_commandpalette_get_query_generation(void *palette);
 
 /// @brief Programmatically set the query text and re-filter.
+/// @param palette CommandPalette handle.
+/// @param text Replacement query text.
 void rt_commandpalette_set_query(void *palette, rt_string text);
 
 /// @brief Enable client-filtered mode (application filters/ranks; widget shows order).
+/// @param palette CommandPalette handle.
+/// @param enabled Non-zero when the application supplies filtered ordering.
 void rt_commandpalette_set_client_filtered(void *palette, int64_t enabled);
 
 //=========================================================================
@@ -5342,6 +5574,16 @@ rt_string rt_widget_get_drop_type(void *widget);
 /// @return Drop data string.
 rt_string rt_widget_get_drop_data(void *widget);
 
+/// @brief Pointer x recorded when the last drop landed on this widget.
+/// @param widget Widget handle.
+/// @return Root-relative drop X coordinate, or 0 when unavailable.
+double rt_widget_get_drop_x(void *widget);
+
+/// @brief Pointer y recorded when the last drop landed on this widget.
+/// @param widget Widget handle.
+/// @return Root-relative drop Y coordinate, or 0 when unavailable.
+double rt_widget_get_drop_y(void *widget);
+
 /// @brief Check if a file was dropped on the application.
 /// @param app Application handle.
 /// @return 1 if file was dropped, 0 otherwise.
@@ -5417,6 +5659,9 @@ static inline void rt_codeeditor_advance_position(const char *text,
 /// @brief Insert @p text at the primary cursor, then place the caret @p caret_offset characters
 ///        into the inserted text (counting newlines) — replacing the hand-rolled insert-then-walk
 ///        idiom for placing the caret inside a multi-line insertion (e.g. a completion snippet).
+/// @param editor CodeEditor widget handle.
+/// @param text Text to insert.
+/// @param caret_offset Number of inserted Unicode characters preceding the final caret.
 void rt_codeeditor_insert_and_place_cursor(void *editor, rt_string text, int64_t caret_offset);
 
 /// @brief Return the identifier word under the primary cursor.
@@ -5450,54 +5695,101 @@ rt_string rt_codeeditor_get_line(void *editor, int64_t line_index);
 rt_string rt_zia_complete(rt_string source, int64_t line, int64_t col);
 
 /// @brief Run Zia code completion with a source path for relative bind resolution.
+/// @param source Zia source text.
+/// @param file_path Source path used for relative bind resolution.
+/// @param line One-based cursor line.
+/// @param col Zero-based cursor column.
+/// @return Owned tab-delimited completion records.
 rt_string rt_zia_complete_for_file(rt_string source,
                                    rt_string file_path,
                                    int64_t line,
                                    int64_t col);
 
 /// @brief Run Zia code completion and return structured completion maps.
+/// @param source Zia source text.
+/// @param line One-based cursor line.
+/// @param col Zero-based cursor column.
+/// @return Owned runtime sequence of completion-item maps.
 void *rt_zia_completion_items(rt_string source, int64_t line, int64_t col);
 
 /// @brief Run path-aware Zia completion and return structured completion maps.
+/// @param source Zia source text.
+/// @param file_path Source path used for relative bind resolution.
+/// @param line One-based cursor line.
+/// @param col Zero-based cursor column.
+/// @return Owned runtime sequence of completion-item maps.
 void *rt_zia_completion_items_for_file(rt_string source,
                                        rt_string file_path,
                                        int64_t line,
                                        int64_t col);
 
 /// @brief Start path-aware completion on a background worker.
+/// @param source Zia source text.
+/// @param file_path Source path used for relative bind resolution.
+/// @param line One-based cursor line.
+/// @param col Zero-based cursor column.
+/// @return Opaque semantic-job handle.
 void *rt_zia_completion_begin_items_for_file(rt_string source,
                                              rt_string file_path,
                                              int64_t line,
                                              int64_t col);
 
 /// @brief Return call signature help for the invocation active at the source position.
+/// @param source Zia source text.
+/// @param line One-based cursor line.
+/// @param col Zero-based cursor column.
+/// @return Owned human-readable signature text, or an empty runtime string.
 rt_string rt_zia_signature_help(rt_string source, int64_t line, int64_t col);
 
 /// @brief Return call signature help with a source path for relative bind resolution.
+/// @param source Zia source text.
+/// @param file_path Source path used for relative bind resolution.
+/// @param line One-based cursor line.
+/// @param col Zero-based cursor column.
+/// @return Owned human-readable signature text, or an empty runtime string.
 rt_string rt_zia_signature_help_for_file(rt_string source,
                                          rt_string file_path,
                                          int64_t line,
                                          int64_t col);
 
 /// @brief Return structured signature help for the invocation active at the source position.
+/// @param source Zia source text.
+/// @param line One-based cursor line.
+/// @param col Zero-based cursor column.
+/// @return Owned runtime map describing the active signature.
 void *rt_zia_signature_info(rt_string source, int64_t line, int64_t col);
 
 /// @brief Return structured signature help with a source path for relative bind resolution.
+/// @param source Zia source text.
+/// @param file_path Source path used for relative bind resolution.
+/// @param line One-based cursor line.
+/// @param col Zero-based cursor column.
+/// @return Owned runtime map describing the active signature.
 void *rt_zia_signature_info_for_file(rt_string source,
                                      rt_string file_path,
                                      int64_t line,
                                      int64_t col);
 
 /// @brief Start path-aware structured signature help on a background worker.
+/// @param source Zia source text.
+/// @param file_path Source path used for relative bind resolution.
+/// @param line One-based cursor line.
+/// @param col Zero-based cursor column.
+/// @return Opaque semantic-job handle.
 void *rt_zia_completion_begin_signature_info_for_file(rt_string source,
                                                       rt_string file_path,
                                                       int64_t line,
                                                       int64_t col);
 
 /// @brief Run semantic analysis and return serialized diagnostics for editor tooling.
+/// @param source Zia source text.
+/// @return Owned serialized diagnostic rows.
 rt_string rt_zia_check(rt_string source);
 
 /// @brief Run semantic analysis with a source path for relative bind resolution.
+/// @param source Zia source text.
+/// @param file_path Source path used in diagnostics and relative binds.
+/// @return Owned serialized diagnostic rows.
 rt_string rt_zia_check_for_file(rt_string source, rt_string file_path);
 
 // Incremental document mirror sync (plan 08): the IDE pushes edit deltas so
@@ -5505,68 +5797,134 @@ rt_string rt_zia_check_for_file(rt_string source, rt_string file_path);
 // See src/runtime/graphics/common/rt_zia_completion.h for full contracts.
 
 /// @brief Replace the mirror for @p path with @p text, stamping @p revision.
+/// @param path Document path used as the mirror key.
+/// @param text Complete replacement text.
+/// @param revision Monotonic editor revision assigned to the replacement.
 void rt_zia_doc_sync_full(rt_string path, rt_string text, int64_t revision);
 
 /// @brief Apply @p deltas_json to the mirror for @p path, advancing to
 ///        @p end_revision. Returns 1 on success, 0 if no baseline/malformed.
+/// @param path Document path used as the mirror key.
+/// @param deltas_json Serialized compact edit-delta array.
+/// @param end_revision Revision assigned after all deltas are applied.
+/// @return 1 on success; 0 when no baseline exists or the deltas are malformed.
 int8_t rt_zia_doc_sync_delta(rt_string path, rt_string deltas_json, int64_t end_revision);
 
 /// @brief Drop the mirror for @p path (document closed).
+/// @param path Document path whose mirror is removed.
 void rt_zia_doc_close(rt_string path);
 
 /// @brief Return the current mirror text for @p path, or "" when absent.
+/// @param path Document path used as the mirror key.
+/// @return Owned mirrored text, or an empty runtime string when absent.
 rt_string rt_zia_doc_text(rt_string path);
+
+/// @brief Check whether a document mirror exists, including an empty mirror.
+/// @param path Document path used as the mirror key.
+/// @return 1 when a mirror exists, otherwise 0.
 int8_t rt_zia_doc_has(rt_string path);
+
+/// @brief Check whether the full Zia editor-service bridge is linked.
+/// @return 1 when strong editor services are available, otherwise 0.
 int8_t rt_zia_service_available(void);
 
 /// @brief Run diagnostics for @p file_path straight off its mirror text.
+/// @param file_path Document path whose mirror is analyzed.
+/// @return Owned serialized diagnostics, or an empty string when no mirror exists.
 rt_string rt_zia_check_for_file_mirror(rt_string file_path);
 
 /// @brief Start async structured diagnostics for @p file_path off its mirror.
+/// @param file_path Document path whose mirror is analyzed.
+/// @return Opaque semantic-job handle, or NULL when no mirror exists.
 void *rt_zia_doc_begin_check_for_file(rt_string file_path);
 
 /// @brief Run semantic analysis and return structured diagnostic maps.
+/// @param source Zia source text.
+/// @return Owned runtime sequence of diagnostic maps.
 void *rt_zia_toolchain_check(rt_string source);
 
 /// @brief Run semantic analysis with a source path and return structured diagnostic maps.
+/// @param source Zia source text.
+/// @param file_path Source path used in diagnostics and relative binds.
+/// @return Owned runtime sequence of diagnostic maps.
 void *rt_zia_toolchain_check_for_file(rt_string source, rt_string file_path);
 
 /// @brief Start path-aware semantic diagnostics on a background worker.
+/// @param source Zia source text.
+/// @param file_path Source path used in diagnostics and relative binds.
+/// @return Opaque semantic-job handle.
 void *rt_zia_toolchain_begin_check_for_file(rt_string source, rt_string file_path);
 
 /// @brief Compile source to IL and return a structured result map.
+/// @param source Zia source text.
+/// @return Owned runtime compile-result map.
 void *rt_zia_toolchain_compile(rt_string source);
 
 /// @brief Compile source with a source path and return a structured result map.
+/// @param source Zia source text.
+/// @param file_path Source path used for diagnostics and output naming.
+/// @return Owned runtime compile-result map.
 void *rt_zia_toolchain_compile_for_file(rt_string source, rt_string file_path);
 
 /// @brief Create a project language index rooted at @p root.
+/// @param root Project root directory.
+/// @return Opaque ProjectIndex handle, or NULL when editor services are unavailable.
 void *rt_zia_project_index_new(rt_string root);
 
 /// @brief Check whether @p handle is a live ProjectIndex handle.
+/// @param handle Candidate project-index handle.
+/// @return 1 when valid, otherwise 0.
 int8_t rt_zia_project_index_is_valid(void *handle);
 
 /// @brief Store dirty/current source for @p file_path in the project index.
+/// @param handle Project-index handle.
+/// @param file_path File path used as the index key.
+/// @param source Current source text.
+/// @return 1 when the index was updated, otherwise 0.
 int8_t rt_zia_project_index_update_file(void *handle, rt_string file_path, rt_string source);
 
 /// @brief Remove @p file_path from the project index.
+/// @param handle Project-index handle.
+/// @param file_path File path to remove.
+/// @return 1 when an indexed file was removed, otherwise 0.
 int8_t rt_zia_project_index_remove_file(void *handle, rt_string file_path);
 
 /// @brief Remove all files from the project index.
+/// @param handle Project-index handle.
 void rt_zia_project_index_clear(void *handle);
 
 /// @brief Dispose the native project index payload. The handle object remains inert.
+/// @param handle Project-index handle to invalidate.
 void rt_zia_project_index_destroy(void *handle);
 
 /// @brief Return a structured definition map for the identifier at @p line/@p col.
+/// @param handle Project-index handle.
+/// @param file_path Current source file path.
+/// @param source Current source text.
+/// @param line One-based cursor line.
+/// @param col Zero-based cursor column.
+/// @return Owned runtime definition map.
 void *rt_zia_project_index_definition(
     void *handle, rt_string file_path, rt_string source, int64_t line, int64_t col);
 
 /// @brief Return structured semantic references for the identifier at @p line/@p col.
+/// @param handle Project-index handle.
+/// @param file_path Current source file path.
+/// @param source Current source text.
+/// @param line One-based cursor line.
+/// @param col Zero-based cursor column.
+/// @return Owned runtime sequence of reference maps.
 void *rt_zia_project_index_references(
     void *handle, rt_string file_path, rt_string source, int64_t line, int64_t col);
 
 /// @brief Return workspace edits for a semantic rename without applying them.
+/// @param handle Project-index handle.
+/// @param file_path Current source file path.
+/// @param source Current source text.
+/// @param line One-based cursor line.
+/// @param col Zero-based cursor column.
+/// @param new_name Replacement identifier.
+/// @return Owned runtime workspace-edit collection.
 void *rt_zia_project_index_rename_edits(void *handle,
                                         rt_string file_path,
                                         rt_string source,
@@ -5575,42 +5933,82 @@ void *rt_zia_project_index_rename_edits(void *handle,
                                         rt_string new_name);
 
 /// @brief Return hover information for the identifier at the given source position.
+/// @param source Zia source text.
+/// @param line One-based cursor line.
+/// @param col Zero-based cursor column.
+/// @return Owned human-readable hover text, or an empty runtime string.
 rt_string rt_zia_hover(rt_string source, int64_t line, int64_t col);
 
 /// @brief Return hover information with a source path for relative bind resolution.
+/// @param source Zia source text.
+/// @param file_path Source path used for relative bind resolution.
+/// @param line One-based cursor line.
+/// @param col Zero-based cursor column.
+/// @return Owned human-readable hover text, or an empty runtime string.
 rt_string rt_zia_hover_for_file(rt_string source, rt_string file_path, int64_t line, int64_t col);
 
 /// @brief Return structured hover information for the identifier at the source position.
+/// @param source Zia source text.
+/// @param line One-based cursor line.
+/// @param col Zero-based cursor column.
+/// @return Owned runtime hover-information map.
 void *rt_zia_hover_info(rt_string source, int64_t line, int64_t col);
 
 /// @brief Return structured hover information with a source path for relative bind resolution.
+/// @param source Zia source text.
+/// @param file_path Source path used for relative bind resolution.
+/// @param line One-based cursor line.
+/// @param col Zero-based cursor column.
+/// @return Owned runtime hover-information map.
 void *rt_zia_hover_info_for_file(rt_string source, rt_string file_path, int64_t line, int64_t col);
 
 /// @brief Start path-aware structured hover info on a background worker.
+/// @param source Zia source text.
+/// @param file_path Source path used for relative bind resolution.
+/// @param line One-based cursor line.
+/// @param col Zero-based cursor column.
+/// @return Opaque semantic-job handle.
 void *rt_zia_completion_begin_hover_info_for_file(rt_string source,
                                                   rt_string file_path,
                                                   int64_t line,
                                                   int64_t col);
 
 /// @brief Return serialized document symbols for the supplied source.
+/// @param source Zia source text.
+/// @return Owned tab-delimited symbol rows, or an empty runtime string.
 rt_string rt_zia_symbols(rt_string source);
 
 /// @brief Return document symbols with a source path for relative bind resolution.
+/// @param source Zia source text.
+/// @param file_path Source path used for relative bind resolution.
+/// @return Owned serialized document-symbol rows.
 rt_string rt_zia_symbols_for_file(rt_string source, rt_string file_path);
 
 /// @brief Start path-aware document symbol extraction on a background worker.
+/// @param source Zia source text.
+/// @param file_path Source path used for relative bind resolution.
+/// @return Opaque semantic-job handle.
 void *rt_zia_completion_begin_symbols_for_file(rt_string source, rt_string file_path);
 
 /// @brief Start path-aware semantic-token classification on a background worker.
+/// @param source Zia source text.
+/// @param file_path Source path used for relative bind resolution.
+/// @return Opaque semantic-job handle.
 void *rt_zia_completion_begin_tokens_for_file(rt_string source, rt_string file_path);
 
 /// @brief Return whether a semantic background job has completed.
+/// @param handle Semantic-job handle.
+/// @return 1 when the job is complete, otherwise 0.
 int8_t rt_zia_semantic_job_is_done(void *handle);
 
 /// @brief Return whether a completed semantic background job failed.
+/// @param handle Semantic-job handle.
+/// @return 1 when the completed job failed, otherwise 0.
 int8_t rt_zia_semantic_job_is_error(void *handle);
 
 /// @brief Return a completed semantic background job's error string, if any.
+/// @param handle Semantic-job handle.
+/// @return Owned error text, or an empty runtime string.
 rt_string rt_zia_semantic_job_error(void *handle);
 
 /// @brief Return a semantic background job's error as an Option string.
@@ -5618,30 +6016,47 @@ rt_string rt_zia_semantic_job_error(void *handle);
 ///          payload, otherwise `None`. This is the preferred API for new code
 ///          because absence is explicit and cannot be confused with an empty
 ///          error string.
+/// @param handle Semantic-job handle.
+/// @return Owned runtime Option containing the error string when present.
 void *rt_zia_semantic_job_error_option(void *handle);
 
 /// @brief Return the numeric semantic background job kind.
+/// @param handle Semantic-job handle.
+/// @return Numeric job-kind identifier.
 int64_t rt_zia_semantic_job_kind(void *handle);
 
 /// @brief Mark a semantic background job as canceled. Running work may finish later.
+/// @param handle Semantic-job handle.
 void rt_zia_semantic_job_cancel(void *handle);
 
 /// @brief Materialize a completion job result as Seq<Map>.
+/// @param handle Completed completion-job handle.
+/// @return Owned runtime sequence of completion maps.
 void *rt_zia_semantic_job_completion_items(void *handle);
 
 /// @brief Materialize a signature job result as Map.
+/// @param handle Completed signature-job handle.
+/// @return Owned runtime signature-information map.
 void *rt_zia_semantic_job_signature_info(void *handle);
 
 /// @brief Materialize a hover job result as Map.
+/// @param handle Completed hover-job handle.
+/// @return Owned runtime hover-information map.
 void *rt_zia_semantic_job_hover_info(void *handle);
 
 /// @brief Materialize a symbols job result as serialized symbol rows.
+/// @param handle Completed symbols-job handle.
+/// @return Owned serialized symbol rows.
 rt_string rt_zia_semantic_job_symbols(void *handle);
 
 /// @brief Materialize a tokens job result as serialized semantic-token rows.
+/// @param handle Completed semantic-token-job handle.
+/// @return Owned serialized semantic-token rows.
 rt_string rt_zia_semantic_job_tokens(void *handle);
 
 /// @brief Materialize a diagnostics job result as Seq<Map>.
+/// @param handle Completed diagnostics-job handle.
+/// @return Owned runtime sequence of diagnostic maps.
 void *rt_zia_semantic_job_diagnostics(void *handle);
 
 /// @brief Flush the cached parse result, forcing a fresh parse on the next call.
@@ -5654,18 +6069,34 @@ void rt_zia_completion_clear_cache(void);
 //=========================================================================
 
 /// @brief BASIC diagnostics for @p source as Seq<Map> (same shape as Zia toolchain).
+/// @param source BASIC source text.
+/// @param file_path Virtual path used in diagnostics and source locations.
+/// @return Owned runtime sequence of diagnostic maps.
 void *rt_basic_toolchain_check_for_file(rt_string source, rt_string file_path);
 
 /// @brief BASIC completion items at 1-based (@p line,@p col) as Seq<Map>.
+/// @param source BASIC source text.
+/// @param file_path Virtual path associated with the source.
+/// @param line One-based cursor line.
+/// @param col One-based cursor column.
+/// @return Owned runtime sequence of completion-item maps.
 void *rt_basic_completion_items_for_file(rt_string source,
                                          rt_string file_path,
                                          int64_t line,
                                          int64_t col);
 
 /// @brief BASIC document symbols as a "name\tkind\ttype\tline\n" string.
+/// @param source BASIC source text.
+/// @param file_path Virtual path associated with the source.
+/// @return Owned tab-delimited runtime string containing document-symbol records.
 rt_string rt_basic_completion_symbols_for_file(rt_string source, rt_string file_path);
 
 /// @brief BASIC hover info for the identifier at 1-based (@p line,@p col) as a Map.
+/// @param source BASIC source text.
+/// @param file_path Virtual path associated with the source.
+/// @param line One-based cursor line.
+/// @param col Zero-based cursor column.
+/// @return Owned runtime hover-information map.
 void *rt_basic_completion_hover_info_for_file(rt_string source,
                                               rt_string file_path,
                                               int64_t line,
@@ -5676,36 +6107,58 @@ void *rt_basic_completion_hover_info_for_file(rt_string source,
 //=========================================================================
 
 /// @brief Create a floating overlay panel attached to @p root.
+/// @param root Root widget that owns the overlay.
+/// @return FloatingPanel handle.
 void *rt_floatingpanel_new(void *root);
 
 /// @brief Destroy a floating panel and its overlay children.
+/// @param panel FloatingPanel handle.
 void rt_floatingpanel_destroy(void *panel);
 
 /// @brief Set absolute root-relative position in logical units.
 /// @details Coordinates cross the owning app's effective UI scale exactly once.
+/// @param panel FloatingPanel handle.
+/// @param x Root-relative logical X coordinate.
+/// @param y Root-relative logical Y coordinate.
 void rt_floatingpanel_set_position(void *panel, double x, double y);
 
 /// @brief Center the panel within its parent (root) bounds, clamped to the top-left.
+/// @param panel FloatingPanel handle.
 void rt_floatingpanel_center_in_parent(void *panel);
 
 /// @brief Set panel dimensions in logical units.
 /// @details Lengths cross the owning app's effective UI scale exactly once.
+/// @param panel FloatingPanel handle.
+/// @param w Logical width.
+/// @param h Logical height.
 void rt_floatingpanel_set_size(void *panel, double w, double h);
 
 /// @brief Show or hide the panel (1 = show, 0 = hide).
+/// @param panel FloatingPanel handle.
+/// @param visible Non-zero to show the panel; zero to hide it.
 void rt_floatingpanel_set_visible(void *panel, int64_t visible);
 
 /// @brief Add a widget as a private (overlay-only) child.
+/// @param panel FloatingPanel handle.
+/// @param child Widget to attach to the overlay.
 void rt_floatingpanel_add_child(void *panel, void *child);
 
 // GroupBox — titled "card" container for grouping related controls.
 /// @brief Create a titled card group box attached to a parent container.
+/// @param parent Parent widget handle, or NULL for no parent.
+/// @param title Visible group title.
+/// @return GroupBox widget handle.
 void *rt_groupbox_new(void *parent, rt_string title);
 /// @brief Destroy a group box and its children.
+/// @param gb GroupBox widget handle.
 void rt_groupbox_destroy(void *gb);
 /// @brief Replace the group box title text.
+/// @param gb GroupBox widget handle.
+/// @param title Replacement title text.
 void rt_groupbox_set_title(void *gb, rt_string title);
 /// @brief Add a control as a child of the group box.
+/// @param gb GroupBox widget handle.
+/// @param child Widget to attach.
 void rt_groupbox_add_child(void *gb, void *child);
 
 #ifdef __cplusplus

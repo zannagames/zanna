@@ -262,6 +262,10 @@ class SceneAssetBrowser {
         assetList = GUI.ListBox.New(group);
         assetList.SetPreferredSize(0.0, 150.0);
         assetList.SetAccessibleName("Project scene assets");
+        // The selected row is a typed drag source: scene surfaces accept
+        // "zanna/asset" payloads carrying the absolute workspace path.
+        assetList.SetDraggable(true);
+        assetList.SetDragData("zanna/asset", "");
 
         previewStage = GUI.VBox.New();
         previewStage.SetAlign(GUI.Align.Center);
@@ -398,6 +402,7 @@ class SceneAssetBrowser {
         RefreshStatus(projectManager);
         if assetList.WasSelectionChanged() {
             RefreshSelection(projectManager);
+            assetList.SetDragData("zanna/asset", SelectedPath());
         } else {
             useButton.SetEnabled(
                 canUseSelection and selectedUsable

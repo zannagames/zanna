@@ -4,10 +4,22 @@
 // standalone translation unit) Purpose: Terrain3D construction, splat map/texture, and chunk
 // surface/skirt building
 //===----------------------------------------------------------------------===//
+/**
+ * @file rt_terrain3d_build.inc
+ * @brief Implements Terrain3D construction, height queries, splat authoring, and chunk building.
+ *
+ * This implementation fragment is included by `rt_terrain3d.c` after the private payload and LOD
+ * helpers are defined; it is not a standalone translation unit.
+ */
+
 /// @brief Construct a `width × depth` heightmap terrain (heights initially zero). Allocates
 /// chunked mesh caches at three LOD levels plus per-chunk AABB storage. Default scale 1×1×1,
 /// LOD switches at 100/250 world units, 2-unit crack-hiding skirts. Traps if dimensions are
 /// outside [2, 4096] or on allocation failure.
+/// @param width Number of height samples along the local x axis.
+/// @param depth Number of height samples along the local z axis.
+/// @return New GC-managed Terrain3D handle, or NULL after trapping on invalid dimensions or
+/// allocation failure.
 void *rt_terrain3d_new(int64_t width, int64_t depth) {
     size_t height_count;
     size_t chunk_count;
@@ -89,12 +101,23 @@ void *rt_terrain3d_new(int64_t width, int64_t depth) {
 
 /// @brief Generate terrain heights directly from Perlin noise (fast native path).
 /// Bypasses the Pixels intermediate — writes directly to float heightmap.
+/// @param obj Perlin runtime object.
+/// @param x First noise-space coordinate.
+/// @param y Second noise-space coordinate.
+/// @param octaves Number of fractal noise octaves.
+/// @param persistence Amplitude multiplier between octaves.
+/// @return Fractal Perlin noise sample.
 extern double rt_perlin_octave2d(
     void *obj, double x, double y, int64_t octaves, double persistence);
 
 /// @brief Fill heights directly from a Perlin noise object (octave fractal sum), bypassing the
 /// Pixels intermediate. Output values are mapped from [-1, 1] to [0, 1]. `scale` controls the
 /// noise frequency (higher = more detail). Invalidates all cached chunk meshes.
+/// @param obj Terrain3D handle; invalid handles are ignored.
+/// @param perlin Perlin generator used to sample the grid.
+/// @param scale Noise-coordinate frequency scale; invalid or near-zero values become 1.
+/// @param octaves Fractal octave count, clamped to `[1, 16]`.
+/// @param persistence Per-octave amplitude multiplier, clamped to `[0, 1]`.
 void rt_terrain3d_generate_perlin(
     void *obj, void *perlin, double scale, int64_t octaves, double persistence) {
     rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
@@ -136,6 +159,9 @@ void rt_terrain3d_generate_perlin(
 /// @brief Resample a Pixels heightmap into the terrain's height grid. Reads 16-bit precision per
 /// sample (R = high byte, G = low byte) for smooth gradients without staircasing. Source pixels
 /// are nearest-neighbor sampled to the terrain resolution. Invalidates all cached chunk meshes.
+/// @param obj Terrain3D handle; invalid handles are ignored.
+/// @param pixels Nonempty Pixels heightmap encoded with red as the high byte and green as the low
+/// byte.
 void rt_terrain3d_set_heightmap(void *obj, void *pixels) {
     if (!obj || !pixels)
         return;
@@ -169,6 +195,8 @@ void rt_terrain3d_set_heightmap(void *obj, void *pixels) {
 /// @brief Attach a Material3D used when rendering chunks. Required before draw — the chunks are
 /// rendered with this material, optionally overridden by the splat-bake texture if a splat map
 /// is set. Does not invalidate chunks (the mesh data is independent of the material).
+/// @param obj Terrain3D handle; invalid handles are ignored.
+/// @param material Material3D handle to retain, or NULL to clear the binding.
 void rt_terrain3d_set_material(void *obj, void *material) {
     if (!obj)
         return;
@@ -191,6 +219,10 @@ void rt_terrain3d_set_material(void *obj, void *material) {
 /// @brief Set per-axis world-space scale: `sx` and `sz` are grid-cell spacing in world units;
 /// `sy` is the height multiplier (heights in [0,1] become world-Y in [0, sy]). Invalidates
 /// cached chunks since vertex world positions change.
+/// @param obj Terrain3D handle; invalid handles are ignored.
+/// @param sx Positive x-axis sample spacing; invalid input becomes 1.
+/// @param sy Signed height multiplier; non-finite input becomes 1.
+/// @param sz Positive z-axis sample spacing; invalid input becomes 1.
 void rt_terrain3d_set_scale(void *obj, double sx, double sy, double sz) {
     if (!obj)
         return;
@@ -217,6 +249,8 @@ void rt_terrain3d_set_scale(void *obj, double sx, double sy, double sz) {
 /// @brief Attach a splat-weight Pixels map. Each pixel's RGBA channels are the per-texel weights
 /// (normalized at bake time) for layers 0..3. Marks the splat bake dirty; mesh geometry is
 /// independent of the splat data and remains cached.
+/// @param obj Terrain3D handle; invalid handles are ignored.
+/// @param pixels Nonempty RGBA Pixels weight map, or NULL to clear the first bank.
 void rt_terrain3d_set_splat_map(void *obj, void *pixels) {
     if (!obj)
         return;
@@ -247,8 +281,11 @@ void rt_terrain3d_set_splat_map(void *obj, void *pixels) {
     }
 }
 
-/// @brief Set the texture for a splat layer (0..3). Layer index outside that range is silently
+/// @brief Set the texture for a splat layer (0..7). Layer index outside that range is silently
 /// ignored. Marks the splat bake dirty without invalidating geometry caches.
+/// @param obj Terrain3D handle; invalid handles are ignored.
+/// @param layer Layer index from 0 through 7.
+/// @param pixels Pixels or TextureAsset3D handle to retain, or NULL to clear the layer.
 void rt_terrain3d_set_layer_texture(void *obj, int64_t layer, void *pixels) {
     if (!obj || layer < 0 || layer >= TERRAIN_MAX_SPLAT_LAYERS)
         return;
@@ -281,6 +318,9 @@ void rt_terrain3d_set_layer_texture(void *obj, int64_t layer, void *pixels) {
 
 /// @brief Set UV-tiling scale for splat layer N. Higher values pack the layer texture into
 /// smaller tiles (more repetitions across the terrain). Marks the splat bake dirty when changed.
+/// @param obj Terrain3D handle; invalid handles are ignored.
+/// @param layer Layer index from 0 through 7.
+/// @param scale Positive finite UV tiling multiplier.
 void rt_terrain3d_set_layer_scale(void *obj, int64_t layer, double scale) {
     if (!obj || layer < 0 || layer >= TERRAIN_MAX_SPLAT_LAYERS)
         return;
@@ -299,6 +339,8 @@ void rt_terrain3d_set_layer_scale(void *obj, int64_t layer, double scale) {
 
 /// @brief Resolve a texture reference to its underlying Pixels and return it only when that is
 ///   a valid non-empty image, else NULL.
+/// @param pixels Pixels or TextureAsset3D reference to resolve.
+/// @return Borrowed nonempty Pixels handle, or NULL when resolution or validation fails.
 static void *terrain_valid_pixels_or_null(void *pixels) {
     rt_pixels_impl *p;
     if (!pixels)
@@ -313,6 +355,8 @@ static void *terrain_valid_pixels_or_null(void *pixels) {
 
 /// @brief Return @p pixels only when it is a valid non-empty Pixels image (splat maps use raw
 ///   Pixels rather than resolved texture references), else NULL.
+/// @param pixels Candidate raw splat-map Pixels handle.
+/// @return Borrowed nonempty Pixels handle, or NULL when invalid.
 static void *terrain_valid_splat_pixels_or_null(void *pixels) {
     rt_pixels_impl *p;
     if (!pixels)
@@ -326,6 +370,7 @@ static void *terrain_valid_splat_pixels_or_null(void *pixels) {
 
 /// @brief Reset the terrain's splat state: release/clear the splat map, restore the base-texture
 ///   material binding, drop the baked splat texture, and clear the splat-dirty flag.
+/// @param t Terrain whose invalid splat state is discarded.
 static void terrain_clear_invalid_splat_state(rt_terrain3d *t) {
     if (!t)
         return;
@@ -342,6 +387,7 @@ static void terrain_clear_invalid_splat_state(rt_terrain3d *t) {
 /// @details A terrain with a valid control map and all four layer textures no longer needs a
 ///          pre-blended material texture. Restoring the base texture avoids leaving an old baked
 ///          fallback bound after authors repair a previously incomplete splat setup.
+/// @param t Terrain switching from the baked fallback to real-time splat rendering.
 static void terrain_use_realtime_splat_state(rt_terrain3d *t) {
     if (!t)
         return;
@@ -353,6 +399,10 @@ static void terrain_use_realtime_splat_state(rt_terrain3d *t) {
 }
 
 /// @brief Sample a pixel from a texture reference at UV coordinates (wrapped).
+/// @param texture_ref Pixels or TextureAsset3D reference to sample.
+/// @param u Horizontal texture coordinate, wrapped into the image width.
+/// @param v Vertical texture coordinate, wrapped into the image height.
+/// @return Packed `0xRRGGBBAA` texel, or opaque white when the texture is invalid.
 static uint32_t sample_pixels_uv(void *texture_ref, double u, double v) {
     void *pixels;
     if (!texture_ref)
@@ -384,6 +434,8 @@ static uint32_t sample_pixels_uv(void *texture_ref, double u, double v) {
 }
 
 /// @brief Convert a normalized floating color channel to 8-bit with finite lower/upper clamps.
+/// @param value Candidate normalized color component.
+/// @return Integer channel value clamped to `[0, 255]`.
 static int32_t terrain_channel_to_u8(double value) {
     if (!isfinite(value) || value < 0.0)
         value = 0.0;
@@ -394,6 +446,8 @@ static int32_t terrain_channel_to_u8(double value) {
 
 /// @brief Pack the terrain material's diffuse RGB + alpha into a single 0xRRGGBBAA pixel
 ///   (opaque white when there is no valid material) — the fallback color for splat baking.
+/// @param t Terrain whose material supplies the fallback modulation color.
+/// @return Packed diffuse material color, or opaque white when no valid material exists.
 static uint32_t terrain_material_fallback_pixel(const rt_terrain3d *t) {
     if (!t || !t->material || !rt_g3d_has_class(t->material, RT_G3D_MATERIAL3D_CLASS_ID))
         return 0xFFFFFFFFu;
@@ -406,6 +460,10 @@ static uint32_t terrain_material_fallback_pixel(const rt_terrain3d *t) {
 }
 
 /// @brief Sample height at grid coordinates (clamped).
+/// @param t Terrain containing the height grid.
+/// @param x Grid x coordinate, clamped to the nearest sample.
+/// @param z Grid z coordinate, clamped to the nearest sample.
+/// @return Finite normalized height sample, or zero for invalid terrain state.
 static float sample_height(const rt_terrain3d *t, int32_t x, int32_t z) {
     if (!terrain_has_valid_grid(t))
         return 0.0f;
@@ -421,6 +479,9 @@ static float sample_height(const rt_terrain3d *t, int32_t x, int32_t z) {
 }
 
 /// @brief Number of samples that lie on a terrain edge.
+/// @param t Terrain containing the height grid.
+/// @param edge Edge identifier from `RT_TERRAIN3D_EDGE_*`.
+/// @return Sample count along the selected edge, or zero for invalid input.
 static int32_t terrain_edge_sample_count(const rt_terrain3d *t, int64_t edge) {
     if (!terrain_has_valid_grid(t))
         return 0;
@@ -437,6 +498,10 @@ static int32_t terrain_edge_sample_count(const rt_terrain3d *t, int64_t edge) {
 }
 
 /// @brief Return a mutable height sample slot on the requested edge.
+/// @param t Terrain containing the height grid.
+/// @param edge Edge identifier from `RT_TERRAIN3D_EDGE_*`.
+/// @param sample Zero-based sample index along that edge.
+/// @return Pointer to the mutable height sample, or NULL for invalid input.
 static float *terrain_edge_height_slot(rt_terrain3d *t, int64_t edge, int32_t sample) {
     if (!terrain_has_valid_grid(t))
         return NULL;
@@ -463,6 +528,9 @@ static float *terrain_edge_height_slot(rt_terrain3d *t, int64_t edge, int32_t sa
 }
 
 /// @brief Convert a normalized height sample into world-Y units.
+/// @param t Terrain supplying the y-axis height scale.
+/// @param h Normalized height sample.
+/// @return Finite world-space height, clamped to the terrain safety range.
 static double terrain_sample_to_world_height(const rt_terrain3d *t, float h) {
     double sy = terrain_scale_axis_or(t, 1, 1.0);
     return (double)terrain_sanitize_height_sample(h) * sy;
@@ -471,6 +539,15 @@ static double terrain_sample_to_world_height(const rt_terrain3d *t, float h) {
 /// @brief Compute the terrain surface normal at grid cell (@p ix, @p iz) from neighboring height
 ///   samples via central differences scaled by the world cell size, writing the unit normal to
 ///   out_nx/out_ny/out_nz.
+/// @param t Terrain containing the height grid.
+/// @param ix Grid x coordinate.
+/// @param iz Grid z coordinate.
+/// @param sx Positive world-space x sample spacing.
+/// @param sy World-space height multiplier.
+/// @param sz Positive world-space z sample spacing.
+/// @param out_nx Output receiving the normal x component.
+/// @param out_ny Output receiving the normal y component.
+/// @param out_nz Output receiving the normal z component.
 static void terrain_grid_normal_at(const rt_terrain3d *t,
                                    int32_t ix,
                                    int32_t iz,
@@ -530,6 +607,9 @@ static void terrain_grid_normal_at(const rt_terrain3d *t,
 }
 
 /// @brief Convert a world-Y height back into a terrain height sample.
+/// @param t Terrain supplying the y-axis height scale.
+/// @param h World-space height.
+/// @return Finite normalized sample representation, clamped to the terrain safety range.
 static float terrain_world_height_to_sample(const rt_terrain3d *t, double h) {
     double sy = terrain_scale_axis_or(t, 1, 1.0);
     double sample = h / sy;
@@ -544,6 +624,9 @@ static float terrain_world_height_to_sample(const rt_terrain3d *t, double h) {
 
 /// @brief Treat sub-ULP seam deltas as unchanged so stitching does not invalidate terrain
 ///   chunks forever on float round-off noise.
+/// @param a First height sample.
+/// @param b Second height sample.
+/// @return Nonzero when samples are equal within a scale-aware float epsilon.
 static int terrain_height_samples_equal_enough(float a, float b) {
     double da;
     double db;
@@ -562,6 +645,11 @@ static int terrain_height_samples_equal_enough(float a, float b) {
 /// @details Used by WorldStream3D after adjacent terrain tiles become resident. The helper maps
 ///   differing edge sample counts by normalized edge distance so a coarse tile can stitch to a
 ///   denser neighbor without relying on visual skirts to cover the shared border.
+/// @param terrain_obj Terrain whose selected border is modified.
+/// @param edge Edge identifier on @p terrain_obj.
+/// @param neighbor_obj Adjacent Terrain3D object modified symmetrically.
+/// @param neighbor_edge Edge identifier on @p neighbor_obj.
+/// @return Number of paired samples changed, or zero for invalid input or an already seamless edge.
 int64_t rt_terrain3d_stitch_edge(void *terrain_obj,
                                  int64_t edge,
                                  void *neighbor_obj,
@@ -611,6 +699,9 @@ int64_t rt_terrain3d_stitch_edge(void *terrain_obj,
 }
 
 /// @brief Build a grayscale Pixels heightmap from the terrain's current height samples.
+/// @param terrain_obj Terrain3D handle to serialize.
+/// @return New Pixels object encoded with 16-bit red/green heights, or NULL on invalid input or
+/// allocation failure.
 void *rt_terrain3d_build_heightmap_pixels(void *terrain_obj) {
     rt_terrain3d *t =
         (rt_terrain3d *)rt_g3d_checked_or_null(terrain_obj, RT_G3D_TERRAIN3D_CLASS_ID);
@@ -641,6 +732,10 @@ void *rt_terrain3d_build_heightmap_pixels(void *terrain_obj) {
 /// @brief Bilinearly sample the terrain height at world-space (wx, wz). Coordinates outside the
 /// grid are clamped to the nearest edge cell. Returns 0 for an invalid handle or a degenerate
 /// scale. Result is in world Y units (heights times scale[1]).
+/// @param obj Terrain3D handle.
+/// @param wx World-space x coordinate in the terrain's local frame.
+/// @param wz World-space z coordinate in the terrain's local frame.
+/// @return Edge-clamped, bilinearly interpolated world-space height, or zero for invalid input.
 double rt_terrain3d_get_height_at(void *obj, double wx, double wz) {
     rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
     double sx;
@@ -700,6 +795,10 @@ double rt_terrain3d_get_height_at(void *obj, double wx, double wz) {
 /// @brief Compute the surface normal at world-space (wx, wz) using central-difference of the
 /// height grid. Returns a fresh Vec3 (always points "up-ish"; defaults to (0,1,0) on invalid
 /// input). Normal is normalized; useful for placing props or aligning rotations to slope.
+/// @param obj Terrain3D handle.
+/// @param wx World-space x coordinate in the terrain's local frame.
+/// @param wz World-space z coordinate in the terrain's local frame.
+/// @return New GC-managed normalized Vec3, falling back to `(0, 1, 0)` for invalid input.
 void *rt_terrain3d_get_normal_at(void *obj, double wx, double wz) {
     rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
     double sx;
@@ -724,10 +823,6 @@ void *rt_terrain3d_get_normal_at(void *obj, double wx, double wz) {
     return rt_vec3_new(nx, ny, nz);
 }
 
-/// @brief Bake splat-blended texture onto the terrain material.
-/// Generates a Pixels texture where each texel is the weighted blend of the 4
-/// layer textures, sampled at their respective UV scales, weighted by the splat
-/// map RGBA channels. Applied once when chunks are invalidated.
 /// @brief Pre-blend the four splat-map layers into a single baked terrain texture.
 /// @details Real-time splat-mapping — sampling four layer textures and
 ///   RGBA-weight blending per fragment — is bandwidth-expensive, so this CPU
@@ -739,6 +834,7 @@ void *rt_terrain3d_get_normal_at(void *obj, double wx, double wz) {
 ///   rather than producing black holes. Called only when the splat map or a
 ///   layer texture is invalidated — subsequent frames just sample the baked
 ///   result.
+/// @param t Terrain whose first splat bank and layer textures are baked.
 static void bake_splat_texture(rt_terrain3d *t) {
     if (!t->splat_map || !t->material || !rt_g3d_has_class(t->material, RT_G3D_MATERIAL3D_CLASS_ID))
         return;
@@ -846,6 +942,10 @@ static void bake_splat_texture(rt_terrain3d *t) {
  *=========================================================================*/
 
 /// @brief Test whether cell (cx, cz) is holed. NULL/absent mask means solid.
+/// @param t Terrain containing the rasterized cell mask.
+/// @param cx Cell x coordinate.
+/// @param cz Cell z coordinate.
+/// @return Nonzero when the in-range cell is marked as a hole.
 static int terrain_cell_holed(const rt_terrain3d *t, int32_t cx, int32_t cz) {
     int32_t cells_x;
     int32_t cells_z;
@@ -861,6 +961,12 @@ static int terrain_cell_holed(const rt_terrain3d *t, int32_t cx, int32_t cz) {
 }
 
 /// @brief True when any fine cell in [cx0,cx1) x [cz0,cz1) is holed (LOD-conservative).
+/// @param t Terrain containing the rasterized cell mask.
+/// @param cx0 Inclusive minimum cell x coordinate.
+/// @param cz0 Inclusive minimum cell z coordinate.
+/// @param cx1 Exclusive maximum cell x coordinate.
+/// @param cz1 Exclusive maximum cell z coordinate.
+/// @return Nonzero when any cell in the requested half-open rectangle is holed.
 static int terrain_cell_range_holed(
     const rt_terrain3d *t, int32_t cx0, int32_t cz0, int32_t cx1, int32_t cz1) {
     if (!t || !t->hole_mask)
@@ -877,6 +983,7 @@ static int terrain_cell_range_holed(
 }
 
 /// @brief Rasterize the authored hole rects into the per-cell bitmask.
+/// @param t Terrain whose authored rectangles and derived mask are synchronized.
 static void terrain_rebuild_hole_mask(rt_terrain3d *t) {
     int32_t cells_x;
     int32_t cells_z;
@@ -929,6 +1036,7 @@ static void terrain_rebuild_hole_mask(rt_terrain3d *t) {
 }
 
 /// @brief Ensure the hole mask reflects the current hole list.
+/// @param t Terrain whose mask is rebuilt only when marked dirty.
 static void terrain_refresh_hole_mask(rt_terrain3d *t) {
     if (t && t->holes_dirty)
         terrain_rebuild_hole_mask(t);
@@ -938,6 +1046,11 @@ static void terrain_refresh_hole_mask(rt_terrain3d *t) {
 /// @details Holes propagate to chunk meshes at every LOD (conservatively — a coarse
 ///   triangle is skipped when any covered fine cell is holed), to nav meshes built via
 ///   BuildNavMesh, and to heightfield colliders through the raw hole-mask handoff.
+/// @param obj Terrain3D handle; invalid handles are rejected.
+/// @param x Local x coordinate of the rectangle origin.
+/// @param z Local z coordinate of the rectangle origin.
+/// @param width Positive rectangle extent along x.
+/// @param depth Positive rectangle extent along z.
 /// @return The hole's index for RemoveHole, or -1 on failure.
 int64_t rt_terrain3d_set_hole(void *obj, double x, double z, double width, double depth) {
     rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
@@ -966,6 +1079,9 @@ int64_t rt_terrain3d_set_hole(void *obj, double x, double z, double width, doubl
 }
 
 /// @brief Remove the hole at @p index (later holes shift down). 1 on success.
+/// @param obj Terrain3D handle.
+/// @param index Zero-based authored-hole index.
+/// @return 1 when the hole is removed, otherwise 0.
 int8_t rt_terrain3d_remove_hole(void *obj, int64_t index) {
     rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
     if (!t || index < 0 || index >= t->hole_count)
@@ -984,6 +1100,7 @@ int8_t rt_terrain3d_remove_hole(void *obj, int64_t index) {
 }
 
 /// @brief Remove every authored hole.
+/// @param obj Terrain3D handle; invalid handles are ignored.
 void rt_terrain3d_clear_holes(void *obj) {
     rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
     if (!t)
@@ -997,12 +1114,17 @@ void rt_terrain3d_clear_holes(void *obj) {
 }
 
 /// @brief Number of authored holes.
+/// @param obj Terrain3D handle.
+/// @return Current authored-hole count, or zero for an invalid handle.
 int64_t rt_terrain3d_get_hole_count(void *obj) {
     rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
     return t ? t->hole_count : 0;
 }
 
 /// @brief Internal: borrow the rasterized hole bitmask for heightfield-collider handoff.
+/// @param obj Terrain3D handle.
+/// @param out_cells_x Optional output receiving the mask width in cells.
+/// @param out_cells_z Optional output receiving the mask depth in cells.
 /// @return The bitmask (row-major, bit per cell) or NULL when no holes exist.
 const uint8_t *rt_terrain3d_get_hole_mask_raw(void *obj,
                                               int32_t *out_cells_x,
@@ -1029,6 +1151,9 @@ const uint8_t *rt_terrain3d_get_hole_mask_raw(void *obj,
  *=========================================================================*/
 
 /// @brief Set splat map @p index (0 weights layers 0-3, 1 weights layers 4-7).
+/// @param obj Terrain3D handle; invalid handles are ignored.
+/// @param index Splat-map bank index, either 0 or 1.
+/// @param pixels Nonempty RGBA Pixels weight map, or NULL to clear the selected bank.
 void rt_terrain3d_set_splat_map_at(void *obj, int64_t index, void *pixels) {
     if (index == 0) {
         rt_terrain3d_set_splat_map(obj, pixels);
@@ -1054,6 +1179,11 @@ void rt_terrain3d_set_splat_map_at(void *obj, int64_t index, void *pixels) {
 }
 
 /// @brief Configure a slope-band rule (degrees) generating weights for @p layer.
+/// @param obj Terrain3D handle; invalid handles are ignored.
+/// @param layer Target splat layer from 0 through 7.
+/// @param min_slope_deg Lower slope angle for the band, in degrees.
+/// @param max_slope_deg Upper slope angle for the band, in degrees.
+/// @param sharpness Transition sharpness at the band edges.
 void rt_terrain3d_set_slope_layer(
     void *obj, int64_t layer, double min_slope_deg, double max_slope_deg, double sharpness) {
     rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
@@ -1066,6 +1196,11 @@ void rt_terrain3d_set_slope_layer(
 }
 
 /// @brief Configure a height-band rule (world Y) generating weights for @p layer.
+/// @param obj Terrain3D handle; invalid handles are ignored.
+/// @param layer Target splat layer from 0 through 7.
+/// @param min_y Lower world-space height for the band.
+/// @param max_y Upper world-space height for the band.
+/// @param sharpness Transition sharpness at the band edges.
 void rt_terrain3d_set_height_layer(
     void *obj, int64_t layer, double min_y, double max_y, double sharpness) {
     rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
@@ -1078,6 +1213,9 @@ void rt_terrain3d_set_height_layer(
 }
 
 /// @brief Internal: borrow splat map @p index (0 or 1) for editor/test inspection.
+/// @param obj Terrain3D handle.
+/// @param index Splat-map bank index, either 0 or 1.
+/// @return Borrowed Pixels handle for the requested map, or NULL when unavailable.
 void *rt_terrain3d_get_splat_map_raw(void *obj, int64_t index) {
     rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
     if (!t)
@@ -1090,6 +1228,10 @@ void *rt_terrain3d_get_splat_map_raw(void *obj, int64_t index) {
 }
 
 /// @brief Smoothstep helper for rule bands.
+/// @param edge0 Lower transition edge.
+/// @param edge1 Upper transition edge.
+/// @param x Value to evaluate.
+/// @return Cubic Hermite interpolation from zero to one across the ordered edges.
 static double terrain_rule_smoothstep(double edge0, double edge1, double x) {
     double range = edge1 - edge0;
     double tval;
@@ -1107,6 +1249,7 @@ static double terrain_rule_smoothstep(double edge0, double edge1, double x) {
 /// @details Deterministic CPU pass at heightmap resolution: per-texel layer weight =
 ///   band(smoothstep in, smoothstep out); weights normalize across configured layers.
 ///   Painting a map afterwards overrides the generated weights (last write wins).
+/// @param obj Terrain3D handle; invalid handles are ignored.
 void rt_terrain3d_rebuild_splat_weights(void *obj) {
     rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
     int configured = 0;
@@ -1190,6 +1333,17 @@ void rt_terrain3d_rebuild_splat_weights(void *obj) {
 }
 
 /// @brief Compute per-vertex data at grid position (ix, iz).
+/// @param t Terrain containing the source height grid and scale.
+/// @param ix Grid x coordinate.
+/// @param iz Grid z coordinate.
+/// @param wx Output receiving local world x.
+/// @param wy Output receiving local world y.
+/// @param wz Output receiving local world z.
+/// @param nx Output receiving the unit-normal x component.
+/// @param ny Output receiving the unit-normal y component.
+/// @param nz_n Output receiving the unit-normal z component.
+/// @param u Output receiving normalized horizontal terrain UV.
+/// @param v Output receiving normalized vertical terrain UV.
 static void terrain_vertex(rt_terrain3d *t,
                            int32_t ix,
                            int32_t iz,
@@ -1215,11 +1369,19 @@ static void terrain_vertex(rt_terrain3d *t,
     *v = (double)iz / (double)(t->depth - 1);
 }
 
-/// @brief Build mesh for one terrain chunk at a given LOD step.
-/// @param step 1=full res (LOD 0), 2=half (LOD 1), 4=quarter (LOD 2).
-/// @param aabb_out If non-NULL, receives the chunk's AABB (6 floats: min[3], max[3]).
 /// @brief Emit the LOD-stepped surface grid (vertices + CCW triangles) for one terrain chunk,
 ///        expanding the running world-space AABB to cover the generated vertices.
+/// @param mesh Mesh3D receiving generated vertices and triangles.
+/// @param t Terrain containing the height grid, scale, and hole mask.
+/// @param x0 First grid x coordinate in the chunk.
+/// @param z0 First grid z coordinate in the chunk.
+/// @param cols Number of source cells along x.
+/// @param rows Number of source cells along z.
+/// @param step Grid stride: 1 for LOD0, 2 for LOD1, or 4 for LOD2.
+/// @param vert_cols Number of generated surface vertices along x.
+/// @param vert_rows Number of generated surface vertices along z.
+/// @param aabb_min Running three-component minimum bound.
+/// @param aabb_max Running three-component maximum bound.
 static void terrain_build_chunk_surface(void *mesh,
                                         rt_terrain3d *t,
                                         int32_t x0,
@@ -1288,6 +1450,16 @@ static void terrain_build_chunk_surface(void *mesh,
 ///        levels. Built for every LOD, including full-detail step==1 chunks, whenever skirt
 ///        depth @p sd is positive: a fine chunk that borders a coarser neighbor still cracks on
 ///        its own edge, so skipping skirts for step==1 left those seams open to the sky.
+/// @param mesh Mesh3D receiving skirt vertices and triangles.
+/// @param t Terrain containing the height grid and scale.
+/// @param x0 First grid x coordinate in the chunk.
+/// @param z0 First grid z coordinate in the chunk.
+/// @param cols Number of source cells along x.
+/// @param rows Number of source cells along z.
+/// @param step Grid stride for the selected LOD.
+/// @param vert_cols Surface-grid vertex count along x.
+/// @param vert_rows Surface-grid vertex count along z.
+/// @param sd Positive downward skirt depth in world units.
 static void terrain_build_chunk_skirts(void *mesh,
                                        rt_terrain3d *t,
                                        int32_t x0,
@@ -1389,6 +1561,15 @@ static void terrain_build_chunk_skirts(void *mesh,
     }
 }
 
+/// @brief Build one terrain chunk mesh at a requested grid stride.
+/// @details Surface vertices, hole-aware triangles, and optional adaptive skirts are emitted in one
+/// geometry batch. The returned mesh owns its generated geometry.
+/// @param t Terrain containing source heights and construction settings.
+/// @param cx Chunk x coordinate.
+/// @param cz Chunk z coordinate.
+/// @param step Grid stride: 1 for LOD0, 2 for LOD1, or 4 for LOD2.
+/// @param aabb_out Optional six-float output receiving minimum then maximum bounds.
+/// @return New Mesh3D handle, or NULL when inputs, allocation, or geometry construction fail.
 static void *build_chunk(rt_terrain3d *t, int32_t cx, int32_t cz, int32_t step, float *aabb_out) {
     int32_t x0 = cx * TERRAIN_CHUNK_SIZE;
     int32_t z0 = cz * TERRAIN_CHUNK_SIZE;
@@ -1487,6 +1668,12 @@ static void *build_chunk(rt_terrain3d *t, int32_t cx, int32_t cz, int32_t step, 
 ///   slots are repaired through the retained Graphics3D slot helper so wrong-class heap handles are
 ///   released only when they are owned retained objects. Returns true only when both a checked
 ///   Mesh3D and valid AABB are resident afterward.
+/// @param t Terrain owning the chunk caches.
+/// @param cx Chunk x coordinate.
+/// @param cz Chunk z coordinate.
+/// @param chunk_index Flat chunk-cache index.
+/// @param lod Requested LOD index from 0 through 2.
+/// @return Nonzero when the selected cache slot contains a valid mesh and bounds.
 static int terrain_build_chunk_lod_if_missing(
     rt_terrain3d *t, int32_t cx, int32_t cz, int32_t chunk_index, int32_t lod) {
     void **array;
@@ -1510,6 +1697,10 @@ static int terrain_build_chunk_lod_if_missing(
 /// @details This is a lightweight seam guard for the chunked renderer. It preserves the existing
 ///   distance/hysteresis selection but prevents a high-detail chunk from sitting directly beside
 ///   the coarsest LOD, a configuration that makes T-junction cracks much easier to see.
+/// @param t Terrain containing per-chunk LOD history.
+/// @param chunk_index Flat chunk-cache index.
+/// @param lod Initially selected LOD.
+/// @return LOD clamped to `[0, 2]` and, when neighbors are initialized, to a one-level difference.
 static int32_t terrain_clamp_lod_to_neighbors(rt_terrain3d *t, int32_t chunk_index, int32_t lod) {
     int32_t cx;
     int32_t cz;
@@ -1552,6 +1743,12 @@ static int32_t terrain_clamp_lod_to_neighbors(rt_terrain3d *t, int32_t chunk_ind
 /// @details A missing selected LOD must not turn into a terrain hole. The fallback order prefers
 ///   nearby quality (`LOD1 -> LOD0 -> LOD2`, `LOD2 -> LOD1 -> LOD0`) while ensuring any resident
 ///   mesh draws. `last_missing_lod_count` records both fallback and complete-miss cases.
+/// @param t Terrain owning resident LOD meshes and bounds.
+/// @param chunk_index Flat chunk-cache index.
+/// @param requested_lod Preferred LOD index.
+/// @param out_lod Optional output receiving the actual resident LOD selected.
+/// @param out_aabb Optional output receiving the actual LOD's borrowed six-float bounds.
+/// @return Borrowed resident Mesh3D handle, or NULL when no valid LOD is available.
 static void *terrain_select_draw_mesh_with_fallback(rt_terrain3d *t,
                                                     int32_t chunk_index,
                                                     int32_t requested_lod,
@@ -1602,6 +1799,10 @@ static void *terrain_select_draw_mesh_with_fallback(rt_terrain3d *t,
 /// history.
 /// @details Using the selected LOD mesh as identity churns history when a chunk crosses an LOD
 ///   threshold. The chunk LOD-state byte has stable storage for the life of the terrain cache.
+/// @param t Terrain owning stable per-chunk state bytes.
+/// @param chunk_index Flat chunk-cache index.
+/// @param fallback Pointer returned when stable terrain storage is unavailable.
+/// @return Stable address of the chunk's LOD-state byte, or @p fallback for invalid input.
 static const void *terrain_chunk_motion_key(rt_terrain3d *t, int32_t chunk_index, void *fallback) {
     if (!terrain_has_valid_chunk_grid(t) || !t->chunk_lod_state || chunk_index < 0 ||
         chunk_index >= terrain_safe_chunk_count(t))

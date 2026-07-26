@@ -58,6 +58,7 @@
 #include "../../include/vg_icon_vector.h"
 #include "../../include/vg_ide_widgets.h"
 #include "../../include/vg_theme.h"
+#include "../../include/vg_widgets.h"
 #include <float.h>
 #include <limits.h>
 #include <math.h>
@@ -126,6 +127,8 @@ static void treeview_compute_virtual_range(vg_treeview_t *tree,
                                            size_t *out_start,
                                            size_t *out_count);
 static void treeview_paint_virtual(vg_treeview_t *tree, void *canvas);
+static void treeview_edit_finish(vg_treeview_t *tree, bool commit);
+static void treeview_edit_sync(vg_treeview_t *tree);
 static bool treeview_handle_virtual_event(vg_treeview_t *tree, vg_event_t *event);
 
 //=============================================================================
@@ -1227,6 +1230,14 @@ static void treeview_destroy(vg_widget_t *widget) {
 
     treeview_notify_virtual_unbound(tree);
 
+    // The editor child widget is destroyed by the widget tree; only the
+    // latched commit text is owned directly here.
+    free(tree->edit_text);
+    tree->edit_text = NULL;
+    tree->edit_node = NULL;
+    tree->edit_committed_node = NULL;
+    tree->edit_input = NULL;
+
     if (tree->root) {
         free_node(tree->root);
         tree->root = NULL;
@@ -1385,8 +1396,8 @@ static void paint_node(
                                 display_y,
                                 child->loading ? theme->colors.accent_primary : row_fg);
 
-            // Draw text
-            if (tree->font && child->text) {
+            // Draw text; the inline row editor covers the edited row's label.
+            if (tree->font && child->text && !(tree->edit_active && child == tree->edit_node)) {
                 float text_max_width =
                     tree->base.width - (text_x - tree->base.x) - treeview_outer_padding();
                 if (text_max_width < 0.0f)
@@ -1629,6 +1640,11 @@ static void treeview_paint_scrollbar(vg_treeview_t *tree, void *canvas) {
 static void treeview_paint(vg_widget_t *widget, void *canvas) {
     vg_treeview_t *tree = (vg_treeview_t *)widget;
     vg_theme_t *theme = vg_theme_get_current();
+
+    // Paint is the reliable poll point for inline-edit upkeep: the focused
+    // row editor repaints continuously and focus transitions repaint both
+    // widgets, so submit, blur-commit, and scroll re-placement land here.
+    treeview_edit_sync(tree);
 
     // Draw background
     vgfx_fill_rect((vgfx_window_t)canvas,
@@ -2009,6 +2025,14 @@ static bool treeview_handle_event(vg_widget_t *widget, vg_event_t *event) {
 
     if (widget->state & VG_STATE_DISABLED) {
         return false;
+    }
+
+    // Escape cancels an inline row edit. The focused row editor declines the
+    // key, so it propagates here through the ancestor chain.
+    if (tree->edit_active && event->type == VG_EVENT_KEY_DOWN &&
+        event->key.key == VG_KEY_ESCAPE) {
+        treeview_edit_finish(tree, false);
+        return true;
     }
 
     if (treeview_handle_scrollbar_event(tree, event))
@@ -2501,6 +2525,10 @@ void vg_treeview_remove_node(vg_treeview_t *tree, vg_tree_node_t *node) {
         tree->last_activated = NULL;
     if (node_in_subtree(node, tree->last_load_requested))
         tree->last_load_requested = NULL;
+    if (node_in_subtree(node, tree->edit_node))
+        treeview_edit_finish(tree, false);
+    if (node_in_subtree(node, tree->edit_committed_node))
+        tree->edit_committed_node = NULL;
 
     // Remove from parent's child list
     vg_tree_node_t *parent = node->parent;
@@ -2553,6 +2581,9 @@ void vg_treeview_clear(vg_treeview_t *tree) {
 
     bool had_nodes = tree->root && tree->root->first_child != NULL;
     bool had_selection = treeview_first_selected(tree) != NULL;
+
+    treeview_edit_finish(tree, false);
+    tree->edit_committed_node = NULL;
 
     // Retire all children of root so stale node handles remain safely inert
     // until the tree itself is destroyed.
@@ -3299,4 +3330,157 @@ vg_tree_node_t *vg_treeview_get_activated_node(vg_treeview_t *tree) {
         tree->last_activated->owner != tree)
         return NULL;
     return tree->last_activated;
+}
+
+//=============================================================================
+// Inline row editing
+//=============================================================================
+
+/// @brief Arrange the row editor over the edited node's current row.
+/// @details Coordinates are parent-relative; the walker adds the tree origin.
+///          Rows are addressed by flattened visible index, so scrolling simply
+///          re-places the editor on the next sync.
+/// @param tree Tree with an active edit.
+/// @return true when the edited row remains visible in the flattened order.
+static bool treeview_edit_place(vg_treeview_t *tree) {
+    int current = 0;
+    int index = get_node_index(tree->root, tree->edit_node, &current);
+    if (index < 0)
+        return false;
+
+    float outer_padding = treeview_outer_padding();
+    float x = outer_padding + (float)tree->edit_node->depth * tree->indent_size +
+              tree->indent_size + tree->icon_size + tree->icon_gap;
+    float y = (float)index * tree->row_height - tree->scroll_y;
+    float width = tree->base.width - x - outer_padding;
+    if (width < 40.0f)
+        width = 40.0f;
+    vg_widget_arrange(
+        &tree->edit_input->base, x, y + 2.0f, width, tree->row_height - 4.0f);
+    return true;
+}
+
+/// @brief End the active inline edit, optionally latching a commit.
+/// @param tree Tree whose edit ends; callers verify edit_active.
+/// @param commit true latches the editor text and node for consumption.
+static void treeview_edit_finish(vg_treeview_t *tree, bool commit) {
+    if (!tree->edit_active)
+        return;
+    if (commit && tree->edit_input) {
+        const char *text = vg_textinput_get_text(tree->edit_input);
+        char *copy = text ? vg_strdup(text) : NULL;
+        if (copy) {
+            free(tree->edit_text);
+            tree->edit_text = copy;
+            tree->edit_committed = true;
+            tree->edit_committed_node = tree->edit_node;
+        }
+    }
+    tree->edit_active = false;
+    tree->edit_node = NULL;
+    if (tree->edit_input) {
+        if (tree->edit_input->base.state & VG_STATE_FOCUSED)
+            vg_widget_set_focus(&tree->base);
+        vg_widget_set_visible(&tree->edit_input->base, false);
+    }
+    tree->base.needs_paint = true;
+    vg_widget_note_revision(&tree->base);
+}
+
+/// @brief Per-paint edit upkeep: submit/blur commits, liveness, placement.
+/// @details Paint is the widget's reliable poll point — the focused editor
+///          repaints continuously (cursor blink) and every focus transition
+///          repaints both widgets involved.
+/// @param tree Tree to synchronize; inactive trees return immediately.
+static void treeview_edit_sync(vg_treeview_t *tree) {
+    if (!tree->edit_active)
+        return;
+    if (!vg_tree_node_is_live(tree->edit_node) || tree->edit_node->owner != tree ||
+        !tree->edit_input) {
+        treeview_edit_finish(tree, false);
+        return;
+    }
+    if (vg_textinput_was_submitted(tree->edit_input)) {
+        treeview_edit_finish(tree, true);
+        return;
+    }
+    if (!(tree->edit_input->base.state & VG_STATE_FOCUSED)) {
+        treeview_edit_finish(tree, true);
+        return;
+    }
+    if (!treeview_edit_place(tree))
+        treeview_edit_finish(tree, true);
+}
+
+/// @brief Begin an inline edit of one visible row (see header contract).
+bool vg_treeview_begin_edit(vg_treeview_t *tree,
+                            vg_tree_node_t *node,
+                            const char *initial_text) {
+    if (!tree || !vg_widget_is_live(&tree->base) || tree->virtual_mode ||
+        !vg_tree_node_is_live(node) || node->owner != tree)
+        return false;
+
+    if (tree->edit_active)
+        treeview_edit_finish(tree, true);
+
+    if (!tree->edit_input) {
+        tree->edit_input = vg_textinput_create(&tree->base);
+        if (!tree->edit_input)
+            return false;
+    }
+    if (tree->font)
+        vg_textinput_set_font(tree->edit_input, tree->font, tree->font_size);
+
+    vg_treeview_scroll_to(tree, node);
+    tree->edit_node = node;
+    tree->edit_active = true;
+    tree->edit_committed = false;
+    tree->edit_committed_node = NULL;
+
+    vg_textinput_set_text(tree->edit_input, initial_text ? initial_text : "");
+    vg_textinput_select_all(tree->edit_input);
+    vg_widget_set_visible(&tree->edit_input->base, true);
+    if (!treeview_edit_place(tree)) {
+        treeview_edit_finish(tree, false);
+        return false;
+    }
+    vg_widget_set_focus(&tree->edit_input->base);
+    /* Consume any stale submit latched before this edit began. */
+    (void)vg_textinput_was_submitted(tree->edit_input);
+    tree->base.needs_paint = true;
+    vg_widget_note_revision(&tree->base);
+    return true;
+}
+
+/// @brief Return whether an inline row edit is in progress (see header).
+bool vg_treeview_is_editing(const vg_treeview_t *tree) {
+    return tree && tree->edit_active;
+}
+
+/// @brief Consume the latched inline-edit commit edge (see header).
+bool vg_treeview_was_edit_committed(vg_treeview_t *tree) {
+    if (!tree || !tree->edit_committed)
+        return false;
+    tree->edit_committed = false;
+    return true;
+}
+
+/// @brief Return the most recently committed inline-edit text (see header).
+const char *vg_treeview_get_edit_text(const vg_treeview_t *tree) {
+    return tree ? tree->edit_text : NULL;
+}
+
+/// @brief Return the node whose inline edit most recently committed (see header).
+vg_tree_node_t *vg_treeview_get_edited_node(vg_treeview_t *tree) {
+    if (!tree || !vg_tree_node_is_live(tree->edit_committed_node) ||
+        tree->edit_committed_node->owner != tree)
+        return NULL;
+    return tree->edit_committed_node;
+}
+
+/// @brief Cancel any inline edit in progress without committing (see header).
+void vg_treeview_cancel_edit(vg_treeview_t *tree) {
+    if (!tree)
+        return;
+    treeview_edit_finish(tree, false);
 }

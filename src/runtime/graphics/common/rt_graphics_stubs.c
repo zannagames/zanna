@@ -5,6 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
+/// @file rt_graphics_stubs.c
+/// @brief Anchors the split graphics-disabled runtime implementation.
+///
+/// @details
+/// Public fallback entry points live in focused Canvas, Canvas3D, asset,
+/// physics, scene, world, media, and helper stub translation units. This
+/// source intentionally exports no functions but preserves the historical
+/// build target and common internal-header dependency.
+///
 // File: src/runtime/graphics/common/rt_graphics_stubs.c
 // Purpose: Compatibility anchor for the graphics-disabled runtime stubs.
 //

@@ -17,6 +17,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file rt_gui_constants.c
+/// @brief Defines allocation-free getters for stable public GUI constant values.
+///
+/// @details
+/// Each macro-generated getter returns an explicit runtime ABI ordinal rather
+/// than depending on lower-toolkit enum layout, so enabled and headless builds
+/// expose identical scalar values.
+
 #include "rt_gui_constants.h"
 
 /// @brief Define one scalar constant getter with a compile-time literal result.

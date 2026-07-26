@@ -146,6 +146,19 @@ vgfx_key_t vgfx_wayland_translate_evdev_key(uint32_t key) {
     case 52: return VGFX_KEY_UNKNOWN;
     case 53: return VGFX_KEY_UNKNOWN;
     case 57: return VGFX_KEY_SPACE;
+    /* Function keys: evdev KEY_F1..KEY_F10 are 59..68; F11/F12 are 87/88. */
+    case 59: return VGFX_KEY_F1;
+    case 60: return VGFX_KEY_F2;
+    case 61: return VGFX_KEY_F3;
+    case 62: return VGFX_KEY_F4;
+    case 63: return VGFX_KEY_F5;
+    case 64: return VGFX_KEY_F6;
+    case 65: return VGFX_KEY_F7;
+    case 66: return VGFX_KEY_F8;
+    case 67: return VGFX_KEY_F9;
+    case 68: return VGFX_KEY_F10;
+    case 87: return VGFX_KEY_F11;
+    case 88: return VGFX_KEY_F12;
     case 102: return VGFX_KEY_HOME;
     case 103: return VGFX_KEY_UP;
     case 104: return VGFX_KEY_PAGE_UP;

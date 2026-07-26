@@ -298,6 +298,9 @@ typedef void (*vg_tree_load_children_callback_t)(struct vg_treeview *tree,
 /// @brief Borrowed display data for one row supplied by an external virtual-tree model.
 /// @details String storage remains owned by the provider and only needs to stay valid until the
 ///          provider callback returns. Depth is expressed in logical tree levels, not pixels.
+/// @brief Forward declaration; the inline row editor is a text-input child.
+struct vg_textinput;
+
 typedef struct vg_treeview_virtual_row {
     const char *text;  ///< Borrowed UTF-8 row label; NULL renders as an empty label.
     size_t depth;      ///< Zero-based indentation level.
@@ -427,6 +430,17 @@ typedef struct vg_treeview {
     vg_tree_node_t *latched_src;                      ///< Dragged node at latched drop.
     vg_tree_node_t *latched_tgt;                      ///< Target node at latched drop.
     vg_tree_drop_position_t latched_pos;              ///< Position at latched drop.
+
+    // Inline row editing (poll model). The editor is a lazily created
+    // single-line text-input child arranged over the edited row; Enter and
+    // focus loss commit, Escape cancels, and the application consumes the
+    // committed text through the Was/Get pair like every other latched event.
+    struct vg_textinput *edit_input;      ///< Lazily created row editor child
+    vg_tree_node_t *edit_node;            ///< Node being edited while active
+    bool edit_active;                     ///< An inline row edit is in progress
+    bool edit_committed;                  ///< A committed edit awaits consumption
+    char *edit_text;                      ///< Owned committed text
+    vg_tree_node_t *edit_committed_node;  ///< Node whose edit was committed
 
     // State
     vg_tree_node_t *hovered; ///< Currently hovered node
@@ -768,6 +782,41 @@ vg_tree_node_t *vg_treeview_get_load_requested_node(vg_treeview_t *tree);
 /// @param tree Tree view to inspect.
 /// @return Borrowed live node, or NULL if no activation has occurred or the node was removed.
 vg_tree_node_t *vg_treeview_get_activated_node(vg_treeview_t *tree);
+
+/// @brief Begin an inline edit of one visible row.
+/// @details Reveals the row, overlays a focused single-line text input
+///          pre-filled with @p initial_text (all selected), and suppresses the
+///          row's painted label until the edit ends. Enter and focus loss
+///          commit; Escape cancels. Any edit already in progress is committed
+///          first. Virtual-mode trees reject inline editing.
+/// @param tree Tree view that owns @p node.
+/// @param node Live node whose row hosts the editor.
+/// @param initial_text Editor contents; NULL edits the empty string.
+/// @return true when the edit began; false for invalid input or virtual mode.
+bool vg_treeview_begin_edit(vg_treeview_t *tree, vg_tree_node_t *node, const char *initial_text);
+
+/// @brief Return whether an inline row edit is currently in progress.
+/// @param tree Tree view to inspect; NULL reports false.
+bool vg_treeview_is_editing(const vg_treeview_t *tree);
+
+/// @brief Consume the latched inline-edit commit edge.
+/// @param tree Tree view to poll; NULL reports false.
+/// @return true exactly once per committed edit.
+bool vg_treeview_was_edit_committed(vg_treeview_t *tree);
+
+/// @brief Return the most recently committed inline-edit text.
+/// @param tree Tree view to inspect.
+/// @return Borrowed committed text valid until the next edit begins, or NULL.
+const char *vg_treeview_get_edit_text(const vg_treeview_t *tree);
+
+/// @brief Return the node whose inline edit most recently committed.
+/// @param tree Tree view to inspect.
+/// @return Borrowed live node, or NULL when none committed or it was removed.
+vg_tree_node_t *vg_treeview_get_edited_node(vg_treeview_t *tree);
+
+/// @brief Cancel any inline edit in progress without committing.
+/// @param tree Tree view whose edit ends; NULL is ignored.
+void vg_treeview_cancel_edit(vg_treeview_t *tree);
 
 //=============================================================================
 // MenuBar Widget

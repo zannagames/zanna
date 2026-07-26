@@ -19,6 +19,13 @@
 // Links: rt_game3d.h (public API + RT_GAME3D_* constants), rt_gltf.h, rt_input.h
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Defines the private data model and cross-translation-unit helpers for Game3D.
+/// @details This header centralizes Game3D tuning limits, opaque handle payloads,
+/// renderer bridge declarations, checked-cast helpers, and shared subsystem entry
+/// points. It is private to the Game3D implementation; callers must use the public
+/// API in `rt_game3d.h` rather than depending on these layouts or helper contracts.
 #pragma once
 
 #include <stdint.h>
@@ -93,10 +100,26 @@ enum {
     RT_GAME3D_EFFECT_DECAL = 2,     ///< Item wraps a decal.
 };
 
-// Camera3D entry points reused by the Game3D camera controllers; defined in
-// render/rt_camera3d.c and forward-declared here to avoid a header dependency.
+/// @brief Aim a Camera3D from an eye position toward a target.
+/// @param obj Borrowed heap or stack Camera3D handle.
+/// @param eye_v Borrowed Vec3 containing the world-space eye position.
+/// @param target_v Borrowed Vec3 containing the world-space aim point.
+/// @param up_v Borrowed Vec3 containing the preferred up direction.
 void rt_camera3d_look_at(void *obj, void *eye_v, void *target_v, void *up_v);
+
+/// @brief Initialize the FPS controller angles from a camera's current orientation.
+/// @param obj Borrowed heap or stack Camera3D handle.
 void rt_camera3d_fps_init(void *obj);
+
+/// @brief Apply one FPS-style look and movement update to a camera.
+/// @param obj Borrowed heap or stack Camera3D handle.
+/// @param yaw_delta Horizontal look delta in degrees.
+/// @param pitch_delta Vertical look delta in degrees.
+/// @param move_fwd Signed forward-axis input.
+/// @param move_right Signed right-axis input.
+/// @param move_up Signed world-up input.
+/// @param speed Non-negative translation speed in world units per second.
+/// @param dt Non-negative elapsed time in seconds.
 void rt_camera3d_fps_update(void *obj,
                             double yaw_delta,
                             double pitch_delta,
@@ -105,11 +128,49 @@ void rt_camera3d_fps_update(void *obj,
                             double move_up,
                             double speed,
                             double dt);
+
+/// @brief Position a camera on a sphere around a Vec3 target.
+/// @param obj Borrowed heap or stack Camera3D handle.
+/// @param target_v Borrowed Vec3 containing the orbit center.
+/// @param distance Non-negative orbit radius in world units.
+/// @param yaw Horizontal orbit angle in degrees.
+/// @param pitch Vertical orbit angle in degrees.
 void rt_camera3d_orbit(void *obj, void *target_v, double distance, double yaw, double pitch);
+
+/// @brief Allocate a Vec3 containing a camera's logical eye position.
+/// @param obj Borrowed heap or stack Camera3D handle.
+/// @return New GC-managed Vec3, or `NULL` for invalid input or allocation failure.
 void *rt_camera3d_get_position(void *obj);
+
+/// @brief Copy a camera's logical eye position into scalar destinations.
+/// @param obj Borrowed heap or stack Camera3D handle.
+/// @param[out] x Required X-coordinate destination, initialized to zero.
+/// @param[out] y Required Y-coordinate destination, initialized to zero.
+/// @param[out] z Required Z-coordinate destination, initialized to zero.
+/// @return `1` when all destinations receive a valid position; otherwise `0`.
 int8_t rt_camera3d_get_position_components(void *obj, double *x, double *y, double *z);
+
+/// @brief Allocate a Vec3 containing a camera's normalized forward direction.
+/// @param obj Borrowed heap or stack Camera3D handle.
+/// @return New GC-managed normalized Vec3, or `NULL` for invalid input or allocation failure.
 void *rt_camera3d_get_forward(void *obj);
+
+/// @brief Allocate a Vec3 containing a camera's normalized right direction.
+/// @param obj Borrowed heap or stack Camera3D handle.
+/// @return New GC-managed normalized Vec3, or `NULL` for invalid input or allocation failure.
 void *rt_camera3d_get_right(void *obj);
+
+/// @brief Aim a camera using unboxed eye, target, and up-vector components.
+/// @param obj Borrowed heap or stack Camera3D handle.
+/// @param eye_x World-space eye X coordinate.
+/// @param eye_y World-space eye Y coordinate.
+/// @param eye_z World-space eye Z coordinate.
+/// @param target_x World-space target X coordinate.
+/// @param target_y World-space target Y coordinate.
+/// @param target_z World-space target Z coordinate.
+/// @param up_x Preferred up-vector X component.
+/// @param up_y Preferred up-vector Y component.
+/// @param up_z Preferred up-vector Z component.
 void rt_camera3d_look_at_components(void *obj,
                                     double eye_x,
                                     double eye_y,
@@ -120,6 +181,15 @@ void rt_camera3d_look_at_components(void *obj,
                                     double up_x,
                                     double up_y,
                                     double up_z);
+
+/// @brief Orbit a camera around an unboxed target position.
+/// @param obj Borrowed heap or stack Camera3D handle.
+/// @param target_x Orbit-center X coordinate.
+/// @param target_y Orbit-center Y coordinate.
+/// @param target_z Orbit-center Z coordinate.
+/// @param distance Non-negative orbit radius in world units.
+/// @param yaw Horizontal orbit angle in degrees.
+/// @param pitch Vertical orbit angle in degrees.
 void rt_camera3d_orbit_components(void *obj,
                                   double target_x,
                                   double target_y,
@@ -127,9 +197,32 @@ void rt_camera3d_orbit_components(void *obj,
                                   double distance,
                                   double yaw,
                                   double pitch);
+
+/// @brief Move a camera to a Vec3 world position while preserving its facing direction.
+/// @param obj Borrowed heap or stack Camera3D handle.
+/// @param pos Borrowed Vec3 containing the new logical eye position.
 void rt_camera3d_set_position(void *obj, void *pos);
+
+/// @brief Resolve a SceneNode3D world position into scalar destinations.
+/// @param node Borrowed SceneNode3D handle.
+/// @param[out] x Required X-coordinate destination.
+/// @param[out] y Required Y-coordinate destination.
+/// @param[out] z Required Z-coordinate destination.
+/// @return `1` on success; `0` without writes for an invalid handle or destination.
 int8_t rt_scene_node3d_get_world_position_components(void *node, double *x, double *y, double *z);
+
+/// @brief Shift a decal by the negative floating-origin displacement.
+/// @param decal Borrowed Decal3D handle; invalid handles are ignored.
+/// @param dx World-origin X displacement.
+/// @param dy World-origin Y displacement.
+/// @param dz World-origin Z displacement.
 void rt_decal3d_rebase_origin(void *decal, double dx, double dy, double dz);
+
+/// @brief Shift a particle emitter and its live particles by a floating-origin displacement.
+/// @param particles Borrowed Particles3D handle; invalid handles are ignored.
+/// @param dx World-origin X displacement.
+/// @param dy World-origin Y displacement.
+/// @param dz World-origin Z displacement.
 void rt_particles3d_rebase_origin(void *particles, double dx, double dy, double dz);
 
 /// @brief LayerMask payload: a single bitfield of RT_GAME3D_LAYER_* bits.
@@ -215,31 +308,43 @@ typedef struct rt_game3d_entity {
 } rt_game3d_entity;
 
 /// @brief Return the entity's SceneNode3D slot only when it still has the expected class.
+/// @param entity Borrowed entity payload, or `NULL`.
+/// @return Borrowed SceneNode3D handle, or `NULL` when absent, stale, or type-mismatched.
 static inline void *game3d_entity_node_ref(const rt_game3d_entity *entity) {
     return entity ? rt_g3d_checked_or_null(entity->node, RT_G3D_SCENENODE3D_CLASS_ID) : NULL;
 }
 
 /// @brief Return the entity's Mesh3D slot only when it still has the expected class.
+/// @param entity Borrowed entity payload, or `NULL`.
+/// @return Borrowed Mesh3D handle, or `NULL` when absent, stale, or type-mismatched.
 static inline void *game3d_entity_mesh_ref(const rt_game3d_entity *entity) {
     return entity ? rt_g3d_checked_or_null(entity->mesh, RT_G3D_MESH3D_CLASS_ID) : NULL;
 }
 
 /// @brief Return the entity's Material3D slot only when it still has the expected class.
+/// @param entity Borrowed entity payload, or `NULL`.
+/// @return Borrowed Material3D handle, or `NULL` when absent, stale, or type-mismatched.
 static inline void *game3d_entity_material_ref(const rt_game3d_entity *entity) {
     return entity ? rt_g3d_checked_or_null(entity->material, RT_G3D_MATERIAL3D_CLASS_ID) : NULL;
 }
 
 /// @brief Return the entity's Physics3DBody slot only when it still has the expected class.
+/// @param entity Borrowed entity payload, or `NULL`.
+/// @return Borrowed Physics3DBody handle, or `NULL` when absent, stale, or type-mismatched.
 static inline void *game3d_entity_body_ref(const rt_game3d_entity *entity) {
     return entity ? rt_g3d_checked_or_null(entity->body, RT_G3D_BODY3D_CLASS_ID) : NULL;
 }
 
 /// @brief Return the entity's Animator3D slot only when it still has the expected class.
+/// @param entity Borrowed entity payload, or `NULL`.
+/// @return Borrowed Animator3D handle, or `NULL` when absent, stale, or type-mismatched.
 static inline void *game3d_entity_anim_ref(const rt_game3d_entity *entity) {
     return entity ? rt_g3d_checked_or_null(entity->anim, RT_G3D_GAME3D_ANIMATOR3D_CLASS_ID) : NULL;
 }
 
 /// @brief Safe number of child entity slots that may be read directly.
+/// @param entity Borrowed entity payload, or `NULL`.
+/// @return The child count capped to the allocated capacity, or zero for invalid storage.
 static inline int32_t game3d_entity_child_count(const rt_game3d_entity *entity) {
     if (!entity || !entity->children || entity->child_count <= 0 || entity->child_capacity <= 0)
         return 0;
@@ -1069,6 +1174,9 @@ typedef struct rt_game3d_world {
 /// @brief Build a stable lifetime diagnostic in the public `Game3D.Type.method: reason` form.
 /// @details `method` strings often include an invalid-handle suffix; lifetime traps replace that
 ///          suffix with the actual destroyed-handle reason while keeping the qualified API name.
+/// @param method Qualified API name, optionally followed by an existing diagnostic suffix.
+/// @param reason Replacement lifetime failure reason; empty values use a generic fallback.
+/// @return Pointer to thread-local storage valid until the next call on the same thread.
 static inline const char *game3d_lifetime_diag(const char *method, const char *reason) {
     static RT_GAME3D_THREAD_LOCAL char message[256];
     const char *fallback_method = "Game3D";
@@ -1092,6 +1200,9 @@ static inline const char *game3d_lifetime_diag(const char *method, const char *r
 //=========================================================================
 
 /// @brief Validate `obj` as a LayerMask handle, trapping `method` on mismatch.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message used when validation fails.
+/// @return Typed LayerMask payload, or `NULL` after recording the trap.
 static inline rt_game3d_layermask *game3d_layermask_checked(void *obj, const char *method) {
     rt_game3d_layermask *mask =
         (rt_game3d_layermask *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_LAYERMASK_CLASS_ID);
@@ -1101,6 +1212,9 @@ static inline rt_game3d_layermask *game3d_layermask_checked(void *obj, const cha
 }
 
 /// @brief Validate `obj` as an Input3D handle, trapping `method` on mismatch.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message used when validation fails.
+/// @return Typed Input3D payload, or `NULL` after recording the trap.
 static inline rt_game3d_input *game3d_input_checked(void *obj, const char *method) {
     rt_game3d_input *input =
         (rt_game3d_input *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_INPUT_CLASS_ID);
@@ -1111,6 +1225,9 @@ static inline rt_game3d_input *game3d_input_checked(void *obj, const char *metho
 
 /// @brief Validate `obj` as an Entity3D handle (allowing a despawned/destroyed one),
 ///   trapping `method` on class mismatch.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message used when class validation fails.
+/// @return Typed Entity3D payload regardless of lifetime state, or `NULL` after a trap.
 static inline rt_game3d_entity *game3d_entity_checked_allow_destroyed(void *obj,
                                                                       const char *method) {
     rt_game3d_entity *entity =
@@ -1121,6 +1238,8 @@ static inline rt_game3d_entity *game3d_entity_checked_allow_destroyed(void *obj,
 }
 
 /// @brief True when a typed Entity3D payload is still live for public API access.
+/// @param entity Borrowed typed entity payload, or `NULL`.
+/// @return Nonzero for a live entity; zero after recording a stale-handle call when applicable.
 static inline int game3d_entity_alive_or_record(const rt_game3d_entity *entity) {
     if (!entity)
         return 0;
@@ -1132,6 +1251,7 @@ static inline int game3d_entity_alive_or_record(const rt_game3d_entity *entity) 
 }
 
 /// @brief Mark a retained Entity3D handle as dead after it leaves its world.
+/// @param entity Entity payload to invalidate; `NULL` is ignored.
 static inline void game3d_entity_mark_dead(rt_game3d_entity *entity) {
     if (!entity)
         return;
@@ -1144,6 +1264,9 @@ static inline void game3d_entity_mark_dead(rt_game3d_entity *entity) {
 
 /// @brief Validate `obj` as a live Entity3D handle; stale handles record diagnostics
 ///   and resolve to NULL so callers can return neutral values or no-op.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message used when class validation fails.
+/// @return Typed live Entity3D payload, or `NULL` for invalid or stale input.
 static inline rt_game3d_entity *game3d_entity_checked(void *obj, const char *method) {
     rt_game3d_entity *entity = game3d_entity_checked_allow_destroyed(obj, method);
     if (!game3d_entity_alive_or_record(entity))
@@ -1151,7 +1274,10 @@ static inline rt_game3d_entity *game3d_entity_checked(void *obj, const char *met
     return entity;
 }
 
-/// @brief Validate `obj` as an Sound3D handle, trapping `method` on mismatch.
+/// @brief Validate `obj` as a Sound3D handle, trapping `method` on mismatch.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message used when validation fails.
+/// @return Typed Sound3D payload, or `NULL` after recording the trap.
 static inline rt_game3d_audio *game3d_audio_checked(void *obj, const char *method) {
     rt_game3d_audio *audio =
         (rt_game3d_audio *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_SOUND_CLASS_ID);
@@ -1161,6 +1287,9 @@ static inline rt_game3d_audio *game3d_audio_checked(void *obj, const char *metho
 }
 
 /// @brief Validate `obj` as an EffectRegistry3D handle, trapping `method` on mismatch.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message used when validation fails.
+/// @return Typed EffectRegistry3D payload, or `NULL` after recording the trap.
 static inline rt_game3d_effects *game3d_effects_checked(void *obj, const char *method) {
     rt_game3d_effects *effects =
         (rt_game3d_effects *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_EFFECTS_CLASS_ID);
@@ -1170,6 +1299,9 @@ static inline rt_game3d_effects *game3d_effects_checked(void *obj, const char *m
 }
 
 /// @brief Validate `obj` as an EnvHandle, trapping `method` on mismatch.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message used when validation fails.
+/// @return Typed environment-handle payload, or `NULL` after recording the trap.
 static inline rt_game3d_env_handle *game3d_env_handle_checked(void *obj, const char *method) {
     rt_game3d_env_handle *env =
         (rt_game3d_env_handle *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_ENV_HANDLE_CLASS_ID);
@@ -1179,6 +1311,9 @@ static inline rt_game3d_env_handle *game3d_env_handle_checked(void *obj, const c
 }
 
 /// @brief Validate `obj` as a BodyDef handle, trapping `method` on mismatch.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message used when validation fails.
+/// @return Typed BodyDef payload, or `NULL` after recording the trap.
 static inline rt_game3d_body_def *game3d_body_def_checked(void *obj, const char *method) {
     rt_game3d_body_def *def =
         (rt_game3d_body_def *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_BODYDEF_CLASS_ID);
@@ -1188,6 +1323,9 @@ static inline rt_game3d_body_def *game3d_body_def_checked(void *obj, const char 
 }
 
 /// @brief Validate `obj` as a Collision3DEvent handle, trapping `method` on mismatch.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message used when validation fails.
+/// @return Typed collision-event payload, or `NULL` after recording the trap.
 static inline rt_game3d_collision_event *game3d_collision_event_checked(void *obj,
                                                                         const char *method) {
     rt_game3d_collision_event *event = (rt_game3d_collision_event *)rt_g3d_checked_or_null(
@@ -1198,6 +1336,9 @@ static inline rt_game3d_collision_event *game3d_collision_event_checked(void *ob
 }
 
 /// @brief Validate `obj` as an Animator3D handle, trapping `method` on mismatch.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message used when validation fails.
+/// @return Typed Animator3D payload, or `NULL` after recording the trap.
 static inline rt_game3d_animator *game3d_animator_checked(void *obj, const char *method) {
     rt_game3d_animator *animator =
         (rt_game3d_animator *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_ANIMATOR3D_CLASS_ID);
@@ -1207,6 +1348,9 @@ static inline rt_game3d_animator *game3d_animator_checked(void *obj, const char 
 }
 
 /// @brief Validate `obj` as a ModelTemplate handle, trapping `method` on mismatch.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message used when validation fails.
+/// @return Typed ModelTemplate payload, or `NULL` after recording the trap.
 static inline rt_game3d_model_template *game3d_model_template_checked(void *obj,
                                                                       const char *method) {
     rt_game3d_model_template *model_template = (rt_game3d_model_template *)rt_g3d_checked_or_null(
@@ -1217,6 +1361,9 @@ static inline rt_game3d_model_template *game3d_model_template_checked(void *obj,
 }
 
 /// @brief Validate `obj` as an AssetHandle3D handle, trapping `method` on mismatch.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message used when validation fails.
+/// @return Typed AssetHandle3D payload, or `NULL` after recording the trap.
 static inline rt_game3d_asset_handle *game3d_asset_handle_checked(void *obj, const char *method) {
     rt_game3d_asset_handle *handle = (rt_game3d_asset_handle *)rt_g3d_checked_or_null(
         obj, RT_G3D_GAME3D_ASSET_HANDLE3D_CLASS_ID);
@@ -1226,6 +1373,9 @@ static inline rt_game3d_asset_handle *game3d_asset_handle_checked(void *obj, con
 }
 
 /// @brief Validate `obj` as a WorldStream3D handle, trapping `method` on mismatch.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message used when validation fails.
+/// @return Typed WorldStream3D payload, or `NULL` after recording the trap.
 static inline rt_game3d_world_stream *game3d_world_stream_checked(void *obj, const char *method) {
     rt_game3d_world_stream *stream = (rt_game3d_world_stream *)rt_g3d_checked_or_null(
         obj, RT_G3D_GAME3D_WORLD_STREAM3D_CLASS_ID);
@@ -1236,6 +1386,9 @@ static inline rt_game3d_world_stream *game3d_world_stream_checked(void *obj, con
 
 /// @brief Validate `obj` as a World3D handle (allowing a destroyed one), trapping
 ///   `method` on class mismatch.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message used when class validation fails.
+/// @return Typed World3D payload regardless of lifetime state, or `NULL` after a trap.
 static inline rt_game3d_world *game3d_world_checked_allow_destroyed(void *obj, const char *method) {
     rt_game3d_world *world =
         (rt_game3d_world *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_WORLD_CLASS_ID);
@@ -1246,6 +1399,9 @@ static inline rt_game3d_world *game3d_world_checked_allow_destroyed(void *obj, c
 
 /// @brief Validate `obj` as a live World3D handle, additionally trapping if the
 ///   world has been destroyed.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Qualified API diagnostic used for invalid or destroyed handles.
+/// @return Typed live World3D payload, or `NULL` after recording a trap.
 static inline rt_game3d_world *game3d_world_checked(void *obj, const char *method) {
     rt_game3d_world *world = game3d_world_checked_allow_destroyed(obj, method);
     if (world && world->destroyed)
@@ -1254,6 +1410,9 @@ static inline rt_game3d_world *game3d_world_checked(void *obj, const char *metho
 }
 
 /// @brief Validate `obj` as a CharacterController3D handle, trapping `method` on mismatch.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message used when validation fails.
+/// @return Typed CharacterController3D payload, or `NULL` after recording the trap.
 static inline rt_game3d_character_controller *game3d_character_controller_checked(
     void *obj, const char *method) {
     rt_game3d_character_controller *controller =
@@ -1265,6 +1424,9 @@ static inline rt_game3d_character_controller *game3d_character_controller_checke
 }
 
 /// @brief Validate `obj` as a FirstPersonController handle, trapping `method` on mismatch.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message used when validation fails.
+/// @return Typed FirstPersonController payload, or `NULL` after recording the trap.
 static inline rt_game3d_first_person_controller *game3d_first_person_controller_checked(
     void *obj, const char *method) {
     rt_game3d_first_person_controller *controller =
@@ -1276,6 +1438,9 @@ static inline rt_game3d_first_person_controller *game3d_first_person_controller_
 }
 
 /// @brief Validate `obj` as a FreeFlyController handle, trapping `method` on mismatch.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message used when validation fails.
+/// @return Typed FreeFlyController payload, or `NULL` after recording the trap.
 static inline rt_game3d_free_fly_controller *game3d_free_fly_controller_checked(
     void *obj, const char *method) {
     rt_game3d_free_fly_controller *controller =
@@ -1287,6 +1452,9 @@ static inline rt_game3d_free_fly_controller *game3d_free_fly_controller_checked(
 }
 
 /// @brief Validate `obj` as an OrbitController handle, trapping `method` on mismatch.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message used when validation fails.
+/// @return Typed OrbitController payload, or `NULL` after recording the trap.
 static inline rt_game3d_orbit_controller *game3d_orbit_controller_checked(void *obj,
                                                                           const char *method) {
     rt_game3d_orbit_controller *controller =
@@ -1297,6 +1465,9 @@ static inline rt_game3d_orbit_controller *game3d_orbit_controller_checked(void *
 }
 
 /// @brief Validate `obj` as a FollowController handle, trapping `method` on mismatch.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message used when validation fails.
+/// @return Typed FollowController payload, or `NULL` after recording the trap.
 static inline rt_game3d_follow_controller *game3d_follow_controller_checked(void *obj,
                                                                             const char *method) {
     rt_game3d_follow_controller *controller =
@@ -1307,6 +1478,9 @@ static inline rt_game3d_follow_controller *game3d_follow_controller_checked(void
 }
 
 /// @brief Validate `obj` as a ThirdPersonController handle, trapping `method` on mismatch.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message used when validation fails.
+/// @return Typed ThirdPersonController payload, or `NULL` after recording the trap.
 static inline rt_game3d_thirdperson_controller *game3d_thirdperson_controller_checked(
     void *obj, const char *method) {
     rt_game3d_thirdperson_controller *controller =
@@ -1318,6 +1492,9 @@ static inline rt_game3d_thirdperson_controller *game3d_thirdperson_controller_ch
 }
 
 /// @brief Validate `obj` as a LipSync3D handle, trapping `method` on mismatch.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message used when validation fails.
+/// @return Typed LipSync3D payload, or `NULL` after recording the trap.
 static inline rt_game3d_lipsync *game3d_lipsync_checked(void *obj, const char *method) {
     rt_game3d_lipsync *lipsync =
         (rt_game3d_lipsync *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_LIPSYNC_CLASS_ID);
@@ -1327,6 +1504,9 @@ static inline rt_game3d_lipsync *game3d_lipsync_checked(void *obj, const char *m
 }
 
 /// @brief Validate `obj` as a Dialogue3D handle, trapping `method` on mismatch.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message used when validation fails.
+/// @return Typed Dialogue3D payload, or `NULL` after recording the trap.
 static inline rt_game3d_dialogue *game3d_dialogue_checked(void *obj, const char *method) {
     rt_game3d_dialogue *dialogue =
         (rt_game3d_dialogue *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_DIALOGUE_CLASS_ID);
@@ -1336,6 +1516,9 @@ static inline rt_game3d_dialogue *game3d_dialogue_checked(void *obj, const char 
 }
 
 /// @brief Validate `obj` as a Timeline3D handle, trapping `method` on mismatch.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message used when validation fails.
+/// @return Typed Timeline3D payload, or `NULL` after recording the trap.
 static inline rt_game3d_timeline *game3d_timeline_checked(void *obj, const char *method) {
     rt_game3d_timeline *timeline =
         (rt_game3d_timeline *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_TIMELINE_CLASS_ID);
@@ -1345,6 +1528,9 @@ static inline rt_game3d_timeline *game3d_timeline_checked(void *obj, const char 
 }
 
 /// @brief Validate `obj` as a RailCamera3D handle, trapping `method` on mismatch.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message used when validation fails.
+/// @return Typed RailCamera3D payload, or `NULL` after recording the trap.
 static inline rt_game3d_rail_camera *game3d_rail_camera_checked(void *obj, const char *method) {
     rt_game3d_rail_camera *rail =
         (rt_game3d_rail_camera *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_RAILCAMERA_CLASS_ID);
@@ -1354,6 +1540,9 @@ static inline rt_game3d_rail_camera *game3d_rail_camera_checked(void *obj, const
 }
 
 /// @brief Validate `obj` as a TargetLock3D handle, trapping `method` on mismatch.
+/// @param obj Opaque handle supplied by a public API caller.
+/// @param method Diagnostic message used when validation fails.
+/// @return Typed TargetLock3D payload, or `NULL` after recording the trap.
 static inline rt_game3d_targetlock *game3d_targetlock_checked(void *obj, const char *method) {
     rt_game3d_targetlock *lock =
         (rt_game3d_targetlock *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_TARGETLOCK_CLASS_ID);
@@ -1366,64 +1555,230 @@ static inline rt_game3d_targetlock *game3d_targetlock_checked(void *obj, const c
 // Shared internal helpers — defined in rt_game3d.c / rt_game3d_controllers.c,
 // declared here for the split sibling translation units.
 //=========================================================================
+/// @brief Replace an untyped retained-reference slot.
+/// @details Retains @p value before releasing the slot's previous value so self-assignment is safe.
+/// @param[in,out] slot Address of the owned reference slot.
+/// @param value Borrowed replacement handle, or `NULL` to clear the slot.
 void game3d_assign_ref(void **slot, void *value);
+
+/// @brief Release and clear an untyped retained-reference slot.
+/// @param[in,out] slot Address of the owned reference slot; `NULL` is ignored.
 void game3d_release_ref(void **slot);
+
+/// @brief Replace a retained slot after validating the replacement's runtime class.
+/// @param[in,out] slot Address of the owned reference slot.
+/// @param value Borrowed replacement handle, or `NULL` to clear the slot.
+/// @param class_id Required runtime class identifier for a non-null replacement.
 void game3d_assign_typed_ref(void **slot, void *value, int64_t class_id);
+
+/// @brief Release and clear a retained slot when its value still matches a runtime class.
+/// @param[in,out] slot Address of the owned reference slot; `NULL` is ignored.
+/// @param class_id Runtime class identifier expected in the current slot.
 void game3d_release_typed_ref(void **slot, int64_t class_id);
+
 /// @brief Create an Animator3D wrapper that can hold both skeletal and node-animation drivers.
 /// @details Used by model instantiation so imported assets with skeletal Animation3D clips,
 /// NodeAnimation3D clips, or both expose a single Game3D Animator3D handle to scripts.
+/// @param controller Borrowed skeletal Animation3D controller, or `NULL`.
+/// @param node_animator Borrowed NodeAnimator3D driver, or `NULL`.
+/// @return New GC-managed Animator3D handle, or `NULL` on allocation failure.
 void *rt_game3d_animator_new_from_bindings(void *controller, void *node_animator);
+
 /// @brief Return true when a Game3D animator must be advanced during World3D animation jobs.
 /// @details NodeAnimator3D-only wrappers are stepped by Scene3D.SyncBindings because they mutate
 /// scene node transforms directly; skeletal controllers still run in the Game3D animation phase.
+/// @param obj Borrowed Animator3D handle.
+/// @return Nonzero when the wrapper contains a skeletal controller that needs a Game3D update.
 int8_t rt_game3d_animator_needs_game_update(void *obj);
+
+/// @brief Clamp a scalar to an inclusive interval.
+/// @param value Value to bound.
+/// @param lo Inclusive lower bound.
+/// @param hi Inclusive upper bound.
+/// @return @p value bounded to `[`@p lo`,` @p hi`]`.
 double game3d_clamp(double value, double lo, double hi);
+
+/// @brief Sanitize and cap a simulation delta.
+/// @param dt Candidate elapsed time in seconds.
+/// @return A finite non-negative delta no greater than `RT_GAME3D_MAX_DT`.
 double game3d_clamp_dt(double dt);
+
+/// @brief Substitute a fallback for a non-finite scalar.
+/// @param value Candidate scalar.
+/// @param fallback Value used when @p value is NaN or infinite.
+/// @return @p value when finite; otherwise @p fallback.
 double game3d_finite_or(double value, double fallback);
+
+/// @brief Sanitize a scalar and clamp its absolute magnitude.
+/// @param value Candidate scalar.
+/// @param fallback Value used for non-finite input.
+/// @param abs_max Non-negative maximum absolute magnitude.
+/// @return A finite value in `[-abs_max, abs_max]`.
 double game3d_clamp_abs_or(double value, double fallback, double abs_max);
+
+/// @brief Sanitize a world coordinate against the Game3D coordinate limit.
+/// @param value Candidate coordinate.
+/// @param fallback Value used for non-finite input.
+/// @return Finite coordinate bounded by `RT_GAME3D_COORD_ABS_MAX`.
 double game3d_clamp_coord_or(double value, double fallback);
+
+/// @brief Sanitize a scale component, using unit scale for non-finite input.
+/// @param value Candidate scale component.
+/// @return Finite scale bounded by `RT_GAME3D_SCALE_ABS_MAX`, or `1.0` as the fallback.
 double game3d_scale_or_unit(double value);
+
+/// @brief Sanitize a scalar and enforce a non-negative result.
+/// @param value Candidate scalar.
+/// @param fallback Value used for non-finite input.
+/// @return The sanitized value clamped to a minimum of zero.
 double game3d_nonnegative_or(double value, double fallback);
+
+/// @brief Sanitize a scalar and clamp it to a non-negative upper-bounded interval.
+/// @param value Candidate scalar.
+/// @param fallback Value used for non-finite input.
+/// @param max_value Inclusive upper bound.
+/// @return A finite value in `[0, max_value]`.
 double game3d_nonnegative_clamped_or(double value, double fallback, double max_value);
+
+/// @brief Sanitize a scalar and substitute the fallback unless it is strictly positive.
+/// @param value Candidate scalar.
+/// @param fallback Replacement for non-finite, zero, or negative input.
+/// @return @p value when finite and positive; otherwise @p fallback.
 double game3d_positive_or(double value, double fallback);
+
+/// @brief Sanitize a positive scalar and clamp it to an upper bound.
+/// @param value Candidate scalar.
+/// @param fallback Replacement for non-finite, zero, or negative input.
+/// @param max_value Inclusive upper bound.
+/// @return A positive finite value no greater than @p max_value.
 double game3d_positive_clamped_or(double value, double fallback, double max_value);
+
+/// @brief Normalize an XZ direction, substituting a fallback direction when degenerate.
+/// @param[in,out] x X component to normalize.
+/// @param[in,out] z Z component to normalize.
+/// @param fallback_x Fallback X component.
+/// @param fallback_z Fallback Z component.
 void game3d_normalize_xz(double *x, double *z, double fallback_x, double fallback_z);
+
+/// @brief Read the world retained by any supported camera-controller payload.
+/// @param controller Borrowed opaque camera-controller handle.
+/// @return Borrowed World3D handle, or `NULL` when the controller is invalid or detached.
 void *game3d_camera_controller_get_world_ref(void *controller);
+
+/// @brief Bind any supported camera controller to a world reference.
+/// @param controller Borrowed opaque camera-controller handle.
+/// @param world Borrowed World3D handle to retain, or `NULL` to detach.
 void game3d_camera_controller_bind_world_ref(void *controller, void *world);
+
+/// @brief Release the world retained by any supported camera controller.
+/// @param controller Borrowed opaque camera-controller handle; invalid handles are ignored.
 void game3d_camera_controller_clear_world_ref(void *controller);
+
+/// @brief Release a camera controller's world only when it equals a specified handle.
+/// @param controller Borrowed opaque camera-controller handle.
+/// @param world Borrowed World3D handle used as the conditional match.
 void game3d_camera_controller_clear_world_ref_if(void *controller, void *world);
+
+/// @brief Test whether a handle belongs to a supported Game3D camera-controller class.
+/// @param controller Borrowed opaque handle.
+/// @return Nonzero for a valid supported controller; otherwise zero.
 int game3d_camera_controller_is_valid(void *controller);
+
 /// @brief Trap unless @p controller is detached or bound to @p world.
+/// @param controller Borrowed opaque camera-controller handle.
+/// @param world Borrowed world expected to own the controller.
+/// @param api_name Qualified API name used in the mismatch diagnostic.
+/// @return Nonzero when detached or bound to @p world; zero after recording a trap.
 int game3d_camera_controller_validate_world(void *controller,
                                             rt_game3d_world *world,
                                             const char *api_name);
+
 /// @brief Trap unless the CharacterController3D's retained world matches @p world.
+/// @param controller Borrowed character-controller payload.
+/// @param world Borrowed world expected to own the controller.
+/// @param api_name Qualified API name used in the mismatch diagnostic.
+/// @return Nonzero when the ownership relation is valid; zero after recording a trap.
 int game3d_character_controller_validate_world(rt_game3d_character_controller *controller,
                                                rt_game3d_world *world,
                                                const char *api_name);
+
 /// @brief Trap when a spawned entity belongs to a different world than @p world.
+/// @param entity Borrowed entity payload to validate.
+/// @param world Borrowed world expected to own the spawned entity.
+/// @param api_name Qualified API name used in the mismatch diagnostic.
+/// @return Nonzero when unspawned or owned by @p world; zero after recording a trap.
 int game3d_entity_validate_controller_world(rt_game3d_entity *entity,
                                             rt_game3d_world *world,
                                             const char *api_name);
+
+/// @brief Resolve an entity node's world-space position.
+/// @param entity Borrowed entity payload.
+/// @param[out] out_pos Required three-component destination.
+/// @return Nonzero on success; zero when the entity has no valid node or position.
 int game3d_entity_world_position_components(rt_game3d_entity *entity, double out_pos[3]);
+
+/// @brief Read the horizontal integral mouse delta from an Input3D snapshot or live input.
+/// @param input Borrowed Input3D payload.
+/// @return Horizontal mouse delta in pixels, or zero for invalid input.
 int64_t game3d_input_mouse_dx(const rt_game3d_input *input);
+
+/// @brief Read the horizontal sub-pixel mouse delta from an Input3D snapshot or live input.
+/// @param input Borrowed Input3D payload.
+/// @return Horizontal floating-point mouse delta, or zero for invalid input.
 double game3d_input_mouse_fdx(const rt_game3d_input *input);
+
+/// @brief Read the vertical sub-pixel mouse delta from an Input3D snapshot or live input.
+/// @param input Borrowed Input3D payload.
+/// @return Vertical floating-point mouse delta, or zero for invalid input.
 double game3d_input_mouse_fdy(const rt_game3d_input *input);
+
+/// @brief Read the vertical integral mouse delta from an Input3D snapshot or live input.
+/// @param input Borrowed Input3D payload.
+/// @return Vertical mouse delta in pixels, or zero for invalid input.
 int64_t game3d_input_mouse_dy(const rt_game3d_input *input);
+
+/// @brief Merge keyboard and bound-gamepad movement into a normalized three-axis vector.
+/// @param input Borrowed Input3D payload.
+/// @param[out] out_x Required lateral-axis destination.
+/// @param[out] out_y Required vertical-axis destination.
+/// @param[out] out_z Required forward-axis destination.
 void game3d_input_move_axis_components(rt_game3d_input *input,
                                        double *out_x,
                                        double *out_y,
                                        double *out_z);
+
+/// @brief Read the vertical wheel delta from an Input3D snapshot or live input.
+/// @param input Borrowed Input3D payload.
+/// @return Vertical wheel delta, or zero for invalid input.
 double game3d_input_wheel_y_snapshot(const rt_game3d_input *input);
+
+/// @brief Synchronize an entity's physics body transform from its scene node.
+/// @param entity Borrowed entity payload whose node and body may be synchronized.
+/// @param force Nonzero to synchronize even when the body mode would normally skip the update.
 void game3d_sync_body_from_entity_node(rt_game3d_entity *entity, int8_t force);
+
+/// @brief Assign a SceneNode3D world position from unboxed components.
+/// @param node Borrowed SceneNode3D handle.
+/// @param world_pos Three-component world-space position.
 void game3d_set_node_world_position(void *node, double world_pos[3]);
+
+/// @brief Assign a SceneNode3D world orientation.
+/// @param node Borrowed SceneNode3D handle.
+/// @param world_quat Borrowed Quaternion handle containing the world orientation.
 void game3d_set_node_world_rotation(void *node, void *world_quat);
+
 /// @brief Shared planar character drive: integrate jump/gravity and move the wrapped
 ///   Character3D along an explicit XZ basis (already normalized), then sync the entity.
 /// @details Used by CharacterController3D.update (camera-derived basis) and the
 ///   third-person controller (yaw-derived basis) so vertical-velocity state lives in
 ///   exactly one place.
+/// @param controller Borrowed character-controller payload to advance.
+/// @param input_obj Borrowed Input3D handle supplying movement and jump state.
+/// @param fx Normalized forward-basis X component.
+/// @param fz Normalized forward-basis Z component.
+/// @param rx Normalized right-basis X component.
+/// @param rz Normalized right-basis Z component.
+/// @param dt Sanitized simulation delta in seconds.
 void game3d_character_controller_drive(rt_game3d_character_controller *controller,
                                        void *input_obj,
                                        double fx,
@@ -1431,82 +1786,315 @@ void game3d_character_controller_drive(rt_game3d_character_controller *controlle
                                        double rx,
                                        double rz,
                                        double dt);
+
 /// @brief Restore all faded occluder materials and drop the fade bookkeeping array.
+/// @param controller Borrowed third-person controller payload to reset.
 void game3d_thirdperson_reset_fades(rt_game3d_thirdperson_controller *controller);
+
 /// @brief Combat pass (rt_game3d_combat.c): clears one-shot health flags and event
 ///   buffers, ticks i-frames, then overlaps live hit volumes against hurt volumes
 ///   and emits HitEvent3D records. Runs after animation + scene sync each step.
+/// @param world Borrowed live world payload to update.
+/// @param dt Sanitized simulation delta in seconds.
 void game3d_world_update_combat(rt_game3d_world *world, double dt);
+
 /// @brief Release the world's buffered hit/damage event records (world teardown).
+/// @param world Borrowed world payload whose event buffers are released.
 void game3d_world_clear_combat_events(rt_game3d_world *world);
+
 /// @brief Release an entity's hitbox array and health slot, clearing backrefs
 ///   first so surviving handles fail closed (entity despawn/teardown path).
+/// @param entity Borrowed entity payload whose combat components are detached.
 void game3d_entity_release_combat_slots(rt_game3d_entity *entity);
+
 /// @brief Timeline pre-physics tick: advance the playhead and fire point tracks
-///   (anim/audio/markers). Returns 1 while camera tracks suspend the controller.
+///   (anim/audio/markers).
+/// @param world Borrowed live world payload.
+/// @param dt Sanitized simulation delta in seconds.
+/// @return Nonzero while an active camera track should suspend the normal controller.
 int game3d_world_timeline_pre(rt_game3d_world *world, double dt);
+
 /// @brief Timeline camera application (the suspended controller's late slot).
+/// @param world Borrowed live world payload.
 void game3d_world_timeline_camera(rt_game3d_world *world);
+
 /// @brief Timeline overlay pass: letterbox bars, fade quad, active subtitle.
+/// @param world Borrowed live world payload.
 void game3d_world_timeline_overlay(rt_game3d_world *world);
+
 /// @brief Dialogue tick: typewriter reveal + auto-advance (scaled dt).
+/// @param world Borrowed live world payload.
+/// @param dt Sanitized scaled simulation delta in seconds.
 void game3d_world_dialogue_tick(rt_game3d_world *world, double dt);
+
 /// @brief Dialogue overlay pass: panel/bubble, speaker name, choices.
+/// @param world Borrowed live world payload.
 void game3d_world_dialogue_overlay(rt_game3d_world *world);
+
 /// @brief Facial tick (lip sync envelope + blink + gaze), after ragdoll sync.
+/// @param world Borrowed live world payload.
+/// @param dt Sanitized simulation delta in seconds.
 void game3d_world_facial_tick(rt_game3d_world *world, double dt);
+
+/// @brief Advance an entity's footstep cadence and emit any due surface-aware step.
+/// @param world Borrowed world providing physics and audio services.
+/// @param entity Borrowed entity whose Footsteps3D component is advanced.
+/// @param dt Sanitized simulation delta in seconds.
 void game3d_footsteps_tick(rt_game3d_world *world, rt_game3d_entity *entity, double dt);
+
+/// @brief Refresh an entity interactor's scored focus candidate.
+/// @param world Borrowed world providing the entity and physics queries.
+/// @param owner Borrowed entity whose Interactor3D component is advanced.
+/// @param dt Sanitized simulation delta in seconds.
 void game3d_interactor_tick(rt_game3d_world *world, rt_game3d_entity *owner, double dt);
+
+/// @brief Advance an entity's perception and behavior-tree AI components.
+/// @param world Borrowed world providing query context.
+/// @param entity Borrowed entity whose AI components are advanced.
+/// @param dt Sanitized simulation delta in seconds.
 void game3d_ai_tick(rt_game3d_world *world, rt_game3d_entity *entity, double dt);
+
 /// @brief Append a damage event record to the world buffer (Health3D.damage).
+/// @param world Borrowed world receiving the event.
+/// @param victim Borrowed damaged entity payload.
+/// @param source Borrowed source entity payload, or `NULL`.
+/// @param amount Sanitized damage amount applied to the victim.
+/// @param tag Caller-defined damage classification.
+/// @param was_lethal Nonzero when this damage transitioned the victim to dead.
 void game3d_world_push_damage_event(rt_game3d_world *world,
                                     rt_game3d_entity *victim,
                                     rt_game3d_entity *source,
                                     double amount,
                                     int64_t tag,
                                     int8_t was_lethal);
+
+/// @brief Remove a physics-body mapping from a world's dense reverse index.
+/// @param world Borrowed world owning the index.
+/// @param body Borrowed Physics3DBody handle to remove; `NULL` is ignored.
 void game3d_world_body_index_remove(rt_game3d_world *world, void *body);
+
+/// @brief Add or refresh the body-to-entity mapping for an entity.
+/// @param world Borrowed world owning the index.
+/// @param entity Borrowed entity whose valid body should be indexed.
+/// @return Nonzero on success or when no body needs indexing; zero on allocation failure.
 int game3d_world_body_index_add(rt_game3d_world *world, rt_game3d_entity *entity);
+
+/// @brief Add an entity's non-empty name to a world's lookup index.
+/// @param world Borrowed world owning the index.
+/// @param entity Borrowed entity whose retained name should be indexed.
+/// @return Nonzero on success or when no name needs indexing; zero on allocation failure.
 int game3d_world_name_index_add_entity(rt_game3d_world *world, rt_game3d_entity *entity);
+
+/// @brief Find a live spawned entity by name through the world's lookup index.
+/// @param world Borrowed world containing the name index.
+/// @param name Null-terminated entity name to find.
+/// @return Borrowed matching entity payload, or `NULL` when no live match exists.
 rt_game3d_entity *game3d_world_name_index_find(rt_game3d_world *world, const char *name);
+
+/// @brief Test whether an integer is a valid Game3D collision-layer number.
+/// @param layer Candidate one-based layer number.
+/// @return Nonzero when @p layer is within the supported layer range.
 int8_t game3d_valid_layer(int64_t layer);
+
+/// @brief Allocate a LayerMask handle from raw mask bits.
+/// @param bits Collision-layer bitfield to store.
+/// @return New GC-managed LayerMask handle, or `NULL` on allocation failure.
 void *game3d_layermask_new_bits(int64_t bits);
+
+/// @brief Instantiate a physics body from a reusable BodyDef payload.
+/// @param def Borrowed body definition containing the type, shape, transform, and material data.
+/// @return New GC-managed Physics3DBody handle, or `NULL` after invalid input or allocation failure.
 void *game3d_body_def_create_body(rt_game3d_body_def *def);
+
+/// @brief Ensure the tracked-audio-source array can hold a requested count.
+/// @param audio Borrowed Sound3D payload whose array may grow.
+/// @param needed Minimum source capacity required.
+/// @return Nonzero on success; zero for invalid input, overflow, or allocation failure.
 int game3d_audio_reserve_sources(rt_game3d_audio *audio, int32_t needed);
+
+/// @brief Remove stale entries and restore invariants in a Sound3D source registry.
+/// @param audio Borrowed Sound3D payload to repair.
 void game3d_audio_repair_sources(rt_game3d_audio *audio);
+
+/// @brief Retain and register an audio source for later pruning and rebasing.
+/// @param audio Borrowed Sound3D payload receiving the source.
+/// @param source Borrowed AudioSource3D handle; invalid or duplicate sources are ignored.
 void game3d_audio_track_source(rt_game3d_audio *audio, void *source);
+
+/// @brief Release finished or invalid sources from a Sound3D registry.
+/// @param audio Borrowed Sound3D payload to prune.
 void game3d_audio_prune_sources(rt_game3d_audio *audio);
+
+/// @brief Shift all tracked positional sources by a floating-origin delta.
+/// @param audio Borrowed Sound3D payload.
+/// @param delta Three-component world-origin displacement to subtract.
 void game3d_audio_rebase_origin(rt_game3d_audio *audio, const double delta[3]);
+
+/// @brief Update listener-relative audio immersion effects for a world.
+/// @param world Borrowed live world payload.
+/// @param dt Sanitized simulation delta in seconds.
 void game3d_audio_immersion_tick(struct rt_game3d_world *world, double dt);
+
+/// @brief Advance every cloth component registered with a world.
+/// @param world Borrowed live world payload.
+/// @param dt Sanitized simulation delta in seconds.
 void game3d_cloth_tick(struct rt_game3d_world *world, double dt);
+
+/// @brief Capture due persistent entity-state deltas for a world.
+/// @param world Borrowed live world payload.
 void game3d_persistence_tick(struct rt_game3d_world *world);
+
+/// @brief Snapshot a persistent entity immediately before it despawns.
+/// @param world Borrowed world owning the persistence records.
+/// @param entity Borrowed entity about to leave the world.
 void game3d_persistence_on_despawn(struct rt_game3d_world *world, struct rt_game3d_entity *entity);
+
+/// @brief Release every persistent-state record owned by a world.
+/// @param world Borrowed world payload being reset or destroyed.
 void game3d_persistence_release(struct rt_game3d_world *world);
+
+/// @brief Append a loaded-cell name to a stream's one-shot event queue.
+/// @param stream Borrowed WorldStream3D payload receiving the event.
+/// @param cell_name Borrowed runtime string naming the loaded cell.
 void game3d_stream_push_loaded_event(struct rt_game3d_world_stream *stream, rt_string cell_name);
+
+/// @brief Release persistence data owned by a world-stream payload.
+/// @param stream Borrowed WorldStream3D payload being reset or destroyed.
 void game3d_stream_persistence_release(struct rt_game3d_world_stream *stream);
+
+/// @brief Record a frame hitch and its subsystem telemetry when a threshold is exceeded.
+/// @param world Borrowed world whose fixed-capacity hitch ring receives the sample.
+/// @param step_wall_ms Measured wall-clock duration of the simulation step in milliseconds.
 void game3d_world_note_hitches(struct rt_game3d_world *world, double step_wall_ms);
+
+/// @brief Clamp a signed 64-bit integer to an inclusive interval.
+/// @param value Value to bound.
+/// @param lo Inclusive lower bound.
+/// @param hi Inclusive upper bound.
+/// @return @p value bounded to `[`@p lo`,` @p hi`]`.
 int64_t game3d_clamp_i64(int64_t value, int64_t lo, int64_t hi);
+
+/// @brief Allocate a Sound3D service bound to a camera listener.
+/// @param camera Borrowed Camera3D handle to retain as the listener transform.
+/// @return New GC-managed Sound3D handle, or `NULL` on allocation failure.
 void *game3d_audio_new(void *camera);
+
+/// @brief Release one effect item's retained object and reset its bookkeeping.
+/// @param item Effect registry slot to clear; `NULL` is ignored.
 void game3d_effect_release_item(rt_game3d_effect_item *item);
+
+/// @brief Remove stale effects and restore EffectRegistry3D array invariants.
+/// @param effects Borrowed effect registry payload to repair.
 void game3d_effects_repair(rt_game3d_effects *effects);
+
+/// @brief Ensure an effect registry can hold a requested item count.
+/// @param effects Borrowed effect registry payload whose array may grow.
+/// @param needed Minimum item capacity required.
+/// @return Nonzero on success; zero for invalid input, overflow, or allocation failure.
 int game3d_effects_reserve(rt_game3d_effects *effects, int32_t needed);
+
+/// @brief Validate and copy a Vec3 handle into an unboxed destination.
+/// @param vec Borrowed Vec3 handle.
+/// @param[out] out Required three-component destination.
+/// @param method Diagnostic message used when validation fails.
+/// @return Nonzero on success; zero after invalid input or a recorded trap.
 int8_t game3d_read_vec3(void *vec, double *out, const char *method);
+
+/// @brief Allocate an EffectRegistry3D bound to a render canvas.
+/// @param canvas Borrowed Canvas3D handle retained by the registry.
+/// @param quality Requested effect-quality preset.
+/// @return New GC-managed EffectRegistry3D handle, or `NULL` on allocation failure.
 void *game3d_effects_new(void *canvas, int64_t quality);
+
+/// @brief Remove an entity from its parent's child array without destroying it.
+/// @param child Borrowed entity payload to detach; root entities are unchanged.
 void game3d_entity_detach_from_parent(rt_game3d_entity *child);
+
+/// @brief Find a child's slot in a parent's dense child array.
+/// @param parent Borrowed parent entity payload.
+/// @param child Borrowed child entity payload to locate.
+/// @return Zero-based slot index, or `-1` when the relationship is absent or invalid.
 int32_t game3d_entity_find_child_index(rt_game3d_entity *parent, rt_game3d_entity *child);
+
+/// @brief Ensure an entity child array can hold a requested count.
+/// @param entity Borrowed parent entity whose child storage may grow.
+/// @param need Minimum child capacity required.
+/// @return Nonzero on success; zero for invalid input, overflow, or allocation failure.
 int game3d_entity_grow_children(rt_game3d_entity *entity, int32_t need);
+
+/// @brief Test whether an entity appears in another entity's parent chain.
+/// @param entity Borrowed entity at which to begin the upward traversal.
+/// @param ancestor Borrowed entity to search for.
+/// @return Nonzero when @p ancestor owns @p entity transitively; otherwise zero.
 int game3d_entity_has_ancestor(rt_game3d_entity *entity, rt_game3d_entity *ancestor);
+
+/// @brief Resolve a physics body to its live owning entity.
+/// @param world Borrowed world containing the body reverse index.
+/// @param body Borrowed Physics3DBody handle to resolve.
+/// @return Borrowed live entity payload, or `NULL` when no valid mapping exists.
 rt_game3d_entity *game3d_world_find_entity_by_body(rt_game3d_world *world, void *body);
+
+/// @brief Spawn an entity subtree into a world and optionally attach its root to the scene.
+/// @param world Borrowed destination world payload.
+/// @param entity Borrowed root entity payload.
+/// @param attach_to_scene Nonzero to attach the root node to the world's scene.
+/// @param[in,out] next_id Monotonic identifier source updated for each newly spawned entity.
+/// @return Nonzero on success; zero after validation, capacity, or allocation failure.
 int game3d_world_spawn_entity_tree(rt_game3d_world *world,
                                    rt_game3d_entity *entity,
                                    int attach_to_scene,
                                    int64_t *next_id);
+
+/// @brief Query whether a keyboard key is down in the snapshot or live input state.
+/// @param input Borrowed Input3D payload.
+/// @param key Runtime key code.
+/// @return Nonzero when the key is currently held; otherwise zero.
 int8_t game3d_input_key_down(const rt_game3d_input *input, int64_t key);
+
+/// @brief Query the one-shot pressed edge for a keyboard key.
+/// @param input Borrowed Input3D payload.
+/// @param key Runtime key code.
+/// @return Nonzero when the key transitioned down in the observed frame.
 int8_t game3d_input_key_pressed(const rt_game3d_input *input, int64_t key);
+
+/// @brief Query the one-shot released edge for a keyboard key.
+/// @param input Borrowed Input3D payload.
+/// @param key Runtime key code.
+/// @return Nonzero when the key transitioned up in the observed frame.
 int8_t game3d_input_key_released(const rt_game3d_input *input, int64_t key);
+
+/// @brief Query whether a mouse button is down in the snapshot or live input state.
+/// @param input Borrowed Input3D payload.
+/// @param button Runtime mouse-button code.
+/// @return Nonzero when the button is currently held; otherwise zero.
 int8_t game3d_input_mouse_down(const rt_game3d_input *input, int64_t button);
+
+/// @brief Query the pressed edge for a mouse button from the coherent snapshot.
+/// @param input Borrowed Input3D payload.
+/// @param button Runtime mouse-button code.
+/// @return Nonzero when the button transitioned down in the captured frame.
 int8_t game3d_input_mouse_pressed_snapshot(const rt_game3d_input *input, int64_t button);
+
+/// @brief Normalize a three-component axis vector in place.
+/// @param[in,out] x X component to sanitize and normalize.
+/// @param[in,out] y Y component to sanitize and normalize.
+/// @param[in,out] z Z component to sanitize and normalize.
 void game3d_normalize_axis3(double *x, double *y, double *z);
+
+/// @brief Replace the world's retained post-processing stack.
+/// @param world Borrowed world payload whose post-processing slot is updated.
+/// @param postfx Borrowed PostProcess3D handle to retain, or `NULL` to clear the slot.
 void game3d_world_assign_postfx(rt_game3d_world *world, void *postfx);
+
+/// @brief Install a light into one of the world's retained environment slots.
+/// @param world Borrowed world payload whose environment changes.
+/// @param slot Environment-light slot selector.
+/// @param light Borrowed light handle to retain, or `NULL` to clear the slot.
 void game3d_world_install_light(rt_game3d_world *world, int64_t slot, void *light);
+
+/// @brief Sanitize and store the world's clear color.
+/// @param world Borrowed world payload to update.
+/// @param r Red channel value.
+/// @param g Green channel value.
+/// @param b Blue channel value.
 void game3d_world_set_clear_color(rt_game3d_world *world, double r, double g, double b);

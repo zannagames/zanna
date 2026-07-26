@@ -109,11 +109,17 @@ void rt_soundlistener3d_set_forward(void *l, void *f) {
     (void)f;
 }
 
+/// @brief Return no listener up vector in a graphics-disabled build.
+/// @param l SoundListener3D handle (ignored).
+/// @return `NULL`.
 void *rt_soundlistener3d_get_up(void *l) {
     (void)l;
     return NULL;
 }
 
+/// @brief Ignore a listener up-vector update.
+/// @param l SoundListener3D handle (ignored).
+/// @param u Vec3 up direction (ignored).
 void rt_soundlistener3d_set_up(void *l, void *u) {
     (void)l;
     (void)u;
@@ -296,6 +302,9 @@ void rt_soundsource3d_set_velocity(void *s, void *v) {
     (void)v;
 }
 
+/// @brief Return the neutral Doppler multiplier for a disabled sound source.
+/// @param s SoundSource3D handle (ignored).
+/// @return `1.0`.
 double rt_soundsource3d_get_doppler_factor(void *s) {
     (void)s;
     return 1.0;
@@ -328,12 +337,16 @@ void rt_soundsource3d_set_max_distance(void *s, double d) {
 }
 
 /// @brief Stub for `SoundSource3D.RefDistance` — get the full-volume radius.
+/// @param s SoundSource3D handle (ignored).
+/// @return `0.0`.
 double rt_soundsource3d_get_ref_distance(void *s) {
     (void)s;
     return 0.0;
 }
 
 /// @brief Stub for `SoundSource3D.RefDistance` setter — set the full-volume radius.
+/// @param s SoundSource3D handle (ignored).
+/// @param d Reference distance in world units (ignored).
 void rt_soundsource3d_set_ref_distance(void *s, double d) {
     (void)s;
     (void)d;
@@ -377,30 +390,40 @@ double rt_soundsource3d_get_pitch(void *s) {
 }
 
 /// @brief Stub for `SoundSource3D.Pitch` setter. Silent no-op.
+/// @param s SoundSource3D handle (ignored).
+/// @param pitch Playback-rate multiplier (ignored).
 void rt_soundsource3d_set_pitch(void *s, double pitch) {
     (void)s;
     (void)pitch;
 }
 
 /// @brief Stub for `SoundSource3D.Occlusion` getter. Returns fully open.
+/// @param s SoundSource3D handle (ignored).
+/// @return `0.0`, indicating no occlusion.
 double rt_soundsource3d_get_occlusion(void *s) {
     (void)s;
     return 0.0;
 }
 
 /// @brief Stub for `SoundSource3D.Occlusion` setter. Silent no-op.
+/// @param s SoundSource3D handle (ignored).
+/// @param amount Occlusion amount (ignored).
 void rt_soundsource3d_set_occlusion(void *s, double amount) {
     (void)s;
     (void)amount;
 }
 
 /// @brief Silent stub: SoundSource3D mix-group routing is a no-op without graphics.
+/// @param s SoundSource3D handle (ignored).
+/// @param group Mixer group identifier (ignored).
 void rt_soundsource3d_set_mix_group(void *s, int64_t group) {
     (void)s;
     (void)group;
 }
 
 /// @brief Silent stub: reports the default SFX group without graphics.
+/// @param s SoundSource3D handle (ignored).
+/// @return `1`, the default SFX mix-group identifier.
 int64_t rt_soundsource3d_get_mix_group(void *s) {
     (void)s;
     return 1;
@@ -577,78 +600,105 @@ void rt_videowidget_update(void *v, double dt) {
 }
 
 /// @brief Stub: graphics disabled — automatic VideoWidget scheduling is unavailable.
+/// @param v VideoWidget handle (ignored).
+/// @param enabled Non-zero to request automatic updates (ignored).
 void rt_videowidget_set_auto_update(void *v, int64_t enabled) {
     (void)v;
     (void)enabled;
 }
 
 /// @brief Stub: graphics disabled — no VideoWidget can be auto-updated.
+/// @param v VideoWidget handle (ignored).
+/// @return `0`.
 int64_t rt_videowidget_is_auto_update(void *v) {
     (void)v;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — no successful-load edge exists.
+/// @param v VideoWidget handle (ignored).
+/// @return `0`.
 int64_t rt_videowidget_was_loaded(void *v) {
     (void)v;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — no live controller can emit a failure edge.
+/// @param v VideoWidget handle (ignored).
+/// @return `0`.
 int64_t rt_videowidget_was_failed(void *v) {
     (void)v;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — no buffering transition exists.
+/// @param v VideoWidget handle (ignored).
+/// @return `0`.
 int64_t rt_videowidget_was_buffering_changed(void *v) {
     (void)v;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — no playback can reach end of stream.
+/// @param v VideoWidget handle (ignored).
+/// @return `0`.
 int64_t rt_videowidget_was_ended(void *v) {
     (void)v;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — no timeline seek can occur.
+/// @param v VideoWidget handle (ignored).
+/// @return `0`.
 int64_t rt_videowidget_was_seeked(void *v) {
     (void)v;
     return 0;
 }
 
 /// @brief Stub: return the stable graphics-disabled VideoWidget diagnostic.
+/// @param v VideoWidget handle (ignored).
+/// @return A constant runtime string explaining that GUI support is unavailable.
 rt_string rt_videowidget_get_error(void *v) {
     (void)v;
     return rt_const_cstr("GUI support is not available in this build");
 }
 
 /// @brief Stub: graphics disabled — no VideoWidget revision exists.
+/// @param v VideoWidget handle (ignored).
+/// @return `0`.
 int64_t rt_videowidget_get_revision(void *v) {
     (void)v;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — transport controls cannot auto-hide.
+/// @param v VideoWidget handle (ignored).
+/// @param enabled Non-zero to enable auto-hide (ignored).
 void rt_videowidget_set_controls_auto_hide(void *v, int64_t enabled) {
     (void)v;
     (void)enabled;
 }
 
 /// @brief Stub: graphics disabled — no owning window can enter fullscreen.
+/// @param v VideoWidget handle (ignored).
+/// @param fullscreen Non-zero to request fullscreen playback (ignored).
 void rt_videowidget_set_fullscreen(void *v, int64_t fullscreen) {
     (void)v;
     (void)fullscreen;
 }
 
 /// @brief Stub: graphics disabled — VideoWidget fullscreen is always false.
+/// @param v VideoWidget handle (ignored).
+/// @return `0`.
 int64_t rt_videowidget_is_fullscreen(void *v) {
     (void)v;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — no app-owned videos require scheduler work.
+/// @param app GUI application handle (ignored).
+/// @param dt Frame interval in seconds (ignored).
+/// @param frame_generation Monotonic GUI frame generation (ignored).
 void rt_videowidget_update_app(void *app, double dt, uint64_t frame_generation) {
     (void)app;
     (void)dt;
@@ -656,12 +706,15 @@ void rt_videowidget_update_app(void *app, double dt, uint64_t frame_generation) 
 }
 
 /// @brief Stub: graphics disabled — there is no VideoWidget scheduler deadline.
+/// @param app GUI application handle (ignored).
+/// @return `-1`, indicating no pending deadline.
 int64_t rt_videowidget_next_deadline_ms(const void *app) {
     (void)app;
     return -1;
 }
 
 /// @brief Stub: graphics disabled — no VideoWidget controllers are app-owned.
+/// @param app GUI application handle (ignored).
 void rt_videowidget_forget_app(void *app) {
     (void)app;
 }
@@ -679,6 +732,9 @@ void rt_videowidget_set_show_controls(void *v, int8_t s) {
     (void)s;
 }
 
+/// @brief Return the fallback controls-visibility flag.
+/// @param v VideoWidget handle (ignored).
+/// @return `0`.
 int64_t rt_videowidget_get_show_controls(void *v) {
     (void)v;
     return 0;
@@ -697,6 +753,9 @@ void rt_videowidget_set_loop(void *v, int8_t l) {
     (void)l;
 }
 
+/// @brief Return the fallback playback-loop flag.
+/// @param v VideoWidget handle (ignored).
+/// @return `0`.
 int64_t rt_videowidget_get_loop(void *v) {
     (void)v;
     return 0;
@@ -753,55 +812,89 @@ double rt_videowidget_get_duration(void *v) {
     return 0.0;
 }
 
+/// @brief Return no root widget for an unavailable VideoWidget.
+/// @param v VideoWidget handle (ignored).
+/// @return `NULL`.
 void *rt_videowidget_get_root(void *v) {
     (void)v;
     return NULL;
 }
 
+/// @brief Ignore a VideoWidget visibility update.
+/// @param v VideoWidget handle (ignored).
+/// @param visible Requested visibility flag (ignored).
 void rt_videowidget_set_visible(void *v, int64_t visible) {
     (void)v;
     (void)visible;
 }
 
+/// @brief Ignore a VideoWidget enabled-state update.
+/// @param v VideoWidget handle (ignored).
+/// @param enabled Requested enabled flag (ignored).
 void rt_videowidget_set_enabled(void *v, int64_t enabled) {
     (void)v;
     (void)enabled;
 }
 
+/// @brief Ignore a VideoWidget size update.
+/// @param v VideoWidget handle (ignored).
+/// @param width Width in logical pixels (ignored).
+/// @param height Height in logical pixels (ignored).
 void rt_videowidget_set_size(void *v, int64_t width, int64_t height) {
     (void)v;
     (void)width;
     (void)height;
 }
 
+/// @brief Ignore a VideoWidget preferred-size update.
+/// @param v VideoWidget handle (ignored).
+/// @param width Preferred width (ignored).
+/// @param height Preferred height (ignored).
 void rt_videowidget_set_preferred_size(void *v, double width, double height) {
     (void)v;
     (void)width;
     (void)height;
 }
 
+/// @brief Ignore a VideoWidget maximum-size update.
+/// @param v VideoWidget handle (ignored).
+/// @param width Maximum width (ignored).
+/// @param height Maximum height (ignored).
 void rt_videowidget_set_max_size(void *v, double width, double height) {
     (void)v;
     (void)width;
     (void)height;
 }
 
+/// @brief Ignore a VideoWidget flex-weight update.
+/// @param v VideoWidget handle (ignored).
+/// @param flex Layout flex weight (ignored).
 void rt_videowidget_set_flex(void *v, double flex) {
     (void)v;
     (void)flex;
 }
 
+/// @brief Ignore a VideoWidget margin update.
+/// @param v VideoWidget handle (ignored).
+/// @param margin Uniform margin in logical pixels (ignored).
 void rt_videowidget_set_margin(void *v, int64_t margin) {
     (void)v;
     (void)margin;
 }
 
+/// @brief Ignore a VideoWidget position update.
+/// @param v VideoWidget handle (ignored).
+/// @param x Left coordinate (ignored).
+/// @param y Top coordinate (ignored).
 void rt_videowidget_set_position(void *v, int64_t x, int64_t y) {
     (void)v;
     (void)x;
     (void)y;
 }
 
+/// @brief Ignore adding a child to an unavailable VideoWidget.
+/// @param v VideoWidget handle (ignored).
+/// @param child Child widget handle (ignored).
 void rt_videowidget_add_child(void *v, void *child) {
     (void)v;
     (void)child;

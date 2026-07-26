@@ -20,6 +20,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Provides overflow-safe validation for untrusted serialized counts.
+/// @details The helper proves that a signed count is non-negative, its minimum
+/// byte requirement is representable by `size_t`, and the corresponding source
+/// range fits inside the caller-supplied byte budget before allocation or parsing.
+
 #pragma once
 
 #include <stddef.h>
@@ -30,6 +36,12 @@ extern "C" {
 #endif
 
 /// @brief Validate an untrusted element count against the bytes available for its source data.
+/// @details A zero minimum element size is valid only for a zero count, avoiding
+///          ambiguous acceptance of arbitrary counts with no byte bound.
+/// @param count Signed element count read from an untrusted source.
+/// @param elem_min_bytes Minimum encoded bytes required per element.
+/// @param available_bytes Number of source bytes available for all elements.
+/// @return Nonzero when the count and minimum byte product are safe and in bounds.
 static inline int rt_untrusted_count_ok(int64_t count,
                                         size_t elem_min_bytes,
                                         size_t available_bytes) {

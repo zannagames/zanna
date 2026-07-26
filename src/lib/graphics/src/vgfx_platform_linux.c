@@ -574,6 +574,10 @@ static vgfx_key_t translate_keysym(KeySym keysym) {
         case XK_KP_Page_Down:
             return VGFX_KEY_PAGE_DOWN;
         default:
+            /* Function keys occupy a contiguous keysym range. */
+            if (keysym >= XK_F1 && keysym <= XK_F12) {
+                return (vgfx_key_t)(VGFX_KEY_F1 + (keysym - XK_F1));
+            }
             return VGFX_KEY_UNKNOWN;
     }
 }

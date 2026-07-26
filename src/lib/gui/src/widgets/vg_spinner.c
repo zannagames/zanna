@@ -334,6 +334,25 @@ static bool spinner_handle_event(vg_widget_t *widget, vg_event_t *event) {
 
     switch (event->type) {
         case VG_EVENT_MOUSE_MOVE: {
+            if (spinner->scrub_candidate || spinner->scrubbing) {
+                float dx = event->mouse.x - spinner->scrub_start_x;
+                if (!spinner->scrubbing && (dx > 4.0f || dx < -4.0f))
+                    spinner->scrubbing = true;
+                if (spinner->scrubbing) {
+                    // Two pixels per step keeps fine values controllable;
+                    // Shift scrubs coarse and Ctrl/Alt scrubs fine.
+                    double factor = 0.5;
+                    if (event->modifiers & VG_MOD_SHIFT)
+                        factor = 5.0;
+                    else if (event->modifiers & (VG_MOD_CTRL | VG_MOD_ALT))
+                        factor = 0.05;
+                    double target =
+                        spinner->scrub_start_value + (double)dx * spinner->step * factor;
+                    spinner_adjust_value(spinner, target - spinner->value);
+                    widget->needs_paint = true;
+                }
+                return true;
+            }
             const bool old_up_hovered = spinner->up_hovered;
             const bool old_down_hovered = spinner->down_hovered;
             spinner->up_hovered =
@@ -377,22 +396,43 @@ static bool spinner_handle_event(vg_widget_t *widget, vg_event_t *event) {
                 return true;
             }
             if (spinner_point_in_text_area(spinner, event->mouse.x, event->mouse.y)) {
-                spinner_begin_edit(spinner);
-                if (spinner->font && spinner->text_buffer) {
-                    float local_x = event->mouse.x - 8.0f;
-                    int hit = vg_font_hit_test(
-                        spinner->font, spinner->font_size, spinner->text_buffer, local_x);
-                    if (hit >= 0)
-                        spinner->cursor_pos = (size_t)hit;
-                    else
-                        spinner->cursor_pos = strlen(spinner->text_buffer);
-                }
-                widget->needs_paint = true;
+                // Arm a scrub candidate; releasing before the drag threshold
+                // falls back to click-to-edit on mouse up.
+                spinner->scrub_candidate = true;
+                spinner->scrubbing = false;
+                spinner->scrub_start_x = event->mouse.x;
+                spinner->scrub_start_value = spinner->value;
+                vg_widget_set_input_capture(widget);
                 return true;
             }
             return false;
 
         case VG_EVENT_MOUSE_UP:
+            if (spinner->scrub_candidate || spinner->scrubbing) {
+                bool was_scrubbing = spinner->scrubbing;
+                spinner->scrub_candidate = false;
+                spinner->scrubbing = false;
+                if (vg_widget_get_input_capture() == widget)
+                    vg_widget_release_input_capture();
+                if (was_scrubbing) {
+                    if (spinner->value != spinner->scrub_start_value)
+                        spinner->scrub_finished = true;
+                } else {
+                    // Below the drag threshold: the press was a click-to-edit.
+                    spinner_begin_edit(spinner);
+                    if (spinner->font && spinner->text_buffer) {
+                        float local_x = spinner->scrub_start_x - 8.0f;
+                        int hit = vg_font_hit_test(
+                            spinner->font, spinner->font_size, spinner->text_buffer, local_x);
+                        if (hit >= 0)
+                            spinner->cursor_pos = (size_t)hit;
+                        else
+                            spinner->cursor_pos = strlen(spinner->text_buffer);
+                    }
+                }
+                widget->needs_paint = true;
+                return true;
+            }
             if (spinner->up_pressed || spinner->down_pressed) {
                 spinner->up_pressed = false;
                 spinner->down_pressed = false;
@@ -695,6 +735,14 @@ void vg_spinner_set_indeterminate(vg_spinner_t *spinner, bool indeterminate) {
 /// @return Current indeterminate state, or `false` for `NULL`.
 bool vg_spinner_is_indeterminate(const vg_spinner_t *spinner) {
     return spinner ? spinner->indeterminate : false;
+}
+
+/// @brief Consume the latched value-scrub completion edge (see header).
+bool vg_spinner_was_scrub_finished(vg_spinner_t *spinner) {
+    if (!spinner || !spinner->scrub_finished)
+        return false;
+    spinner->scrub_finished = false;
+    return true;
 }
 
 /// @brief Set the minimum and maximum bounds for the spinner value.

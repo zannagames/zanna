@@ -32,12 +32,16 @@
 #include "rt_graphics_stubs_internal.h"
 
 /// @brief Set the env map of the material3d.
+/// @param o Material3D handle; ignored because graphics support is unavailable.
+/// @param cm CubeMap3D handle; ignored because graphics support is unavailable.
 void rt_material3d_set_env_map(void *o, void *cm) {
     (void)o;
     (void)cm;
 }
 
 /// @brief Set the reflectivity of the material3d.
+/// @param o Material3D handle; ignored because graphics support is unavailable.
+/// @param r Requested reflectivity; ignored because graphics support is unavailable.
 void rt_material3d_set_reflectivity(void *o, double r) {
     (void)o;
     (void)r;
@@ -237,6 +241,8 @@ int64_t rt_mesh3d_get_simplify_status(void *o) {
 /// @brief Stub for `Mesh3D.Resident` — resident payload state.
 ///
 /// Silent stub returning `false`.
+/// @param o Mesh3D handle (ignored).
+/// @return `0` because graphics-disabled meshes have no resident payload.
 int8_t rt_mesh3d_get_resident(void *o) {
     (void)o;
     return 0;
@@ -245,6 +251,8 @@ int8_t rt_mesh3d_get_resident(void *o) {
 /// @brief Stub for `Mesh3D.Resident` setter.
 ///
 /// Silent no-op stub.
+/// @param o Mesh3D handle (ignored).
+/// @param resident Requested resident state (ignored).
 void rt_mesh3d_set_resident(void *o, int8_t resident) {
     (void)o;
     (void)resident;
@@ -253,6 +261,8 @@ void rt_mesh3d_set_resident(void *o, int8_t resident) {
 /// @brief Stub for `Mesh3D.CompactStreams` setter.
 ///
 /// Silent no-op stub.
+/// @param o Mesh3D handle (ignored).
+/// @param enabled Requested compact-stream state (ignored).
 void rt_mesh3d_set_compact_streams(void *o, int8_t enabled) {
     (void)o;
     (void)enabled;
@@ -261,6 +271,8 @@ void rt_mesh3d_set_compact_streams(void *o, int8_t enabled) {
 /// @brief Stub for `Mesh3D.CompactStreams` getter.
 ///
 /// Silent stub returning `0`.
+/// @param o Mesh3D handle (ignored).
+/// @return `0` because no mesh streams exist.
 int8_t rt_mesh3d_get_compact_streams(void *o) {
     (void)o;
     return 0;
@@ -269,6 +281,8 @@ int8_t rt_mesh3d_get_compact_streams(void *o) {
 /// @brief Stub for `Mesh3D.ResidentBytes`.
 ///
 /// Silent stub returning `0`.
+/// @param o Mesh3D handle (ignored).
+/// @return `0` because no resident mesh storage exists.
 int64_t rt_mesh3d_get_resident_bytes(void *o) {
     (void)o;
     return 0;
@@ -277,6 +291,8 @@ int64_t rt_mesh3d_get_resident_bytes(void *o) {
 /// @brief Stub for `Mesh3D.RetainedBytes`.
 ///
 /// Disabled Graphics3D builds retain no mesh payload, so the neutral value is `0`.
+/// @param o Mesh3D handle (ignored).
+/// @return `0` because no retained mesh storage exists.
 int64_t rt_mesh3d_get_retained_bytes(void *o) {
     (void)o;
     return 0;
@@ -331,6 +347,7 @@ void rt_mesh3d_add_triangle(void *o, int64_t v0, int64_t v1, int64_t v2) {
 }
 
 /// @brief Recalc the normals of the mesh3d.
+/// @param o Mesh3D handle; ignored because graphics support is unavailable.
 void rt_mesh3d_recalc_normals(void *o) {
     (void)o;
 }
@@ -472,6 +489,9 @@ void rt_material3d_set_color(void *o, double r, double g, double b) {
     (void)b;
 }
 
+/// @brief Return no material color object in a graphics-disabled build.
+/// @param o Material3D handle (ignored).
+/// @return Always NULL.
 void *rt_material3d_get_color(void *o) {
     (void)o;
     return NULL;
@@ -480,36 +500,56 @@ void *rt_material3d_get_color(void *o) {
 /// @brief Graphics-disabled material map inspection stubs.
 /// @details No decoded graphics resources exist in this build, so every read-only map-pixel
 ///          property returns NULL without trapping.
+/// @param o Material3D handle (ignored).
+/// @return Always NULL.
 void *rt_material3d_get_texture_pixels(void *o) {
     (void)o;
     return NULL;
 }
 
+/// @brief Return no decoded normal-map Pixels in a graphics-disabled build.
+/// @param o Material3D handle (ignored).
+/// @return Always NULL.
 void *rt_material3d_get_normal_map_pixels(void *o) {
     (void)o;
     return NULL;
 }
 
+/// @brief Return no decoded specular-map Pixels in a graphics-disabled build.
+/// @param o Material3D handle (ignored).
+/// @return Always NULL.
 void *rt_material3d_get_specular_map_pixels(void *o) {
     (void)o;
     return NULL;
 }
 
+/// @brief Return no decoded emissive-map Pixels in a graphics-disabled build.
+/// @param o Material3D handle (ignored).
+/// @return Always NULL.
 void *rt_material3d_get_emissive_map_pixels(void *o) {
     (void)o;
     return NULL;
 }
 
+/// @brief Return no decoded metallic-roughness-map Pixels in a graphics-disabled build.
+/// @param o Material3D handle (ignored).
+/// @return Always NULL.
 void *rt_material3d_get_metallic_roughness_map_pixels(void *o) {
     (void)o;
     return NULL;
 }
 
+/// @brief Return no decoded ambient-occlusion-map Pixels in a graphics-disabled build.
+/// @param o Material3D handle (ignored).
+/// @return Always NULL.
 void *rt_material3d_get_ao_map_pixels(void *o) {
     (void)o;
     return NULL;
 }
 
+/// @brief Return no decoded lightmap Pixels in a graphics-disabled build.
+/// @param o Material3D handle (ignored).
+/// @return Always NULL.
 void *rt_material3d_get_lightmap_pixels(void *o) {
     (void)o;
     return NULL;
@@ -687,6 +727,9 @@ void rt_material3d_set_unlit(void *o, int8_t u) {
     (void)u;
 }
 
+/// @brief Return the neutral disabled value for `Material3D.Unlit`.
+/// @param o Material3D handle (ignored).
+/// @return Always `0`.
 int8_t rt_material3d_get_unlit(void *o) {
     (void)o;
     return 0;
@@ -705,6 +748,9 @@ void rt_material3d_set_shading_model(void *o, int64_t m) {
     (void)m;
 }
 
+/// @brief Return the default shading-model identifier in a graphics-disabled build.
+/// @param o Material3D handle (ignored).
+/// @return Always `0`, the default Blinn-Phong model.
 int64_t rt_material3d_get_shading_model(void *o) {
     (void)o;
     return 0;
@@ -741,6 +787,8 @@ void rt_material3d_set_normal_map(void *o, void *p) {
 /// @brief Stub for `Material3D.HasTexture` — whether the base-color/albedo slot is bound.
 ///
 /// Silent stub returning `0`.
+/// @param o Material3D handle (ignored).
+/// @return Always `0`.
 int8_t rt_material3d_get_has_texture(void *o) {
     (void)o;
     return 0;
@@ -749,6 +797,8 @@ int8_t rt_material3d_get_has_texture(void *o) {
 /// @brief Stub for `Material3D.HasNormalMap` — whether the normal-map slot is bound.
 ///
 /// Silent stub returning `0`.
+/// @param o Material3D handle (ignored).
+/// @return Always `0`.
 int8_t rt_material3d_get_has_normal_map(void *o) {
     (void)o;
     return 0;
@@ -770,6 +820,8 @@ void rt_material3d_set_metallic_roughness_map(void *o, void *p) {
 /// @brief Stub for `Material3D.HasMetallicRoughnessMap`.
 ///
 /// Silent stub returning `0`.
+/// @param o Material3D handle (ignored).
+/// @return Always `0`.
 int8_t rt_material3d_get_has_metallic_roughness_map(void *o) {
     (void)o;
     return 0;
@@ -788,12 +840,16 @@ void rt_material3d_set_ao_map(void *o, void *p) {
 }
 
 /// @brief Silent stub for `Material3D.SetLightmap` — no-op.
+/// @param obj Material3D handle (ignored).
+/// @param pixels Pixels lightmap handle (ignored).
 void rt_material3d_set_lightmap(void *obj, void *pixels) {
     (void)obj;
     (void)pixels;
 }
 
 /// @brief Silent stub for `Material3D.get_HasLightmap` — no-op; returns 0.
+/// @param obj Material3D handle (ignored).
+/// @return Always `0`.
 int8_t rt_material3d_get_has_lightmap(void *obj) {
     (void)obj;
     return 0;
@@ -802,6 +858,8 @@ int8_t rt_material3d_get_has_lightmap(void *obj) {
 /// @brief Stub for `Material3D.HasAmbientOcclusionMap`.
 ///
 /// Silent stub returning `0`.
+/// @param o Material3D handle (ignored).
+/// @return Always `0`.
 int8_t rt_material3d_get_has_ao_map(void *o) {
     (void)o;
     return 0;
@@ -823,6 +881,8 @@ void rt_material3d_set_specular_map(void *o, void *p) {
 /// @brief Stub for `Material3D.HasSpecularMap`.
 ///
 /// Silent stub returning `0`.
+/// @param o Material3D handle (ignored).
+/// @return Always `0`.
 int8_t rt_material3d_get_has_specular_map(void *o) {
     (void)o;
     return 0;
@@ -844,6 +904,8 @@ void rt_material3d_set_emissive_map(void *o, void *p) {
 /// @brief Stub for `Material3D.HasEmissiveMap`.
 ///
 /// Silent stub returning `0`.
+/// @param o Material3D handle (ignored).
+/// @return Always `0`.
 int8_t rt_material3d_get_has_emissive_map(void *o) {
     (void)o;
     return 0;
@@ -852,12 +914,18 @@ int8_t rt_material3d_get_has_emissive_map(void *o) {
 /// @brief Stub for `Material3D.HasEnvMap`.
 ///
 /// Silent stub returning `0`.
+/// @param o Material3D handle (ignored).
+/// @return Always `0`.
 int8_t rt_material3d_get_has_env_map(void *o) {
     (void)o;
     return 0;
 }
 
 /// @brief Set the emissive color of the material3d.
+/// @param o Material3D handle (ignored).
+/// @param r Requested red component (ignored).
+/// @param g Requested green component (ignored).
+/// @param b Requested blue component (ignored).
 void rt_material3d_set_emissive_color(void *o, double r, double g, double b) {
     (void)o;
     (void)r;
@@ -1082,6 +1150,17 @@ void *rt_light3d_new_spot(
     return NULL;
 }
 
+/// @brief Trap because rectangular area lights require unavailable Graphics3D support.
+/// @param position Vec3 light position (ignored).
+/// @param direction Vec3 emission direction (ignored).
+/// @param width Rectangle width (ignored).
+/// @param height Rectangle height (ignored).
+/// @param r Red color component (ignored).
+/// @param g Green color component (ignored).
+/// @param b Blue color component (ignored).
+/// @param attenuation Distance attenuation (ignored).
+/// @param range Light range (ignored).
+/// @return Never returns normally; graphics-unavailable handling yields NULL.
 void *rt_light3d_new_area_rectangle(void *position,
                                     void *direction,
                                     double width,
@@ -1104,6 +1183,14 @@ void *rt_light3d_new_area_rectangle(void *position,
     return NULL;
 }
 
+/// @brief Trap because spherical area lights require unavailable Graphics3D support.
+/// @param position Vec3 light position (ignored).
+/// @param radius Sphere radius (ignored).
+/// @param r Red color component (ignored).
+/// @param g Green color component (ignored).
+/// @param b Blue color component (ignored).
+/// @param range Light range (ignored).
+/// @return Never returns normally; graphics-unavailable handling yields NULL.
 void *rt_light3d_new_area_sphere(
     void *position, double radius, double r, double g, double b, double range) {
     (void)position;
@@ -1116,6 +1203,14 @@ void *rt_light3d_new_area_sphere(
     return NULL;
 }
 
+/// @brief Trap because volume lights require unavailable Graphics3D support.
+/// @param position Vec3 volume center (ignored).
+/// @param radius Volume radius (ignored).
+/// @param r Red color component (ignored).
+/// @param g Green color component (ignored).
+/// @param b Blue color component (ignored).
+/// @param range Light range (ignored).
+/// @return Never returns normally; graphics-unavailable handling yields NULL.
 void *rt_light3d_new_volume(
     void *position, double radius, double r, double g, double b, double range) {
     (void)position;
@@ -1177,112 +1272,178 @@ void rt_light3d_set_color(void *o, double r, double g, double b) {
     (void)b;
 }
 
+/// @brief Return the neutral light-type identifier in a graphics-disabled build.
+/// @param o Light3D handle (ignored).
+/// @return Always `0`.
 int64_t rt_light3d_get_type(void *o) {
     (void)o;
     return 0;
 }
 
+/// @brief Return no Light3D color object in a graphics-disabled build.
+/// @param o Light3D handle (ignored).
+/// @return Always NULL.
 void *rt_light3d_get_color(void *o) {
     (void)o;
     return NULL;
 }
 
+/// @brief Return the neutral Light3D intensity.
+/// @param o Light3D handle (ignored).
+/// @return Always `0.0`.
 double rt_light3d_get_intensity(void *o) {
     (void)o;
     return 0.0;
 }
 
+/// @brief Ignore a Light3D enabled-state update.
+/// @param o Light3D handle (ignored).
+/// @param enabled Requested enabled state (ignored).
 void rt_light3d_set_enabled(void *o, int8_t enabled) {
     (void)o;
     (void)enabled;
 }
 
+/// @brief Return the disabled Light3D fallback state.
+/// @param o Light3D handle (ignored).
+/// @return Always `0`.
 int8_t rt_light3d_get_enabled(void *o) {
     (void)o;
     return 0;
 }
 
+/// @brief Ignore a Light3D shadow-casting update.
+/// @param o Light3D handle (ignored).
+/// @param enabled Requested shadow state (ignored).
 void rt_light3d_set_casts_shadows(void *o, int8_t enabled) {
     (void)o;
     (void)enabled;
 }
 
+/// @brief Return the disabled shadow-casting fallback state.
+/// @param o Light3D handle (ignored).
+/// @return Always `0`.
 int8_t rt_light3d_get_casts_shadows(void *o) {
     (void)o;
     return 0;
 }
 
+/// @brief Return no Light3D direction object.
+/// @param o Light3D handle (ignored).
+/// @return Always NULL.
 void *rt_light3d_get_direction(void *o) {
     (void)o;
     return NULL;
 }
 
+/// @brief Return no Light3D position object.
+/// @param o Light3D handle (ignored).
+/// @return Always NULL.
 void *rt_light3d_get_position(void *o) {
     (void)o;
     return NULL;
 }
 
+/// @brief Ignore a Light3D position update.
+/// @param o Light3D handle (ignored).
+/// @param position Vec3 position (ignored).
 void rt_light3d_set_position(void *o, void *position) {
     (void)o;
     (void)position;
 }
 
+/// @brief Ignore a Light3D direction update.
+/// @param o Light3D handle (ignored).
+/// @param direction Vec3 direction (ignored).
 void rt_light3d_set_direction(void *o, void *direction) {
     (void)o;
     (void)direction;
 }
 
+/// @brief Return the neutral rectangular-light width.
+/// @param o Light3D handle (ignored).
+/// @return Always `0.0`.
 double rt_light3d_get_width(void *o) {
     (void)o;
     return 0.0;
 }
 
+/// @brief Ignore a rectangular-light width update.
+/// @param o Light3D handle (ignored).
+/// @param width Requested width (ignored).
 void rt_light3d_set_width(void *o, double width) {
     (void)o;
     (void)width;
 }
 
+/// @brief Return the neutral rectangular-light height.
+/// @param o Light3D handle (ignored).
+/// @return Always `0.0`.
 double rt_light3d_get_height(void *o) {
     (void)o;
     return 0.0;
 }
 
+/// @brief Ignore a rectangular-light height update.
+/// @param o Light3D handle (ignored).
+/// @param height Requested height (ignored).
 void rt_light3d_set_height(void *o, double height) {
     (void)o;
     (void)height;
 }
 
+/// @brief Return the neutral area/volume-light radius.
+/// @param o Light3D handle (ignored).
+/// @return Always `0.0`.
 double rt_light3d_get_radius(void *o) {
     (void)o;
     return 0.0;
 }
 
+/// @brief Ignore an area/volume-light radius update.
+/// @param o Light3D handle (ignored).
+/// @param radius Requested radius (ignored).
 void rt_light3d_set_radius(void *o, double radius) {
     (void)o;
     (void)radius;
 }
 
+/// @brief Return the default light decay-type identifier.
+/// @param o Light3D handle (ignored).
+/// @return Always `0`.
 int64_t rt_light3d_get_decay_type(void *o) {
     (void)o;
     return 0;
 }
 
+/// @brief Ignore a light decay-type update.
+/// @param o Light3D handle (ignored).
+/// @param decay_type Requested decay identifier (ignored).
 void rt_light3d_set_decay_type(void *o, int64_t decay_type) {
     (void)o;
     (void)decay_type;
 }
 
+/// @brief Return the neutral light range.
+/// @param o Light3D handle (ignored).
+/// @return Always `0.0`.
 double rt_light3d_get_range(void *o) {
     (void)o;
     return 0.0;
 }
 
+/// @brief Ignore a light range update.
+/// @param o Light3D handle (ignored).
+/// @param range Requested range (ignored).
 void rt_light3d_set_range(void *o, double range) {
     (void)o;
     (void)range;
 }
 
 /// @brief Stub for `NodeAnimation3D.New`; graphics support is unavailable.
+/// @param name Animation name (ignored).
+/// @param duration Animation duration (ignored).
+/// @return Never returns normally; graphics-unavailable handling yields NULL.
 void *rt_node_animation3d_new(rt_string name, double duration) {
     (void)name;
     (void)duration;
@@ -1291,24 +1452,32 @@ void *rt_node_animation3d_new(rt_string name, double duration) {
 }
 
 /// @brief Stub for `NodeAnimation3D.Name`.
+/// @param animation NodeAnimation3D handle (ignored).
+/// @return Empty runtime string.
 rt_string rt_node_animation3d_get_name(void *animation) {
     (void)animation;
     return rt_const_cstr("");
 }
 
 /// @brief Stub for `NodeAnimation3D.Duration`.
+/// @param animation NodeAnimation3D handle (ignored).
+/// @return Always `0.0`.
 double rt_node_animation3d_get_duration(void *animation) {
     (void)animation;
     return 0.0;
 }
 
 /// @brief Stub for `NodeAnimation3D.ChannelCount`.
+/// @param animation NodeAnimation3D handle (ignored).
+/// @return Always `0`.
 int64_t rt_node_animation3d_get_channel_count(void *animation) {
     (void)animation;
     return 0;
 }
 
 /// @brief Stub for `NodeAnimator3D.New`; graphics support is unavailable.
+/// @param clip Initial NodeAnimation3D clip (ignored).
+/// @return Never returns normally; graphics-unavailable handling yields NULL.
 void *rt_node_animator3d_new(void *clip) {
     (void)clip;
     rt_graphics_unavailable_("NodeAnimator3D.New: graphics support not compiled in");
@@ -1316,12 +1485,17 @@ void *rt_node_animator3d_new(void *clip) {
 }
 
 /// @brief Stub for `NodeAnimator3D.ClipCount`.
+/// @param animator NodeAnimator3D handle (ignored).
+/// @return Always `0`.
 int64_t rt_node_animator3d_get_clip_count(void *animator) {
     (void)animator;
     return 0;
 }
 
 /// @brief Stub for `NodeAnimator3D.GetClip`.
+/// @param animator NodeAnimator3D handle (ignored).
+/// @param index Clip index (ignored).
+/// @return Always NULL.
 void *rt_node_animator3d_get_clip(void *animator, int64_t index) {
     (void)animator;
     (void)index;
@@ -1329,6 +1503,9 @@ void *rt_node_animator3d_get_clip(void *animator, int64_t index) {
 }
 
 /// @brief Stub for `NodeAnimator3D.GetClipName`.
+/// @param animator NodeAnimator3D handle (ignored).
+/// @param index Clip index (ignored).
+/// @return Empty runtime string.
 rt_string rt_node_animator3d_get_clip_name(void *animator, int64_t index) {
     (void)animator;
     (void)index;
@@ -1336,30 +1513,41 @@ rt_string rt_node_animator3d_get_clip_name(void *animator, int64_t index) {
 }
 
 /// @brief Stub for `NodeAnimator3D.CurrentClip`.
+/// @param animator NodeAnimator3D handle (ignored).
+/// @return Empty runtime string.
 rt_string rt_node_animator3d_get_current_clip(void *animator) {
     (void)animator;
     return rt_const_cstr("");
 }
 
 /// @brief Stub for `NodeAnimator3D.Playing`.
+/// @param animator NodeAnimator3D handle (ignored).
+/// @return Always `0`.
 int8_t rt_node_animator3d_get_playing(void *animator) {
     (void)animator;
     return 0;
 }
 
 /// @brief Stub for `NodeAnimator3D.Speed`.
+/// @param animator NodeAnimator3D handle (ignored).
+/// @return Always `0.0`.
 double rt_node_animator3d_get_speed(void *animator) {
     (void)animator;
     return 0.0;
 }
 
 /// @brief Stub for `NodeAnimator3D.Time`.
+/// @param animator NodeAnimator3D handle (ignored).
+/// @return Always `0.0`.
 double rt_node_animator3d_get_time(void *animator) {
     (void)animator;
     return 0.0;
 }
 
 /// @brief Stub for `NodeAnimator3D.Play`.
+/// @param animator NodeAnimator3D handle (ignored).
+/// @param name Clip name (ignored).
+/// @return Always `0`.
 int8_t rt_node_animator3d_play(void *animator, rt_string name) {
     (void)animator;
     (void)name;
@@ -1367,23 +1555,30 @@ int8_t rt_node_animator3d_play(void *animator, rt_string name) {
 }
 
 /// @brief Stub for `NodeAnimator3D.Stop`.
+/// @param animator NodeAnimator3D handle (ignored).
 void rt_node_animator3d_stop(void *animator) {
     (void)animator;
 }
 
 /// @brief Stub for `NodeAnimator3D.SetSpeed`.
+/// @param animator NodeAnimator3D handle (ignored).
+/// @param speed Requested playback speed (ignored).
 void rt_node_animator3d_set_speed(void *animator, double speed) {
     (void)animator;
     (void)speed;
 }
 
 /// @brief Stub for `NodeAnimator3D.SetTime`.
+/// @param animator NodeAnimator3D handle (ignored).
+/// @param time Requested playback time (ignored).
 void rt_node_animator3d_set_time(void *animator, double time) {
     (void)animator;
     (void)time;
 }
 
 /// @brief Stub for `NodeAnimator3D.Update`.
+/// @param animator NodeAnimator3D handle (ignored).
+/// @param dt Elapsed time (ignored).
 void rt_node_animator3d_update(void *animator, double dt) {
     (void)animator;
     (void)dt;
@@ -1595,6 +1790,10 @@ rt_string rt_animation3d_get_name(void *a) {
 /// @brief Stub for `Animation3D.Retarget`.
 ///
 /// Silent stub returning NULL.
+/// @param a Animation3D handle (ignored).
+/// @param src Source Skeleton3D handle (ignored).
+/// @param dst Destination Skeleton3D handle (ignored).
+/// @return Always NULL.
 void *rt_animation3d_retarget(void *a, void *src, void *dst) {
     (void)a;
     (void)src;
@@ -1915,12 +2114,17 @@ rt_string rt_fbx_get_animation_name(void *f, int64_t i) {
 }
 
 /// @brief Stub object/morph animation count for graphics-disabled builds.
+/// @param f FBX document handle (ignored).
+/// @return Always `0`.
 int64_t rt_fbx_node_animation_count(void *f) {
     (void)f;
     return 0;
 }
 
 /// @brief Stub object/morph animation lookup for graphics-disabled builds.
+/// @param f FBX document handle (ignored).
+/// @param i Animation index (ignored).
+/// @return Always NULL.
 void *rt_fbx_get_node_animation(void *f, int64_t i) {
     (void)f;
     (void)i;
@@ -1928,6 +2132,9 @@ void *rt_fbx_get_node_animation(void *f, int64_t i) {
 }
 
 /// @brief Stub object/morph animation name lookup for graphics-disabled builds.
+/// @param f FBX document handle (ignored).
+/// @param i Animation index (ignored).
+/// @return Empty runtime string.
 rt_string rt_fbx_get_node_animation_name(void *f, int64_t i) {
     (void)f;
     (void)i;
@@ -1935,12 +2142,17 @@ rt_string rt_fbx_get_node_animation_name(void *f, int64_t i) {
 }
 
 /// @brief Stub imported-camera count for graphics-disabled builds.
+/// @param f FBX document handle (ignored).
+/// @return Always `0`.
 int64_t rt_fbx_camera_count(void *f) {
     (void)f;
     return 0;
 }
 
 /// @brief Stub imported-camera lookup for graphics-disabled builds.
+/// @param f FBX document handle (ignored).
+/// @param i Camera index (ignored).
+/// @return Always NULL.
 void *rt_fbx_get_camera(void *f, int64_t i) {
     (void)f;
     (void)i;
@@ -2010,6 +2222,9 @@ void *rt_gltf_load(rt_string p) {
     return NULL;
 }
 
+/// @brief Trap because asset-URI glTF loading requires unavailable Graphics3D support.
+/// @param p Asset path or URI (ignored).
+/// @return Never returns normally; graphics-unavailable handling yields NULL.
 void *rt_gltf_load_asset(rt_string p) {
     (void)p;
     rt_graphics_unavailable_("GLTF.LoadAsset: graphics support not compiled in");
@@ -2110,29 +2325,49 @@ void *rt_gltf_get_camera(void *g, int64_t i) {
     return NULL;
 }
 
+/// @brief Return the neutral glTF scene count.
+/// @param g glTF document handle (ignored).
+/// @return Always `0`.
 int64_t rt_gltf_scene_count(void *g) {
     (void)g;
     return 0;
 }
 
+/// @brief Return no glTF scene name in a graphics-disabled build.
+/// @param g glTF document handle (ignored).
+/// @param i Scene index (ignored).
+/// @return Empty runtime string.
 rt_string rt_gltf_get_scene_name(void *g, int64_t i) {
     (void)g;
     (void)i;
     return rt_const_cstr("");
 }
 
+/// @brief Return no indexed glTF scene root.
+/// @param g glTF document handle (ignored).
+/// @param i Scene index (ignored).
+/// @return Always NULL.
 void *rt_gltf_get_scene_root_at(void *g, int64_t i) {
     (void)g;
     (void)i;
     return NULL;
 }
 
+/// @brief Return the neutral camera count for an indexed glTF scene.
+/// @param g glTF document handle (ignored).
+/// @param scene_index Scene index (ignored).
+/// @return Always `0`.
 int64_t rt_gltf_scene_camera_count(void *g, int64_t scene_index) {
     (void)g;
     (void)scene_index;
     return 0;
 }
 
+/// @brief Return no indexed camera for a glTF scene.
+/// @param g glTF document handle (ignored).
+/// @param scene_index Scene index (ignored).
+/// @param i Camera index (ignored).
+/// @return Always NULL.
 void *rt_gltf_get_scene_camera(void *g, int64_t scene_index, int64_t i) {
     (void)g;
     (void)scene_index;
@@ -2181,6 +2416,9 @@ void *rt_model3d_load_result(rt_string p) {
     return rt_result_err_str(rt_const_cstr("SceneAsset.Load: graphics support not compiled in"));
 }
 
+/// @brief Trap because SceneAsset URI loading requires unavailable Graphics3D support.
+/// @param p Asset path or URI (ignored).
+/// @return Never returns normally; graphics-unavailable handling yields NULL.
 void *rt_model3d_load_asset(rt_string p) {
     (void)p;
     rt_graphics_unavailable_("Model3D.LoadAsset: graphics support not compiled in");
@@ -2197,6 +2435,9 @@ void *rt_model3d_load_asset_result(rt_string p) {
 }
 
 /// @brief Stub for `SceneAsset.Save` in graphics-disabled builds.
+/// @param model SceneAsset handle (ignored).
+/// @param path Destination path (ignored).
+/// @return Never returns normally; graphics-unavailable handling yields `0`.
 int64_t rt_model3d_save(void *model, rt_string path) {
     (void)model;
     (void)path;
@@ -2255,18 +2496,24 @@ int64_t rt_model3d_get_animation_count(void *m) {
 }
 
 /// @brief Stub for `Model3D.NodeAnimationCount`.
+/// @param m Model3D handle (ignored).
+/// @return Always `0`.
 int64_t rt_model3d_get_node_animation_count(void *m) {
     (void)m;
     return 0;
 }
 
 /// @brief Stub for `SceneAsset.MorphTargetCount`.
+/// @param m SceneAsset handle (ignored).
+/// @return Always `0`.
 int64_t rt_model3d_get_morph_target_count(void *m) {
     (void)m;
     return 0;
 }
 
 /// @brief Stub for `SceneAsset.MorphShapeCount`.
+/// @param m SceneAsset handle (ignored).
+/// @return Always `0`.
 int64_t rt_model3d_get_morph_shape_count(void *m) {
     (void)m;
     return 0;
@@ -2343,6 +2590,9 @@ void *rt_model3d_get_animation(void *m, int64_t i) {
 }
 
 /// @brief Stub for `Model3D.GetNodeAnimation`.
+/// @param m Model3D handle (ignored).
+/// @param i Node-animation index (ignored).
+/// @return Always NULL.
 void *rt_model3d_get_node_animation(void *m, int64_t i) {
     (void)m;
     (void)i;
@@ -2350,6 +2600,9 @@ void *rt_model3d_get_node_animation(void *m, int64_t i) {
 }
 
 /// @brief Stub for `SceneAsset.GetMorphTarget(meshIndex)`.
+/// @param m SceneAsset handle (ignored).
+/// @param i Mesh index (ignored).
+/// @return Always NULL.
 void *rt_model3d_get_morph_target(void *m, int64_t i) {
     (void)m;
     (void)i;
@@ -2357,6 +2610,9 @@ void *rt_model3d_get_morph_target(void *m, int64_t i) {
 }
 
 /// @brief Stub for `Model3D.GetNodeAnimationName`.
+/// @param m Model3D handle (ignored).
+/// @param i Node-animation index (ignored).
+/// @return Empty runtime string.
 rt_string rt_model3d_get_node_animation_name(void *m, int64_t i) {
     (void)m;
     (void)i;
@@ -2364,6 +2620,9 @@ rt_string rt_model3d_get_node_animation_name(void *m, int64_t i) {
 }
 
 /// @brief Stub for `Model3D.LoadAnimation`.
+/// @param path Model path (ignored).
+/// @param index Animation index (ignored).
+/// @return Never returns normally; graphics-unavailable handling yields NULL.
 void *rt_model3d_load_animation(rt_string path, int64_t index) {
     (void)path;
     (void)index;
@@ -2383,6 +2642,9 @@ void *rt_model3d_load_animation_result(rt_string path, int64_t index) {
 }
 
 /// @brief Stub for `Model3D.LoadAnimationAsset`.
+/// @param path Asset path or URI (ignored).
+/// @param index Animation index (ignored).
+/// @return Never returns normally; graphics-unavailable handling yields NULL.
 void *rt_model3d_load_animation_asset(rt_string path, int64_t index) {
     (void)path;
     (void)index;
@@ -2402,6 +2664,9 @@ void *rt_model3d_load_animation_asset_result(rt_string path, int64_t index) {
 }
 
 /// @brief Stub for `Model3D.LoadNodeAnimation`.
+/// @param path Model path (ignored).
+/// @param index Node-animation index (ignored).
+/// @return Never returns normally; graphics-unavailable handling yields NULL.
 void *rt_model3d_load_node_animation(rt_string path, int64_t index) {
     (void)path;
     (void)index;
@@ -2421,6 +2686,9 @@ void *rt_model3d_load_node_animation_result(rt_string path, int64_t index) {
 }
 
 /// @brief Stub for `Model3D.LoadNodeAnimationAsset`.
+/// @param path Asset path or URI (ignored).
+/// @param index Node-animation index (ignored).
+/// @return Never returns normally; graphics-unavailable handling yields NULL.
 void *rt_model3d_load_node_animation_asset(rt_string path, int64_t index) {
     (void)path;
     (void)index;
@@ -3125,16 +3393,28 @@ int64_t rt_anim_blend3d_state_count(void *b) {
 
 /* BlendTree3D stubs */
 
+/// @brief Return no 1D blend tree in a graphics-disabled build.
+/// @param skeleton Skeleton3D handle (ignored).
+/// @return Always NULL.
 void *rt_blend_tree3d_new_1d(void *skeleton) {
     (void)skeleton;
     return NULL;
 }
 
+/// @brief Return no 2D blend tree in a graphics-disabled build.
+/// @param skeleton Skeleton3D handle (ignored).
+/// @return Always NULL.
 void *rt_blend_tree3d_new_2d(void *skeleton) {
     (void)skeleton;
     return NULL;
 }
 
+/// @brief Reject adding an animation sample to an unavailable blend tree.
+/// @param tree BlendTree3D handle (ignored).
+/// @param animation Animation3D handle (ignored).
+/// @param x Sample x coordinate (ignored).
+/// @param y Sample y coordinate (ignored).
+/// @return Always `-1`.
 int64_t rt_blend_tree3d_add_sample(void *tree, void *animation, double x, double y) {
     (void)tree;
     (void)animation;
@@ -3143,22 +3423,35 @@ int64_t rt_blend_tree3d_add_sample(void *tree, void *animation, double x, double
     return -1;
 }
 
+/// @brief Ignore a blend-tree parameter update.
+/// @param tree BlendTree3D handle (ignored).
+/// @param x Blend parameter x coordinate (ignored).
+/// @param y Blend parameter y coordinate (ignored).
 void rt_blend_tree3d_set_param(void *tree, double x, double y) {
     (void)tree;
     (void)x;
     (void)y;
 }
 
+/// @brief Ignore a blend-tree time update.
+/// @param tree BlendTree3D handle (ignored).
+/// @param dt Elapsed time (ignored).
 void rt_blend_tree3d_update(void *tree, double dt) {
     (void)tree;
     (void)dt;
 }
 
+/// @brief Return the neutral blend-tree sample count.
+/// @param tree BlendTree3D handle (ignored).
+/// @return Always `0`.
 int64_t rt_blend_tree3d_get_sample_count(void *tree) {
     (void)tree;
     return 0;
 }
 
+/// @brief Return no computed blend pose.
+/// @param tree BlendTree3D handle (ignored).
+/// @return Always NULL.
 void *rt_blend_tree3d_get_blend(void *tree) {
     (void)tree;
     return NULL;
@@ -3166,6 +3459,12 @@ void *rt_blend_tree3d_get_blend(void *tree) {
 
 /* IKSolver3D stubs */
 
+/// @brief Return no two-bone IK solver in a graphics-disabled build.
+/// @param skeleton Skeleton3D handle (ignored).
+/// @param root Root bone index (ignored).
+/// @param mid Middle bone index (ignored).
+/// @param end End-effector bone index (ignored).
+/// @return Always NULL.
 void *rt_ik_solver3d_two_bone(void *skeleton, int64_t root, int64_t mid, int64_t end) {
     (void)skeleton;
     (void)root;
@@ -3174,42 +3473,70 @@ void *rt_ik_solver3d_two_bone(void *skeleton, int64_t root, int64_t mid, int64_t
     return NULL;
 }
 
+/// @brief Return no look-at IK solver.
+/// @param skeleton Skeleton3D handle (ignored).
+/// @param bone Driven bone index (ignored).
+/// @return Always NULL.
 void *rt_ik_solver3d_look_at(void *skeleton, int64_t bone) {
     (void)skeleton;
     (void)bone;
     return NULL;
 }
 
+/// @brief Return no FABRIK IK solver.
+/// @param skeleton Skeleton3D handle (ignored).
+/// @param chain Bone-index chain (ignored).
+/// @return Always NULL.
 void *rt_ik_solver3d_fabrik(void *skeleton, void *chain) {
     (void)skeleton;
     (void)chain;
     return NULL;
 }
 
+/// @brief Ignore an IK target update.
+/// @param solver IKSolver3D handle (ignored).
+/// @param target Vec3 or Transform target (ignored).
 void rt_ik_solver3d_set_target(void *solver, void *target) {
     (void)solver;
     (void)target;
 }
 
+/// @brief Ignore an IK blend-weight update.
+/// @param solver IKSolver3D handle (ignored).
+/// @param weight Requested solver weight (ignored).
 void rt_ik_solver3d_set_weight(void *solver, double weight) {
     (void)solver;
     (void)weight;
 }
 
+/// @brief Ignore an IK pole-vector update.
+/// @param solver IKSolver3D handle (ignored).
+/// @param pole Vec3 pole target (ignored).
 void rt_ik_solver3d_set_pole(void *solver, void *pole) {
     (void)solver;
     (void)pole;
 }
 
+/// @brief Ignore an IK solve request.
+/// @param solver IKSolver3D handle (ignored).
 void rt_ik_solver3d_solve(void *solver) {
     (void)solver;
 }
 
+/// @brief Return no skeleton from an unavailable IK solver.
+/// @param solver IKSolver3D handle (ignored).
+/// @return Always NULL.
 void *rt_ik_solver3d_get_skeleton(void *solver) {
     (void)solver;
     return NULL;
 }
 
+/// @brief Report that an unavailable IK solver cannot modify a pose.
+/// @param solver IKSolver3D handle (ignored).
+/// @param locals Local-pose matrix buffer (ignored).
+/// @param globals Global-pose matrix buffer (ignored).
+/// @param bone_count Number of bones in both buffers (ignored).
+/// @return Always `0`.
 int8_t rt_ik_solver3d_apply_to_pose(void *solver,
                                     float *locals,
                                     float *globals,
@@ -3451,6 +3778,13 @@ int8_t rt_anim_controller3d_set_blend_tree(void *c, void *t) {
 
 /// @brief Stub for `AnimController3D.SetIKSolver` — would normally apply an
 ///        IKSolver3D after controller layers and before skinning.
+///
+/// Silent stub returning `0`.
+///
+/// @param c AnimController3D handle (ignored).
+/// @param s IKSolver3D handle to apply (ignored).
+///
+/// @return `0`.
 int8_t rt_anim_controller3d_set_ik_solver(void *c, void *s) {
     (void)c;
     (void)s;
@@ -3622,6 +3956,13 @@ int8_t rt_anim_controller3d_crossfade_layer(void *c, int64_t l, rt_string s, dou
 ///        toward state `s` over `d` seconds and compose it as a bind-pose delta.
 ///
 /// Silent stub returning `0`.
+///
+/// @param c AnimController3D handle (ignored).
+/// @param l Layer index (ignored).
+/// @param s Target state name (ignored).
+/// @param d Crossfade duration in seconds (ignored).
+///
+/// @return `0`.
 int8_t rt_anim_controller3d_crossfade_layer_additive(void *c, int64_t l, rt_string s, double d) {
     (void)c;
     (void)l;
@@ -3910,12 +4251,19 @@ void rt_texatlas3d_get_uv_rect(
 }
 
 /// @brief Stub for `Particles3D.set_Seed`. Silent no-op stub.
+///
+/// @param obj  Particles3D handle (ignored).
+/// @param seed Deterministic random seed (ignored).
 void rt_particles3d_set_seed(void *obj, int64_t seed) {
     (void)obj;
     (void)seed;
 }
 
 /// @brief Stub for `Particles3D.get_Seed`. Silent stub returning 0.
+///
+/// @param obj Particles3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_particles3d_get_seed(void *obj) {
     (void)obj;
     return 0;
@@ -3925,12 +4273,19 @@ int64_t rt_particles3d_get_seed(void *obj) {
  * defs whose implementations compile only in graphics-enabled builds. */
 
 /// @brief Silent fallback stub for `BlendTree3D.get_BlendMode` (graphics-disabled build).
+///
+/// @param o BlendTree3D handle (ignored).
+///
+/// @return `0`, the fallback blend-mode value.
 int64_t rt_blend_tree3d_get_blend_mode(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("BlendTree3D.get_BlendMode: graphics support not compiled in", 0);
 }
 
 /// @brief Trapping stub for `BlendTree3D.set_BlendMode` (graphics-disabled build).
+///
+/// @param o  BlendTree3D handle (ignored before trapping).
+/// @param a1 Blend-mode value (ignored before trapping).
 void rt_blend_tree3d_set_blend_mode(void *o, int64_t a1) {
     (void)o;
     (void)a1;
@@ -3938,6 +4293,9 @@ void rt_blend_tree3d_set_blend_mode(void *o, int64_t a1) {
 }
 
 /// @brief Trapping stub for `Decal3D.SetDepthBias` (graphics-disabled build).
+///
+/// @param o  Decal3D handle (ignored before trapping).
+/// @param a1 Depth-bias value (ignored before trapping).
 void rt_decal3d_set_depth_bias(void *o, double a1) {
     (void)o;
     (void)a1;
@@ -3945,18 +4303,27 @@ void rt_decal3d_set_depth_bias(void *o, double a1) {
 }
 
 /// @brief Trapping stub for `Material3D.ClearAlbedoRenderTarget` (graphics-disabled build).
+///
+/// @param o Material3D handle (ignored before trapping).
 void rt_material3d_clear_albedo_render_target(void *o) {
     (void)o;
     RT_GRAPHICS_TRAP_VOID("Material3D.ClearAlbedoRenderTarget: graphics support not compiled in");
 }
 
 /// @brief Silent fallback stub for `Material3D.get_SsrEnabled` (graphics-disabled build).
+///
+/// @param o Material3D handle (ignored).
+///
+/// @return `0`, indicating that screen-space reflections are disabled.
 int8_t rt_material3d_get_ssr_enabled(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("Material3D.get_SsrEnabled: graphics support not compiled in", 0);
 }
 
 /// @brief Trapping stub for `Material3D.SetAlbedoRenderTarget` (graphics-disabled build).
+///
+/// @param o  Material3D handle (ignored before trapping).
+/// @param a1 Render-target handle (ignored before trapping).
 void rt_material3d_set_albedo_render_target(void *o, void *a1) {
     (void)o;
     (void)a1;
@@ -3964,6 +4331,9 @@ void rt_material3d_set_albedo_render_target(void *o, void *a1) {
 }
 
 /// @brief Trapping stub for `Material3D.SetEmissiveRenderTarget` (graphics-disabled build).
+///
+/// @param o  Material3D handle (ignored before trapping).
+/// @param a1 Render-target handle (ignored before trapping).
 void rt_material3d_set_emissive_render_target(void *o, void *a1) {
     (void)o;
     (void)a1;
@@ -3971,6 +4341,9 @@ void rt_material3d_set_emissive_render_target(void *o, void *a1) {
 }
 
 /// @brief Trapping stub for `Material3D.set_SsrEnabled` (graphics-disabled build).
+///
+/// @param o  Material3D handle (ignored before trapping).
+/// @param a1 Non-zero to enable screen-space reflections (ignored before trapping).
 void rt_material3d_set_ssr_enabled(void *o, int8_t a1) {
     (void)o;
     (void)a1;
@@ -3978,6 +4351,12 @@ void rt_material3d_set_ssr_enabled(void *o, int8_t a1) {
 }
 
 /// @brief Silent fallback stub for `SceneAsset.ApplyVariant` (graphics-disabled build).
+///
+/// @param o  SceneAsset handle (ignored).
+/// @param a1 Destination scene or model handle (ignored).
+/// @param a2 Variant index to apply (ignored).
+///
+/// @return `0`, indicating that no variant was applied.
 int64_t rt_model3d_apply_variant(void *o, void *a1, int64_t a2) {
     (void)o;
     (void)a1;
@@ -3986,6 +4365,12 @@ int64_t rt_model3d_apply_variant(void *o, void *a1, int64_t a2) {
 }
 
 /// @brief Silent fallback stub for `SceneAsset.GenerateLODs` (graphics-disabled build).
+///
+/// @param o  SceneAsset handle (ignored).
+/// @param a1 Number of levels of detail to generate (ignored).
+/// @param a2 Simplification ratio between levels (ignored).
+///
+/// @return `0`, indicating that no levels of detail were generated.
 int64_t rt_model3d_generate_lods(void *o, int64_t a1, double a2) {
     (void)o;
     (void)a1;
@@ -3994,6 +4379,10 @@ int64_t rt_model3d_generate_lods(void *o, int64_t a1, double a2) {
 }
 
 /// @brief Silent fallback stub for `SceneAsset.get_VariantCount` (graphics-disabled build).
+///
+/// @param o SceneAsset handle (ignored).
+///
+/// @return `0`, indicating that no material variants are available.
 int64_t rt_model3d_get_variant_count(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("SceneAsset.get_VariantCount: graphics support not compiled in",
@@ -4001,6 +4390,11 @@ int64_t rt_model3d_get_variant_count(void *o) {
 }
 
 /// @brief Silent fallback stub for `SceneAsset.GetVariantName` (graphics-disabled build).
+///
+/// @param o  SceneAsset handle (ignored).
+/// @param a1 Variant index (ignored).
+///
+/// @return An empty runtime string.
 rt_string rt_model3d_get_variant_name(void *o, int64_t a1) {
     (void)o;
     (void)a1;
@@ -4009,6 +4403,11 @@ rt_string rt_model3d_get_variant_name(void *o, int64_t a1) {
 }
 
 /// @brief Trapping stub for `SceneAsset.LoadResultWithOptions` (graphics-disabled build).
+///
+/// @param a0 Asset path to load (ignored before trapping).
+/// @param a1 Non-zero to request the optional loading behavior (ignored before trapping).
+///
+/// @return This stub traps before returning; `NULL` is supplied as the macro fallback.
 void *rt_model3d_load_result_with_options(rt_string a0, int8_t a1) {
     (void)a0;
     (void)a1;
@@ -4017,6 +4416,11 @@ void *rt_model3d_load_result_with_options(rt_string a0, int8_t a1) {
 }
 
 /// @brief Trapping stub for `SceneAsset.LoadWithOptions` (graphics-disabled build).
+///
+/// @param a0 Asset path to load (ignored before trapping).
+/// @param a1 Non-zero to request the optional loading behavior (ignored before trapping).
+///
+/// @return This stub traps before returning; `NULL` is supplied as the macro fallback.
 void *rt_model3d_load_with_options(rt_string a0, int8_t a1) {
     (void)a0;
     (void)a1;
@@ -4024,6 +4428,11 @@ void *rt_model3d_load_with_options(rt_string a0, int8_t a1) {
 }
 
 /// @brief Trapping stub for `SceneAsset.LoadWithOptionsEx` (graphics-disabled build).
+///
+/// @param a0 Asset path to load (ignored before trapping).
+/// @param a1 Serialized or named loading options (ignored before trapping).
+///
+/// @return This stub traps before returning; `NULL` is supplied as the macro fallback.
 void *rt_model3d_load_with_options_ex(rt_string a0, rt_string a1) {
     (void)a0;
     (void)a1;
@@ -4031,6 +4440,9 @@ void *rt_model3d_load_with_options_ex(rt_string a0, rt_string a1) {
 }
 
 /// @brief Trapping stub for `Particles3D.SetStretch` (graphics-disabled build).
+///
+/// @param o  Particles3D handle (ignored before trapping).
+/// @param a1 Stretch factor (ignored before trapping).
 void rt_particles3d_set_stretch(void *o, double a1) {
     (void)o;
     (void)a1;
@@ -4038,6 +4450,10 @@ void rt_particles3d_set_stretch(void *o, double a1) {
 }
 
 /// @brief Trapping stub for `Particles3D.SetTrail` (graphics-disabled build).
+///
+/// @param o  Particles3D handle (ignored before trapping).
+/// @param a1 Trail duration or length setting (ignored before trapping).
+/// @param a2 Trail segment count (ignored before trapping).
 void rt_particles3d_set_trail(void *o, double a1, int64_t a2) {
     (void)o;
     (void)a1;
@@ -4046,12 +4462,20 @@ void rt_particles3d_set_trail(void *o, double a1, int64_t a2) {
 }
 
 /// @brief Silent fallback stub for `Skeleton3D.get_AliasCount` (graphics-disabled build).
+///
+/// @param o Skeleton3D handle (ignored).
+///
+/// @return `0`, indicating that no bone aliases are available.
 int64_t rt_skeleton3d_get_alias_count(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("Skeleton3D.get_AliasCount: graphics support not compiled in", 0);
 }
 
 /// @brief Trapping stub for `Skeleton3D.SetBoneAlias` (graphics-disabled build).
+///
+/// @param o  Skeleton3D handle (ignored before trapping).
+/// @param a1 Alias name (ignored before trapping).
+/// @param a2 Target bone name (ignored before trapping).
 void rt_skeleton3d_set_bone_alias(void *o, rt_string a1, rt_string a2) {
     (void)o;
     (void)a1;
@@ -4060,12 +4484,19 @@ void rt_skeleton3d_set_bone_alias(void *o, rt_string a1, rt_string a2) {
 }
 
 /// @brief Silent fallback stub for `Sprite3D.get_Additive` (graphics-disabled build).
+///
+/// @param o Sprite3D handle (ignored).
+///
+/// @return `0`, indicating that additive blending is disabled.
 int8_t rt_sprite3d_get_additive(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("Sprite3D.get_Additive: graphics support not compiled in", 0);
 }
 
 /// @brief Trapping stub for `Sprite3D.set_Additive` (graphics-disabled build).
+///
+/// @param o  Sprite3D handle (ignored before trapping).
+/// @param a1 Non-zero to enable additive blending (ignored before trapping).
 void rt_sprite3d_set_additive(void *o, int8_t a1) {
     (void)o;
     (void)a1;
@@ -4073,6 +4504,9 @@ void rt_sprite3d_set_additive(void *o, int8_t a1) {
 }
 
 /// @brief Trapping stub for `Sprite3D.SetColor` (graphics-disabled build).
+///
+/// @param o  Sprite3D handle (ignored before trapping).
+/// @param a1 Packed tint color (ignored before trapping).
 void rt_sprite3d_set_color(void *o, int64_t a1) {
     (void)o;
     (void)a1;

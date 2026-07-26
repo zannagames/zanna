@@ -25,6 +25,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file rt_gui_filedialog.c
+/// @brief Implements synchronous, asynchronous, and reusable file-dialog runtime bindings.
+///
+/// @details
+/// The module preserves legacy sentinel and escaped-list APIs while also
+/// exposing explicit Option and sequence results. Retained controller wrappers
+/// deep-copy accepted paths and keep headless behavior ABI-compatible.
+
 #include "rt_gui_internal.h"
 #include "rt_option.h"
 #include "rt_platform.h"
@@ -32,6 +40,8 @@
 #include "rt_trap.h"
 
 /// @brief Count paths in the escaped semicolon list returned by `OpenMultiple`.
+/// @param escaped Runtime escaped path list.
+/// @return Number of encoded paths, zero for empty input, or `INT64_MAX` on saturation.
 int64_t rt_filedialog_path_list_count(rt_string escaped) {
     if (!escaped)
         return 0;
@@ -59,6 +69,9 @@ int64_t rt_filedialog_path_list_count(rt_string escaped) {
 }
 
 /// @brief Decode one path from the escaped semicolon list returned by `OpenMultiple`.
+/// @param escaped Runtime escaped path list.
+/// @param index Zero-based encoded path index.
+/// @return Owned decoded path, or an empty runtime string for invalid input or allocation failure.
 rt_string rt_filedialog_path_list_get(rt_string escaped, int64_t index) {
     if (!escaped || index < 0)
         return rt_str_empty();
@@ -205,6 +218,7 @@ void *rt_filedialog_open_multiple_seq(rt_string title, rt_string default_path, r
 /// @details Prefers the app returned by `rt_gui_get_active_app`; falls back to
 ///          the module-level `s_current_app` pointer so dialogs work even when
 ///          the "active" app is temporarily null during event dispatch.
+/// @return Active or current application, or `NULL` when no GUI app is available.
 static rt_gui_app_t *rt_filedialog_app(void) {
     rt_gui_app_t *app = rt_gui_get_active_app();
     return app ? app : s_current_app;
@@ -231,6 +245,10 @@ static char *rt_filedialog_strdup(const char *text) {
 
 /// @brief Join selected paths as a semicolon-delimited string with '\\' escaping.
 /// @details Escapes literal ';' and '\\' so callers can unambiguously split the result.
+/// @param paths Array of selected null-terminated paths.
+/// @param count Number of entries in @p paths.
+/// @param[out] out_len Optional destination for the encoded byte length.
+/// @return Newly allocated escaped list, or `NULL` for empty input, overflow, or OOM.
 static char *rt_filedialog_join_paths_escaped(char **paths, size_t count, size_t *out_len) {
     if (out_len)
         *out_len = 0;
@@ -278,6 +296,9 @@ static char *rt_filedialog_join_paths_escaped(char **paths, size_t count, size_t
 /// @details Ensures default font is applied, sets the dialog as the modal root over `app->root`,
 ///          shows it, and pushes it so the main loop blocks on it. Returns 0 if any pointer is
 ///          NULL.
+/// @param app Application and window hosting the modal surface.
+/// @param dialog Lower-toolkit file dialog to configure and push.
+/// @return `1` when the dialog becomes the top modal dialog; otherwise `0`.
 static int rt_filedialog_prepare_modal(rt_gui_app_t *app, vg_filedialog_t *dialog) {
     if (!app || !app->window || !app->root || !dialog)
         return 0;
@@ -293,6 +314,9 @@ static int rt_filedialog_prepare_modal(rt_gui_app_t *app, vg_filedialog_t *dialo
 /// @brief Run the GUI event loop until the dialog closes or the app signals shutdown.
 /// @details Polls and renders the app in a tight loop; pops the dialog from the stack
 ///          and syncs the modal root on exit. Returns 1 if at least one file was selected.
+/// @param app Application whose event loop drives the modal dialog.
+/// @param dialog Open lower-toolkit file dialog.
+/// @return `1` when at least one path was selected; otherwise `0`.
 static int rt_filedialog_run_modal(rt_gui_app_t *app, vg_filedialog_t *dialog) {
     if (!app || !dialog)
         return 0;
@@ -307,7 +331,14 @@ static int rt_filedialog_run_modal(rt_gui_app_t *app, vg_filedialog_t *dialog) {
 
 /// @brief Prepare and then run a modal file dialog in one call.
 /// @details Combines `rt_filedialog_prepare_modal` + `rt_filedialog_run_modal`.
+/// @param app Application hosting the modal dialog.
+/// @param dialog Lower-toolkit file dialog to show.
+/// @return `1` when at least one path was selected; otherwise `0`.
 #if !RT_PLATFORM_MACOS
+/// @brief Prepare and synchronously run a modal file dialog.
+/// @param app Application hosting the modal dialog.
+/// @param dialog Lower-toolkit file dialog to show.
+/// @return `1` when at least one path was selected; otherwise `0`.
 static int rt_filedialog_show_modal(rt_gui_app_t *app, vg_filedialog_t *dialog) {
     if (!rt_filedialog_prepare_modal(app, dialog))
         return 0;
@@ -318,6 +349,10 @@ static int rt_filedialog_show_modal(rt_gui_app_t *app, vg_filedialog_t *dialog) 
 /// @brief One-shot "open file" dialog. Blocks the caller until the user picks a single file or
 /// cancels when an active GUI app/window exists. Returns the absolute path on selection, or an
 /// empty string on cancel or when no modal GUI window is active.
+/// @param title Runtime dialog title.
+/// @param default_path Runtime initial directory.
+/// @param filter Runtime semicolon-delimited glob filter.
+/// @return Owned selected path, or an empty runtime string on cancellation or failure.
 rt_string rt_filedialog_open(rt_string title, rt_string default_path, rt_string filter) {
     RT_ASSERT_MAIN_THREAD();
     char *ctitle = rt_string_to_gui_cstr(title);
@@ -373,6 +408,10 @@ rt_string rt_filedialog_open(rt_string title, rt_string default_path, rt_string 
 
 /// @brief Open dialog with multi-select. Returns paths as an escaped semicolon-separated string.
 /// Use `rt_filedialog_path_list_count` and `rt_filedialog_path_list_get` to decode it.
+/// @param title Runtime dialog title.
+/// @param default_path Runtime initial directory.
+/// @param filter Runtime semicolon-delimited glob filter.
+/// @return Owned escaped path list, or an empty runtime string on cancellation or failure.
 rt_string rt_filedialog_open_multiple(rt_string title, rt_string default_path, rt_string filter) {
     RT_ASSERT_MAIN_THREAD();
     char *ctitle = rt_string_to_gui_cstr(title);
@@ -457,6 +496,11 @@ rt_string rt_filedialog_open_multiple(rt_string title, rt_string default_path, r
 /// @brief One-shot "save file" dialog. Returns the chosen path (with extension if user typed
 /// one or accepted the default), or empty on cancel. Does not actually create the file — the
 /// caller writes to the returned path.
+/// @param title Runtime dialog title.
+/// @param default_path Runtime initial directory.
+/// @param filter Runtime semicolon-delimited glob filter.
+/// @param default_name Runtime initial filename.
+/// @return Owned selected path, or an empty runtime string on cancellation or failure.
 rt_string rt_filedialog_save(rt_string title,
                              rt_string default_path,
                              rt_string filter,
@@ -518,6 +562,9 @@ rt_string rt_filedialog_save(rt_string title,
 }
 
 /// @brief One-shot folder-picker dialog. Returns the absolute folder path or empty on cancel.
+/// @param title Runtime dialog title.
+/// @param default_path Runtime initial directory.
+/// @return Owned selected folder path, or an empty runtime string on cancellation or failure.
 rt_string rt_filedialog_select_folder(rt_string title, rt_string default_path) {
     RT_ASSERT_MAIN_THREAD();
     char *ctitle = rt_string_to_gui_cstr(title);
@@ -591,6 +638,7 @@ static size_t s_filedialog_wrapper_cap = 0;
 /// @details The registry is the source of truth for handle validation: a checked
 ///          cast only trusts an opaque `void*` once it is found here (then verifies
 ///          the magic tag), guarding against forged/freed handles. Capacity doubles from 8.
+/// @param data File-dialog wrapper to register.
 /// @return 1 on success or if already present; 0 on overflow or realloc failure.
 static int rt_filedialog_register_wrapper(rt_filedialog_data_t *data) {
     RT_ASSERT_MAIN_THREAD();
@@ -616,6 +664,7 @@ static int rt_filedialog_register_wrapper(rt_filedialog_data_t *data) {
 }
 
 /// @brief Remove a wrapper from the file-dialog registry, compacting the array. No-op if absent.
+/// @param data Wrapper to remove.
 static void rt_filedialog_unregister_wrapper(rt_filedialog_data_t *data) {
     RT_ASSERT_MAIN_THREAD();
     if (!data)
@@ -632,6 +681,8 @@ static void rt_filedialog_unregister_wrapper(rt_filedialog_data_t *data) {
 }
 
 /// @brief True if @p data is a currently-registered wrapper; backs handle validation.
+/// @param data Candidate wrapper pointer.
+/// @return `1` when the exact pointer is registered; otherwise `0`.
 static int rt_filedialog_wrapper_is_registered(const rt_filedialog_data_t *data) {
     RT_ASSERT_MAIN_THREAD();
     if (!data)
@@ -643,6 +694,8 @@ static int rt_filedialog_wrapper_is_registered(const rt_filedialog_data_t *data)
     return 0;
 }
 
+/// @brief Invalidate any retained wrapper whose lower dialog was destroyed externally.
+/// @param dialog Lower dialog pointer being invalidated.
 void rt_filedialog_invalidate_dialog(vg_dialog_t *dialog) {
     RT_ASSERT_MAIN_THREAD();
     if (!dialog)
@@ -663,6 +716,8 @@ void rt_filedialog_invalidate_dialog(vg_dialog_t *dialog) {
 }
 
 /// @brief Safe-cast an opaque handle to the file-dialog wrapper by magic tag.
+/// @param dialog Candidate runtime FileDialog handle.
+/// @return Validated registered wrapper, or `NULL` for invalid input.
 static rt_filedialog_data_t *rt_filedialog_wrapper_checked(void *dialog) {
     rt_filedialog_data_t *data = (rt_filedialog_data_t *)dialog;
     return rt_filedialog_wrapper_is_registered(data) && data->magic == RT_FILEDIALOG_DATA_MAGIC
@@ -671,12 +726,15 @@ static rt_filedialog_data_t *rt_filedialog_wrapper_checked(void *dialog) {
 }
 
 /// @brief Safe-cast an opaque handle to a wrapper with a live backing dialog.
+/// @param dialog Candidate runtime FileDialog handle.
+/// @return Validated wrapper with a live lower widget, or `NULL`.
 static rt_filedialog_data_t *rt_filedialog_data_checked(void *dialog) {
     rt_filedialog_data_t *data = rt_filedialog_wrapper_checked(dialog);
     return data && data->dialog && vg_widget_is_live(&data->dialog->base.base) ? data : NULL;
 }
 
 /// @brief Free the selected-paths array and reset count to zero.
+/// @param data File-dialog wrapper whose owned path snapshot is cleared.
 static void rt_filedialog_clear_selected_paths(rt_filedialog_data_t *data) {
     if (!data || !data->selected_paths)
         return;
@@ -738,6 +796,8 @@ static int rt_filedialog_copy_paths(rt_filedialog_data_t *data, char **paths, si
 /// @details Fetches the borrowed path array owned by the VG backend, deep-copies every string, then
 ///          atomically replaces the wrapper's previous list. Partial copy failures clean
 ///          up fully and return 0 rather than leaving a corrupt partial list.
+/// @param data Live wrapper whose lower-dialog selection is copied.
+/// @return `1` after a complete copy; otherwise `0`.
 static int rt_filedialog_copy_selected_paths(rt_filedialog_data_t *data) {
     if (!data || !data->dialog)
         return 0;
@@ -790,6 +850,7 @@ static void rt_filedialog_on_result(vg_dialog_t *dialog,
 }
 
 /// @brief Release all resources owned by the file-dialog wrapper.
+/// @param data Registered wrapper to dispose.
 static void rt_filedialog_dispose(rt_filedialog_data_t *data) {
     if (!data)
         return;
@@ -809,6 +870,7 @@ static void rt_filedialog_dispose(rt_filedialog_data_t *data) {
 }
 
 /// @brief GC finalizer — delegates to `rt_filedialog_dispose`.
+/// @param dialog Managed FileDialog wrapper being finalized.
 static void rt_filedialog_finalize(void *dialog) {
     rt_filedialog_dispose((rt_filedialog_data_t *)dialog);
 }
@@ -816,6 +878,8 @@ static void rt_filedialog_finalize(void *dialog) {
 /// @brief Construct a stateful FileDialog object — `type` is RT_FILEDIALOG_OPEN/SAVE/FOLDER.
 /// Use the setters (`_set_title`, `_set_path`, `_add_filter`, ...) to configure, then `_show`
 /// to display modally. Returns NULL on backend or allocation failure.
+/// @param type Public open, save, or folder dialog type.
+/// @return New managed FileDialog wrapper, or `NULL` for invalid type or allocation failure.
 void *rt_filedialog_new(int64_t type) {
     RT_ASSERT_MAIN_THREAD();
     vg_filedialog_mode_t mode;
@@ -864,24 +928,29 @@ void *rt_filedialog_new(int64_t type) {
 }
 
 /// @brief Convenience constructor for an Open-file dialog.
+/// @return New managed open-file dialog, or `NULL` on failure.
 void *rt_filedialog_new_open(void) {
     RT_ASSERT_MAIN_THREAD();
     return rt_filedialog_new(RT_FILEDIALOG_OPEN);
 }
 
 /// @brief Convenience constructor for a Save-file dialog.
+/// @return New managed save-file dialog, or `NULL` on failure.
 void *rt_filedialog_new_save(void) {
     RT_ASSERT_MAIN_THREAD();
     return rt_filedialog_new(RT_FILEDIALOG_SAVE);
 }
 
 /// @brief Convenience constructor for a Select-folder dialog.
+/// @return New managed folder dialog, or `NULL` on failure.
 void *rt_filedialog_new_folder(void) {
     RT_ASSERT_MAIN_THREAD();
     return rt_filedialog_new(RT_FILEDIALOG_FOLDER);
 }
 
 /// @brief Set the dialog's titlebar text. No-op if `dialog` is NULL.
+/// @param dialog FileDialog wrapper handle.
+/// @param title Runtime title copied into lower-dialog storage.
 void rt_filedialog_set_title(void *dialog, rt_string title) {
     RT_ASSERT_MAIN_THREAD();
     rt_filedialog_data_t *data = rt_filedialog_data_checked(dialog);
@@ -895,6 +964,8 @@ void rt_filedialog_set_title(void *dialog, rt_string title) {
 
 /// @brief Set the directory the dialog opens in. Subsequent navigation may move elsewhere; the
 /// returned selection is always an absolute path.
+/// @param dialog FileDialog wrapper handle.
+/// @param path Runtime initial directory; embedded NUL bytes are rejected.
 void rt_filedialog_set_path(void *dialog, rt_string path) {
     RT_ASSERT_MAIN_THREAD();
     rt_filedialog_data_t *data = rt_filedialog_data_checked(dialog);
@@ -910,6 +981,9 @@ void rt_filedialog_set_path(void *dialog, rt_string path) {
 
 /// @brief Replace all filename filters with a single (`name`, `pattern`) entry. `name` is the
 /// human label shown in the dialog (e.g., "Image files"), `pattern` is the glob (e.g., "*.png").
+/// @param dialog FileDialog wrapper handle.
+/// @param name Optional runtime display name; defaults to `Files`.
+/// @param pattern Required runtime glob pattern without embedded NUL bytes.
 void rt_filedialog_set_filter(void *dialog, rt_string name, rt_string pattern) {
     RT_ASSERT_MAIN_THREAD();
     rt_filedialog_data_t *data = rt_filedialog_data_checked(dialog);
@@ -930,6 +1004,9 @@ void rt_filedialog_set_filter(void *dialog, rt_string name, rt_string pattern) {
 
 /// @brief Append an additional (`name`, `pattern`) filter without clearing existing ones. The
 /// dialog typically shows them in a dropdown; users can switch between filters at picking time.
+/// @param dialog FileDialog wrapper handle.
+/// @param name Optional runtime display name; defaults to `Files`.
+/// @param pattern Required runtime glob pattern without embedded NUL bytes.
 void rt_filedialog_add_filter(void *dialog, rt_string name, rt_string pattern) {
     RT_ASSERT_MAIN_THREAD();
     rt_filedialog_data_t *data = rt_filedialog_data_checked(dialog);
@@ -948,6 +1025,8 @@ void rt_filedialog_add_filter(void *dialog, rt_string name, rt_string pattern) {
 }
 
 /// @brief Pre-fill the filename field (Save dialogs primarily). User can edit before confirming.
+/// @param dialog FileDialog wrapper handle.
+/// @param name Runtime initial filename copied into lower-dialog storage.
 void rt_filedialog_set_default_name(void *dialog, rt_string name) {
     RT_ASSERT_MAIN_THREAD();
     rt_filedialog_data_t *data = rt_filedialog_data_checked(dialog);
@@ -961,6 +1040,8 @@ void rt_filedialog_set_default_name(void *dialog, rt_string name) {
 
 /// @brief Toggle multi-select. After `_show`, retrieve count via `_get_path_count` and individual
 /// paths via `_get_path_at(i)`. Has no effect on Save/Folder dialogs.
+/// @param dialog FileDialog wrapper handle.
+/// @param multiple Non-zero to enable multiple selection.
 void rt_filedialog_set_multiple(void *dialog, int64_t multiple) {
     RT_ASSERT_MAIN_THREAD();
     rt_filedialog_data_t *data = rt_filedialog_data_checked(dialog);
@@ -1083,6 +1164,8 @@ int64_t rt_filedialog_show_async(void *dialog) {
 /// @brief Show the dialog modally. Blocks the caller until the user dismisses it. Returns 1 if
 /// the user confirmed at least one selection, 0 if cancelled or if no active GUI window exists.
 /// Replaces any prior selection snapshot (calling `_show` twice on the same handle is allowed).
+/// @param dialog Live stateful FileDialog wrapper.
+/// @return `1` after an accepted selection; otherwise `0`.
 int64_t rt_filedialog_show(void *dialog) {
     RT_ASSERT_MAIN_THREAD();
     rt_filedialog_data_t *data = rt_filedialog_data_checked(dialog);
@@ -1167,6 +1250,8 @@ void *rt_filedialog_get_paths(void *dialog) {
 }
 
 /// @brief Return the first selected path from the most recent `_show`. Empty if no selection.
+/// @param dialog Live FileDialog wrapper.
+/// @return Owned first selected path, or an empty runtime string when absent or invalid.
 rt_string rt_filedialog_get_path(void *dialog) {
     RT_ASSERT_MAIN_THREAD();
     rt_filedialog_data_t *data = rt_filedialog_data_checked(dialog);
@@ -1179,6 +1264,8 @@ rt_string rt_filedialog_get_path(void *dialog) {
 }
 
 /// @brief Number of paths selected by the most recent `_show` (0 if cancelled or pre-show).
+/// @param dialog Live FileDialog wrapper.
+/// @return Selected path count saturated at `INT64_MAX`, or zero for invalid input.
 int64_t rt_filedialog_get_path_count(void *dialog) {
     RT_ASSERT_MAIN_THREAD();
     rt_filedialog_data_t *data = rt_filedialog_data_checked(dialog);
@@ -1191,6 +1278,9 @@ int64_t rt_filedialog_get_path_count(void *dialog) {
 
 /// @brief Return the i-th selected path (0-based) from a multi-select dialog. Empty if `index`
 /// is out of range. Use `_get_path_count` first to bound the iteration.
+/// @param dialog Live FileDialog wrapper.
+/// @param index Zero-based selected-path index.
+/// @return Owned selected path, or an empty runtime string for invalid input.
 rt_string rt_filedialog_get_path_at(void *dialog, int64_t index) {
     RT_ASSERT_MAIN_THREAD();
     rt_filedialog_data_t *data = rt_filedialog_data_checked(dialog);
@@ -1208,6 +1298,7 @@ rt_string rt_filedialog_get_path_at(void *dialog, int64_t index) {
 
 /// @brief Manually free dialog resources (paths, backend handle). The GC finalizer also calls
 /// this, so explicit destruction is optional — useful for early cleanup before GC catches up.
+/// @param dialog Registered FileDialog wrapper to destroy.
 void rt_filedialog_destroy(void *dialog) {
     RT_ASSERT_MAIN_THREAD();
     rt_filedialog_data_t *data = rt_filedialog_wrapper_checked(dialog);
@@ -1219,6 +1310,10 @@ void rt_filedialog_destroy(void *dialog) {
 #else /* !ZANNA_ENABLE_GRAPHICS */
 
 /// @brief Stub: returns empty string — file open dialog requires graphics.
+/// @param title Ignored dialog title.
+/// @param default_path Ignored initial directory.
+/// @param filter Ignored glob filter.
+/// @return Empty runtime string.
 rt_string rt_filedialog_open(rt_string title, rt_string default_path, rt_string filter) {
     (void)title;
     (void)default_path;
@@ -1227,6 +1322,10 @@ rt_string rt_filedialog_open(rt_string title, rt_string default_path, rt_string 
 }
 
 /// @brief Stub: returns empty string — multi-select open dialog requires graphics.
+/// @param title Ignored dialog title.
+/// @param default_path Ignored initial directory.
+/// @param filter Ignored glob filter.
+/// @return Empty runtime string.
 rt_string rt_filedialog_open_multiple(rt_string title, rt_string default_path, rt_string filter) {
     (void)title;
     (void)default_path;
@@ -1235,6 +1334,11 @@ rt_string rt_filedialog_open_multiple(rt_string title, rt_string default_path, r
 }
 
 /// @brief Stub: returns empty string — save dialog requires graphics.
+/// @param title Ignored dialog title.
+/// @param default_path Ignored initial directory.
+/// @param filter Ignored glob filter.
+/// @param default_name Ignored initial filename.
+/// @return Empty runtime string.
 rt_string rt_filedialog_save(rt_string title,
                              rt_string default_path,
                              rt_string filter,
@@ -1247,6 +1351,9 @@ rt_string rt_filedialog_save(rt_string title,
 }
 
 /// @brief Stub: returns empty string — folder picker requires graphics.
+/// @param title Ignored dialog title.
+/// @param default_path Ignored initial directory.
+/// @return Empty runtime string.
 rt_string rt_filedialog_select_folder(rt_string title, rt_string default_path) {
     (void)title;
     (void)default_path;
@@ -1254,39 +1361,51 @@ rt_string rt_filedialog_select_folder(rt_string title, rt_string default_path) {
 }
 
 /// @brief Stub: returns NULL — file dialog object requires graphics.
+/// @param type Ignored dialog type.
+/// @return Always `NULL`.
 void *rt_filedialog_new(int64_t type) {
     (void)type;
     return NULL;
 }
 
 /// @brief Stub: returns NULL — open-file dialog requires graphics.
+/// @return Always `NULL`.
 void *rt_filedialog_new_open(void) {
     return NULL;
 }
 
 /// @brief Stub: returns NULL — save-file dialog requires graphics.
+/// @return Always `NULL`.
 void *rt_filedialog_new_save(void) {
     return NULL;
 }
 
 /// @brief Stub: returns NULL — folder-picker dialog requires graphics.
+/// @return Always `NULL`.
 void *rt_filedialog_new_folder(void) {
     return NULL;
 }
 
 /// @brief Stub: `FileDialog.SetTitle` is a no-op without graphics.
+/// @param dialog Ignored FileDialog handle.
+/// @param title Ignored title.
 void rt_filedialog_set_title(void *dialog, rt_string title) {
     (void)dialog;
     (void)title;
 }
 
 /// @brief Stub: `FileDialog.SetPath` is a no-op without graphics.
+/// @param dialog Ignored FileDialog handle.
+/// @param path Ignored initial directory.
 void rt_filedialog_set_path(void *dialog, rt_string path) {
     (void)dialog;
     (void)path;
 }
 
 /// @brief Stub: `FileDialog.SetFilter` is a no-op without graphics.
+/// @param dialog Ignored FileDialog handle.
+/// @param name Ignored filter name.
+/// @param pattern Ignored glob pattern.
 void rt_filedialog_set_filter(void *dialog, rt_string name, rt_string pattern) {
     (void)dialog;
     (void)name;
@@ -1294,6 +1413,9 @@ void rt_filedialog_set_filter(void *dialog, rt_string name, rt_string pattern) {
 }
 
 /// @brief Stub: `FileDialog.AddFilter` is a no-op without graphics.
+/// @param dialog Ignored FileDialog handle.
+/// @param name Ignored filter name.
+/// @param pattern Ignored glob pattern.
 void rt_filedialog_add_filter(void *dialog, rt_string name, rt_string pattern) {
     (void)dialog;
     (void)name;
@@ -1301,101 +1423,135 @@ void rt_filedialog_add_filter(void *dialog, rt_string name, rt_string pattern) {
 }
 
 /// @brief Stub: `FileDialog.SetDefaultName` is a no-op without graphics.
+/// @param dialog Ignored FileDialog handle.
+/// @param name Ignored filename.
 void rt_filedialog_set_default_name(void *dialog, rt_string name) {
     (void)dialog;
     (void)name;
 }
 
 /// @brief Stub: `FileDialog.SetMultiple` is a no-op without graphics.
+/// @param dialog Ignored FileDialog handle.
+/// @param multiple Ignored multi-select flag.
 void rt_filedialog_set_multiple(void *dialog, int64_t multiple) {
     (void)dialog;
     (void)multiple;
 }
 
 /// @brief Stub: hidden-file configuration is unavailable without graphics.
+/// @param dialog Ignored FileDialog handle.
+/// @param show_hidden Ignored visibility flag.
 void rt_filedialog_set_show_hidden(void *dialog, int64_t show_hidden) {
     (void)dialog;
     (void)show_hidden;
 }
 
 /// @brief Stub: overwrite confirmation is unavailable without graphics.
+/// @param dialog Ignored FileDialog handle.
+/// @param confirm Ignored confirmation flag.
 void rt_filedialog_set_confirm_overwrite(void *dialog, int64_t confirm) {
     (void)dialog;
     (void)confirm;
 }
 
 /// @brief Stub: default-extension configuration is unavailable without graphics.
+/// @param dialog Ignored FileDialog handle.
+/// @param extension Ignored extension.
 void rt_filedialog_set_default_extension(void *dialog, rt_string extension) {
     (void)dialog;
     (void)extension;
 }
 
 /// @brief Stub: bookmark configuration is unavailable without graphics.
+/// @param dialog Ignored FileDialog handle.
+/// @param path Ignored bookmark path.
 void rt_filedialog_add_bookmark(void *dialog, rt_string path) {
     (void)dialog;
     (void)path;
 }
 
 /// @brief Stub: no bookmark state exists without graphics.
+/// @param dialog Ignored FileDialog handle.
 void rt_filedialog_clear_bookmarks(void *dialog) {
     (void)dialog;
 }
 
 /// @brief Stub: asynchronous presentation cannot start without graphics.
+/// @param dialog Ignored FileDialog handle.
+/// @return Always `0`.
 int64_t rt_filedialog_show_async(void *dialog) {
     (void)dialog;
     return 0;
 }
 
 /// @brief Stub: returns 0 — dialog cannot be shown without graphics.
+/// @param dialog Ignored FileDialog handle.
+/// @return Always `0`.
 int64_t rt_filedialog_show(void *dialog) {
     (void)dialog;
     return 0;
 }
 
 /// @brief Stub: no file dialog is open without graphics.
+/// @param dialog Ignored FileDialog handle.
+/// @return Always `0`.
 int64_t rt_filedialog_is_open(void *dialog) {
     (void)dialog;
     return 0;
 }
 
 /// @brief Stub: no stateful wrapper can complete without graphics.
+/// @param dialog Ignored FileDialog handle.
+/// @return Always `0`.
 int64_t rt_filedialog_was_completed(void *dialog) {
     (void)dialog;
     return 0;
 }
 
 /// @brief Stub: absent file-dialog handles report Failed.
+/// @param dialog Ignored FileDialog handle.
+/// @return `RT_GUI_DIALOG_STATUS_FAILED`.
 int64_t rt_filedialog_get_status(void *dialog) {
     (void)dialog;
     return RT_GUI_DIALOG_STATUS_FAILED;
 }
 
 /// @brief Stub: return the stable graphics-disabled capability diagnostic.
+/// @param dialog Ignored FileDialog handle.
+/// @return Runtime string describing unavailable GUI support.
 rt_string rt_filedialog_get_error(void *dialog) {
     (void)dialog;
     return rt_const_cstr("GUI support is not available in this build");
 }
 
 /// @brief Stub: return an empty owned path sequence without graphics.
+/// @param dialog Ignored FileDialog handle.
+/// @return New empty owned sequence, or `NULL` on allocation failure.
 void *rt_filedialog_get_paths(void *dialog) {
     (void)dialog;
     return rt_seq_new_owned();
 }
 
 /// @brief Stub: returns empty string — no path available without graphics.
+/// @param dialog Ignored FileDialog handle.
+/// @return Empty runtime string.
 rt_string rt_filedialog_get_path(void *dialog) {
     (void)dialog;
     return rt_str_empty();
 }
 
 /// @brief Stub: returns 0 — no paths available without graphics.
+/// @param dialog Ignored FileDialog handle.
+/// @return Always `0`.
 int64_t rt_filedialog_get_path_count(void *dialog) {
     (void)dialog;
     return 0;
 }
 
 /// @brief Stub: returns empty string — no path at index without graphics.
+/// @param dialog Ignored FileDialog handle.
+/// @param index Ignored path index.
+/// @return Empty runtime string.
 rt_string rt_filedialog_get_path_at(void *dialog, int64_t index) {
     (void)dialog;
     (void)index;
@@ -1403,6 +1559,7 @@ rt_string rt_filedialog_get_path_at(void *dialog, int64_t index) {
 }
 
 /// @brief Stub: `FileDialog.Destroy` is a no-op without graphics.
+/// @param dialog Ignored FileDialog handle.
 void rt_filedialog_destroy(void *dialog) {
     (void)dialog;
 }

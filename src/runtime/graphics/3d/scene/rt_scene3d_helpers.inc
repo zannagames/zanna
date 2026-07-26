@@ -19,12 +19,24 @@
 //   docs/adr/0166-exact-scenenode-world-matrix-assignment.md
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements shared Scene3D transform, ownership, bounds, light, and PVS helpers.
+/// @details This include supplies allocation-safe iterative traversals, exact
+/// preserve-world TRS decomposition, lazy transform propagation, binding sync,
+/// geometry revision tracking, world-bounds construction, spatial query
+/// primitives, and portal visibility setup for the Scene3D implementation.
+
 /*==========================================================================
  * Helpers
  *=========================================================================*/
 
 /// @brief Build a TRS matrix: Translate * Rotate * Scale (row-major).
 /// Quaternion (x,y,z,w) is expanded inline to avoid allocating a Mat4.
+/// @param pos Borrowed three-component translation, or `NULL` for zero.
+/// @param quat Borrowed four-component quaternion, or `NULL` for identity.
+/// @param scl Borrowed three-component scale, or `NULL` for unit scale.
+/// @param out Output receiving sixteen row-major matrix lanes.
 static void build_trs_matrix(const double *pos,
                              const double *quat,
                              const double *scl,
@@ -67,6 +79,9 @@ static void build_trs_matrix(const double *pos,
 }
 
 /// @brief Multiply two 4x4 row-major matrices: out = a * b.
+/// @param a Borrowed left matrix.
+/// @param b Borrowed right matrix.
+/// @param out Output receiving the finite product or identity on invalid input.
 static void mat4d_mul(const double *a, const double *b, double *out) {
     double tmp[16];
     if (!out)
@@ -86,6 +101,7 @@ static void mat4d_mul(const double *a, const double *b, double *out) {
 }
 
 /// @brief Write an identity 4x4 row-major matrix into @p out.
+/// @param out Output receiving sixteen identity-matrix lanes.
 void mat4d_identity(double *out) {
     if (!out)
         return;
@@ -101,6 +117,9 @@ void mat4d_identity(double *out) {
 /// Returns 0 on success and writes the inverse into `out`. Returns -1
 /// if the matrix is singular (`|det| < 1e-12`); `out` is then untouched.
 /// Used to derive parent-from-world transforms and bind-pose inverses.
+/// @param m Borrowed finite row-major matrix.
+/// @param out Output receiving the inverse on success.
+/// @return Zero on success, or `-1` for invalid, singular, or non-finite input.
 static int mat4d_invert(const double *m, double *out) {
     double inv[16];
     double det;
@@ -158,6 +177,7 @@ static int mat4d_invert(const double *m, double *out) {
 }
 
 /// @brief Set `out` to the identity quaternion `(0, 0, 0, 1)` — no rotation.
+/// @param out Output receiving four quaternion components.
 static void quat_identity(double *out) {
     if (!out)
         return;
@@ -168,6 +188,7 @@ static void quat_identity(double *out) {
 }
 
 /// @brief Renormalise `q` so |q|=1; defaults to identity if it's degenerate.
+/// @param q Mutable four-component quaternion; `NULL` is accepted.
 void scene3d_quat_normalize_local(double *q) {
     double max_abs;
     double x;
@@ -204,6 +225,8 @@ void scene3d_quat_normalize_local(double *q) {
 }
 
 /// @brief Square root helper for quaternion extraction, treating invalid terms as zero.
+/// @param value Candidate squared quaternion term.
+/// @return Square root for a positive finite value, otherwise zero.
 static double scene3d_sqrt_nonnegative(double value) {
     if (!isfinite(value) || value <= 0.0)
         return 0.0;
@@ -211,6 +234,8 @@ static double scene3d_sqrt_nonnegative(double value) {
 }
 
 /// @brief Quaternion conjugate for unit-rotation inverse.
+/// @param q Borrowed unit quaternion, or `NULL` for identity.
+/// @param out Output receiving the conjugate.
 static void quat_conjugate_local(const double *q, double *out) {
     if (!out)
         return;
@@ -225,6 +250,9 @@ static void quat_conjugate_local(const double *q, double *out) {
 }
 
 /// @brief Quaternion product `out = a * b`.
+/// @param a Borrowed left quaternion.
+/// @param b Borrowed right quaternion.
+/// @param out Output receiving the normalized product or identity.
 static void quat_mul_local(const double *a, const double *b, double *out) {
     double ax;
     double ay;
@@ -256,6 +284,9 @@ static void quat_mul_local(const double *a, const double *b, double *out) {
 }
 
 /// @brief Transform a point by a row-major 4x4 matrix with translation in column 3.
+/// @param m Borrowed finite row-major matrix.
+/// @param point Borrowed three-component point.
+/// @param out Output receiving the sanitized transformed point.
 static void mat4d_transform_point(const double *m, const double *point, double *out) {
     double p[3] = {point ? point[0] : 0.0, point ? point[1] : 0.0, point ? point[2] : 0.0};
     double x;
@@ -283,6 +314,16 @@ static void mat4d_transform_point(const double *m, const double *point, double *
 /// Picks the largest of four possible diagonal terms and uses
 /// the corresponding extraction formula — Shepperd's method —
 /// for numerical stability across the full sphere of orientations.
+/// @param m00 Rotation row 0, column 0.
+/// @param m01 Rotation row 0, column 1.
+/// @param m02 Rotation row 0, column 2.
+/// @param m10 Rotation row 1, column 0.
+/// @param m11 Rotation row 1, column 1.
+/// @param m12 Rotation row 1, column 2.
+/// @param m20 Rotation row 2, column 0.
+/// @param m21 Rotation row 2, column 1.
+/// @param m22 Rotation row 2, column 2.
+/// @param out Output receiving a normalized quaternion.
 static void quat_from_matrix_rows(double m00,
                                   double m01,
                                   double m02,
@@ -347,6 +388,9 @@ static void quat_from_matrix_rows(double m00,
 /// Used when reading back world-space orientation after a node's
 /// world matrix has been composed from parent transforms — we need
 /// the rotation back as a quaternion for further composition.
+/// @param m Borrowed finite row-major transform matrix.
+/// @param basis Output receiving an orthonormal three-by-three basis.
+/// @return Nonzero when a finite non-degenerate rotation basis was recovered.
 static int scene_extract_rotation_basis(const double *m, double basis[9]) {
     double rx;
     double ry;
@@ -419,6 +463,8 @@ static int scene_extract_rotation_basis(const double *m, double basis[9]) {
 
 /// @brief Extract a unit quaternion from a world matrix's rotation, normalizing the basis
 ///   first; falls back to identity when the matrix has no recoverable rotation.
+/// @param m Borrowed world matrix.
+/// @param out Output receiving a normalized quaternion or identity.
 static void quat_from_world_matrix(const double *m, double *out) {
     double basis[9];
     if (!out)
@@ -443,6 +489,11 @@ static void quat_from_world_matrix(const double *m, double *out) {
 /// @details Used by walk functions that prefer iterative traversal over recursion
 ///   (avoids stack overflow on deep scene graphs).
 ///   Returns 1 on success or no-op (NULL node), 0 on overflow / OOM.
+/// @param stack Address of the caller-owned mutable node-pointer stack.
+/// @param count In/out populated entry count.
+/// @param capacity In/out allocated entry capacity.
+/// @param node Borrowed candidate node to validate and append.
+/// @return Nonzero on append or safe no-op, zero on growth failure.
 int scene_node_stack_push(rt_scene_node3d ***stack,
                           size_t *count,
                           size_t *capacity,
@@ -464,6 +515,11 @@ int scene_node_stack_push(rt_scene_node3d ***stack,
 /// @brief `scene_node_stack_push` for read-only `const` traversals.
 /// @details Same growth contract; the const variant is needed because the C type
 ///   system disallows aliasing a `const T**` as a `T**` even when only reads happen.
+/// @param stack Address of the caller-owned immutable-node stack.
+/// @param count In/out populated entry count.
+/// @param capacity In/out allocated entry capacity.
+/// @param node Borrowed node to append.
+/// @return Nonzero on append or safe no-op, zero on growth failure.
 static int scene_node_const_stack_push(const rt_scene_node3d ***stack,
                                        size_t *count,
                                        size_t *capacity,
@@ -481,11 +537,13 @@ static int scene_node_const_stack_push(const rt_scene_node3d ***stack,
 static int32_t g_scene3d_test_owner_growth_failure_after = -1;
 
 /// @brief Configure deterministic owner-transaction allocation fault injection for tests.
+/// @param successful_growths Number of successful growths allowed before failure, or `-1` to disable.
 void rt_scene3d_test_set_owner_growth_failure(int32_t successful_growths) {
     g_scene3d_test_owner_growth_failure_after = successful_growths < -1 ? -1 : successful_growths;
 }
 
 /// @brief Grow one owner transaction, honoring the deterministic test-only failure countdown.
+/// @param transaction Borrowed transaction whose native node array may grow.
 /// @return `1` when the buffer can accept another node, otherwise `0` without changing it.
 static int scene_owner_transaction_grow(scene_owner_transaction *transaction) {
     if (!transaction)
@@ -499,6 +557,9 @@ static int scene_owner_transaction_grow(scene_owner_transaction *transaction) {
 }
 
 /// @brief Append one validated node to a preflight owner transaction.
+/// @param transaction Borrowed transaction to extend.
+/// @param node Borrowed validated node; `NULL` is a successful no-op.
+/// @return Nonzero on append/no-op, or zero on size or allocation failure.
 static int scene_owner_transaction_append(scene_owner_transaction *transaction,
                                           rt_scene_node3d *node) {
     if (!transaction || !node)
@@ -512,6 +573,9 @@ static int scene_owner_transaction_append(scene_owner_transaction *transaction,
 }
 
 /// @brief Collect a complete subtree breadth-first before publishing any owner changes.
+/// @param node Borrowed subtree root; invalid or null roots produce an empty transaction.
+/// @param transaction Output transaction owning the collected pointer array.
+/// @return Nonzero when preflight collection completes, otherwise zero with storage discarded.
 int scene_node_owner_transaction_prepare(rt_scene_node3d *node,
                                          scene_owner_transaction *transaction) {
     size_t cursor = 0;
@@ -540,6 +604,7 @@ fail:
 }
 
 /// @brief Release a prepared owner transaction without publishing changes.
+/// @param transaction Borrowed transaction whose native storage is freed and reset.
 void scene_node_owner_transaction_discard(scene_owner_transaction *transaction) {
     if (!transaction)
         return;
@@ -548,6 +613,8 @@ void scene_node_owner_transaction_discard(scene_owner_transaction *transaction) 
 }
 
 /// @brief Publish one prepared owner assignment without allocation or failure paths.
+/// @param transaction Borrowed prepared complete-subtree transaction.
+/// @param owner Borrowed Scene3D assigned to every collected node, or `NULL`.
 void scene_node_owner_transaction_assign(scene_owner_transaction *transaction, rt_scene3d *owner) {
     if (!transaction)
         return;
@@ -556,6 +623,8 @@ void scene_node_owner_transaction_assign(scene_owner_transaction *transaction, r
 }
 
 /// @brief Publish one prepared conditional owner clear without allocation.
+/// @param transaction Borrowed prepared complete-subtree transaction.
+/// @param owner Borrowed owner cleared only from matching nodes.
 void scene_node_owner_transaction_clear(scene_owner_transaction *transaction, rt_scene3d *owner) {
     if (!transaction || !owner)
         return;
@@ -566,6 +635,8 @@ void scene_node_owner_transaction_clear(scene_owner_transaction *transaction, rt
 }
 
 /// @brief Clear matching descendant owners while preserving the transaction root owner.
+/// @param transaction Borrowed prepared subtree transaction.
+/// @param owner Borrowed owner cleared from entries after the root.
 void scene_node_owner_transaction_clear_descendants(scene_owner_transaction *transaction,
                                                     rt_scene3d *owner) {
     if (!transaction || !owner)
@@ -577,6 +648,9 @@ void scene_node_owner_transaction_clear_descendants(scene_owner_transaction *tra
 }
 
 /// @brief Transactionally assign one owner to a complete subtree.
+/// @param node Borrowed subtree root.
+/// @param owner Borrowed Scene3D assigned to every node, or `NULL`.
+/// @return Nonzero after complete assignment or an empty no-op; zero on preflight failure.
 int scene_node_assign_owner_recursive(rt_scene_node3d *node, rt_scene3d *owner) {
     scene_owner_transaction transaction;
     if (!node)
@@ -591,6 +665,9 @@ int scene_node_assign_owner_recursive(rt_scene_node3d *node, rt_scene3d *owner) 
 }
 
 /// @brief Transactionally clear a matching owner from a complete subtree.
+/// @param node Borrowed subtree root.
+/// @param owner Borrowed owner cleared only where it matches.
+/// @return Nonzero after complete clearing or an empty no-op; zero on preflight failure.
 int scene_node_clear_owner_recursive(rt_scene_node3d *node, rt_scene3d *owner) {
     scene_owner_transaction transaction;
     if (!node || !owner)
@@ -609,6 +686,7 @@ int scene_node_clear_owner_recursive(rt_scene_node3d *node, rt_scene3d *owner) {
 /// Descendants do not need eager dirty propagation. Each node tracks the parent
 /// world-matrix revision it last consumed, so a child lazily notices parent
 /// changes during `recompute_world_matrix` without allocating a traversal stack.
+/// @param node Borrowed node whose world transform and spatial bounds become stale.
 void mark_dirty(rt_scene_node3d *node) {
     if (!node)
         return;
@@ -620,6 +698,7 @@ void mark_dirty(rt_scene_node3d *node) {
 /// @details This is the non-recursive body used by `recompute_world_matrix`. It keeps
 ///          the existing parent-revision dirty check, but assumes parent matrices are
 ///          current so deep scene graphs do not consume the C call stack.
+/// @param node Borrowed node whose parent is already current.
 static void recompute_world_matrix_single(rt_scene_node3d *node) {
     double local[16];
     uint32_t parent_revision = 0;
@@ -665,6 +744,7 @@ static void recompute_world_matrix_single(rt_scene_node3d *node) {
 ///          highest ancestor down to @p node. This preserves lazy parent revision
 ///          tracking while avoiding recursive calls and per-call heap allocation on normal
 ///          scene-owned nodes.
+/// @param node Borrowed node whose ancestor chain and world matrix are refreshed.
 void recompute_world_matrix(rt_scene_node3d *node) {
     rt_scene_node3d **stack = NULL;
     size_t count = 0;
@@ -708,6 +788,10 @@ void recompute_world_matrix(rt_scene_node3d *node) {
 }
 
 /// @brief Length of one affine basis column without overflowing intermediate squares.
+/// @param x Basis-column X component.
+/// @param y Basis-column Y component.
+/// @param z Basis-column Z component.
+/// @return Stable Euclidean length, zero for zero input, or NaN for invalid input.
 static double scene3d_preserve_basis_length(double x, double y, double z) {
     double max_abs = fmax(fabs(x), fmax(fabs(y), fabs(z)));
     if (!isfinite(max_abs) || max_abs <= 0.0)
@@ -722,6 +806,9 @@ static double scene3d_preserve_basis_length(double x, double y, double z) {
 /// @details The absolute floor handles values around zero. The scaled DBL_EPSILON
 ///          term permits ordinary inversion/quaternion round-off without accepting
 ///          visible shear or a materially different authored transform.
+/// @param a Borrowed first sixteen-lane matrix.
+/// @param b Borrowed second sixteen-lane matrix.
+/// @return Nonzero when every lane agrees within the losslessness tolerance.
 int scene3d_preserve_matrix_equal(const double a[16], const double b[16]) {
     if (!scene3d_matrix_is_finite(a) || !scene3d_matrix_is_finite(b))
         return 0;
@@ -741,6 +828,12 @@ int scene3d_preserve_matrix_equal(const double a[16], const double b[16]) {
 ///          parents, projective matrices, degenerate bases, shear, and decomposition
 ///          drift before callers mutate node state. A negative determinant is carried
 ///          by the largest-magnitude scale axis so reflected transforms remain exact.
+/// @param parent Borrowed prospective parent, or `NULL` for a root transform.
+/// @param desired_world Borrowed complete requested world matrix.
+/// @param out_position Output receiving exact local translation.
+/// @param out_rotation Output receiving exact local unit quaternion.
+/// @param out_scale Output receiving exact local scale, including reflection sign.
+/// @return Nonzero only when rebuilding the derived TRS reproduces the requested world matrix.
 int scene_node_compute_local_trs_for_world_matrix(rt_scene_node3d *parent,
                                                   const double desired_world[16],
                                                   double out_position[3],
@@ -839,6 +932,12 @@ int scene_node_compute_local_trs_for_world_matrix(rt_scene_node3d *parent,
 }
 
 /// @brief Derive the local TRS that preserves one child's complete world matrix.
+/// @param new_parent Borrowed prospective parent.
+/// @param child Borrowed child whose current world matrix is preserved.
+/// @param out_position Output receiving exact local translation.
+/// @param out_rotation Output receiving exact local unit quaternion.
+/// @param out_scale Output receiving exact local scale.
+/// @return Nonzero when the preserved world matrix has an exact parent-relative TRS.
 int scene_node_compute_preserved_local_trs(rt_scene_node3d *new_parent,
                                            rt_scene_node3d *child,
                                            double out_position[3],
@@ -857,6 +956,8 @@ int scene_node_compute_preserved_local_trs(rt_scene_node3d *new_parent,
 }
 
 /// @brief Count nodes in a subtree (including the root).
+/// @param node Borrowed subtree root.
+/// @return Non-negative node count, saturating at `INT32_MAX`.
 static int32_t count_subtree(const rt_scene_node3d *node) {
     const rt_scene_node3d **stack = NULL;
     size_t count = 0;
@@ -887,6 +988,10 @@ static int32_t count_subtree(const rt_scene_node3d *node) {
 }
 
 /// @brief Compose `node->world_matrix` from its ancestors and read the translation column.
+/// @param node Borrowed SceneNode3D handle.
+/// @param x Output receiving world X, initialized to zero.
+/// @param y Output receiving world Y, initialized to zero.
+/// @param z Output receiving world Z, initialized to zero.
 void scene_node_get_world_position(rt_scene_node3d *node, double *x, double *y, double *z) {
     if (!x || !y || !z) {
         return;
@@ -903,6 +1008,8 @@ void scene_node_get_world_position(rt_scene_node3d *node, double *x, double *y, 
 }
 
 /// @brief Read this node's world-space rotation as a quaternion (composing parent rotations).
+/// @param node Borrowed SceneNode3D handle.
+/// @param out_quat Output receiving the unit world quaternion or identity.
 void scene_node_get_world_rotation(rt_scene_node3d *node, double *out_quat) {
     if (!out_quat) {
         return;
@@ -920,6 +1027,9 @@ void scene_node_get_world_rotation(rt_scene_node3d *node, double *out_quat) {
 /// requested world transform so the resulting local transform
 /// produces the requested world pose. Used by physics → scene
 /// sync to apply rigid-body world poses to scene nodes.
+/// @param node Borrowed node whose local position/rotation are updated.
+/// @param world_pos Borrowed requested world-space position.
+/// @param world_quat Borrowed requested world-space quaternion.
 static void scene_node_set_world_transform(rt_scene_node3d *node,
                                            const double *world_pos,
                                            const double *world_quat) {
@@ -974,6 +1084,9 @@ static void scene_node_set_world_transform(rt_scene_node3d *node,
 }
 
 /// @brief Rotate a 3-vector by a unit quaternion: v' = v + 2*w*(q x v) + 2*(q x (q x v)).
+/// @param q Borrowed unit quaternion.
+/// @param v Borrowed three-component vector.
+/// @param out Output receiving the rotated vector.
 static void scene_node_quat_rotate_vec(const double q[4], const double v[3], double out[3]) {
     double tx = 2.0 * (q[1] * v[2] - q[2] * v[1]);
     double ty = 2.0 * (q[2] * v[0] - q[0] * v[2]);
@@ -990,6 +1103,7 @@ static void scene_node_quat_rotate_vec(const double q[4], const double v[3], dou
 ///   not inherit skeletal scale). The bone pose is model-space, so the node
 ///   must be parented under the node that renders the skinned model for the
 ///   composition to land in the right space.
+/// @param node Borrowed socketed node whose local transform is updated.
 static void scene_node_apply_bone_socket(rt_scene_node3d *node) {
     void *animator;
     double bone_pos[3];
@@ -1033,6 +1147,8 @@ static void scene_node_apply_bone_socket(rt_scene_node3d *node) {
 }
 
 /// @brief Shift an entire root-level subtree by subtracting a world-space delta.
+/// @param node Borrowed root-level subtree node.
+/// @param delta Borrowed three-component origin shift.
 static void scene_node_rebase_root_child(rt_scene_node3d *node, const double delta[3]) {
     double world_pos[3];
     double world_rot[4];
@@ -1054,6 +1170,7 @@ static void scene_node_rebase_root_child(rt_scene_node3d *node, const double del
 /// Animations whose root bone moves (walk cycles, jumps) report the
 /// per-frame translation/rotation as a delta; here we apply it to
 /// the node's local transform so the character actually traverses.
+/// @param node Borrowed node whose bound animator root motion is consumed.
 static void scene_node_apply_root_motion(rt_scene_node3d *node) {
     void *delta;
     void *delta_rot;
@@ -1100,6 +1217,7 @@ static void scene_node_apply_root_motion(rt_scene_node3d *node) {
 }
 
 /// @brief Derive a node-attached camera's eye/forward/up basis from the current world matrix.
+/// @param node Borrowed node whose attached camera pose is synchronized.
 static void scene_node_sync_camera(rt_scene_node3d *node) {
     rt_camera3d *camera;
     double eye[3];
@@ -1137,6 +1255,9 @@ static void scene_node_sync_camera(rt_scene_node3d *node) {
 /// Then recurses into children. The traversal stack persists on @p scene so the
 /// once-per-tick whole-tree walk stops paying a malloc/free per frame; on trap
 /// paths the buffer is simply left in place for the next call.
+/// @param scene Borrowed owning scene providing reusable traversal storage.
+/// @param node Borrowed subtree root.
+/// @param dt Simulation delta forwarded to bound animators.
 static void scene_node_sync_recursive(rt_scene3d *scene, rt_scene_node3d *node, double dt) {
     size_t count = 0;
     if (!node || !scene)
@@ -1215,6 +1336,9 @@ static void scene_node_sync_recursive(rt_scene3d *scene, rt_scene_node3d *node, 
 
 /// @brief True if `target` appears anywhere in the subtree rooted at `root`.
 /// Used to prevent cycles when reparenting (don't re-attach a node under one of its descendants).
+/// @param root Borrowed subtree root.
+/// @param target Borrowed candidate descendant.
+/// @return Nonzero when the validated target occurs in the subtree.
 int node_contains(const rt_scene_node3d *root, const rt_scene_node3d *target) {
     const rt_scene_node3d **stack = NULL;
     size_t count = 0;
@@ -1246,6 +1370,10 @@ int node_contains(const rt_scene_node3d *root, const rt_scene_node3d *target) {
 
 /// @brief Compute the local-space AABB of `mesh` by min/maxing every vertex position.
 /// Cached on the mesh so subsequent calls are O(1).
+/// @param mesh Borrowed Mesh3D payload, or `NULL`.
+/// @param out_min Optional output receiving local minimum bounds.
+/// @param out_max Optional output receiving local maximum bounds.
+/// @param out_radius Optional output receiving cached bounding-sphere radius.
 void scene_mesh_bounds(rt_mesh3d *mesh, float out_min[3], float out_max[3], float *out_radius) {
     if (!mesh) {
         if (out_min)
@@ -1275,6 +1403,9 @@ void scene_mesh_bounds(rt_mesh3d *mesh, float out_min[3], float out_max[3], floa
 /// @details Spatial entries use this compact signature to notice mesh, LOD, and impostor metadata
 ///   changes without retaining a larger snapshot. It is not cryptographic; it only needs to make
 ///   ordinary scene-edit collisions unlikely enough for BVH refit invalidation.
+/// @param signature Existing nonzero signature state.
+/// @param value Arbitrary value to mix.
+/// @return Updated nonzero 32-bit signature.
 static uint32_t scene3d_mix_signature_u64(uint32_t signature, uint64_t value) {
     uint32_t lo = (uint32_t)(value & 0xffffffffu);
     uint32_t hi = (uint32_t)(value >> 32u);
@@ -1284,6 +1415,8 @@ static uint32_t scene3d_mix_signature_u64(uint32_t signature, uint64_t value) {
 }
 
 /// @brief Convert a double to bits for compact geometry-signature mixing.
+/// @param value Candidate floating-point value; non-finite values canonicalize to zero.
+/// @return Canonicalized IEEE-754 bit pattern.
 static uint64_t scene3d_double_bits_for_signature(double value) {
     union {
         double d;
@@ -1298,6 +1431,9 @@ static uint64_t scene3d_double_bits_for_signature(double value) {
 /// @details Spatial entries store a compact signature instead of retaining every mesh
 ///          pointer snapshot. Including the pointer catches replacement by a different mesh whose
 ///          geometry revision happens to match the prior one.
+/// @param signature Existing signature state.
+/// @param mesh_obj Borrowed candidate Mesh3D handle.
+/// @return Updated nonzero signature including identity and geometry revision.
 static uint32_t scene3d_mix_mesh_revision(uint32_t signature, void *mesh_obj) {
     rt_mesh3d *mesh =
         rt_g3d_has_class(mesh_obj, RT_G3D_MESH3D_CLASS_ID) ? (rt_mesh3d *)mesh_obj : NULL;
@@ -1312,6 +1448,8 @@ static uint32_t scene3d_mix_mesh_revision(uint32_t signature, void *mesh_obj) {
 ///          mesh. The result changes when any referenced mesh's CPU geometry changes,
 ///          allowing the spatial index to refit stale bounds even if the node transform
 ///          revision did not change.
+/// @param node Borrowed node whose base, LOD, and impostor metadata are mixed.
+/// @return Nonzero geometry signature, or zero for an invalid node.
 uint32_t scene_node_geometry_revision_signature(rt_scene_node3d *node) {
     uint32_t signature = 2166136261u;
     if (!node)
@@ -1339,6 +1477,7 @@ uint32_t scene_node_geometry_revision_signature(rt_scene_node3d *node) {
 ///          geometry can be mutated after assignment. This helper compares the mesh's
 ///          geometry revision to the node's last cached revision and recomputes only
 ///          when necessary. Non-mesh or missing meshes reset the cache to an empty AABB.
+/// @param node Borrowed node whose primary mesh-bound cache is refreshed.
 void scene_node_refresh_mesh_bounds(rt_scene_node3d *node) {
     rt_mesh3d *mesh;
     if (!node)
@@ -1358,6 +1497,9 @@ void scene_node_refresh_mesh_bounds(rt_scene_node3d *node) {
 }
 
 /// @brief Multiply a local-space point by the node's world matrix; result lands in `out`.
+/// @param world_matrix Borrowed finite row-major transform.
+/// @param local Borrowed local-space float point.
+/// @param out Output receiving a safely narrowed world-space point.
 static void scene_world_point(const double *world_matrix, const float local[3], float out[3]) {
     double p[3];
     double x;
@@ -1385,6 +1527,9 @@ static void scene_world_point(const double *world_matrix, const float local[3], 
 /// @details LOD and impostor selection can sit on tight distance thresholds. Keeping the world
 ///          center and camera position in double precision avoids frame-to-frame selection jitter
 ///          in large-world scenes where float truncation erases the low bits near the camera.
+/// @param world_matrix Borrowed finite row-major transform.
+/// @param local Borrowed local-space float point.
+/// @param out Output receiving a double-precision world-space point.
 static void scene_world_point_d(const double *world_matrix, const float local[3], double out[3]) {
     double p[3];
     double x;
@@ -1440,6 +1585,9 @@ static void scene_normalize_f32_vec3(float v[3],
 }
 
 /// @brief Transform a local vector by a finite world matrix's linear 3x3 portion.
+/// @param world_matrix Borrowed finite row-major transform.
+/// @param local Borrowed local-space direction or basis vector.
+/// @param out Output receiving the transformed vector without translation.
 static void scene_world_vector_d(const double world_matrix[16],
                                  const double local[3],
                                  double out[3]) {
@@ -1457,6 +1605,8 @@ static void scene_world_vector_d(const double world_matrix[16],
 }
 
 /// @brief Normalize a double vector and return its original length, or zero on degeneration.
+/// @param value Mutable three-component vector.
+/// @return Original finite length after normalization, or zero on degeneration.
 static double scene_normalize_f64_vec3(double value[3]) {
     double scale;
     double length;
@@ -1477,6 +1627,8 @@ static double scene_normalize_f64_vec3(double value[3]) {
 }
 
 /// @brief Conservative maximum axis scale of a world matrix.
+/// @param world_matrix Borrowed finite row-major transform.
+/// @return Largest linear-basis length, defaulting to one for invalid/degenerate matrices.
 static double scene_world_max_scale(const double world_matrix[16]) {
     double maximum = 0.0;
     if (!world_matrix || !scene3d_matrix_is_finite(world_matrix))
@@ -1491,6 +1643,12 @@ static double scene_world_max_scale(const double world_matrix[16]) {
 }
 
 /// @brief Transform a node-attached light into world space for the current draw snapshot.
+/// @details Copies all authored fields, transforms position and direction,
+///          orthonormalizes area-light bases, and scales physical extents/range
+///          conservatively without mutating the retained source light.
+/// @param node Borrowed node supplying the world transform.
+/// @param src Borrowed attached local-space light payload.
+/// @param dst Output receiving an independent world-space snapshot.
 static void scene_transform_node_light(rt_scene_node3d *node,
                                        const rt_light3d *src,
                                        rt_light3d *dst) {
@@ -1653,6 +1811,8 @@ static void scene_collect_node_lights(rt_scene_node3d *node,
 }
 
 /// @brief Initialise a min/max pair so subsequent point inserts grow a valid AABB.
+/// @param out_min Optional output set to positive float maxima.
+/// @param out_max Optional output set to negative float maxima.
 void scene_bounds_reset(float out_min[3], float out_max[3]) {
     if (out_min) {
         out_min[0] = FLT_MAX;
@@ -1667,6 +1827,8 @@ void scene_bounds_reset(float out_min[3], float out_max[3]) {
 }
 
 /// @brief Reset an AABB to the empty state (min = +DBL_MAX, max = -DBL_MAX) ready for accumulation.
+/// @param out_min Optional output set to positive double maxima.
+/// @param out_max Optional output set to negative double maxima.
 void scene_bounds_reset_d(double out_min[3], double out_max[3]) {
     if (out_min) {
         out_min[0] = DBL_MAX;
@@ -1681,6 +1843,9 @@ void scene_bounds_reset_d(double out_min[3], double out_max[3]) {
 }
 
 /// @brief Expand @p bounds_min/@p bounds_max to include @p point.
+/// @param bounds_min Mutable accumulated float minimum.
+/// @param bounds_max Mutable accumulated float maximum.
+/// @param point Borrowed point to include.
 static void scene_bounds_include_point(float bounds_min[3],
                                        float bounds_max[3],
                                        const float point[3]) {
@@ -1695,6 +1860,9 @@ static void scene_bounds_include_point(float bounds_min[3],
 }
 
 /// @brief Expand an AABB in place to contain a point.
+/// @param bounds_min Mutable accumulated double minimum.
+/// @param bounds_max Mutable accumulated double maximum.
+/// @param point Borrowed point sanitized before inclusion.
 void scene_bounds_include_point_d(double bounds_min[3],
                                   double bounds_max[3],
                                   const double point[3]) {
@@ -1714,6 +1882,12 @@ void scene_bounds_include_point_d(double bounds_min[3],
 
 /// @brief Transform a local AABB by a matrix into a world AABB by bounding its eight rotated
 /// corners.
+/// @param obj_min Borrowed local-space minimum corner.
+/// @param obj_max Borrowed local-space maximum corner.
+/// @param world_matrix Borrowed finite row-major transform.
+/// @param out_min Output receiving world-space minimum bounds.
+/// @param out_max Output receiving world-space maximum bounds.
+/// @return Nonzero when all eight corners produce valid bounds, otherwise zero.
 int scene3d_transform_aabb_d(const float obj_min[3],
                              const float obj_max[3],
                              const double world_matrix[16],
@@ -1770,6 +1944,11 @@ int scene3d_transform_aabb_d(const float obj_min[3],
 }
 
 /// @brief Transform the 8 corners of a local AABB and union them into @p bounds_min/max.
+/// @param bounds_min Mutable accumulated float minimum.
+/// @param bounds_max Mutable accumulated float maximum.
+/// @param local_min Borrowed local-space AABB minimum.
+/// @param local_max Borrowed local-space AABB maximum.
+/// @param local_to_root Borrowed transform from local to queried-root space.
 static void scene_bounds_include_aabb(float bounds_min[3],
                                       float bounds_max[3],
                                       const float local_min[3],
@@ -1792,8 +1971,11 @@ static void scene_bounds_include_aabb(float bounds_min[3],
     }
 }
 
+/// @brief Traversal frame pairing a node with its transform into queried-root space.
 typedef struct {
+    /// Borrowed subtree node.
     rt_scene_node3d *node;
+    /// Row-major matrix mapping node-local coordinates to root-local coordinates.
     double node_to_root[16];
 } scene_bounds_stack_item_t;
 
@@ -1801,6 +1983,11 @@ typedef struct {
 /// @details Used instead of recursion so deep scene hierarchies cannot overflow
 ///          the C stack. Capacity doubles on demand (seeded at 64) via an
 ///          overflow-guarded realloc.
+/// @param stack Address of the caller-owned stack allocation.
+/// @param count In/out populated item count.
+/// @param capacity In/out allocated item capacity.
+/// @param node Borrowed node to append.
+/// @param node_to_root Borrowed transform copied into the new frame.
 /// @return 1 on success — and also on NULL/missing arguments, treated as a no-op;
 ///         0 only when capacity growth overflows or realloc fails.
 static int scene_bounds_stack_push(scene_bounds_stack_item_t **stack,
@@ -1881,6 +2068,9 @@ int scene_node_collect_subtree_bounds(rt_scene_node3d *node,
 /// @details Reuses the owning scene's query traversal stack when the subtree is
 ///   scene-attached, so repeated per-frame `Find` calls do not heap-allocate.
 ///   Detached subtrees (e.g. scene-less model rigs) fall back to a local stack.
+/// @param node Borrowed subtree root.
+/// @param target Borrowed null-terminated exact name.
+/// @return Borrowed first matching node in depth-first order, or `NULL`.
 rt_scene_node3d *find_by_name(rt_scene_node3d *node, const char *target) {
     rt_scene_node3d **local_stack = NULL;
     size_t local_capacity = 0;
@@ -1924,6 +2114,10 @@ rt_scene_node3d *find_by_name(rt_scene_node3d *node, const char *target) {
 }
 
 /// @brief Read a boxed Vec3 into a double[3], trapping with @p trap_message on a non-Vec3 handle.
+/// @param obj Borrowed opaque handle expected to contain a Vec3.
+/// @param out Output receiving sanitized components.
+/// @param trap_message Message used when type validation fails.
+/// @return Nonzero after a successful read, otherwise zero.
 int scene3d_read_vec3d(void *obj, double out[3], const char *trap_message) {
     if (!out)
         return 0;
@@ -1938,6 +2132,10 @@ int scene3d_read_vec3d(void *obj, double out[3], const char *trap_message) {
 }
 
 /// @brief Get a node's own mesh AABB in world space. Transform-only nodes return false.
+/// @param node Borrowed SceneNode3D handle.
+/// @param world_min Output receiving world-space minimum bounds.
+/// @param world_max Output receiving world-space maximum bounds.
+/// @return Nonzero for a valid mesh node with transformed bounds.
 int scene3d_node_world_mesh_aabb(rt_scene_node3d *node, double world_min[3], double world_max[3]) {
     float local_min[3];
     float local_max[3];
@@ -1956,6 +2154,11 @@ int scene3d_node_world_mesh_aabb(rt_scene_node3d *node, double world_min[3], dou
 }
 
 /// @brief Whether two AABBs overlap on all three axes.
+/// @param a_min Borrowed minimum corner of box A.
+/// @param a_max Borrowed maximum corner of box A.
+/// @param b_min Borrowed minimum corner of box B.
+/// @param b_max Borrowed maximum corner of box B.
+/// @return Nonzero when the canonicalized closed boxes overlap or touch.
 int scene3d_aabb_intersects_aabb(const double a_min[3],
                                  const double a_max[3],
                                  const double b_min[3],
@@ -1971,6 +2174,11 @@ int scene3d_aabb_intersects_aabb(const double a_min[3],
 }
 
 /// @brief Whether a sphere overlaps an AABB, via closest-point squared distance vs radius².
+/// @param aabb_min Borrowed box minimum corner.
+/// @param aabb_max Borrowed box maximum corner.
+/// @param center Borrowed sphere center.
+/// @param radius Candidate non-negative sphere radius.
+/// @return Nonzero when the sanitized closed shapes overlap or touch.
 int scene3d_aabb_intersects_sphere(const double aabb_min[3],
                                    const double aabb_max[3],
                                    const double center[3],
@@ -2000,6 +2208,13 @@ int scene3d_aabb_intersects_sphere(const double aabb_min[3],
 }
 
 /// @brief Ray-vs-AABB slab test with a normalized direction and finite max distance.
+/// @param origin Borrowed ray origin.
+/// @param direction Borrowed non-degenerate ray direction, normalized internally.
+/// @param aabb_min Borrowed box minimum corner.
+/// @param aabb_max Borrowed box maximum corner.
+/// @param max_distance Maximum accepted entry distance.
+/// @param out_t Optional output receiving the non-negative entry distance.
+/// @return Nonzero when the ray intersects within @p max_distance.
 int scene3d_ray_intersects_aabb(const double origin[3],
                                 const double direction[3],
                                 const double aabb_min[3],
@@ -2057,14 +2272,24 @@ int scene3d_ray_intersects_aabb(const double origin[3],
     return tmin <= max_distance;
 }
 
+/// @brief Visibility state used while testing nodes against authored zones and portals.
 typedef struct {
+    /// Owned byte mask indexed by zone.
     uint8_t *visible_zones;
+    /// Number of valid mask entries.
     int32_t zone_count;
+    /// Optional borrowed counter incremented on PVS rejection.
     int32_t *culled_count;
+    /// Whether PVS filtering is active for the camera.
     int8_t active;
 } scene3d_pvs_context_t;
 
 /// @brief Push a (node, inherited-animator) frame onto the index-build traversal stack, growing it.
+/// @param stack Address of the caller-owned traversal stack.
+/// @param count In/out populated frame count.
+/// @param capacity In/out allocated frame capacity.
+/// @param node Borrowed node to validate and append.
+/// @param inherited_animator Borrowed ancestor animator carried into the frame.
 /// @return 1 on success (or NULL no-op), 0 on overflow/allocation failure.
 int scene_index_build_stack_push(scene_index_build_stack_item_t **stack,
                                  size_t *count,
@@ -2087,10 +2312,10 @@ int scene_index_build_stack_push(scene_index_build_stack_item_t **stack,
     return 1;
 }
 
-/// @brief Ensure the spatial index can hold @p needed leaf entries (doubling growth).
-
 /// @brief Grow the scene's visibility-zone array to hold at least @p needed zones (doubling
 /// growth).
+/// @param scene Borrowed scene whose native zone array may grow.
+/// @param needed Minimum required zone capacity.
 /// @return 1 on success or when capacity already suffices; 0 on overflow or allocation failure.
 static int scene3d_visibility_zone_ensure_capacity(rt_scene3d *scene, int32_t needed) {
     int32_t new_capacity;
@@ -2118,6 +2343,8 @@ static int scene3d_visibility_zone_ensure_capacity(rt_scene3d *scene, int32_t ne
 
 /// @brief Grow the scene's visibility-portal array to hold at least @p needed portals (doubling
 /// growth).
+/// @param scene Borrowed scene whose native portal array may grow.
+/// @param needed Minimum required portal capacity.
 /// @return 1 on success or when capacity already suffices; 0 on overflow or allocation failure.
 static int scene3d_visibility_portal_ensure_capacity(rt_scene3d *scene, int32_t needed) {
     int32_t new_capacity;
@@ -2143,6 +2370,11 @@ static int scene3d_visibility_portal_ensure_capacity(rt_scene3d *scene, int32_t 
     return 1;
 }
 
+/// @brief Clamp a visibility-array count to initialized storage.
+/// @param array Borrowed allocation pointer.
+/// @param count Logical element count.
+/// @param capacity Allocated element capacity.
+/// @return Safe non-negative count no larger than capacity.
 static int32_t scene3d_visibility_array_count_or_zero(const void *array,
                                                       int32_t count,
                                                       int32_t capacity) {
@@ -2151,6 +2383,9 @@ static int32_t scene3d_visibility_array_count_or_zero(const void *array,
     return count < capacity ? count : capacity;
 }
 
+/// @brief Return the scene's safe initialized visibility-zone count.
+/// @param scene Borrowed Scene3D payload.
+/// @return Safe non-negative count bounded by allocated storage.
 static int32_t scene3d_visibility_zone_count_safe(const rt_scene3d *scene) {
     return scene ? scene3d_visibility_array_count_or_zero(scene->visibility_zones,
                                                           scene->visibility_zone_count,
@@ -2158,6 +2393,9 @@ static int32_t scene3d_visibility_zone_count_safe(const rt_scene3d *scene) {
                  : 0;
 }
 
+/// @brief Return the scene's safe initialized visibility-portal count.
+/// @param scene Borrowed Scene3D payload.
+/// @return Safe non-negative count bounded by allocated storage.
 static int32_t scene3d_visibility_portal_count_safe(const rt_scene3d *scene) {
     return scene ? scene3d_visibility_array_count_or_zero(scene->visibility_portals,
                                                           scene->visibility_portal_count,
@@ -2166,6 +2404,9 @@ static int32_t scene3d_visibility_portal_count_safe(const rt_scene3d *scene) {
 }
 
 /// @brief Test whether @p point lies inside the zone's world-space AABB (inclusive bounds).
+/// @param zone Borrowed authored visibility zone.
+/// @param point Borrowed world-space point.
+/// @return Nonzero when the point lies inside or on every zone boundary.
 static int scene3d_visibility_zone_contains_point(const rt_scene3d_visibility_zone *zone,
                                                   const double point[3]) {
     return zone && point && point[0] >= zone->world_min[0] && point[0] <= zone->world_max[0] &&
@@ -2174,6 +2415,8 @@ static int scene3d_visibility_zone_contains_point(const rt_scene3d_visibility_zo
 }
 
 /// @brief Find the visibility zone containing the camera eye (including its shake offset).
+/// @param scene Borrowed scene containing authored zones.
+/// @param cam Borrowed camera whose shaken eye is tested.
 /// @return Index of the first containing zone, or -1 if the eye is non-finite or outside every
 /// zone.
 static int scene3d_visibility_find_camera_zone(const rt_scene3d *scene, const rt_camera3d *cam) {
@@ -2195,6 +2438,12 @@ static int scene3d_visibility_find_camera_zone(const rt_scene3d *scene, const rt
 }
 
 /// @brief Legacy reachability flood-fill: mark every zone reachable through any portal.
+/// @param scene Borrowed scene containing zones and directed portals.
+/// @param out Borrowed active PVS context whose bitmap is populated.
+/// @param camera_zone Valid starting zone index.
+/// @param zone_count Safe zone count.
+/// @param portal_count Safe directed portal count.
+/// @param queue Caller-owned scratch queue with @p zone_count entries.
 static void scene3d_pvs_flood_fill(rt_scene3d *scene,
                                    scene3d_pvs_context_t *out,
                                    int32_t camera_zone,
@@ -2224,6 +2473,10 @@ static void scene3d_pvs_flood_fill(rt_scene3d *scene,
 ///   the per-axis interval between the two zone AABBs — their intersection when they
 ///   overlap or touch, the gap slab when they are separated. Corners straddling the near
 ///   plane degrade to the full view rect (classic conservative portal handling).
+/// @param vp Borrowed row-major culling view-projection matrix.
+/// @param a Borrowed source visibility zone.
+/// @param b Borrowed destination visibility zone.
+/// @param out_rect Output receiving `[min_x, min_y, max_x, max_y]` in NDC.
 /// @return 0 = portal entirely behind the camera (cull), 1 = @p out_rect valid,
 ///         2 = conservative full-view rect.
 static int scene3d_portal_ndc_rect(const float *vp,
@@ -2280,6 +2533,15 @@ static int scene3d_portal_ndc_rect(const float *vp,
 ///   window; the target inherits the intersection. Runs to a fixpoint (a wider path
 ///   discovered later re-expands the target) with a hard expansion cap for safety.
 ///   Falls back to flood-fill mid-run only via the caller's toggle, never silently.
+/// @param scene Borrowed scene containing zones and directed portals.
+/// @param out Borrowed active PVS context whose bitmap is populated.
+/// @param vp Borrowed culling view-projection matrix.
+/// @param camera_zone Valid starting zone index.
+/// @param zone_count Safe zone count.
+/// @param portal_count Safe directed portal count.
+/// @param queue Caller-owned circular queue scratch.
+/// @param zone_rects Caller-owned four-double NDC rectangle per zone.
+/// @param in_queue Caller-owned byte membership flags.
 static void scene3d_pvs_portal_clip(rt_scene3d *scene,
                                     scene3d_pvs_context_t *out,
                                     const float *vp,
@@ -2371,6 +2633,10 @@ static void scene3d_pvs_portal_clip(rt_scene3d *scene,
 ///          per-zone visibility bitmap consumed by scene3d_pvs_allows_aabb. Left
 ///          inactive (zeroed) when the scene has no zones, the camera is outside all
 ///          zones, or allocation fails.
+/// @param scene Borrowed scene containing visibility authoring.
+/// @param cam Borrowed active camera.
+/// @param vp Optional borrowed culling view-projection matrix.
+/// @param out Output context, zeroed when no active PVS can be produced.
 /// @return 1 if an active PVS context was produced; 0 otherwise (with @p out zeroed).
 static int scene3d_build_pvs_context(rt_scene3d *scene,
                                      rt_camera3d *cam,
@@ -2420,6 +2686,7 @@ static int scene3d_build_pvs_context(rt_scene3d *scene,
 }
 
 /// @brief Release a PVS context's zone bitmap and reset it to the inactive state. Safe on NULL.
+/// @param pvs Borrowed context whose owned bitmap is freed.
 static void scene3d_pvs_context_clear(scene3d_pvs_context_t *pvs) {
     if (!pvs)
         return;
@@ -2431,6 +2698,10 @@ static void scene3d_pvs_context_clear(scene3d_pvs_context_t *pvs) {
 /// @details An AABB passes if it overlaps no authored zone (zones do not cover it) or overlaps at
 ///          least one zone flagged visible in @p pvs. Returns visible (1) whenever the PVS is
 ///          inactive, so visibility culling degrades safely to a no-op.
+/// @param scene Borrowed scene containing authored zones.
+/// @param pvs Borrowed current PVS context.
+/// @param world_min Borrowed world-space AABB minimum.
+/// @param world_max Borrowed world-space AABB maximum.
 /// @return 1 if the AABB should be considered visible; 0 if every overlapping zone is culled.
 static int scene3d_pvs_allows_aabb(const rt_scene3d *scene,
                                    const scene3d_pvs_context_t *pvs,
@@ -2456,6 +2727,12 @@ static int scene3d_pvs_allows_aabb(const rt_scene3d *scene,
 
 /// @brief Compute the AABB swept by a ray segment (origin to origin + dir·length) for broadphase
 /// culling.
+/// @param origin Borrowed ray origin.
+/// @param direction Borrowed ray direction, normalized internally.
+/// @param max_distance Non-negative sweep length.
+/// @param out_min Output receiving swept AABB minimum.
+/// @param out_max Output receiving swept AABB maximum.
+/// @return Nonzero when finite canonical bounds were produced.
 int scene3d_ray_sweep_bounds(const double origin[3],
                              const double direction[3],
                              double max_distance,
@@ -2492,6 +2769,10 @@ int scene3d_ray_sweep_bounds(const double origin[3],
 /// @details Unprojects the eight clip-space corners through the inverse VP and bounds them, giving
 /// a
 ///          coarse AABB the spatial index can use to reject off-screen nodes before exact culling.
+/// @param vp Borrowed finite row-major view-projection matrix.
+/// @param out_min Output receiving world-space frustum minimum.
+/// @param out_max Output receiving world-space frustum maximum.
+/// @return Nonzero when the inverse projection yields eight finite corners.
 static int scene3d_frustum_bounds_from_vp(const float vp[16],
                                           double out_min[3],
                                           double out_max[3]) {

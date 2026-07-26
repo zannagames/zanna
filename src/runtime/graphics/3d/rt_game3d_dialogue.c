@@ -26,6 +26,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements localized, typewriter-driven dialogue overlays for Game3D.
+/// @details Dialogue3D stores a bounded line queue, optional voice clips, and
+///          one blocking choice prompt. A shown dialogue occupies its world's
+///          single active slot; the world tick advances reveal/hold state and
+///          the overlay hook renders either a bottom panel or a projected
+///          speaker bubble. Text is resolved when queued, so subsequent locale
+///          changes affect only newly added lines and choices.
+
 #include "rt_canvas3d.h"
 #include "rt_game3d.h"
 #include "rt_game3d_internal.h"
@@ -47,6 +56,7 @@
 //=========================================================================
 
 /// @brief GC finalizer: release retained references (clips per line included).
+/// @param obj Dialogue3D storage being finalized; NULL is ignored.
 static void game3d_dialogue_finalize(void *obj) {
     rt_game3d_dialogue *dialogue = (rt_game3d_dialogue *)obj;
     if (!dialogue)
@@ -59,6 +69,10 @@ static void game3d_dialogue_finalize(void *obj) {
 }
 
 /// @brief Create a conversation bound to @p world (shown via show()).
+/// @param world_obj World3D that owns the active-dialogue slot, audio engine,
+///                  camera, and overlay canvas used during playback.
+/// @return A newly allocated Dialogue3D retaining @p world_obj, or NULL after
+///         validation or allocation failure.
 void *rt_game3d_dialogue_new(void *world_obj) {
     rt_game3d_world *world =
         game3d_world_checked(world_obj, "Game3D.Dialogue3D.New: invalid world");
@@ -81,6 +95,10 @@ void *rt_game3d_dialogue_new(void *world_obj) {
 }
 
 /// @brief Resolve text through the bound bundle (key hit) or keep the literal.
+/// @param dialogue Dialogue whose optional MessageBundle supplies translations.
+/// @param text Localization key or literal runtime string; NULL resolves empty.
+/// @param[out] dst Destination byte buffer.
+/// @param dst_size Capacity of @p dst including the terminator; must be positive.
 static void game3d_dialogue_resolve_text(rt_game3d_dialogue *dialogue,
                                          rt_string text,
                                          char *dst,
@@ -103,6 +121,12 @@ static void game3d_dialogue_resolve_text(rt_game3d_dialogue *dialogue,
 //=========================================================================
 
 /// @brief Shared line-append body.
+/// @param obj Dialogue3D runtime handle.
+/// @param speaker Optional speaker label copied into the bounded line record.
+/// @param text Localization key or literal text resolved and copied immediately.
+/// @param voice_clip Optional clip retained until the dialogue is finalized.
+/// @param api_name Validation message identifying the public caller.
+/// @return @p obj for fluent chaining, including validation and capacity failures.
 static void *game3d_dialogue_say_impl(
     void *obj, rt_string speaker, rt_string text, void *voice_clip, const char *api_name) {
     rt_game3d_dialogue *dialogue = game3d_dialogue_checked(obj, api_name);
@@ -126,18 +150,32 @@ static void *game3d_dialogue_say_impl(
 }
 
 /// @brief Fluent: queue a line (text may be a localization key).
+/// @param obj Dialogue3D runtime handle.
+/// @param speaker Optional speaker label.
+/// @param text Localization key or literal line text.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_dialogue_say(void *obj, rt_string speaker, rt_string text) {
     return game3d_dialogue_say_impl(
         obj, speaker, text, NULL, "Game3D.Dialogue3D.say: invalid dialogue");
 }
 
 /// @brief Fluent: queue a voiced line (clip plays when the line starts).
+/// @param obj Dialogue3D runtime handle.
+/// @param speaker Optional speaker label.
+/// @param text Localization key or literal line text.
+/// @param clip Optional audio clip retained by the queued line.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_dialogue_say_voiced(void *obj, rt_string speaker, rt_string text, void *clip) {
     return game3d_dialogue_say_impl(
         obj, speaker, text, clip, "Game3D.Dialogue3D.sayVoiced: invalid dialogue");
 }
 
 /// @brief Fluent: queue a blocking choice prompt after the current lines.
+/// @param obj Dialogue3D runtime handle.
+/// @param options_seq Sequence containing one through eight runtime strings.
+///                    Each option is localized and copied immediately.
+/// @return @p obj for fluent chaining; invalid option counts trap without
+///         replacing the prior prompt.
 void *rt_game3d_dialogue_ask_choice(void *obj, void *options_seq) {
     rt_game3d_dialogue *dialogue =
         game3d_dialogue_checked(obj, "Game3D.Dialogue3D.askChoice: invalid dialogue");
@@ -163,6 +201,10 @@ void *rt_game3d_dialogue_ask_choice(void *obj, void *options_seq) {
 //=========================================================================
 
 /// @brief Show the conversation: install as the world's active dialogue.
+/// @details Any different dialogue already installed in the world is marked
+///          inactive before the world retains this one. Playback restarts from
+///          the first queued line and clears transient reveal/choice notification state.
+/// @param obj Dialogue3D runtime handle.
 void rt_game3d_dialogue_show(void *obj) {
     rt_game3d_dialogue *dialogue =
         game3d_dialogue_checked(obj, "Game3D.Dialogue3D.show: invalid dialogue");
@@ -186,6 +228,9 @@ void rt_game3d_dialogue_show(void *obj) {
 }
 
 /// @brief Hide the conversation (releases the world slot).
+/// @param obj Dialogue3D runtime handle.
+/// @post The dialogue is inactive; its world slot is released only if it still
+///       points to this dialogue.
 void rt_game3d_dialogue_hide(void *obj) {
     rt_game3d_dialogue *dialogue =
         game3d_dialogue_checked(obj, "Game3D.Dialogue3D.hide: invalid dialogue");
@@ -199,6 +244,8 @@ void rt_game3d_dialogue_hide(void *obj) {
 }
 
 /// @brief Current line text length (revealed cap).
+/// @param dialogue Dialogue whose current queue position is inspected.
+/// @return The byte length of the current resolved line, or zero outside the queue.
 static size_t game3d_dialogue_line_len(const rt_game3d_dialogue *dialogue) {
     if (dialogue->line_index < 0 || dialogue->line_index >= dialogue->line_count)
         return 0;
@@ -206,6 +253,10 @@ static size_t game3d_dialogue_line_len(const rt_game3d_dialogue *dialogue) {
 }
 
 /// @brief Advance to the next line (or arm the pending choice / finish).
+/// @details A partially revealed line is completed without changing the queue
+///          position. A second advance moves forward; reaching the queue end
+///          activates an unanswered choice or hides the dialogue.
+/// @param obj Dialogue3D runtime handle.
 void rt_game3d_dialogue_advance(void *obj) {
     rt_game3d_dialogue *dialogue =
         game3d_dialogue_checked(obj, "Game3D.Dialogue3D.advance: invalid dialogue");
@@ -231,6 +282,7 @@ void rt_game3d_dialogue_advance(void *obj) {
 }
 
 /// @brief Complete the current line's reveal instantly.
+/// @param obj Dialogue3D runtime handle; inactive dialogues are unchanged.
 void rt_game3d_dialogue_skip_reveal(void *obj) {
     rt_game3d_dialogue *dialogue =
         game3d_dialogue_checked(obj, "Game3D.Dialogue3D.skipReveal: invalid dialogue");
@@ -239,6 +291,9 @@ void rt_game3d_dialogue_skip_reveal(void *obj) {
 }
 
 /// @brief Move the choice highlight by @p delta (clamped).
+/// @param obj Dialogue3D runtime handle.
+/// @param delta Signed selection displacement. The result is clamped rather
+///              than wrapped at the first and last option.
 void rt_game3d_dialogue_move_choice(void *obj, int64_t delta) {
     rt_game3d_dialogue *dialogue =
         game3d_dialogue_checked(obj, "Game3D.Dialogue3D.moveChoice: invalid dialogue");
@@ -253,6 +308,9 @@ void rt_game3d_dialogue_move_choice(void *obj, int64_t delta) {
 }
 
 /// @brief Confirm the highlighted choice: latches choiceMade + lastChoice.
+/// @param obj Dialogue3D runtime handle.
+/// @post The selected zero-based index remains available through lastChoice,
+///       choiceMade is armed once, and the dialogue is hidden.
 void rt_game3d_dialogue_confirm_choice(void *obj) {
     rt_game3d_dialogue *dialogue =
         game3d_dialogue_checked(obj, "Game3D.Dialogue3D.confirmChoice: invalid dialogue");
@@ -269,18 +327,27 @@ void rt_game3d_dialogue_confirm_choice(void *obj) {
 // Properties
 //=========================================================================
 
+/// @brief Report whether the dialogue is currently shown.
+/// @param obj Dialogue3D runtime handle.
+/// @return Non-zero when active, otherwise zero.
 int8_t rt_game3d_dialogue_get_active(void *obj) {
     rt_game3d_dialogue *dialogue =
         game3d_dialogue_checked(obj, "Game3D.Dialogue3D.get_active: invalid dialogue");
     return dialogue ? dialogue->active : 0;
 }
 
+/// @brief Return the number of queued dialogue lines.
+/// @param obj Dialogue3D runtime handle.
+/// @return The bounded queue length, or zero for an invalid dialogue.
 int64_t rt_game3d_dialogue_get_line_count(void *obj) {
     rt_game3d_dialogue *dialogue =
         game3d_dialogue_checked(obj, "Game3D.Dialogue3D.get_lineCount: invalid dialogue");
     return dialogue ? dialogue->line_count : 0;
 }
 
+/// @brief Report whether playback is blocked on a visible choice prompt.
+/// @param obj Dialogue3D runtime handle.
+/// @return Non-zero while a choice is active, otherwise zero.
 int8_t rt_game3d_dialogue_get_choice_pending(void *obj) {
     rt_game3d_dialogue *dialogue =
         game3d_dialogue_checked(obj, "Game3D.Dialogue3D.choicePending: invalid dialogue");
@@ -288,6 +355,9 @@ int8_t rt_game3d_dialogue_get_choice_pending(void *obj) {
 }
 
 /// @brief One-shot: a choice was confirmed since the last query.
+/// @param obj Dialogue3D runtime handle.
+/// @return Non-zero once after confirmation, otherwise zero.
+/// @post A non-zero pending notification is cleared by this query.
 int8_t rt_game3d_dialogue_choice_made(void *obj) {
     rt_game3d_dialogue *dialogue =
         game3d_dialogue_checked(obj, "Game3D.Dialogue3D.choiceMade: invalid dialogue");
@@ -298,6 +368,9 @@ int8_t rt_game3d_dialogue_choice_made(void *obj) {
     return made;
 }
 
+/// @brief Return the most recently confirmed zero-based choice index.
+/// @param obj Dialogue3D runtime handle.
+/// @return The latched index, or -1 before confirmation or for an invalid dialogue.
 int64_t rt_game3d_dialogue_last_choice(void *obj) {
     rt_game3d_dialogue *dialogue =
         game3d_dialogue_checked(obj, "Game3D.Dialogue3D.lastChoice: invalid dialogue");
@@ -305,6 +378,9 @@ int64_t rt_game3d_dialogue_last_choice(void *obj) {
 }
 
 /// @brief Currently displayed (revealed) text of the active line.
+/// @param obj Dialogue3D runtime handle.
+/// @return A runtime string containing only the currently revealed byte prefix;
+///         inactive or exhausted dialogues return an empty string.
 rt_string rt_game3d_dialogue_current_text(void *obj) {
     rt_game3d_dialogue *dialogue =
         game3d_dialogue_checked(obj, "Game3D.Dialogue3D.currentText: invalid dialogue");
@@ -325,6 +401,10 @@ rt_string rt_game3d_dialogue_current_text(void *obj) {
     return rt_const_cstr(revealed);
 }
 
+/// @brief Select the entity used to anchor speaker-bubble presentation.
+/// @param obj Dialogue3D runtime handle.
+/// @param entity Entity3D to retain, or NULL to clear the anchor. Other runtime
+///               classes trap and leave the prior reference unchanged.
 void rt_game3d_dialogue_set_speaker_entity(void *obj, void *entity) {
     rt_game3d_dialogue *dialogue =
         game3d_dialogue_checked(obj, "Game3D.Dialogue3D.setSpeakerEntity: invalid dialogue");
@@ -336,6 +416,10 @@ void rt_game3d_dialogue_set_speaker_entity(void *obj, void *entity) {
         game3d_assign_ref(&dialogue->speaker_entity, entity);
 }
 
+/// @brief Enable or disable speaker-anchored bubble presentation.
+/// @param obj Dialogue3D runtime handle.
+/// @param anchored Non-zero to try projecting above the speaker entity. Failed
+///                 projection falls back to the bottom panel.
 void rt_game3d_dialogue_set_anchored(void *obj, int8_t anchored) {
     rt_game3d_dialogue *dialogue =
         game3d_dialogue_checked(obj, "Game3D.Dialogue3D.setAnchored: invalid dialogue");
@@ -343,6 +427,9 @@ void rt_game3d_dialogue_set_anchored(void *obj, int8_t anchored) {
         dialogue->anchored = anchored ? 1 : 0;
 }
 
+/// @brief Configure automatic advancement after each line is fully revealed.
+/// @param obj Dialogue3D runtime handle.
+/// @param enabled Non-zero to advance after the fixed hold interval.
 void rt_game3d_dialogue_set_auto_advance(void *obj, int8_t enabled) {
     rt_game3d_dialogue *dialogue =
         game3d_dialogue_checked(obj, "Game3D.Dialogue3D.setAutoAdvance: invalid dialogue");
@@ -350,6 +437,10 @@ void rt_game3d_dialogue_set_auto_advance(void *obj, int8_t enabled) {
         dialogue->auto_advance = enabled ? 1 : 0;
 }
 
+/// @brief Configure the typewriter reveal rate.
+/// @param obj Dialogue3D runtime handle.
+/// @param chars_per_second Requested positive byte reveal rate. Invalid values
+///                         select the default and the result is capped at 10,000.
 void rt_game3d_dialogue_set_reveal_speed(void *obj, double chars_per_second) {
     rt_game3d_dialogue *dialogue =
         game3d_dialogue_checked(obj, "Game3D.Dialogue3D.setRevealSpeed: invalid dialogue");
@@ -359,6 +450,10 @@ void rt_game3d_dialogue_set_reveal_speed(void *obj, double chars_per_second) {
 }
 
 /// @brief Bind a MessageBundle for key resolution (NULL unbinds).
+/// @details Resolution occurs while lines or choices are queued; existing copied
+///          text is not retranslated when this binding changes.
+/// @param obj Dialogue3D runtime handle.
+/// @param bundle MessageBundle to retain, or NULL to restore literal-only behavior.
 void rt_game3d_dialogue_set_locale(void *obj, void *bundle) {
     rt_game3d_dialogue *dialogue =
         game3d_dialogue_checked(obj, "Game3D.Dialogue3D.setLocale: invalid dialogue");
@@ -366,6 +461,10 @@ void rt_game3d_dialogue_set_locale(void *obj, void *bundle) {
         game3d_assign_ref(&dialogue->bundle, bundle);
 }
 
+/// @brief Configure panel opacity and speaker-name color.
+/// @param obj Dialogue3D runtime handle.
+/// @param panel_alpha Requested opacity, finite-clamped to [0, 1] with 0.65 fallback.
+/// @param name_color Packed color passed to Canvas3D for speaker labels.
 void rt_game3d_dialogue_set_style(void *obj, double panel_alpha, int64_t name_color) {
     rt_game3d_dialogue *dialogue =
         game3d_dialogue_checked(obj, "Game3D.Dialogue3D.setStyle: invalid dialogue");
@@ -380,6 +479,11 @@ void rt_game3d_dialogue_set_style(void *obj, double panel_alpha, int64_t name_co
 //=========================================================================
 
 /// @brief Typewriter tick + voice fire + auto-advance. See internal header.
+/// @details The voice clip starts exactly once when a line first ticks. Reveal
+///          progress accumulates at the configured rate; when complete, automatic
+///          mode counts down a fixed hold before invoking advance.
+/// @param world World3D whose active dialogue is advanced; NULL is ignored.
+/// @param dt Frame duration in seconds, sanitized before reveal and hold updates.
 void game3d_world_dialogue_tick(rt_game3d_world *world, double dt) {
     if (!world)
         return;
@@ -411,6 +515,11 @@ void game3d_world_dialogue_tick(rt_game3d_world *world, double dt) {
 }
 
 /// @brief Draw borrowed C text through Canvas3D without leaking the temporary runtime string.
+/// @param canvas Canvas3D receiving the overlay text.
+/// @param x Horizontal pixel coordinate.
+/// @param y Vertical pixel coordinate.
+/// @param text Borrowed NUL-terminated text; NULL is treated as empty.
+/// @param color Packed text color.
 static void game3d_dialogue_draw_text_cstr(
     void *canvas, int64_t x, int64_t y, const char *text, int64_t color) {
     rt_string runtime_text = rt_const_cstr(text ? text : "");
@@ -421,6 +530,11 @@ static void game3d_dialogue_draw_text_cstr(
 }
 
 /// @brief Overlay draw: bottom panel or anchored bubble + choices. See header.
+/// @details Active choices use a centered bottom list. Normal lines first try a
+///          clamped bubble above the projected speaker and fall back to a bottom
+///          panel when anchoring is disabled, invalid, or behind the camera.
+/// @param world World3D whose canvas, camera, dimensions, and active dialogue
+///              supply the overlay; incomplete worlds are ignored.
 void game3d_world_dialogue_overlay(rt_game3d_world *world) {
     if (!world || !world->canvas)
         return;

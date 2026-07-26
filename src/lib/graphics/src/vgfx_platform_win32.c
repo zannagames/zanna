@@ -785,6 +785,30 @@ static vgfx_key_t translate_vk(WPARAM vk) {
             return VGFX_KEY_UP;
         case VK_DOWN:
             return VGFX_KEY_DOWN;
+        case VK_F1:
+            return VGFX_KEY_F1;
+        case VK_F2:
+            return VGFX_KEY_F2;
+        case VK_F3:
+            return VGFX_KEY_F3;
+        case VK_F4:
+            return VGFX_KEY_F4;
+        case VK_F5:
+            return VGFX_KEY_F5;
+        case VK_F6:
+            return VGFX_KEY_F6;
+        case VK_F7:
+            return VGFX_KEY_F7;
+        case VK_F8:
+            return VGFX_KEY_F8;
+        case VK_F9:
+            return VGFX_KEY_F9;
+        case VK_F10:
+            return VGFX_KEY_F10;
+        case VK_F11:
+            return VGFX_KEY_F11;
+        case VK_F12:
+            return VGFX_KEY_F12;
         /* Punctuation / OEM keys. Win32 delivers these as VK_OEM_* virtual codes that
            are NOT their ASCII values, so map each to the ASCII of its unshifted
            character — vgfx_key_t is ASCII-based. This makes symbol-based shortcuts

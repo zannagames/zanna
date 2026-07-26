@@ -110,17 +110,31 @@ emissive maps across a selection without mutating unselected users of shared
 imported materials. The 3D viewport renders the live SceneGraph's authored
 meshes and PBR materials through a windowless Canvas3D that requests the
 platform GPU backend and falls back to the deterministic software rasterizer
-truthfully (ADR 0191; probes always use the software path). Interactive
+truthfully (ADR 0191; probes always use the software path). On macOS the
+Metal backend now creates a real headless context, so the editor viewport is
+GPU-accelerated; OpenGL and D3D11 headless contexts are still pending and
+those platforms fall back to software for the offscreen viewport. Interactive
 camera and gizmo drags render at reduced resolution and re-render at full
 resolution on release, and the viewport now sizes up to the pane rather than
 a fixed 1600x1000 cap. Shaded and
 triangle-wireframe modes retain exact alignment with the editor grid,
 hierarchy links, markers, selection, and transform gizmos; mode is per-scene
-session state and never edits VSCN. The 3D viewport selects the nearest visible
-transformed mesh bounds, falls back to bounded origin markers for meshless
-nodes, supports replace/Shift-add/Control-or-Command-toggle/blank-clear
-selection, and pans in the camera plane with Shift plus middle/right drag.
-These interactions update workspace state only. Both hierarchies are
+session state and never edits VSCN. The 3D viewport picks triangle-accurately
+(ADR 0193): a click selects the visible mesh node containing the nearest
+ray-intersected triangle, so clicking through a gap or around a concave
+silhouette selects what the pixel shows rather than the nearest empty
+bounding-box corner; bounded origin markers remain the fallback for meshless
+nodes. Alt-click cycles front to back through overlapping triangle hits.
+Left-dragging from empty viewport space draws a marquee that selects every
+node whose projected world bounds intersect the rectangle, with the 2D
+vocabulary (replace, Shift adds, Ctrl/Cmd toggles) and Escape cancelling the
+gesture without touching the selection. Selected mesh nodes show
+screen-space bounds corner brackets (amber primary, cyan others) and the
+hovered mesh shows a subtle bracket; full mesh silhouette outlines stay
+deferred until a GPU outline pass exists. Replace/Shift-add/
+Control-or-Command-toggle/blank-clear click selection and Shift plus
+middle/right camera-plane pan are unchanged. These interactions update
+workspace state only. Both hierarchies are
 real expandable TreeViews with stable non-display row identities,
 Ctrl/Command-click and Shift-click multi-selection, collapse retention, and
 transactional above/onto/below row drops. `Ctrl`/`Cmd`+`F` reveals a
@@ -131,9 +145,12 @@ subtrees while preserving absolute positions; the 3D outliner preserves
 complete world transforms by default. Batch drag/transform, duplicate, and delete actions
 commit as one undoable transaction. The 3D visibility checkbox shows a native
 mixed state and resolves the complete node selection in one transaction. The
-2D inspector can create, rename, update, and remove scene-wide typed metadata,
-as well as set/remove one typed property across the object selection.
-Scene-metadata selection is tab-local and survives session restore. The 3D
+2D inspector authors scene-wide typed metadata and per-object typed
+properties through always-editable rows — each value is one
+[key][kind][value][×] row that commits on Enter, on value blur, or on a kind
+change, with a trailing draft row appended by "New property"; a multi-object
+selection shows one shared draft row that sets a value on, or removes a key
+from, every selected object. The 3D
 numeric inspector edits a single node's transform live — spinner changes
 mutate the live node immediately and serialize exactly once when the
 spinners lose focus, with Escape restoring the captured values — while
@@ -150,10 +167,10 @@ Earlier/Later moves one contiguous same-parent selection as a stable sibling
 block with exact VSCN history and selection preservation; direct row drops use
 the same runtime primitives, preserve complete world transforms by default,
 and roll back the whole group on failure. Its Gameplay metadata group
-creates, renames, updates, and removes bounded null, Boolean, integer, float,
-and string values on one node. Exact scalar kinds round-trip through VSCN v6,
-one accepted action is one history transaction, and the selected metadata row
-remains local to its scene tab/session. Both editors load bounded project-root
+edits bounded null, Boolean, integer, float, and string values on one node
+through the same always-editable rows: renaming a key, changing a kind, or
+editing a value commits as one history transaction, a row's × removes its
+value, and exact scalar kinds round-trip through VSCN v6. Both editors load bounded project-root
 `scene-components.json` templates and atomically add missing typed fields
 across a selection without overwriting authored same-kind values. Their shared
 structured schema form maintains every cross-target definition with validated
@@ -339,6 +356,38 @@ manage their own clip rectangles (lists, editors) so content past the pane
 fold can never paint over neighboring panels. Group-box and color-picker
 children arrange in the shared parent-relative coordinate space, which also
 keeps their hitboxes aligned with their pixels.
+
+Scene surfaces have right-click context menus: both hierarchies offer
+create (empty/child plus 3D primitives, light, and camera), rename,
+duplicate, delete/remove, ordering (2D), and framing (3D); the 3D viewport
+offers creation and framing, opening only when the right button releases in
+place so fly-look drags never fight it; and the 2D canvas switches tools.
+Every menu action routes through the same editor transactions as the
+toolbar and shortcuts, so validation, history, and dirty state are
+identical.
+
+Assets drag onto scene surfaces as typed payloads through the widget
+drag-and-drop system: dragging a project image row from an asset browser
+onto the 2D canvas creates one sprite object at the drop cell — with a
+portable `editor.sprite` reference — as one undoable transaction, and
+dragging a 3D asset row onto the 3D viewport imports it through the
+standard one-transaction import path; material-library rows drag onto the
+viewport to assign the material to the node under the recorded drop point.
+Extension gates refuse non-image canvas drops and non-3D viewport drops
+without touching history. Drop handlers position from the drop coordinates
+the GUI core records when the drop lands (`GetDropX`/`GetDropY`), never
+from the live pointer, which may have moved (or, under automation, reset)
+by the time the frame is pumped.
+
+Both hierarchies rename inline: F2 with a single selection overlays a
+focused row editor pre-filled with the raw node name (3D) or object id (2D);
+Enter or focus loss commits one undoable rename, Escape cancels, and a 2D
+rename onto an existing id is refused with the standard uniqueness message.
+Numeric spinners scrub: dragging horizontally on the value area adjusts the
+value continuously (Shift is coarse, Ctrl/Alt fine), and releasing the drag
+commits the whole gesture as one history entry through the same live-edit
+drafts that typed edits use. Function keys F1–F12 are delivered by every
+platform backend and by the automation harness.
 
 The 2D editor is a three-pane workbench: a persistent left Objects pane
 (search, full-height hierarchy tree, parent chooser, creation/duplication/

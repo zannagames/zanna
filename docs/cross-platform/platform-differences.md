@@ -6,7 +6,7 @@ last-verified: 2026-07-23
 
 # Platform Behavioral Differences
 
-This document describes the intentional and incidental behavioral differences in the Zanna compiler and runtime across **Windows (x86-64)**, **macOS (x86-64 and ARM64)**, and **Linux (x86-64 and AArch64)**. It is intended for developers and advanced users who need to understand what Zanna does differently per platform at runtime.
+This document describes the intentional and incidental behavioral differences in the Zanna compiler and runtime across **Windows (x86-64)**, **macOS (ARM64 / Apple Silicon)**, and **Linux (x86-64 and AArch64)**. It is intended for developers and advanced users who need to understand what Zanna does differently per platform at runtime.
 
 For a contributor-oriented checklist of which source files to modify when adding platform-sensitive code, see [platform-checklist.md](platform-checklist.md).
 
@@ -26,7 +26,7 @@ For a contributor-oriented checklist of which source files to modify when adding
 | Graphics | ✅ Full (GDI) | ✅ Full (Cocoa) | ⚠️ Partial [2] |
 | Audio | ✅ Full (WASAPI) | ✅ Full (AudioQueue) | ⚠️ Partial [3] |
 | Game Controllers | ✅ Full (XInput) | ✅ Full (IOKit HID) | ⚠️ Partial [4] |
-| Native Codegen (x86-64) | ✅ Full | ✅ Full | ✅ Full |
+| Native Codegen (x86-64) | ✅ Full | ❌ Not supported [8] | ✅ Full |
 | Native Codegen (AArch64) | ⚠️ Partial [6] | ✅ Full | ✅ Full |
 | Process Execution | ✅ Full | ✅ Full | ✅ Full |
 
@@ -39,6 +39,7 @@ For a contributor-oriented checklist of which source files to modify when adding
 5. ~~x86-64 native codegen emits SysV ABI only.~~ **Fixed:** Both System V AMD64 and Windows x64 ABIs are implemented.
 6. AArch64 Windows PE/COFF target is defined but not tested in CI.
 7. ~~Resolved.~~ Windows test infrastructure uses `CreateProcess` self-relaunch + Job Object instead of `fork()`.
+8. macOS is supported on Apple Silicon (ARM64) only. Intel (x86-64) macOS is not a supported target: the native linker does not implement Mach-O x86-64 dynamic imports, and the x86-64 native-link backend is not built on macOS hosts.
 
 ---
 
@@ -205,9 +206,9 @@ Zanna compiles Zia programs to native machine code via its built-in code generat
 
 ### 2.1 x86-64: SysV vs Win64 ABI
 
-The x86-64 backend supports two ABIs. The pipeline selects the correct ABI automatically via `hostTarget()` — Win64 on Windows, SysV on macOS/Linux.
+The x86-64 backend supports two ABIs. The pipeline selects the correct ABI automatically via `hostTarget()` — Win64 on Windows, SysV on Linux. (macOS x86-64 is not a supported target; macOS support is ARM64-only.)
 
-| Property | SysV AMD64 (macOS, Linux) | Win64 (Windows) |
+| Property | SysV AMD64 (Linux) | Win64 (Windows) |
 |----------|---------------------------|-----------------|
 | Integer argument registers | 6: RDI, RSI, RDX, RCX, R8, R9 | 4: RCX, RDX, R8, R9 |
 | FP argument registers | 8: XMM0–XMM7 | 4: XMM0–XMM3 |
@@ -219,7 +220,7 @@ The x86-64 backend supports two ABIs. The pipeline selects the correct ABI autom
 | Stack alignment | 16-byte aligned before `CALL` | 16-byte aligned before `CALL` |
 | Return registers | RAX (int), XMM0 (float) | RAX (int), XMM0 (float) |
 
-**Implication:** Native compilation produces executables that follow the platform's native calling convention — Win64 on Windows, SysV on macOS/Linux. The generated code and runtime share the same ABI on each platform.
+**Implication:** Native compilation produces executables that follow the platform's native calling convention — Win64 on Windows, SysV on Linux. The generated code and runtime share the same ABI on each platform.
 
 ### 2.2 AArch64: Darwin vs Linux vs Windows
 

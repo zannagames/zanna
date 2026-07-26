@@ -17,11 +17,22 @@
 // Links: rt_scene3d.c, rt_scene3d_node.c, rt_scene3d_internal.h
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements Scene3D lifecycle, hierarchy access, visibility authoring, draw, and telemetry.
+/// @details This include owns scene construction/finalization, root-level
+/// mutations, name lookup, portal/PVS definitions, camera-dependent LOD
+/// selection, draw-state preservation, binding synchronization, and counters.
+
 /*==========================================================================
  * Scene3D
  *=========================================================================*/
 
 /// @brief GC finalizer for a Scene3D — releases the root node and any post-processing context.
+/// @details Clears owner backlinks before releasing the root, then releases
+///          imported asset tables, spatial-index storage, visibility data, and
+///          reusable traversal buffers in dependency order.
+/// @param obj Borrowed Scene3D payload being finalized; `NULL` is accepted.
 static void rt_scene3d_finalize(void *obj) {
     rt_scene3d *scene = (rt_scene3d *)obj;
     rt_scene_node3d *root;
@@ -110,6 +121,7 @@ static void rt_scene3d_finalize(void *obj) {
 }
 
 /// @brief Allocate a fresh Scene3D with an empty root node and no lights or skybox.
+/// @return New Scene3D handle, or `NULL` after trapping on allocation failure.
 void *rt_scene3d_new(void) {
     rt_scene3d *s =
         (rt_scene3d *)rt_obj_new_i64(RT_G3D_SCENE3D_CLASS_ID, (int64_t)sizeof(rt_scene3d));
@@ -151,12 +163,17 @@ void *rt_scene3d_new(void) {
 }
 
 /// @brief Return the implicit root node — every other node lives somewhere in its subtree.
+/// @param obj Borrowed Scene3D handle.
+/// @return Borrowed root SceneNode3D handle, or `NULL` for an invalid scene.
 void *rt_scene3d_get_root(void *obj) {
     rt_scene3d *s = scene3d_checked(obj);
     return s ? scene_node3d_checked(s->root) : NULL;
 }
 
 /// @brief Convenience: add `node` as a direct child of the scene's root node.
+/// @param obj Borrowed destination Scene3D handle.
+/// @param node Borrowed SceneNode3D retained by the root.
+/// @return Nonzero when the node is parented beneath the scene root.
 int8_t rt_scene3d_try_add(void *obj, void *node) {
     rt_scene3d *s = scene3d_checked(obj);
     rt_scene_node3d *n = scene_node3d_checked(node);
@@ -171,11 +188,17 @@ int8_t rt_scene3d_try_add(void *obj, void *node) {
 
 /// @brief Add a top-level node to the scene (under its root), taking ownership and dirtying the
 /// index.
+/// @param obj Borrowed destination Scene3D handle.
+/// @param node Borrowed SceneNode3D retained by the root on success.
 void rt_scene3d_add(void *obj, void *node) {
     (void)rt_scene3d_try_add(obj, node);
 }
 
 /// @brief `Scene3D.RebaseOrigin(dx, dy, dz)` — shift scene content by -delta.
+/// @param obj Borrowed Scene3D handle.
+/// @param dx Finite X component of the origin shift.
+/// @param dy Finite Y component of the origin shift.
+/// @param dz Finite Z component of the origin shift.
 void rt_scene3d_rebase_origin(void *obj, double dx, double dy, double dz) {
     rt_scene3d *s = scene3d_checked(obj);
     rt_scene_node3d *root = s ? scene_node3d_checked(s->root) : NULL;
@@ -190,6 +213,8 @@ void rt_scene3d_rebase_origin(void *obj, double dx, double dy, double dz) {
 }
 
 /// @brief Convenience: remove `node` from the scene root's children.
+/// @param obj Borrowed owning Scene3D handle.
+/// @param node Borrowed node to detach if it belongs to the root subtree.
 void rt_scene3d_remove(void *obj, void *node) {
     rt_scene3d *s = scene3d_checked(obj);
     rt_scene_node3d *n = scene_node3d_checked(node);
@@ -202,6 +227,8 @@ void rt_scene3d_remove(void *obj, void *node) {
 }
 
 /// @brief Locate a node by name via depth-first traversal from the scene root.
+/// @param obj Borrowed Scene3D handle.
+/// @param name Borrowed exact node name.
 /// @return Pointer to the first matching node or NULL. Ownership is not
 ///   transferred — callers must not release the returned pointer directly.
 void *rt_scene3d_find(void *obj, rt_string name) {
@@ -232,6 +259,11 @@ void *rt_scene3d_find_option(void *obj, rt_string name) {
 }
 
 /// @brief Add an authored PVS visibility zone AABB; returns its zero-based index, or -1.
+/// @param obj Borrowed Scene3D handle.
+/// @param name Borrowed zone name retained by the scene, or `NULL` for empty.
+/// @param min_obj Borrowed Vec3 first AABB corner.
+/// @param max_obj Borrowed Vec3 opposite AABB corner.
+/// @return New zero-based zone index, or `-1` on validation or allocation failure.
 int64_t rt_scene3d_add_visibility_zone(void *obj, rt_string name, void *min_obj, void *max_obj) {
     rt_scene3d *s = scene3d_checked(obj);
     int32_t zone_count;
@@ -266,6 +298,9 @@ int64_t rt_scene3d_add_visibility_zone(void *obj, rt_string name, void *min_obj,
 /// @brief Append one directed visibility portal (@p from_zone -> @p to_zone) to the scene.
 /// @details Validates both zone indices against the current zone count and grows the portal array
 ///          as needed before recording the edge.
+/// @param s Borrowed scene receiving the directed edge.
+/// @param from_zone Existing source-zone index.
+/// @param to_zone Existing destination-zone index.
 /// @return 1 on success; 0 on invalid indices, overflow, or allocation failure.
 static int scene3d_add_visibility_portal_directed(rt_scene3d *s,
                                                   int32_t from_zone,
@@ -292,6 +327,11 @@ static int scene3d_add_visibility_portal_directed(rt_scene3d *s,
 }
 
 /// @brief Add a directed or bidirectional visibility portal between authored zones.
+/// @param obj Borrowed Scene3D handle.
+/// @param from_zone Existing source-zone index.
+/// @param to_zone Existing destination-zone index.
+/// @param bidirectional Nonzero to append the reverse edge as well.
+/// @return Index of the first added directed portal, or `-1` on failure.
 int64_t rt_scene3d_add_visibility_portal(void *obj,
                                          int64_t from_zone,
                                          int64_t to_zone,
@@ -325,6 +365,8 @@ int64_t rt_scene3d_add_visibility_portal(void *obj,
 }
 
 /// @brief Helper to convert double[16] to float[16] for frustum extraction.
+/// @param src Borrowed sixteen-lane double matrix.
+/// @param dst Output receiving sixteen safely narrowed float lanes.
 static void mat4_d2f_local(const double *src, float *dst) {
     for (int i = 0; i < 16; i++)
         dst[i] = scene3d_float_or_zero(src[i]);
@@ -358,6 +400,8 @@ static double scene3d_active_output_aspect(const rt_canvas3d *canvas, const rt_c
 }
 
 /// @brief Return active output height in pixels for screen-error LOD estimates.
+/// @param canvas Borrowed active canvas, or `NULL`.
+/// @return Positive render-target or canvas height, defaulting to 720 pixels.
 static double scene3d_active_output_height(const rt_canvas3d *canvas) {
     int32_t h = 0;
     if (canvas) {
@@ -373,6 +417,9 @@ static double scene3d_active_output_height(const rt_canvas3d *canvas) {
 /// @details Canvas3D.Begin applies camera shake before caching its render parameters. Reusing the
 ///   cached world camera makes Scene3D distance LOD, impostors, and PVS agree with the frame that
 ///   will actually render, instead of mixing unshaken camera coordinates with shaken rendering.
+/// @param canvas Borrowed active canvas, or `NULL`.
+/// @param cam Borrowed camera used when no cached in-frame pose is available.
+/// @param out_pos Output receiving the sanitized world-space position.
 static void scene3d_resolved_camera_world_position(const rt_canvas3d *canvas,
                                                    const rt_camera3d *cam,
                                                    double out_pos[3]) {
@@ -390,6 +437,11 @@ static void scene3d_resolved_camera_world_position(const rt_canvas3d *canvas,
 }
 
 /// @brief Estimate how large a bounding sphere appears on screen in pixels.
+/// @param canvas Borrowed active canvas, or `NULL` for the default output height.
+/// @param cam Borrowed camera defining projection mode and scale.
+/// @param radius Positive world-space sphere radius.
+/// @param distance Positive camera-to-sphere distance for perspective projection.
+/// @return Estimated diameter in pixels, or `DBL_MAX` when projection input is invalid.
 static double scene3d_projected_diameter_px(const rt_canvas3d *canvas,
                                             const rt_camera3d *cam,
                                             double radius,
@@ -418,6 +470,13 @@ static double scene3d_projected_diameter_px(const rt_canvas3d *canvas,
 }
 
 /// @brief Pick an authored LOD mesh using projected screen size instead of distance thresholds.
+/// @param node Borrowed node containing sorted LOD entries.
+/// @param canvas Borrowed active canvas, or `NULL`.
+/// @param cam Borrowed active camera.
+/// @param state In/out per-view hysteresis state.
+/// @param radius World-space node bounds radius.
+/// @param distance Camera-to-node distance in world units.
+/// @return Borrowed selected resident Mesh3D handle, or `NULL` when auto LOD is unavailable.
 static void *scene3d_auto_lod_mesh(rt_scene_node3d *node,
                                    const rt_canvas3d *canvas,
                                    const rt_camera3d *cam,
@@ -497,6 +556,9 @@ static void scene3d_build_culling_vp(rt_canvas3d *canvas, rt_camera3d *cam, floa
 ///   multiple scenes can share a single Begin/End pair. Traps when invoked
 ///   inside a Begin2D/End block because 2D and 3D passes use incompatible
 ///   pipeline state.
+/// @param obj Borrowed Scene3D handle.
+/// @param canvas3d Borrowed destination Canvas3D handle.
+/// @param camera Borrowed Camera3D defining visibility and projection.
 void rt_scene3d_draw(void *obj, void *canvas3d, void *camera) {
     rt_scene3d *s = scene3d_checked(obj);
     rt_canvas3d *canvas = rt_canvas3d_checked_or_stack(canvas3d);
@@ -575,6 +637,7 @@ void rt_scene3d_draw(void *obj, void *canvas3d, void *camera) {
 ///   children afterwards without re-instantiating the scene. Each detached
 ///   subtree's retain count is decremented; subtrees held by other strong
 ///   refs outside the scene graph survive and remain usable.
+/// @param obj Borrowed Scene3D handle whose root children are detached.
 void rt_scene3d_clear(void *obj) {
     rt_scene3d *s = scene3d_checked(obj);
     rt_scene_node3d *root;
@@ -621,6 +684,8 @@ void rt_scene3d_clear(void *obj) {
 ///   the audio graph using `dt` so Doppler / attenuation stay in lockstep with
 ///   the scene's own integration timestep. Callers typically invoke this once
 ///   per simulation step, before submitting the scene for drawing.
+/// @param obj Borrowed Scene3D handle.
+/// @param dt Finite simulation delta forwarded to binding updates.
 void rt_scene3d_sync_bindings(void *obj, double dt) {
     rt_scene3d *scene = scene3d_checked(obj);
     rt_scene_node3d *root = scene ? scene_node3d_checked(scene->root) : NULL;
@@ -634,6 +699,8 @@ void rt_scene3d_sync_bindings(void *obj, double dt) {
 /// @details Re-walks the tree rather than trusting a cached value so the result
 ///   stays correct after direct child-list mutation. The cached `node_count`
 ///   field is refreshed as a side effect.
+/// @param obj Borrowed Scene3D handle.
+/// @return Non-negative total node count, including the root.
 int64_t rt_scene3d_get_node_count(void *obj) {
     rt_scene3d *scene = scene3d_checked(obj);
     if (!scene)
@@ -642,6 +709,9 @@ int64_t rt_scene3d_get_node_count(void *obj) {
     return scene->node_count;
 }
 
+/// @brief Convert an internal signed counter to a non-negative public value.
+/// @param value Internal counter that may be stale or negative.
+/// @return Positive counter widened to 64 bits, or zero.
 static int64_t scene3d_counter_or_zero(int32_t value) {
     return value > 0 ? (int64_t)value : 0;
 }
@@ -649,30 +719,40 @@ static int64_t scene3d_counter_or_zero(int32_t value) {
 /// @brief Number of nodes culled by the most recent `rt_scene3d_draw` call.
 /// @details Zero until the first draw. Useful as a coarse telemetry signal to
 ///   verify that culling is actually rejecting off-screen geometry.
+/// @param obj Borrowed Scene3D handle.
+/// @return Non-negative latest aggregate cull count.
 int64_t rt_scene3d_get_culled_count(void *obj) {
     rt_scene3d *scene = scene3d_checked(obj);
     return scene ? scene3d_counter_or_zero(scene->last_culled_count) : 0;
 }
 
 /// @brief Number of drawable mesh nodes submitted by the most recent draw.
+/// @param obj Borrowed Scene3D handle.
+/// @return Non-negative latest submitted-node count.
 int64_t rt_scene3d_get_visible_node_count(void *obj) {
     rt_scene3d *scene = scene3d_checked(obj);
     return scene ? scene3d_counter_or_zero(scene->last_visible_node_count) : 0;
 }
 
 /// @brief Number of drawable mesh nodes skipped by portal/PVS visibility in the most recent draw.
+/// @param obj Borrowed Scene3D handle.
+/// @return Non-negative latest PVS-cull count.
 int64_t rt_scene3d_get_pvs_culled_count(void *obj) {
     rt_scene3d *scene = scene3d_checked(obj);
     return scene ? scene3d_counter_or_zero(scene->last_pvs_culled_count) : 0;
 }
 
 /// @brief Number of authored visibility zones in the scene.
+/// @param obj Borrowed Scene3D handle.
+/// @return Safe non-negative authored zone count.
 int64_t rt_scene3d_get_visibility_zone_count(void *obj) {
     rt_scene3d *scene = scene3d_checked(obj);
     return scene ? (int64_t)scene3d_visibility_zone_count_safe(scene) : 0;
 }
 
 /// @brief Number of directed visibility portal links in the scene.
+/// @param obj Borrowed Scene3D handle.
+/// @return Safe non-negative directed portal-link count.
 int64_t rt_scene3d_get_visibility_portal_count(void *obj) {
     rt_scene3d *scene = scene3d_checked(obj);
     return scene ? (int64_t)scene3d_visibility_portal_count_safe(scene) : 0;
@@ -681,6 +761,8 @@ int64_t rt_scene3d_get_visibility_portal_count(void *obj) {
 /// @brief Toggle portal-frustum PVS clipping (default on). Off = legacy
 ///        reachability flood-fill: every zone connected through any portal chain
 ///        is treated as visible regardless of view direction.
+/// @param obj Borrowed Scene3D handle.
+/// @param enabled Nonzero for frustum-clipped traversal; zero for reachability only.
 void rt_scene3d_set_portal_clipping(void *obj, int8_t enabled) {
     rt_scene3d *scene = scene3d_checked(obj);
     if (!scene)
@@ -689,12 +771,16 @@ void rt_scene3d_set_portal_clipping(void *obj, int8_t enabled) {
 }
 
 /// @brief Current portal-clipping mode (true = frustum-clipped traversal).
+/// @param obj Borrowed Scene3D handle.
+/// @return Nonzero when portal-frustum clipping is enabled.
 int8_t rt_scene3d_get_portal_clipping(void *obj) {
     rt_scene3d *scene = scene3d_checked(obj);
     return (scene && !scene->portal_clipping_disabled) ? 1 : 0;
 }
 
 /// @brief Portal expansions evaluated during the most recent PVS build.
+/// @param obj Borrowed Scene3D handle.
+/// @return Non-negative latest portal-expansion count.
 int64_t rt_scene3d_get_portal_traversal_count(void *obj) {
     rt_scene3d *scene = scene3d_checked(obj);
     return scene ? scene3d_counter_or_zero(scene->last_portal_traversal_count) : 0;

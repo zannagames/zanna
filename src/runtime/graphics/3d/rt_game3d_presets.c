@@ -13,6 +13,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements one-call Game3D lighting, material, post-processing, quality, and prefab
+/// presets.
+/// @details Presets sanitize public inputs, build the underlying renderer objects,
+/// transfer or release temporary references explicitly, and install coherent groups
+/// of settings without exposing the private World3D payload.
+
 #include "rt_animcontroller3d.h"
 #include "rt_asset.h"
 #include "rt_audio.h"
@@ -63,6 +70,7 @@
 #include <string.h>
 
 /// @brief Remove all preset lights and reset to a dim neutral ambient. See header.
+/// @param obj Borrowed live World3D handle whose Canvas3D lighting is reset.
 void rt_game3d_lighting_clear(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.Lighting.Clear: invalid world");
     if (!world || !world->canvas)
@@ -72,6 +80,7 @@ void rt_game3d_lighting_clear(void *obj) {
 }
 
 /// @brief Install a neutral two-light (key + fill) studio rig with a dark backdrop. See header.
+/// @param obj Borrowed live World3D handle receiving the rig.
 void rt_game3d_lighting_studio(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.Lighting.Studio: invalid world");
     if (!world || !world->canvas)
@@ -98,6 +107,8 @@ void rt_game3d_lighting_studio(void *obj) {
 
 /// @brief Install a single bright sun light and sky-blue backdrop; a NULL `sun_dir`
 ///   uses a default down-angled direction. Traps on a non-Vec3 direction. See header.
+/// @param obj Borrowed live World3D handle receiving the rig.
+/// @param sun_dir Borrowed Vec3 direction to normalize, or `NULL` for the preset direction.
 void rt_game3d_lighting_outdoor(void *obj, void *sun_dir) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.Lighting.Outdoor: invalid world");
     if (!world || !world->canvas)
@@ -134,6 +145,7 @@ void rt_game3d_lighting_outdoor(void *obj, void *sun_dir) {
 }
 
 /// @brief Install a dim moonlight + cool point lamp for a dark night look. See header.
+/// @param obj Borrowed live World3D handle receiving the rig.
 void rt_game3d_lighting_night(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.Lighting.Night: invalid world");
     if (!world || !world->canvas)
@@ -158,6 +170,7 @@ void rt_game3d_lighting_night(void *obj) {
 }
 
 /// @brief Install a warm key + cool rim point-light pair for indoor scenes. See header.
+/// @param obj Borrowed live World3D handle receiving the rig.
 void rt_game3d_lighting_interior(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.Lighting.Interior: invalid world");
     if (!world || !world->canvas)
@@ -183,6 +196,12 @@ void rt_game3d_lighting_interior(void *obj) {
 
 /// @brief Build an opaque PBR material from a clamped color, metallic, and roughness,
 ///   shared by the material presets below.
+/// @param r Red base-color channel, clamped to `[0, 1]`.
+/// @param g Green base-color channel, clamped to `[0, 1]`.
+/// @param b Blue base-color channel, clamped to `[0, 1]`.
+/// @param metallic Metallic factor, clamped to `[0, 1]`.
+/// @param roughness Roughness factor, clamped to `[0, 1]`.
+/// @return New GC-managed opaque Material3D handle, or `NULL` on allocation failure.
 static void *game3d_material_pbr(double r, double g, double b, double metallic, double roughness) {
     void *mat = rt_material3d_new_pbr(
         game3d_clamp(r, 0.0, 1.0), game3d_clamp(g, 0.0, 1.0), game3d_clamp(b, 0.0, 1.0));
@@ -198,11 +217,19 @@ static void *game3d_material_pbr(double r, double g, double b, double metallic, 
 }
 
 /// @brief Matte dielectric plastic preset (non-metallic, medium roughness). See header.
+/// @param r Red base-color channel, clamped to `[0, 1]`.
+/// @param g Green base-color channel, clamped to `[0, 1]`.
+/// @param b Blue base-color channel, clamped to `[0, 1]`.
+/// @return New GC-managed Material3D handle, or `NULL` on allocation failure.
 void *rt_game3d_materials_plastic(double r, double g, double b) {
     return game3d_material_pbr(r, g, b, 0.0, 0.46);
 }
 
 /// @brief Shiny metallic preset (full metallic, low roughness, some reflectivity). See header.
+/// @param r Red base-color channel, clamped to `[0, 1]`.
+/// @param g Green base-color channel, clamped to `[0, 1]`.
+/// @param b Blue base-color channel, clamped to `[0, 1]`.
+/// @return New GC-managed Material3D handle, or `NULL` on allocation failure.
 void *rt_game3d_materials_metal(double r, double g, double b) {
     void *mat = game3d_material_pbr(r, g, b, 1.0, 0.22);
     if (mat)
@@ -211,11 +238,20 @@ void *rt_game3d_materials_metal(double r, double g, double b) {
 }
 
 /// @brief Soft matte rubber preset (non-metallic, high roughness). See header.
+/// @param r Red base-color channel, clamped to `[0, 1]`.
+/// @param g Green base-color channel, clamped to `[0, 1]`.
+/// @param b Blue base-color channel, clamped to `[0, 1]`.
+/// @return New GC-managed Material3D handle, or `NULL` on allocation failure.
 void *rt_game3d_materials_rubber(double r, double g, double b) {
     return game3d_material_pbr(r, g, b, 0.0, 0.88);
 }
 
 /// @brief Translucent double-sided glass preset (blended, reflective). See header.
+/// @param r Red base-color channel, clamped to `[0, 1]`.
+/// @param g Green base-color channel, clamped to `[0, 1]`.
+/// @param b Blue base-color channel, clamped to `[0, 1]`.
+/// @param alpha Opacity clamped to `[0.05, 1]`.
+/// @return New GC-managed blended Material3D handle, or `NULL` on allocation failure.
 void *rt_game3d_materials_glass(double r, double g, double b, double alpha) {
     void *mat = game3d_material_pbr(r, g, b, 0.0, 0.08);
     if (mat) {
@@ -228,6 +264,11 @@ void *rt_game3d_materials_glass(double r, double g, double b, double alpha) {
 }
 
 /// @brief Self-illuminated emissive preset at the given color/intensity. See header.
+/// @param r Red emissive and base-color channel, clamped to `[0, 1]`.
+/// @param g Green emissive and base-color channel, clamped to `[0, 1]`.
+/// @param b Blue emissive and base-color channel, clamped to `[0, 1]`.
+/// @param intensity Non-negative emissive multiplier; invalid input falls back to one.
+/// @return New GC-managed emissive Material3D handle, or `NULL` on allocation failure.
 void *rt_game3d_materials_emissive(double r, double g, double b, double intensity) {
     r = game3d_clamp(r, 0.0, 1.0);
     g = game3d_clamp(g, 0.0, 1.0);
@@ -243,6 +284,10 @@ void *rt_game3d_materials_emissive(double r, double g, double b, double intensit
 }
 
 /// @brief Flat unlit preset that ignores scene lighting. See header.
+/// @param r Red base-color channel, clamped to `[0, 1]`.
+/// @param g Green base-color channel, clamped to `[0, 1]`.
+/// @param b Blue base-color channel, clamped to `[0, 1]`.
+/// @return New GC-managed unlit Material3D handle, or `NULL` on allocation failure.
 void *rt_game3d_materials_unlit(double r, double g, double b) {
     void *mat = rt_material3d_new_color(
         game3d_clamp(r, 0.0, 1.0), game3d_clamp(g, 0.0, 1.0), game3d_clamp(b, 0.0, 1.0));
@@ -254,6 +299,8 @@ void *rt_game3d_materials_unlit(double r, double g, double b) {
 }
 
 /// @brief PBR material sampling its albedo from a Pixels texture. See header.
+/// @param pixels Borrowed Pixels texture passed to the material constructor.
+/// @return New GC-managed textured Material3D handle, or `NULL` on allocation failure.
 void *rt_game3d_materials_from_albedo_map(void *pixels) {
     void *mat = rt_material3d_new_textured(pixels);
     if (mat) {
@@ -267,6 +314,7 @@ void *rt_game3d_materials_from_albedo_map(void *pixels) {
 
 /// @brief Install a cinematic post-FX chain (bloom, tone-map, FXAA, color-grade,
 ///   vignette) on the world. See header.
+/// @param obj Borrowed live World3D handle receiving the new stack.
 void rt_game3d_postfx_cinematic(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.PostFX.Cinematic: invalid world");
     if (!world)
@@ -285,6 +333,7 @@ void rt_game3d_postfx_cinematic(void *obj) {
 
 /// @brief Install a light, minimal post-FX chain (subtle tone-map, FXAA, color-grade)
 ///   for a crisp look. See header.
+/// @param obj Borrowed live World3D handle receiving the new stack.
 void rt_game3d_postfx_crisp(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.PostFX.Crisp: invalid world");
     if (!world)
@@ -300,6 +349,7 @@ void rt_game3d_postfx_crisp(void *obj) {
 }
 
 /// @brief Disable all post-processing by installing a disabled post-FX stack. See header.
+/// @param obj Borrowed live World3D handle receiving the disabled stack.
 void rt_game3d_postfx_none(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.PostFX.None: invalid world");
     if (!world)
@@ -314,6 +364,8 @@ void rt_game3d_postfx_none(void *obj) {
 /// @brief Apply a quality preset: out-of-range values default to BALANCED; enables
 ///   frustum culling, and configures or disables shadows (resolution/bias scaled by
 ///   preset) based on backend support. See header.
+/// @param obj Borrowed live World3D handle whose renderer settings are updated.
+/// @param quality Requested `RT_GAME3D_QUALITY_*` value.
 void rt_game3d_quality_apply(void *obj, int64_t quality) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.Quality.Apply: invalid world");
     if (!world || !world->canvas)
@@ -353,6 +405,10 @@ void rt_game3d_quality_apply(void *obj, int64_t quality) {
 
 /// @brief Clamp a requested tessellation segment count to [8, 256], using `fallback`
 ///   (itself floored at 8) when the request is too low.
+/// @param segments Requested segment count.
+/// @param fallback Replacement used below the minimum.
+/// @return Segment count in `[8, 256]`; oversized fallback values are preserved only on the low
+/// request path.
 static int64_t game3d_sanitize_segments(int64_t segments, int64_t fallback) {
     if (segments < 8)
         return fallback < 8 ? 8 : fallback;
@@ -363,6 +419,10 @@ static int64_t game3d_sanitize_segments(int64_t segments, int64_t fallback) {
 
 /// @brief Wrap a freshly built mesh into a named entity, supplying a default plastic
 ///   material when none is given; consumes the mesh reference (and the default material).
+/// @param mesh Owned Mesh3D reference consumed by this helper.
+/// @param material Borrowed Material3D handle, or `NULL` to allocate a default plastic material.
+/// @param name Null-terminated entity name, or `NULL` to leave the default name.
+/// @return New GC-managed Entity3D handle, or `NULL` on construction failure.
 static void *game3d_prefab_from_mesh(void *mesh, void *material, const char *name) {
     int owns_material = 0;
     if (!material) {
@@ -382,12 +442,20 @@ static void *game3d_prefab_from_mesh(void *mesh, void *material, const char *nam
 }
 
 /// @brief Create a uniform cube entity of the given size. See header.
+/// @param size Positive edge length; invalid input falls back to one.
+/// @param material Borrowed Material3D handle, or `NULL` for default plastic.
+/// @return New GC-managed Entity3D handle, or `NULL` on allocation failure.
 void *rt_game3d_prefab_box(double size, void *material) {
     double s = game3d_positive_clamped_or(size, 1.0, RT_GAME3D_SCALE_ABS_MAX);
     return game3d_prefab_from_mesh(rt_mesh3d_new_box(s, s, s), material, "Box");
 }
 
 /// @brief Create a box entity with explicit width/height/depth. See header.
+/// @param width Positive X extent; invalid input falls back to one.
+/// @param height Positive Y extent; invalid input falls back to one.
+/// @param depth Positive Z extent; invalid input falls back to one.
+/// @param material Borrowed Material3D handle, or `NULL` for default plastic.
+/// @return New GC-managed Entity3D handle, or `NULL` on allocation failure.
 void *rt_game3d_prefab_box_xyz(double width, double height, double depth, void *material) {
     double w = game3d_positive_clamped_or(width, 1.0, RT_GAME3D_SCALE_ABS_MAX);
     double h = game3d_positive_clamped_or(height, 1.0, RT_GAME3D_SCALE_ABS_MAX);
@@ -396,6 +464,10 @@ void *rt_game3d_prefab_box_xyz(double width, double height, double depth, void *
 }
 
 /// @brief Create a UV-sphere entity (segments clamped, default 32). See header.
+/// @param radius Positive sphere radius; invalid input falls back to `0.5`.
+/// @param segments Requested tessellation count, sanitized to the supported range.
+/// @param material Borrowed Material3D handle, or `NULL` for default plastic.
+/// @return New GC-managed Entity3D handle, or `NULL` on allocation failure.
 void *rt_game3d_prefab_sphere(double radius, int64_t segments, void *material) {
     double r = game3d_positive_clamped_or(radius, 0.5, RT_GAME3D_SCALE_ABS_MAX);
     return game3d_prefab_from_mesh(
@@ -403,6 +475,11 @@ void *rt_game3d_prefab_sphere(double radius, int64_t segments, void *material) {
 }
 
 /// @brief Create a cylinder entity (segments clamped, default 24). See header.
+/// @param radius Positive cylinder radius; invalid input falls back to `0.5`.
+/// @param height Positive cylinder height; invalid input falls back to one.
+/// @param segments Requested tessellation count, sanitized to the supported range.
+/// @param material Borrowed Material3D handle, or `NULL` for default plastic.
+/// @return New GC-managed Entity3D handle, or `NULL` on allocation failure.
 void *rt_game3d_prefab_cylinder(double radius, double height, int64_t segments, void *material) {
     double r = game3d_positive_clamped_or(radius, 0.5, RT_GAME3D_SCALE_ABS_MAX);
     double h = game3d_positive_clamped_or(height, 1.0, RT_GAME3D_SCALE_ABS_MAX);
@@ -411,6 +488,10 @@ void *rt_game3d_prefab_cylinder(double radius, double height, int64_t segments, 
 }
 
 /// @brief Create a flat plane entity of the given footprint. See header.
+/// @param width Positive X extent; invalid input falls back to one.
+/// @param depth Positive Z extent; invalid input falls back to one.
+/// @param material Borrowed Material3D handle, or `NULL` for default plastic.
+/// @return New GC-managed Entity3D handle, or `NULL` on allocation failure.
 void *rt_game3d_prefab_plane(double width, double depth, void *material) {
     double w = game3d_positive_clamped_or(width, 1.0, RT_GAME3D_SCALE_ABS_MAX);
     double d = game3d_positive_clamped_or(depth, 1.0, RT_GAME3D_SCALE_ABS_MAX);
@@ -418,6 +499,9 @@ void *rt_game3d_prefab_plane(double width, double depth, void *material) {
 }
 
 /// @brief Create a large ground plane named "Ground" on the WORLD layer. See header.
+/// @param size Positive square footprint size; invalid input falls back to one per axis.
+/// @param material Borrowed Material3D handle, or `NULL` for default plastic.
+/// @return New GC-managed Entity3D handle on the world layer, or `NULL` on allocation failure.
 void *rt_game3d_prefab_ground(double size, void *material) {
     void *entity = rt_game3d_prefab_plane(size, size, material);
     if (entity) {

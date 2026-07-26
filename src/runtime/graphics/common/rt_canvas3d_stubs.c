@@ -77,6 +77,9 @@ void *rt_cubemap3d_new(void *px, void *nx, void *py, void *ny, void *pz, void *n
 }
 
 /// @brief Set the skybox of the canvas3d.
+///
+/// @param c  Canvas3D handle (ignored before trapping).
+/// @param cm CubeMap3D handle to use as the skybox (ignored before trapping).
 void rt_canvas3d_set_skybox(void *c, void *cm) {
     (void)c;
     (void)cm;
@@ -84,6 +87,8 @@ void rt_canvas3d_set_skybox(void *c, void *cm) {
 }
 
 /// @brief Clear the skybox of the canvas3d.
+///
+/// @param c Canvas3D handle (ignored before trapping).
 void rt_canvas3d_clear_skybox(void *c) {
     (void)c;
     RT_GRAPHICS_TRAP_VOID("Canvas3D.ClearSkybox: graphics support not compiled in");
@@ -111,6 +116,11 @@ void *rt_rendertarget3d_new(int64_t w, int64_t h) {
 ///
 /// Trapping stub: HDR render targets cannot be faked headlessly because they
 /// are explicit GPU-side allocations the caller will try to bind/sample.
+///
+/// @param w Target width in pixels (ignored before trapping).
+/// @param h Target height in pixels (ignored before trapping).
+///
+/// @return Never returns normally.
 void *rt_rendertarget3d_new_hdr(int64_t w, int64_t h) {
     (void)w;
     (void)h;
@@ -149,6 +159,10 @@ int64_t rt_rendertarget3d_get_height(void *o) {
 ///
 /// Silent stub returning `0`. Reachable only through a NULL handle in
 /// graphics-disabled builds.
+///
+/// @param o RenderTarget3D handle (ignored).
+///
+/// @return `0`, indicating that the absent target is not HDR.
 int32_t rt_rendertarget3d_get_is_hdr(void *o) {
     (void)o;
     return 0;
@@ -216,6 +230,8 @@ void *rt_canvas3d_new(rt_string title, int64_t w, int64_t h) {
 /// @brief Stub for windowless Canvas3D construction.
 /// @details A usable offscreen renderer still requires graphics support, so this follows the
 ///          existing stateful-constructor trap policy.
+/// @param target RenderTarget3D that would receive offscreen output (ignored before trapping).
+/// @return Never returns normally.
 void *rt_canvas3d_new_offscreen(void *target) {
     (void)target;
     rt_graphics_unavailable_("Canvas3D.NewOffscreen: graphics support not compiled in");
@@ -223,6 +239,10 @@ void *rt_canvas3d_new_offscreen(void *target) {
 }
 
 /// @brief Report false because graphics-disabled builds cannot create any Canvas3D.
+///
+/// @param obj Canvas3D handle (ignored).
+///
+/// @return `0`.
 int8_t rt_canvas3d_get_is_offscreen(void *obj) {
     (void)obj;
     return 0;
@@ -290,6 +310,16 @@ void rt_canvas3d_draw_mesh(void *o, void *m, void *t, void *mt) {
     RT_GRAPHICS_TRAP_VOID("Canvas3D.DrawMesh: graphics support not compiled in");
 }
 
+/// @brief Trapping stub for wind-deformed mesh drawing.
+///
+/// @param o  Canvas3D handle (ignored before trapping).
+/// @param m  Mesh3D handle (ignored before trapping).
+/// @param t  Transform3D handle (ignored before trapping).
+/// @param mt Material3D handle (ignored before trapping).
+/// @param dx Wind-direction X component (ignored before trapping).
+/// @param dz Wind-direction Z component (ignored before trapping).
+/// @param s  Wind strength (ignored before trapping).
+/// @param ph Wind animation phase (ignored before trapping).
 void rt_canvas3d_draw_mesh_wind(
     void *o, void *m, void *t, void *mt, double dx, double dz, double s, double ph) {
     (void)o;
@@ -338,6 +368,11 @@ int64_t rt_canvas3d_poll(void *o) {
     RT_GRAPHICS_OPTIONAL_TRAP_RET("Canvas3D.Poll: graphics support not compiled in", 0);
 }
 
+/// @brief Return the fallback event code when no Canvas3D event queue exists.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0`, indicating that no event was available.
 int64_t rt_canvas3d_poll_event(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("Canvas3D.PollEvent: graphics support not compiled in", 0);
@@ -385,43 +420,81 @@ void rt_canvas3d_set_backface_cull(void *o, int8_t e) {
 }
 
 /// @brief Get the width of the canvas3d.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_canvas3d_get_width(void *o) {
     (void)o;
     return 0;
 }
 
 /// @brief Get the height of the canvas3d.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_canvas3d_get_height(void *o) {
     (void)o;
     return 0;
 }
 
+/// @brief Return the fallback host-window width for a graphics-disabled canvas.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_canvas3d_get_window_width(void *o) {
     (void)o;
     return 0;
 }
 
+/// @brief Return the fallback host-window height for a graphics-disabled canvas.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_canvas3d_get_window_height(void *o) {
     (void)o;
     return 0;
 }
 
+/// @brief Trapping stub for changing Canvas3D fullscreen state.
+///
+/// @param o Canvas3D handle (ignored before trapping).
+/// @param e Non-zero to enter fullscreen mode (ignored before trapping).
 void rt_canvas3d_set_fullscreen(void *o, int8_t e) {
     (void)o;
     (void)e;
     RT_GRAPHICS_TRAP_VOID("Canvas3D.SetFullscreen: graphics support not compiled in");
 }
 
+/// @brief Report that a graphics-disabled canvas is not fullscreen.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0`.
 int8_t rt_canvas3d_is_fullscreen(void *o) {
     (void)o;
     return 0;
 }
 
+/// @brief Trapping stub for toggling Canvas3D fullscreen state.
+///
+/// @param o Canvas3D handle (ignored before trapping).
 void rt_canvas3d_toggle_fullscreen(void *o) {
     (void)o;
     RT_GRAPHICS_TRAP_VOID("Canvas3D.ToggleFullscreen: graphics support not compiled in");
 }
 
+/// @brief Trapping stub for drawing a Pixels image in the Canvas3D 2D overlay.
+///
+/// @param o Canvas3D handle (ignored before trapping).
+/// @param x Destination X coordinate (ignored before trapping).
+/// @param y Destination Y coordinate (ignored before trapping).
+/// @param w Destination width (ignored before trapping).
+/// @param h Destination height (ignored before trapping).
+/// @param p Pixels handle (ignored before trapping).
 void rt_canvas3d_draw_image2d(void *o, int64_t x, int64_t y, int64_t w, int64_t h, void *p) {
     (void)o;
     (void)x;
@@ -432,29 +505,51 @@ void rt_canvas3d_draw_image2d(void *o, int64_t x, int64_t y, int64_t w, int64_t 
     RT_GRAPHICS_TRAP_VOID("Canvas3D.DrawImage2D: graphics support not compiled in");
 }
 
+/// @brief Return the fallback width of the currently active output target.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_canvas3d_get_active_output_width(void *o) {
     (void)o;
     return 0;
 }
 
+/// @brief Return the fallback height of the currently active output target.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_canvas3d_get_active_output_height(void *o) {
     (void)o;
     return 0;
 }
 
 /// @brief Get the fps of the canvas3d.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_canvas3d_get_fps(void *o) {
     (void)o;
     return 0;
 }
 
 /// @brief Get the delta time of the canvas3d.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0` milliseconds.
 int64_t rt_canvas3d_get_delta_time(void *o) {
     (void)o;
     return 0;
 }
 
 /// @brief Get the delta time of the canvas3d in seconds.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0.0` seconds.
 double rt_canvas3d_get_delta_time_sec(void *o) {
     (void)o;
     return 0.0;
@@ -474,38 +569,71 @@ void rt_canvas3d_set_dt_max(void *o, int64_t m) {
     RT_GRAPHICS_TRAP_VOID("Canvas3D.SetDTMax: graphics support not compiled in");
 }
 
+/// @brief Trapping stub for selecting a Canvas3D quality preset.
+///
+/// @param o       Canvas3D handle (ignored before trapping).
+/// @param quality Requested quality preset (ignored before trapping).
 void rt_canvas3d_set_quality(void *o, int64_t quality) {
     (void)o;
     (void)quality;
     RT_GRAPHICS_TRAP_VOID("Canvas3D.SetQuality: graphics support not compiled in");
 }
 
+/// @brief Return the fallback requested Canvas3D quality preset.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_canvas3d_get_quality_requested(void *o) {
     (void)o;
     return 0;
 }
 
+/// @brief Return the fallback active Canvas3D quality preset.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_canvas3d_get_quality_active(void *o) {
     (void)o;
     return 0;
 }
 
+/// @brief Report that no quality fallback occurred in the absent backend.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0`.
 int8_t rt_canvas3d_get_quality_fallback(void *o) {
     (void)o;
     return 0;
 }
 
+/// @brief Return the empty quality-fallback reason for a graphics-disabled canvas.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return An empty owned runtime string.
 rt_string rt_canvas3d_get_quality_fallback_reason(void *o) {
     (void)o;
     return rt_string_from_bytes("", 0);
 }
 
+/// @brief Trapping stub for choosing the Canvas3D input source.
+///
+/// @param o    Canvas3D handle (ignored before trapping).
+/// @param mode Input-source mode (ignored before trapping).
 void rt_canvas3d_set_input_source(void *o, int64_t mode) {
     (void)o;
     (void)mode;
     RT_GRAPHICS_TRAP_VOID("Canvas3D.SetInputSource: graphics support not compiled in");
 }
 
+/// @brief Trapping stub for injecting a synthetic key transition.
+///
+/// @param o    Canvas3D handle (ignored before trapping).
+/// @param key  Runtime key code (ignored before trapping).
+/// @param down Non-zero for key-down, zero for key-up (ignored before trapping).
 void rt_canvas3d_push_synthetic_key(void *o, int64_t key, int8_t down) {
     (void)o;
     (void)key;
@@ -513,6 +641,13 @@ void rt_canvas3d_push_synthetic_key(void *o, int64_t key, int8_t down) {
     RT_GRAPHICS_TRAP_VOID("Canvas3D.PushSyntheticKey: graphics support not compiled in");
 }
 
+/// @brief Trapping stub for injecting synthetic mouse input.
+///
+/// @param o       Canvas3D handle (ignored before trapping).
+/// @param dx      Relative horizontal motion (ignored before trapping).
+/// @param dy      Relative vertical motion (ignored before trapping).
+/// @param buttons Mouse-button bitmask (ignored before trapping).
+/// @param wheel   Wheel delta (ignored before trapping).
 void rt_canvas3d_push_synthetic_mouse(
     void *o, double dx, double dy, int64_t buttons, double wheel) {
     (void)o;
@@ -523,23 +658,37 @@ void rt_canvas3d_push_synthetic_mouse(
     RT_GRAPHICS_TRAP_VOID("Canvas3D.PushSyntheticMouse: graphics support not compiled in");
 }
 
+/// @brief Trapping stub for clearing queued synthetic input.
+///
+/// @param o Canvas3D handle (ignored before trapping).
 void rt_canvas3d_clear_synthetic_input(void *o) {
     (void)o;
     RT_GRAPHICS_TRAP_VOID("Canvas3D.ClearSyntheticInput: graphics support not compiled in");
 }
 
+/// @brief Trapping stub for choosing the Canvas3D clock source.
+///
+/// @param o    Canvas3D handle (ignored before trapping).
+/// @param mode Clock-source mode (ignored before trapping).
 void rt_canvas3d_set_clock_source(void *o, int64_t mode) {
     (void)o;
     (void)mode;
     RT_GRAPHICS_TRAP_VOID("Canvas3D.SetClockSource: graphics support not compiled in");
 }
 
+/// @brief Trapping stub for assigning the synthetic frame interval.
+///
+/// @param o  Canvas3D handle (ignored before trapping).
+/// @param dt Synthetic delta time in seconds (ignored before trapping).
 void rt_canvas3d_set_synthetic_delta_time_sec(void *o, double dt) {
     (void)o;
     (void)dt;
     RT_GRAPHICS_TRAP_VOID("Canvas3D.SetSyntheticDeltaTimeSec: graphics support not compiled in");
 }
 
+/// @brief Trapping stub for advancing the synthetic Canvas3D clock by one frame.
+///
+/// @param o Canvas3D handle (ignored before trapping).
 void rt_canvas3d_advance_synthetic_frame(void *o) {
     (void)o;
     RT_GRAPHICS_TRAP_VOID("Canvas3D.AdvanceSyntheticFrame: graphics support not compiled in");
@@ -560,21 +709,36 @@ void rt_canvas3d_set_light(void *o, int64_t i, void *l) {
     RT_GRAPHICS_TRAP_VOID("Canvas3D.SetLight: graphics support not compiled in");
 }
 
+/// @brief Trapping stub for removing all Canvas3D lights.
+///
+/// @param o Canvas3D handle (ignored before trapping).
 void rt_canvas3d_clear_lights(void *o) {
     (void)o;
     RT_GRAPHICS_TRAP_VOID("Canvas3D.ClearLights: graphics support not compiled in");
 }
 
+/// @brief Trapping stub for restoring the default Canvas3D light rig.
+///
+/// @param o Canvas3D handle (ignored before trapping).
 void rt_canvas3d_set_default_lighting(void *o) {
     (void)o;
     RT_GRAPHICS_TRAP_VOID("Canvas3D.SetDefaultLighting: graphics support not compiled in");
 }
 
+/// @brief Return the number of lights in a graphics-disabled canvas.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_canvas3d_get_light_count(void *o) {
     (void)o;
     return 0;
 }
 
+/// @brief Trapping stub for enabling or disabling clustered lighting.
+///
+/// @param o       Canvas3D handle (ignored before trapping).
+/// @param enabled Non-zero to enable clustered lighting (ignored before trapping).
 void rt_canvas3d_set_clustered_lighting(void *o, int8_t enabled) {
     (void)o;
     (void)enabled;
@@ -585,6 +749,11 @@ void rt_canvas3d_set_clustered_lighting(void *o, int8_t enabled) {
 ///
 /// Fallback probe: returns failure when Graphics3D is not compiled in so callers can
 /// choose a non-clustered path without relying on a runtime trap.
+///
+/// @param o       Canvas3D handle (ignored).
+/// @param enabled Requested clustered-lighting state (ignored).
+///
+/// @return `0`, indicating that the state could not be applied.
 int8_t rt_canvas3d_try_set_clustered_lighting(void *o, int8_t enabled) {
     (void)o;
     (void)enabled;
@@ -592,11 +761,20 @@ int8_t rt_canvas3d_try_set_clustered_lighting(void *o, int8_t enabled) {
 }
 
 /// @brief Disabled-build fallback stub for `Canvas3D.ClusteredLighting`.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0`.
 int8_t rt_canvas3d_get_clustered_lighting(void *o) {
     (void)o;
     return 0;
 }
 
+/// @brief Return the fallback maximum number of active lights.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_canvas3d_get_max_active_lights(void *o) {
     (void)o;
     return 0;
@@ -637,6 +815,12 @@ void rt_canvas3d_draw_line3d(void *o, void *f, void *t, int64_t c) {
     RT_GRAPHICS_TRAP_VOID("Canvas3D.DrawLine3D: graphics support not compiled in");
 }
 
+/// @brief Trapping stub for drawing a raw world-space line segment.
+///
+/// @param o Canvas3D handle (ignored before trapping).
+/// @param f Pointer to the three-component start position (ignored before trapping).
+/// @param t Pointer to the three-component end position (ignored before trapping).
+/// @param c Packed color (ignored before trapping).
 void rt_canvas3d_draw_line3d_raw(void *o, const double *f, const double *t, int64_t c) {
     (void)o;
     (void)f;
@@ -733,6 +917,10 @@ int8_t rt_canvas3d_backend_supports(void *o, rt_string capability) {
 /// @brief Stub for `Canvas3D.BackendDrawCalls` — backend draw telemetry.
 ///
 /// Silent stub returning 0 because there is no backend in graphics-disabled builds.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_canvas3d_get_backend_draw_calls(void *o) {
     (void)o;
     return 0;
@@ -741,6 +929,10 @@ int64_t rt_canvas3d_get_backend_draw_calls(void *o) {
 /// @brief Stub for `Canvas3D.BackendDroppedDraws` — backend rejection telemetry.
 ///
 /// Silent stub returning 0 because there is no backend in graphics-disabled builds.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_canvas3d_get_backend_dropped_draws(void *o) {
     (void)o;
     return 0;
@@ -749,6 +941,10 @@ int64_t rt_canvas3d_get_backend_dropped_draws(void *o) {
 /// @brief Stub for `Canvas3D.BackendMeshCacheHits` — backend mesh-cache telemetry.
 ///
 /// Silent stub returning 0 because there is no backend in graphics-disabled builds.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_canvas3d_get_backend_mesh_cache_hits(void *o) {
     (void)o;
     return 0;
@@ -757,6 +953,10 @@ int64_t rt_canvas3d_get_backend_mesh_cache_hits(void *o) {
 /// @brief Stub for `Canvas3D.BackendMeshCacheMisses` — backend mesh-cache telemetry.
 ///
 /// Silent stub returning 0 because there is no backend in graphics-disabled builds.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_canvas3d_get_backend_mesh_cache_misses(void *o) {
     (void)o;
     return 0;
@@ -765,6 +965,10 @@ int64_t rt_canvas3d_get_backend_mesh_cache_misses(void *o) {
 /// @brief Stub for `Canvas3D.BackendMeshStreamUploads` — backend stream-upload telemetry.
 ///
 /// Silent stub returning 0 because there is no backend in graphics-disabled builds.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_canvas3d_get_backend_mesh_stream_uploads(void *o) {
     (void)o;
     return 0;
@@ -773,6 +977,10 @@ int64_t rt_canvas3d_get_backend_mesh_stream_uploads(void *o) {
 /// @brief Stub for `Canvas3D.BackendTextureFallbackBinds` — backend texture telemetry.
 ///
 /// Silent stub returning 0 because there is no backend in graphics-disabled builds.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_canvas3d_get_backend_texture_fallback_binds(void *o) {
     (void)o;
     return 0;
@@ -782,6 +990,10 @@ int64_t rt_canvas3d_get_backend_texture_fallback_binds(void *o) {
 ///
 /// No instanced drawing occurs in graphics-disabled builds, so no instances can
 /// be dropped by a chunked fallback queue reservation.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_canvas3d_get_instanced_fallback_dropped_count(void *o) {
     (void)o;
     return 0;
@@ -818,6 +1030,10 @@ void rt_canvas3d_reset_submission_diagnostics(void *o) {
 /// @brief Stub for `Canvas3D.EventDropCount`.
 ///
 /// Graphics-disabled builds do not pump a Canvas3D event ring.
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_canvas3d_get_event_drop_count(void *o) {
     (void)o;
     return 0;
@@ -827,6 +1043,10 @@ int64_t rt_canvas3d_get_event_drop_count(void *o) {
 ///
 /// Deferred mesh snapshots are unavailable without the 3D renderer.
 /// Silent stub returning 0 (no mesh snapshot memory is allocated).
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0` bytes.
 int64_t rt_canvas3d_get_mesh_snapshot_bytes(void *o) {
     (void)o;
     return 0;
@@ -836,6 +1056,10 @@ int64_t rt_canvas3d_get_mesh_snapshot_bytes(void *o) {
 ///
 /// No renderer-owned mesh snapshots are attempted in graphics-disabled builds.
 /// Silent stub returning 0 (no mesh snapshot drops can occur).
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_canvas3d_get_mesh_snapshot_drop_count(void *o) {
     (void)o;
     return 0;
@@ -845,6 +1069,10 @@ int64_t rt_canvas3d_get_mesh_snapshot_drop_count(void *o) {
 ///
 /// No renderer-owned mesh snapshots are attempted in graphics-disabled builds.
 /// Silent stub returning 0 (no mesh snapshot bytes can be denied).
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0` bytes.
 int64_t rt_canvas3d_get_mesh_snapshot_dropped_bytes(void *o) {
     (void)o;
     return 0;
@@ -854,6 +1082,10 @@ int64_t rt_canvas3d_get_mesh_snapshot_dropped_bytes(void *o) {
 ///
 /// The disabled renderer has no active per-frame mesh snapshot budget.
 /// Silent stub returning 0 (no mesh snapshot budget is active).
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0` bytes.
 int64_t rt_canvas3d_get_mesh_snapshot_budget_bytes(void *o) {
     (void)o;
     return 0;
@@ -862,6 +1094,10 @@ int64_t rt_canvas3d_get_mesh_snapshot_budget_bytes(void *o) {
 /// @brief Stub for `Canvas3D.BackendPresentPath` — backend presentation mode.
 ///
 /// Silent stub returning 0 (unknown/unavailable).
+///
+/// @param o Canvas3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_canvas3d_get_backend_present_path(void *o) {
     (void)o;
     return 0;
@@ -1017,6 +1253,11 @@ void *rt_canvas3d_screenshot(void *o) {
 }
 
 /// @brief Graphics-disabled stub for allocation-reusing Canvas3D readback.
+///
+/// @param o      Canvas3D handle (ignored before trapping).
+/// @param pixels Destination Pixels handle (ignored before trapping).
+///
+/// @return This stub traps before returning; `0` is supplied as the macro fallback.
 int8_t rt_canvas3d_try_copy_screenshot_to(void *o, void *pixels) {
     (void)o;
     (void)pixels;
@@ -1024,6 +1265,11 @@ int8_t rt_canvas3d_try_copy_screenshot_to(void *o, void *pixels) {
 }
 
 /// @brief Graphics-disabled stub for finalized allocation-reusing Canvas3D readback.
+///
+/// @param o      Canvas3D handle (ignored before trapping).
+/// @param pixels Destination Pixels handle (ignored before trapping).
+///
+/// @return This stub traps before returning; `0` is supplied as the macro fallback.
 int8_t rt_canvas3d_try_copy_screenshot_final_to(void *o, void *pixels) {
     (void)o;
     (void)pixels;
@@ -1108,6 +1354,9 @@ int8_t rt_camera3d_is_ortho(void *o) {
 }
 
 /// @brief Graphics-disabled stub for writable Camera3D projection mode.
+///
+/// @param o        Camera3D handle (ignored before trapping).
+/// @param is_ortho Non-zero to use an orthographic projection (ignored before trapping).
 void rt_camera3d_set_is_ortho(void *o, int8_t is_ortho) {
     (void)o;
     (void)is_ortho;
@@ -1115,12 +1364,19 @@ void rt_camera3d_set_is_ortho(void *o, int8_t is_ortho) {
 }
 
 /// @brief Graphics-disabled stub for Camera3D.OrthoSize.
+///
+/// @param o Camera3D handle (ignored).
+///
+/// @return `0.0`.
 double rt_camera3d_get_ortho_size(void *o) {
     (void)o;
     return 0.0;
 }
 
 /// @brief Graphics-disabled stub for writable Camera3D.OrthoSize.
+///
+/// @param o    Camera3D handle (ignored before trapping).
+/// @param size Orthographic half-height or size value (ignored before trapping).
 void rt_camera3d_set_ortho_size(void *o, double size) {
     (void)o;
     (void)size;
@@ -1206,6 +1462,11 @@ void rt_camera3d_set_horizontal_fov(void *o, double f) {
     RT_GRAPHICS_TRAP_VOID("Camera3D.SetHorizontalFov: graphics support not compiled in");
 }
 
+/// @brief Return the fallback configured near clip plane.
+///
+/// @param o Camera3D handle (ignored).
+///
+/// @return `0.0`.
 double rt_camera3d_get_near_plane(void *o) {
     (void)o;
     return 0.0;
@@ -1213,17 +1474,28 @@ double rt_camera3d_get_near_plane(void *o) {
 
 /// @brief Stub for `Camera3D.EffectiveNearPlane` — return the sanitized near clip plane.
 /// @details Graphics-disabled builds have no camera projection state, so this returns 0.0.
+/// @param o Camera3D handle (ignored).
+/// @return `0.0`.
 double rt_camera3d_get_effective_near_plane(void *o) {
     (void)o;
     return 0.0;
 }
 
+/// @brief Trapping stub for setting the camera near clip plane.
+///
+/// @param o Camera3D handle (ignored before trapping).
+/// @param n Near clip distance (ignored before trapping).
 void rt_camera3d_set_near_plane(void *o, double n) {
     (void)o;
     (void)n;
     RT_GRAPHICS_TRAP_VOID("Camera3D.SetNearPlane: graphics support not compiled in");
 }
 
+/// @brief Return the fallback configured far clip plane.
+///
+/// @param o Camera3D handle (ignored).
+///
+/// @return `0.0`.
 double rt_camera3d_get_far_plane(void *o) {
     (void)o;
     return 0.0;
@@ -1231,11 +1503,17 @@ double rt_camera3d_get_far_plane(void *o) {
 
 /// @brief Stub for `Camera3D.EffectiveFarPlane` — return the sanitized far clip plane.
 /// @details Graphics-disabled builds have no camera projection state, so this returns 0.0.
+/// @param o Camera3D handle (ignored).
+/// @return `0.0`.
 double rt_camera3d_get_effective_far_plane(void *o) {
     (void)o;
     return 0.0;
 }
 
+/// @brief Trapping stub for setting the camera far clip plane.
+///
+/// @param o Camera3D handle (ignored before trapping).
+/// @param f Far clip distance (ignored before trapping).
 void rt_camera3d_set_far_plane(void *o, double f) {
     (void)o;
     (void)f;
@@ -1272,6 +1550,9 @@ void rt_camera3d_set_position(void *o, void *p) {
 ///        Game3D window resize/tick helpers.
 ///
 /// Trapping stub.
+///
+/// @param o      Camera3D handle (ignored before trapping).
+/// @param aspect Render-output aspect ratio (ignored before trapping).
 void rt_camera3d_sync_render_aspect(void *o, double aspect) {
     (void)o;
     (void)aspect;
@@ -1330,6 +1611,11 @@ void *rt_camera3d_screen_to_ray(void *o, int64_t sx, int64_t sy, int64_t sw, int
 }
 
 /// @brief Stub for `Camera3D.ScreenToRayOrigin`.
+/// @param o  Camera3D handle (ignored).
+/// @param sx Screen pixel X coordinate (ignored).
+/// @param sy Screen pixel Y coordinate (ignored).
+/// @param sw Viewport width in pixels (ignored).
+/// @param sh Viewport height in pixels (ignored).
 /// @return `NULL`.
 void *rt_camera3d_screen_to_ray_origin(void *o, int64_t sx, int64_t sy, int64_t sw, int64_t sh) {
     (void)o;
@@ -1395,6 +1681,12 @@ void *rt_postfx3d_new(void) {
     return NULL;
 }
 
+/// @brief Trapping stub for constructing a quality-configured post-processing chain.
+///
+/// @param canvas  Canvas3D the chain would process (ignored before trapping).
+/// @param quality Post-processing quality preset (ignored before trapping).
+///
+/// @return Never returns normally.
 void *rt_postfx3d_new_quality(void *canvas, int64_t quality) {
     (void)canvas;
     (void)quality;
@@ -1493,24 +1785,37 @@ void rt_postfx3d_set_enabled(void *o, int8_t e) {
 }
 
 /// @brief Get the enabled of the postfx3d.
+///
+/// @param o PostFX3D handle (ignored).
+///
+/// @return `0`.
 int8_t rt_postfx3d_get_enabled(void *o) {
     (void)o;
     return 0;
 }
 
 /// @brief Remove all entries from the postfx3d.
+///
+/// @param o PostFX3D handle (ignored before trapping).
 void rt_postfx3d_clear(void *o) {
     (void)o;
     RT_GRAPHICS_TRAP_VOID("PostFX3D.Clear: graphics support not compiled in");
 }
 
 /// @brief Return the count of elements in the postfx3d.
+///
+/// @param o PostFX3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_postfx3d_get_effect_count(void *o) {
     (void)o;
     return 0;
 }
 
 /// @brief Set the post fx of the canvas3d.
+///
+/// @param c  Canvas3D handle (ignored before trapping).
+/// @param fx PostFX3D chain, or `NULL` to detach (ignored before trapping).
 void rt_canvas3d_set_post_fx(void *c, void *fx) {
     (void)c;
     (void)fx;
@@ -1518,6 +1823,8 @@ void rt_canvas3d_set_post_fx(void *c, void *fx) {
 }
 
 /// @brief Apply the to canvas of the postfx3d.
+///
+/// @param c Canvas3D handle (ignored before trapping).
 void rt_postfx3d_apply_to_canvas(void *c) {
     (void)c;
     RT_GRAPHICS_TRAP_VOID("PostFX3D.ApplyToCanvas: graphics support not compiled in");
@@ -1694,6 +2001,12 @@ void rt_canvas3d_draw_aabb_wire(void *c, void *mn, void *mx, int64_t cl) {
     RT_GRAPHICS_TRAP_VOID("Canvas3D.DrawAABBWire: graphics support not compiled in");
 }
 
+/// @brief Trapping stub for drawing a raw axis-aligned bounding-box wireframe.
+///
+/// @param c  Canvas3D handle (ignored before trapping).
+/// @param mn Pointer to the three-component minimum corner (ignored before trapping).
+/// @param mx Pointer to the three-component maximum corner (ignored before trapping).
+/// @param cl Packed color (ignored before trapping).
 void rt_canvas3d_draw_aabb_wire_raw(void *c, const double *mn, const double *mx, int64_t cl) {
     (void)c;
     (void)mn;
@@ -1782,6 +2095,13 @@ void rt_canvas3d_set_fog(void *c, double n, double f, double r, double g, double
 }
 
 /// @brief Silent stub for `Canvas3D.SetHeightFogSun` — no-op.
+///
+/// @param obj    Canvas3D handle (ignored).
+/// @param r      Sun-scattering red component (ignored).
+/// @param g      Sun-scattering green component (ignored).
+/// @param b      Sun-scattering blue component (ignored).
+/// @param power  Directional scattering exponent (ignored).
+/// @param amount Sun-scattering contribution (ignored).
 void rt_canvas3d_set_height_fog_sun(
     void *obj, double r, double g, double b, double power, double amount) {
     (void)obj;
@@ -1793,11 +2113,17 @@ void rt_canvas3d_set_height_fog_sun(
 }
 
 /// @brief Silent stub for `Canvas3D.ClearHeightFog` — no-op.
+///
+/// @param obj Canvas3D handle (ignored).
 void rt_canvas3d_clear_height_fog(void *obj) {
     (void)obj;
 }
 
 /// @brief Silent stub for `Canvas3D.get_HeightFogEnabled` — no-op; returns 0.
+///
+/// @param obj Canvas3D handle (ignored).
+///
+/// @return `0`.
 int8_t rt_canvas3d_get_height_fog_enabled(void *obj) {
     (void)obj;
     return 0;
@@ -1872,6 +2198,10 @@ void rt_canvas3d_set_shadow_slope_bias(void *c, double b) {
     RT_GRAPHICS_TRAP_VOID("Canvas3D.SetShadowSlopeBias: graphics support not compiled in");
 }
 
+/// @brief Trapping stub for selecting the number of shadow cascades.
+///
+/// @param c     Canvas3D handle (ignored before trapping).
+/// @param count Requested cascade count (ignored before trapping).
 void rt_canvas3d_set_shadow_cascades(void *c, int64_t count) {
     (void)c;
     (void)count;
@@ -2306,12 +2636,21 @@ void rt_canvas3d_draw_text_3d(void *c, int64_t x, int64_t y, rt_string t, int64_
 }
 
 /// @brief Stub for `Mesh3D.ReleaseCpuScratch`. Silent stub returning 0.
+///
+/// @param obj Mesh3D handle (ignored).
+///
+/// @return `0` bytes released.
 int64_t rt_mesh3d_release_cpu_scratch(void *obj) {
     (void)obj;
     return 0;
 }
 
 /// @brief Stub for `Canvas3D.PassCpuMs`. Silent stub returning 0.
+///
+/// @param obj  Canvas3D handle (ignored).
+/// @param pass Render-pass index (ignored).
+///
+/// @return `0.0` milliseconds.
 double rt_canvas3d_get_pass_cpu_ms(void *obj, int64_t pass) {
     (void)obj;
     (void)pass;
@@ -2319,6 +2658,10 @@ double rt_canvas3d_get_pass_cpu_ms(void *obj, int64_t pass) {
 }
 
 /// @brief Stub for `Canvas3D.get_PassCount`. Silent stub returning 0.
+///
+/// @param obj Canvas3D handle (ignored).
+///
+/// @return `0`.
 int64_t rt_canvas3d_get_pass_count(void *obj) {
     (void)obj;
     return 0;
@@ -2328,6 +2671,13 @@ int64_t rt_canvas3d_get_pass_count(void *obj) {
  * defs whose implementations compile only in graphics-enabled builds. */
 
 /// @brief Silent fallback stub for `Camera3D.WorldToScreen` (graphics-disabled build).
+///
+/// @param o  Camera3D handle (ignored).
+/// @param a1 Vec3 world-space position (ignored).
+/// @param a2 Viewport width in pixels (ignored).
+/// @param a3 Viewport height in pixels (ignored).
+///
+/// @return `NULL`.
 void *rt_camera3d_world_to_screen_vec(void *o, void *a1, int64_t a2, int64_t a3) {
     (void)o;
     (void)a1;
@@ -2337,6 +2687,10 @@ void *rt_camera3d_world_to_screen_vec(void *o, void *a1, int64_t a2, int64_t a3)
 }
 
 /// @brief Trapping stub for `Canvas3D.BeginViewModel` (graphics-disabled build).
+///
+/// @param o  Canvas3D handle (ignored before trapping).
+/// @param a1 Camera3D handle (ignored before trapping).
+/// @param a2 View-model field of view or depth parameter (ignored before trapping).
 void rt_canvas3d_begin_view_model(void *o, void *a1, double a2) {
     (void)o;
     (void)a1;
@@ -2345,12 +2699,22 @@ void rt_canvas3d_begin_view_model(void *o, void *a1, double a2) {
 }
 
 /// @brief Trapping stub for `Canvas3D.ClearClipRect2D` (graphics-disabled build).
+///
+/// @param o Canvas3D handle (ignored before trapping).
 void rt_canvas3d_clear_clip_rect2d(void *o) {
     (void)o;
     RT_GRAPHICS_TRAP_VOID("Canvas3D.ClearClipRect2D: graphics support not compiled in");
 }
 
 /// @brief Trapping stub for `Canvas3D.DrawFrame2D` (graphics-disabled build).
+///
+/// @param o  Canvas3D handle (ignored before trapping).
+/// @param a1 Destination X coordinate (ignored before trapping).
+/// @param a2 Destination Y coordinate (ignored before trapping).
+/// @param a3 Destination width (ignored before trapping).
+/// @param a4 Destination height (ignored before trapping).
+/// @param a5 Packed color (ignored before trapping).
+/// @param a6 Frame thickness (ignored before trapping).
 void rt_canvas3d_draw_frame2d(
     void *o, int64_t a1, int64_t a2, int64_t a3, int64_t a4, int64_t a5, double a6) {
     (void)o;
@@ -2364,6 +2728,17 @@ void rt_canvas3d_draw_frame2d(
 }
 
 /// @brief Trapping stub for `Canvas3D.DrawImage2DNineSlice` (graphics-disabled build).
+///
+/// @param o  Canvas3D handle (ignored before trapping).
+/// @param a1 Destination X coordinate (ignored before trapping).
+/// @param a2 Destination Y coordinate (ignored before trapping).
+/// @param a3 Destination width (ignored before trapping).
+/// @param a4 Destination height (ignored before trapping).
+/// @param a5 Pixels source (ignored before trapping).
+/// @param a6 Left border width (ignored before trapping).
+/// @param a7 Top border width (ignored before trapping).
+/// @param a8 Right border width (ignored before trapping).
+/// @param a9 Bottom border width (ignored before trapping).
 void rt_canvas3d_draw_image2d_nine_slice(void *o,
                                          int64_t a1,
                                          int64_t a2,
@@ -2388,6 +2763,17 @@ void rt_canvas3d_draw_image2d_nine_slice(void *o,
 }
 
 /// @brief Trapping stub for `Canvas3D.DrawImage2DRegion` (graphics-disabled build).
+///
+/// @param o  Canvas3D handle (ignored before trapping).
+/// @param a1 Destination X coordinate (ignored before trapping).
+/// @param a2 Destination Y coordinate (ignored before trapping).
+/// @param a3 Destination width (ignored before trapping).
+/// @param a4 Destination height (ignored before trapping).
+/// @param a5 Pixels source (ignored before trapping).
+/// @param a6 Source X coordinate (ignored before trapping).
+/// @param a7 Source Y coordinate (ignored before trapping).
+/// @param a8 Source width (ignored before trapping).
+/// @param a9 Source height (ignored before trapping).
 void rt_canvas3d_draw_image2d_region(void *o,
                                      int64_t a1,
                                      int64_t a2,
@@ -2412,6 +2798,9 @@ void rt_canvas3d_draw_image2d_region(void *o,
 }
 
 /// @brief Trapping stub for `Canvas3D.DrawLensFlare` (graphics-disabled build).
+///
+/// @param o  Canvas3D handle (ignored before trapping).
+/// @param a1 LensFlare3D handle (ignored before trapping).
 void rt_canvas3d_draw_lens_flare(void *o, void *a1) {
     (void)o;
     (void)a1;
@@ -2419,6 +2808,14 @@ void rt_canvas3d_draw_lens_flare(void *o, void *a1) {
 }
 
 /// @brief Trapping stub for `Canvas3D.DrawLine2D` (graphics-disabled build).
+///
+/// @param o  Canvas3D handle (ignored before trapping).
+/// @param a1 Start X coordinate (ignored before trapping).
+/// @param a2 Start Y coordinate (ignored before trapping).
+/// @param a3 End X coordinate (ignored before trapping).
+/// @param a4 End Y coordinate (ignored before trapping).
+/// @param a5 Packed color (ignored before trapping).
+/// @param a6 Line thickness (ignored before trapping).
 void rt_canvas3d_draw_line2d(
     void *o, int64_t a1, int64_t a2, int64_t a3, int64_t a4, int64_t a5, double a6) {
     (void)o;
@@ -2432,6 +2829,15 @@ void rt_canvas3d_draw_line2d(
 }
 
 /// @brief Trapping stub for `Canvas3D.DrawRoundFrame2D` (graphics-disabled build).
+///
+/// @param o  Canvas3D handle (ignored before trapping).
+/// @param a1 Rectangle X coordinate (ignored before trapping).
+/// @param a2 Rectangle Y coordinate (ignored before trapping).
+/// @param a3 Rectangle width (ignored before trapping).
+/// @param a4 Rectangle height (ignored before trapping).
+/// @param a5 Corner radius (ignored before trapping).
+/// @param a6 Packed color (ignored before trapping).
+/// @param a7 Frame thickness (ignored before trapping).
 void rt_canvas3d_draw_round_frame2d(
     void *o, int64_t a1, int64_t a2, int64_t a3, int64_t a4, int64_t a5, int64_t a6, double a7) {
     (void)o;
@@ -2446,6 +2852,15 @@ void rt_canvas3d_draw_round_frame2d(
 }
 
 /// @brief Trapping stub for `Canvas3D.DrawRoundRect2D` (graphics-disabled build).
+///
+/// @param o  Canvas3D handle (ignored before trapping).
+/// @param a1 Rectangle X coordinate (ignored before trapping).
+/// @param a2 Rectangle Y coordinate (ignored before trapping).
+/// @param a3 Rectangle width (ignored before trapping).
+/// @param a4 Rectangle height (ignored before trapping).
+/// @param a5 Corner radius (ignored before trapping).
+/// @param a6 Packed color (ignored before trapping).
+/// @param a7 Optional smoothing or border parameter (ignored before trapping).
 void rt_canvas3d_draw_round_rect2d(
     void *o, int64_t a1, int64_t a2, int64_t a3, int64_t a4, int64_t a5, int64_t a6, double a7) {
     (void)o;
@@ -2460,6 +2875,13 @@ void rt_canvas3d_draw_round_rect2d(
 }
 
 /// @brief Trapping stub for `Canvas3D.DrawText2DAA` (graphics-disabled build).
+///
+/// @param o  Canvas3D handle (ignored before trapping).
+/// @param a1 Text X coordinate (ignored before trapping).
+/// @param a2 Text Y coordinate (ignored before trapping).
+/// @param a3 Runtime string to draw (ignored before trapping).
+/// @param a4 Packed color (ignored before trapping).
+/// @param a5 Antialiasing scale or opacity parameter (ignored before trapping).
 void rt_canvas3d_draw_text2d_aa(
     void *o, int64_t a1, int64_t a2, rt_string a3, int64_t a4, double a5) {
     (void)o;
@@ -2472,6 +2894,13 @@ void rt_canvas3d_draw_text2d_aa(
 }
 
 /// @brief Trapping stub for `Canvas3D.DrawText2DScaled` (graphics-disabled build).
+///
+/// @param o  Canvas3D handle (ignored before trapping).
+/// @param a1 Text X coordinate (ignored before trapping).
+/// @param a2 Text Y coordinate (ignored before trapping).
+/// @param a3 Runtime string to draw (ignored before trapping).
+/// @param a4 Packed color (ignored before trapping).
+/// @param a5 Glyph scale (ignored before trapping).
 void rt_canvas3d_draw_text2d_scaled(
     void *o, int64_t a1, int64_t a2, rt_string a3, int64_t a4, double a5) {
     (void)o;
@@ -2484,6 +2913,8 @@ void rt_canvas3d_draw_text2d_scaled(
 }
 
 /// @brief Silent fallback stub for `Canvas3D.get_ClusterOverflowCount` (graphics-disabled build).
+/// @param o Canvas3D handle (ignored).
+/// @return `0`.
 int64_t rt_canvas3d_get_cluster_overflow_count(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET(
@@ -2491,6 +2922,8 @@ int64_t rt_canvas3d_get_cluster_overflow_count(void *o) {
 }
 
 /// @brief Silent fallback stub for `Canvas3D.get_DroppedLightCount` (graphics-disabled build).
+/// @param o Canvas3D handle (ignored).
+/// @return `0`.
 int64_t rt_canvas3d_get_dropped_light_count(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET(
@@ -2498,6 +2931,8 @@ int64_t rt_canvas3d_get_dropped_light_count(void *o) {
 }
 
 /// @brief Silent fallback stub for `Canvas3D.get_GpuSkinnedDrawCount` (graphics-disabled build).
+/// @param o Canvas3D handle (ignored).
+/// @return `0`.
 int64_t rt_canvas3d_get_gpu_skinned_draw_count(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET(
@@ -2505,6 +2940,8 @@ int64_t rt_canvas3d_get_gpu_skinned_draw_count(void *o) {
 }
 
 /// @brief Silent fallback stub for `Canvas3D.get_InstancedFallbackCount` (graphics-disabled build).
+/// @param o Canvas3D handle (ignored).
+/// @return `0`.
 int64_t rt_canvas3d_get_instanced_fallback_count(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET(
@@ -2512,6 +2949,8 @@ int64_t rt_canvas3d_get_instanced_fallback_count(void *o) {
 }
 
 /// @brief Silent fallback stub for `Canvas3D.get_RenderScale` (graphics-disabled build).
+/// @param o Canvas3D handle (ignored).
+/// @return `0.0`.
 double rt_canvas3d_get_render_scale(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("Canvas3D.get_RenderScale: graphics support not compiled in",
@@ -2519,6 +2958,8 @@ double rt_canvas3d_get_render_scale(void *o) {
 }
 
 /// @brief Silent fallback stub for `Canvas3D.get_ShadowDistance` (graphics-disabled build).
+/// @param o Canvas3D handle (ignored).
+/// @return `0.0`.
 double rt_canvas3d_get_shadow_distance(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("Canvas3D.get_ShadowDistance: graphics support not compiled in",
@@ -2526,6 +2967,8 @@ double rt_canvas3d_get_shadow_distance(void *o) {
 }
 
 /// @brief Silent fallback stub for `Canvas3D.get_ShadowRequestsDropped` (graphics-disabled build).
+/// @param o Canvas3D handle (ignored).
+/// @return `0`.
 int64_t rt_canvas3d_get_shadow_requests_dropped(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET(
@@ -2533,6 +2976,8 @@ int64_t rt_canvas3d_get_shadow_requests_dropped(void *o) {
 }
 
 /// @brief Silent fallback stub for `Canvas3D.get_ShadowSlotsUsed` (graphics-disabled build).
+/// @param o Canvas3D handle (ignored).
+/// @return `0`.
 int64_t rt_canvas3d_get_shadow_slots_used(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("Canvas3D.get_ShadowSlotsUsed: graphics support not compiled in",
@@ -2540,6 +2985,8 @@ int64_t rt_canvas3d_get_shadow_slots_used(void *o) {
 }
 
 /// @brief Silent fallback stub for `Canvas3D.get_SkinningUploadBytes` (graphics-disabled build).
+/// @param o Canvas3D handle (ignored).
+/// @return `0` bytes.
 int64_t rt_canvas3d_get_skinning_upload_bytes(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET(
@@ -2547,12 +2994,18 @@ int64_t rt_canvas3d_get_skinning_upload_bytes(void *o) {
 }
 
 /// @brief Silent fallback stub for `Canvas3D.get_VSync` (graphics-disabled build).
+/// @param o Canvas3D handle (ignored).
+/// @return `0`.
 int8_t rt_canvas3d_get_vsync(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("Canvas3D.get_VSync: graphics support not compiled in", 0);
 }
 
 /// @brief Silent fallback stub for `Canvas3D.MeasureText2D` (graphics-disabled build).
+/// @param o  Canvas3D handle (ignored).
+/// @param a1 Text to measure (ignored).
+/// @param a2 Glyph scale (ignored).
+/// @return `0` pixels.
 int64_t rt_canvas3d_measure_text2d(void *o, rt_string a1, double a2) {
     (void)o;
     (void)a1;
@@ -2561,6 +3014,10 @@ int64_t rt_canvas3d_measure_text2d(void *o, rt_string a1, double a2) {
 }
 
 /// @brief Silent fallback stub for `Canvas3D.MeasureText2DAA` (graphics-disabled build).
+/// @param o  Canvas3D handle (ignored).
+/// @param a1 Text to measure (ignored).
+/// @param a2 Glyph scale (ignored).
+/// @return `0` pixels.
 int64_t rt_canvas3d_measure_text2d_aa(void *o, rt_string a1, double a2) {
     (void)o;
     (void)a1;
@@ -2569,6 +3026,9 @@ int64_t rt_canvas3d_measure_text2d_aa(void *o, rt_string a1, double a2) {
 }
 
 /// @brief Silent fallback stub for `Canvas3D.PassDrawCount` (graphics-disabled build).
+/// @param o  Canvas3D handle (ignored).
+/// @param a1 Render-pass index (ignored).
+/// @return `0`.
 int64_t rt_canvas3d_pass_draw_count(void *o, int64_t a1) {
     (void)o;
     (void)a1;
@@ -2576,6 +3036,9 @@ int64_t rt_canvas3d_pass_draw_count(void *o, int64_t a1) {
 }
 
 /// @brief Silent fallback stub for `Canvas3D.PassInstanceCount` (graphics-disabled build).
+/// @param o  Canvas3D handle (ignored).
+/// @param a1 Render-pass index (ignored).
+/// @return `0`.
 int64_t rt_canvas3d_pass_instance_count(void *o, int64_t a1) {
     (void)o;
     (void)a1;
@@ -2584,6 +3047,11 @@ int64_t rt_canvas3d_pass_instance_count(void *o, int64_t a1) {
 }
 
 /// @brief Trapping stub for `Canvas3D.SetClipRect2D` (graphics-disabled build).
+/// @param o  Canvas3D handle (ignored before trapping).
+/// @param a1 Clip rectangle X coordinate (ignored before trapping).
+/// @param a2 Clip rectangle Y coordinate (ignored before trapping).
+/// @param a3 Clip rectangle width (ignored before trapping).
+/// @param a4 Clip rectangle height (ignored before trapping).
 void rt_canvas3d_set_clip_rect2d(void *o, int64_t a1, int64_t a2, int64_t a3, int64_t a4) {
     (void)o;
     (void)a1;
@@ -2594,6 +3062,8 @@ void rt_canvas3d_set_clip_rect2d(void *o, int64_t a1, int64_t a2, int64_t a3, in
 }
 
 /// @brief Trapping stub for `Canvas3D.SetClusterLightBudget` (graphics-disabled build).
+/// @param o  Canvas3D handle (ignored before trapping).
+/// @param a1 Maximum clustered-light count (ignored before trapping).
 void rt_canvas3d_set_cluster_light_budget(void *o, int64_t a1) {
     (void)o;
     (void)a1;
@@ -2601,6 +3071,8 @@ void rt_canvas3d_set_cluster_light_budget(void *o, int64_t a1) {
 }
 
 /// @brief Trapping stub for `Canvas3D.SetForceCpuSkinning` (graphics-disabled build).
+/// @param o  Canvas3D handle (ignored before trapping).
+/// @param a1 Non-zero to force CPU skinning (ignored before trapping).
 void rt_canvas3d_set_force_cpu_skinning(void *o, int8_t a1) {
     (void)o;
     (void)a1;
@@ -2608,6 +3080,8 @@ void rt_canvas3d_set_force_cpu_skinning(void *o, int8_t a1) {
 }
 
 /// @brief Trapping stub for `Canvas3D.SetShadowBudget` (graphics-disabled build).
+/// @param o  Canvas3D handle (ignored before trapping).
+/// @param a1 Maximum active shadow allocation count (ignored before trapping).
 void rt_canvas3d_set_shadow_budget(void *o, int64_t a1) {
     (void)o;
     (void)a1;
@@ -2615,6 +3089,8 @@ void rt_canvas3d_set_shadow_budget(void *o, int64_t a1) {
 }
 
 /// @brief Trapping stub for `Canvas3D.SetShadowDistance` (graphics-disabled build).
+/// @param o  Canvas3D handle (ignored before trapping).
+/// @param a1 Maximum shadow-render distance (ignored before trapping).
 void rt_canvas3d_set_shadow_distance(void *o, double a1) {
     (void)o;
     (void)a1;
@@ -2622,6 +3098,8 @@ void rt_canvas3d_set_shadow_distance(void *o, double a1) {
 }
 
 /// @brief Trapping stub for `Canvas3D.SetShadowQuality` (graphics-disabled build).
+/// @param o  Canvas3D handle (ignored before trapping).
+/// @param a1 Shadow quality preset (ignored before trapping).
 void rt_canvas3d_set_shadow_quality(void *o, int64_t a1) {
     (void)o;
     (void)a1;
@@ -2629,6 +3107,8 @@ void rt_canvas3d_set_shadow_quality(void *o, int64_t a1) {
 }
 
 /// @brief Trapping stub for `Canvas3D.SetShadowStrength` (graphics-disabled build).
+/// @param o  Canvas3D handle (ignored before trapping).
+/// @param a1 Shadow opacity or strength (ignored before trapping).
 void rt_canvas3d_set_shadow_strength(void *o, double a1) {
     (void)o;
     (void)a1;
@@ -2636,6 +3116,8 @@ void rt_canvas3d_set_shadow_strength(void *o, double a1) {
 }
 
 /// @brief Trapping stub for `Canvas3D.SetVSync` (graphics-disabled build).
+/// @param o  Canvas3D handle (ignored before trapping).
+/// @param a1 Non-zero to enable vertical synchronization (ignored before trapping).
 void rt_canvas3d_set_vsync(void *o, int8_t a1) {
     (void)o;
     (void)a1;
@@ -2643,6 +3125,9 @@ void rt_canvas3d_set_vsync(void *o, int8_t a1) {
 }
 
 /// @brief Silent fallback stub for `Canvas3D.TrySetRenderScale` (graphics-disabled build).
+/// @param o  Canvas3D handle (ignored).
+/// @param a1 Requested render scale (ignored).
+/// @return `0`, indicating that the scale was not applied.
 int8_t rt_canvas3d_try_set_render_scale(void *o, double a1) {
     (void)o;
     (void)a1;
@@ -2651,6 +3136,9 @@ int8_t rt_canvas3d_try_set_render_scale(void *o, double a1) {
 }
 
 /// @brief Trapping stub for `CubeMap3D.LoadHdrPanorama` (graphics-disabled build).
+/// @param a0 HDR panorama path (ignored before trapping).
+/// @param a1 Requested cubemap face resolution or exposure setting (ignored before trapping).
+/// @return This stub traps before returning; `NULL` is supplied as the macro fallback.
 void *rt_cubemap3d_load_hdr_panorama(rt_string a0, double a1) {
     (void)a0;
     (void)a1;
@@ -2658,6 +3146,8 @@ void *rt_cubemap3d_load_hdr_panorama(rt_string a0, double a1) {
 }
 
 /// @brief Silent fallback stub for `LedgeHit3D.get_GrabPoint` (graphics-disabled build).
+/// @param o LedgeHit3D handle (ignored).
+/// @return `NULL`.
 void *rt_ledge_hit3d_get_grab_point(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("LedgeHit3D.get_GrabPoint: graphics support not compiled in",
@@ -2665,12 +3155,16 @@ void *rt_ledge_hit3d_get_grab_point(void *o) {
 }
 
 /// @brief Silent fallback stub for `LedgeHit3D.get_HasLanding` (graphics-disabled build).
+/// @param o LedgeHit3D handle (ignored).
+/// @return `0`.
 int8_t rt_ledge_hit3d_get_has_landing(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("LedgeHit3D.get_HasLanding: graphics support not compiled in", 0);
 }
 
 /// @brief Silent fallback stub for `LedgeHit3D.get_HasStandingRoom` (graphics-disabled build).
+/// @param o LedgeHit3D handle (ignored).
+/// @return `0`.
 int8_t rt_ledge_hit3d_get_has_standing_room(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET(
@@ -2678,12 +3172,16 @@ int8_t rt_ledge_hit3d_get_has_standing_room(void *o) {
 }
 
 /// @brief Silent fallback stub for `LedgeHit3D.get_Height` (graphics-disabled build).
+/// @param o LedgeHit3D handle (ignored).
+/// @return `0.0`.
 double rt_ledge_hit3d_get_height(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("LedgeHit3D.get_Height: graphics support not compiled in", 0.0);
 }
 
 /// @brief Silent fallback stub for `LedgeHit3D.get_LandingPoint` (graphics-disabled build).
+/// @param o LedgeHit3D handle (ignored).
+/// @return `NULL`.
 void *rt_ledge_hit3d_get_landing_point(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("LedgeHit3D.get_LandingPoint: graphics support not compiled in",
@@ -2691,6 +3189,8 @@ void *rt_ledge_hit3d_get_landing_point(void *o) {
 }
 
 /// @brief Silent fallback stub for `LedgeHit3D.get_SurfaceNormal` (graphics-disabled build).
+/// @param o LedgeHit3D handle (ignored).
+/// @return `NULL`.
 void *rt_ledge_hit3d_get_surface_normal(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("LedgeHit3D.get_SurfaceNormal: graphics support not compiled in",
@@ -2698,6 +3198,8 @@ void *rt_ledge_hit3d_get_surface_normal(void *o) {
 }
 
 /// @brief Silent fallback stub for `LedgeHit3D.get_WallNormal` (graphics-disabled build).
+/// @param o LedgeHit3D handle (ignored).
+/// @return `NULL`.
 void *rt_ledge_hit3d_get_wall_normal(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("LedgeHit3D.get_WallNormal: graphics support not compiled in",
@@ -2705,6 +3207,11 @@ void *rt_ledge_hit3d_get_wall_normal(void *o) {
 }
 
 /// @brief Trapping stub for `LensFlare3D.AddElement` (graphics-disabled build).
+/// @param o  LensFlare3D handle (ignored before trapping).
+/// @param a1 Element position along the flare axis (ignored before trapping).
+/// @param a2 Element size or scale (ignored before trapping).
+/// @param a3 Packed element color (ignored before trapping).
+/// @param a4 Element intensity (ignored before trapping).
 void rt_lensflare3d_add_element(void *o, double a1, double a2, int64_t a3, double a4) {
     (void)o;
     (void)a1;
@@ -2715,12 +3222,18 @@ void rt_lensflare3d_add_element(void *o, double a1, double a2, int64_t a3, doubl
 }
 
 /// @brief Trapping stub for `LensFlare3D.New` (graphics-disabled build).
+/// @param o Light3D or sun-source handle (ignored before trapping).
+/// @return This stub traps before returning; `NULL` is supplied as the macro fallback.
 void *rt_lensflare3d_new(void *o) {
     (void)o;
     RT_GRAPHICS_TRAP_RET("LensFlare3D.New: graphics support not compiled in", NULL);
 }
 
 /// @brief Trapping stub for `PostFX3D.AddAutoExposure` (graphics-disabled build).
+/// @param o  PostFX3D handle (ignored before trapping).
+/// @param a1 Minimum exposure (ignored before trapping).
+/// @param a2 Maximum exposure (ignored before trapping).
+/// @param a3 Adaptation speed (ignored before trapping).
 void rt_postfx3d_add_auto_exposure(void *o, double a1, double a2, double a3) {
     (void)o;
     (void)a1;
@@ -2730,6 +3243,9 @@ void rt_postfx3d_add_auto_exposure(void *o, double a1, double a2, double a3) {
 }
 
 /// @brief Trapping stub for `PostFX3D.AddColorLUT` (graphics-disabled build).
+/// @param o  PostFX3D handle (ignored before trapping).
+/// @param a1 Color lookup-table Pixels handle (ignored before trapping).
+/// @param a2 Blend strength (ignored before trapping).
 void rt_postfx3d_add_color_lut(void *o, void *a1, double a2) {
     (void)o;
     (void)a1;
@@ -2738,6 +3254,9 @@ void rt_postfx3d_add_color_lut(void *o, void *a1, double a2) {
 }
 
 /// @brief Trapping stub for `PostFX3D.AddSSR` (graphics-disabled build).
+/// @param o  PostFX3D handle (ignored before trapping).
+/// @param a1 Screen-space reflection thickness or step parameter (ignored before trapping).
+/// @param a2 Screen-space reflection intensity or distance parameter (ignored before trapping).
 void rt_postfx3d_add_ssr(void *o, double a1, double a2) {
     (void)o;
     (void)a1;
@@ -2746,6 +3265,10 @@ void rt_postfx3d_add_ssr(void *o, double a1, double a2) {
 }
 
 /// @brief Trapping stub for `PostFX3D.AddSunShafts` (graphics-disabled build).
+/// @param o  PostFX3D handle (ignored before trapping).
+/// @param a1 Shaft intensity (ignored before trapping).
+/// @param a2 Shaft decay or density (ignored before trapping).
+/// @param a3 Sample count (ignored before trapping).
 void rt_postfx3d_add_sun_shafts(void *o, double a1, double a2, int64_t a3) {
     (void)o;
     (void)a1;
@@ -2755,6 +3278,8 @@ void rt_postfx3d_add_sun_shafts(void *o, double a1, double a2, int64_t a3) {
 }
 
 /// @brief Trapping stub for `PostFX3D.AddTAA` (graphics-disabled build).
+/// @param o  PostFX3D handle (ignored before trapping).
+/// @param a1 Temporal blend factor (ignored before trapping).
 void rt_postfx3d_add_taa(void *o, double a1) {
     (void)o;
     (void)a1;
@@ -2762,6 +3287,8 @@ void rt_postfx3d_add_taa(void *o, double a1) {
 }
 
 /// @brief Silent fallback stub for `PostFX3D.get_LastError` (graphics-disabled build).
+/// @param o PostFX3D handle (ignored).
+/// @return An empty owned runtime string.
 rt_string rt_postfx3d_get_last_error(void *o) {
     (void)o;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("PostFX3D.get_LastError: graphics support not compiled in",
@@ -2769,12 +3296,15 @@ rt_string rt_postfx3d_get_last_error(void *o) {
 }
 
 /// @brief Silent fallback stub for `PostFX3D.MakeIdentityLUT` (graphics-disabled build).
+/// @return `NULL`.
 void *rt_postfx3d_make_identity_lut(void) {
     RT_GRAPHICS_OPTIONAL_TRAP_RET("PostFX3D.MakeIdentityLUT: graphics support not compiled in",
                                   NULL);
 }
 
 /// @brief Trapping stub for `RenderTarget3D.CopyTo` (graphics-disabled build).
+/// @param o  Source RenderTarget3D handle (ignored before trapping).
+/// @param a1 Destination RenderTarget3D or Pixels handle (ignored before trapping).
 void rt_rendertarget3d_copy_to(void *o, void *a1) {
     (void)o;
     (void)a1;

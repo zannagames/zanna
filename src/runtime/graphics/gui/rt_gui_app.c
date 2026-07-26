@@ -3,6 +3,16 @@
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
 //
+/// @file rt_gui_app.c
+/// @brief Implements GUI application lifecycle, input dispatch, layout, and rendering.
+///
+/// @details
+/// This module owns per-application windows and retained widget roots, switches
+/// global toolkit state between applications, routes platform events through
+/// overlays and the widget tree, schedules animation work, and performs full or
+/// damage-region painting. Graphics-disabled definitions preserve the same C ABI
+/// with deterministic inert behavior.
+///
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/graphics/rt_gui_app.c
@@ -91,6 +101,8 @@ static char *rt_gui_app_strdup(const char *text) {
 /// @brief Return the index of `app` in `s_registered_apps`, or -1 if not found.
 /// @details Linear search over the live-app registry. The registry is small
 ///          (typically 1-4 apps) so O(n) is fine.
+/// @param app Borrowed application pointer to locate.
+/// @return Zero-based registry index, or -1 when absent.
 static int rt_gui_app_index(const rt_gui_app_t *app) {
     RT_ASSERT_MAIN_THREAD();
     if (!app)
@@ -106,6 +118,8 @@ static int rt_gui_app_index(const rt_gui_app_t *app) {
 /// @details The destroyed-app set lets the runtime reject stale handles (Zia
 ///          code that holds a reference past app_destroy) without dereferencing
 ///          a freed pointer.
+/// @param handle Opaque application address to locate.
+/// @return Zero-based tombstone index, or -1 when absent.
 static int rt_gui_destroyed_app_index(const void *handle) {
     RT_ASSERT_MAIN_THREAD();
     if (!handle)
@@ -120,6 +134,8 @@ static int rt_gui_destroyed_app_index(const void *handle) {
 /// @brief Return non-zero if `handle` points to an app that has already been destroyed.
 /// @details Used by checked entry points to guard against use-after-destroy
 ///          without dereferencing the potentially freed pointer.
+/// @param handle Opaque candidate application handle.
+/// @return 1 when the address is tombstoned, otherwise 0.
 int rt_gui_is_destroyed_app_handle(const void *handle) {
     RT_ASSERT_MAIN_THREAD();
     return rt_gui_destroyed_app_index(handle) >= 0;
@@ -129,6 +145,8 @@ int rt_gui_is_destroyed_app_handle(const void *handle) {
 /// @details Checks the current, active, and registered-app lists. Used by
 ///          `rt_gui_app_from_widget` to confirm that a widget's user_data
 ///          really is an app pointer before casting it.
+/// @param handle Opaque candidate application handle.
+/// @return 1 when the handle identifies a registered live app, otherwise 0.
 int rt_gui_is_app_handle_known(const void *handle) {
     RT_ASSERT_MAIN_THREAD();
     if (!handle)
@@ -142,6 +160,7 @@ int rt_gui_is_app_handle_known(const void *handle) {
 /// @details Called when an app handle is about to be re-registered (e.g., a
 ///          new rt_gui_app_new called with the same address from the GC heap).
 ///          Without this, the recycled address would be permanently rejected.
+/// @param handle Opaque application address to remove from the tombstone list.
 static void rt_gui_forget_destroyed_app_handle(const void *handle) {
     RT_ASSERT_MAIN_THREAD();
     int idx = rt_gui_destroyed_app_index(handle);
@@ -157,6 +176,7 @@ static void rt_gui_forget_destroyed_app_handle(const void *handle) {
 /// @details The list is capped and drops the oldest tombstone when full. Duplicate
 ///          entries are skipped. A handle that wasn't found in the live registry
 ///          should still be noted (e.g., if the GC freed it before unregister ran).
+/// @param handle Opaque destroyed application address to record.
 static void rt_gui_note_destroyed_app_handle(const void *handle) {
     RT_ASSERT_MAIN_THREAD();
     if (!handle || rt_gui_destroyed_app_index(handle) >= 0)
@@ -187,6 +207,7 @@ static void rt_gui_note_destroyed_app_handle(const void *handle) {
 /// @details Removes the handle from the destroyed-tombstone list first (in case
 ///          the GC recycled the address). Duplicate registrations are silently
 ///          accepted. The registry uses geometric-growth realloc.
+/// @param app Live application to register.
 /// @return 1 on success, 0 on OOM.
 int rt_gui_register_app(rt_gui_app_t *app) {
     RT_ASSERT_MAIN_THREAD();
@@ -212,6 +233,7 @@ int rt_gui_register_app(rt_gui_app_t *app) {
 /// @brief Remove `app` from the live-app registry and add it to the tombstone list.
 /// @details After removal the handle is considered destroyed — subsequent calls to
 ///          `rt_gui_is_app_handle_known` with this address will return false.
+/// @param app Registered application to remove.
 static void rt_gui_unregister_app(rt_gui_app_t *app) {
     RT_ASSERT_MAIN_THREAD();
     int idx = rt_gui_app_index(app);
@@ -305,6 +327,9 @@ static void rt_gui_restore_app_runtime_state(rt_gui_app_t *app) {
 ///          when activating an app that has a window, or when deactivating an
 ///          app that had one. Avoids unnecessary native menu work when both
 ///          parties are windowless (e.g., headless test apps).
+/// @param incoming Application being activated, or NULL.
+/// @param outgoing Application being deactivated, or NULL.
+/// @return Non-zero when native menu synchronization is required.
 static int rt_gui_should_sync_macos_menu(rt_gui_app_t *incoming, rt_gui_app_t *outgoing) {
     return (incoming && incoming->window) || (!incoming && outgoing && outgoing->window);
 }
@@ -337,6 +362,9 @@ const vg_theme_t *rt_gui_app_theme_base(const rt_gui_app_t *app) {
 ///          visible and has children, otherwise the nearest ancestor's next sibling,
 ///          stopping (NULL) at @p root. Gating descent on visibility lets a hidden
 ///          container's entire subtree be skipped in a single step.
+/// @param root Traversal root that bounds ancestor climbing.
+/// @param node Current traversal node.
+/// @return Borrowed next traversal node, or NULL at the end.
 static vg_widget_t *rt_gui_next_visible_widget(vg_widget_t *root, vg_widget_t *node) {
     if (!root || !node)
         return NULL;
@@ -405,6 +433,8 @@ static bool rt_gui_tick_widget_tree(vg_widget_t *widget, float dt) {
 ///          The walk short-circuits on the first dirty descendant — a typical
 ///          frame finds nothing dirty in O(visible widget count) and the
 ///          render loop can go straight to paint.
+/// @param widget Borrowed subtree root.
+/// @return True when a visible widget requires layout, otherwise false.
 static bool rt_gui_widget_tree_needs_layout(const vg_widget_t *widget) {
     if (!widget || !widget->visible)
         return false;
@@ -427,6 +457,8 @@ static bool rt_gui_widget_tree_needs_layout(const vg_widget_t *widget) {
 /// @brief Test whether any widget in a subtree has its paint-dirty flag set.
 /// @details Hidden overlay roots can be paint-dirty after being dismissed; that
 ///          still requires one full repaint to erase their previous pixels.
+/// @param widget Borrowed subtree root.
+/// @return True when any relevant widget requires painting, otherwise false.
 static bool rt_gui_widget_tree_needs_paint(const vg_widget_t *widget) {
     if (!widget)
         return false;
@@ -451,6 +483,7 @@ static bool rt_gui_widget_tree_needs_paint(const vg_widget_t *widget) {
 }
 
 /// @brief Clear paint-dirty flags after a complete full-window repaint.
+/// @param widget Borrowed subtree root; NULL is ignored.
 static void rt_gui_widget_tree_clear_paint(vg_widget_t *widget) {
     if (!widget)
         return;
@@ -459,6 +492,10 @@ static void rt_gui_widget_tree_clear_paint(vg_widget_t *widget) {
         rt_gui_widget_tree_clear_paint(child);
 }
 
+/// @brief Test whether any detached application overlay requires repainting.
+/// @param app Borrowed application whose palettes, dialogs, notifications, tooltips, and context
+/// menu are inspected.
+/// @return True when at least one overlay subtree is paint-dirty.
 static bool rt_gui_app_overlays_need_paint(const rt_gui_app_t *app) {
     if (!app)
         return false;
@@ -499,6 +536,11 @@ typedef struct rt_gui_damage {
 static int rt_gui_widget_paints_children_internally(vg_widget_t *widget);
 
 /// @brief Union a screen rectangle into the damage accumulator (ignores empties).
+/// @param dmg Damage accumulator to update.
+/// @param x Rectangle left coordinate in screen pixels.
+/// @param y Rectangle top coordinate in screen pixels.
+/// @param w Rectangle width in screen pixels.
+/// @param h Rectangle height in screen pixels.
 static void rt_gui_damage_add(rt_gui_damage_t *dmg, float x, float y, float w, float h) {
     if (w <= 0.0f || h <= 0.0f)
         return;
@@ -687,6 +729,8 @@ static bool rt_gui_widget_bounds_moved(
 ///          even though the editor marks needs_layout on every keystroke: the layout
 ///          re-runs but is idempotent, so nothing moves and only the editor is dirty.
 ///          Over-coverage is always safe; only under-coverage could leave stale pixels.
+/// @param widget Borrowed subtree root.
+/// @param dmg Damage accumulator receiving current and vacated bounds.
 static void rt_gui_collect_damage(vg_widget_t *widget, rt_gui_damage_t *dmg) {
     if (!widget || !dmg)
         return;
@@ -731,6 +775,8 @@ static void rt_gui_collect_damage(vg_widget_t *widget, rt_gui_damage_t *dmg) {
     }
 }
 
+/// @brief Clear paint-dirty flags across the root tree and every detached overlay.
+/// @param app Borrowed application whose retained paint state is consumed.
 static void rt_gui_app_clear_paint_flags(rt_gui_app_t *app) {
     if (!app)
         return;
@@ -1160,6 +1206,8 @@ rt_gui_app_t *rt_gui_app_from_widget(vg_widget_t *widget) {
 /// @brief Return a validated GUI app's current scheduler generation.
 /// @details This isolated-module bridge is side-effect free and returns zero for stale or foreign
 ///          pointers. The render scheduler is the sole writer of the generation field.
+/// @param app_ptr Candidate managed application handle.
+/// @return Current frame generation, or 0 for an invalid handle.
 uint64_t rt_gui_app_frame_generation_for_owner(void *app_ptr) {
     rt_gui_app_t *app = rt_gui_app_handle_checked(app_ptr);
     return app ? app->frame_generation : 0u;
@@ -1170,6 +1218,7 @@ uint64_t rt_gui_app_frame_generation_for_owner(void *app_ptr) {
 ///          avoids per-push allocation while keeping memory usage reasonable
 ///          for the typical case (1-3 nested dialogs).
 /// @param app App whose dialog stack to grow.
+/// @return 1 when capacity is available, otherwise 0.
 static int rt_gui_grow_dialog_stack(rt_gui_app_t *app) {
     if (!app || app->dialog_count < app->dialog_cap)
         return app != NULL;
@@ -1274,6 +1323,7 @@ vg_dialog_t *rt_gui_top_dialog(rt_gui_app_t *app) {
 ///          more than 1-2 command palettes, but the dynamic array handles the
 ///          general case safely.
 /// @param app App whose command palette array to grow.
+/// @return 1 when capacity is available, otherwise 0.
 static int rt_gui_grow_command_palette_array(rt_gui_app_t *app) {
     if (!app || app->command_palette_count < app->command_palette_cap)
         return app != NULL;
@@ -1585,6 +1635,7 @@ void *rt_gui_app_try_new(rt_string title, int64_t width, int64_t height) {
 
 /// @brief GC finalizer for GUI apps. Mirrors explicit Destroy so native windows
 ///        and widget trees do not leak when user code drops the app handle.
+/// @param app_ptr Managed application object selected for finalization.
 static void rt_gui_app_finalizer(void *app_ptr) {
     rt_gui_app_t *app = (rt_gui_app_t *)app_ptr;
     if (app && app->magic == RT_GUI_APP_MAGIC)
@@ -1824,6 +1875,8 @@ static int rt_gui_send_event_to_widget(vg_widget_t *widget, vg_event_t *event);
 /// Such widgets are skipped by the recursive painter — they are
 /// expected to call into their custom paint vtable to handle
 /// child rendering with whatever clipping / scrolling the widget needs.
+/// @param widget Borrowed widget to classify.
+/// @return 1 when the widget owns descendant painting, otherwise 0.
 static int rt_gui_widget_paints_children_internally(vg_widget_t *widget) {
     if (!widget)
         return 0;
@@ -1869,6 +1922,10 @@ static int rt_gui_widget_accepts_drop_type(vg_widget_t *widget, const char *type
 /// @details Walks from @p hit up through its ancestors and returns the first widget
 ///          (other than the drag @p source) that accepts the payload type, so a drop
 ///          on a child bubbles to an accepting container. NULL if none qualifies.
+/// @param hit Deepest borrowed widget under the pointer.
+/// @param source Borrowed drag-source widget to exclude.
+/// @param type Borrowed MIME-like drag payload type.
+/// @return Borrowed accepting widget, or NULL when no candidate qualifies.
 static vg_widget_t *rt_gui_find_drop_target(vg_widget_t *hit,
                                             vg_widget_t *source,
                                             const char *type) {
@@ -1913,6 +1970,8 @@ static int rt_gui_send_event_to_widget(vg_widget_t *widget, vg_event_t *event) {
 ///          union members, so this helper centralizes the disambiguation. Wheel
 ///          events use `event->wheel.screen_x`; all other pointer events use
 ///          `event->mouse.screen_x`.
+/// @param event Borrowed pointer event.
+/// @return Screen-space X coordinate, or 0 for NULL.
 static float rt_gui_event_screen_x(const vg_event_t *event) {
     if (!event)
         return 0.0f;
@@ -1922,6 +1981,8 @@ static float rt_gui_event_screen_x(const vg_event_t *event) {
 /// @brief Extract the screen-space Y coordinate from any pointer event.
 /// @details Mirrors `rt_gui_event_screen_x`; dispatches on wheel vs. mouse
 ///          union to read the correct Y field.
+/// @param event Borrowed pointer event.
+/// @return Screen-space Y coordinate, or 0 for NULL.
 static float rt_gui_event_screen_y(const vg_event_t *event) {
     if (!event)
         return 0.0f;
@@ -1934,6 +1995,8 @@ static float rt_gui_event_screen_y(const vg_event_t *event) {
 ///          state to the app so Zia code can call `App.LastClicked()` without
 ///          needing direct access to the vg internals. The timestamp guard
 ///          prevents stale clicks from a previous frame from being re-captured.
+/// @param app Application receiving the click snapshot.
+/// @param event Borrowed dispatched event used to reject stale click timestamps; may be NULL.
 static void rt_gui_capture_reported_click(rt_gui_app_t *app, const vg_event_t *event) {
     if (!app)
         return;
@@ -1953,6 +2016,8 @@ static void rt_gui_capture_reported_click(rt_gui_app_t *app, const vg_event_t *e
 ///          that reject the source's data type via `rt_gui_widget_accepts_drop_type`.
 ///          The `_is_drag_over` flag is cleared on the previous target and set
 ///          on the new one so painters can highlight valid drop zones.
+/// @param app Application whose drag state is updated.
+/// @param event_root Borrowed widget root used for hit testing.
 static void rt_gui_update_drag_over_target(rt_gui_app_t *app, vg_widget_t *event_root) {
     if (!app)
         return;
@@ -1980,6 +2045,7 @@ static void rt_gui_update_drag_over_target(rt_gui_app_t *app, vg_widget_t *event
 /// @brief Clear the pending drag candidate and its recorded start position.
 /// @details Called when a press is released without crossing the drag
 ///          threshold, or when the candidate widget is no longer live.
+/// @param app Application whose candidate state is cleared.
 static void rt_gui_cancel_drag_candidate(rt_gui_app_t *app) {
     if (!app)
         return;
@@ -1994,6 +2060,8 @@ static void rt_gui_cancel_drag_candidate(rt_gui_app_t *app) {
 ///          4-pixel radius) so small jitters during a click do not start a
 ///          drag. If the candidate widget died meanwhile the candidate is
 ///          cancelled instead.
+/// @param app Application whose pending drag is evaluated.
+/// @param event_root Borrowed event root used to resolve the current drop target.
 static void rt_gui_maybe_start_drag(rt_gui_app_t *app, vg_widget_t *event_root) {
     if (!app || app->drag_source || !app->drag_candidate)
         return;
@@ -2015,6 +2083,8 @@ static void rt_gui_maybe_start_drag(rt_gui_app_t *app, vg_widget_t *event_root) 
 /// @details Always clears the drag candidate first. If a drag was active, the
 ///          widget under the pointer is hit-tested and, when it accepts the
 ///          source's drag type and is not the source itself, receives the drop.
+/// @param app Application whose active drag is completed and cleared.
+/// @param event_root Borrowed event root used to hit-test the drop point.
 static void rt_gui_complete_drag_drop(rt_gui_app_t *app, vg_widget_t *event_root) {
     if (!app)
         return;
@@ -2044,6 +2114,10 @@ static void rt_gui_complete_drag_drop(rt_gui_app_t *app, vg_widget_t *event_root
             free(target->_drop_received_data);
             target->_drop_received_type = new_type;
             target->_drop_received_data = new_data;
+            // Record the landing point: consumers must not depend on the
+            // live pointer, which can move (or reset) before they poll.
+            target->_drop_received_x = (float)app->mouse_x;
+            target->_drop_received_y = (float)app->mouse_y;
             target->_was_dropped = true;
             target->_is_drag_over = false;
         }
@@ -2155,6 +2229,9 @@ static void rt_gui_paint_detached_overlays(rt_gui_app_t *app, vg_tooltip_manager
 /// @brief Test if a screen-space point falls within the command palette bounds.
 /// @details Used to determine whether mouse events should be routed to the
 ///          palette or dismissed (clicks outside close the palette).
+/// @param palette Borrowed command palette.
+/// @param x Screen-space X coordinate.
+/// @param y Screen-space Y coordinate.
 /// @return Non-zero if (x, y) is inside the palette's layout rectangle.
 static int rt_gui_palette_contains_point(vg_commandpalette_t *palette, float x, float y) {
     if (!palette)
@@ -2979,6 +3056,12 @@ typedef struct rt_gui_render_frame {
 /// @details Backs render_widget_tree's iterative (non-recursive) traversal so deeply
 ///          nested layouts cannot overflow the C stack. Capacity doubles from 64 via
 ///          an overflow-guarded realloc.
+/// @param frames In/out render-frame array.
+/// @param count In/out active frame count.
+/// @param cap In/out allocated frame capacity.
+/// @param widget Borrowed widget for the new frame; NULL is a successful no-op.
+/// @param parent_abs_x Accumulated parent X origin.
+/// @param parent_abs_y Accumulated parent Y origin.
 /// @return true on success — and on a NULL widget, treated as a no-op; false on
 ///         capacity overflow or realloc failure.
 static bool rt_gui_render_stack_push(rt_gui_render_frame_t **frames,
@@ -3009,6 +3092,10 @@ static bool rt_gui_render_stack_push(rt_gui_render_frame_t **frames,
 ///          stack. Each frame carries the parent's absolute origin; a widget's
 ///          stored relative (x,y) is temporarily promoted to absolute for painting
 ///          and its children pushed with the new origin. Invisible widgets are skipped.
+/// @param window Borrowed platform window receiving paint operations.
+/// @param widget Borrowed subtree root.
+/// @param parent_abs_x Accumulated parent X origin.
+/// @param parent_abs_y Accumulated parent Y origin.
 static void render_widget_tree(vgfx_window_t window,
                                vg_widget_t *widget,
                                float parent_abs_x,
@@ -3125,6 +3212,8 @@ static void render_widget_overlay_tree(vgfx_window_t window,
 #else /* !ZANNA_ENABLE_GRAPHICS */
 
 /// @brief Stub: graphics-disabled applications have no scheduler generation.
+/// @param app_ptr Ignored application handle.
+/// @return Always 0.
 uint64_t rt_gui_app_frame_generation_for_owner(void *app_ptr) {
     (void)app_ptr;
     return 0u;
@@ -3152,11 +3241,16 @@ rt_string rt_gui_system_get_unavailable_reason(void) {
 }
 
 /// @brief Stub: graphics disabled — no-op; modal dialog management requires a live app.
+/// @param dlg Ignored dialog handle.
 void rt_gui_set_active_dialog(void *dlg) {
     (void)dlg;
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no window or widget tree is created.
+/// @param title Ignored application title.
+/// @param width Ignored requested width.
+/// @param height Ignored requested height.
+/// @return Always NULL.
 void *rt_gui_app_new(rt_string title, int64_t width, int64_t height) {
     (void)title;
     (void)width;
@@ -3180,22 +3274,29 @@ void *rt_gui_app_try_new(rt_string title, int64_t width, int64_t height) {
 void rt_gui_ensure_default_font(void) {}
 
 /// @brief No-op stub: app destruction (graphics disabled).
+/// @param app_ptr Ignored application handle.
 void rt_gui_app_destroy(void *app_ptr) {
     (void)app_ptr;
 }
 
 /// @brief Stub: always returns 1 (close immediately when graphics disabled).
+/// @param app_ptr Ignored application handle.
+/// @return Always 1.
 int64_t rt_gui_app_should_close(void *app_ptr) {
     (void)app_ptr;
     return 1;
 }
 
 /// @brief Poll the app.
+/// @param app_ptr Ignored application handle.
 void rt_gui_app_poll(void *app_ptr) {
     (void)app_ptr;
 }
 
 /// @brief Stub: `App.PollWait` returns 0 without graphics.
+/// @param app_ptr Ignored application handle.
+/// @param timeout_ms Ignored maximum wait.
+/// @return Always 0.
 int64_t rt_gui_app_poll_wait(void *app_ptr, int64_t timeout_ms) {
     (void)app_ptr;
     (void)timeout_ms;
@@ -3203,6 +3304,7 @@ int64_t rt_gui_app_poll_wait(void *app_ptr, int64_t timeout_ms) {
 }
 
 /// @brief Render the app.
+/// @param app_ptr Ignored application handle.
 void rt_gui_app_render(void *app_ptr) {
     (void)app_ptr;
 }
@@ -3242,12 +3344,17 @@ void rt_gui_app_make_current(void *app_ptr) {
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no root widget exists without a live app.
+/// @param app_ptr Ignored application handle.
+/// @return Always NULL.
 void *rt_gui_app_get_root(void *app_ptr) {
     (void)app_ptr;
     return NULL;
 }
 
 /// @brief Set the font of the app.
+/// @param app_ptr Ignored application handle.
+/// @param font Ignored font handle.
+/// @param size Ignored font size.
 void rt_gui_app_set_font(void *app_ptr, void *font, double size) {
     (void)app_ptr;
     (void)font;

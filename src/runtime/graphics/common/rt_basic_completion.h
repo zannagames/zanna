@@ -5,6 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
+/// @file rt_basic_completion.h
+/// @brief Declares the C ABI for BASIC diagnostics and editor-language services.
+///
+/// @details
+/// These entry points mirror the Zia language-service bridge so IDE consumers
+/// can request diagnostics, completions, document symbols, and hover data
+/// without depending on frontend-specific C++ types. Strong implementations
+/// live in the BASIC frontend; weak runtime stubs preserve linkability for
+/// binaries that omit that frontend.
+///
 // File: src/runtime/graphics/common/rt_basic_completion.h
 // Purpose: C ABI for the Zanna BASIC IDE language-service bridge (completion,
 //          diagnostics, hover, symbols), mirroring the Zia bridge. The strong
@@ -33,25 +43,54 @@
 extern "C" {
 #endif
 
-/// @brief Diagnostics for BASIC @p source (virtual @p file_path). Returns an
-///        owned Seq of Maps {file,line,column,endLine,endColumn,severity,
-///        severityName,code,message,stage,...} — identical to the Zia toolchain.
+/// @brief Collect diagnostics for BASIC source associated with a virtual file.
+///
+/// The returned sequence contains maps with the same schema as the Zia
+/// toolchain, including file, range, severity, diagnostic code, message, and
+/// compilation-stage fields.
+///
+/// @param source    BASIC source text to analyze.
+/// @param file_path Virtual path used in diagnostics and source locations.
+///
+/// @return An owned runtime sequence of diagnostic maps; the caller owns the
+///         returned runtime object.
 void *rt_basic_toolchain_check_for_file(rt_string source, rt_string file_path);
 
-/// @brief Completion items for BASIC @p source at 1-based (@p line,@p col).
-///        Returns an owned Seq of Maps {label,insertText,kind,kindName,detail,
-///        documentation,source,cursorOffset,replacement*}.
+/// @brief Collect BASIC completion items at a source position.
+///
+/// Completion maps include label, insertion text, kind, detail,
+/// documentation, cursor offset, and replacement-range fields.
+///
+/// @param source    BASIC source text to analyze.
+/// @param file_path Virtual path associated with the source.
+/// @param line      One-based source line containing the cursor.
+/// @param col       One-based source column containing the cursor.
+///
+/// @return An owned runtime sequence of completion-item maps; the caller owns
+///         the returned runtime object.
 void *rt_basic_completion_items_for_file(rt_string source,
                                          rt_string file_path,
                                          int64_t line,
                                          int64_t col);
 
-/// @brief BASIC document symbols for @p source as a tab-delimited string, one
-///        "name\tkind\ttype\tline" record per line.
+/// @brief Serialize the document symbols declared by BASIC source.
+///
+/// @param source    BASIC source text to inspect.
+/// @param file_path Virtual path associated with the source.
+///
+/// @return An owned tab-delimited runtime string with one
+///         `name\tkind\ttype\tline` record per line.
 rt_string rt_basic_completion_symbols_for_file(rt_string source, rt_string file_path);
 
-/// @brief Hover info for the identifier at 1-based (@p line, 0-based @p col) in
-///        @p source. Returns an owned Map {available,title,type,display,source,...}.
+/// @brief Collect hover information for the BASIC identifier at a source position.
+///
+/// @param source    BASIC source text to analyze.
+/// @param file_path Virtual path associated with the source.
+/// @param line      One-based source line containing the cursor.
+/// @param col       Zero-based source column containing the cursor.
+///
+/// @return An owned runtime map containing availability, title, type, display,
+///         and source fields; the caller owns the returned runtime object.
 void *rt_basic_completion_hover_info_for_file(rt_string source,
                                               rt_string file_path,
                                               int64_t line,

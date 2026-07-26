@@ -346,6 +346,43 @@ static inline uint32_t rt_mesh3d_validated_index_count(rt_mesh3d *mesh) {
     return index_count;
 }
 
+/// @brief Allocation-free triangle-accurate mesh raycast for scene queries.
+/// @details Same broad phase, retained BVH narrow phase, and singular-matrix
+///          world-space fallback as `rt_ray3d_intersect_mesh`, but takes raw
+///          doubles and reports the hit without boxing. Implemented in
+///          rt_raycast3d.c.
+/// @param origin Borrowed finite world-space ray origin.
+/// @param dir Borrowed world-space direction, normalized internally.
+/// @param mesh Borrowed validated mesh payload.
+/// @param model Optional borrowed row-major world matrix; `NULL` = identity.
+/// @param max_distance Non-negative Euclidean hit cap; negative means uncapped.
+/// @param out_distance Optional output Euclidean world hit distance.
+/// @param out_triangle Optional output winning triangle index.
+/// @param out_point Optional output world-space hit point (double[3]).
+/// @param out_normal Optional output normalized world face normal (double[3]).
+/// @return Nonzero when a triangle hit within range was found.
+int rt_raycast3d_mesh_hit_raw(const double origin[3],
+                              const double dir[3],
+                              rt_mesh3d *mesh,
+                              const double *model,
+                              double max_distance,
+                              double *out_distance,
+                              int64_t *out_triangle,
+                              double *out_point,
+                              double *out_normal);
+
+/// @brief Box a RayHit3D from raw hit data. Implemented in rt_raycast3d.c,
+///        which privately owns the RayHit3D payload layout.
+/// @param distance Non-negative Euclidean world hit distance.
+/// @param point Borrowed world-space hit point (double[3]).
+/// @param normal Borrowed normalized world face normal (double[3]).
+/// @param triangle Winning triangle index within the hit mesh.
+/// @return New RayHit3D object, or `NULL` on invalid input or allocation failure.
+void *rt_raycast3d_build_hit(double distance,
+                             const double point[3],
+                             const double normal[3],
+                             int64_t triangle);
+
 /// @brief Zero a mesh's cached AABB/bounding-sphere and clear the dirty flag.
 /// @param mesh Mutable mesh whose cached bounds are reset; `NULL` is ignored.
 static inline void rt_mesh3d_reset_bounds(rt_mesh3d *mesh) {

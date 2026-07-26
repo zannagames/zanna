@@ -25,6 +25,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements collision-aware over-the-shoulder camera and character control.
+/// @details ThirdPersonController separates pre-physics input and character
+/// driving from post-sync spring-arm placement, blends aim framing, optionally
+/// follows TargetLock3D, and manages reversible per-node material instances for
+/// occlusion fading.
+
 #include "rt_canvas3d.h"
 #include "rt_game3d.h"
 #include "rt_game3d_internal.h"
@@ -44,6 +51,8 @@
 //=========================================================================
 
 /// @brief Return the controller's target Entity3D when still alive, else NULL.
+/// @param controller Borrowed third-person controller payload.
+/// @return Borrowed live target entity, or `NULL` when absent, stale, or invalid.
 static rt_game3d_entity *game3d_thirdperson_target_ref(
     const rt_game3d_thirdperson_controller *controller) {
     rt_game3d_entity *entity = controller ? (rt_game3d_entity *)rt_g3d_checked_or_null(
@@ -53,6 +62,8 @@ static rt_game3d_entity *game3d_thirdperson_target_ref(
 }
 
 /// @brief Return the controller's CharacterController3D slot when valid, else NULL.
+/// @param controller Borrowed third-person controller payload.
+/// @return Borrowed CharacterController3D handle, or `NULL` when absent or type-mismatched.
 static void *game3d_thirdperson_character_ref(const rt_game3d_thirdperson_controller *controller) {
     return controller ? rt_g3d_checked_or_null(controller->character,
                                                RT_G3D_GAME3D_CHARACTER_CONTROLLER_CLASS_ID)
@@ -60,6 +71,8 @@ static void *game3d_thirdperson_character_ref(const rt_game3d_thirdperson_contro
 }
 
 /// @brief Wrap yaw into [-180, 180) so orbit state never grows unbounded.
+/// @param yaw Candidate angle in degrees.
+/// @return Finite coterminal angle in `[-180, 180)`, or zero for non-finite input.
 static double game3d_thirdperson_wrap_yaw(double yaw) {
     if (!isfinite(yaw))
         return 0.0;
@@ -73,6 +86,9 @@ static double game3d_thirdperson_wrap_yaw(double yaw) {
 /// @details Yaw 0 looks down -Z; yaw 90 looks down -X (matches the character-drive
 ///   parity contract in plan 01). Positive pitch raises the camera above the pivot
 ///   looking down (orbit-style pitch, like OrbitController).
+/// @param yaw_deg Orbit yaw in degrees.
+/// @param pitch_deg Orbit pitch in degrees.
+/// @param[out] out_forward Required three-component unit-direction destination.
 static void game3d_thirdperson_forward(double yaw_deg, double pitch_deg, double out_forward[3]) {
     double yaw = yaw_deg * (RT_GAME3D_PI / 180.0);
     double pitch = pitch_deg * (RT_GAME3D_PI / 180.0);
@@ -83,6 +99,7 @@ static void game3d_thirdperson_forward(double yaw_deg, double pitch_deg, double 
 }
 
 /// @brief Restore one fade entry's original material and release its refs.
+/// @param entry Fade bookkeeping entry to clear; `NULL` is ignored.
 static void game3d_thirdperson_fade_entry_release(rt_game3d_tp_fade_entry *entry) {
     if (!entry)
         return;
@@ -98,6 +115,7 @@ static void game3d_thirdperson_fade_entry_release(rt_game3d_tp_fade_entry *entry
 
 /// @brief Restore all faded occluder materials and drop the bookkeeping array.
 ///   Shared with the world-detach path (rt_game3d_controllers.c). See internal header.
+/// @param controller Third-person controller payload whose fade state is reset.
 void game3d_thirdperson_reset_fades(rt_game3d_thirdperson_controller *controller) {
     if (!controller)
         return;
@@ -110,6 +128,9 @@ void game3d_thirdperson_reset_fades(rt_game3d_thirdperson_controller *controller
 }
 
 /// @brief Find an existing fade entry for @p node, or -1.
+/// @param controller Borrowed controller containing the fade array.
+/// @param node Borrowed SceneNode3D handle to locate.
+/// @return Zero-based fade entry index, or `-1` when absent.
 static int32_t game3d_thirdperson_fade_find(const rt_game3d_thirdperson_controller *controller,
                                             const void *node) {
     for (int32_t i = 0; i < controller->fade_count; ++i)
@@ -119,6 +140,8 @@ static int32_t game3d_thirdperson_fade_find(const rt_game3d_thirdperson_controll
 }
 
 /// @brief Begin fading @p node: clone its material into a blend-mode instance.
+/// @param controller Controller whose owned fade array may grow.
+/// @param node Borrowed SceneNode3D handle whose material is instanced.
 /// @return Index of the new entry, or -1 on failure (no material, alloc failure).
 static int32_t game3d_thirdperson_fade_begin(rt_game3d_thirdperson_controller *controller,
                                              void *node) {
@@ -153,6 +176,12 @@ static int32_t game3d_thirdperson_fade_begin(rt_game3d_thirdperson_controller *c
 
 /// @brief Per-late-update occluder-fade pass: raycast pivot→eye, fade hit meshes
 ///   toward RT_GAME3D_TP_FADE_ALPHA, restore meshes that stopped occluding.
+/// @param controller Controller owning fade bookkeeping.
+/// @param world Borrowed world providing physics and body lookup.
+/// @param target Borrowed camera target excluded from fading.
+/// @param pivot Three-component camera pivot.
+/// @param eye Three-component resolved camera position.
+/// @param dt Candidate frame delta used for exponential alpha blending.
 static void game3d_thirdperson_update_fades(rt_game3d_thirdperson_controller *controller,
                                             rt_game3d_world *world,
                                             rt_game3d_entity *target,
@@ -218,6 +247,7 @@ static void game3d_thirdperson_update_fades(rt_game3d_thirdperson_controller *co
 }
 
 /// @brief GC finalizer: restore faded materials, release retained references.
+/// @param obj Finalized ThirdPersonController payload; `NULL` is ignored.
 static void game3d_thirdperson_controller_finalize(void *obj) {
     rt_game3d_thirdperson_controller *controller = (rt_game3d_thirdperson_controller *)obj;
     if (!controller)
@@ -236,6 +266,10 @@ static void game3d_thirdperson_controller_finalize(void *obj) {
 /// @brief Create a third-person spring-arm controller orbiting @p target_entity.
 ///   Defaults: distance 4 (0.75..8), pivot 1.5, shoulder (0.35,0,0), pitch -60..75,
 ///   damping 12, boom radius 0.25, mask all, fade off, aim 1.6/45°. See header.
+/// @param world_obj Borrowed live World3D handle retained by the controller.
+/// @param target_entity Borrowed live Entity3D handle retained as the orbit target.
+/// @return New GC-managed ThirdPersonController handle, or `NULL` after validation/allocation
+/// failure.
 void *rt_game3d_thirdperson_controller_new(void *world_obj, void *target_entity) {
     rt_game3d_world *world =
         game3d_world_checked(world_obj, "Game3D.ThirdPersonController.New: invalid world");
@@ -275,6 +309,8 @@ void *rt_game3d_thirdperson_controller_new(void *world_obj, void *target_entity)
 }
 
 /// @brief Get the orbited target entity (NULL if none/stale).
+/// @param obj Borrowed ThirdPersonController handle.
+/// @return Borrowed live target Entity3D handle, or `NULL`.
 void *rt_game3d_thirdperson_controller_get_target(void *obj) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.get_target: invalid controller");
@@ -282,6 +318,8 @@ void *rt_game3d_thirdperson_controller_get_target(void *obj) {
 }
 
 /// @brief Set the orbited target entity (validated when non-NULL).
+/// @param obj Borrowed ThirdPersonController handle.
+/// @param target_entity Borrowed same-world Entity3D to retain, or `NULL` to detach.
 void rt_game3d_thirdperson_controller_set_target(void *obj, void *target_entity) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.set_target: invalid controller");
@@ -303,6 +341,8 @@ void rt_game3d_thirdperson_controller_set_target(void *obj, void *target_entity)
 }
 
 /// @brief Get the optional CharacterController3D drive slot (NULL if none/invalid).
+/// @param obj Borrowed ThirdPersonController handle.
+/// @return Borrowed CharacterController3D handle, or `NULL`.
 void *rt_game3d_thirdperson_controller_get_character(void *obj) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.get_character: invalid controller");
@@ -310,6 +350,8 @@ void *rt_game3d_thirdperson_controller_get_character(void *obj) {
 }
 
 /// @brief Set the CharacterController3D drive slot; traps on wrong class or world.
+/// @param obj Borrowed ThirdPersonController handle.
+/// @param character_controller Borrowed same-world CharacterController3D to retain, or `NULL`.
 void rt_game3d_thirdperson_controller_set_character(void *obj, void *character_controller) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.set_character: invalid controller");
@@ -334,6 +376,8 @@ void rt_game3d_thirdperson_controller_set_character(void *obj, void *character_c
 }
 
 /// @brief Get the desired (pre-collision) boom length.
+/// @param obj Borrowed ThirdPersonController handle.
+/// @return Desired boom length in world units, or zero when invalid.
 double rt_game3d_thirdperson_controller_get_distance(void *obj) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.get_distance: invalid controller");
@@ -341,6 +385,8 @@ double rt_game3d_thirdperson_controller_get_distance(void *obj) {
 }
 
 /// @brief Set the desired boom length (clamped to [min, max]).
+/// @param obj Borrowed ThirdPersonController handle.
+/// @param distance Requested world-space boom length.
 void rt_game3d_thirdperson_controller_set_distance(void *obj, double distance) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.set_distance: invalid controller");
@@ -352,6 +398,8 @@ void rt_game3d_thirdperson_controller_set_distance(void *obj, double distance) {
 }
 
 /// @brief Get the boom pull-in floor.
+/// @param obj Borrowed ThirdPersonController handle.
+/// @return Minimum boom length in world units, or zero when invalid.
 double rt_game3d_thirdperson_controller_get_min_distance(void *obj) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.get_minDistance: invalid controller");
@@ -359,6 +407,8 @@ double rt_game3d_thirdperson_controller_get_min_distance(void *obj) {
 }
 
 /// @brief Set the boom pull-in floor (non-negative, ≤ max).
+/// @param obj Borrowed ThirdPersonController handle.
+/// @param min_distance Requested non-negative minimum; also raises the desired distance if needed.
 void rt_game3d_thirdperson_controller_set_min_distance(void *obj, double min_distance) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.set_minDistance: invalid controller");
@@ -373,6 +423,8 @@ void rt_game3d_thirdperson_controller_set_min_distance(void *obj, double min_dis
 }
 
 /// @brief Get the boom length ceiling.
+/// @param obj Borrowed ThirdPersonController handle.
+/// @return Maximum boom length in world units, or zero when invalid.
 double rt_game3d_thirdperson_controller_get_max_distance(void *obj) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.get_maxDistance: invalid controller");
@@ -380,6 +432,8 @@ double rt_game3d_thirdperson_controller_get_max_distance(void *obj) {
 }
 
 /// @brief Set the boom length ceiling (≥ min).
+/// @param obj Borrowed ThirdPersonController handle.
+/// @param max_distance Requested maximum; also lowers the desired distance if needed.
 void rt_game3d_thirdperson_controller_set_max_distance(void *obj, double max_distance) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.set_maxDistance: invalid controller");
@@ -394,6 +448,8 @@ void rt_game3d_thirdperson_controller_set_max_distance(void *obj, double max_dis
 }
 
 /// @brief Get the local-space shoulder offset as a Vec3.
+/// @param obj Borrowed ThirdPersonController handle.
+/// @return New GC-managed Vec3 containing the free-camera shoulder offset, or `NULL` when invalid.
 void *rt_game3d_thirdperson_controller_get_shoulder_offset(void *obj) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.get_shoulderOffset: invalid controller");
@@ -405,6 +461,8 @@ void *rt_game3d_thirdperson_controller_get_shoulder_offset(void *obj) {
 }
 
 /// @brief Set the local-space shoulder offset; traps on a non-Vec3.
+/// @param obj Borrowed ThirdPersonController handle.
+/// @param offset Borrowed Vec3 whose sanitized components also seed the aim offset.
 void rt_game3d_thirdperson_controller_set_shoulder_offset(void *obj, void *offset) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.set_shoulderOffset: invalid controller");
@@ -424,6 +482,8 @@ void rt_game3d_thirdperson_controller_set_shoulder_offset(void *obj, void *offse
 }
 
 /// @brief Get the pivot height above the target entity origin.
+/// @param obj Borrowed ThirdPersonController handle.
+/// @return Stored world-space pivot height, or zero when invalid.
 double rt_game3d_thirdperson_controller_get_pivot_height(void *obj) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.get_pivotHeight: invalid controller");
@@ -431,6 +491,8 @@ double rt_game3d_thirdperson_controller_get_pivot_height(void *obj) {
 }
 
 /// @brief Set the pivot height above the target entity origin.
+/// @param obj Borrowed ThirdPersonController handle.
+/// @param height Candidate coordinate-bounded pivot height.
 void rt_game3d_thirdperson_controller_set_pivot_height(void *obj, double height) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.set_pivotHeight: invalid controller");
@@ -439,6 +501,8 @@ void rt_game3d_thirdperson_controller_set_pivot_height(void *obj, double height)
 }
 
 /// @brief Get the boom-release smoothing factor.
+/// @param obj Borrowed ThirdPersonController handle.
+/// @return Sanitized non-negative damping factor, or zero when invalid.
 double rt_game3d_thirdperson_controller_get_damping(void *obj) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.get_damping: invalid controller");
@@ -449,6 +513,8 @@ double rt_game3d_thirdperson_controller_get_damping(void *obj) {
 }
 
 /// @brief Set the boom-release smoothing factor (negatives reset to the default).
+/// @param obj Borrowed ThirdPersonController handle.
+/// @param damping Requested exponential damping factor.
 void rt_game3d_thirdperson_controller_set_damping(void *obj, double damping) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.set_damping: invalid controller");
@@ -458,6 +524,8 @@ void rt_game3d_thirdperson_controller_set_damping(void *obj, double damping) {
 }
 
 /// @brief Get the camera orbit yaw in degrees.
+/// @param obj Borrowed ThirdPersonController handle.
+/// @return Stored wrapped yaw in degrees, or zero when invalid.
 double rt_game3d_thirdperson_controller_get_yaw(void *obj) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.get_yaw: invalid controller");
@@ -465,6 +533,8 @@ double rt_game3d_thirdperson_controller_get_yaw(void *obj) {
 }
 
 /// @brief Set the camera orbit yaw in degrees (wrapped to [-180, 180)).
+/// @param obj Borrowed ThirdPersonController handle.
+/// @param yaw Candidate yaw in degrees.
 void rt_game3d_thirdperson_controller_set_yaw(void *obj, double yaw) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.set_yaw: invalid controller");
@@ -473,6 +543,8 @@ void rt_game3d_thirdperson_controller_set_yaw(void *obj, double yaw) {
 }
 
 /// @brief Get the camera orbit pitch in degrees (positive = above the pivot).
+/// @param obj Borrowed ThirdPersonController handle.
+/// @return Stored clamped pitch in degrees, or zero when invalid.
 double rt_game3d_thirdperson_controller_get_pitch(void *obj) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.get_pitch: invalid controller");
@@ -480,6 +552,8 @@ double rt_game3d_thirdperson_controller_get_pitch(void *obj) {
 }
 
 /// @brief Set the camera orbit pitch in degrees (clamped to [PitchMin, PitchMax]).
+/// @param obj Borrowed ThirdPersonController handle.
+/// @param pitch Candidate orbit pitch in degrees.
 void rt_game3d_thirdperson_controller_set_pitch(void *obj, double pitch) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.set_pitch: invalid controller");
@@ -489,6 +563,8 @@ void rt_game3d_thirdperson_controller_set_pitch(void *obj, double pitch) {
 }
 
 /// @brief Get the boom sweep sphere radius.
+/// @param obj Borrowed ThirdPersonController handle.
+/// @return Positive collision radius in world units, or zero when invalid.
 double rt_game3d_thirdperson_controller_get_collision_radius(void *obj) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.get_collisionRadius: invalid controller");
@@ -496,6 +572,8 @@ double rt_game3d_thirdperson_controller_get_collision_radius(void *obj) {
 }
 
 /// @brief Set the boom sweep sphere radius (positive; non-finite resets default).
+/// @param obj Borrowed ThirdPersonController handle.
+/// @param radius Requested positive sphere radius.
 void rt_game3d_thirdperson_controller_set_collision_radius(void *obj, double radius) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.set_collisionRadius: invalid controller");
@@ -505,6 +583,8 @@ void rt_game3d_thirdperson_controller_set_collision_radius(void *obj, double rad
 }
 
 /// @brief Get the boom collision layer mask.
+/// @param obj Borrowed ThirdPersonController handle.
+/// @return Raw collision-layer mask, or zero when invalid.
 int64_t rt_game3d_thirdperson_controller_get_collision_mask(void *obj) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.get_collisionMask: invalid controller");
@@ -512,6 +592,8 @@ int64_t rt_game3d_thirdperson_controller_get_collision_mask(void *obj) {
 }
 
 /// @brief Set the boom collision layer mask (exclude character/projectile layers).
+/// @param obj Borrowed ThirdPersonController handle.
+/// @param mask Raw physics collision-layer bit mask.
 void rt_game3d_thirdperson_controller_set_collision_mask(void *obj, int64_t mask) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.set_collisionMask: invalid controller");
@@ -520,6 +602,8 @@ void rt_game3d_thirdperson_controller_set_collision_mask(void *obj, int64_t mask
 }
 
 /// @brief Get whether occluder fading is enabled.
+/// @param obj Borrowed ThirdPersonController handle.
+/// @return Nonzero when occluder material fading is enabled.
 int8_t rt_game3d_thirdperson_controller_get_occlusion_fade(void *obj) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.get_occlusionFade: invalid controller");
@@ -527,6 +611,8 @@ int8_t rt_game3d_thirdperson_controller_get_occlusion_fade(void *obj) {
 }
 
 /// @brief Enable/disable occluder fading; disabling restores faded materials now.
+/// @param obj Borrowed ThirdPersonController handle.
+/// @param enabled Nonzero to enable the late-update fade pass.
 void rt_game3d_thirdperson_controller_set_occlusion_fade(void *obj, int8_t enabled) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.set_occlusionFade: invalid controller");
@@ -538,6 +624,8 @@ void rt_game3d_thirdperson_controller_set_occlusion_fade(void *obj, int8_t enabl
 }
 
 /// @brief Get the aim-mode request flag.
+/// @param obj Borrowed ThirdPersonController handle.
+/// @return Nonzero when aim mode is requested.
 int8_t rt_game3d_thirdperson_controller_get_aiming(void *obj) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.get_aiming: invalid controller");
@@ -545,6 +633,8 @@ int8_t rt_game3d_thirdperson_controller_get_aiming(void *obj) {
 }
 
 /// @brief Set the aim-mode request flag (blend animates in Update).
+/// @param obj Borrowed ThirdPersonController handle.
+/// @param aiming Nonzero to blend toward aim framing.
 void rt_game3d_thirdperson_controller_set_aiming(void *obj, int8_t aiming) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.set_aiming: invalid controller");
@@ -553,6 +643,8 @@ void rt_game3d_thirdperson_controller_set_aiming(void *obj, int8_t aiming) {
 }
 
 /// @brief Get the aim-mode boom length.
+/// @param obj Borrowed ThirdPersonController handle.
+/// @return Stored aim boom length in world units, or zero when invalid.
 double rt_game3d_thirdperson_controller_get_aim_distance(void *obj) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.get_aimDistance: invalid controller");
@@ -560,6 +652,8 @@ double rt_game3d_thirdperson_controller_get_aim_distance(void *obj) {
 }
 
 /// @brief Set the aim-mode boom length.
+/// @param obj Borrowed ThirdPersonController handle.
+/// @param distance Requested positive aim boom length.
 void rt_game3d_thirdperson_controller_set_aim_distance(void *obj, double distance) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.set_aimDistance: invalid controller");
@@ -569,6 +663,8 @@ void rt_game3d_thirdperson_controller_set_aim_distance(void *obj, double distanc
 }
 
 /// @brief Get the aim-mode camera FOV in degrees.
+/// @param obj Borrowed ThirdPersonController handle.
+/// @return Stored aim FOV in degrees, or zero when invalid.
 double rt_game3d_thirdperson_controller_get_aim_fov(void *obj) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.get_aimFov: invalid controller");
@@ -576,6 +672,8 @@ double rt_game3d_thirdperson_controller_get_aim_fov(void *obj) {
 }
 
 /// @brief Set the aim-mode camera FOV in degrees (1..179).
+/// @param obj Borrowed ThirdPersonController handle.
+/// @param fov Requested vertical field of view in degrees.
 void rt_game3d_thirdperson_controller_set_aim_fov(void *obj, double fov) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.set_aimFov: invalid controller");
@@ -585,6 +683,8 @@ void rt_game3d_thirdperson_controller_set_aim_fov(void *obj, double fov) {
 }
 
 /// @brief Get the installed TargetLock3D framing source (NULL if none).
+/// @param obj Borrowed ThirdPersonController handle.
+/// @return Borrowed TargetLock3D handle, or `NULL` when absent or invalid.
 void *rt_game3d_thirdperson_controller_get_lock_target(void *obj) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.get_lockTarget: invalid controller");
@@ -593,6 +693,8 @@ void *rt_game3d_thirdperson_controller_get_lock_target(void *obj) {
 }
 
 /// @brief Install a TargetLock3D framing source (NULL to clear); traps on wrong class.
+/// @param obj Borrowed ThirdPersonController handle.
+/// @param lock Borrowed TargetLock3D handle to retain, or `NULL` to clear.
 void rt_game3d_thirdperson_controller_set_lock_target(void *obj, void *lock) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.set_lockTarget: invalid controller");
@@ -610,6 +712,9 @@ void rt_game3d_thirdperson_controller_set_lock_target(void *obj, void *lock) {
 
 /// @brief Pre-physics update: consume look input into yaw/pitch, advance the aim
 ///   blend, and drive the optional character camera-relatively (yaw basis).
+/// @param obj Borrowed ThirdPersonController handle.
+/// @param world_obj Borrowed live World3D handle expected to own the controller.
+/// @param dt Candidate simulation delta, sanitized before aim and movement integration.
 void rt_game3d_thirdperson_controller_update(void *obj, void *world_obj, double dt) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.update: invalid controller");
@@ -679,6 +784,9 @@ void rt_game3d_thirdperson_controller_update(void *obj, void *world_obj, double 
 /// @brief Post-sync late update: spring-arm the camera behind the target with a
 ///   sphere-swept boom (instant pull-in, damped release), apply aim FOV blending,
 ///   and run the optional occluder-fade pass.
+/// @param obj Borrowed ThirdPersonController handle.
+/// @param world_obj Borrowed live World3D handle expected to own the controller.
+/// @param dt Candidate frame delta used for release damping and occlusion fades.
 void rt_game3d_thirdperson_controller_late_update(void *obj, void *world_obj, double dt) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.lateUpdate: invalid controller");

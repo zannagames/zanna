@@ -5,6 +5,14 @@
 //
 //===----------------------------------------------------------------------===//
 //
+/// @file rt_graphics_internal.h
+/// @brief Defines shared Canvas internals and overflow-safe graphics helpers.
+///
+/// @details
+/// This subsystem-private header centralizes the canvas representation,
+/// coordinate scaling, clipping, color conversion, and checked arithmetic
+/// required by the split Canvas implementation units.
+///
 // File: src/runtime/graphics/rt_graphics_internal.h
 // Purpose: Shared internal definitions for the rt_graphics subsystem. Provides
 //   the rt_canvas struct, the rt_pixels_impl forward declaration, common
@@ -45,6 +53,8 @@
 //=============================================================================
 
 /// @brief Absolute value for int64_t.
+/// @param x Signed input value.
+/// @return `abs(x)`, with `INT64_MIN` saturated to `INT64_MAX`.
 static inline int64_t rtg_abs64(int64_t x) {
     if (x == INT64_MIN)
         return INT64_MAX;
@@ -52,16 +62,25 @@ static inline int64_t rtg_abs64(int64_t x) {
 }
 
 /// @brief Minimum of two int64_t values.
+/// @param a First value.
+/// @param b Second value.
+/// @return The lesser value.
 static inline int64_t rtg_min64(int64_t a, int64_t b) {
     return a < b ? a : b;
 }
 
 /// @brief Maximum of two int64_t values.
+/// @param a First value.
+/// @param b Second value.
+/// @return The greater value.
 static inline int64_t rtg_max64(int64_t a, int64_t b) {
     return a > b ? a : b;
 }
 
 /// @brief Saturating int64 addition for bounds math.
+/// @param a Left operand.
+/// @param b Right operand.
+/// @return The mathematical sum clamped to the `int64_t` range.
 static inline int64_t rtg_add_sat64(int64_t a, int64_t b) {
     if (b > 0 && a > INT64_MAX - b)
         return INT64_MAX;
@@ -71,6 +90,9 @@ static inline int64_t rtg_add_sat64(int64_t a, int64_t b) {
 }
 
 /// @brief Saturating subtract by a non-negative amount.
+/// @param a Minuend.
+/// @param b Non-negative amount to subtract; non-positive values leave @p a unchanged.
+/// @return The difference saturated at `INT64_MIN`.
 static inline int64_t rtg_sub_nonneg_sat64(int64_t a, int64_t b) {
     if (b <= 0)
         return a;
@@ -80,6 +102,9 @@ static inline int64_t rtg_sub_nonneg_sat64(int64_t a, int64_t b) {
 }
 
 /// @brief Saturating int64 multiplication for coordinate math.
+/// @param a Left operand.
+/// @param b Right operand.
+/// @return The mathematical product clamped to the `int64_t` range.
 static inline int64_t rtg_mul_sat64(int64_t a, int64_t b) {
     long double value = (long double)a * (long double)b;
     if (value >= (long double)INT64_MAX)
@@ -90,6 +115,8 @@ static inline int64_t rtg_mul_sat64(int64_t a, int64_t b) {
 }
 
 /// @brief Clamp an int64 to the int32 range accepted by ZannaGFX.
+/// @param value Input value.
+/// @return @p value clamped to `INT32_MIN..INT32_MAX`.
 static inline int32_t rtg_clamp_i64_to_i32(int64_t value) {
     if (value > INT32_MAX)
         return INT32_MAX;
@@ -99,6 +126,8 @@ static inline int32_t rtg_clamp_i64_to_i32(int64_t value) {
 }
 
 /// @brief Return whether an int64 can be passed to ZannaGFX without narrowing.
+/// @param value Input value.
+/// @return Non-zero when @p value lies in the signed 32-bit range.
 static inline int8_t rtg_i64_fits_i32(int64_t value) {
     return value >= INT32_MIN && value <= INT32_MAX;
 }
@@ -108,6 +137,8 @@ static inline int8_t rtg_i64_fits_i32(int64_t value) {
 /// @details If @p start >= 0 or @p len <= 0 nothing is skipped. Otherwise the
 ///          skip is min(-start, len), saturating the INT64_MIN edge case so the
 ///          caller can clip a copy span to the non-negative region.
+/// @param start Span start coordinate.
+/// @param len Span length.
 /// @return Count in [0, len] of elements to drop from the front of the span.
 static inline int64_t rtg_negative_skip(int64_t start, int64_t len) {
     if (start >= 0 || len <= 0)
@@ -185,6 +216,7 @@ static inline int8_t rtg_clip_copy_axis(
 }
 
 /// @brief Sine in degrees as fixed-point Q10.
+/// @param deg Angle in degrees; values wrap modulo 360.
 /// @return sin(deg) * 1024 for fixed-point precision.
 static inline int64_t rtg_sin_deg_fp(int64_t deg) {
     deg = deg % 360;
@@ -195,12 +227,16 @@ static inline int64_t rtg_sin_deg_fp(int64_t deg) {
 }
 
 /// @brief Cosine in degrees as fixed-point Q10.
+/// @param deg Angle in degrees; values wrap modulo 360.
 /// @return cos(deg) * 1024 for fixed-point precision.
 static inline int64_t rtg_cos_deg_fp(int64_t deg) {
     return rtg_sin_deg_fp(deg + 90);
 }
 
 /// @brief Convert RGB (0-255 each) to HSL.
+/// @param r Red channel in 0..255.
+/// @param g Green channel in 0..255.
+/// @param b Blue channel in 0..255.
 /// @param h Output hue (0-360).
 /// @param s Output saturation (0-100).
 /// @param l Output lightness (0-100).
@@ -234,6 +270,10 @@ static inline void rtg_rgb_to_hsl(
 }
 
 /// @brief Hue to RGB conversion helper for HSL.
+/// @param p Lower intermediate HSL channel value.
+/// @param q Upper intermediate HSL channel value.
+/// @param t Hue offset in degrees; wraps modulo 360.
+/// @return Interpolated channel value in the helper's 0..100 scale.
 static inline int64_t rtg_hue_to_rgb_helper(int64_t p, int64_t q, int64_t t) {
     t %= 360;
     if (t < 0)
@@ -295,9 +335,11 @@ static inline void rtg_hsl_to_rgb(
 /* Internal input teardown helpers used by canvas lifecycle code. */
 /// @brief Drop any keyboard-input state bound to @p canvas if it is the
 ///        currently-tracked canvas (called when a Canvas is destroyed).
+/// @param canvas Canvas handle being destroyed.
 void rt_keyboard_clear_canvas_if_matches(void *canvas);
 /// @brief Drop any mouse-input state bound to @p canvas if it is the
 ///        currently-tracked canvas (called when a Canvas is destroyed).
+/// @param canvas Canvas handle being destroyed.
 void rt_mouse_clear_canvas_if_matches(void *canvas);
 
 /// @brief Magic value used to reject accidental calls with non-Canvas objects.
@@ -330,6 +372,7 @@ typedef struct {
 /// @brief Safely down-cast an opaque pointer to rt_canvas.
 /// @details Validates the object is a live Canvas instance (correct class id,
 ///          size, and RT_CANVAS_MAGIC guard) before returning it.
+/// @param canvas_ptr Candidate opaque runtime object.
 /// @return The rt_canvas pointer, or NULL if @p canvas_ptr is not a Canvas.
 static inline rt_canvas *rt_canvas_checked(void *canvas_ptr) {
     if (!canvas_ptr)
@@ -345,12 +388,16 @@ static inline rt_canvas *rt_canvas_checked(void *canvas_ptr) {
 /// @brief Clamp a HiDPI scale factor to a sane minimum of 1.0.
 /// @details Guards against zero/negative/NaN-ish scales reported by a window
 ///          backend, which would otherwise blow up logical<->physical math.
+/// @param scale Backend-reported scale factor.
+/// @return @p scale when it is at least `1.0`; otherwise `1.0`.
 static inline float rtg_sanitize_scale(float scale) {
     return scale >= 1.0f ? scale : 1.0f;
 }
 
 /// @brief Round a double to the nearest int64 (half away from zero), saturating
 ///        at the int64 range to avoid UB on overflow.
+/// @param value Floating-point value to convert.
+/// @return The rounded value saturated to the `int64_t` range.
 static inline int64_t rtg_round_scaled(double value) {
     if (value >= (double)INT64_MAX)
         return INT64_MAX;
@@ -361,12 +408,18 @@ static inline int64_t rtg_round_scaled(double value) {
 
 /// @brief Convert a logical (DPI-independent) coordinate to a physical pixel
 ///        coordinate by multiplying by the sanitized HiDPI scale.
+/// @param logical Logical-pixel coordinate.
+/// @param scale HiDPI scale factor.
+/// @return Rounded, saturating physical-pixel coordinate.
 static inline int64_t rtg_scale_up_i64(int64_t logical, float scale) {
     return rtg_round_scaled((double)logical * (double)rtg_sanitize_scale(scale));
 }
 
 /// @brief Convert a physical pixel coordinate back to a logical coordinate by
 ///        dividing by the sanitized HiDPI scale (inverse of rtg_scale_up_i64).
+/// @param physical Physical-pixel coordinate.
+/// @param scale HiDPI scale factor.
+/// @return Rounded, saturating logical-pixel coordinate.
 static inline int64_t rtg_scale_down_i64(int64_t physical, float scale) {
     return rtg_round_scaled((double)physical / (double)rtg_sanitize_scale(scale));
 }
@@ -377,6 +430,8 @@ static inline int64_t rtg_scale_down_i64(int64_t physical, float scale) {
 ///          keeps its designed logical size and scales draw/input coordinates to
 ///          that fullscreen framebuffer instead of exposing the monitor as a new
 ///          game resolution.
+/// @param canvas Canvas whose current window and logical size are inspected.
+/// @return Effective coordinate scale, constrained to `1.0..16.0`.
 static inline float rt_canvas_effective_coord_scale(rt_canvas *canvas) {
     if (!canvas || !canvas->gfx_win)
         return 1.0f;
@@ -407,6 +462,7 @@ static inline float rt_canvas_effective_coord_scale(rt_canvas *canvas) {
 /// @details Re-reads the window HiDPI scale, applies it as the coord scale, and
 ///          either sets or clears the GFX clip rectangle to mirror the canvas's
 ///          logical clip state. No-op when the canvas has no window.
+/// @param canvas Canvas whose scale and clip state are synchronized.
 static inline void rt_canvas_resync_window_state(rt_canvas *canvas) {
     if (!canvas || !canvas->gfx_win)
         return;
@@ -428,6 +484,11 @@ static inline void rt_canvas_resync_window_state(rt_canvas *canvas) {
 /// @details Resyncs window state, then intersects the canvas's logical clip
 ///          (or the full window if clipping is disabled) with the window
 ///          bounds. Outputs are written to @p x/@p y/@p w/@p h.
+/// @param canvas Canvas whose logical clip region is queried.
+/// @param x Output receiving the clipped left coordinate.
+/// @param y Output receiving the clipped top coordinate.
+/// @param w Output receiving the clipped width.
+/// @param h Output receiving the clipped height.
 /// @return Non-zero if a non-empty clip region results, 0 if fully clipped out.
 static inline int8_t rt_canvas_get_logical_clip_bounds(
     rt_canvas *canvas, int64_t *x, int64_t *y, int64_t *w, int64_t *h) {
@@ -474,6 +535,11 @@ static inline int8_t rt_canvas_get_logical_clip_bounds(
 /// @details Clamps the in/out rect (@p x, @p y, @p w, @p h) to the effective
 ///          logical clip bounds from rt_canvas_get_logical_clip_bounds(). On
 ///          empty input or no overlap, the size outputs are zeroed.
+/// @param canvas Canvas whose clip region constrains the rectangle.
+/// @param x In/out rectangle left coordinate.
+/// @param y In/out rectangle top coordinate.
+/// @param w In/out rectangle width.
+/// @param h In/out rectangle height.
 /// @return Non-zero if a non-empty intersection remains, 0 otherwise.
 static inline int8_t rt_canvas_clip_intersect_logical(
     rt_canvas *canvas, int64_t *x, int64_t *y, int64_t *w, int64_t *h) {
@@ -517,6 +583,14 @@ static inline int8_t rt_canvas_clip_intersect_logical(
 ///        transparent sprite-sheet frames blend instead of overwriting. Declared
 ///        outside the ZANNA_ENABLE_GRAPHICS guard so translation units compiled
 ///        without graphics (e.g. isolated contract tests that stub it) still see it.
+/// @param canvas_ptr Destination Canvas handle.
+/// @param dx Destination X coordinate.
+/// @param dy Destination Y coordinate.
+/// @param pixels_ptr Source Pixels handle.
+/// @param sx Source-region X coordinate.
+/// @param sy Source-region Y coordinate.
+/// @param w Source-region width.
+/// @param h Source-region height.
 void rt_canvas_blit_region_alpha(void *canvas_ptr,
                                  int64_t dx,
                                  int64_t dy,
@@ -530,4 +604,9 @@ void rt_canvas_blit_region_alpha(void *canvas_ptr,
 ///        height-1 logical rect (scale-aware; internal, defined in rt_drawing.c).
 ///        Scanline-fill primitives use this instead of rt_canvas_line so HiDPI
 ///        canvases don't render striped fills.
+/// @param canvas_ptr Destination Canvas handle.
+/// @param x0 Inclusive left endpoint.
+/// @param x1 Inclusive right endpoint.
+/// @param y Logical row coordinate.
+/// @param color Packed span color.
 void rt_canvas_fill_hspan(void *canvas_ptr, int64_t x0, int64_t x1, int64_t y, int64_t color);

@@ -25,6 +25,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_terrain3d.c
+ * @brief Defines Terrain3D private state and its validated cross-module grid descriptor.
+ *
+ * Lifecycle, construction, LOD, and drawing routines are split into order-sensitive implementation
+ * includes. The private payload owns sampled heights, per-chunk meshes and bounds, splat resources,
+ * hole masks, and draw telemetry.
+ */
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_terrain3d.h"
@@ -91,6 +100,14 @@ extern void rt_pixels_set(void *pixels, int64_t x, int64_t y, int64_t color);
 #define TERRAIN3D_UNUSED_PRIVATE
 #endif
 
+/**
+ * @struct rt_terrain3d
+ * @brief Private state for a chunked, heightmap-backed terrain runtime object.
+ *
+ * Mesh and AABB arrays are indexed by chunk, with separate caches for each supported LOD. Retained
+ * texture/material handles, authored hole data, and generated splat resources share the lifetime
+ * of the GC-managed terrain object.
+ */
 typedef struct {
     void *vptr;
     float *heights;

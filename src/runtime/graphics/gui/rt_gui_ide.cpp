@@ -24,6 +24,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file rt_gui_ide.cpp
+/// @brief Implements IDE-oriented GUI automation, virtual models, and command bindings.
+///
+/// @details
+/// Managed runtime handles own C++ state for deterministic automation journals,
+/// viewport-backed list and tree models, accessibility checks, and command
+/// routing. Native widget bindings remain non-owning and are invalidated before
+/// either side is reclaimed.
+
 #include "rt_gui_ide.h"
 
 #include "rt_gui.h" // self-guarding MenuItem/ToolbarItem/Shortcuts/CommandPalette accessors
@@ -72,6 +81,9 @@
 
 namespace {
 
+/// @brief Copy a managed runtime string into an ordinary byte-preserving C++ string.
+/// @param s Runtime string to copy.
+/// @return Copied bytes, or an empty string for null or invalid input.
 std::string toStd(rt_string s) {
     if (!s)
         return {};
@@ -85,6 +97,8 @@ std::string toStd(rt_string s) {
 /// @brief Copy runtime text into a C-renderable UTF-8 string without hidden NUL truncation.
 /// @details Each embedded NUL byte becomes U+FFFD. Allocation failure propagates to the caller,
 ///          which preserves the prior model value.
+/// @param value Runtime string whose bytes are normalized.
+/// @return UTF-8 text safe for null-terminated GUI APIs.
 static std::string toGuiTextStd(rt_string value) {
     std::string input = toStd(value);
     size_t nul_count =
@@ -104,15 +118,24 @@ static std::string toGuiTextStd(rt_string value) {
     return output;
 }
 
+/// @brief Copy a C++ string into a managed runtime string.
+/// @param value Byte sequence to copy.
+/// @return Newly referenced runtime string, or `NULL` on allocation failure.
 rt_string makeString(const std::string &value) {
     return rt_string_from_bytes(value.data(), value.size());
 }
 
+/// @brief Release a managed object and free it when its reference count reaches zero.
+/// @param obj Runtime object to release; `NULL` is accepted.
 void releaseObject(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
+/// @brief Store a copied C++ string in a managed map.
+/// @param map Runtime map receiving the value.
+/// @param key Null-terminated constant key.
+/// @param value String bytes to copy.
 void mapSetStr(void *map, const char *key, const std::string &value) {
     if (!map || !key)
         return;
@@ -127,6 +150,9 @@ void mapSetStr(void *map, const char *key, const std::string &value) {
 /// @details GUI automation helpers accept user-provided coordinates and sizes. Saturating
 ///          arithmetic lets range comparisons and area estimates remain deterministic even
 ///          for extreme test inputs that would otherwise overflow `int64_t`.
+/// @param a First addend.
+/// @param b Second addend.
+/// @return Saturated signed sum.
 static int64_t saturatingAddI64(int64_t a, int64_t b) {
     if (b > 0 && a > INT64_MAX - b)
         return INT64_MAX;
@@ -138,6 +164,9 @@ static int64_t saturatingAddI64(int64_t a, int64_t b) {
 /// @brief Multiply two non-negative `int64_t` dimensions, returning zero on invalid/overflow.
 /// @details Used for synthetic snapshot pixel counts. A zero result is a conservative
 ///          "unknown/empty" value that avoids reporting wrapped negative pixel counts.
+/// @param width Non-negative width.
+/// @param height Non-negative height.
+/// @return Product, or zero when a dimension is non-positive or multiplication would overflow.
 static int64_t safeAreaI64(int64_t width, int64_t height) {
     if (width <= 0 || height <= 0 || width > INT64_MAX / height)
         return 0;
@@ -147,6 +176,9 @@ static int64_t safeAreaI64(int64_t width, int64_t height) {
 /// @brief Return `ceil(numerator / denominator)` for positive dimensions without overflow.
 /// @details Avoids the common `(n + d - 1)` idiom because viewport dimensions can be
 ///          externally supplied and may be close to `INT64_MAX`.
+/// @param numerator Positive dividend.
+/// @param denominator Positive divisor.
+/// @return Ceiling quotient, or zero when either operand is non-positive.
 static int64_t ceilDivPositiveI64(int64_t numerator, int64_t denominator) {
     if (numerator <= 0 || denominator <= 0)
         return 0;
@@ -156,6 +188,11 @@ static int64_t ceilDivPositiveI64(int64_t numerator, int64_t denominator) {
 /// @brief Check whether two positive-length integer ranges overlap.
 /// @details End coordinates are computed with saturating addition so very large
 ///          rectangles remain well-defined instead of overflowing.
+/// @param a Start of the first range.
+/// @param a_len Positive length of the first range.
+/// @param b Start of the second range.
+/// @param b_len Positive length of the second range.
+/// @return `true` when the half-open ranges overlap; otherwise `false`.
 static bool rangesIntersect(int64_t a, int64_t a_len, int64_t b, int64_t b_len) {
     if (a_len <= 0 || b_len <= 0)
         return false;
@@ -199,6 +236,9 @@ struct HarnessHandle {
     HarnessState *state{nullptr};
 };
 
+/// @brief Validate a runtime object as a live TestHarness handle.
+/// @param obj Candidate managed object.
+/// @return Validated handle, or `nullptr` after trapping on invalid or destroyed input.
 HarnessHandle *requireHarness(void *obj) {
     if (!obj || rt_obj_class_id(obj) != RT_GUI_TEST_HARNESS_CLASS_ID) {
         rt_trap("GUI.TestHarness: invalid handle");
@@ -212,6 +252,8 @@ HarnessHandle *requireHarness(void *obj) {
     return h;
 }
 
+/// @brief Release native bindings and C++ state owned by a TestHarness object.
+/// @param obj Managed TestHarness object being finalized.
 void harnessFinalizer(void *obj) {
     auto *h = static_cast<HarnessHandle *>(obj);
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -309,7 +351,19 @@ static vgfx_key_t harnessKeyCode(const std::string &value, uint32_t *out_text_co
                                          {"end", VGFX_KEY_END},
                                          {"pageup", VGFX_KEY_PAGE_UP},
                                          {"pagedown", VGFX_KEY_PAGE_DOWN},
-                                         {"space", VGFX_KEY_SPACE}};
+                                         {"space", VGFX_KEY_SPACE},
+                                         {"f1", VGFX_KEY_F1},
+                                         {"f2", VGFX_KEY_F2},
+                                         {"f3", VGFX_KEY_F3},
+                                         {"f4", VGFX_KEY_F4},
+                                         {"f5", VGFX_KEY_F5},
+                                         {"f6", VGFX_KEY_F6},
+                                         {"f7", VGFX_KEY_F7},
+                                         {"f8", VGFX_KEY_F8},
+                                         {"f9", VGFX_KEY_F9},
+                                         {"f10", VGFX_KEY_F10},
+                                         {"f11", VGFX_KEY_F11},
+                                         {"f12", VGFX_KEY_F12}};
     for (const NamedKey &entry : named) {
         if (harnessAsciiEqual(value, entry.name)) {
             if (out_text_codepoint && entry.key == VGFX_KEY_SPACE)
@@ -481,6 +535,9 @@ static uint64_t harnessHashI64(uint64_t hash, int64_t value) {
 
 #endif
 
+/// @brief Convert an optional synthetic widget record to the runtime query-map schema.
+/// @param w Widget record to serialize, or `nullptr` for a not-found result.
+/// @return New managed map, or `NULL` on allocation failure.
 void *widgetToMap(const WidgetRecord *w) {
     void *map = rt_map_new();
     if (!map)
@@ -503,6 +560,8 @@ void *widgetToMap(const WidgetRecord *w) {
 /// @brief Convert a captured harness event into the map shape returned to runtime callers.
 /// @details A NULL event still returns a map with `found=false`, which lets scripts query
 ///          optional event indices without trapping or special-casing a NULL object result.
+/// @param event Event record to serialize, or `nullptr` for a not-found result.
+/// @return New managed map, or `NULL` on allocation failure.
 void *eventToMap(const EventRecord *event) {
     void *map = rt_map_new();
     if (!map)
@@ -522,6 +581,13 @@ void *eventToMap(const EventRecord *event) {
     return map;
 }
 
+/// @brief Test whether a synthetic widget bounds intersects a query rectangle.
+/// @param w Widget record supplying the first rectangle.
+/// @param x Query rectangle X coordinate.
+/// @param y Query rectangle Y coordinate.
+/// @param width Query rectangle width.
+/// @param height Query rectangle height.
+/// @return `true` when both axis ranges overlap; otherwise `false`.
 bool intersects(const WidgetRecord &w, int64_t x, int64_t y, int64_t width, int64_t height) {
     return rangesIntersect(w.x, w.w, x, width) && rangesIntersect(w.y, w.h, y, height);
 }
@@ -543,6 +609,9 @@ struct VirtualListHandle {
     VirtualListState *state{nullptr};
 };
 
+/// @brief Validate a runtime object as a live VirtualList handle.
+/// @param obj Candidate managed object.
+/// @return Validated handle, or `nullptr` after trapping on invalid or destroyed input.
 VirtualListHandle *requireList(void *obj) {
     if (!obj || rt_obj_class_id(obj) != RT_GUI_VIRTUAL_LIST_CLASS_ID) {
         rt_trap("GUI.VirtualList: invalid handle");
@@ -574,6 +643,9 @@ static std::string rowId(const VirtualListState &state, int64_t row) {
 
 /// @brief Parse a canonical non-negative decimal ID representable by a runtime row index.
 /// @details Leading zeroes are rejected except for the id `0`, keeping implicit IDs one-to-one.
+/// @param id Candidate stable identifier.
+/// @param[out] out_row Optional destination for the parsed row.
+/// @return `true` for canonical decimal input in the signed 64-bit range; otherwise `false`.
 static bool parseCanonicalRowNumber(const std::string &id, int64_t *out_row) {
     if (id.empty() || (id.size() > 1 && id.front() == '0'))
         return false;
@@ -593,6 +665,10 @@ static bool parseCanonicalRowNumber(const std::string &id, int64_t *out_row) {
 }
 
 /// @brief Parse a canonical decimal row id within the current logical list.
+/// @param state Virtual-list model providing the row-count bound.
+/// @param id Candidate implicit identifier.
+/// @param[out] out_row Optional destination for the resolved row.
+/// @return `true` when @p id denotes an in-range implicit row; otherwise `false`.
 static bool parseImplicitRowId(const VirtualListState &state,
                                const std::string &id,
                                int64_t *out_row) {
@@ -605,6 +681,10 @@ static bool parseImplicitRowId(const VirtualListState &state,
 }
 
 /// @brief Resolve a stable id through the explicit hash or an unshadowed implicit decimal id.
+/// @param state Virtual-list model providing explicit and implicit IDs.
+/// @param id Stable identifier to resolve.
+/// @param[out] out_row Optional destination for the resolved logical row.
+/// @return `true` when the identifier resolves uniquely; otherwise `false`.
 static bool findListRowById(const VirtualListState &state,
                             const std::string &id,
                             int64_t *out_row) {
@@ -623,6 +703,7 @@ static bool findListRowById(const VirtualListState &state,
 }
 
 /// @brief Report a duplicate stable model id without mutating the model.
+/// @param id Duplicate identifier included in the trap message when allocation permits.
 static void trapDuplicateModelId(const std::string &id) {
     std::string message = "GUI model ID must be unique: ";
     try {
@@ -637,6 +718,7 @@ static void trapDuplicateModelId(const std::string &id) {
 static void detachVirtualList(VirtualListState &state);
 
 /// @brief Finalize a VirtualList after first severing its non-owning control binding.
+/// @param obj Managed VirtualList object being finalized.
 static void listFinalizer(void *obj) {
     auto *h = static_cast<VirtualListHandle *>(obj);
     if (h->state)
@@ -673,6 +755,9 @@ struct VirtualTreeHandle {
     VirtualTreeState *state{nullptr};
 };
 
+/// @brief Validate a runtime object as a live VirtualTree handle.
+/// @param obj Candidate managed object.
+/// @return Validated handle, or `nullptr` after trapping on invalid or destroyed input.
 VirtualTreeHandle *requireTree(void *obj) {
     if (!obj || rt_obj_class_id(obj) != RT_GUI_VIRTUAL_TREE_CLASS_ID) {
         rt_trap("GUI.VirtualTree: invalid handle");
@@ -689,6 +774,7 @@ VirtualTreeHandle *requireTree(void *obj) {
 static void detachVirtualTree(VirtualTreeState &state);
 
 /// @brief Finalize a VirtualTree after first severing its non-owning control binding.
+/// @param obj Managed VirtualTree object being finalized.
 static void treeFinalizer(void *obj) {
     auto *h = static_cast<VirtualTreeHandle *>(obj);
     if (h->state)
@@ -710,6 +796,9 @@ struct CommandStateHandle {
     CommandState *state{nullptr};
 };
 
+/// @brief Validate a runtime object as a live CommandState handle.
+/// @param obj Candidate managed object.
+/// @return Validated handle, or `nullptr` after trapping on invalid or destroyed input.
 CommandStateHandle *requireCommandState(void *obj) {
     if (!obj || rt_obj_class_id(obj) != RT_GUI_COMMAND_STATE_CLASS_ID) {
         rt_trap("GUI.CommandState: invalid handle");
@@ -723,6 +812,8 @@ CommandStateHandle *requireCommandState(void *obj) {
     return h;
 }
 
+/// @brief Release C++ state owned by a managed CommandState.
+/// @param obj Managed CommandState object being finalized.
 void commandStateFinalizer(void *obj) {
     auto *h = static_cast<CommandStateHandle *>(obj);
     delete h->state;
@@ -730,6 +821,9 @@ void commandStateFinalizer(void *obj) {
 }
 
 /// @brief Remove one child link while preserving the relative order of all remaining children.
+/// @param state Virtual-tree model to update.
+/// @param parent Stable parent identifier.
+/// @param id Stable child identifier to erase.
 static void eraseChildId(VirtualTreeState &state,
                          const std::string &parent,
                          const std::string &id) {
@@ -741,6 +835,10 @@ static void eraseChildId(VirtualTreeState &state,
 }
 
 /// @brief Return true when assigning @p id beneath @p parent would introduce an ancestry cycle.
+/// @param state Virtual-tree model containing the current ancestry.
+/// @param id Node being moved.
+/// @param parent Candidate new parent identifier.
+/// @return `true` when the assignment would create a cycle or corrupt ancestry; otherwise `false`.
 static bool virtualTreeWouldCycle(const VirtualTreeState &state,
                                   const std::string &id,
                                   const std::string &parent) {
@@ -758,6 +856,8 @@ static bool virtualTreeWouldCycle(const VirtualTreeState &state,
 }
 
 /// @brief Rebuild the flattened visible-row index iteratively, then swap it atomically.
+/// @param state Virtual-tree model whose cached projection is ensured.
+/// @return `true` when the index is current or rebuilt successfully; `false` on allocation failure.
 static bool ensureVisibleTreeIndex(VirtualTreeState &state) {
     if (!state.visibleDirty)
         return true;
@@ -798,6 +898,9 @@ static bool ensureVisibleTreeIndex(VirtualTreeState &state) {
 }
 
 /// @brief Convert one cached visible row into the public runtime map shape.
+/// @param state Virtual-tree model containing node details.
+/// @param row Cached visible row to serialize.
+/// @return New managed row map, or `NULL` if the node is missing or allocation fails.
 static void *visibleTreeRowToMap(VirtualTreeState &state, const VisibleTreeRow &row) {
     auto it = state.nodes.find(row.id);
     if (it == state.nodes.end())
@@ -820,6 +923,8 @@ static void *visibleTreeRowToMap(VirtualTreeState &state, const VisibleTreeRow &
 }
 
 /// @brief Remove every descendant of @p id iteratively, retaining the named node itself.
+/// @param state Virtual-tree model to mutate.
+/// @param id Stable identifier of the node whose descendants are removed.
 static void removeVirtualTreeDescendants(VirtualTreeState &state, const std::string &id) {
     auto it = state.nodes.find(id);
     if (it == state.nodes.end())
@@ -841,6 +946,11 @@ static void removeVirtualTreeDescendants(VirtualTreeState &state, const std::str
 
 #ifdef ZANNA_ENABLE_GRAPHICS
 /// @brief Supply borrowed text for one bound ListBox viewport row.
+/// @param listbox Lower ListBox requesting data.
+/// @param index Zero-based logical row index.
+/// @param[out] text Destination for borrowed row text.
+/// @param[out] icon Optional icon destination; currently unused.
+/// @param user_data Bound VirtualList state.
 static void virtualListProvider(
     vg_widget_t *listbox, size_t index, const char **text, struct vg_icon *icon, void *user_data) {
     (void)listbox;
@@ -872,6 +982,8 @@ static void virtualListProvider(
 }
 
 /// @brief Clear the model's raw ListBox pointer when the lower control detaches first.
+/// @param listbox Lower ListBox being unbound.
+/// @param user_data Bound VirtualList state.
 static void virtualListUnbound(vg_widget_t *listbox, void *user_data) {
     auto *state = static_cast<VirtualListState *>(user_data);
     if (state && state->boundList == listbox)
@@ -879,6 +991,7 @@ static void virtualListUnbound(vg_widget_t *listbox, void *user_data) {
 }
 
 /// @brief Refresh a bound ListBox count and cached viewport after a model mutation.
+/// @param state VirtualList model whose projection should be invalidated.
 static void syncBoundVirtualList(VirtualListState &state) {
     auto *listbox = static_cast<vg_listbox_t *>(state.boundList);
     if (!listbox)
@@ -891,6 +1004,11 @@ static void syncBoundVirtualList(VirtualListState &state) {
 }
 
 /// @brief Supply one borrowed flattened row descriptor to a bound virtual TreeView.
+/// @param tree Lower TreeView requesting data.
+/// @param index Zero-based visible-row index.
+/// @param[out] out_row Destination row descriptor.
+/// @param user_data Bound VirtualTree state.
+/// @return `true` when a visible row was supplied; otherwise `false`.
 static bool virtualTreeProvider(vg_treeview_t *tree,
                                 size_t index,
                                 vg_treeview_virtual_row_t *out_row,
@@ -913,6 +1031,7 @@ static bool virtualTreeProvider(vg_treeview_t *tree,
 }
 
 /// @brief Synchronize flattened row count, selection, and paint after a tree model mutation.
+/// @param state VirtualTree model whose projection should be synchronized.
 static void syncBoundVirtualTree(VirtualTreeState &state) {
     auto *tree = static_cast<vg_treeview_t *>(state.boundTree);
     if (!tree || !ensureVisibleTreeIndex(state))
@@ -925,6 +1044,10 @@ static void syncBoundVirtualTree(VirtualTreeState &state) {
 }
 
 /// @brief Apply one semantic virtual TreeView action to the hash-indexed model.
+/// @param tree Bound lower TreeView.
+/// @param index Zero-based visible-row index receiving the action.
+/// @param action Selection, parent navigation, or expansion action.
+/// @param user_data Bound VirtualTree state.
 static void virtualTreeAction(vg_treeview_t *tree,
                               size_t index,
                               vg_treeview_virtual_action_t action,
@@ -969,6 +1092,8 @@ static void virtualTreeAction(vg_treeview_t *tree,
 }
 
 /// @brief Clear the model's raw TreeView pointer when the lower control detaches first.
+/// @param tree Lower TreeView being unbound.
+/// @param user_data Bound VirtualTree state.
 static void virtualTreeUnbound(vg_treeview_t *tree, void *user_data) {
     auto *state = static_cast<VirtualTreeState *>(user_data);
     if (state && state->boundTree == tree)
@@ -995,6 +1120,7 @@ static void syncBoundVirtualTree(VirtualTreeState &state) {
 #endif
 
 /// @brief Detach a VirtualList from its non-owning control, if any.
+/// @param state VirtualList state whose control link is cleared.
 static void detachVirtualList(VirtualListState &state) {
     void *bound = state.boundList;
     state.boundList = nullptr;
@@ -1007,6 +1133,7 @@ static void detachVirtualList(VirtualListState &state) {
 }
 
 /// @brief Detach a VirtualTree from its non-owning control, if any.
+/// @param state VirtualTree state whose control link is cleared.
 static void detachVirtualTree(VirtualTreeState &state) {
     void *bound = state.boundTree;
     state.boundTree = nullptr;
@@ -1018,11 +1145,17 @@ static void detachVirtualTree(VirtualTreeState &state) {
 #endif
 }
 
+/// @brief Convert an 8-bit sRGB channel to linear-light luminance.
+/// @param c Channel value; only the low eight bits are used.
+/// @return Linearized channel value in the nominal range `[0,1]`.
 double channelLuminance(int64_t c) {
     double v = static_cast<double>(c & 0xff) / 255.0;
     return v <= 0.03928 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
 }
 
+/// @brief Compute relative luminance for a packed `0xRRGGBB` color.
+/// @param rgb Packed RGB value.
+/// @return WCAG relative luminance.
 double luminance(int64_t rgb) {
     return 0.2126 * channelLuminance((rgb >> 16) & 0xff) +
            0.7152 * channelLuminance((rgb >> 8) & 0xff) + 0.0722 * channelLuminance(rgb & 0xff);
@@ -1059,6 +1192,8 @@ struct CommandRegistryHandle {
 };
 
 /// @brief Trapping accessor for a Zanna.GUI.Command handle (public Command methods).
+/// @param obj Candidate managed object.
+/// @return Validated live Command handle, or `nullptr` after trapping.
 CommandHandle *requireCommand(void *obj) {
     if (!obj || rt_obj_class_id(obj) != RT_GUI_COMMAND_CLASS_ID) {
         rt_trap("GUI.Command: invalid handle");
@@ -1074,12 +1209,17 @@ CommandHandle *requireCommand(void *obj) {
 
 /// @brief Non-trapping accessor: returns the command payload, or NULL if @p obj is not a
 ///        live Command. Used to validate registry entries without aborting.
+/// @param obj Candidate managed object.
+/// @return Live command payload, or `nullptr` for invalid input.
 CommandData *commandDataChecked(void *obj) {
     if (!rt_obj_is_instance(obj, RT_GUI_COMMAND_CLASS_ID, sizeof(CommandHandle)))
         return nullptr;
     return static_cast<CommandHandle *>(obj)->state;
 }
 
+/// @brief Validate a runtime object as a live CommandRegistry handle.
+/// @param obj Candidate managed object.
+/// @return Validated handle, or `nullptr` after trapping on invalid or destroyed input.
 CommandRegistryHandle *requireCommandRegistry(void *obj) {
     if (!obj || rt_obj_class_id(obj) != RT_GUI_COMMAND_REGISTRY_CLASS_ID) {
         rt_trap("GUI.CommandRegistry: invalid handle");
@@ -1093,12 +1233,16 @@ CommandRegistryHandle *requireCommandRegistry(void *obj) {
     return h;
 }
 
+/// @brief Release C++ state owned by a managed Command.
+/// @param obj Managed Command object being finalized.
 void commandFinalizer(void *obj) {
     auto *h = static_cast<CommandHandle *>(obj);
     delete h->state; // menuItem/toolbarItem are not owned; nothing else to free
     h->state = nullptr;
 }
 
+/// @brief Release retained commands and C++ state owned by a CommandRegistry.
+/// @param obj Managed CommandRegistry object being finalized.
 void commandRegistryFinalizer(void *obj) {
     auto *h = static_cast<CommandRegistryHandle *>(obj);
     if (h->state) {
@@ -1113,6 +1257,7 @@ void commandRegistryFinalizer(void *obj) {
 
 /// @brief Push the command's enabled/checked state onto its bound widgets.
 /// @details The set_* accessors self-guard, so a NULL or destroyed widget is a no-op.
+/// @param c Command payload whose state is projected.
 void pushCommandState(CommandData &c) {
     if (c.menuItem) {
         rt_menuitem_set_enabled(c.menuItem, c.enabled ? 1 : 0);
@@ -1129,6 +1274,7 @@ void pushCommandState(CommandData &c) {
 }
 
 /// @brief Push state, then read the command's invocation sources for this frame.
+/// @param c Command payload to poll and update.
 /// @param paletteSelectedId The palette's selected command id this frame ("" if none).
 /// @return True if the (enabled) command was invoked. Each click source is read exactly once
 ///         (menu/toolbar clicks are consumed on read), and the result is cached on the command.
@@ -1157,6 +1303,8 @@ bool pollCommandInto(CommandData &c, const std::string &paletteSelectedId) {
 
 extern "C" {
 
+/// @brief Create an empty managed GUI automation harness.
+/// @return New TestHarness handle, or `NULL` on allocation failure.
 void *rt_gui_test_harness_new(void) {
     auto *h = static_cast<HarnessHandle *>(
         rt_obj_new_i64(RT_GUI_TEST_HARNESS_CLASS_ID, sizeof(HarnessHandle)));
@@ -1171,6 +1319,8 @@ void *rt_gui_test_harness_new(void) {
     return h;
 }
 
+/// @brief Clear synthetic widgets, events, focus, and dispatch position from a harness.
+/// @param harness Managed TestHarness handle.
 void rt_gui_test_harness_clear(void *harness) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireHarness(harness));
     h->state->widgets.clear();
@@ -1448,6 +1598,10 @@ void *rt_gui_test_harness_get_accessibility_snapshot(void *harness) {
 #endif
 }
 
+/// @brief Advance the synthetic harness frame counter.
+/// @param harness Managed TestHarness handle.
+/// @param frames Number of frames to add; values below one advance by one.
+/// @return Updated synthetic frame number.
 int64_t rt_gui_test_harness_tick(void *harness, int64_t frames) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireHarness(harness), 0);
     if (frames < 1)
@@ -1456,6 +1610,15 @@ int64_t rt_gui_test_harness_tick(void *harness, int64_t frames) {
     return h->state->frame;
 }
 
+/// @brief Add or replace one synthetic widget record by stable identifier.
+/// @param harness Managed TestHarness handle.
+/// @param id Stable widget identifier.
+/// @param type Widget type name.
+/// @param name Accessible or display name.
+/// @param x Synthetic bounds X coordinate.
+/// @param y Synthetic bounds Y coordinate.
+/// @param w Synthetic bounds width.
+/// @param hgt Synthetic bounds height.
 void rt_gui_test_harness_register_widget(void *harness,
                                          rt_string id,
                                          rt_string type,
@@ -1479,6 +1642,10 @@ void rt_gui_test_harness_register_widget(void *harness,
     }
 }
 
+/// @brief Find a synthetic widget by stable identifier.
+/// @param harness Managed TestHarness handle.
+/// @param id Widget identifier to match.
+/// @return New query-result map with a `found` field.
 void *rt_gui_test_harness_find_by_id(void *harness, rt_string id) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireHarness(harness), widgetToMap(nullptr));
     try {
@@ -1516,6 +1683,10 @@ void *rt_gui_test_harness_find_by_id_option(void *harness, rt_string id) {
     return testHarnessLookupOption(rt_gui_test_harness_find_by_id(harness, id));
 }
 
+/// @brief Find the first synthetic widget with a matching name.
+/// @param harness Managed TestHarness handle.
+/// @param name Widget name to match.
+/// @return New query-result map with a `found` field.
 void *rt_gui_test_harness_find_by_name(void *harness, rt_string name) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireHarness(harness), widgetToMap(nullptr));
     try {
@@ -1537,6 +1708,10 @@ void *rt_gui_test_harness_find_by_name_option(void *harness, rt_string name) {
     return testHarnessLookupOption(rt_gui_test_harness_find_by_name(harness, name));
 }
 
+/// @brief Find the first synthetic widget with a matching type.
+/// @param harness Managed TestHarness handle.
+/// @param type Widget type to match.
+/// @return New query-result map with a `found` field.
 void *rt_gui_test_harness_find_by_type(void *harness, rt_string type) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireHarness(harness), widgetToMap(nullptr));
     try {
@@ -1558,6 +1733,10 @@ void *rt_gui_test_harness_find_by_type_option(void *harness, rt_string type) {
     return testHarnessLookupOption(rt_gui_test_harness_find_by_type(harness, type));
 }
 
+/// @brief Append a synthetic key action to the harness journal.
+/// @param harness Managed TestHarness handle.
+/// @param key Runtime key token.
+/// @param modifiers Platform modifier-bit mask.
 void rt_gui_test_harness_send_key(void *harness, rt_string key, int64_t modifiers) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireHarness(harness));
     try {
@@ -1567,6 +1746,12 @@ void rt_gui_test_harness_send_key(void *harness, rt_string key, int64_t modifier
     }
 }
 
+/// @brief Append a synthetic mouse action and update synthetic focus by hit testing.
+/// @param harness Managed TestHarness handle.
+/// @param event_type Runtime mouse action token.
+/// @param x Synthetic pointer X coordinate.
+/// @param y Synthetic pointer Y coordinate.
+/// @param button Platform mouse-button ordinal.
 void rt_gui_test_harness_send_mouse(
     void *harness, rt_string event_type, int64_t x, int64_t y, int64_t button) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireHarness(harness));
@@ -1586,6 +1771,8 @@ void rt_gui_test_harness_send_mouse(
 /// @brief Return the number of synthetic input events recorded by a GUI test harness.
 /// @details Invalid handles return zero through the standard harness guard. Extremely large
 ///          vectors are saturated to `INT64_MAX` to preserve the public integer contract.
+/// @param harness Managed TestHarness handle.
+/// @return Recorded event count saturated to `INT64_MAX`.
 int64_t rt_gui_test_harness_event_count(void *harness) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireHarness(harness), 0);
     if (h->state->events.size() > static_cast<size_t>(INT64_MAX))
@@ -1596,6 +1783,9 @@ int64_t rt_gui_test_harness_event_count(void *harness) {
 /// @brief Return one recorded harness event as a map.
 /// @details Out-of-range indices and invalid handles return a map with `found=false`; valid
 ///          events include type, value, coordinates, button, modifiers, and frame fields.
+/// @param harness Managed TestHarness handle.
+/// @param index Zero-based event index.
+/// @return New event-result map with a `found` field.
 void *rt_gui_test_harness_event_at(void *harness, int64_t index) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireHarness(harness), eventToMap(nullptr));
     if (index < 0 || static_cast<uint64_t>(index) >= h->state->events.size())
@@ -1606,6 +1796,7 @@ void *rt_gui_test_harness_event_at(void *harness, int64_t index) {
 /// @brief Clear all synthetic input events recorded by a GUI test harness.
 /// @details This does not alter focus, widgets, virtual lists, or the frame counter; it only
 ///          resets the event journal exposed through the event inspection helpers.
+/// @param harness Managed TestHarness handle.
 void rt_gui_test_harness_clear_events(void *harness) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireHarness(harness));
     h->state->events.clear();
@@ -1614,11 +1805,17 @@ void rt_gui_test_harness_clear_events(void *harness) {
 #endif
 }
 
+/// @brief Return the stable identifier of the synthetically focused widget.
+/// @param harness Managed TestHarness handle.
+/// @return Newly referenced focus identifier, possibly empty.
 rt_string rt_gui_test_harness_get_focus(void *harness) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireHarness(harness), nullptr);
     return makeString(h->state->focus);
 }
 
+/// @brief Return synthetic widget identifiers in registration order.
+/// @param harness Managed TestHarness handle.
+/// @return New owned sequence of identifier strings, or `NULL` on allocation failure.
 void *rt_gui_test_harness_focus_order(void *harness) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireHarness(harness), nullptr);
     void *seq = rt_seq_new_owned();
@@ -1634,6 +1831,13 @@ void *rt_gui_test_harness_focus_order(void *harness) {
     return seq;
 }
 
+/// @brief Produce a synthetic nonblank-region summary from registered widget bounds.
+/// @param harness Managed TestHarness handle.
+/// @param x Query rectangle X coordinate.
+/// @param y Query rectangle Y coordinate.
+/// @param w Query rectangle width.
+/// @param hgt Query rectangle height.
+/// @return New managed snapshot map, or `NULL` on allocation failure.
 void *rt_gui_test_harness_capture_region(
     void *harness, int64_t x, int64_t y, int64_t w, int64_t hgt) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireHarness(harness), nullptr);
@@ -1654,12 +1858,20 @@ void *rt_gui_test_harness_capture_region(
     return snapshot;
 }
 
+/// @brief Read the nonblank assertion flag from a synthetic snapshot map.
+/// @param snapshot Runtime map returned by the region capture API.
+/// @return `1` when the map reports nonblank content; otherwise `0`.
 int8_t rt_gui_test_harness_assert_nonblank(void *snapshot) {
     if (!snapshot || rt_obj_class_id(snapshot) != RT_MAP_CLASS_ID)
         return 0;
     return rt_map_get_bool(snapshot, rt_const_cstr("nonBlank"));
 }
 
+/// @brief Create a managed virtual-list model with fixed row and viewport metrics.
+/// @param row_count Initial non-negative logical row count.
+/// @param row_height Row height clamped to at least one.
+/// @param viewport_height Viewport height clamped to at least one.
+/// @return New VirtualList handle, or `NULL` on allocation failure.
 void *rt_virtual_list_new(int64_t row_count, int64_t row_height, int64_t viewport_height) {
     auto *h = static_cast<VirtualListHandle *>(
         rt_obj_new_i64(RT_GUI_VIRTUAL_LIST_CLASS_ID, sizeof(VirtualListHandle)));
@@ -1678,6 +1890,7 @@ void *rt_virtual_list_new(int64_t row_count, int64_t row_height, int64_t viewpor
 }
 
 /// @brief Synchronize model selection from a bound ListBox's current selected index.
+/// @param state VirtualList model whose stable selection is updated.
 static void syncVirtualListSelectionFromControl(VirtualListState &state) {
 #ifdef ZANNA_ENABLE_GRAPHICS
     auto *listbox = static_cast<vg_listbox_t *>(state.boundList);
@@ -1699,6 +1912,8 @@ static void syncVirtualListSelectionFromControl(VirtualListState &state) {
 }
 
 /// @brief Resize a sparse VirtualList while preserving unique stable-ID semantics.
+/// @param list Managed VirtualList handle.
+/// @param row_count New non-negative logical row count.
 void rt_virtual_list_set_count(void *list, int64_t row_count) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireList(list));
     VirtualListState &state = *h->state;
@@ -1743,6 +1958,9 @@ void rt_virtual_list_set_count(void *list, int64_t row_count) {
 }
 
 /// @brief Assign a unique stable ID with rollback on allocation failure.
+/// @param list Managed VirtualList handle.
+/// @param row Zero-based logical row.
+/// @param id Non-empty stable identifier.
 void rt_virtual_list_set_row_id(void *list, int64_t row, rt_string id) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireList(list));
     VirtualListState &state = *h->state;
@@ -1813,6 +2031,9 @@ void rt_virtual_list_set_row_id(void *list, int64_t row, rt_string id) {
 }
 
 /// @brief Set display text for one sparse VirtualList row without changing its stable ID.
+/// @param list Managed VirtualList handle.
+/// @param row Zero-based logical row.
+/// @param text Runtime display text normalized for GUI rendering.
 void rt_virtual_list_set_row_text(void *list, int64_t row, rt_string text) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireList(list));
     VirtualListState &state = *h->state;
@@ -1839,6 +2060,8 @@ void rt_virtual_list_set_row_text(void *list, int64_t row, rt_string text) {
 }
 
 /// @brief Invalidate one bound ListBox row after application-owned backing data changes.
+/// @param list Managed VirtualList handle.
+/// @param row Zero-based logical row to repaint.
 void rt_virtual_list_invalidate_row(void *list, int64_t row) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireList(list));
     if (row < 0 || row >= h->state->rowCount)
@@ -1851,6 +2074,9 @@ void rt_virtual_list_invalidate_row(void *list, int64_t row) {
 }
 
 /// @brief Bind a VirtualList to a live ListBox, preserving an old binding on allocation failure.
+/// @param list Managed VirtualList handle.
+/// @param listbox Live ListBox control.
+/// @return `1` when binding succeeds; otherwise `0`.
 int8_t rt_virtual_list_bind(void *list, void *listbox) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireList(list), 0);
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -1881,17 +2107,22 @@ int8_t rt_virtual_list_bind(void *list, void *listbox) {
 }
 
 /// @brief Detach a VirtualList from its current ListBox, if any.
+/// @param list Managed VirtualList handle.
 void rt_virtual_list_unbind(void *list) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireList(list));
     detachVirtualList(*h->state);
 }
 
 /// @brief Reverse-form convenience wrapper for `VirtualList.Bind`.
+/// @param listbox Live ListBox control.
+/// @param model Managed VirtualList handle.
+/// @return `1` when binding succeeds; otherwise `0`.
 int8_t rt_listbox_set_virtual_model(void *listbox, void *model) {
     return rt_virtual_list_bind(model, listbox);
 }
 
 /// @brief Clear a ListBox's external model binding without destroying either object.
+/// @param listbox Live ListBox control; invalid handles are ignored.
 void rt_listbox_clear_virtual_model(void *listbox) {
 #ifdef ZANNA_ENABLE_GRAPHICS
     auto *control =
@@ -1904,6 +2135,8 @@ void rt_listbox_clear_virtual_model(void *listbox) {
 }
 
 /// @brief Return the first provider-backed ListBox row in the current viewport.
+/// @param listbox Live ListBox control.
+/// @return First visible logical row saturated to `INT64_MAX`, or zero when unavailable.
 int64_t rt_listbox_get_visible_first(void *listbox) {
 #ifdef ZANNA_ENABLE_GRAPHICS
     auto *control =
@@ -1917,6 +2150,8 @@ int64_t rt_listbox_get_visible_first(void *listbox) {
 }
 
 /// @brief Return the number of provider-backed ListBox rows materialized for its viewport.
+/// @param listbox Live ListBox control.
+/// @return Visible materialized row count saturated to `INT64_MAX`, or zero when unavailable.
 int64_t rt_listbox_get_visible_count(void *listbox) {
 #ifdef ZANNA_ENABLE_GRAPHICS
     auto *control =
@@ -1929,6 +2164,10 @@ int64_t rt_listbox_get_visible_count(void *listbox) {
 #endif
 }
 
+/// @brief Calculate the overscanned logical row range for a vertical scroll position.
+/// @param list Managed VirtualList handle.
+/// @param scroll_y Non-negative scroll offset; negative values clamp to zero.
+/// @return New map containing half-open `start`, `end`, and `count` values.
 void *rt_virtual_list_visible_range(void *list, int64_t scroll_y) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireList(list), nullptr);
     auto &s = *h->state;
@@ -1948,6 +2187,9 @@ void *rt_virtual_list_visible_range(void *list, int64_t scroll_y) {
     return map;
 }
 
+/// @brief Select a virtual-list row by stable identifier.
+/// @param list Managed VirtualList handle.
+/// @param id Stable identifier to select; unresolved values clear bound control selection.
 void rt_virtual_list_select_id(void *list, rt_string id) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireList(list));
     try {
@@ -1967,12 +2209,18 @@ void rt_virtual_list_select_id(void *list, rt_string id) {
     }
 }
 
+/// @brief Return the selected virtual-list stable identifier.
+/// @param list Managed VirtualList handle.
+/// @return Newly referenced stable identifier, possibly empty.
 rt_string rt_virtual_list_get_selected_id(void *list) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireList(list), nullptr);
     syncVirtualListSelectionFromControl(*h->state);
     return makeString(h->state->selectedId);
 }
 
+/// @brief Resolve the selected stable identifier to a logical row.
+/// @param list Managed VirtualList handle.
+/// @return Zero-based selected row, or `-1` when unresolved.
 int64_t rt_virtual_list_get_selected_index(void *list) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireList(list), -1);
     syncVirtualListSelectionFromControl(*h->state);
@@ -1980,6 +2228,8 @@ int64_t rt_virtual_list_get_selected_index(void *list) {
     return findListRowById(*h->state, h->state->selectedId, &row) ? row : -1;
 }
 
+/// @brief Create an empty managed virtual-tree model with an internal root.
+/// @return New VirtualTree handle, or `NULL` on allocation failure.
 void *rt_virtual_tree_new(void) {
     auto *h = static_cast<VirtualTreeHandle *>(
         rt_obj_new_i64(RT_GUI_VIRTUAL_TREE_CLASS_ID, sizeof(VirtualTreeHandle)));
@@ -2002,6 +2252,11 @@ void *rt_virtual_tree_new(void) {
     return h;
 }
 
+/// @brief Declare a uniquely identified virtual-tree node beneath a parent.
+/// @param tree Managed VirtualTree handle.
+/// @param parent_id Stable parent identifier; missing parents become placeholders.
+/// @param id_s Non-empty unique node identifier.
+/// @param text Runtime display label normalized for GUI rendering.
 void rt_virtual_tree_add_node(void *tree, rt_string parent_id, rt_string id_s, rt_string text) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireTree(tree));
     try {
@@ -2114,6 +2369,10 @@ void rt_virtual_tree_add_node(void *tree, rt_string parent_id, rt_string id_s, r
 }
 
 /// @brief Move an existing declared node beneath another existing node without changing its ID.
+/// @param tree Managed VirtualTree handle.
+/// @param id_s Stable identifier of the node to move.
+/// @param parent_id Stable identifier of the new parent.
+/// @return `1` on success or no-op same-parent movement; otherwise `0`.
 int8_t rt_virtual_tree_move_node(void *tree, rt_string id_s, rt_string parent_id) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireTree(tree), 0);
     try {
@@ -2144,6 +2403,10 @@ int8_t rt_virtual_tree_move_node(void *tree, rt_string id_s, rt_string parent_id
 }
 
 /// @brief Replace one declared virtual-tree node label atomically.
+/// @param tree Managed VirtualTree handle.
+/// @param id_s Stable node identifier.
+/// @param text Replacement runtime display label.
+/// @return `1` when the declared node exists and the operation succeeds; otherwise `0`.
 int8_t rt_virtual_tree_set_node_text(void *tree, rt_string id_s, rt_string text) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireTree(tree), 0);
     try {
@@ -2162,6 +2425,10 @@ int8_t rt_virtual_tree_set_node_text(void *tree, rt_string id_s, rt_string text)
     }
 }
 
+/// @brief Expand a virtual-tree node and report lazy-population state.
+/// @param tree Managed VirtualTree handle.
+/// @param id_s Stable node identifier.
+/// @return New map describing lookup, expansion, and population status.
 void *rt_virtual_tree_expand(void *tree, rt_string id_s) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireTree(tree), nullptr);
     void *map = rt_map_new();
@@ -2192,6 +2459,9 @@ void *rt_virtual_tree_expand(void *tree, rt_string id_s) {
     return map;
 }
 
+/// @brief Collapse a virtual-tree node if it exists.
+/// @param tree Managed VirtualTree handle.
+/// @param id_s Stable node identifier.
 void rt_virtual_tree_collapse(void *tree, rt_string id_s) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireTree(tree));
     try {
@@ -2206,6 +2476,9 @@ void rt_virtual_tree_collapse(void *tree, rt_string id_s) {
     }
 }
 
+/// @brief Select a virtual-tree node by stable identifier.
+/// @param tree Managed VirtualTree handle.
+/// @param id Stable identifier to store and project.
 void rt_virtual_tree_select_id(void *tree, rt_string id) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireTree(tree));
     try {
@@ -2216,16 +2489,26 @@ void rt_virtual_tree_select_id(void *tree, rt_string id) {
     }
 }
 
+/// @brief Return the selected virtual-tree stable identifier.
+/// @param tree Managed VirtualTree handle.
+/// @return Newly referenced stable identifier, possibly empty.
 rt_string rt_virtual_tree_get_selected_id(void *tree) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireTree(tree), nullptr);
     return makeString(h->state->selectedId);
 }
 
+/// @brief Materialize every currently visible virtual-tree row.
+/// @param tree Managed VirtualTree handle.
+/// @return New owned sequence of row maps.
 void *rt_virtual_tree_visible_rows(void *tree) {
     return rt_virtual_tree_visible_rows_range(tree, 0, INT64_MAX);
 }
 
 /// @brief Materialize only the requested slice of the cached flattened tree order.
+/// @param tree Managed VirtualTree handle.
+/// @param first Non-negative first visible-row index.
+/// @param count Maximum rows to materialize.
+/// @return New owned sequence of row maps, possibly empty.
 void *rt_virtual_tree_visible_rows_range(void *tree, int64_t first, int64_t count) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireTree(tree), nullptr);
     void *rows = rt_seq_new_owned();
@@ -2254,6 +2537,9 @@ void *rt_virtual_tree_visible_rows_range(void *tree, int64_t first, int64_t coun
     return rows;
 }
 
+/// @brief Discard a node's descendants and mark it for lazy repopulation.
+/// @param tree Managed VirtualTree handle.
+/// @param id_s Stable identifier of the retained subtree root.
 void rt_virtual_tree_refresh_subtree(void *tree, rt_string id_s) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireTree(tree));
     try {
@@ -2277,6 +2563,9 @@ void rt_virtual_tree_refresh_subtree(void *tree, rt_string id_s) {
 }
 
 /// @brief Bind a VirtualTree to a live TreeView without constructing retained nodes.
+/// @param tree Managed VirtualTree handle.
+/// @param treeview Live TreeView control.
+/// @return `1` when binding succeeds; otherwise `0`.
 int8_t rt_virtual_tree_bind(void *tree, void *treeview) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireTree(tree), 0);
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -2307,17 +2596,22 @@ int8_t rt_virtual_tree_bind(void *tree, void *treeview) {
 }
 
 /// @brief Detach a VirtualTree from its current TreeView.
+/// @param tree Managed VirtualTree handle.
 void rt_virtual_tree_unbind(void *tree) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireTree(tree));
     detachVirtualTree(*h->state);
 }
 
 /// @brief Reverse-form convenience wrapper for `VirtualTree.Bind`.
+/// @param treeview Live TreeView control.
+/// @param model Managed VirtualTree handle.
+/// @return `1` when binding succeeds; otherwise `0`.
 int8_t rt_treeview_set_virtual_model(void *treeview, void *model) {
     return rt_virtual_tree_bind(model, treeview);
 }
 
 /// @brief Clear a TreeView's external model binding without destroying either object.
+/// @param treeview Live TreeView control; invalid handles are ignored.
 void rt_treeview_clear_virtual_model(void *treeview) {
 #ifdef ZANNA_ENABLE_GRAPHICS
     auto *control = static_cast<vg_treeview_t *>(
@@ -2329,6 +2623,10 @@ void rt_treeview_clear_virtual_model(void *treeview) {
 #endif
 }
 
+/// @brief Create a managed command-state record for accessibility and UI state snapshots.
+/// @param id Stable command identifier.
+/// @param label Display label, also used as the initial accessible label.
+/// @return New CommandState handle, or `NULL` on allocation failure.
 void *rt_command_state_new(rt_string id, rt_string label) {
     auto *h = static_cast<CommandStateHandle *>(
         rt_obj_new_i64(RT_GUI_COMMAND_STATE_CLASS_ID, sizeof(CommandStateHandle)));
@@ -2353,26 +2651,42 @@ void *rt_command_state_new(rt_string id, rt_string label) {
     return h;
 }
 
+/// @brief Set a command state's enabled flag.
+/// @param state Managed CommandState handle.
+/// @param enabled Non-zero to enable the command.
 void rt_command_state_set_enabled(void *state, int8_t enabled) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireCommandState(state));
     h->state->enabled = enabled != 0;
 }
 
+/// @brief Query a command state's enabled flag.
+/// @param state Managed CommandState handle.
+/// @return `1` when enabled; otherwise `0`.
 int8_t rt_command_state_get_enabled(void *state) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireCommandState(state), 0);
     return h->state->enabled ? 1 : 0;
 }
 
+/// @brief Set a command state's checked flag.
+/// @param state Managed CommandState handle.
+/// @param checked Non-zero to mark the command checked.
 void rt_command_state_set_checked(void *state, int8_t checked) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireCommandState(state));
     h->state->checked = checked != 0;
 }
 
+/// @brief Query a command state's checked flag.
+/// @param state Managed CommandState handle.
+/// @return `1` when checked; otherwise `0`.
 int8_t rt_command_state_get_checked(void *state) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireCommandState(state), 0);
     return h->state->checked ? 1 : 0;
 }
 
+/// @brief Replace a command state's accessible label and description atomically.
+/// @param state Managed CommandState handle.
+/// @param label Accessible label.
+/// @param description Accessible description.
 void rt_command_state_set_accessible(void *state, rt_string label, rt_string description) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireCommandState(state));
     auto *s = h->state;
@@ -2384,6 +2698,9 @@ void rt_command_state_set_accessible(void *state, rt_string label, rt_string des
     }
 }
 
+/// @brief Snapshot all command-state fields into a managed map.
+/// @param state Managed CommandState handle.
+/// @return New state map, or `NULL` on allocation failure.
 void *rt_command_state_snapshot(void *state) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireCommandState(state), nullptr);
     auto *s = h->state;
@@ -2399,6 +2716,10 @@ void *rt_command_state_snapshot(void *state) {
     return map;
 }
 
+/// @brief Compute the WCAG contrast ratio between two packed RGB colors.
+/// @param fg_rgb Foreground `0xRRGGBB` color.
+/// @param bg_rgb Background `0xRRGGBB` color.
+/// @return Contrast ratio from 1.0 through 21.0.
 double rt_accessibility_contrast_ratio(int64_t fg_rgb, int64_t bg_rgb) {
     double a = luminance(fg_rgb);
     double b = luminance(bg_rgb);
@@ -2407,12 +2728,19 @@ double rt_accessibility_contrast_ratio(int64_t fg_rgb, int64_t bg_rgb) {
     return (a + 0.05) / (b + 0.05);
 }
 
+/// @brief Test two colors against a requested minimum contrast ratio.
+/// @param fg_rgb Foreground `0xRRGGBB` color.
+/// @param bg_rgb Background `0xRRGGBB` color.
+/// @param min_ratio Required ratio; invalid values use 4.5.
+/// @return `1` when the computed ratio meets the threshold; otherwise `0`.
 int8_t rt_accessibility_meets_contrast(int64_t fg_rgb, int64_t bg_rgb, double min_ratio) {
     if (!std::isfinite(min_ratio) || min_ratio <= 0.0)
         min_ratio = 4.5;
     return rt_accessibility_contrast_ratio(fg_rgb, bg_rgb) >= min_ratio ? 1 : 0;
 }
 
+/// @brief Return the built-in high-contrast GUI color-token palette.
+/// @return New managed map of packed RGB tokens, or `NULL` on allocation failure.
 void *rt_accessibility_high_contrast_tokens(void) {
     void *map = rt_map_new();
     if (!map)
@@ -2425,6 +2753,10 @@ void *rt_accessibility_high_contrast_tokens(void) {
     return map;
 }
 
+/// @brief Create a managed command with stable identity and display title.
+/// @param id Stable command identifier.
+/// @param title Runtime display title.
+/// @return New Command handle, or `NULL` on allocation failure.
 void *rt_command_new(rt_string id, rt_string title) {
     auto *h = static_cast<CommandHandle *>(
         rt_obj_new_i64(RT_GUI_COMMAND_CLASS_ID, sizeof(CommandHandle)));
@@ -2448,16 +2780,25 @@ void *rt_command_new(rt_string id, rt_string title) {
     return h;
 }
 
+/// @brief Return a command's stable identifier.
+/// @param command Managed Command handle.
+/// @return Newly referenced identifier string.
 rt_string rt_command_get_id(void *command) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireCommand(command), nullptr);
     return makeString(h->state->id);
 }
 
+/// @brief Return a command's display title.
+/// @param command Managed Command handle.
+/// @return Newly referenced title string.
 rt_string rt_command_get_title(void *command) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireCommand(command), nullptr);
     return makeString(h->state->title);
 }
 
+/// @brief Set and best-effort register a command keyboard shortcut.
+/// @param command Managed Command handle.
+/// @param keys Runtime shortcut chord specification.
 void rt_command_set_shortcut(void *command, rt_string keys) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireCommand(command));
     try {
@@ -2482,66 +2823,102 @@ void rt_command_set_shortcut(void *command, rt_string keys) {
     }
 }
 
+/// @brief Return a command's configured shortcut.
+/// @param command Managed Command handle.
+/// @return Newly referenced shortcut string, possibly empty.
 rt_string rt_command_get_shortcut(void *command) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireCommand(command), nullptr);
     return makeString(h->state->shortcut);
 }
 
+/// @brief Set command availability and project it to bound controls.
+/// @param command Managed Command handle.
+/// @param enabled Non-zero to enable invocation.
 void rt_command_set_enabled(void *command, int8_t enabled) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireCommand(command));
     h->state->enabled = enabled != 0;
     pushCommandState(*h->state);
 }
 
+/// @brief Query whether a command is enabled.
+/// @param command Managed Command handle.
+/// @return `1` when enabled; otherwise `0`.
 int8_t rt_command_is_enabled(void *command) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireCommand(command), 0);
     return h->state->enabled ? 1 : 0;
 }
 
+/// @brief Configure whether a command exposes checked state.
+/// @param command Managed Command handle.
+/// @param checkable Non-zero to make the command checkable.
 void rt_command_set_checkable(void *command, int8_t checkable) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireCommand(command));
     h->state->checkable = checkable != 0;
     pushCommandState(*h->state);
 }
 
+/// @brief Query whether a command is checkable.
+/// @param command Managed Command handle.
+/// @return `1` when checkable; otherwise `0`.
 int8_t rt_command_is_checkable(void *command) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireCommand(command), 0);
     return h->state->checkable ? 1 : 0;
 }
 
+/// @brief Set command checked state and project it to bound controls.
+/// @param command Managed Command handle.
+/// @param checked Non-zero to mark the command checked.
 void rt_command_set_checked(void *command, int8_t checked) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireCommand(command));
     h->state->checked = checked != 0;
     pushCommandState(*h->state);
 }
 
+/// @brief Query whether a command is checked.
+/// @param command Managed Command handle.
+/// @return `1` when checked; otherwise `0`.
 int8_t rt_command_is_checked(void *command) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireCommand(command), 0);
     return h->state->checked ? 1 : 0;
 }
 
+/// @brief Bind or unbind a non-owning MenuItem invocation source.
+/// @param command Managed Command handle.
+/// @param item MenuItem handle, or `NULL` to unbind.
 void rt_command_bind_menu_item(void *command, void *item) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireCommand(command));
     h->state->menuItem = item; // raw handle; NULL unbinds
     pushCommandState(*h->state);
 }
 
+/// @brief Bind or unbind a non-owning ToolbarItem invocation source.
+/// @param command Managed Command handle.
+/// @param item ToolbarItem handle, or `NULL` to unbind.
 void rt_command_bind_toolbar_item(void *command, void *item) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireCommand(command));
     h->state->toolbarItem = item; // raw handle; NULL unbinds
     pushCommandState(*h->state);
 }
 
+/// @brief Poll bound menu, toolbar, and shortcut sources for one command.
+/// @param command Managed Command handle.
+/// @return `1` when the enabled command was invoked; otherwise `0`.
 int8_t rt_command_poll(void *command) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireCommand(command), 0);
     return pollCommandInto(*h->state, std::string()) ? 1 : 0;
 }
 
+/// @brief Return the invocation result cached by the latest poll.
+/// @param command Managed Command handle.
+/// @return `1` when the last poll observed invocation; otherwise `0`.
 int8_t rt_command_was_invoked(void *command) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireCommand(command), 0);
     return h->state->invoked ? 1 : 0;
 }
 
+/// @brief Snapshot a command's identity, binding state, and latest invocation flag.
+/// @param command Managed Command handle.
+/// @return New managed map, or `NULL` on allocation failure.
 void *rt_command_snapshot(void *command) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireCommand(command), nullptr);
     auto *s = h->state;
@@ -2558,6 +2935,8 @@ void *rt_command_snapshot(void *command) {
     return map;
 }
 
+/// @brief Create an empty managed command registry.
+/// @return New CommandRegistry handle, or `NULL` on allocation failure.
 void *rt_command_registry_new(void) {
     auto *h = static_cast<CommandRegistryHandle *>(
         rt_obj_new_i64(RT_GUI_COMMAND_REGISTRY_CLASS_ID, sizeof(CommandRegistryHandle)));
@@ -2572,6 +2951,9 @@ void *rt_command_registry_new(void) {
     return h;
 }
 
+/// @brief Add and retain one live command unless it is already registered.
+/// @param registry Managed CommandRegistry handle.
+/// @param command Live Command handle to co-own.
 void rt_command_registry_add(void *registry, void *command) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireCommandRegistry(registry));
     if (!commandDataChecked(command))
@@ -2587,12 +2969,19 @@ void rt_command_registry_add(void *registry, void *command) {
     rt_obj_retain_known(command); // registry co-owns the command
 }
 
+/// @brief Return the number of retained registry commands.
+/// @param registry Managed CommandRegistry handle.
+/// @return Command count saturated to `INT64_MAX`.
 int64_t rt_command_registry_count(void *registry) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireCommandRegistry(registry), 0);
     size_t n = h->state->commands.size();
     return n > static_cast<size_t>(INT64_MAX) ? INT64_MAX : static_cast<int64_t>(n);
 }
 
+/// @brief Find and retain a registered command by stable identifier.
+/// @param registry Managed CommandRegistry handle.
+/// @param id Command identifier to match.
+/// @return Owned Command reference, or `NULL` when absent.
 void *rt_command_registry_find(void *registry, rt_string id) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireCommandRegistry(registry), nullptr);
     std::string key;
@@ -2626,11 +3015,17 @@ void *rt_command_registry_find_option(void *registry, rt_string id) {
     return option;
 }
 
+/// @brief Bind or unbind a non-owning CommandPalette invocation source.
+/// @param registry Managed CommandRegistry handle.
+/// @param palette CommandPalette handle, or `NULL` to unbind.
 void rt_command_registry_bind_palette(void *registry, void *palette) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireCommandRegistry(registry));
     h->state->palette = palette; // raw handle; NULL unbinds
 }
 
+/// @brief Poll every registered command and the bound palette once.
+/// @param registry Managed CommandRegistry handle.
+/// @return Newly referenced identifier of the first invoked command, or an empty string.
 rt_string rt_command_registry_poll(void *registry) {
     RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireCommandRegistry(registry), makeString(std::string()));
     // Read the palette's selection once (WasSelected is consumed on read).
@@ -2653,6 +3048,8 @@ rt_string rt_command_registry_poll(void *registry) {
     return makeString(invokedId);
 }
 
+/// @brief Release every command retained by a registry.
+/// @param registry Managed CommandRegistry handle.
 void rt_command_registry_clear(void *registry) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireCommandRegistry(registry));
     for (void *cmd : h->state->commands) {

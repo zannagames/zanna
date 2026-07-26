@@ -26,6 +26,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file rt_gui_findbar.c
+/// @brief Implements managed FindBar bindings for CodeEditor search and replacement.
+///
+/// @details
+/// The module validates GC-backed wrappers, tracks live editor bindings, mirrors
+/// widget option state, and exposes both sentinel and Option search results.
+/// Headless definitions retain the API with neutral behavior.
+
 #include "rt_gui_internal.h"
 #include "rt_option.h"
 #include "rt_platform.h"
@@ -64,6 +72,7 @@ static void rt_findbar_sync_options_from_widget(rt_findbar_data_t *data);
 /// @details The registry is the source of truth for handle validation: a checked
 ///          cast only trusts an opaque `void*` once it is found here, guarding
 ///          against forged or freed handles. Capacity doubles from 8 on demand.
+/// @param data FindBar wrapper to register.
 /// @return 1 on success or if already present; 0 on overflow or realloc failure.
 static int rt_findbar_register_wrapper(rt_findbar_data_t *data) {
     if (!data)
@@ -87,6 +96,7 @@ static int rt_findbar_register_wrapper(rt_findbar_data_t *data) {
 }
 
 /// @brief Remove a wrapper from the find-bar registry, compacting the array. No-op if absent.
+/// @param data Wrapper to remove.
 static void rt_findbar_unregister_wrapper(rt_findbar_data_t *data) {
     if (!data)
         return;
@@ -102,6 +112,8 @@ static void rt_findbar_unregister_wrapper(rt_findbar_data_t *data) {
 }
 
 /// @brief True if @p data is a currently-registered wrapper; backs handle validation.
+/// @param data Candidate wrapper pointer.
+/// @return `1` when the exact pointer is registered; otherwise `0`.
 static int rt_findbar_wrapper_is_registered(const rt_findbar_data_t *data) {
     if (!data)
         return 0;
@@ -113,6 +125,7 @@ static int rt_findbar_wrapper_is_registered(const rt_findbar_data_t *data) {
 }
 
 /// @brief Clear the wrapper's bound editor and drop the bar's search target (if live).
+/// @param data FindBar wrapper to unbind.
 static void rt_findbar_unbind_data(rt_findbar_data_t *data) {
     if (!data)
         return;
@@ -123,6 +136,8 @@ static void rt_findbar_unbind_data(rt_findbar_data_t *data) {
 
 /// @brief True if the bar's bound editor is still a live code editor; lazily unbinds
 ///        and returns 0 when the editor has been destroyed out from under the bar.
+/// @param data FindBar wrapper whose target is validated.
+/// @return `1` when a live CodeEditor remains bound; otherwise `0`.
 static int rt_findbar_has_live_editor(rt_findbar_data_t *data) {
     if (!data || !data->bound_editor)
         return 0;
@@ -133,6 +148,8 @@ static int rt_findbar_has_live_editor(rt_findbar_data_t *data) {
     return 1;
 }
 
+/// @brief Unbind every FindBar targeting a CodeEditor inside a destroyed widget subtree.
+/// @param subtree Root of the widget subtree being retired.
 void rt_findbar_forget_editor_subtree(vg_widget_t *subtree) {
     if (!subtree)
         return;
@@ -145,6 +162,8 @@ void rt_findbar_forget_editor_subtree(vg_widget_t *subtree) {
 }
 
 /// @brief Safe-cast an opaque handle to the find-bar wrapper by magic tag.
+/// @param bar Candidate runtime FindBar handle.
+/// @return Validated registered wrapper, or `NULL` for invalid input.
 static rt_findbar_data_t *rt_findbar_wrapper_checked(void *bar) {
     rt_findbar_data_t *data = (rt_findbar_data_t *)bar;
     return rt_findbar_wrapper_is_registered(data) && data->magic == RT_FINDBAR_DATA_MAGIC ? data
@@ -153,18 +172,22 @@ static rt_findbar_data_t *rt_findbar_wrapper_checked(void *bar) {
 
 /// @brief Safe-cast an opaque handle to the find-bar wrapper, validating its
 ///        backing widget is still live. Returns NULL otherwise.
+/// @param bar Candidate runtime FindBar handle.
+/// @return Validated wrapper with a live lower widget, or `NULL`.
 static rt_findbar_data_t *rt_findbar_checked(void *bar) {
     rt_findbar_data_t *data = rt_findbar_wrapper_checked(bar);
     return data && data->bar && vg_widget_is_live(&data->bar->base) ? data : NULL;
 }
 
 /// @brief Safe-cast an opaque handle to the code editor the find-bar targets.
+/// @param editor Candidate runtime widget handle.
 /// @return The code editor widget, or NULL if @p editor is not one.
 static vg_codeeditor_t *rt_findbar_editor_checked(void *editor) {
     return (vg_codeeditor_t *)rt_gui_widget_handle_checked_type(editor, VG_WIDGET_CODEEDITOR);
 }
 
 /// @brief Widget destroy override — clears the runtime wrapper back-pointer before chaining.
+/// @param widget Lower FindBar widget being destroyed.
 static void rt_findbar_widget_destroy(vg_widget_t *widget) {
     rt_findbar_data_t *data = widget ? (rt_findbar_data_t *)widget->user_data : NULL;
     if (data && data->bar == (vg_findreplacebar_t *)widget) {
@@ -176,6 +199,7 @@ static void rt_findbar_widget_destroy(vg_widget_t *widget) {
 }
 
 /// @brief Release the find/replace bar widget and free cached text buffers.
+/// @param data Registered FindBar wrapper to dispose.
 static void rt_findbar_dispose(rt_findbar_data_t *data) {
     if (!data)
         return;
@@ -197,6 +221,7 @@ static void rt_findbar_dispose(rt_findbar_data_t *data) {
 }
 
 /// @brief GC finalizer — delegates to `rt_findbar_dispose`.
+/// @param bar Managed FindBar wrapper being finalized.
 static void rt_findbar_finalize(void *bar) {
     rt_findbar_data_t *data = (rt_findbar_data_t *)bar;
     rt_findbar_dispose(data);
@@ -289,6 +314,7 @@ void rt_findbar_bind_editor(void *bar, void *editor) {
 }
 
 /// @brief Unbind the find bar from its current code editor.
+/// @param bar FindBar wrapper handle.
 void rt_findbar_unbind_editor(void *bar) {
     RT_ASSERT_MAIN_THREAD();
     rt_findbar_data_t *data = rt_findbar_checked(bar);
@@ -298,6 +324,8 @@ void rt_findbar_unbind_editor(void *bar) {
 }
 
 /// @brief Toggle between find-only mode and find+replace mode.
+/// @param bar FindBar wrapper handle.
+/// @param replace Non-zero to expose replacement controls.
 void rt_findbar_set_replace_mode(void *bar, int64_t replace) {
     RT_ASSERT_MAIN_THREAD();
     rt_findbar_data_t *data = rt_findbar_checked(bar);
@@ -308,6 +336,8 @@ void rt_findbar_set_replace_mode(void *bar, int64_t replace) {
 }
 
 /// @brief Check whether the find bar is in replace mode.
+/// @param bar FindBar wrapper handle.
+/// @return `1` when replacement controls are enabled; otherwise `0`.
 int64_t rt_findbar_is_replace_mode(void *bar) {
     RT_ASSERT_MAIN_THREAD();
     rt_findbar_data_t *data = rt_findbar_checked(bar);
@@ -319,6 +349,8 @@ int64_t rt_findbar_is_replace_mode(void *bar) {
 
 /// @brief Set the search text for find operations.
 /// @details Updates both the cached text and the underlying vg find input widget.
+/// @param bar FindBar wrapper handle.
+/// @param text Runtime search text copied into widget and wrapper state.
 void rt_findbar_set_find_text(void *bar, rt_string text) {
     RT_ASSERT_MAIN_THREAD();
     rt_findbar_data_t *data = rt_findbar_checked(bar);
@@ -333,6 +365,8 @@ void rt_findbar_set_find_text(void *bar, rt_string text) {
 }
 
 /// @brief Get the current search text.
+/// @param bar FindBar wrapper handle.
+/// @return Owned live or cached search text, or an empty runtime string.
 rt_string rt_findbar_get_find_text(void *bar) {
     RT_ASSERT_MAIN_THREAD();
     rt_findbar_data_t *data = rt_findbar_checked(bar);
@@ -351,6 +385,8 @@ rt_string rt_findbar_get_find_text(void *bar) {
 /// @brief Set the replacement text for replace operations.
 /// @details Updates the cached text and pushes it to the underlying vg replace
 ///          input widget so replace/replace_all use the correct value.
+/// @param bar FindBar wrapper handle.
+/// @param text Runtime replacement text copied into widget and wrapper state.
 void rt_findbar_set_replace_text(void *bar, rt_string text) {
     RT_ASSERT_MAIN_THREAD();
     rt_findbar_data_t *data = rt_findbar_checked(bar);
@@ -368,6 +404,8 @@ void rt_findbar_set_replace_text(void *bar, rt_string text) {
 }
 
 /// @brief Get the current replacement text.
+/// @param bar FindBar wrapper handle.
+/// @return Owned live or cached replacement text, or an empty runtime string.
 rt_string rt_findbar_get_replace_text(void *bar) {
     RT_ASSERT_MAIN_THREAD();
     rt_findbar_data_t *data = rt_findbar_checked(bar);
@@ -386,6 +424,7 @@ rt_string rt_findbar_get_replace_text(void *bar) {
 /// @brief Push cached search options to the vg find/replace bar widget.
 /// @details Called internally after any option change (case-sensitive, whole-word,
 ///          regex) so the underlying search engine picks up the new settings.
+/// @param data FindBar wrapper whose cached options are applied.
 static void rt_findbar_update_options(rt_findbar_data_t *data) {
     if (!data || !data->bar)
         return;
@@ -399,6 +438,7 @@ static void rt_findbar_update_options(rt_findbar_data_t *data) {
 
 /// @brief Copy the bar widget's current search options (case/whole-word/regex/replace
 ///        mode) back into the wrapper's cached flags after the user toggles them.
+/// @param data FindBar wrapper whose cache is synchronized.
 static void rt_findbar_sync_options_from_widget(rt_findbar_data_t *data) {
     if (!data || !data->bar)
         return;
@@ -409,6 +449,8 @@ static void rt_findbar_sync_options_from_widget(rt_findbar_data_t *data) {
 }
 
 /// @brief Enable or disable case-sensitive matching.
+/// @param bar FindBar wrapper handle.
+/// @param sensitive Non-zero for case-sensitive matching.
 void rt_findbar_set_case_sensitive(void *bar, int64_t sensitive) {
     RT_ASSERT_MAIN_THREAD();
     rt_findbar_data_t *data = rt_findbar_checked(bar);
@@ -419,6 +461,8 @@ void rt_findbar_set_case_sensitive(void *bar, int64_t sensitive) {
 }
 
 /// @brief Check whether case-sensitive matching is enabled.
+/// @param bar FindBar wrapper handle.
+/// @return `1` when case-sensitive matching is enabled; otherwise `0`.
 int64_t rt_findbar_is_case_sensitive(void *bar) {
     RT_ASSERT_MAIN_THREAD();
     rt_findbar_data_t *data = rt_findbar_checked(bar);
@@ -429,6 +473,8 @@ int64_t rt_findbar_is_case_sensitive(void *bar) {
 }
 
 /// @brief Enable or disable whole-word matching.
+/// @param bar FindBar wrapper handle.
+/// @param whole Non-zero to require whole-word matches.
 void rt_findbar_set_whole_word(void *bar, int64_t whole) {
     RT_ASSERT_MAIN_THREAD();
     rt_findbar_data_t *data = rt_findbar_checked(bar);
@@ -439,6 +485,8 @@ void rt_findbar_set_whole_word(void *bar, int64_t whole) {
 }
 
 /// @brief Check whether whole-word matching is enabled.
+/// @param bar FindBar wrapper handle.
+/// @return `1` when whole-word matching is enabled; otherwise `0`.
 int64_t rt_findbar_is_whole_word(void *bar) {
     RT_ASSERT_MAIN_THREAD();
     rt_findbar_data_t *data = rt_findbar_checked(bar);
@@ -449,6 +497,8 @@ int64_t rt_findbar_is_whole_word(void *bar) {
 }
 
 /// @brief Enable or disable regex-based pattern matching.
+/// @param bar FindBar wrapper handle.
+/// @param regex Non-zero to interpret the search text as a regular expression.
 void rt_findbar_set_regex(void *bar, int64_t regex) {
     RT_ASSERT_MAIN_THREAD();
     rt_findbar_data_t *data = rt_findbar_checked(bar);
@@ -459,6 +509,8 @@ void rt_findbar_set_regex(void *bar, int64_t regex) {
 }
 
 /// @brief Check whether regex matching is enabled.
+/// @param bar FindBar wrapper handle.
+/// @return `1` when regular-expression matching is enabled; otherwise `0`.
 int64_t rt_findbar_is_regex(void *bar) {
     RT_ASSERT_MAIN_THREAD();
     rt_findbar_data_t *data = rt_findbar_checked(bar);
@@ -469,6 +521,7 @@ int64_t rt_findbar_is_regex(void *bar) {
 }
 
 /// @brief Advance to the next match in the bound editor.
+/// @param bar FindBar wrapper handle.
 /// @return 1 if at least one match exists, 0 otherwise.
 int64_t rt_findbar_find_next(void *bar) {
     RT_ASSERT_MAIN_THREAD();
@@ -490,6 +543,7 @@ void *rt_findbar_find_next_option(void *bar) {
 }
 
 /// @brief Move to the previous match in the bound editor.
+/// @param bar FindBar wrapper handle.
 /// @return 1 if at least one match exists, 0 otherwise.
 int64_t rt_findbar_find_previous(void *bar) {
     RT_ASSERT_MAIN_THREAD();
@@ -511,6 +565,7 @@ void *rt_findbar_find_previous_option(void *bar) {
 }
 
 /// @brief Replace the current match with the replacement text.
+/// @param bar FindBar wrapper handle.
 /// @return 1 when text was replaced, 0 otherwise.
 int64_t rt_findbar_replace(void *bar) {
     RT_ASSERT_MAIN_THREAD();
@@ -524,6 +579,7 @@ int64_t rt_findbar_replace(void *bar) {
 }
 
 /// @brief Replace all matches in the bound editor with the replacement text.
+/// @param bar FindBar wrapper handle.
 /// @return The number of matches that existed before replacement.
 int64_t rt_findbar_replace_all(void *bar) {
     RT_ASSERT_MAIN_THREAD();
@@ -536,6 +592,8 @@ int64_t rt_findbar_replace_all(void *bar) {
 }
 
 /// @brief Get the total number of matches for the current search text.
+/// @param bar FindBar wrapper handle.
+/// @return Current match count, or zero for invalid input.
 int64_t rt_findbar_get_match_count(void *bar) {
     RT_ASSERT_MAIN_THREAD();
     rt_findbar_data_t *data = rt_findbar_checked(bar);
@@ -545,6 +603,8 @@ int64_t rt_findbar_get_match_count(void *bar) {
 }
 
 /// @brief Get the 1-based index of the currently highlighted match.
+/// @param bar FindBar wrapper handle.
+/// @return One-based current match index, or zero when no match is active.
 int64_t rt_findbar_get_current_match(void *bar) {
     RT_ASSERT_MAIN_THREAD();
     rt_findbar_data_t *data = rt_findbar_checked(bar);
@@ -557,6 +617,8 @@ int64_t rt_findbar_get_current_match(void *bar) {
 }
 
 /// @brief Show or hide the find bar widget.
+/// @param bar FindBar wrapper handle.
+/// @param visible Non-zero to show the bar.
 void rt_findbar_set_visible(void *bar, int64_t visible) {
     RT_ASSERT_MAIN_THREAD();
     rt_findbar_data_t *data = rt_findbar_checked(bar);
@@ -566,6 +628,8 @@ void rt_findbar_set_visible(void *bar, int64_t visible) {
 }
 
 /// @brief Check whether the find bar is currently visible.
+/// @param bar FindBar wrapper handle.
+/// @return `1` when visible; otherwise `0`.
 int64_t rt_findbar_is_visible(void *bar) {
     RT_ASSERT_MAIN_THREAD();
     rt_findbar_data_t *data = rt_findbar_checked(bar);
@@ -575,6 +639,7 @@ int64_t rt_findbar_is_visible(void *bar) {
 }
 
 /// @brief Give keyboard focus to the find bar's search input field.
+/// @param bar FindBar wrapper handle.
 void rt_findbar_focus(void *bar) {
     RT_ASSERT_MAIN_THREAD();
     rt_findbar_data_t *data = rt_findbar_checked(bar);
@@ -589,160 +654,211 @@ void rt_findbar_focus(void *bar) {
 // link cleanly without graphics. Behavioral docs live on the real implementations above.
 
 /// @brief Stub — graphics disabled at build time. Returns NULL.
+/// @param parent Ignored parent handle.
+/// @return Always `NULL`.
 void *rt_findbar_new(void *parent) {
     (void)parent;
     return NULL;
 }
 
 /// @brief Stub: `FindBar.Destroy` is a no-op without graphics.
+/// @param bar Ignored FindBar handle.
 void rt_findbar_destroy(void *bar) {
     (void)bar;
 }
 
 /// @brief Stub: `FindBar.BindEditor` is a no-op without graphics.
+/// @param bar Ignored FindBar handle.
+/// @param editor Ignored CodeEditor handle.
 void rt_findbar_bind_editor(void *bar, void *editor) {
     (void)bar;
     (void)editor;
 }
 
 /// @brief Stub: `FindBar.UnbindEditor` is a no-op without graphics.
+/// @param bar Ignored FindBar handle.
 void rt_findbar_unbind_editor(void *bar) {
     (void)bar;
 }
 
 /// @brief Stub: `FindBar.SetReplaceMode` is a no-op without graphics.
+/// @param bar Ignored FindBar handle.
+/// @param replace Ignored replacement-mode flag.
 void rt_findbar_set_replace_mode(void *bar, int64_t replace) {
     (void)bar;
     (void)replace;
 }
 
 /// @brief Stub: returns 0 (replace mode always off without graphics).
+/// @param bar Ignored FindBar handle.
+/// @return Always `0`.
 int64_t rt_findbar_is_replace_mode(void *bar) {
     (void)bar;
     return 0;
 }
 
 /// @brief Stub: `FindBar.SetFindText` is a no-op without graphics.
+/// @param bar Ignored FindBar handle.
+/// @param text Ignored search text.
 void rt_findbar_set_find_text(void *bar, rt_string text) {
     (void)bar;
     (void)text;
 }
 
 /// @brief Stub: returns empty string (no find text without graphics).
+/// @param bar Ignored FindBar handle.
+/// @return Empty runtime string.
 rt_string rt_findbar_get_find_text(void *bar) {
     (void)bar;
     return rt_str_empty();
 }
 
 /// @brief Stub: `FindBar.SetReplaceText` is a no-op without graphics.
+/// @param bar Ignored FindBar handle.
+/// @param text Ignored replacement text.
 void rt_findbar_set_replace_text(void *bar, rt_string text) {
     (void)bar;
     (void)text;
 }
 
 /// @brief Stub: returns empty string (no replace text without graphics).
+/// @param bar Ignored FindBar handle.
+/// @return Empty runtime string.
 rt_string rt_findbar_get_replace_text(void *bar) {
     (void)bar;
     return rt_str_empty();
 }
 
 /// @brief Stub: `FindBar.SetCaseSensitive` is a no-op without graphics.
+/// @param bar Ignored FindBar handle.
+/// @param sensitive Ignored matching flag.
 void rt_findbar_set_case_sensitive(void *bar, int64_t sensitive) {
     (void)bar;
     (void)sensitive;
 }
 
 /// @brief Stub: returns 0 (case-insensitive by default without graphics).
+/// @param bar Ignored FindBar handle.
+/// @return Always `0`.
 int64_t rt_findbar_is_case_sensitive(void *bar) {
     (void)bar;
     return 0;
 }
 
 /// @brief Stub: `FindBar.SetWholeWord` is a no-op without graphics.
+/// @param bar Ignored FindBar handle.
+/// @param whole Ignored matching flag.
 void rt_findbar_set_whole_word(void *bar, int64_t whole) {
     (void)bar;
     (void)whole;
 }
 
 /// @brief Stub: returns 0 (whole-word off without graphics).
+/// @param bar Ignored FindBar handle.
+/// @return Always `0`.
 int64_t rt_findbar_is_whole_word(void *bar) {
     (void)bar;
     return 0;
 }
 
 /// @brief Stub: `FindBar.SetRegex` is a no-op without graphics.
+/// @param bar Ignored FindBar handle.
+/// @param regex Ignored matching flag.
 void rt_findbar_set_regex(void *bar, int64_t regex) {
     (void)bar;
     (void)regex;
 }
 
 /// @brief Stub: returns 0 (regex off without graphics).
+/// @param bar Ignored FindBar handle.
+/// @return Always `0`.
 int64_t rt_findbar_is_regex(void *bar) {
     (void)bar;
     return 0;
 }
 
 /// @brief Stub: returns 0 (no search without graphics).
+/// @param bar Ignored FindBar handle.
+/// @return Always `0`.
 int64_t rt_findbar_find_next(void *bar) {
     (void)bar;
     return 0;
 }
 
 /// @brief Stub: returns None (no search without graphics).
+/// @param bar Ignored FindBar handle.
+/// @return Managed empty Option.
 void *rt_findbar_find_next_option(void *bar) {
     (void)bar;
     return rt_option_none();
 }
 
 /// @brief Stub: returns 0 (no search without graphics).
+/// @param bar Ignored FindBar handle.
+/// @return Always `0`.
 int64_t rt_findbar_find_previous(void *bar) {
     (void)bar;
     return 0;
 }
 
 /// @brief Stub: returns None (no search without graphics).
+/// @param bar Ignored FindBar handle.
+/// @return Managed empty Option.
 void *rt_findbar_find_previous_option(void *bar) {
     (void)bar;
     return rt_option_none();
 }
 
 /// @brief Stub: returns 0 (no replace without graphics).
+/// @param bar Ignored FindBar handle.
+/// @return Always `0`.
 int64_t rt_findbar_replace(void *bar) {
     (void)bar;
     return 0;
 }
 
 /// @brief Stub: returns 0 (no replace-all without graphics).
+/// @param bar Ignored FindBar handle.
+/// @return Always `0`.
 int64_t rt_findbar_replace_all(void *bar) {
     (void)bar;
     return 0;
 }
 
 /// @brief Stub: returns 0 (no match count without graphics).
+/// @param bar Ignored FindBar handle.
+/// @return Always `0`.
 int64_t rt_findbar_get_match_count(void *bar) {
     (void)bar;
     return 0;
 }
 
 /// @brief Stub: returns 0 (no current match without graphics).
+/// @param bar Ignored FindBar handle.
+/// @return Always `0`.
 int64_t rt_findbar_get_current_match(void *bar) {
     (void)bar;
     return 0;
 }
 
 /// @brief Stub: `FindBar.SetVisible` is a no-op without graphics.
+/// @param bar Ignored FindBar handle.
+/// @param visible Ignored visibility flag.
 void rt_findbar_set_visible(void *bar, int64_t visible) {
     (void)bar;
     (void)visible;
 }
 
 /// @brief Stub: returns 0 (always hidden without graphics).
+/// @param bar Ignored FindBar handle.
+/// @return Always `0`.
 int64_t rt_findbar_is_visible(void *bar) {
     (void)bar;
     return 0;
 }
 
 /// @brief Stub: `FindBar.Focus` is a no-op without graphics.
+/// @param bar Ignored FindBar handle.
 void rt_findbar_focus(void *bar) {
     (void)bar;
 }

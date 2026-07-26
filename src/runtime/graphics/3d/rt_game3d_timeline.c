@@ -25,6 +25,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements immutable-track Game3D cutscene timelines and world playback.
+/// @details Timeline3D stores bounded snapshots and retained track objects,
+/// advances fire-once and interval tracks on scaled world time, applies camera
+/// work after scene synchronization, draws overlays, and defines deterministic
+/// skip, stop, and replacement behavior.
+
 #include "rt_animcontroller3d.h"
 #include "rt_canvas3d.h"
 #include "rt_game3d.h"
@@ -44,6 +51,7 @@
 //=========================================================================
 
 /// @brief GC finalizer: release retained track objects, buffers, and world ref.
+/// @param obj Finalized Timeline3D payload; `NULL` is ignored.
 static void game3d_timeline_finalize(void *obj) {
     rt_game3d_timeline *timeline = (rt_game3d_timeline *)obj;
     if (!timeline)
@@ -60,6 +68,8 @@ static void game3d_timeline_finalize(void *obj) {
 }
 
 /// @brief Create an empty timeline bound to @p world (installed via playTimeline).
+/// @param world_obj Borrowed live World3D handle retained by the timeline.
+/// @return New GC-managed Timeline3D handle, or `NULL` after validation or allocation failure.
 void *rt_game3d_timeline_new(void *world_obj) {
     rt_game3d_world *world =
         game3d_world_checked(world_obj, "Game3D.Timeline3D.New: invalid world");
@@ -79,6 +89,12 @@ void *rt_game3d_timeline_new(void *world_obj) {
 }
 
 /// @brief Append a zeroed track (grows the array); NULL on failure/while playing.
+/// @param timeline Timeline payload whose track array may grow.
+/// @param type Internal `RT_GAME3D_TL_*` track discriminator.
+/// @param t0 Candidate non-negative start time in seconds.
+/// @param t1 Candidate end time, clamped to be no earlier than @p t0.
+/// @param api_name Diagnostic recorded when mutation is attempted during playback.
+/// @return Borrowed new track slot, or `NULL` on immutable state or allocation failure.
 static rt_game3d_tl_track *game3d_timeline_append(
     rt_game3d_timeline *timeline, int8_t type, double t0, double t1, const char *api_name) {
     if (!timeline)
@@ -112,6 +128,8 @@ static rt_game3d_tl_track *game3d_timeline_append(
 }
 
 /// @brief Copy a snapshot of an rt_string into a bounded track text field.
+/// @param[out] dst Fixed `RT_GAME3D_TL_TEXT_MAX`-byte destination.
+/// @param text Borrowed runtime string, or `NULL` for empty text.
 static void game3d_timeline_copy_text(char *dst, rt_string text) {
     dst[0] = '\0';
     const char *src = text ? rt_string_cstr(text) : NULL;
@@ -126,6 +144,12 @@ static void game3d_timeline_copy_text(char *dst, rt_string text) {
 //=========================================================================
 
 /// @brief Camera cut: pose applied at t, held until the next camera key.
+/// @param obj Borrowed Timeline3D handle.
+/// @param t Non-negative cut time in seconds.
+/// @param pos Borrowed Vec3 camera position.
+/// @param look Borrowed Vec3 look-at point.
+/// @param fov Vertical field of view clamped to `[1, 179]`.
+/// @return Original borrowed timeline handle for fluent chaining.
 void *rt_game3d_timeline_add_camera_cut(void *obj, double t, void *pos, void *look, double fov) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.addCameraCut: invalid timeline");
@@ -153,6 +177,13 @@ void *rt_game3d_timeline_add_camera_cut(void *obj, double t, void *pos, void *lo
 }
 
 /// @brief Camera spline move over [t0,t1]; look = Vec3 | Entity3D | Path3D | NULL.
+/// @param obj Borrowed Timeline3D handle.
+/// @param t0 Non-negative move start time in seconds.
+/// @param t1 Move end time, clamped not earlier than @p t0.
+/// @param path Borrowed Path3D retained as the camera trajectory.
+/// @param look_target Borrowed Vec3, Entity3D, or Path3D retained as the target, or `NULL`.
+/// @param ease `RT_GAME3D_EASE_*` selector clamped to the supported range.
+/// @return Original borrowed timeline handle for fluent chaining.
 void *rt_game3d_timeline_add_camera_move(
     void *obj, double t0, double t1, void *path, void *look_target, int64_t ease) {
     rt_game3d_timeline *timeline =
@@ -183,6 +214,13 @@ void *rt_game3d_timeline_add_camera_move(
 }
 
 /// @brief FOV ramp lerped over [t0,t1].
+/// @param obj Borrowed Timeline3D handle.
+/// @param t0 Non-negative ramp start time.
+/// @param t1 Ramp end time, clamped not earlier than @p t0.
+/// @param fov0 Initial vertical FOV in degrees.
+/// @param fov1 Final vertical FOV in degrees.
+/// @param ease `RT_GAME3D_EASE_*` selector.
+/// @return Original borrowed timeline handle for fluent chaining.
 void *rt_game3d_timeline_add_fov_ramp(
     void *obj, double t0, double t1, double fov0, double fov1, int64_t ease) {
     rt_game3d_timeline *timeline =
@@ -203,6 +241,12 @@ void *rt_game3d_timeline_add_fov_ramp(
 }
 
 /// @brief Fire Animator3D.crossfade on a named entity at t.
+/// @param obj Borrowed Timeline3D handle.
+/// @param t Non-negative fire time in seconds.
+/// @param entity_name Borrowed entity name snapshotted into the track.
+/// @param state_name Borrowed animation state name snapshotted into the track.
+/// @param crossfade_seconds Non-negative blend duration, capped at 60 seconds.
+/// @return Original borrowed timeline handle for fluent chaining.
 void *rt_game3d_timeline_add_anim(
     void *obj, double t, rt_string entity_name, rt_string state_name, double crossfade_seconds) {
     rt_game3d_timeline *timeline =
@@ -222,6 +266,12 @@ void *rt_game3d_timeline_add_anim(
 }
 
 /// @brief Fire an audio clip at t (2D, or positional at @p position).
+/// @param obj Borrowed Timeline3D handle.
+/// @param t Non-negative fire time in seconds.
+/// @param clip Borrowed non-null audio clip retained by the track.
+/// @param positional Nonzero to play the clip at a world position.
+/// @param position Borrowed Vec3 required for positional playback.
+/// @return Original borrowed timeline handle for fluent chaining.
 void *rt_game3d_timeline_add_audio(
     void *obj, double t, void *clip, int8_t positional, void *position) {
     rt_game3d_timeline *timeline =
@@ -253,6 +303,11 @@ void *rt_game3d_timeline_add_audio(
 }
 
 /// @brief Subtitle text shown over [t0,t1].
+/// @param obj Borrowed Timeline3D handle.
+/// @param t0 Non-negative display start time.
+/// @param t1 Display end time, clamped not earlier than @p t0.
+/// @param text Borrowed subtitle text snapshotted into the track.
+/// @return Original borrowed timeline handle for fluent chaining.
 void *rt_game3d_timeline_add_subtitle(void *obj, double t0, double t1, rt_string text) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.addSubtitle: invalid timeline");
@@ -268,6 +323,11 @@ void *rt_game3d_timeline_add_subtitle(void *obj, double t0, double t1, rt_string
 }
 
 /// @brief Letterbox bars covering @p amount of the height over [t0,t1].
+/// @param obj Borrowed Timeline3D handle.
+/// @param t0 Non-negative display start time.
+/// @param t1 Display end time, clamped not earlier than @p t0.
+/// @param amount Per-edge screen-height fraction clamped to `[0, 0.45]`.
+/// @return Original borrowed timeline handle for fluent chaining.
 void *rt_game3d_timeline_add_letterbox(void *obj, double t0, double t1, double amount) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.addLetterbox: invalid timeline");
@@ -283,6 +343,12 @@ void *rt_game3d_timeline_add_letterbox(void *obj, double t0, double t1, double a
 }
 
 /// @brief Full-screen fade from alpha a0 to a1 over [t0,t1].
+/// @param obj Borrowed Timeline3D handle.
+/// @param t0 Non-negative fade start time.
+/// @param t1 Fade end time, clamped not earlier than @p t0.
+/// @param a0 Initial alpha clamped to `[0, 1]`.
+/// @param a1 Final alpha clamped to `[0, 1]`.
+/// @return Original borrowed timeline handle for fluent chaining.
 void *rt_game3d_timeline_add_fade(void *obj, double t0, double t1, double a0, double a1) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.addFade: invalid timeline");
@@ -300,6 +366,10 @@ void *rt_game3d_timeline_add_fade(void *obj, double t0, double t1, double a0, do
 }
 
 /// @brief Polled event marker fired when the playhead crosses t.
+/// @param obj Borrowed Timeline3D handle.
+/// @param t Non-negative marker time in seconds.
+/// @param id Caller-defined marker identifier.
+/// @return Original borrowed timeline handle for fluent chaining.
 void *rt_game3d_timeline_add_marker(void *obj, double t, int64_t id) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.addMarker: invalid timeline");
@@ -318,36 +388,54 @@ void *rt_game3d_timeline_add_marker(void *obj, double t, int64_t id) {
 // Properties and polling
 //=========================================================================
 
+/// @brief Get the latest track end time.
+/// @param obj Borrowed Timeline3D handle.
+/// @return Timeline duration in seconds, or zero when invalid.
 double rt_game3d_timeline_get_duration(void *obj) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.get_duration: invalid timeline");
     return timeline ? timeline->duration : 0.0;
 }
 
+/// @brief Get the current playhead time.
+/// @param obj Borrowed Timeline3D handle.
+/// @return Current playhead time in seconds, or zero when invalid.
 double rt_game3d_timeline_get_time(void *obj) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.get_time: invalid timeline");
     return timeline ? timeline->time : 0.0;
 }
 
+/// @brief Get whether the playhead is advancing.
+/// @param obj Borrowed Timeline3D handle.
+/// @return Nonzero while playing; otherwise zero.
 int8_t rt_game3d_timeline_get_playing(void *obj) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.get_playing: invalid timeline");
     return timeline ? timeline->playing : 0;
 }
 
+/// @brief Get whether playback has reached or skipped to the end.
+/// @param obj Borrowed Timeline3D handle.
+/// @return Nonzero after completion; otherwise zero.
 int8_t rt_game3d_timeline_get_finished(void *obj) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.get_finished: invalid timeline");
     return timeline ? timeline->finished : 0;
 }
 
+/// @brief Get whether explicit skip requests are accepted.
+/// @param obj Borrowed Timeline3D handle.
+/// @return Nonzero when skippable; otherwise zero.
 int8_t rt_game3d_timeline_get_skippable(void *obj) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.get_skippable: invalid timeline");
     return timeline ? timeline->skippable : 0;
 }
 
+/// @brief Enable or disable explicit timeline skipping.
+/// @param obj Borrowed Timeline3D handle.
+/// @param skippable Nonzero to accept skip requests.
 void rt_game3d_timeline_set_skippable(void *obj, int8_t skippable) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.set_skippable: invalid timeline");
@@ -356,18 +444,27 @@ void rt_game3d_timeline_set_skippable(void *obj, int8_t skippable) {
 }
 
 /// @brief One-shot: true for the step after the timeline reached its end.
+/// @param obj Borrowed Timeline3D handle.
+/// @return Current completion-transition flag, or zero when invalid.
 int8_t rt_game3d_timeline_just_finished(void *obj) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.justFinished: invalid timeline");
     return timeline ? timeline->just_finished : 0;
 }
 
+/// @brief Get the number of marker events fired during the latest step.
+/// @param obj Borrowed Timeline3D handle.
+/// @return Buffered marker count, or zero when invalid.
 int64_t rt_game3d_timeline_events_fired_count(void *obj) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.eventsFiredCount: invalid timeline");
     return timeline ? timeline->fired_marker_count : 0;
 }
 
+/// @brief Read a marker identifier fired during the latest step.
+/// @param obj Borrowed Timeline3D handle.
+/// @param index Zero-based buffered marker index.
+/// @return Marker identifier, or zero when out of range.
 int64_t rt_game3d_timeline_event_fired_id(void *obj, int64_t index) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.eventFiredId: invalid timeline");
@@ -377,6 +474,8 @@ int64_t rt_game3d_timeline_event_fired_id(void *obj, int64_t index) {
 }
 
 /// @brief Currently displayed subtitle ("" when none) — plan 25's hook point.
+/// @param obj Borrowed Timeline3D handle.
+/// @return New runtime string containing the active subtitle or empty text.
 rt_string rt_game3d_timeline_active_subtitle(void *obj) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.activeSubtitle: invalid timeline");
@@ -388,6 +487,9 @@ rt_string rt_game3d_timeline_active_subtitle(void *obj) {
 //=========================================================================
 
 /// @brief qsort comparator: by t0, stable-ish via type then marker id.
+/// @param a Borrowed pointer to the first track.
+/// @param b Borrowed pointer to the second track.
+/// @return Negative, zero, or positive according to playback ordering.
 static int game3d_timeline_track_cmp(const void *a, const void *b) {
     const rt_game3d_tl_track *ta = (const rt_game3d_tl_track *)a;
     const rt_game3d_tl_track *tb = (const rt_game3d_tl_track *)b;
@@ -401,6 +503,7 @@ static int game3d_timeline_track_cmp(const void *a, const void *b) {
 }
 
 /// @brief Reset the playhead and fire-once latches; sort tracks once.
+/// @param timeline Timeline payload to prepare for playback.
 static void game3d_timeline_reset(rt_game3d_timeline *timeline) {
     if (!timeline->sorted) {
         qsort(timeline->tracks,
@@ -422,6 +525,9 @@ static void game3d_timeline_reset(rt_game3d_timeline *timeline) {
 }
 
 /// @brief Apply an ease curve to a normalized fraction.
+/// @param frac Candidate interpolation fraction, clamped to `[0, 1]`.
+/// @param ease Linear, smoothstep, ease-in, or ease-out selector.
+/// @return Eased interpolation fraction in `[0, 1]`.
 static double game3d_timeline_ease(double frac, int8_t ease) {
     frac = game3d_clamp(frac, 0.0, 1.0);
     switch (ease) {
@@ -437,6 +543,10 @@ static double game3d_timeline_ease(double frac, int8_t ease) {
 }
 
 /// @brief Fire one point track (anim / audio / marker). @p silent skips audio.
+/// @param world Borrowed world providing entity and audio services.
+/// @param timeline Timeline payload receiving marker events.
+/// @param track Point track to latch and execute.
+/// @param silent Nonzero to suppress audio and force animation crossfades to zero.
 static void game3d_timeline_fire(rt_game3d_world *world,
                                  rt_game3d_timeline *timeline,
                                  rt_game3d_tl_track *track,
@@ -481,6 +591,9 @@ static void game3d_timeline_fire(rt_game3d_world *world,
 }
 
 /// @brief Pre-physics tick. See internal header.
+/// @param world Borrowed world containing the active timeline.
+/// @param dt Candidate scaled simulation delta, sanitized before advancing.
+/// @return Nonzero while camera tracks should suspend the normal camera controller.
 int game3d_world_timeline_pre(rt_game3d_world *world, double dt) {
     if (!world)
         return 0;
@@ -549,6 +662,9 @@ int game3d_world_timeline_pre(rt_game3d_world *world, double dt) {
 /// @details A cutscene camera looking straight up/down makes (0,1,0) parallel to the
 ///          view direction, so the look-at cross product degenerates to zero and the
 ///          camera basis becomes NaN. Mirrors the rail camera's near-vertical guard.
+/// @param eye Three-component camera position.
+/// @param look Three-component look-at point.
+/// @param[out] up Required three-component safe up-vector destination.
 static void game3d_timeline_safe_up(const double eye[3], const double look[3], double up[3]) {
     double view[3] = {look[0] - eye[0], look[1] - eye[1], look[2] - eye[2]};
     double len = sqrt(view[0] * view[0] + view[1] * view[1] + view[2] * view[2]);
@@ -563,6 +679,7 @@ static void game3d_timeline_safe_up(const double eye[3], const double look[3], d
 }
 
 /// @brief Camera application in the late-update slot. See internal header.
+/// @param world Borrowed world whose camera receives the active cut, move, and FOV ramp.
 void game3d_world_timeline_camera(rt_game3d_world *world) {
     if (!world || !world->camera)
         return;
@@ -665,6 +782,7 @@ void game3d_world_timeline_camera(rt_game3d_world *world) {
 }
 
 /// @brief Overlay pass: letterbox bars, fade quad, subtitle. See internal header.
+/// @param world Borrowed world whose Canvas3D receives the active overlays.
 void game3d_world_timeline_overlay(rt_game3d_world *world) {
     if (!world || !world->canvas)
         return;
@@ -702,6 +820,8 @@ void game3d_world_timeline_overlay(rt_game3d_world *world) {
 //=========================================================================
 
 /// @brief Install and start a timeline (one per world; replacing stops the old).
+/// @param world_obj Borrowed live World3D handle.
+/// @param timeline_obj Borrowed same-world Timeline3D handle retained as active.
 void rt_game3d_world_play_timeline(void *world_obj, void *timeline_obj) {
     rt_game3d_world *world =
         game3d_world_checked(world_obj, "Game3D.World3D.playTimeline: invalid world");
@@ -723,6 +843,8 @@ void rt_game3d_world_play_timeline(void *world_obj, void *timeline_obj) {
 }
 
 /// @brief The world's active timeline (NULL when none).
+/// @param world_obj Borrowed live World3D handle.
+/// @return Borrowed active Timeline3D handle, or `NULL`.
 void *rt_game3d_world_active_timeline(void *world_obj) {
     rt_game3d_world *world =
         game3d_world_checked(world_obj, "Game3D.World3D.activeTimeline: invalid world");
@@ -731,6 +853,7 @@ void *rt_game3d_world_active_timeline(void *world_obj) {
 }
 
 /// @brief Stop and uninstall the world's active timeline (controller resumes).
+/// @param world_obj Borrowed live World3D handle.
 void rt_game3d_world_stop_timeline(void *world_obj) {
     rt_game3d_world *world =
         game3d_world_checked(world_obj, "Game3D.World3D.stopTimeline: invalid world");
@@ -746,6 +869,7 @@ void rt_game3d_world_stop_timeline(void *world_obj) {
 /// @brief Skip to the end: past-fire pending tracks in order (anims apply their
 ///   final state instantly, audio stays silent, markers fire), apply the end
 ///   camera, and finish. Gated by `skippable`.
+/// @param obj Borrowed Timeline3D handle.
 void rt_game3d_timeline_skip(void *obj) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.skip: invalid timeline");
@@ -776,6 +900,7 @@ void rt_game3d_timeline_skip(void *obj) {
 }
 
 /// @brief Stop playback (controller resumes next step); keeps the playhead.
+/// @param obj Borrowed Timeline3D handle.
 void rt_game3d_timeline_stop(void *obj) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.stop: invalid timeline");

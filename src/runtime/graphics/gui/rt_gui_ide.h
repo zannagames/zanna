@@ -22,6 +22,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file rt_gui_ide.h
+/// @brief Declares IDE automation, virtual-model, accessibility, and command runtime APIs.
+///
+/// @details
+/// Constructors return managed runtime objects, while bindings to GUI controls
+/// are non-owning and self-invalidating. All returned strings, maps, sequences,
+/// and options follow ordinary runtime ownership rules.
+
 #pragma once
 
 #include "rt_string.h"
@@ -42,8 +50,10 @@ extern "C" {
 // --- GUI test harness: retain the legacy synthetic model for headless unit tests,
 //     or bind a live App to drive its real input/render/accessibility paths. ---
 /// @brief Create a new headless GUI test harness object.
+/// @return New managed TestHarness object, or `NULL` on allocation failure.
 void *rt_gui_test_harness_new(void);
 /// @brief Remove all registered widgets and reset harness state.
+/// @param harness Managed TestHarness object; invalid handles trap.
 void rt_gui_test_harness_clear(void *harness);
 /// @brief Bind a live GUI application for real input dispatch and framebuffer inspection.
 /// @details The harness retains @p app until UnbindApp, rebinding, or harness reclamation.
@@ -128,10 +138,20 @@ void *rt_gui_test_harness_compare_region(
 /// @return New managed Zanna.Collections.Map accessibility snapshot, or NULL on root OOM.
 void *rt_gui_test_harness_get_accessibility_snapshot(void *harness);
 /// @brief Advance the harness by @p frames simulated frames (clamped to ≥1).
+/// @param harness Managed TestHarness object; invalid handles trap.
+/// @param frames Number of synthetic frames to add.
 /// @return The harness's new accumulated frame counter.
 int64_t rt_gui_test_harness_tick(void *harness, int64_t frames);
 /// @brief Register (or replace by id) a synthetic widget with the given id/type/name
 ///        and bounds in the harness's widget table.
+/// @param harness Managed TestHarness object.
+/// @param id Stable widget identifier.
+/// @param type Widget type name.
+/// @param name Accessible or display name.
+/// @param x Synthetic bounds X coordinate.
+/// @param y Synthetic bounds Y coordinate.
+/// @param w Synthetic bounds width.
+/// @param h Synthetic bounds height.
 void rt_gui_test_harness_register_widget(void *harness,
                                          rt_string id,
                                          rt_string type,
@@ -141,49 +161,102 @@ void rt_gui_test_harness_register_widget(void *harness,
                                          int64_t w,
                                          int64_t h);
 /// @brief Find a registered widget record by exact id (NULL if none).
+/// @param harness Managed TestHarness object.
+/// @param id Widget identifier to match.
+/// @return New query map whose `found` field reports whether a match exists.
 void *rt_gui_test_harness_find_by_id(void *harness, rt_string id);
 /// @brief Find a registered widget record by exact id as an Option.
 /// @details Returns Some(Map) when found and None when no matching widget exists.
+/// @param harness Managed TestHarness object.
+/// @param id Widget identifier to match.
+/// @return Managed Option containing the result map when found.
 void *rt_gui_test_harness_find_by_id_option(void *harness, rt_string id);
 /// @brief Find the first registered widget record with the given name (NULL if none).
+/// @param harness Managed TestHarness object.
+/// @param name Widget name to match.
+/// @return New query map whose `found` field reports whether a match exists.
 void *rt_gui_test_harness_find_by_name(void *harness, rt_string name);
 /// @brief Find the first registered widget record with the given name as an Option.
 /// @details Returns Some(Map) when found and None when no matching widget exists.
+/// @param harness Managed TestHarness object.
+/// @param name Widget name to match.
+/// @return Managed Option containing the result map when found.
 void *rt_gui_test_harness_find_by_name_option(void *harness, rt_string name);
 /// @brief Find the first registered widget record of the given type (NULL if none).
+/// @param harness Managed TestHarness object.
+/// @param type Widget type to match.
+/// @return New query map whose `found` field reports whether a match exists.
 void *rt_gui_test_harness_find_by_type(void *harness, rt_string type);
 /// @brief Find the first registered widget record of the given type as an Option.
 /// @details Returns Some(Map) when found and None when no matching widget exists.
+/// @param harness Managed TestHarness object.
+/// @param type Widget type to match.
+/// @return Managed Option containing the result map when found.
 void *rt_gui_test_harness_find_by_type_option(void *harness, rt_string type);
 /// @brief Inject a key event (@p key plus a modifier bitmask) into the harness.
+/// @param harness Managed TestHarness object.
+/// @param key Runtime key token.
+/// @param modifiers Platform modifier-bit mask.
 void rt_gui_test_harness_send_key(void *harness, rt_string key, int64_t modifiers);
 /// @brief Inject a mouse event of @p event_type at (@p x, @p y) for the given button.
+/// @param harness Managed TestHarness object.
+/// @param event_type Runtime mouse action token.
+/// @param x Synthetic pointer X coordinate.
+/// @param y Synthetic pointer Y coordinate.
+/// @param button Platform mouse-button ordinal.
 void rt_gui_test_harness_send_mouse(
     void *harness, rt_string event_type, int64_t x, int64_t y, int64_t button);
 /// @brief Return the number of synthetic input events recorded by the harness.
+/// @param harness Managed TestHarness object.
+/// @return Event count saturated to `INT64_MAX`.
 int64_t rt_gui_test_harness_event_count(void *harness);
 /// @brief Return a Map snapshot for the event at @p index, or found=0 if out of range.
+/// @param harness Managed TestHarness object.
+/// @param index Zero-based event index.
+/// @return New event-result map.
 void *rt_gui_test_harness_event_at(void *harness, int64_t index);
 /// @brief Remove all recorded synthetic input events without changing widgets or focus.
+/// @param harness Managed TestHarness object.
 void rt_gui_test_harness_clear_events(void *harness);
 /// @brief Return the id of the currently focused widget (empty string if none).
+/// @param harness Managed TestHarness object.
+/// @return Newly referenced focus identifier.
 rt_string rt_gui_test_harness_get_focus(void *harness);
 /// @brief Return a sequence of widget ids in registration (focus-traversal) order.
+/// @param harness Managed TestHarness object.
+/// @return New owned sequence of identifiers, or `NULL` on allocation failure.
 void *rt_gui_test_harness_focus_order(void *harness);
 /// @brief Capture a synthetic snapshot of a region as a Map with x/y/width/height,
 ///        `nonBlankPixels` and a `nonBlank` flag (derived from widget coverage, not real pixels).
+/// @param harness Managed TestHarness object.
+/// @param x Query rectangle X coordinate.
+/// @param y Query rectangle Y coordinate.
+/// @param w Query rectangle width.
+/// @param h Query rectangle height.
+/// @return New managed snapshot map, or `NULL` on allocation failure.
 void *rt_gui_test_harness_capture_region(void *harness, int64_t x, int64_t y, int64_t w, int64_t h);
 /// @brief Read the `nonBlank` flag from a capture_region snapshot; 0 if @p snapshot is not one.
+/// @param snapshot Runtime map returned by CaptureRegion.
+/// @return `1` when the snapshot reports nonblank content; otherwise `0`.
 int8_t rt_gui_test_harness_assert_nonblank(void *snapshot);
 
 // --- Virtualized list: only the rows visible at the current scroll offset are
 //     realized, so arbitrarily large row counts stay cheap. ---
 /// @brief Create a virtualized list with @p row_count rows of @p row_height pixels
 ///        shown through a @p viewport_height window.
+/// @param row_count Initial non-negative logical row count.
+/// @param row_height Row height clamped to at least one pixel.
+/// @param viewport_height Viewport height clamped to at least one pixel.
+/// @return New managed VirtualList object, or `NULL` on allocation failure.
 void *rt_virtual_list_new(int64_t row_count, int64_t row_height, int64_t viewport_height);
 /// @brief Update the total row count (clamped to ≥0).
+/// @param list Managed VirtualList object; invalid handles trap.
+/// @param row_count New logical row count.
 void rt_virtual_list_set_count(void *list, int64_t row_count);
 /// @brief Assign a stable id to the row at index @p row (ignored if out of range).
+/// @param list Managed VirtualList object; invalid handles trap.
+/// @param row Zero-based logical row.
+/// @param id Non-empty unique stable identifier.
 void rt_virtual_list_set_row_id(void *list, int64_t row, rt_string id);
 /// @brief Set the UTF-8 display text supplied for one virtual row.
 /// @details Text is copied into sparse model storage. Embedded NUL bytes are rendered as visible
@@ -233,19 +306,32 @@ int64_t rt_listbox_get_visible_first(void *listbox);
 /// @return Non-negative viewport row count.
 int64_t rt_listbox_get_visible_count(void *listbox);
 /// @brief Compute the rows to realize at scroll offset @p scroll_y.
+/// @param list Managed VirtualList object; invalid handles trap.
+/// @param scroll_y Vertical scroll offset, clamped to zero.
 /// @return A Map with `start`, `end` and `count` (overscan rows included).
 void *rt_virtual_list_visible_range(void *list, int64_t scroll_y);
 /// @brief Select the row carrying the given id.
+/// @param list Managed VirtualList object; invalid handles trap.
+/// @param id Stable row identifier to select.
 void rt_virtual_list_select_id(void *list, rt_string id);
 /// @brief Return the selected row's id (empty string if none).
+/// @param list Managed VirtualList object; invalid handles trap.
+/// @return Newly referenced stable identifier.
 rt_string rt_virtual_list_get_selected_id(void *list);
 /// @brief Return the selected row's index, or -1 if nothing is selected.
+/// @param list Managed VirtualList object; invalid handles trap.
+/// @return Zero-based logical row, or `-1` when selection is unresolved.
 int64_t rt_virtual_list_get_selected_index(void *list);
 
 // --- Virtualized tree: lazily expanded, only visible (expanded) rows realized. ---
 /// @brief Create an empty virtualized tree.
+/// @return New managed VirtualTree object, or `NULL` on allocation failure.
 void *rt_virtual_tree_new(void);
 /// @brief Add a node @p id labelled @p text under @p parent_id (empty parent = root).
+/// @param tree Managed VirtualTree object; invalid handles trap.
+/// @param parent_id Stable parent identifier, or empty for the hidden root.
+/// @param id Non-empty unique node identifier.
+/// @param text Runtime display label.
 void rt_virtual_tree_add_node(void *tree, rt_string parent_id, rt_string id, rt_string text);
 /// @brief Move an existing virtual-tree node to a new parent while preserving its stable ID.
 /// @details This additive operation preserves the pre-unique-ID model's reparenting capability
@@ -266,16 +352,26 @@ int8_t rt_virtual_tree_move_node(void *tree, rt_string id, rt_string parent_id);
 /// @return One on success, including an unchanged label; otherwise zero.
 int8_t rt_virtual_tree_set_node_text(void *tree, rt_string id, rt_string text);
 /// @brief Mark a node expanded.
+/// @param tree Managed VirtualTree object; invalid handles trap.
+/// @param id Stable node identifier.
 /// @return A Map describing the result: `found`, `expanded` and `needsPopulate`
 ///         (set when the node has no loaded children yet).
 void *rt_virtual_tree_expand(void *tree, rt_string id);
 /// @brief Collapse a node, hiding its subtree.
+/// @param tree Managed VirtualTree object; invalid handles trap.
+/// @param id Stable node identifier.
 void rt_virtual_tree_collapse(void *tree, rt_string id);
 /// @brief Select the node carrying the given id.
+/// @param tree Managed VirtualTree object; invalid handles trap.
+/// @param id Stable node identifier.
 void rt_virtual_tree_select_id(void *tree, rt_string id);
 /// @brief Return the selected node's id (empty string if none).
+/// @param tree Managed VirtualTree object; invalid handles trap.
+/// @return Newly referenced stable identifier.
 rt_string rt_virtual_tree_get_selected_id(void *tree);
 /// @brief Return the currently visible (expanded) rows as a sequence.
+/// @param tree Managed VirtualTree object; invalid handles trap.
+/// @return New owned sequence of visible-row maps.
 void *rt_virtual_tree_visible_rows(void *tree);
 /// @brief Return only a requested slice of the flattened visible-tree order.
 /// @details The model maintains a lazy stable-ID index. After structural warm-up this operation is
@@ -287,6 +383,8 @@ void *rt_virtual_tree_visible_rows(void *tree);
 /// @return Owned `Zanna.Collections.Seq` of row maps, possibly empty.
 void *rt_virtual_tree_visible_rows_range(void *tree, int64_t first, int64_t count);
 /// @brief Rebuild the visible-row cache for a node's subtree after structural changes.
+/// @param tree Managed VirtualTree object; invalid handles trap.
+/// @param id Stable identifier of the retained subtree root.
 void rt_virtual_tree_refresh_subtree(void *tree, rt_string id);
 /// @brief Bind a VirtualTree to a live TreeView through its viewport provider path.
 /// @details No retained TreeNode objects are created for model rows. Existing endpoint bindings
@@ -313,92 +411,163 @@ void rt_treeview_clear_virtual_model(void *treeview);
 // --- Command state: the enabled/checked/accessibility state of a UI command,
 //     used to drive menu items, toolbar buttons and the command palette. ---
 /// @brief Create a command-state object identified by @p id with display @p label.
+/// @param id Stable command identifier.
+/// @param label Display and initial accessible label.
+/// @return New managed CommandState object, or `NULL` on allocation failure.
 void *rt_command_state_new(rt_string id, rt_string label);
 /// @brief Set whether the command is enabled (invokable).
+/// @param state Managed CommandState object; invalid handles trap.
+/// @param enabled Non-zero to enable invocation.
 void rt_command_state_set_enabled(void *state, int8_t enabled);
 /// @brief Return 1 if the command is enabled.
+/// @param state Managed CommandState object; invalid handles trap.
+/// @return `1` when enabled; otherwise `0`.
 int8_t rt_command_state_get_enabled(void *state);
 /// @brief Set the command's checked (toggled-on) state.
+/// @param state Managed CommandState object; invalid handles trap.
+/// @param checked Non-zero to mark the command checked.
 void rt_command_state_set_checked(void *state, int8_t checked);
 /// @brief Return 1 if the command is checked.
+/// @param state Managed CommandState object; invalid handles trap.
+/// @return `1` when checked; otherwise `0`.
 int8_t rt_command_state_get_checked(void *state);
 /// @brief Set the accessibility label and description announced for the command.
+/// @param state Managed CommandState object; invalid handles trap.
+/// @param label Accessible label.
+/// @param description Accessible description.
 void rt_command_state_set_accessible(void *state, rt_string label, rt_string description);
 /// @brief Snapshot the command state as a Map (id, label, accessibleLabel,
 ///        accessibleDescription, enabled, checked).
+/// @param state Managed CommandState object; invalid handles trap.
+/// @return New managed state map, or `NULL` on allocation failure.
 void *rt_command_state_snapshot(void *state);
 
 // --- Command: a UI action bound to its menu item, toolbar button, keyboard
 //     shortcut and command-palette entry, polled from one place. ---
 /// @brief Create a command identified by @p id with display @p title (enabled by default).
+/// @param id Stable command identifier.
+/// @param title Display title.
+/// @return New managed Command object, or `NULL` on allocation failure.
 void *rt_command_new(rt_string id, rt_string title);
 /// @brief Return the command's stable id.
+/// @param command Managed Command object; invalid handles trap.
+/// @return Newly referenced identifier.
 rt_string rt_command_get_id(void *command);
 /// @brief Return the command's display title.
+/// @param command Managed Command object; invalid handles trap.
+/// @return Newly referenced title.
 rt_string rt_command_get_title(void *command);
 /// @brief Set the command's keyboard shortcut chord (e.g. "Ctrl+B") and register it with the
 ///        global Zanna.GUI.Shortcuts registry under the command id (best-effort if no app yet).
+/// @param command Managed Command object; invalid handles trap.
+/// @param keys Runtime shortcut chord specification.
 void rt_command_set_shortcut(void *command, rt_string keys);
 /// @brief Return the command's shortcut chord (empty string if none).
+/// @param command Managed Command object; invalid handles trap.
+/// @return Newly referenced shortcut string.
 rt_string rt_command_get_shortcut(void *command);
 /// @brief Set whether the command is enabled; pushed to bound widgets.
+/// @param command Managed Command object; invalid handles trap.
+/// @param enabled Non-zero to enable invocation.
 void rt_command_set_enabled(void *command, int8_t enabled);
 /// @brief Return 1 if the command is enabled.
+/// @param command Managed Command object; invalid handles trap.
+/// @return `1` when enabled; otherwise `0`.
 int8_t rt_command_is_enabled(void *command);
 /// @brief Set whether the command is checkable (a toggle); pushed to a bound menu item.
+/// @param command Managed Command object; invalid handles trap.
+/// @param checkable Non-zero to expose checked state.
 void rt_command_set_checkable(void *command, int8_t checkable);
 /// @brief Return 1 if the command is checkable.
+/// @param command Managed Command object; invalid handles trap.
+/// @return `1` when checkable; otherwise `0`.
 int8_t rt_command_is_checkable(void *command);
 /// @brief Set the command's checked (toggled-on) state; pushed to bound widgets.
+/// @param command Managed Command object; invalid handles trap.
+/// @param checked Non-zero to mark the command checked.
 void rt_command_set_checked(void *command, int8_t checked);
 /// @brief Return 1 if the command is checked.
+/// @param command Managed Command object; invalid handles trap.
+/// @return `1` when checked; otherwise `0`.
 int8_t rt_command_is_checked(void *command);
 /// @brief Bind a Zanna.GUI.MenuItem the command should read (clicks) and drive (enabled/checked).
+/// @param command Managed Command object; invalid handles trap.
+/// @param item MenuItem handle, or `NULL` to unbind.
 void rt_command_bind_menu_item(void *command, void *item);
 /// @brief Bind a Zanna.GUI.ToolbarItem the command should read (clicks) and drive
 /// (enabled/toggled).
+/// @param command Managed Command object; invalid handles trap.
+/// @param item ToolbarItem handle, or `NULL` to unbind.
 void rt_command_bind_toolbar_item(void *command, void *item);
 /// @brief Poll a standalone command: read bound menu/toolbar/shortcut, push state to bound
 ///        widgets, and return 1 if invoked this frame (disabled commands never report invoked).
+/// @param command Managed Command object; invalid handles trap.
+/// @return `1` when invoked by an enabled source; otherwise `0`.
 int8_t rt_command_poll(void *command);
 /// @brief Return the invoked flag computed by the most recent command- or registry-level poll.
+/// @param command Managed Command object; invalid handles trap.
+/// @return `1` when the latest poll observed invocation; otherwise `0`.
 int8_t rt_command_was_invoked(void *command);
 /// @brief Snapshot the command as a Map (id, title, shortcut, enabled, checkable, checked,
 /// invoked).
+/// @param command Managed Command object; invalid handles trap.
+/// @return New managed command map, or `NULL` on allocation failure.
 void *rt_command_snapshot(void *command);
 
 // --- Command registry: owns a set of commands and routes menu/toolbar/shortcut/palette
 //     to them in a single per-frame poll. ---
 /// @brief Create an empty command registry.
+/// @return New managed CommandRegistry object, or `NULL` on allocation failure.
 void *rt_command_registry_new(void);
 /// @brief Add (retain) a command to the registry; ignored if @p command is not a Command or already
 /// present.
+/// @param registry Managed CommandRegistry object; invalid handles trap.
+/// @param command Live Command object to retain.
 void rt_command_registry_add(void *registry, void *command);
 /// @brief Return the number of commands in the registry.
+/// @param registry Managed CommandRegistry object; invalid handles trap.
+/// @return Retained command count saturated to `INT64_MAX`.
 int64_t rt_command_registry_count(void *registry);
 /// @brief Return the command with id @p id (a retained reference), or NULL if none.
+/// @param registry Managed CommandRegistry object; invalid handles trap.
+/// @param id Stable command identifier to match.
+/// @return Owned Command reference, or `NULL` when absent.
 void *rt_command_registry_find(void *registry, rt_string id);
 /// @brief Return the command with id @p id as an Option.
 /// @details Returns Some(Command) when found and None when no registered command matches.
+/// @param registry Managed CommandRegistry object; invalid handles trap.
+/// @param id Stable command identifier to match.
+/// @return Managed Option containing the command when found.
 void *rt_command_registry_find_option(void *registry, rt_string id);
 /// @brief Bind the Zanna.GUI.CommandPalette whose selection routes to registered commands.
+/// @param registry Managed CommandRegistry object; invalid handles trap.
+/// @param palette CommandPalette handle, or `NULL` to unbind.
 void rt_command_registry_bind_palette(void *registry, void *palette);
 /// @brief Poll the palette once and every command (menu/toolbar/shortcut/palette); push state.
+/// @param registry Managed CommandRegistry object; invalid handles trap.
 /// @return The id of a command invoked this frame, or the empty string. Each command's
 ///         WasInvoked() flag is updated.
 rt_string rt_command_registry_poll(void *registry);
 /// @brief Release all commands and empty the registry.
+/// @param registry Managed CommandRegistry object; invalid handles trap.
 void rt_command_registry_clear(void *registry);
 
 // --- Accessibility: WCAG contrast math and high-contrast theme tokens. ---
 /// @brief Compute the WCAG relative-luminance contrast ratio between two 0xRRGGBB colors.
+/// @param fg_rgb Foreground packed RGB color.
+/// @param bg_rgb Background packed RGB color.
 /// @return A ratio in [1, 21] (lighter:darker, order-independent).
 double rt_accessibility_contrast_ratio(int64_t fg_rgb, int64_t bg_rgb);
 /// @brief Return 1 if the fg/bg contrast ratio meets @p min_ratio.
 /// @details A non-finite or non-positive @p min_ratio defaults to the WCAG AA threshold of 4.5.
+/// @param fg_rgb Foreground packed RGB color.
+/// @param bg_rgb Background packed RGB color.
+/// @param min_ratio Required contrast ratio.
+/// @return `1` when the computed ratio meets the threshold; otherwise `0`.
 int8_t rt_accessibility_meets_contrast(int64_t fg_rgb, int64_t bg_rgb, double min_ratio);
 /// @brief Return a Map of high-contrast theme color tokens
 ///        (background, foreground, accent, warning, error).
+/// @return New managed color-token map, or `NULL` on allocation failure.
 void *rt_accessibility_high_contrast_tokens(void);
 
 #ifdef __cplusplus

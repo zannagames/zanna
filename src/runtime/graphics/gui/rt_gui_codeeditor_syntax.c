@@ -26,6 +26,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file rt_gui_codeeditor_syntax.c
+/// @brief Implements CodeEditor lexical coloring, semantic overlays, and shared text helpers.
+///
+/// @details
+/// The graphics-enabled implementation tokenizes Zia, BASIC, and Zanna IL,
+/// manages user-defined highlighting and inlay state, and supplies UTF-8-aware
+/// editor utilities. Graphics-disabled definitions preserve the runtime ABI
+/// with deterministic no-op behavior.
+
 #include "rt_error.h"
 #include "rt_gui_codeeditor_internal.h"
 #include "rt_gui_internal.h"
@@ -82,6 +91,10 @@ static char *rt_codeeditor_syntax_strdup(const char *text) {
 ///
 /// Used by every tokenizer to paint a span of characters (a keyword,
 /// string literal, comment) the same color in one sweep.
+/// @param[out] colors Per-byte color array to update.
+/// @param pos First array index to paint.
+/// @param n Number of consecutive entries to paint.
+/// @param color Packed ARGB color assigned to the span.
 static void syn_fill(uint32_t *colors, size_t pos, size_t n, uint32_t color) {
     for (size_t i = 0; i < n; i++)
         colors[pos + i] = color;
@@ -94,6 +107,10 @@ static void syn_fill(uint32_t *colors, size_t pos, size_t n, uint32_t color) {
 /// `fallback` (which is the VS Code dark-theme default).
 ///
 /// `token_type` is a `vg_syntax_token_type` value (0..VG_SYN_TOKEN_COUNT-1).
+/// @param ce CodeEditor supplying optional token-color overrides.
+/// @param token_type Syntax token category.
+/// @param fallback Default packed ARGB color.
+/// @return Editor-specific override when present; otherwise @p fallback.
 static uint32_t syn_color(vg_codeeditor_t *ce, int token_type, uint32_t fallback) {
     if (ce && token_type >= 0 && token_type < VG_SYN_TOKEN_COUNT && ce->token_colors[token_type])
         return ce->token_colors[token_type];
@@ -101,12 +118,15 @@ static uint32_t syn_color(vg_codeeditor_t *ce, int token_type, uint32_t fallback
 }
 
 /// @brief Safe-cast an opaque handle to a live CodeEditor widget.
+/// @param editor Candidate runtime widget handle.
 /// @return The code editor, or NULL if @p editor is not a live one.
 vg_codeeditor_t *rt_codeeditor_handle_checked(void *editor) {
     RT_ASSERT_MAIN_THREAD();
     return (vg_codeeditor_t *)rt_gui_widget_handle_checked_type(editor, VG_WIDGET_CODEEDITOR);
 }
 
+/// @brief Invalidate cached lexical state and request repainting of an editor.
+/// @param ce CodeEditor whose generation and per-line cache markers are reset.
 static void rt_codeeditor_invalidate_syntax_cache(vg_codeeditor_t *ce) {
     if (!ce)
         return;
@@ -120,6 +140,8 @@ static void rt_codeeditor_invalidate_syntax_cache(vg_codeeditor_t *ce) {
 }
 
 /// @brief Validate a gutter-marker slot index (0–3) and report it via @p out_type.
+/// @param slot Runtime slot index; slots 0 through 4 are accepted.
+/// @param[out] out_type Optional destination for the validated slot.
 /// @return 1 if the slot is in range; 0 otherwise (leaving `*out_type` untouched).
 int rt_codeeditor_gutter_slot_checked(int64_t slot, int *out_type) {
     // Slots 0-3 are the disc/image icon slots (0=breakpoint, 1=warning,
@@ -134,6 +156,9 @@ int rt_codeeditor_gutter_slot_checked(int64_t slot, int *out_type) {
 }
 
 /// @brief Byte length of a line clamped to INT_MAX; 0 for an out-of-range line index.
+/// @param ce CodeEditor containing the line.
+/// @param line Zero-based logical line index.
+/// @return Line length in bytes, clamped to `INT_MAX`, or zero for invalid input.
 int rt_codeeditor_line_length_i32(const vg_codeeditor_t *ce, int line) {
     if (!ce || line < 0 || line >= ce->line_count)
         return 0;
@@ -144,6 +169,9 @@ int rt_codeeditor_line_length_i32(const vg_codeeditor_t *ce, int line) {
 /// @details Validates continuation bytes and respects @p remaining so a truncated
 ///          multibyte sequence at the buffer end cannot over-read. Any malformed
 ///          lead byte yields 1, guaranteeing forward progress in column-walk loops.
+/// @param p Address of the candidate UTF-8 lead byte.
+/// @param remaining Number of readable bytes starting at @p p.
+/// @return Validated span length from one through four, or zero when no byte is available.
 static size_t rt_codeeditor_utf8_span(const char *p, size_t remaining) {
     if (!p || remaining == 0)
         return 0;
@@ -168,6 +196,10 @@ static size_t rt_codeeditor_utf8_span(const char *p, size_t remaining) {
 ///          characters; this walks the line by UTF-8 spans so multibyte glyphs count
 ///          as one column. @p byte_col is clamped to the line length and never splits
 ///          a multibyte sequence (it stops at the last whole character that fits).
+/// @param ce CodeEditor containing the line.
+/// @param line Zero-based logical line index.
+/// @param byte_col Byte offset to translate.
+/// @return Zero-based character column, or zero for invalid input.
 int rt_codeeditor_byte_col_to_char_col(const vg_codeeditor_t *ce, int line, int byte_col) {
     if (!ce || line < 0 || line >= ce->line_count || byte_col <= 0)
         return 0;
@@ -190,6 +222,10 @@ int rt_codeeditor_byte_col_to_char_col(const vg_codeeditor_t *ce, int line, int 
 /// @details Inverse of rt_codeeditor_byte_col_to_char_col: advances @p char_col
 ///          UTF-8 spans (or to end of line), then returns the byte position clamped
 ///          to INT_MAX.
+/// @param ce CodeEditor containing the line.
+/// @param line Zero-based logical line index.
+/// @param char_col Character column to translate.
+/// @return UTF-8 byte offset clamped to `INT_MAX`, or zero for invalid input.
 int rt_codeeditor_char_col_to_byte_col(const vg_codeeditor_t *ce, int line, int char_col) {
     if (!ce || line < 0 || line >= ce->line_count || char_col <= 0)
         return 0;
@@ -205,6 +241,10 @@ int rt_codeeditor_char_col_to_byte_col(const vg_codeeditor_t *ce, int line, int 
 }
 
 /// @brief Lexicographic compare of two (line, col) caret positions.
+/// @param lhs_line Left-hand logical line.
+/// @param lhs_col Left-hand character column.
+/// @param rhs_line Right-hand logical line.
+/// @param rhs_col Right-hand character column.
 /// @return -1 if lhs precedes rhs, 1 if it follows, 0 if equal.
 static int rt_codeeditor_compare_positions(int lhs_line, int lhs_col, int rhs_line, int rhs_col) {
     if (lhs_line != rhs_line)
@@ -216,6 +256,7 @@ static int rt_codeeditor_compare_positions(int lhs_line, int lhs_col, int rhs_li
 
 /// @brief Order a selection so `start <= end`, swapping the endpoints if the user
 ///        dragged backwards. Lets downstream range logic assume a forward span.
+/// @param[in,out] selection Selection whose endpoints should be normalized.
 void rt_codeeditor_normalize_selection(vg_selection_t *selection) {
     if (!selection)
         return;
@@ -236,6 +277,10 @@ void rt_codeeditor_normalize_selection(vg_selection_t *selection) {
 /// Custom keywords let scripts add domain-specific syntax (e.g., your
 /// game's scripting commands) without modifying the built-in tables.
 /// Case-sensitive — matches `SetCustomKeywords`'s contract.
+/// @param word Candidate token bytes.
+/// @param wlen Candidate token length.
+/// @param ce CodeEditor owning the custom keyword table.
+/// @return `1` for an exact custom-keyword match; otherwise `0`.
 static int syn_is_custom_keyword(const char *word, size_t wlen, vg_codeeditor_t *ce) {
     if (!ce || !ce->custom_keywords)
         return 0;
@@ -253,16 +298,22 @@ static int syn_is_custom_keyword(const char *word, size_t wlen, vg_codeeditor_t 
 ///
 /// ASCII-only — Unicode identifiers are not yet supported by the
 /// tokenizer (would require a full UTF-8 codepoint classifier).
+/// @param c Character to classify.
+/// @return Non-zero for an ASCII letter or underscore.
 static int syn_is_id_start(char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
 }
 
 /// @brief True if `c` may continue an identifier (id-start chars + digits).
+/// @param c Character to classify.
+/// @return Non-zero for an ASCII identifier-continuation character.
 static int syn_is_id_cont(char c) {
     return syn_is_id_start(c) || (c >= '0' && c <= '9');
 }
 
 /// @brief True for a hexadecimal digit (0-9, a-f, A-F).
+/// @param c Character to classify.
+/// @return Non-zero when @p c is an ASCII hexadecimal digit.
 static int syn_is_hex_digit(char c) {
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 }
@@ -271,6 +322,10 @@ static int syn_is_hex_digit(char c) {
 ///        past it. Handles `0x`/`0X` hex, `0b`/`0B` binary, a decimal fractional
 ///        part, digit-group underscores, and an `e`/`E[+/-]` exponent. The caller
 ///        guarantees text[start] is a decimal digit.
+/// @param text Source line being scanned.
+/// @param len Readable byte length of @p text.
+/// @param start Index of the first decimal digit.
+/// @return Index immediately after the recognized numeric literal.
 static size_t syn_scan_number(const char *text, size_t len, size_t start) {
     size_t i = start;
     if (text[i] == '0' && i + 1 < len && (text[i + 1] == 'x' || text[i + 1] == 'X')) {
@@ -301,6 +356,8 @@ static size_t syn_scan_number(const char *text, size_t len, size_t start) {
 }
 
 /// @brief True for a bracket / delimiter character: ( ) [ ] { }.
+/// @param c Character to classify.
+/// @return Non-zero for a supported bracket or delimiter.
 static int syn_is_bracket(char c) {
     return c == '(' || c == ')' || c == '[' || c == ']' || c == '{' || c == '}';
 }
@@ -308,6 +365,8 @@ static int syn_is_bracket(char c) {
 /// @brief True for an operator punctuation character.
 /// @details Deliberately excludes `.`, `,`, `;` (kept at the default color so
 ///          member access and separators do not become visually noisy).
+/// @param c Character to classify.
+/// @return Non-zero for punctuation treated as an operator.
 static int syn_is_operator(char c) {
     return c == '+' || c == '-' || c == '*' || c == '/' || c == '%' || c == '=' || c == '<' ||
            c == '>' || c == '!' || c == '&' || c == '|' || c == '^' || c == '~' || c == '?' ||
@@ -319,6 +378,10 @@ static int syn_is_operator(char c) {
 /// Folds lowercase letters via the bit-flip trick (`a..z` differ from
 /// `A..Z` by exactly 0x20). Used for BASIC keyword matching, which is
 /// case-insensitive.
+/// @param a First byte sequence.
+/// @param b Second byte sequence.
+/// @param len Number of bytes to compare.
+/// @return `1` when the sequences are equal ignoring ASCII case; otherwise `0`.
 static int syn_word_eq_ci(const char *a, const char *b, size_t len) {
     for (size_t i = 0; i < len; i++) {
         char ca = (a[i] >= 'a' && a[i] <= 'z') ? a[i] - 32 : a[i];
@@ -333,6 +396,10 @@ static int syn_word_eq_ci(const char *a, const char *b, size_t len) {
 ///
 /// Used for Zia keywords/types — Zia is case-sensitive. Linear scan;
 /// keyword tables are short enough that hashing isn't worth it.
+/// @param word Candidate token bytes.
+/// @param wlen Candidate token length.
+/// @param table Null-terminated table of case-sensitive keywords.
+/// @return `1` when the token exactly matches a table entry; otherwise `0`.
 static int syn_is_keyword(const char *word, size_t wlen, const char *const *table) {
     for (int i = 0; table[i]; i++) {
         size_t klen = strlen(table[i]);
@@ -343,6 +410,10 @@ static int syn_is_keyword(const char *word, size_t wlen, const char *const *tabl
 }
 
 /// @brief Case-insensitive variant of `syn_is_keyword` for BASIC.
+/// @param word Candidate token bytes.
+/// @param wlen Candidate token length.
+/// @param table Null-terminated table of keywords.
+/// @return `1` when the token matches an entry ignoring ASCII case; otherwise `0`.
 static int syn_is_keyword_ci(const char *word, size_t wlen, const char *const *table) {
     for (int i = 0; table[i]; i++) {
         size_t klen = strlen(table[i]);
@@ -378,6 +449,10 @@ static const char *const zia_types[] = {"Integer",
                                         "Queue",
                                         NULL};
 
+/// @brief Scan one Zia line and update nested block-comment depth.
+/// @param line Null-terminated source line; `NULL` leaves the depth unchanged.
+/// @param depth Open block-comment depth on entry.
+/// @return Block-comment depth after the line, ignoring comment markers in strings.
 static int rt_zia_comment_depth_after_text(const char *line, int depth) {
     if (!line)
         return depth;
@@ -427,6 +502,9 @@ static int rt_zia_comment_depth_after_text(const char *line, int depth) {
 /// @details Caches per-line lexical state so painting a viewport near the end
 ///          of a large file does not rescan all preceding lines for every
 ///          visible row.
+/// @param ce CodeEditor providing line text and cached lexical state.
+/// @param line_num Zero-based line whose incoming state is requested.
+/// @return Open nested block-comment depth immediately before @p line_num.
 static int rt_zia_comment_depth_before_line(vg_codeeditor_t *ce, int line_num) {
     if (!ce || line_num <= 0 || !ce->lines)
         return 0;
@@ -467,6 +545,11 @@ static int rt_zia_comment_depth_before_line(vg_codeeditor_t *ce, int line_num) {
 ///   - identifier → keyword (via real Zia keyword table) / type / custom
 ///     keyword / default lookup
 ///   - everything else → default color
+/// @param editor Widget-layer editor invoking the callback.
+/// @param line_num Zero-based logical line being highlighted.
+/// @param text Null-terminated UTF-8 line text.
+/// @param[out] colors Per-byte color array populated by the tokenizer.
+/// @param user_data CodeEditor instance supplying theme and cached syntax state.
 static void rt_zia_syntax_cb(
     vg_widget_t *editor, int line_num, const char *text, uint32_t *colors, void *user_data) {
     vg_codeeditor_t *ce = (vg_codeeditor_t *)user_data;
@@ -655,6 +738,11 @@ static const char *const basic_types[] = {"BOOLEAN", "DOUBLE",  "FLOAT", "INT", 
 ///   - Keyword matching is case-insensitive (`PRINT`, `print`, `Print`
 ///     all highlight).
 ///   - Built-in type names (INTEGER, DOUBLE, STRING, …) colour as types.
+/// @param editor Widget-layer editor invoking the callback.
+/// @param line_num Zero-based logical line being highlighted.
+/// @param text Null-terminated BASIC source line.
+/// @param[out] colors Per-byte color array populated by the tokenizer.
+/// @param user_data CodeEditor instance supplying theme and custom keywords.
 static void rt_basic_syntax_cb(
     vg_widget_t *editor, int line_num, const char *text, uint32_t *colors, void *user_data) {
     (void)line_num;
@@ -843,6 +931,8 @@ static const char *const zanna_opcodes[] = {"add",
                                             NULL};
 
 /// @brief True if `c` continues an IL identifier/opcode token (id chars + '.').
+/// @param c Character to classify.
+/// @return Non-zero for an identifier continuation or period.
 static int syn_is_il_id_cont(char c) {
     return syn_is_id_cont(c) || c == '.';
 }
@@ -855,6 +945,11 @@ static int syn_is_il_id_cont(char c) {
 ///     SSA temp (parameter color).
 ///   - Opcode mnemonics may embed `.`/`_` (`iadd.ovf`, `cast.si_to_fp`), so the
 ///     identifier scan treats `.` as a continuation character.
+/// @param editor Widget-layer editor invoking the callback.
+/// @param line_num Zero-based logical line being highlighted.
+/// @param text Null-terminated Zanna IL source line.
+/// @param[out] colors Per-byte color array populated by the tokenizer.
+/// @param user_data CodeEditor instance supplying theme overrides.
 static void rt_zanna_syntax_cb(
     vg_widget_t *editor, int line_num, const char *text, uint32_t *colors, void *user_data) {
     (void)line_num;
@@ -951,6 +1046,8 @@ static void rt_zanna_syntax_cb(
 /// The editor pointer itself is the `user_data` for the callback so
 /// the tokenizer can read the per-editor color overrides + custom
 /// keyword list.
+/// @param editor CodeEditor widget handle.
+/// @param language Runtime language name selecting the tokenizer.
 void rt_codeeditor_set_language(void *editor, rt_string language) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -981,6 +1078,9 @@ void rt_codeeditor_set_language(void *editor, rt_string language) {
 /// 3=string, 4=comment, 5=number, 6=function, 7=operator, 8=bracket,
 /// 9=parameter, 10=property, 11=constant, 12=decorator. `color`: ARGB
 /// 0xAARRGGBB. Out-of-range types are ignored. Triggers a repaint.
+/// @param editor CodeEditor widget handle.
+/// @param token_type Syntax token category to override.
+/// @param color Packed ARGB replacement color.
 void rt_codeeditor_set_token_color(void *editor, int64_t token_type, int64_t color) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -997,6 +1097,8 @@ void rt_codeeditor_set_token_color(void *editor, int64_t token_type, int64_t col
 /// of each token, leading/trailing whitespace trimmed). Replaces any
 /// previous list (no append). Empty input clears the list. Doubling
 /// growth from an initial capacity of 8.
+/// @param editor CodeEditor widget handle.
+/// @param keywords Comma-separated runtime string; empty input clears the list.
 void rt_codeeditor_set_custom_keywords(void *editor, rt_string keywords) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1081,6 +1183,7 @@ void rt_codeeditor_set_custom_keywords(void *editor, rt_string keywords) {
 ///
 /// Highlights are user-defined colored ranges painted on top of the
 /// syntax highlighting (e.g., for diagnostics, find-results, etc.).
+/// @param editor CodeEditor widget handle.
 void rt_codeeditor_clear_highlights(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1107,6 +1210,12 @@ void rt_codeeditor_clear_highlights(void *editor) {
 /// Spans are inclusive on start, exclusive on end. Geometric growth
 /// for the spans array (cap doubles, starting at 8). Silently no-ops
 /// on OOM (better than trapping the editor).
+/// @param editor CodeEditor widget handle.
+/// @param start_line Zero-based inclusive start line.
+/// @param start_col Zero-based inclusive start column.
+/// @param end_line Zero-based exclusive-end line.
+/// @param end_col Zero-based exclusive end column.
+/// @param color Packed ARGB overlay color.
 void rt_codeeditor_add_highlight(void *editor,
                                  int64_t start_line,
                                  int64_t start_col,
@@ -1147,6 +1256,7 @@ void rt_codeeditor_add_highlight(void *editor,
 ///
 /// Useful when callers mutate highlight state through other means
 /// and need the editor to redraw on the next frame.
+/// @param editor CodeEditor widget handle.
 void rt_codeeditor_refresh_highlights(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1156,6 +1266,8 @@ void rt_codeeditor_refresh_highlights(void *editor) {
 
 /// @brief Default foreground color for a semantic token type (mirrors the
 ///        lexical palette so semantic and lexical coloring stay consistent).
+/// @param token_type Widget-layer semantic token category.
+/// @return Packed ARGB default color for the category.
 static uint32_t semantic_default_color(int token_type) {
     switch (token_type) {
         case VG_SYN_TOKEN_KEYWORD:
@@ -1187,6 +1299,11 @@ static uint32_t semantic_default_color(int token_type) {
 /// The color honors any per-editor SetTokenColor override, else the lexical
 /// default for the type. Applied on top of the lexical highlighter in
 /// highlight_line(). Geometric growth (cap doubles from 16); no-ops on OOM.
+/// @param editor CodeEditor widget handle.
+/// @param line Zero-based logical line.
+/// @param start Inclusive character-column start.
+/// @param end Exclusive character-column end.
+/// @param token_type Semantic token category controlling the overlay color.
 void rt_codeeditor_add_semantic_token(
     void *editor, int64_t line, int64_t start, int64_t end, int64_t token_type) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
@@ -1221,6 +1338,7 @@ void rt_codeeditor_add_semantic_token(
 
 /// @brief `CodeEditor.ClearSemanticTokens()` — drop the semantic overlay and
 ///        re-highlight so lexical colors are restored.
+/// @param editor CodeEditor widget handle.
 void rt_codeeditor_clear_semantic_tokens(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1231,6 +1349,11 @@ void rt_codeeditor_clear_semantic_tokens(void *editor) {
 }
 
 /// @brief `CodeEditor.AddInlayHint(line, col, text, color)` — add ghost annotation text.
+/// @param editor CodeEditor widget handle.
+/// @param line Zero-based logical line for the hint.
+/// @param col Zero-based character column for the hint.
+/// @param text Runtime annotation text copied into widget storage.
+/// @param color Packed ARGB hint color.
 void rt_codeeditor_add_inlay_hint(
     void *editor, int64_t line, int64_t col, rt_string text, int64_t color) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
@@ -1246,6 +1369,7 @@ void rt_codeeditor_add_inlay_hint(
 }
 
 /// @brief `CodeEditor.ClearInlayHints()` — remove every inlay hint.
+/// @param editor CodeEditor widget handle.
 void rt_codeeditor_clear_inlay_hints(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1254,6 +1378,8 @@ void rt_codeeditor_clear_inlay_hints(void *editor) {
 }
 
 /// @brief `CodeEditor.GetInlayHintCount()` — return active inlay hints.
+/// @param editor CodeEditor widget handle.
+/// @return Number of active inlay hints, or zero for an invalid handle.
 int64_t rt_codeeditor_get_inlay_hint_count(void *editor) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1266,12 +1392,17 @@ int64_t rt_codeeditor_get_inlay_hint_count(void *editor) {
 #else /* !ZANNA_ENABLE_GRAPHICS */
 
 /// @brief Stub: `CodeEditor.SetLanguage` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param language Ignored language name.
 void rt_codeeditor_set_language(void *editor, rt_string language) {
     (void)editor;
     (void)language;
 }
 
 /// @brief Stub: `CodeEditor.SetTokenColor` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param token_type Ignored syntax token category.
+/// @param color Ignored packed ARGB color.
 void rt_codeeditor_set_token_color(void *editor, int64_t token_type, int64_t color) {
     (void)editor;
     (void)token_type;
@@ -1279,17 +1410,26 @@ void rt_codeeditor_set_token_color(void *editor, int64_t token_type, int64_t col
 }
 
 /// @brief Stub: `CodeEditor.SetCustomKeywords` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param keywords Ignored comma-separated keyword string.
 void rt_codeeditor_set_custom_keywords(void *editor, rt_string keywords) {
     (void)editor;
     (void)keywords;
 }
 
 /// @brief Stub: `CodeEditor.ClearHighlights` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
 void rt_codeeditor_clear_highlights(void *editor) {
     (void)editor;
 }
 
 /// @brief Stub: `CodeEditor.AddHighlight` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param start_line Ignored inclusive start line.
+/// @param start_col Ignored inclusive start column.
+/// @param end_line Ignored exclusive-end line.
+/// @param end_col Ignored exclusive end column.
+/// @param color Ignored packed ARGB color.
 void rt_codeeditor_add_highlight(void *editor,
                                  int64_t start_line,
                                  int64_t start_col,
@@ -1305,11 +1445,17 @@ void rt_codeeditor_add_highlight(void *editor,
 }
 
 /// @brief Stub: `CodeEditor.RefreshHighlights` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
 void rt_codeeditor_refresh_highlights(void *editor) {
     (void)editor;
 }
 
 /// @brief Stub: `CodeEditor.AddSemanticToken` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param line Ignored zero-based logical line.
+/// @param start Ignored inclusive start column.
+/// @param end Ignored exclusive end column.
+/// @param token_type Ignored semantic token category.
 void rt_codeeditor_add_semantic_token(
     void *editor, int64_t line, int64_t start, int64_t end, int64_t token_type) {
     (void)editor;
@@ -1320,11 +1466,17 @@ void rt_codeeditor_add_semantic_token(
 }
 
 /// @brief Stub: `CodeEditor.ClearSemanticTokens` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
 void rt_codeeditor_clear_semantic_tokens(void *editor) {
     (void)editor;
 }
 
 /// @brief Stub: `CodeEditor.AddInlayHint` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param line Ignored zero-based logical line.
+/// @param col Ignored zero-based character column.
+/// @param text Ignored hint text.
+/// @param color Ignored packed ARGB color.
 void rt_codeeditor_add_inlay_hint(
     void *editor, int64_t line, int64_t col, rt_string text, int64_t color) {
     (void)editor;
@@ -1335,11 +1487,14 @@ void rt_codeeditor_add_inlay_hint(
 }
 
 /// @brief Stub: `CodeEditor.ClearInlayHints` is a no-op without graphics.
+/// @param editor Ignored CodeEditor handle.
 void rt_codeeditor_clear_inlay_hints(void *editor) {
     (void)editor;
 }
 
 /// @brief Stub: returns 0 (no inlay hint state without graphics).
+/// @param editor Ignored CodeEditor handle.
+/// @return Always `0`.
 int64_t rt_codeeditor_get_inlay_hint_count(void *editor) {
     (void)editor;
     return 0;

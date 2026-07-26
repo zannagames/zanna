@@ -66,6 +66,22 @@ software constructor.
   rises to the pane size, and interactive drags render at reduced resolution
   with a full-resolution re-render on release.
 
+### Implementation state
+
+- **Metal (macOS): implemented.** `metal_create_ctx` accepts a NULL window
+  and builds a headless context — device, pipelines, caches, and main render
+  targets without a presentation layer. Offscreen frames flow through the
+  established render-target pass and its GPU→CPU color sync; every
+  present/layer route already no-ops without a `CAMetalLayer`. Verified
+  on-device: the accelerated constructor selects Metal (no fallback), a
+  cleared frame reads back the requested color within per-channel rasterizer
+  tolerance (`test_rt_canvas3d`), and Studio's viewport launches without the
+  software-fallback notice.
+- **OpenGL (Linux) and D3D11 (Windows): pending.** Their `create_ctx` still
+  requires a window and fails cleanly, so the accelerated constructor
+  truthfully falls back to software on those platforms until their headless
+  context work lands.
+
 ## Consequences
 
 - The editor viewport can finally use the same GPU path games use, removing

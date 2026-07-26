@@ -3,6 +3,15 @@
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
 //
+/// @file rt_gui_automation_bridge.h
+/// @brief Declares the narrow C/C++ bridge from managed GUI apps to TestHarness automation.
+///
+/// @details
+/// The bridge validates application liveness and returns only opaque, borrowed
+/// window/root pointers plus a scheduler-aware event timestamp. Keeping toolkit
+/// implementation types out of this boundary lets the C++ harness author input
+/// without exposing the private `rt_gui_app_t` layout.
+///
 // File: src/runtime/graphics/gui/rt_gui_automation_bridge.h
 // Purpose: Narrow C/C++ bridge that exposes validated, borrowed GUI App state
 //          required by the runtime TestHarness without publishing rt_gui_app_t.

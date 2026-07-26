@@ -3,6 +3,15 @@
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
 //
+/// @file rt_graphics.h
+/// @brief Declares the public C ABI for Canvas2D graphics and window management.
+///
+/// @details
+/// The API exposes opaque canvas handles, logical-pixel drawing primitives,
+/// framebuffer operations, color helpers, event pumping, timing, and window
+/// state. Graphics-disabled builds retain the same symbols through dedicated
+/// fallback stubs.
+///
 // File: src/runtime/graphics/rt_graphics.h
 // Purpose: Runtime bridge functions for the ZannaGFX graphics library, providing canvas
 // creation/destruction, drawing operations, pixel manipulation, image loading, and window
@@ -50,6 +59,8 @@ int8_t rt_canvas_is_available(void);
 void *rt_canvas_new(rt_string title, int64_t width, int64_t height);
 
 /// @brief Return 1 if @p canvas is a live Canvas handle, 0 otherwise.
+/// @param canvas Candidate opaque handle.
+/// @return `1` for a live Canvas handle; otherwise `0`.
 int8_t rt_canvas_is_handle(void *canvas);
 
 /// @brief Destroy a graphics canvas and free resources.
@@ -198,12 +209,26 @@ void rt_canvas_text_scaled_bg(
 int64_t rt_canvas_text_scaled_width(rt_string text, int64_t scale);
 
 /// @brief Draw text horizontally centered on the canvas.
+/// @param canvas Canvas handle.
+/// @param y Top-edge Y coordinate.
+/// @param text Text to draw.
+/// @param color Packed text color.
 void rt_canvas_text_centered(void *canvas, int64_t y, rt_string text, int64_t color);
 
 /// @brief Draw text right-aligned with a margin from the right edge.
+/// @param canvas Canvas handle.
+/// @param margin Distance from the right canvas edge in logical pixels.
+/// @param y Top-edge Y coordinate.
+/// @param text Text to draw.
+/// @param color Packed text color.
 void rt_canvas_text_right(void *canvas, int64_t margin, int64_t y, rt_string text, int64_t color);
 
 /// @brief Draw scaled text horizontally centered on the canvas.
+/// @param canvas Canvas handle.
+/// @param y Top-edge Y coordinate.
+/// @param text Text to draw.
+/// @param color Packed text color.
+/// @param scale Positive integer glyph scale.
 void rt_canvas_text_centered_scaled(
     void *canvas, int64_t y, rt_string text, int64_t color, int64_t scale);
 
@@ -451,12 +476,21 @@ void rt_canvas_polygon(void *canvas, void *points, int64_t count, int64_t color)
 void rt_canvas_polygon_frame(void *canvas, void *points, int64_t count, int64_t color);
 
 /// @brief Draw connected line segments from a typed Path2D.
+/// @param canvas Canvas handle.
+/// @param path Typed Path2D handle containing the vertices.
+/// @param color Packed line color.
 void rt_canvas_polyline_path(void *canvas, void *path, int64_t color);
 
 /// @brief Draw a filled polygon from a typed Path2D.
+/// @param canvas Canvas handle.
+/// @param path Typed Path2D handle containing the closed polygon vertices.
+/// @param color Packed fill color.
 void rt_canvas_polygon_path(void *canvas, void *path, int64_t color);
 
 /// @brief Draw a polygon outline from a typed Path2D.
+/// @param canvas Canvas handle.
+/// @param path Typed Path2D handle containing the closed polygon vertices.
+/// @param color Packed outline color.
 void rt_canvas_polygon_frame_path(void *canvas, void *path, int64_t color);
 
 //=========================================================================
@@ -495,22 +529,38 @@ int64_t rt_canvas_save_png(void *canvas, rt_string path);
 // Color Functions
 //=========================================================================
 
-/// @brief Construct a color from RGB components.
-/// @brief Named color-constant getters: each returns a packed 0x00RRGGBB
-///        value for the color in its name (red/green/blue/white/black/yellow/
-///        cyan/magenta/gray/orange), for front-ends that call functions
-///        rather than use color literals.
+/// @brief Return the packed red color constant.
+/// @return Packed `0x00FF0000`.
 int64_t rt_color_red(void);
+/// @brief Return the packed green color constant.
+/// @return Packed `0x0000FF00`.
 int64_t rt_color_green(void);
+/// @brief Return the packed blue color constant.
+/// @return Packed `0x000000FF`.
 int64_t rt_color_blue(void);
+/// @brief Return the packed white color constant.
+/// @return Packed `0x00FFFFFF`.
 int64_t rt_color_white(void);
+/// @brief Return the packed black color constant.
+/// @return Packed `0x00000000`.
 int64_t rt_color_black(void);
+/// @brief Return the packed yellow color constant.
+/// @return Packed `0x00FFFF00`.
 int64_t rt_color_yellow(void);
+/// @brief Return the packed cyan color constant.
+/// @return Packed `0x0000FFFF`.
 int64_t rt_color_cyan(void);
+/// @brief Return the packed magenta color constant.
+/// @return Packed `0x00FF00FF`.
 int64_t rt_color_magenta(void);
+/// @brief Return the packed gray color constant.
+/// @return The runtime's packed gray constant.
 int64_t rt_color_gray(void);
+/// @brief Return the packed orange color constant.
+/// @return The runtime's packed orange constant.
 int64_t rt_color_orange(void);
 
+/// @brief Construct a packed color from RGB channel values.
 /// @param r Red component (0-255).
 /// @param g Green component (0-255).
 /// @param b Blue component (0-255).
@@ -699,12 +749,18 @@ void rt_canvas_gradient_v(
 // --- Window management (BINDING-001 + BINDING-002) ---
 
 /// @brief Get the display scale factor (1.0 on standard, 2.0 on HiDPI/Retina).
+/// @param canvas Canvas handle.
+/// @return Ratio of physical framebuffer pixels to logical canvas pixels.
 double rt_canvas_get_scale(void *canvas);
 
 /// @brief Get the window X position in screen coordinates.
+/// @param canvas Canvas handle.
+/// @return Window top-left X coordinate in screen pixels.
 int64_t rt_canvas_get_window_x(void *canvas);
 
 /// @brief Get the window Y position in screen coordinates.
+/// @param canvas Canvas handle.
+/// @return Window top-left Y coordinate in screen pixels.
 int64_t rt_canvas_get_window_y(void *canvas);
 
 /// @brief Get the window position in screen coordinates.
@@ -714,64 +770,97 @@ int64_t rt_canvas_get_window_y(void *canvas);
 void rt_canvas_get_position(void *canvas, int64_t *out_x, int64_t *out_y);
 
 /// @brief Set the window position in screen coordinates.
+/// @param canvas Canvas handle.
+/// @param x New top-left X coordinate.
+/// @param y New top-left Y coordinate.
 void rt_canvas_set_position(void *canvas, int64_t x, int64_t y);
 
 /// @brief Get the current target FPS (-1 = unlimited).
+/// @param canvas Canvas handle.
+/// @return Target frames per second, or `-1` when unlimited.
 int64_t rt_canvas_get_fps(void *canvas);
 
 /// @brief Set the target FPS (<=0 = unlimited).
+/// @param canvas Canvas handle.
+/// @param fps Target frames per second; non-positive disables the cap.
 void rt_canvas_set_fps(void *canvas, int64_t fps);
 
 /// @brief Get milliseconds elapsed since the last Flip() call.
 /// If SetDTMax was called, result is clamped to [1, max] after startup while
 /// preserving an exact 0 ms first frame.
+/// @param canvas Canvas handle.
+/// @return Elapsed frame time in milliseconds.
 int64_t rt_canvas_get_delta_time(void *canvas);
 
 /// @brief Get seconds elapsed since the last Flip() call.
 /// Uses the same clamp as rt_canvas_get_delta_time().
+/// @param canvas Canvas handle.
+/// @return Elapsed frame time in seconds.
 double rt_canvas_get_delta_time_sec(void *canvas);
 
 /// @brief Set the maximum delta time clamp.
 /// When set, DeltaTime is clamped to [1, max] after the first frame. Pass 0 to
 /// disable clamping (default).
+/// @param canvas Canvas handle.
+/// @param max_ms Maximum reported frame interval in milliseconds; `0` disables clamping.
 void rt_canvas_set_dt_max(void *canvas, int64_t max_ms);
 
 /// @brief Poll events and check if the window should remain open.
 /// Equivalent to calling Poll() then checking !ShouldClose.
+/// @param canvas Canvas handle.
 /// @return 1 if the frame should proceed, 0 if the window is closing.
 int64_t rt_canvas_begin_frame(void *canvas);
 
 /// @brief Return 1 if the window is maximized, 0 otherwise.
+/// @param canvas Canvas handle.
+/// @return `1` when maximized; otherwise `0`.
 int8_t rt_canvas_is_maximized(void *canvas);
 
 /// @brief Maximize the window.
+/// @param canvas Canvas handle.
 void rt_canvas_maximize(void *canvas);
 
 /// @brief Return 1 if the window is minimized, 0 otherwise.
+/// @param canvas Canvas handle.
+/// @return `1` when minimized; otherwise `0`.
 int8_t rt_canvas_is_minimized(void *canvas);
 
 /// @brief Minimize (iconify) the window.
+/// @param canvas Canvas handle.
 void rt_canvas_minimize(void *canvas);
 
 /// @brief Restore from minimized or maximized state.
+/// @param canvas Canvas handle.
 void rt_canvas_restore(void *canvas);
 
 /// @brief Return 1 if the window has keyboard focus, 0 otherwise.
+/// @param canvas Canvas handle.
+/// @return `1` when focused; otherwise `0`.
 int8_t rt_canvas_is_focused(void *canvas);
 
 /// @brief Bring the window to the front and give it focus.
+/// @param canvas Canvas handle.
 void rt_canvas_focus(void *canvas);
 
 /// @brief Allow (0) or prevent (1) the window close button.
+/// @param canvas Canvas handle.
+/// @param prevent Non-zero to suppress close-button requests.
 void rt_canvas_prevent_close(void *canvas, int64_t prevent);
 
 /// @brief Get the monitor size in pixels.
+/// @param canvas Canvas handle.
+/// @param out_w Output receiving the monitor width.
+/// @param out_h Output receiving the monitor height.
 void rt_canvas_get_monitor_size(void *canvas, int64_t *out_w, int64_t *out_h);
 
 /// @brief Get the monitor width in pixels.
+/// @param canvas Canvas handle.
+/// @return Monitor width in physical pixels.
 int64_t rt_canvas_get_monitor_width(void *canvas);
 
 /// @brief Get the monitor height in pixels.
+/// @param canvas Canvas handle.
+/// @return Monitor height in physical pixels.
 int64_t rt_canvas_get_monitor_height(void *canvas);
 
 #ifdef __cplusplus

@@ -1,10 +1,36 @@
 //===----------------------------------------------------------------------===//
-// Part of the Zanna project, under the GNU GPL v3. See LICENSE.
-// File: src/runtime/graphics/3d/rt_game3d_world_sim.inc  (#included from rt_game3d.c; not a
-// standalone translation unit) Purpose: Game3D environment/debug helpers, per-frame
-// controller/animation update, entity spawn/despawn
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
 //===----------------------------------------------------------------------===//
+//
+// File: src/runtime/graphics/3d/rt_game3d_world_sim.inc
+// Purpose: World3D environment/debug helpers, controller and animation
+//   updates, transactional entity-tree registration, and runtime teardown,
+//   included by rt_game3d.c rather than compiled independently.
+// Key invariants:
+//   - Spawn and despawn update scene, physics, body, name, and entity indices
+//     as a transaction or roll back the entities added by the failed attempt.
+//   - Parallel animation work never updates the same animator concurrently.
+//   - World teardown releases runtime objects before freeing their registries.
+// Ownership/Lifetime:
+//   - World registries retain spawned entities and subsystem handles.
+//   - Temporary traversal, deduplication, and job arrays are world-owned or
+//     freed before their operation returns.
+// Links: rt_game3d.c, rt_game3d_internal.h, rt_game3d_indices.inc
+//
+//===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements World3D simulation helpers and entity-tree lifecycle.
+/// @details This include provides fluent environment presets, debug controls,
+/// camera-controller dispatch, serial and worker-backed animation updates,
+/// atomic entity-tree spawning and rollback, recursive despawning, and final
+/// release of world-owned runtime state.
+
 /// @brief GC finalizer for an EnvHandle: release its water, terrain, and world refs.
+/// @param obj Borrowed EnvHandle payload being finalized; `NULL` is accepted.
 static void game3d_env_handle_finalize(void *obj) {
     rt_game3d_env_handle *env = (rt_game3d_env_handle *)obj;
     if (!env)
@@ -15,6 +41,8 @@ static void game3d_env_handle_finalize(void *obj) {
 }
 
 /// @brief Allocate an EnvHandle bound to `world`; traps on OOM.
+/// @param world Borrowed World3D retained by the new environment handle.
+/// @return New EnvHandle object, or `NULL` after trapping on allocation failure.
 static void *game3d_env_handle_new(rt_game3d_world *world) {
     rt_game3d_env_handle *env = (rt_game3d_env_handle *)rt_obj_new_i64(
         RT_G3D_GAME3D_ENV_HANDLE_CLASS_ID, (int64_t)sizeof(*env));
@@ -29,6 +57,9 @@ static void *game3d_env_handle_new(rt_game3d_world *world) {
 }
 
 /// @brief Resolve and validate the world an EnvHandle targets; traps `method` if absent.
+/// @param env Borrowed environment handle whose retained world is resolved.
+/// @param method Trap message used when the handle has no world or validation fails.
+/// @return Borrowed live World3D payload, or `NULL` after trapping.
 static rt_game3d_world *game3d_env_world(rt_game3d_env_handle *env, const char *method) {
     if (!env || !env->world) {
         rt_trap(method);
@@ -39,6 +70,10 @@ static rt_game3d_world *game3d_env_world(rt_game3d_env_handle *env, const char *
 
 /// @brief Fluent: spawn a ground-collider terrain entity (replacing any prior one) into
 ///   the environment's world and return the handle. See header.
+/// @param obj Borrowed EnvHandle returned unchanged for fluent chaining.
+/// @param size Requested square terrain extent; invalid values use 80 world units.
+/// @param height Requested finite world-space surface height.
+/// @return The original environment handle.
 void *rt_game3d_env_handle_with_terrain(void *obj, double size, double height) {
     rt_game3d_env_handle *env =
         game3d_env_handle_checked(obj, "Game3D.EnvHandle.withTerrain: invalid environment");
@@ -76,6 +111,9 @@ void *rt_game3d_env_handle_with_terrain(void *obj, double size, double height) {
 
 /// @brief Fluent: spawn a translucent water plane at `level` (replacing any prior one)
 ///   and return the handle. See header.
+/// @param obj Borrowed EnvHandle returned unchanged for fluent chaining.
+/// @param level Requested finite world-space water elevation.
+/// @return The original environment handle.
 void *rt_game3d_env_handle_with_water(void *obj, double level) {
     rt_game3d_env_handle *env =
         game3d_env_handle_checked(obj, "Game3D.EnvHandle.withWater: invalid environment");
@@ -108,6 +146,10 @@ void *rt_game3d_env_handle_with_water(void *obj, double level) {
 
 /// @brief Fluent: enable distance fog between near/far planes using the world's clear
 ///   color and return the handle. See header.
+/// @param obj Borrowed EnvHandle returned unchanged for fluent chaining.
+/// @param near_plane Non-negative fog start distance, defaulting to 18.
+/// @param far_plane Positive full-fog distance, defaulting to 120.
+/// @return The original environment handle.
 void *rt_game3d_env_handle_with_fog(void *obj, double near_plane, double far_plane) {
     rt_game3d_env_handle *env =
         game3d_env_handle_checked(obj, "Game3D.EnvHandle.withFog: invalid environment");
@@ -123,6 +165,11 @@ void *rt_game3d_env_handle_with_fog(void *obj, double near_plane, double far_pla
 }
 
 /// @brief Fluent: enable exponential height fog on the environment's canvas.
+/// @param obj Borrowed EnvHandle returned unchanged for fluent chaining.
+/// @param density Non-negative fog density, defaulting to 0.02.
+/// @param height Finite world-space reference height, defaulting to zero.
+/// @param falloff Positive exponential falloff, defaulting to 0.1.
+/// @return The original environment handle.
 void *rt_game3d_env_handle_with_height_fog(void *obj,
                                            double density,
                                            double height,
@@ -141,6 +188,8 @@ void *rt_game3d_env_handle_with_height_fog(void *obj,
 
 /// @brief Build a bright daytime environment (sun lighting, terrain, fog) and return
 ///   its handle. See header.
+/// @param obj Borrowed World3D configured by the preset.
+/// @return New retained EnvHandle associated with the world, or `NULL` on allocation failure.
 void *rt_game3d_environment_outdoor(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.Environment.Outdoor: invalid world");
     void *env = game3d_env_handle_new(world);
@@ -153,6 +202,8 @@ void *rt_game3d_environment_outdoor(void *obj) {
 }
 
 /// @brief Build a warm low-sun sunset environment and return its handle. See header.
+/// @param obj Borrowed World3D configured by the preset.
+/// @return New retained EnvHandle associated with the world, or `NULL` on allocation failure.
 void *rt_game3d_environment_sunset(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.Environment.Sunset: invalid world");
     void *env = game3d_env_handle_new(world);
@@ -169,6 +220,8 @@ void *rt_game3d_environment_sunset(void *obj) {
 }
 
 /// @brief Build a flat, diffuse overcast environment and return its handle. See header.
+/// @param obj Borrowed World3D configured by the preset.
+/// @return New retained EnvHandle associated with the world, or `NULL` on allocation failure.
 void *rt_game3d_environment_overcast(void *obj) {
     rt_game3d_world *world =
         game3d_world_checked(obj, "Game3D.Environment.Overcast: invalid world");
@@ -192,6 +245,8 @@ void *rt_game3d_environment_overcast(void *obj) {
 
 /// @brief Build a dark night environment (moonlight, terrain, fog) and return its
 ///   handle. See header.
+/// @param obj Borrowed World3D configured by the preset.
+/// @return New retained EnvHandle associated with the world, or `NULL` on allocation failure.
 void *rt_game3d_environment_night(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.Environment.Night: invalid world");
     void *env = game3d_env_handle_new(world);
@@ -202,6 +257,8 @@ void *rt_game3d_environment_night(void *obj) {
 }
 
 /// @brief Toggle the on-screen debug stats overlay. See header.
+/// @param obj Borrowed World3D handle.
+/// @param enabled Nonzero to render the debug statistics overlay.
 void rt_game3d_debug_show_overlay(void *obj, int8_t enabled) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.Debug3D.ShowOverlay: invalid world");
     if (world)
@@ -210,6 +267,9 @@ void rt_game3d_debug_show_overlay(void *obj, int8_t enabled) {
 
 /// @brief Enable an axis gizmo at the given Vec3 origin and size; traps on a non-Vec3
 ///   origin. See header.
+/// @param obj Borrowed World3D handle.
+/// @param origin Borrowed Vec3 retained as the axis-gizmo origin.
+/// @param size Positive axis length, defaulting to one for invalid values.
 void rt_game3d_debug_draw_axes(void *obj, void *origin, double size) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.Debug3D.DrawAxes: invalid world");
     if (!origin || !rt_g3d_is_vec3(origin)) {
@@ -224,6 +284,8 @@ void rt_game3d_debug_draw_axes(void *obj, void *origin, double size) {
 }
 
 /// @brief Toggle physics collider/contact debug drawing. See header.
+/// @param obj Borrowed World3D handle.
+/// @param enabled Nonzero to draw physics debug geometry.
 void rt_game3d_debug_draw_physics(void *obj, int8_t enabled) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.Debug3D.DrawPhysics: invalid world");
     if (world)
@@ -231,6 +293,8 @@ void rt_game3d_debug_draw_physics(void *obj, int8_t enabled) {
 }
 
 /// @brief Toggle the on-screen camera info readout. See header.
+/// @param obj Borrowed World3D handle.
+/// @param enabled Nonzero to render camera state in the debug overlay.
 void rt_game3d_debug_draw_camera_info(void *obj, int8_t enabled) {
     rt_game3d_world *world =
         game3d_world_checked(obj, "Game3D.Debug3D.DrawCameraInfo: invalid world");
@@ -239,6 +303,8 @@ void rt_game3d_debug_draw_camera_info(void *obj, int8_t enabled) {
 }
 
 /// @brief Toggle the backend-capabilities readout overlay. See header.
+/// @param obj Borrowed World3D handle.
+/// @param enabled Nonzero to render graphics-backend capabilities.
 void rt_game3d_debug_draw_capabilities(void *obj, int8_t enabled) {
     rt_game3d_world *world =
         game3d_world_checked(obj, "Game3D.Debug3D.DrawCapabilities: invalid world");
@@ -246,10 +312,10 @@ void rt_game3d_debug_draw_capabilities(void *obj, int8_t enabled) {
         world->debug_caps_enabled = enabled ? 1 : 0;
 }
 
-/// @brief GC finalizer for a character controller: release its entity and character.
-
 /// @brief Dispatch the per-frame update to the world's installed camera controller by
 ///   class id; traps if the controller is not a Game3D camera controller.
+/// @param world Borrowed world owning the optional controller.
+/// @param dt Sanitized simulation delta forwarded to the controller implementation.
 static void game3d_world_update_controller(rt_game3d_world *world, double dt) {
     if (!world || !world->camera_controller)
         return;
@@ -278,15 +344,20 @@ static void game3d_world_update_controller(rt_game3d_world *world, double dt) {
     }
 }
 
-/// @brief Advance every live, non-destroyed entity's animator by `dt`.
+/// @brief Describes one disjoint animator slice submitted to a worker.
 typedef struct {
+    /// Borrowed deduplicated animator array.
     void **animators;
+    /// Inclusive slice start.
     int32_t start;
+    /// Exclusive slice end.
     int32_t end;
+    /// Simulation delta forwarded to every animator.
     double dt;
 } rt_game3d_animation_job;
 
 /// @brief Worker-job entry point: advance a contiguous slice of animators by the frame delta.
+/// @param arg Borrowed `rt_game3d_animation_job` descriptor valid until pool synchronization.
 static void game3d_animation_job_run(void *arg) {
     rt_game3d_animation_job *job = (rt_game3d_animation_job *)arg;
     if (!job || !job->animators)
@@ -299,6 +370,9 @@ static void game3d_animation_job_run(void *arg) {
 }
 
 /// @brief Choose how many parallel jobs to split an animator update across, given the worker count.
+/// @param worker_count Configured number of available worker threads.
+/// @param animator_count Number of unique animators requiring an update.
+/// @return Job count in `[1, animator_count]`, with four target jobs per worker.
 static int32_t game3d_animation_job_count(int64_t worker_count, int32_t animator_count) {
     if (worker_count <= 1 || animator_count <= 1)
         return 1;
@@ -311,6 +385,9 @@ static int32_t game3d_animation_job_count(int64_t worker_count, int32_t animator
 }
 
 /// @brief Update a list of animators sequentially (the single-threaded fallback path).
+/// @param animators Borrowed array of animator handles.
+/// @param count Number of array elements to consider.
+/// @param dt Simulation delta forwarded to each non-null animator.
 static void game3d_update_animator_list_serial(void **animators, int32_t count, double dt) {
     if (!animators || count <= 0)
         return;
@@ -324,6 +401,9 @@ static void game3d_update_animator_list_serial(void **animators, int32_t count, 
 ///
 /// @details The animation phase runs every fixed step, so retaining this pointer array avoids
 ///          allocating one `entity_count`-sized block per tick.
+/// @param world Borrowed world whose reusable animator array may grow.
+/// @param needed Minimum number of pointer slots required.
+/// @return Nonzero when the array has sufficient capacity, otherwise zero.
 static int game3d_world_ensure_animation_animators(rt_game3d_world *world, int32_t needed) {
     void **grown;
     int32_t new_capacity;
@@ -346,6 +426,9 @@ static int game3d_world_ensure_animation_animators(rt_game3d_world *world, int32
 ///
 /// @details The set uses open addressing and is cleared with memset every tick. Retaining the
 ///          allocation avoids calloc/free churn while preserving O(n) duplicate detection.
+/// @param world Borrowed world whose reusable set storage may grow.
+/// @param capacity Required power-of-two pointer-slot count.
+/// @return Cleared world-owned set storage, or `NULL` for invalid size or allocation failure.
 static void **game3d_world_prepare_animation_seen_set(rt_game3d_world *world, size_t capacity) {
     void **grown;
     if (!world || capacity == 0 || capacity > SIZE_MAX / sizeof(void *))
@@ -365,6 +448,9 @@ static void **game3d_world_prepare_animation_seen_set(rt_game3d_world *world, si
 ///
 /// @details Task descriptors are small but allocated from the fixed-step hot path; reusing them
 ///          keeps parallel animator updates allocation-free after the first growth.
+/// @param world Borrowed world whose reusable descriptor array may grow.
+/// @param needed Positive number of task descriptors required.
+/// @return Cleared world-owned descriptor array, or `NULL` on invalid input or allocation failure.
 static rt_game3d_animation_job *game3d_world_prepare_animation_jobs(rt_game3d_world *world,
                                                                     int32_t needed) {
     rt_game3d_animation_job *grown;
@@ -391,6 +477,10 @@ static rt_game3d_animation_job *game3d_world_prepare_animation_jobs(rt_game3d_wo
 
 /// @brief Advance all of the world's animators by @p dt, parallelizing across workers when
 /// worthwhile.
+/// @details Live entities are filtered and animator pointers deduplicated before
+///          partitioning, preventing concurrent updates to a shared animator.
+/// @param world Borrowed world whose live animators are advanced.
+/// @param dt Simulation delta supplied to each qualifying animator.
 static void game3d_world_update_animations(rt_game3d_world *world, double dt) {
     if (!world)
         return;
@@ -478,6 +568,8 @@ static void game3d_world_update_animations(rt_game3d_world *world, double dt) {
 
 /// @brief Dispatch the post-physics late update to the world's camera controller by
 ///   class id; traps on an unrecognized controller class.
+/// @param world Borrowed world owning the optional controller.
+/// @param dt Sanitized simulation delta forwarded to late-update behavior.
 static void game3d_world_late_update_controller(rt_game3d_world *world, double dt) {
     if (!world || !world->camera_controller)
         return;
@@ -508,6 +600,9 @@ static void game3d_world_late_update_controller(rt_game3d_world *world, double d
 
 /// @brief Ensure the world's entity registry can hold `need` entries, doubling capacity;
 ///   returns 0 on allocation failure.
+/// @param world Borrowed world whose entity pointer array may grow.
+/// @param need Minimum number of entity slots required.
+/// @return Nonzero when the requested capacity is available, otherwise zero.
 static int game3d_world_grow_entities(rt_game3d_world *world, int32_t need) {
     int32_t new_cap;
     if (!world)
@@ -527,6 +622,11 @@ static int game3d_world_grow_entities(rt_game3d_world *world, int32_t need) {
 }
 
 /// @brief Linear-search the registry for `entity`; returns its index or -1.
+/// @details Uses the entity's cached registry index when valid and repairs that
+///          cache after a successful fallback scan.
+/// @param world Borrowed world whose entity registry is searched.
+/// @param entity Borrowed entity pointer to locate.
+/// @return Zero-based registry index, or `-1` when absent.
 static int32_t game3d_world_find_entity_index(rt_game3d_world *world, rt_game3d_entity *entity) {
     int32_t indexed_slot;
     if (!world || !entity)
@@ -548,6 +648,10 @@ static int32_t game3d_world_find_entity_index(rt_game3d_world *world, rt_game3d_
 
 /// @brief Find the spawned entity whose physics body is `body`; NULL if none. Used to
 ///   map collision events back to entities.
+/// @details Invalid or stale index entries are removed before returning absence.
+/// @param world Borrowed world whose body index is queried.
+/// @param body Borrowed physics-body handle used as the index key.
+/// @return Borrowed live spawned Entity3D payload, or `NULL` when no valid owner exists.
 rt_game3d_entity *game3d_world_find_entity_by_body(rt_game3d_world *world, void *body) {
     int found = 0;
     int slot;
@@ -575,6 +679,8 @@ rt_game3d_entity *game3d_world_find_entity_by_body(rt_game3d_world *world, void 
 
 /// @brief Remove `entity` from the registry without rebuilding the name index.
 /// @details Used by tree operations that rebuild once after a batch.
+/// @param world Borrowed world whose registry and body index are updated.
+/// @param entity Borrowed registered entity to remove.
 static void game3d_world_registry_remove_no_rebuild(rt_game3d_world *world,
                                                     rt_game3d_entity *entity) {
     int32_t index = game3d_world_find_entity_index(world, entity);
@@ -602,6 +708,8 @@ static void game3d_world_registry_remove_no_rebuild(rt_game3d_world *world,
 
 /// @brief Detach an entity's node from its parent, or from the scene root if it has no
 ///   parent.
+/// @param world Borrowed owning world used for root-scene removal.
+/// @param entity Borrowed entity whose scene node is detached.
 static void game3d_entity_detach_node(rt_game3d_world *world, rt_game3d_entity *entity) {
     void *node = game3d_entity_node_ref(entity);
     if (!world || !node)
@@ -613,19 +721,34 @@ static void game3d_entity_detach_node(rt_game3d_world *world, rt_game3d_entity *
         rt_scene3d_remove(world->scene, node);
 }
 
+/// @brief Explicit-stack entry used for pre-order or post-order entity-tree traversal.
 typedef struct game3d_entity_tree_item {
+    /// Borrowed entity represented by this entry.
     rt_game3d_entity *entity;
+    /// Whether the entity owns the scene-root attachment.
     int8_t root_link;
+    /// Whether descendants have already been scheduled.
     int8_t visited;
 } game3d_entity_tree_item;
 
+/// @brief Tracks entities added by the current spawn transaction for reverse rollback.
 typedef struct game3d_spawned_entity_list {
+    /// Borrowed entity pointers retained by the world registry.
     rt_game3d_entity **items;
+    /// Number of populated rollback entries.
     int32_t count;
+    /// Allocated pointer-slot count.
     int32_t capacity;
 } game3d_spawned_entity_list;
 
 /// @brief Push an entity-tree traversal item onto the work list, growing it as needed.
+/// @param items Address of the caller-owned traversal array.
+/// @param count In/out number of populated entries.
+/// @param capacity In/out allocated entry count.
+/// @param entity Borrowed entity stored in the new item.
+/// @param root_link Nonzero when this item owns the scene-root link.
+/// @param visited Nonzero for the post-order revisit entry.
+/// @return Nonzero on success, or zero for invalid storage arguments or allocation failure.
 static int game3d_entity_tree_push(game3d_entity_tree_item **items,
                                    int32_t *count,
                                    int32_t *capacity,
@@ -655,6 +778,9 @@ static int game3d_entity_tree_push(game3d_entity_tree_item **items,
 /// @brief Record one entity spawned during the current tree transaction.
 /// @details The list owns only the pointer array; entity lifetimes are held by the world registry.
 ///          Rollback uses the reverse order so children are removed before parents.
+/// @param list Borrowed rollback list to grow and append.
+/// @param entity Borrowed newly registered entity.
+/// @return Nonzero on success, or zero for invalid input or allocation failure.
 static int game3d_spawned_entity_list_push(game3d_spawned_entity_list *list,
                                            rt_game3d_entity *entity) {
     rt_game3d_entity **grown;
@@ -676,6 +802,7 @@ static int game3d_spawned_entity_list_push(game3d_spawned_entity_list *list,
 }
 
 /// @brief Free the pointer storage owned by a spawned-entity rollback list.
+/// @param list Borrowed list to release and reset; `NULL` is accepted.
 static void game3d_spawned_entity_list_free(game3d_spawned_entity_list *list) {
     if (!list)
         return;
@@ -687,6 +814,10 @@ static void game3d_spawned_entity_list_free(game3d_spawned_entity_list *list) {
 /// @details Destroy marking happens after physics, scene, and registry removal so cleanup helpers
 ///          still see a live spawned entity. A temporary retain keeps the handle valid after the
 ///          registry releases its ownership.
+/// @param world Borrowed owning world.
+/// @param entity Borrowed spawned entity to remove.
+/// @param detach_root Nonzero to detach the entity's node from its external scene parent.
+/// @param mark_destroyed Nonzero to invalidate the entity handle after removal.
 static void game3d_world_despawn_entity_one_internal(rt_game3d_world *world,
                                                      rt_game3d_entity *entity,
                                                      int detach_root,
@@ -715,6 +846,9 @@ static void game3d_world_despawn_entity_one_internal(rt_game3d_world *world,
 }
 
 /// @brief Despawn a single entity: detach it from physics/scene, unregister it, and release it.
+/// @param world Borrowed owning world.
+/// @param entity Borrowed spawned entity to remove while keeping its handle live.
+/// @param detach_root Nonzero to detach the entity's node from its external scene parent.
 static void game3d_world_despawn_entity_one(rt_game3d_world *world,
                                             rt_game3d_entity *entity,
                                             int detach_root) {
@@ -725,6 +859,10 @@ static void game3d_world_despawn_entity_one(rt_game3d_world *world,
 /// @details Only entities recorded in @p spawned are removed; already-spawned entities in the input
 ///          tree are left alone. The root scene link is detached only if the recorded entity is the
 ///          transaction root.
+/// @param world Borrowed world receiving the failed transaction.
+/// @param spawned Borrowed ordered list of entities added by that transaction.
+/// @param root Borrowed transaction-root entity used to identify the scene link.
+/// @param attach_to_scene Nonzero when the root was attached to the world scene.
 static void game3d_world_rollback_spawned_entities(rt_game3d_world *world,
                                                    game3d_spawned_entity_list *spawned,
                                                    rt_game3d_entity *root,
@@ -739,6 +877,12 @@ static void game3d_world_rollback_spawned_entities(rt_game3d_world *world,
 }
 
 /// @brief Despawn an entity tree with an explicit heap stack, optionally marking nodes destroyed.
+/// @details Traverses children before parents so physics and registry ownership
+///          remain valid until every descendant has been removed.
+/// @param world Borrowed owning world.
+/// @param entity Borrowed root entity of the subtree.
+/// @param detach_root Nonzero to detach the root from its external scene parent.
+/// @param mark_destroyed Nonzero to invalidate every removed entity handle.
 static void game3d_world_despawn_entity_tree_internal(rt_game3d_world *world,
                                                       rt_game3d_entity *entity,
                                                       int detach_root,
@@ -780,6 +924,9 @@ static void game3d_world_despawn_entity_tree_internal(rt_game3d_world *world,
 }
 
 /// @brief Despawn an entity tree with an explicit heap stack, marking handles stale.
+/// @param world Borrowed owning world.
+/// @param entity Borrowed root entity of the subtree.
+/// @param detach_root Nonzero to detach the root from its external scene parent.
 static void game3d_world_despawn_entity_tree(rt_game3d_world *world,
                                              rt_game3d_entity *entity,
                                              int detach_root) {
@@ -788,6 +935,13 @@ static void game3d_world_despawn_entity_tree(rt_game3d_world *world,
 
 /// @brief Spawn one entity in a tree walk; returns 1 when children should be visited,
 ///   0 when it was already spawned in this world, and -1 on a trapped failure.
+/// @details Registration updates the name and body indices, scene attachment,
+///          physics membership, node-body binding, ownership, and stable ID.
+/// @param world Borrowed destination world.
+/// @param entity Borrowed entity to validate and register.
+/// @param attach_to_scene Nonzero to attach this entity's node to the scene root.
+/// @param next_id Optional in/out next stable entity identifier.
+/// @return `1` for a new registration, `0` when no child traversal is needed, or `-1` on failure.
 static int game3d_world_spawn_entity_one(rt_game3d_world *world,
                                          rt_game3d_entity *entity,
                                          int attach_to_scene,
@@ -887,6 +1041,11 @@ static int game3d_world_spawn_entity_one(rt_game3d_world *world,
 ///   node to the scene, register and add bodies to physics, and mark the tree spawned.
 /// @details Internal callers pass only live entities; destroyed or cross-world entities trap here.
 ///   Only the root attaches to the scene (`attach_to_scene`); children remain parented to it.
+/// @param world Borrowed destination world.
+/// @param entity Borrowed root entity whose full child tree is traversed.
+/// @param attach_to_scene Nonzero to attach the root node to the scene.
+/// @param next_id Optional in/out stable-ID counter advanced for unassigned entities.
+/// @return Nonzero when the complete transaction succeeds, otherwise zero after rollback.
 int game3d_world_spawn_entity_tree(rt_game3d_world *world,
                                    rt_game3d_entity *entity,
                                    int attach_to_scene,
@@ -942,6 +1101,8 @@ int game3d_world_spawn_entity_tree(rt_game3d_world *world,
 
 /// @brief Despawn and release every entity (optionally marking them destroyed), then
 ///   release all owned subsystems. Shared by destroy() and the GC finalizer.
+/// @param world Borrowed world whose live runtime state is released.
+/// @param mark_entities_destroyed Nonzero to invalidate entity handles during teardown.
 static void game3d_world_release_runtime(rt_game3d_world *world, int mark_entities_destroyed) {
     if (!world)
         return;
@@ -978,6 +1139,9 @@ static void game3d_world_release_runtime(rt_game3d_world *world, int mark_entiti
 
 /// @brief Free all of the world's per-subsystem registries (entities, controllers, animators,
 /// etc.).
+/// @details Clears combat and persistence state, releases retained cloths, and
+///          resets every freed registry pointer, count, capacity, and validity flag.
+/// @param world Borrowed world whose registry storage is freed.
 static void game3d_world_free_registries(rt_game3d_world *world) {
     if (!world)
         return;
@@ -1024,6 +1188,7 @@ static void game3d_world_free_registries(rt_game3d_world *world) {
 }
 
 /// @brief GC finalizer for a world: release all runtime state and free the entity array.
+/// @param obj Borrowed World3D payload being finalized; `NULL` is accepted.
 static void game3d_world_finalize(void *obj) {
     rt_game3d_world *world = (rt_game3d_world *)obj;
     if (!world)

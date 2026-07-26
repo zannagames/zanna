@@ -3,6 +3,15 @@
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
 //
+/// @file rt_gui_accessibility_linux.c
+/// @brief Implements Linux desktop accessibility preferences and AT-SPI projection hooks.
+///
+/// @details
+/// Preference queries combine environment overrides, the desktop portal, and
+/// bounded XSettings parsing while retaining deterministic fallbacks. Semantic
+/// tree lifecycle and announcement events are forwarded to the optional AT-SPI
+/// adapter without transferring ownership of toolkit objects or native handles.
+///
 // File: src/runtime/graphics/gui/rt_gui_accessibility_linux.c
 // Purpose: X11/XSettings accessibility-preference adapter for the Zanna GUI runtime.
 //
@@ -160,6 +169,12 @@ static rt_gui_xsetting_value_t rt_gui_xsettings_parse(const unsigned char *bytes
     return result;
 }
 
+/// @brief Decode an integer XSetting from a supplied payload for parser conformance checks.
+/// @param bytes Complete XSettings property payload.
+/// @param length Payload size in bytes.
+/// @param requested Exact setting name to locate.
+/// @param integer_out Optional destination for the decoded integer value.
+/// @return 1 when the requested setting was found, otherwise 0.
 int rt_gui_linux_test_parse_xsetting(const unsigned char *bytes,
                                      size_t length,
                                      const char *requested,
@@ -337,35 +352,38 @@ int32_t rt_gui_accessibility_platform_prefers_dark(vgfx_window_t window) {
     return 0;
 }
 
-/// @brief Preserve the headless tree when no in-process AT-SPI transport is available.
-/// @param window Borrowed X11 window; currently unused.
-/// @param root Borrowed semantic root; currently unused.
+/// @brief Attach the optional AT-SPI projection to a window's semantic tree.
+/// @param window Borrowed native window associated with the tree.
+/// @param root Borrowed semantic root to project.
 void rt_gui_accessibility_platform_attach(vgfx_window_t window, vg_widget_t *root) {
     rt_gui_atspi_linux_attach(window, root);
 }
 
 /// @brief Detach the optional Linux native accessibility projection.
-/// @param window Borrowed X11 window; currently unused.
+/// @param window Borrowed native window whose AT-SPI projection is removed.
 void rt_gui_accessibility_platform_detach(vgfx_window_t window) {
     rt_gui_atspi_linux_detach(window);
 }
 
 /// @brief Notify the optional Linux native accessibility projection of a changed node.
-/// @param window Borrowed X11 window; currently unused.
-/// @param widget Borrowed changed widget; currently unused.
+/// @param window Borrowed native window associated with the tree.
+/// @param widget Borrowed semantic widget whose exported state changed.
 void rt_gui_accessibility_platform_notify(vgfx_window_t window, vg_widget_t *widget) {
     rt_gui_atspi_linux_notify(window, widget);
 }
 
+/// @brief Reconcile the optional Linux native accessibility projection with the semantic tree.
+/// @param window Borrowed native window associated with the tree.
+/// @param root Borrowed semantic root to project.
 void rt_gui_accessibility_platform_sync(vgfx_window_t window, vg_widget_t *root) {
     rt_gui_atspi_linux_sync(window, root);
 }
 
 /// @brief Project a live-region announcement when a Linux native bridge is installed.
-/// @param window Borrowed X11 window; currently unused.
-/// @param widget Borrowed source widget; currently unused.
-/// @param text Borrowed UTF-8 announcement; currently unused.
-/// @param mode Requested urgency; currently unused.
+/// @param window Borrowed native window associated with the tree.
+/// @param widget Borrowed semantic widget that originated the announcement.
+/// @param text Borrowed UTF-8 announcement text.
+/// @param mode Requested live-region urgency.
 void rt_gui_accessibility_platform_announce(vgfx_window_t window,
                                             vg_widget_t *widget,
                                             const char *text,

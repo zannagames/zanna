@@ -19,6 +19,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements character movement and the built-in Game3D camera controllers.
+/// @details This translation unit owns the CharacterController3D, first-person,
+///          free-fly, orbit, and follow controller implementations. It converts
+///          input snapshots into bounded movement, maintains controller-to-world
+///          ownership, synchronizes physics characters with scene nodes, and
+///          separates pre-physics input work from post-physics camera placement.
+///          All public entry points validate runtime class identities; camera and
+///          entity bindings are additionally checked to prevent cross-world state
+///          mutation.
+
 #include "rt_animcontroller3d.h"
 #include "rt_asset.h"
 #include "rt_audio.h"
@@ -68,11 +79,19 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Validate an entity binding before a controller uses it in a world.
+/// @param entity Entity candidate; NULL is accepted.
+/// @param world Intended controller world; NULL suppresses owner comparison.
+/// @param api_name Trap message used when a spawned entity belongs elsewhere.
+/// @return Non-zero when the binding is usable, otherwise zero.
 int game3d_entity_validate_controller_world(rt_game3d_entity *entity,
                                             rt_game3d_world *world,
                                             const char *api_name);
 
 /// @brief Compute walking-controller X/Z input without Space/Shift/Ctrl vertical keys.
+/// @param input Input snapshot queried for WASD and arrow-key state; may be NULL.
+/// @param[out] out_x Optional destination for the normalized right/left component.
+/// @param[out] out_z Optional destination for the normalized forward/back component.
 static void game3d_input_planar_move_axis_components(rt_game3d_input *input,
                                                      double *out_x,
                                                      double *out_z) {
@@ -99,6 +118,7 @@ static void game3d_input_planar_move_axis_components(rt_game3d_input *input,
 
 /// @brief GC finalizer for a character controller: release its world, entity, and
 ///   underlying character references.
+/// @param obj CharacterController3D storage being finalized; NULL is ignored.
 static void game3d_character_controller_finalize(void *obj) {
     rt_game3d_character_controller *controller = (rt_game3d_character_controller *)obj;
     if (!controller)
@@ -109,6 +129,9 @@ static void game3d_character_controller_finalize(void *obj) {
 }
 
 /// @brief Return the controller's Entity3D slot only when it still has the expected class.
+/// @param controller Controller whose retained entity slot is inspected; may be NULL.
+/// @return The live or recorded Entity3D pointer, or NULL for a missing, stale, or
+///         wrongly typed slot.
 static rt_game3d_entity *game3d_character_controller_entity_ref(
     const rt_game3d_character_controller *controller) {
     rt_game3d_entity *entity = controller ? (rt_game3d_entity *)rt_g3d_checked_or_null(
@@ -118,6 +141,8 @@ static rt_game3d_entity *game3d_character_controller_entity_ref(
 }
 
 /// @brief Return the controller's Character3D slot only when it still has the expected class.
+/// @param controller Controller whose retained character slot is inspected; may be NULL.
+/// @return The validated Character3D pointer, or NULL when unavailable.
 static void *game3d_character_controller_character_ref(
     const rt_game3d_character_controller *controller) {
     return controller ? rt_g3d_checked_or_null(controller->character, RT_G3D_CHARACTER3D_CLASS_ID)
@@ -125,6 +150,8 @@ static void *game3d_character_controller_character_ref(
 }
 
 /// @brief Return the FPS controller's nested CharacterController3D when valid.
+/// @param controller First-person controller to inspect; may be NULL.
+/// @return The validated nested CharacterController3D pointer, or NULL.
 static void *game3d_first_person_character_controller_ref(
     const rt_game3d_first_person_controller *controller) {
     return controller ? rt_g3d_checked_or_null(controller->character_controller,
@@ -133,6 +160,8 @@ static void *game3d_first_person_character_controller_ref(
 }
 
 /// @brief Return an orbit target only when it is still a Vec3 or Entity3D.
+/// @param controller Orbit controller whose target slot is inspected; may be NULL.
+/// @return The retained Vec3 or live/recorded Entity3D target, or NULL when invalid.
 static void *game3d_orbit_controller_target_ref(const rt_game3d_orbit_controller *controller) {
     if (!controller)
         return NULL;
@@ -146,6 +175,9 @@ static void *game3d_orbit_controller_target_ref(const rt_game3d_orbit_controller
 }
 
 /// @brief Compute the sanitized orbit distance range, preserving min <= max.
+/// @param controller Orbit controller supplying the configured bounds; NULL selects defaults.
+/// @param[out] out_min Optional destination for the positive sanitized minimum.
+/// @param[out] out_max Optional destination for the sanitized maximum, never below the minimum.
 static void game3d_orbit_controller_distance_range(const rt_game3d_orbit_controller *controller,
                                                    double *out_min,
                                                    double *out_max) {
@@ -166,6 +198,8 @@ static void game3d_orbit_controller_distance_range(const rt_game3d_orbit_control
 }
 
 /// @brief Return a finite orbit distance within the controller's sanitized range.
+/// @param controller Orbit controller to inspect; may be NULL.
+/// @return The positive clamped distance, or zero for a NULL controller.
 static double game3d_orbit_controller_distance_value(const rt_game3d_orbit_controller *controller) {
     double min_distance = 1.0;
     double max_distance = 100.0;
@@ -179,6 +213,8 @@ static double game3d_orbit_controller_distance_value(const rt_game3d_orbit_contr
 }
 
 /// @brief Return the follow target only when it is still an Entity3D.
+/// @param controller Follow controller whose target slot is inspected; may be NULL.
+/// @return The live or recorded target entity, or NULL when unavailable.
 static rt_game3d_entity *game3d_follow_controller_target_ref(
     const rt_game3d_follow_controller *controller) {
     rt_game3d_entity *entity =
@@ -189,12 +225,17 @@ static rt_game3d_entity *game3d_follow_controller_target_ref(
 }
 
 /// @brief Return the follow offset only when it is still a Vec3.
+/// @param controller Follow controller whose offset slot is inspected; may be NULL.
+/// @return The validated Vec3 offset pointer, or NULL.
 static void *game3d_follow_controller_offset_ref(const rt_game3d_follow_controller *controller) {
     return controller && rt_g3d_is_vec3(controller->offset) ? controller->offset : NULL;
 }
 
 /// @brief Write a world-space position into a node, converting through its
 ///        parent's inverse world matrix so parent transforms are preserved.
+/// @param node SceneNode3D to reposition; NULL is ignored.
+/// @param[in,out] world_pos Three finite-clamped world coordinates. The supplied
+///                array is sanitized in place before conversion to local space.
 void game3d_set_node_world_position(void *node, double world_pos[3]) {
     void *parent;
     if (!node || !world_pos)
@@ -230,6 +271,9 @@ void game3d_set_node_world_position(void *node, double world_pos[3]) {
 
 /// @brief Write a world-space rotation into a node, converting through its parent's
 ///        inverse world rotation so parent orientation is preserved (world = parent * local).
+/// @param node SceneNode3D to rotate; NULL is ignored.
+/// @param world_quat Desired world-space quaternion; NULL is ignored and ownership
+///                   remains with the caller.
 void game3d_set_node_world_rotation(void *node, void *world_quat) {
     void *parent;
     if (!node || !world_quat)
@@ -251,6 +295,9 @@ void game3d_set_node_world_rotation(void *node, void *world_quat) {
 }
 
 /// @brief Push a node's current world-space position/rotation/scale into its body.
+/// @param entity Entity whose node and physics body are synchronized; missing
+///               components make the operation a no-op.
+/// @param force Non-zero to synchronize regardless of the node sync mode.
 void game3d_sync_body_from_entity_node(rt_game3d_entity *entity, int8_t force) {
     void *node = game3d_entity_node_ref(entity);
     void *body = game3d_entity_body_ref(entity);
@@ -279,6 +326,8 @@ void game3d_sync_body_from_entity_node(rt_game3d_entity *entity, int8_t force) {
 }
 
 /// @brief Copy the character's current position back onto the driven entity's node.
+/// @param controller Controller whose Character3D position drives its entity node;
+///                   NULL or incomplete controllers are ignored.
 static void game3d_character_controller_sync_entity(rt_game3d_character_controller *controller) {
     rt_game3d_entity *entity = game3d_character_controller_entity_ref(controller);
     void *character = game3d_character_controller_character_ref(controller);
@@ -296,6 +345,14 @@ static void game3d_character_controller_sync_entity(rt_game3d_character_controll
 /// @brief Create a capsule character controller bound to an entity, seeding the
 ///   character at the entity's position and wiring it into the world physics; sane
 ///   defaults are substituted for non-positive radius/height/mass. See header.
+/// @param world_obj World3D that owns the physics simulation and controller binding.
+/// @param entity_obj Entity3D whose scene node is driven by the character.
+/// @param radius Capsule radius; invalid or non-positive values select 0.3.
+/// @param height Standing capsule height; invalid or non-positive values select 1.8.
+/// @param mass Character mass; invalid or negative values select 70.
+/// @return A newly allocated CharacterController3D, or NULL after validation or
+///         allocation failure. The returned controller retains its world, entity,
+///         and underlying Character3D.
 void *rt_game3d_character_controller_new(
     void *world_obj, void *entity_obj, double radius, double height, double mass) {
     rt_game3d_world *world =
@@ -353,6 +410,8 @@ void *rt_game3d_character_controller_new(
 }
 
 /// @brief Get the underlying Character3D object (NULL if invalid).
+/// @param obj CharacterController3D runtime handle.
+/// @return The validated underlying Character3D pointer, or NULL.
 void *rt_game3d_character_controller_get_character(void *obj) {
     rt_game3d_character_controller *controller = game3d_character_controller_checked(
         obj, "Game3D.CharacterController3D.get_character: invalid controller");
@@ -360,6 +419,8 @@ void *rt_game3d_character_controller_get_character(void *obj) {
 }
 
 /// @brief Get the entity driven by this controller (NULL if invalid).
+/// @param obj CharacterController3D runtime handle.
+/// @return The live or recorded driven Entity3D pointer, or NULL.
 void *rt_game3d_character_controller_get_entity(void *obj) {
     rt_game3d_character_controller *controller = game3d_character_controller_checked(
         obj, "Game3D.CharacterController3D.get_entity: invalid controller");
@@ -367,6 +428,8 @@ void *rt_game3d_character_controller_get_entity(void *obj) {
 }
 
 /// @brief Get the horizontal move speed in units/sec.
+/// @param obj CharacterController3D runtime handle.
+/// @return The finite non-negative speed, or zero for an invalid controller.
 double rt_game3d_character_controller_get_speed(void *obj) {
     rt_game3d_character_controller *controller = game3d_character_controller_checked(
         obj, "Game3D.CharacterController3D.get_speed: invalid controller");
@@ -377,6 +440,9 @@ double rt_game3d_character_controller_get_speed(void *obj) {
 }
 
 /// @brief Set the horizontal move speed (negatives reset to the default).
+/// @param obj CharacterController3D runtime handle.
+/// @param speed Requested units per second; invalid or negative values select
+///              the default and large values are capped.
 void rt_game3d_character_controller_set_speed(void *obj, double speed) {
     rt_game3d_character_controller *controller = game3d_character_controller_checked(
         obj, "Game3D.CharacterController3D.set_speed: invalid controller");
@@ -386,6 +452,8 @@ void rt_game3d_character_controller_set_speed(void *obj, double speed) {
 }
 
 /// @brief Get the jump launch speed in units/sec.
+/// @param obj CharacterController3D runtime handle.
+/// @return The finite non-negative launch speed, or zero for an invalid controller.
 double rt_game3d_character_controller_get_jump_speed(void *obj) {
     rt_game3d_character_controller *controller = game3d_character_controller_checked(
         obj, "Game3D.CharacterController3D.get_jumpSpeed: invalid controller");
@@ -396,6 +464,9 @@ double rt_game3d_character_controller_get_jump_speed(void *obj) {
 }
 
 /// @brief Set the jump launch speed (negatives reset to the default).
+/// @param obj CharacterController3D runtime handle.
+/// @param jump_speed Requested upward launch speed; invalid or negative values
+///                   select the default and large values are capped.
 void rt_game3d_character_controller_set_jump_speed(void *obj, double jump_speed) {
     rt_game3d_character_controller *controller = game3d_character_controller_checked(
         obj, "Game3D.CharacterController3D.set_jumpSpeed: invalid controller");
@@ -405,6 +476,8 @@ void rt_game3d_character_controller_set_jump_speed(void *obj, double jump_speed)
 }
 
 /// @brief Get the gravity acceleration in units/sec².
+/// @param obj CharacterController3D runtime handle.
+/// @return The finite bounded gravity magnitude, or zero for an invalid controller.
 double rt_game3d_character_controller_get_gravity(void *obj) {
     rt_game3d_character_controller *controller = game3d_character_controller_checked(
         obj, "Game3D.CharacterController3D.get_gravity: invalid controller");
@@ -415,6 +488,9 @@ double rt_game3d_character_controller_get_gravity(void *obj) {
 }
 
 /// @brief Set the downward gravity acceleration magnitude (non-finite resets to the default).
+/// @param obj CharacterController3D runtime handle.
+/// @param gravity Requested acceleration magnitude; non-finite input selects the
+///                default and extreme values are bounded.
 void rt_game3d_character_controller_set_gravity(void *obj, double gravity) {
     rt_game3d_character_controller *controller = game3d_character_controller_checked(
         obj, "Game3D.CharacterController3D.set_gravity: invalid controller");
@@ -426,6 +502,14 @@ void rt_game3d_character_controller_set_gravity(void *obj, double gravity) {
 /// @brief Shared planar drive core: integrate jump/gravity against the grounded state
 ///   and move the wrapped Character3D along the caller-supplied normalized XZ basis.
 ///   See rt_game3d_internal.h.
+/// @param controller Character controller whose vertical state and wrapped
+///                   Character3D are advanced.
+/// @param input_obj Game3D input snapshot used for planar axes and jump presses.
+/// @param fx World-space X component of the desired forward basis.
+/// @param fz World-space Z component of the desired forward basis.
+/// @param rx World-space X component of the desired right basis.
+/// @param rz World-space Z component of the desired right basis.
+/// @param dt Frame duration in seconds; sanitized to the controller time-step range.
 void game3d_character_controller_drive(rt_game3d_character_controller *controller,
                                        void *input_obj,
                                        double fx,
@@ -487,6 +571,10 @@ void game3d_character_controller_drive(rt_game3d_character_controller *controlle
 ///   (clamped to unit length), integrates jump/downward gravity against the grounded
 ///   state, moves the Character3D by `dt` (itself clamped), and syncs the result
 ///   back onto the entity. Traps on invalid input or a non-Camera3D camera.
+/// @param obj CharacterController3D runtime handle.
+/// @param input_obj Game3D input snapshot supplying movement and jump state.
+/// @param camera Camera3D whose planar forward/right axes define movement space.
+/// @param dt Frame duration in seconds; sanitized before integration.
 void rt_game3d_character_controller_update(void *obj, void *input_obj, void *camera, double dt) {
     rt_game3d_character_controller *controller = game3d_character_controller_checked(
         obj, "Game3D.CharacterController3D.update: invalid controller");
@@ -513,6 +601,10 @@ void rt_game3d_character_controller_update(void *obj, void *input_obj, void *cam
 
 /// @brief Teleport the character to an absolute position (NaN-scrubbed), clearing
 ///   vertical velocity, and sync the entity. See header.
+/// @param obj CharacterController3D runtime handle.
+/// @param x Desired world-space X coordinate.
+/// @param y Desired world-space Y coordinate.
+/// @param z Desired world-space Z coordinate.
 void rt_game3d_character_controller_teleport(void *obj, double x, double y, double z) {
     rt_game3d_character_controller *controller = game3d_character_controller_checked(
         obj, "Game3D.CharacterController3D.teleport: invalid controller");
@@ -528,6 +620,8 @@ void rt_game3d_character_controller_teleport(void *obj, double x, double y, doub
 }
 
 /// @brief True if the character is currently standing on ground. See header.
+/// @param obj CharacterController3D runtime handle.
+/// @return Non-zero when the wrapped character reports grounded, otherwise zero.
 int8_t rt_game3d_character_controller_grounded(void *obj) {
     rt_game3d_character_controller *controller = game3d_character_controller_checked(
         obj, "Game3D.CharacterController3D.grounded: invalid controller");
@@ -536,6 +630,8 @@ int8_t rt_game3d_character_controller_grounded(void *obj) {
 }
 
 /// @brief Get the crouch capsule height applied by SetCrouching(true).
+/// @param obj CharacterController3D runtime handle.
+/// @return The configured crouch height, or zero for an invalid controller.
 double rt_game3d_character_controller_get_crouch_height(void *obj) {
     rt_game3d_character_controller *controller = game3d_character_controller_checked(
         obj, "Game3D.CharacterController3D.get_crouchHeight: invalid controller");
@@ -543,6 +639,9 @@ double rt_game3d_character_controller_get_crouch_height(void *obj) {
 }
 
 /// @brief Set the crouch capsule height (positive; applied on the next SetCrouching).
+/// @param obj CharacterController3D runtime handle.
+/// @param height Requested positive capsule height; invalid values fall back to
+///               half the stored standing height.
 void rt_game3d_character_controller_set_crouch_height(void *obj, double height) {
     rt_game3d_character_controller *controller = game3d_character_controller_checked(
         obj, "Game3D.CharacterController3D.set_crouchHeight: invalid controller");
@@ -553,6 +652,10 @@ void rt_game3d_character_controller_set_crouch_height(void *obj, double height) 
 
 /// @brief Toggle crouch: true swaps to CrouchHeight (always succeeds), false tries
 ///   to stand back up and returns false when blocked by a ceiling (TryStand).
+/// @param obj CharacterController3D runtime handle.
+/// @param crouching Non-zero to request the crouched height; zero to try restoring
+///                  the standing height.
+/// @return Non-zero when the requested capsule height was accepted, otherwise zero.
 int8_t rt_game3d_character_controller_set_crouching(void *obj, int8_t crouching) {
     rt_game3d_character_controller *controller = game3d_character_controller_checked(
         obj, "Game3D.CharacterController3D.setCrouching: invalid controller");
@@ -576,6 +679,8 @@ int8_t rt_game3d_character_controller_set_crouching(void *obj, int8_t crouching)
 }
 
 /// @brief True while the crouch state is engaged.
+/// @param obj CharacterController3D runtime handle.
+/// @return Non-zero when crouching is engaged, otherwise zero.
 int8_t rt_game3d_character_controller_is_crouching(void *obj) {
     rt_game3d_character_controller *controller = game3d_character_controller_checked(
         obj, "Game3D.CharacterController3D.isCrouching: invalid controller");
@@ -583,6 +688,8 @@ int8_t rt_game3d_character_controller_is_crouching(void *obj) {
 }
 
 /// @brief Get the dynamic push impulse scale (delegates to Character3D).
+/// @param obj CharacterController3D runtime handle.
+/// @return The wrapped character push strength, or zero when unavailable.
 double rt_game3d_character_controller_get_push_strength(void *obj) {
     rt_game3d_character_controller *controller = game3d_character_controller_checked(
         obj, "Game3D.CharacterController3D.get_pushStrength: invalid controller");
@@ -591,6 +698,8 @@ double rt_game3d_character_controller_get_push_strength(void *obj) {
 }
 
 /// @brief Set the dynamic push impulse scale (delegates to Character3D).
+/// @param obj CharacterController3D runtime handle.
+/// @param strength Requested push impulse scale, interpreted by Character3D.
 void rt_game3d_character_controller_set_push_strength(void *obj, double strength) {
     rt_game3d_character_controller *controller = game3d_character_controller_checked(
         obj, "Game3D.CharacterController3D.set_pushStrength: invalid controller");
@@ -600,6 +709,8 @@ void rt_game3d_character_controller_set_push_strength(void *obj, double strength
 }
 
 /// @brief Get whether the controller rides moving platforms.
+/// @param obj CharacterController3D runtime handle.
+/// @return Non-zero when moving-platform riding is enabled, otherwise zero.
 int8_t rt_game3d_character_controller_get_ride_platforms(void *obj) {
     rt_game3d_character_controller *controller = game3d_character_controller_checked(
         obj, "Game3D.CharacterController3D.get_ridePlatforms: invalid controller");
@@ -608,6 +719,8 @@ int8_t rt_game3d_character_controller_get_ride_platforms(void *obj) {
 }
 
 /// @brief Set whether the controller rides moving platforms.
+/// @param obj CharacterController3D runtime handle.
+/// @param enabled Non-zero to inherit supported platform motion.
 void rt_game3d_character_controller_set_ride_platforms(void *obj, int8_t enabled) {
     rt_game3d_character_controller *controller = game3d_character_controller_checked(
         obj, "Game3D.CharacterController3D.set_ridePlatforms: invalid controller");
@@ -617,6 +730,8 @@ void rt_game3d_character_controller_set_ride_platforms(void *obj, int8_t enabled
 }
 
 /// @brief True while the character rests on a too-steep surface.
+/// @param obj CharacterController3D runtime handle.
+/// @return Non-zero when Character3D reports a sliding state, otherwise zero.
 int8_t rt_game3d_character_controller_is_sliding(void *obj) {
     rt_game3d_character_controller *controller = game3d_character_controller_checked(
         obj, "Game3D.CharacterController3D.isSliding: invalid controller");
@@ -628,6 +743,13 @@ int8_t rt_game3d_character_controller_is_sliding(void *obj) {
 ///   for the traversal-probe sugar. Forward comes from the entity node's world
 ///   rotation applied to -Z (identity rotation faces -Z). Returns 0 when the
 ///   controller lacks a world, character, or entity node.
+/// @param controller Character controller supplying the world, character, and
+///                   driven entity orientation.
+/// @param[out] out_physics Destination for the borrowed Physics3DWorld pointer.
+/// @param[out] origin Three-element destination for the foot-level world origin.
+/// @param[out] forward Three-element destination for the entity-facing world vector.
+/// @param[out] out_radius Destination for the positive capsule radius.
+/// @return Non-zero when every required output was populated, otherwise zero.
 static int game3d_character_controller_probe_basis(rt_game3d_character_controller *controller,
                                                    void **out_physics,
                                                    double origin[3],
@@ -680,6 +802,10 @@ static int game3d_character_controller_probe_basis(rt_game3d_character_controlle
 
 /// @brief Probe for a grabbable ledge ahead of the character (see
 ///   Physics3DWorld.ProbeLedge). Sweep depth defaults to 1.0 unit; mask all.
+/// @param obj CharacterController3D runtime handle.
+/// @param max_height Maximum ledge height above the foot-level probe origin.
+/// @return A probe-result object supplied by Physics3D, or NULL when the
+///         controller lacks a usable probe basis or no result is produced.
 void *rt_game3d_character_controller_probe_ledge(void *obj, double max_height) {
     rt_game3d_character_controller *controller = game3d_character_controller_checked(
         obj, "Game3D.CharacterController3D.probeLedge: invalid controller");
@@ -700,6 +826,11 @@ void *rt_game3d_character_controller_probe_ledge(void *obj, double max_height) {
 
 /// @brief Probe for a vaultable obstacle ahead of the character (see
 ///   Physics3DWorld.ProbeVault). Mask all.
+/// @param obj CharacterController3D runtime handle.
+/// @param max_height Maximum vault height above the foot-level origin.
+/// @param max_thickness Maximum accepted obstacle depth.
+/// @return A probe-result object supplied by Physics3D, or NULL when the
+///         controller lacks a usable probe basis or no result is produced.
 void *rt_game3d_character_controller_probe_vault(void *obj,
                                                  double max_height,
                                                  double max_thickness) {
@@ -722,6 +853,9 @@ void *rt_game3d_character_controller_probe_vault(void *obj,
 
 /// @brief Resolve the ground body under the character to its owning Entity3D
 ///   through the world registry (NULL when airborne or unmanaged).
+/// @param obj CharacterController3D runtime handle.
+/// @return The live or recorded entity that owns the supporting body, or NULL
+///         while airborne, unmanaged, or invalid.
 void *rt_game3d_character_controller_ground_entity(void *obj) {
     rt_game3d_character_controller *controller = game3d_character_controller_checked(
         obj, "Game3D.CharacterController3D.groundEntity: invalid controller");
@@ -741,6 +875,8 @@ void *rt_game3d_character_controller_ground_entity(void *obj) {
 
 /// @brief True if `controller` is NULL or one of the four Game3D camera-controller
 ///   classes — the set accepted by World3D.SetCameraController.
+/// @param controller Candidate runtime object; NULL represents no active controller.
+/// @return Non-zero for NULL or a supported camera-controller class, otherwise zero.
 int game3d_camera_controller_is_valid(void *controller) {
     if (!controller)
         return 1;
@@ -751,6 +887,8 @@ int game3d_camera_controller_is_valid(void *controller) {
 }
 
 /// @brief Return the world currently retained by a camera controller, or NULL.
+/// @param controller Supported camera-controller runtime object; may be NULL.
+/// @return The retained World3D after class validation, or NULL.
 void *game3d_camera_controller_get_world_ref(void *controller) {
     void *world = NULL;
     if (!controller)
@@ -772,6 +910,9 @@ void *game3d_camera_controller_get_world_ref(void *controller) {
 }
 
 /// @brief Rebind a camera controller's retained world reference to @p world.
+/// @param controller Supported camera-controller runtime object; NULL is ignored.
+/// @param world New World3D reference, or NULL to detach. The slot retains a
+///              valid world and releases its previous value.
 void game3d_camera_controller_bind_world_ref(void *controller, void *world) {
     if (!controller)
         return;
@@ -806,11 +947,14 @@ void game3d_camera_controller_bind_world_ref(void *controller, void *world) {
 }
 
 /// @brief Clear a camera controller's retained world reference without mutating nested controllers.
+/// @param controller Supported camera-controller runtime object; NULL is ignored.
 void game3d_camera_controller_clear_world_ref(void *controller) {
     game3d_camera_controller_bind_world_ref(controller, NULL);
 }
 
 /// @brief Clear a camera controller's world reference only when it still points at @p world.
+/// @param controller Supported camera-controller runtime object; may be NULL.
+/// @param world Expected current World3D pointer.
 void game3d_camera_controller_clear_world_ref_if(void *controller, void *world) {
     if (game3d_camera_controller_get_world_ref(controller) == world)
         game3d_camera_controller_bind_world_ref(controller, NULL);
@@ -821,6 +965,11 @@ void game3d_camera_controller_clear_world_ref_if(void *controller, void *world) 
 ///   camera changes to one World3D while retained controller state belongs to another.
 ///   A NULL bound world is allowed for detached controllers so explicit update calls
 ///   remain possible after clearing a world slot.
+/// @param controller Camera controller being updated; may be detached or NULL.
+/// @param world World3D supplied to the update operation; may be NULL.
+/// @param api_name Trap message used for a cross-world mismatch; NULL selects
+///                 a generic controller message.
+/// @return Non-zero when detached or bound to @p world, otherwise zero.
 int game3d_camera_controller_validate_world(void *controller,
                                             rt_game3d_world *world,
                                             const char *api_name) {
@@ -837,6 +986,10 @@ int game3d_camera_controller_validate_world(void *controller,
 /// @details First-person controllers can wrap a separately-created character
 ///   controller. This prevents one world's FPS controller from moving a character
 ///   registered in another world's physics simulation.
+/// @param controller CharacterController3D whose retained world is inspected.
+/// @param world Intended update world; NULL suppresses comparison.
+/// @param api_name Trap message used on mismatch; NULL selects a generic message.
+/// @return Non-zero when detached or bound to @p world, otherwise zero.
 int game3d_character_controller_validate_world(rt_game3d_character_controller *controller,
                                                rt_game3d_world *world,
                                                const char *api_name) {
@@ -855,6 +1008,11 @@ int game3d_character_controller_validate_world(rt_game3d_character_controller *c
 /// @details Unspawned entities remain assignable because they can be spawned into
 ///   the target world later. Spawned entities must match to avoid controllers reading
 ///   transforms from one World3D while writing cameras or physics state in another.
+/// @param entity Entity candidate; NULL is accepted.
+/// @param world Intended controller world; NULL suppresses owner comparison.
+/// @param api_name Trap message used for an ownership mismatch; NULL selects a
+///                 generic controller message.
+/// @return Non-zero for a usable entity binding, otherwise zero.
 int game3d_entity_validate_controller_world(rt_game3d_entity *entity,
                                             rt_game3d_world *world,
                                             const char *api_name) {
@@ -868,6 +1026,7 @@ int game3d_entity_validate_controller_world(rt_game3d_entity *entity,
 }
 
 /// @brief GC finalizer for the FPS controller: release its character controller.
+/// @param obj FirstPersonController storage being finalized; NULL is ignored.
 static void game3d_first_person_controller_finalize(void *obj) {
     rt_game3d_first_person_controller *controller = (rt_game3d_first_person_controller *)obj;
     if (controller) {
@@ -877,6 +1036,9 @@ static void game3d_first_person_controller_finalize(void *obj) {
 }
 
 /// @brief Create a first-person controller bound to the world's camera. See header.
+/// @param world_obj World3D whose camera and input snapshot the controller uses.
+/// @return A newly allocated FirstPersonController retaining @p world_obj, or
+///         NULL after validation or allocation failure.
 void *rt_game3d_first_person_controller_new(void *world_obj) {
     rt_game3d_world *world =
         game3d_world_checked(world_obj, "Game3D.FirstPersonController.New: invalid world");
@@ -901,6 +1063,8 @@ void *rt_game3d_first_person_controller_new(void *world_obj) {
 }
 
 /// @brief Get the character controller driving movement (NULL if none/invalid).
+/// @param obj FirstPersonController runtime handle.
+/// @return The validated nested CharacterController3D pointer, or NULL.
 void *rt_game3d_first_person_controller_get_character(void *obj) {
     rt_game3d_first_person_controller *controller = game3d_first_person_controller_checked(
         obj, "Game3D.FirstPersonController.get_character: invalid controller");
@@ -908,6 +1072,10 @@ void *rt_game3d_first_person_controller_get_character(void *obj) {
 }
 
 /// @brief Set the character controller driving movement; traps on a non-CharacterController3D.
+/// @param obj FirstPersonController runtime handle.
+/// @param character_controller CharacterController3D to retain, or NULL to use
+///                             direct camera walking. A controller bound to a
+///                             different world is rejected.
 void rt_game3d_first_person_controller_set_character(void *obj, void *character_controller) {
     rt_game3d_first_person_controller *controller = game3d_first_person_controller_checked(
         obj, "Game3D.FirstPersonController.set_character: invalid controller");
@@ -933,6 +1101,8 @@ void rt_game3d_first_person_controller_set_character(void *obj, void *character_
 }
 
 /// @brief Get the move speed in units/sec.
+/// @param obj FirstPersonController runtime handle.
+/// @return The finite non-negative movement speed, or zero when invalid.
 double rt_game3d_first_person_controller_get_speed(void *obj) {
     rt_game3d_first_person_controller *controller = game3d_first_person_controller_checked(
         obj, "Game3D.FirstPersonController.get_speed: invalid controller");
@@ -943,6 +1113,9 @@ double rt_game3d_first_person_controller_get_speed(void *obj) {
 }
 
 /// @brief Set the move speed (negatives reset to the default).
+/// @param obj FirstPersonController runtime handle.
+/// @param speed Requested movement speed; invalid or negative values select the
+///              default and extreme values are capped.
 void rt_game3d_first_person_controller_set_speed(void *obj, double speed) {
     rt_game3d_first_person_controller *controller = game3d_first_person_controller_checked(
         obj, "Game3D.FirstPersonController.set_speed: invalid controller");
@@ -952,6 +1125,8 @@ void rt_game3d_first_person_controller_set_speed(void *obj, double speed) {
 }
 
 /// @brief Get the mouse-look sensitivity.
+/// @param obj FirstPersonController runtime handle.
+/// @return The finite non-negative sensitivity, or zero when invalid.
 double rt_game3d_first_person_controller_get_look_sensitivity(void *obj) {
     rt_game3d_first_person_controller *controller = game3d_first_person_controller_checked(
         obj, "Game3D.FirstPersonController.get_lookSensitivity: invalid controller");
@@ -962,6 +1137,9 @@ double rt_game3d_first_person_controller_get_look_sensitivity(void *obj) {
 }
 
 /// @brief Set the mouse-look sensitivity (negatives reset to the default).
+/// @param obj FirstPersonController runtime handle.
+/// @param sensitivity Requested degrees-per-mouse-unit scale; invalid or
+///                    negative values select the default.
 void rt_game3d_first_person_controller_set_look_sensitivity(void *obj, double sensitivity) {
     rt_game3d_first_person_controller *controller = game3d_first_person_controller_checked(
         obj, "Game3D.FirstPersonController.set_lookSensitivity: invalid controller");
@@ -971,6 +1149,7 @@ void rt_game3d_first_person_controller_set_look_sensitivity(void *obj, double se
 }
 
 /// @brief Capture and hide the cursor and remember the captured state.
+/// @param obj FirstPersonController runtime handle.
 void rt_game3d_first_person_controller_capture_mouse(void *obj) {
     rt_game3d_first_person_controller *controller = game3d_first_person_controller_checked(
         obj, "Game3D.FirstPersonController.captureMouse: invalid controller");
@@ -981,6 +1160,7 @@ void rt_game3d_first_person_controller_capture_mouse(void *obj) {
 }
 
 /// @brief Release the cursor and clear the captured state.
+/// @param obj FirstPersonController runtime handle.
 void rt_game3d_first_person_controller_release_mouse(void *obj) {
     rt_game3d_first_person_controller *controller = game3d_first_person_controller_checked(
         obj, "Game3D.FirstPersonController.releaseMouse: invalid controller");
@@ -994,6 +1174,10 @@ void rt_game3d_first_person_controller_release_mouse(void *obj) {
 /// @details Applies mouse-look to the camera; if a character controller is attached it
 ///   drives ground movement through it, otherwise it free-walks the camera directly.
 ///   Re-captures the cursor each frame when capture is enabled.
+/// @param obj FirstPersonController runtime handle.
+/// @param world_obj World3D supplying the camera and current input snapshot; it
+///                  must match the retained world when one is bound.
+/// @param dt Frame duration in seconds; sanitized before camera or character movement.
 void rt_game3d_first_person_controller_update(void *obj, void *world_obj, double dt) {
     rt_game3d_first_person_controller *controller = game3d_first_person_controller_checked(
         obj, "Game3D.FirstPersonController.update: invalid controller");
@@ -1048,6 +1232,9 @@ void rt_game3d_first_person_controller_update(void *obj, void *world_obj, double
 
 /// @brief After physics, snap the camera to the character's eye height (only when a
 ///   character controller is attached). See header.
+/// @param obj FirstPersonController runtime handle.
+/// @param world_obj World3D whose camera follows the nested character.
+/// @param dt Frame duration in seconds; unused because placement is an exact snap.
 void rt_game3d_first_person_controller_late_update(void *obj, void *world_obj, double dt) {
     (void)dt;
     rt_game3d_first_person_controller *controller = game3d_first_person_controller_checked(
@@ -1094,6 +1281,7 @@ void rt_game3d_first_person_controller_late_update(void *obj, void *world_obj, d
 }
 
 /// @brief GC finalizer for a FreeFlyController: release its retained world/camera references.
+/// @param obj FreeFlyController storage being finalized; NULL is ignored.
 static void game3d_free_fly_controller_finalize(void *obj) {
     rt_game3d_free_fly_controller *controller = (rt_game3d_free_fly_controller *)obj;
     if (controller)
@@ -1101,6 +1289,9 @@ static void game3d_free_fly_controller_finalize(void *obj) {
 }
 
 /// @brief Create a free-fly spectator controller for the world's camera. See header.
+/// @param world_obj World3D whose camera and input snapshot the controller uses.
+/// @return A newly allocated FreeFlyController retaining @p world_obj, or NULL
+///         after validation or allocation failure.
 void *rt_game3d_free_fly_controller_new(void *world_obj) {
     rt_game3d_world *world =
         game3d_world_checked(world_obj, "Game3D.FreeFlyController.New: invalid world");
@@ -1124,6 +1315,8 @@ void *rt_game3d_free_fly_controller_new(void *world_obj) {
 }
 
 /// @brief Get the fly speed in units/sec.
+/// @param obj FreeFlyController runtime handle.
+/// @return The finite non-negative fly speed, or zero when invalid.
 double rt_game3d_free_fly_controller_get_speed(void *obj) {
     rt_game3d_free_fly_controller *controller = game3d_free_fly_controller_checked(
         obj, "Game3D.FreeFlyController.get_speed: invalid controller");
@@ -1134,6 +1327,9 @@ double rt_game3d_free_fly_controller_get_speed(void *obj) {
 }
 
 /// @brief Set the fly speed (negatives reset to the default).
+/// @param obj FreeFlyController runtime handle.
+/// @param speed Requested movement speed; invalid or negative values select the
+///              default and extreme values are capped.
 void rt_game3d_free_fly_controller_set_speed(void *obj, double speed) {
     rt_game3d_free_fly_controller *controller = game3d_free_fly_controller_checked(
         obj, "Game3D.FreeFlyController.set_speed: invalid controller");
@@ -1143,6 +1339,8 @@ void rt_game3d_free_fly_controller_set_speed(void *obj, double speed) {
 }
 
 /// @brief Get the mouse-look sensitivity.
+/// @param obj FreeFlyController runtime handle.
+/// @return The finite non-negative sensitivity, or zero when invalid.
 double rt_game3d_free_fly_controller_get_look_sensitivity(void *obj) {
     rt_game3d_free_fly_controller *controller = game3d_free_fly_controller_checked(
         obj, "Game3D.FreeFlyController.get_lookSensitivity: invalid controller");
@@ -1153,6 +1351,9 @@ double rt_game3d_free_fly_controller_get_look_sensitivity(void *obj) {
 }
 
 /// @brief Set the mouse-look sensitivity (negatives reset to the default).
+/// @param obj FreeFlyController runtime handle.
+/// @param sensitivity Requested degrees-per-mouse-unit scale; invalid or
+///                    negative values select the default.
 void rt_game3d_free_fly_controller_set_look_sensitivity(void *obj, double sensitivity) {
     rt_game3d_free_fly_controller *controller = game3d_free_fly_controller_checked(
         obj, "Game3D.FreeFlyController.set_lookSensitivity: invalid controller");
@@ -1162,6 +1363,7 @@ void rt_game3d_free_fly_controller_set_look_sensitivity(void *obj, double sensit
 }
 
 /// @brief Capture and hide the cursor and remember the captured state.
+/// @param obj FreeFlyController runtime handle.
 void rt_game3d_free_fly_controller_capture_mouse(void *obj) {
     rt_game3d_free_fly_controller *controller = game3d_free_fly_controller_checked(
         obj, "Game3D.FreeFlyController.captureMouse: invalid controller");
@@ -1172,6 +1374,7 @@ void rt_game3d_free_fly_controller_capture_mouse(void *obj) {
 }
 
 /// @brief Release the cursor and clear the captured state.
+/// @param obj FreeFlyController runtime handle.
 void rt_game3d_free_fly_controller_release_mouse(void *obj) {
     rt_game3d_free_fly_controller *controller = game3d_free_fly_controller_checked(
         obj, "Game3D.FreeFlyController.releaseMouse: invalid controller");
@@ -1183,6 +1386,10 @@ void rt_game3d_free_fly_controller_release_mouse(void *obj) {
 
 /// @brief Update free-fly look and 6-DOF movement (including vertical) from input for
 ///   the frame; re-captures the cursor when capture is enabled.
+/// @param obj FreeFlyController runtime handle.
+/// @param world_obj World3D supplying the camera and current input snapshot; it
+///                  must match the retained world when one is bound.
+/// @param dt Frame duration in seconds; sanitized before camera integration.
 void rt_game3d_free_fly_controller_update(void *obj, void *world_obj, double dt) {
     rt_game3d_free_fly_controller *controller = game3d_free_fly_controller_checked(
         obj, "Game3D.FreeFlyController.update: invalid controller");
@@ -1223,6 +1430,9 @@ void rt_game3d_free_fly_controller_update(void *obj, void *world_obj, double dt)
 }
 
 /// @brief No-op late update (free-fly needs no post-physics pass); validates handles. See header.
+/// @param obj FreeFlyController runtime handle.
+/// @param world_obj World3D validated against the controller binding.
+/// @param dt Frame duration in seconds; intentionally unused.
 void rt_game3d_free_fly_controller_late_update(void *obj, void *world_obj, double dt) {
     (void)dt;
     rt_game3d_free_fly_controller *controller = game3d_free_fly_controller_checked(
@@ -1237,6 +1447,7 @@ void rt_game3d_free_fly_controller_late_update(void *obj, void *world_obj, doubl
 }
 
 /// @brief GC finalizer for the orbit controller: release its target reference.
+/// @param obj OrbitController storage being finalized; NULL is ignored.
 static void game3d_orbit_controller_finalize(void *obj) {
     rt_game3d_orbit_controller *controller = (rt_game3d_orbit_controller *)obj;
     if (controller) {
@@ -1247,6 +1458,11 @@ static void game3d_orbit_controller_finalize(void *obj) {
 
 /// @brief Create an orbit controller circling the given Vec3 target; traps on a
 ///   non-Vec3 target. See header.
+/// @param world_obj World3D whose camera and input snapshot the controller uses.
+/// @param target Vec3 world position or Entity3D to orbit. Entity targets must
+///               not belong to another world.
+/// @return A newly allocated OrbitController retaining the world and target, or
+///         NULL after validation or allocation failure.
 void *rt_game3d_orbit_controller_new(void *world_obj, void *target) {
     rt_game3d_world *world =
         game3d_world_checked(world_obj, "Game3D.OrbitController.New: invalid world");
@@ -1282,7 +1498,9 @@ void *rt_game3d_orbit_controller_new(void *world_obj, void *target) {
     return controller;
 }
 
-/// @brief Get the orbit target Vec3 (NULL if invalid).
+/// @brief Get the orbit target Vec3 or Entity3D (NULL if invalid).
+/// @param obj OrbitController runtime handle.
+/// @return The validated retained target, or NULL.
 void *rt_game3d_orbit_controller_get_target(void *obj) {
     rt_game3d_orbit_controller *controller = game3d_orbit_controller_checked(
         obj, "Game3D.OrbitController.get_target: invalid controller");
@@ -1290,6 +1508,9 @@ void *rt_game3d_orbit_controller_get_target(void *obj) {
 }
 
 /// @brief Set the orbit target; traps on a non-Vec3/non-Entity3D.
+/// @param obj OrbitController runtime handle.
+/// @param target Vec3 world position or Entity3D to retain. Entity targets
+///               owned by a different world are rejected.
 void rt_game3d_orbit_controller_set_target(void *obj, void *target) {
     rt_game3d_orbit_controller *controller = game3d_orbit_controller_checked(
         obj, "Game3D.OrbitController.set_target: invalid controller");
@@ -1314,6 +1535,9 @@ void rt_game3d_orbit_controller_set_target(void *obj, void *target) {
 }
 
 /// @brief Get the orbit distance (radius) in world units.
+/// @param obj OrbitController runtime handle.
+/// @return The positive distance clamped to the sanitized minimum/maximum
+///         range, or zero when invalid.
 double rt_game3d_orbit_controller_get_distance(void *obj) {
     rt_game3d_orbit_controller *controller = game3d_orbit_controller_checked(
         obj, "Game3D.OrbitController.get_distance: invalid controller");
@@ -1321,6 +1545,8 @@ double rt_game3d_orbit_controller_get_distance(void *obj) {
 }
 
 /// @brief Set the orbit distance, clamped to the controller's min/max range.
+/// @param obj OrbitController runtime handle.
+/// @param distance Requested positive orbit radius in world units.
 void rt_game3d_orbit_controller_set_distance(void *obj, double distance) {
     rt_game3d_orbit_controller *controller = game3d_orbit_controller_checked(
         obj, "Game3D.OrbitController.set_distance: invalid controller");
@@ -1336,6 +1562,8 @@ void rt_game3d_orbit_controller_set_distance(void *obj, double distance) {
 }
 
 /// @brief Get the horizontal orbit angle (yaw) in degrees.
+/// @param obj OrbitController runtime handle.
+/// @return The finite bounded yaw angle, or zero when invalid.
 double rt_game3d_orbit_controller_get_yaw(void *obj) {
     rt_game3d_orbit_controller *controller =
         game3d_orbit_controller_checked(obj, "Game3D.OrbitController.get_yaw: invalid controller");
@@ -1344,6 +1572,8 @@ double rt_game3d_orbit_controller_get_yaw(void *obj) {
 }
 
 /// @brief Set the yaw angle in degrees (non-finite resets to 0).
+/// @param obj OrbitController runtime handle.
+/// @param yaw Requested horizontal angle in degrees.
 void rt_game3d_orbit_controller_set_yaw(void *obj, double yaw) {
     rt_game3d_orbit_controller *controller =
         game3d_orbit_controller_checked(obj, "Game3D.OrbitController.set_yaw: invalid controller");
@@ -1352,6 +1582,8 @@ void rt_game3d_orbit_controller_set_yaw(void *obj, double yaw) {
 }
 
 /// @brief Get the vertical orbit angle (pitch) in degrees.
+/// @param obj OrbitController runtime handle.
+/// @return The pitch clamped to [-85, 85] degrees, or zero when invalid.
 double rt_game3d_orbit_controller_get_pitch(void *obj) {
     rt_game3d_orbit_controller *controller = game3d_orbit_controller_checked(
         obj, "Game3D.OrbitController.get_pitch: invalid controller");
@@ -1359,6 +1591,8 @@ double rt_game3d_orbit_controller_get_pitch(void *obj) {
 }
 
 /// @brief Set the pitch angle in degrees, clamped to [-85, 85] to avoid gimbal flip.
+/// @param obj OrbitController runtime handle.
+/// @param pitch Requested vertical angle in degrees.
 void rt_game3d_orbit_controller_set_pitch(void *obj, double pitch) {
     rt_game3d_orbit_controller *controller = game3d_orbit_controller_checked(
         obj, "Game3D.OrbitController.set_pitch: invalid controller");
@@ -1368,6 +1602,10 @@ void rt_game3d_orbit_controller_set_pitch(void *obj, double pitch) {
 
 /// @brief Update orbit yaw/pitch from left-drag and distance from the wheel; clamps
 ///   pitch and distance to their ranges. See header.
+/// @param obj OrbitController runtime handle.
+/// @param world_obj World3D supplying the current input snapshot; it must match
+///                  the retained world when one is bound.
+/// @param dt Frame duration in seconds; unused because input deltas are snapshots.
 void rt_game3d_orbit_controller_update(void *obj, void *world_obj, double dt) {
     (void)dt;
     rt_game3d_orbit_controller *controller =
@@ -1407,6 +1645,9 @@ void rt_game3d_orbit_controller_update(void *obj, void *world_obj, double dt) {
 }
 
 /// @brief After physics, reposition the camera on the orbit sphere around the target. See header.
+/// @param obj OrbitController runtime handle.
+/// @param world_obj World3D whose camera is placed around the target.
+/// @param dt Frame duration in seconds; unused because placement is absolute.
 void rt_game3d_orbit_controller_late_update(void *obj, void *world_obj, double dt) {
     (void)dt;
     rt_game3d_orbit_controller *controller = game3d_orbit_controller_checked(
@@ -1447,6 +1688,7 @@ void rt_game3d_orbit_controller_late_update(void *obj, void *world_obj, double d
 }
 
 /// @brief GC finalizer for the follow controller: release its target and offset.
+/// @param obj FollowController storage being finalized; NULL is ignored.
 static void game3d_follow_controller_finalize(void *obj) {
     rt_game3d_follow_controller *controller = (rt_game3d_follow_controller *)obj;
     if (!controller)
@@ -1458,6 +1700,12 @@ static void game3d_follow_controller_finalize(void *obj) {
 
 /// @brief Create a follow controller chasing `target_entity` at a Vec3 `offset`; traps
 ///   on a bad entity or non-Vec3 offset. See header.
+/// @param world_obj World3D whose camera the controller positions.
+/// @param target_entity Entity3D to follow; a spawned entity must belong to
+///                      @p world_obj.
+/// @param offset Vec3 world-space displacement from the target to the desired camera.
+/// @return A newly allocated FollowController retaining the world, target, and
+///         offset, or NULL after validation or allocation failure.
 void *rt_game3d_follow_controller_new(void *world_obj, void *target_entity, void *offset) {
     rt_game3d_world *world =
         game3d_world_checked(world_obj, "Game3D.FollowController.New: invalid world");
@@ -1491,6 +1739,8 @@ void *rt_game3d_follow_controller_new(void *world_obj, void *target_entity, void
 }
 
 /// @brief Get the followed entity (NULL if none/invalid).
+/// @param obj FollowController runtime handle.
+/// @return The live or recorded retained target Entity3D, or NULL.
 void *rt_game3d_follow_controller_get_target(void *obj) {
     rt_game3d_follow_controller *controller = game3d_follow_controller_checked(
         obj, "Game3D.FollowController.get_target: invalid controller");
@@ -1498,6 +1748,9 @@ void *rt_game3d_follow_controller_get_target(void *obj) {
 }
 
 /// @brief Set the followed entity (validated when non-NULL).
+/// @param obj FollowController runtime handle.
+/// @param target_entity Entity3D to retain, or NULL to clear the target. A
+///                      spawned entity owned by a different world is rejected.
 void rt_game3d_follow_controller_set_target(void *obj, void *target_entity) {
     rt_game3d_follow_controller *controller = game3d_follow_controller_checked(
         obj, "Game3D.FollowController.set_target: invalid controller");
@@ -1519,6 +1772,8 @@ void rt_game3d_follow_controller_set_target(void *obj, void *target_entity) {
 }
 
 /// @brief Get the follow offset Vec3 (NULL if invalid).
+/// @param obj FollowController runtime handle.
+/// @return The validated retained Vec3 offset, or NULL.
 void *rt_game3d_follow_controller_get_offset(void *obj) {
     rt_game3d_follow_controller *controller = game3d_follow_controller_checked(
         obj, "Game3D.FollowController.get_offset: invalid controller");
@@ -1526,6 +1781,8 @@ void *rt_game3d_follow_controller_get_offset(void *obj) {
 }
 
 /// @brief Set the follow offset; traps on a non-Vec3.
+/// @param obj FollowController runtime handle.
+/// @param offset Vec3 displacement to retain; NULL and non-Vec3 values trap.
 void rt_game3d_follow_controller_set_offset(void *obj, void *offset) {
     rt_game3d_follow_controller *controller = game3d_follow_controller_checked(
         obj, "Game3D.FollowController.set_offset: invalid controller");
@@ -1538,6 +1795,8 @@ void rt_game3d_follow_controller_set_offset(void *obj, void *offset) {
 }
 
 /// @brief Get the position-smoothing damping factor.
+/// @param obj FollowController runtime handle.
+/// @return The finite non-negative bounded damping factor, or zero when invalid.
 double rt_game3d_follow_controller_get_damping(void *obj) {
     rt_game3d_follow_controller *controller = game3d_follow_controller_checked(
         obj, "Game3D.FollowController.get_damping: invalid controller");
@@ -1548,6 +1807,9 @@ double rt_game3d_follow_controller_get_damping(void *obj) {
 }
 
 /// @brief Set the damping factor (negatives reset to the default).
+/// @param obj FollowController runtime handle.
+/// @param damping Requested exponential damping coefficient; invalid or
+///                negative values select the default.
 void rt_game3d_follow_controller_set_damping(void *obj, double damping) {
     rt_game3d_follow_controller *controller = game3d_follow_controller_checked(
         obj, "Game3D.FollowController.set_damping: invalid controller");
@@ -1557,6 +1819,9 @@ void rt_game3d_follow_controller_set_damping(void *obj, double damping) {
 }
 
 /// @brief No-op pre-physics update (follow runs in late update); validates handles. See header.
+/// @param obj FollowController runtime handle.
+/// @param world_obj World3D validated against the controller binding.
+/// @param dt Frame duration in seconds; intentionally unused.
 void rt_game3d_follow_controller_update(void *obj, void *world_obj, double dt) {
     (void)dt;
     rt_game3d_follow_controller *controller =
@@ -1570,6 +1835,11 @@ void rt_game3d_follow_controller_update(void *obj, void *world_obj, double dt) {
 /// @brief After physics, exponentially damp the camera toward target+offset and look at
 ///   the target. The damping uses a frame-rate-independent `1 - exp(-damping·dt)` blend. See
 ///   header.
+/// @param obj FollowController runtime handle.
+/// @param world_obj World3D whose camera is positioned; it must match the
+///                  retained world when one is bound.
+/// @param dt Frame duration in seconds; sanitized before evaluating the
+///           exponential blend.
 void rt_game3d_follow_controller_late_update(void *obj, void *world_obj, double dt) {
     rt_game3d_follow_controller *controller = game3d_follow_controller_checked(
         obj, "Game3D.FollowController.lateUpdate: invalid controller");

@@ -37,6 +37,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file rt_gui_features.c
+/// @brief Implements advanced GUI bindings for palettes, tooltips, toasts, and drag-and-drop.
+///
+/// @details
+/// The graphics-enabled path manages GC-backed wrapper state, event snapshots,
+/// scheduler timing, and runtime-string conversion for feature widgets.
+/// Graphics-disabled definitions preserve the exported ABI with deterministic
+/// inert behavior.
+
 #include "rt_gui_internal.h"
 #include "rt_platform.h"
 
@@ -99,6 +108,7 @@ static size_t s_commandpalette_wrapper_cap = 0;
 /// @details The registry is the source of truth for handle validation: a checked
 ///          cast only trusts an opaque `void*` once it is found here (then verifies
 ///          the magic tag), guarding against forged/freed handles. Capacity doubles from 8.
+/// @param data Command-palette wrapper to register.
 /// @return 1 on success or if already present; 0 on overflow or realloc failure.
 static int rt_commandpalette_register_wrapper(rt_commandpalette_data_t *data) {
     if (!data)
@@ -128,6 +138,7 @@ static int rt_commandpalette_register_wrapper(rt_commandpalette_data_t *data) {
 
 /// @brief Remove a wrapper from the command-palette registry, compacting the array. No-op if
 /// absent.
+/// @param data Wrapper to remove.
 static void rt_commandpalette_unregister_wrapper(rt_commandpalette_data_t *data) {
     if (!data)
         return;
@@ -143,6 +154,8 @@ static void rt_commandpalette_unregister_wrapper(rt_commandpalette_data_t *data)
 }
 
 /// @brief True if @p data is a currently-registered wrapper; backs handle validation.
+/// @param data Candidate wrapper pointer.
+/// @return `1` when the exact pointer is registered; otherwise `0`.
 static int rt_commandpalette_wrapper_is_registered(const rt_commandpalette_data_t *data) {
     if (!data)
         return 0;
@@ -155,6 +168,7 @@ static int rt_commandpalette_wrapper_is_registered(const rt_commandpalette_data_
 
 /// @brief Free the cached selected-command string and reset the selection flag,
 ///        so a fresh palette session starts with no pending choice.
+/// @param data Command-palette wrapper whose pending selection is cleared.
 static void rt_commandpalette_clear_selection(rt_commandpalette_data_t *data) {
     if (!data)
         return;
@@ -164,6 +178,8 @@ static void rt_commandpalette_clear_selection(rt_commandpalette_data_t *data) {
 }
 
 /// @brief Authenticate a CommandPalette handle via its magic tag (NULL if not).
+/// @param palette Candidate runtime CommandPalette handle.
+/// @return Validated registered wrapper, or `NULL` for invalid input.
 static rt_commandpalette_data_t *rt_commandpalette_checked(void *palette) {
     rt_commandpalette_data_t *data = (rt_commandpalette_data_t *)palette;
     return rt_commandpalette_wrapper_is_registered(data) &&
@@ -173,6 +189,7 @@ static rt_commandpalette_data_t *rt_commandpalette_checked(void *palette) {
 }
 
 /// @brief Release the command palette widget, unregister it from the app, and zero all fields.
+/// @param data Registered wrapper to dispose; `NULL` is accepted.
 static void rt_commandpalette_dispose(rt_commandpalette_data_t *data) {
     if (!data)
         return;
@@ -192,6 +209,7 @@ static void rt_commandpalette_dispose(rt_commandpalette_data_t *data) {
 }
 
 /// @brief GC finalizer — delegates to `rt_commandpalette_dispose`.
+/// @param palette Managed CommandPalette wrapper being finalized.
 static void rt_commandpalette_finalize(void *palette) {
     rt_commandpalette_dispose((rt_commandpalette_data_t *)palette);
 }
@@ -202,6 +220,9 @@ static void rt_commandpalette_finalize(void *palette) {
 /// struct so the next `rt_commandpalette_get_selected_id` call
 /// returns it. Edge-triggered: each invocation overwrites the
 /// previous selection.
+/// @param palette Lower-toolkit palette that emitted the event.
+/// @param cmd Activated command record.
+/// @param user_data Registered runtime wrapper receiving the event snapshot.
 static void rt_commandpalette_on_execute(vg_commandpalette_t *palette,
                                          vg_command_t *cmd,
                                          void *user_data) {
@@ -226,6 +247,8 @@ static void rt_commandpalette_on_execute(vg_commandpalette_t *palette,
 /// rather than the bare `vg_commandpalette_t*` so callers can
 /// poll the most recently activated command via
 /// `rt_commandpalette_get_selected_id`.
+/// @param parent App or widget handle used to resolve the owning application.
+/// @return New managed CommandPalette wrapper, or `NULL` on invalid context or allocation failure.
 void *rt_commandpalette_new(void *parent) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *parent_widget = parent ? rt_gui_widget_parent_from_handle(parent) : NULL;
@@ -269,6 +292,7 @@ void *rt_commandpalette_new(void *parent) {
 }
 
 /// @brief Release resources and destroy the commandpalette.
+/// @param palette CommandPalette wrapper to destroy; invalid handles are ignored.
 void rt_commandpalette_destroy(void *palette) {
     RT_ASSERT_MAIN_THREAD();
     if (!palette)
@@ -283,6 +307,8 @@ void rt_commandpalette_destroy(void *palette) {
 /// @details Length math is overflow-checked before the malloc. A NULL/empty
 ///          category yields NULL (caller falls back to the bare label); a NULL
 ///          label is treated as empty.
+/// @param category Category text placed inside square brackets.
+/// @param label Command label appended after the category.
 /// @return Newly allocated string the caller must free, or NULL on bad input/OOM.
 static char *rt_commandpalette_format_display_label(const char *category, const char *label) {
     if (!category || !category[0])
@@ -300,6 +326,10 @@ static char *rt_commandpalette_format_display_label(const char *category, const 
 }
 
 /// @brief Register a command in the palette's fuzzy-searchable list.
+/// @param palette CommandPalette wrapper handle.
+/// @param id Runtime command identifier; embedded NUL bytes are rejected.
+/// @param label Runtime display label.
+/// @param category Optional runtime category prepended to the display label.
 void rt_commandpalette_add_command(void *palette,
                                    rt_string id,
                                    rt_string label,
@@ -340,6 +370,11 @@ void rt_commandpalette_add_command(void *palette,
 /// `"Ctrl+S"`) is shown next to the entry. The shortcut is purely
 /// informational — wiring it up to actually fire is up to the
 /// caller's keyboard handler.
+/// @param palette CommandPalette wrapper handle.
+/// @param id Runtime command identifier; embedded NUL bytes are rejected.
+/// @param label Runtime display label.
+/// @param category Optional runtime category.
+/// @param shortcut Runtime shortcut text displayed beside the command.
 void rt_commandpalette_add_command_with_shortcut(
     void *palette, rt_string id, rt_string label, rt_string category, rt_string shortcut) {
     RT_ASSERT_MAIN_THREAD();
@@ -376,6 +411,8 @@ void rt_commandpalette_add_command_with_shortcut(
 }
 
 /// @brief Remove a command from the palette by its ID.
+/// @param palette CommandPalette wrapper handle.
+/// @param id Runtime command identifier; embedded NUL bytes are rejected.
 void rt_commandpalette_remove_command(void *palette, rt_string id) {
     RT_ASSERT_MAIN_THREAD();
     if (!palette)
@@ -395,6 +432,7 @@ void rt_commandpalette_remove_command(void *palette, rt_string id) {
 }
 
 /// @brief Remove all entries from the commandpalette.
+/// @param palette CommandPalette wrapper handle.
 void rt_commandpalette_clear(void *palette) {
     RT_ASSERT_MAIN_THREAD();
     if (!palette)
@@ -407,6 +445,7 @@ void rt_commandpalette_clear(void *palette) {
 }
 
 /// @brief Show the commandpalette.
+/// @param palette CommandPalette wrapper handle.
 void rt_commandpalette_show(void *palette) {
     RT_ASSERT_MAIN_THREAD();
     if (!palette)
@@ -419,6 +458,7 @@ void rt_commandpalette_show(void *palette) {
 }
 
 /// @brief Hide the commandpalette.
+/// @param palette CommandPalette wrapper handle.
 void rt_commandpalette_hide(void *palette) {
     RT_ASSERT_MAIN_THREAD();
     if (!palette)
@@ -430,6 +470,8 @@ void rt_commandpalette_hide(void *palette) {
 }
 
 /// @brief Check whether the command palette is currently visible.
+/// @param palette CommandPalette wrapper handle.
+/// @return `1` when its overlay is visible; otherwise `0`.
 int64_t rt_commandpalette_is_visible(void *palette) {
     RT_ASSERT_MAIN_THREAD();
     if (!palette)
@@ -441,6 +483,8 @@ int64_t rt_commandpalette_is_visible(void *palette) {
 }
 
 /// @brief Set the placeholder of the commandpalette.
+/// @param palette CommandPalette wrapper handle.
+/// @param text Runtime placeholder text copied into palette storage.
 void rt_commandpalette_set_placeholder(void *palette, rt_string text) {
     RT_ASSERT_MAIN_THREAD();
     if (!palette)
@@ -455,6 +499,8 @@ void rt_commandpalette_set_placeholder(void *palette, rt_string text) {
 }
 
 /// @brief Get the selected command of the commandpalette.
+/// @param palette CommandPalette wrapper handle.
+/// @return Owned selected command identifier, or an empty runtime string when absent.
 rt_string rt_commandpalette_get_selected_command(void *palette) {
     RT_ASSERT_MAIN_THREAD();
     if (!palette)
@@ -467,6 +513,8 @@ rt_string rt_commandpalette_get_selected_command(void *palette) {
 }
 
 /// @brief Check if a command was selected since the last call (edge-triggered, resets).
+/// @param palette CommandPalette wrapper handle.
+/// @return `1` once after command activation; otherwise `0`.
 int64_t rt_commandpalette_was_command_selected(void *palette) {
     RT_ASSERT_MAIN_THREAD();
     if (!palette)
@@ -480,6 +528,8 @@ int64_t rt_commandpalette_was_command_selected(void *palette) {
 }
 
 /// @brief `CommandPalette.GetQuery` — current live query text.
+/// @param palette CommandPalette wrapper handle.
+/// @return Owned query text, or an empty runtime string for invalid input.
 rt_string rt_commandpalette_get_query(void *palette) {
     RT_ASSERT_MAIN_THREAD();
     if (!palette)
@@ -492,6 +542,8 @@ rt_string rt_commandpalette_get_query(void *palette) {
 }
 
 /// @brief `CommandPalette.GetQueryGeneration` — bumped on every query change.
+/// @param palette CommandPalette wrapper handle.
+/// @return Current query generation, or zero for invalid input.
 int64_t rt_commandpalette_get_query_generation(void *palette) {
     RT_ASSERT_MAIN_THREAD();
     if (!palette)
@@ -503,6 +555,8 @@ int64_t rt_commandpalette_get_query_generation(void *palette) {
 }
 
 /// @brief `CommandPalette.SetQuery` — prefill the query and re-filter.
+/// @param palette CommandPalette wrapper handle.
+/// @param text Runtime query text copied into palette storage.
 void rt_commandpalette_set_query(void *palette, rt_string text) {
     RT_ASSERT_MAIN_THREAD();
     if (!palette)
@@ -517,6 +571,8 @@ void rt_commandpalette_set_query(void *palette, rt_string text) {
 }
 
 /// @brief `CommandPalette.SetClientFiltered` — toggle application-driven filtering.
+/// @param palette CommandPalette wrapper handle.
+/// @param enabled Non-zero to let the application supply filtered results.
 void rt_commandpalette_set_client_filtered(void *palette, int64_t enabled) {
     RT_ASSERT_MAIN_THREAD();
     if (!palette)
@@ -532,6 +588,9 @@ void rt_commandpalette_set_client_filtered(void *palette, int64_t enabled) {
 //=============================================================================
 
 /// @brief Allocate "title\nbody" with overflow checks.
+/// @param title Optional title text.
+/// @param body Optional body text.
+/// @return Newly allocated joined string, or `NULL` on overflow or allocation failure.
 static char *rt_gui_join_title_body(const char *title, const char *body) {
     const char *t = title ? title : "";
     const char *b = body ? body : "";
@@ -548,6 +607,9 @@ static char *rt_gui_join_title_body(const char *title, const char *body) {
 }
 
 /// @brief Show the tooltip.
+/// @param text Runtime tooltip text.
+/// @param x Screen-space horizontal coordinate.
+/// @param y Screen-space vertical coordinate.
 void rt_tooltip_show(rt_string text, int64_t x, int64_t y) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *app = rt_gui_get_active_app();
@@ -577,6 +639,10 @@ void rt_tooltip_show(rt_string text, int64_t x, int64_t y) {
 }
 
 /// @brief Show a rich tooltip with a title and body at a specific screen position.
+/// @param title Runtime title text.
+/// @param body Runtime body text.
+/// @param x Screen-space horizontal coordinate.
+/// @param y Screen-space vertical coordinate.
 void rt_tooltip_show_rich(rt_string title, rt_string body, int64_t x, int64_t y) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *app = rt_gui_get_active_app();
@@ -625,6 +691,7 @@ void rt_tooltip_hide(void) {
 }
 
 /// @brief Set the delay of the tooltip.
+/// @param delay_ms Non-negative show delay in milliseconds, clamped to `UINT32_MAX`.
 void rt_tooltip_set_delay(int64_t delay_ms) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *app = rt_gui_get_active_app();
@@ -645,6 +712,8 @@ void rt_tooltip_set_delay(int64_t delay_ms) {
 }
 
 /// @brief Set the tooltip of the widget.
+/// @param widget Live widget handle.
+/// @param text Runtime tooltip text copied into widget storage.
 void rt_widget_set_tooltip(void *widget, rt_string text) {
     RT_ASSERT_MAIN_THREAD();
     if (!rt_gui_is_widget_handle(widget))
@@ -656,6 +725,9 @@ void rt_widget_set_tooltip(void *widget, rt_string text) {
 }
 
 /// @brief Attach a rich tooltip (title + body) to a widget for hover display.
+/// @param widget Live widget handle.
+/// @param title Runtime title text.
+/// @param body Runtime body text.
 void rt_widget_set_tooltip_rich(void *widget, rt_string title, rt_string body) {
     RT_ASSERT_MAIN_THREAD();
     if (!rt_gui_is_widget_handle(widget))
@@ -678,6 +750,7 @@ void rt_widget_set_tooltip_rich(void *widget, rt_string title, rt_string body) {
 }
 
 /// @brief Clear the tooltip of the widget.
+/// @param widget Live widget handle.
 void rt_widget_clear_tooltip(void *widget) {
     RT_ASSERT_MAIN_THREAD();
     if (!rt_gui_is_widget_handle(widget))
@@ -703,6 +776,8 @@ typedef struct rt_toast_data {
 } rt_toast_data_t;
 
 /// @brief Authenticate a Toast handle via its magic tag (NULL if not).
+/// @param toast Candidate managed Toast wrapper.
+/// @return Validated wrapper, or `NULL` when the magic tag does not match.
 static rt_toast_data_t *rt_toast_checked(void *toast) {
     rt_toast_data_t *data = (rt_toast_data_t *)toast;
     return data && data->magic == RT_TOAST_DATA_MAGIC ? data : NULL;
@@ -710,6 +785,8 @@ static rt_toast_data_t *rt_toast_checked(void *toast) {
 
 /// @brief Toast action-button callback — flips an edge-trigger when the user clicks "Undo" /
 /// "Retry" etc.
+/// @param id Notification identifier supplied by the manager.
+/// @param user_data Toast wrapper associated with the notification.
 static void rt_toast_on_action(uint32_t id, void *user_data) {
     rt_toast_data_t *data = (rt_toast_data_t *)user_data;
     if (!data || data->magic != RT_TOAST_DATA_MAGIC || data->id != id)
@@ -718,11 +795,14 @@ static void rt_toast_on_action(uint32_t id, void *user_data) {
 }
 
 /// @brief Return the toast's live app, rejecting stale app handles without dereferencing them.
+/// @param data Toast wrapper whose owning application is validated.
+/// @return Live application pointer, or `NULL` when absent or stale.
 static rt_gui_app_t *rt_toast_live_app(rt_toast_data_t *data) {
     return data && data->app && rt_gui_is_app_handle(data->app) ? data->app : NULL;
 }
 
 /// @brief Detach notification callbacks that point at this toast wrapper and free owned state.
+/// @param data Toast wrapper to dispose.
 static void rt_toast_dispose(rt_toast_data_t *data) {
     if (!data)
         return;
@@ -744,6 +824,7 @@ static void rt_toast_dispose(rt_toast_data_t *data) {
 }
 
 /// @brief GC finalizer for toast handles.
+/// @param toast Managed Toast wrapper being finalized.
 static void rt_toast_finalize(void *toast) {
     rt_toast_dispose((rt_toast_data_t *)toast);
 }
@@ -753,6 +834,8 @@ static void rt_toast_finalize(void *toast) {
 /// Notifications stack on the active app's overlay; each app gets
 /// its own manager so background apps don't show toasts on the
 /// foreground window.
+/// @param app Application that owns the notification overlay.
+/// @return Existing or newly created manager, or `NULL` for invalid input or allocation failure.
 static vg_notification_manager_t *rt_get_notification_manager(rt_gui_app_t *app) {
     if (!app)
         return NULL;
@@ -768,6 +851,8 @@ static vg_notification_manager_t *rt_get_notification_manager(rt_gui_app_t *app)
 
 /// @brief Map a public `RT_TOAST_*` enum to the internal `VG_NOTIFICATION_*` enum.
 /// Defaults to INFO for any unknown value.
+/// @param type Public toast type value.
+/// @return Corresponding widget-layer notification type.
 static vg_notification_type_t rt_toast_type_to_vg(int64_t type) {
     switch (type) {
         case RT_TOAST_INFO:
@@ -785,6 +870,8 @@ static vg_notification_type_t rt_toast_type_to_vg(int64_t type) {
 
 /// @brief Map a public `RT_TOAST_POSITION_*` enum to the internal `VG_NOTIFICATION_*` corner.
 /// Defaults to TOP_RIGHT for unknown positions.
+/// @param position Public toast-position value.
+/// @return Corresponding widget-layer notification position.
 static vg_notification_position_t rt_toast_position_to_vg(int64_t position) {
     switch (position) {
         case RT_TOAST_POSITION_TOP_RIGHT:
@@ -805,6 +892,9 @@ static vg_notification_position_t rt_toast_position_to_vg(int64_t position) {
 }
 
 /// @brief Compare optional notification strings without treating two NULL values as unequal.
+/// @param left First optional string.
+/// @param right Second optional string.
+/// @return `true` when both are null or their contents match; otherwise `false`.
 static bool rt_toast_text_equal(const char *left, const char *right) {
     if (left == right)
         return true;
@@ -818,6 +908,13 @@ static bool rt_toast_text_equal(const char *left, const char *right) {
 ///          Coalescing an exact active match keeps those events from obscuring newer, unrelated
 ///          feedback. Configurable Toast handles remain distinct because callers use their IDs
 ///          for action and dismissal polling.
+/// @param app Application supplying the scheduler clock.
+/// @param mgr Notification manager receiving or refreshing the toast.
+/// @param type Notification severity.
+/// @param title Optional title text.
+/// @param message Optional message text.
+/// @param duration_ms Auto-dismiss duration, or zero for persistent display.
+/// @return Existing or newly assigned notification identifier, or zero on failure.
 static uint32_t rt_toast_show_shortcut(rt_gui_app_t *app,
                                        vg_notification_manager_t *mgr,
                                        vg_notification_type_t type,
@@ -853,6 +950,7 @@ static uint32_t rt_toast_show_shortcut(rt_gui_app_t *app,
 }
 
 /// @brief Show an informational toast notification (auto-dismisses after 3 seconds).
+/// @param message Runtime notification message.
 void rt_toast_info(rt_string message) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *app = rt_gui_get_active_app();
@@ -867,6 +965,7 @@ void rt_toast_info(rt_string message) {
 }
 
 /// @brief Show a success toast notification (auto-dismisses after 3 seconds).
+/// @param message Runtime notification message.
 void rt_toast_success(rt_string message) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *app = rt_gui_get_active_app();
@@ -881,6 +980,7 @@ void rt_toast_success(rt_string message) {
 }
 
 /// @brief Show a warning toast notification (auto-dismisses after 5 seconds).
+/// @param message Runtime notification message.
 void rt_toast_warning(rt_string message) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *app = rt_gui_get_active_app();
@@ -895,6 +995,7 @@ void rt_toast_warning(rt_string message) {
 }
 
 /// @brief Show an error toast notification (does not auto-dismiss; user must close).
+/// @param message Runtime notification message.
 void rt_toast_error(rt_string message) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *app = rt_gui_get_active_app();
@@ -914,6 +1015,10 @@ void rt_toast_error(rt_string message) {
 /// fire-and-forget, this version returns a wrapper struct that
 /// callers can poll via `rt_toast_was_action_clicked` to detect
 /// user interaction. `duration_ms == 0` means no auto-dismiss.
+/// @param message Runtime notification message.
+/// @param type Public toast severity value.
+/// @param duration_ms Auto-dismiss delay in milliseconds; non-positive values persist.
+/// @return New managed Toast wrapper, or `NULL` when no active app exists or creation fails.
 void *rt_toast_new(rt_string message, int64_t type, int64_t duration_ms) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *app = rt_gui_get_active_app();
@@ -958,6 +1063,8 @@ void *rt_toast_new(rt_string message, int64_t type, int64_t duration_ms) {
 }
 
 /// @brief Set the action of the toast.
+/// @param toast Managed Toast wrapper.
+/// @param label Non-empty runtime label for the action button.
 void rt_toast_set_action(void *toast, rt_string label) {
     RT_ASSERT_MAIN_THREAD();
     rt_toast_data_t *data = rt_toast_checked(toast);
@@ -995,6 +1102,8 @@ void rt_toast_set_action(void *toast, rt_string label) {
 }
 
 /// @brief Check if the toast's action button was clicked (edge-triggered).
+/// @param toast Managed Toast wrapper.
+/// @return `1` once after an action click; otherwise `0`.
 int64_t rt_toast_was_action_clicked(void *toast) {
     RT_ASSERT_MAIN_THREAD();
     rt_toast_data_t *data = rt_toast_checked(toast);
@@ -1006,6 +1115,8 @@ int64_t rt_toast_was_action_clicked(void *toast) {
 }
 
 /// @brief Check if the toast was dismissed (expired or manually closed).
+/// @param toast Managed Toast wrapper.
+/// @return `1` once after dismissal or removal from the manager; otherwise `0`.
 int64_t rt_toast_was_dismissed(void *toast) {
     RT_ASSERT_MAIN_THREAD();
     rt_toast_data_t *data = rt_toast_checked(toast);
@@ -1050,6 +1161,7 @@ int64_t rt_toast_was_dismissed(void *toast) {
 }
 
 /// @brief Dismiss the toast.
+/// @param toast Managed Toast wrapper to dismiss.
 void rt_toast_dismiss(void *toast) {
     RT_ASSERT_MAIN_THREAD();
     rt_toast_data_t *data = rt_toast_checked(toast);
@@ -1064,6 +1176,7 @@ void rt_toast_dismiss(void *toast) {
 }
 
 /// @brief Set the position of the toast.
+/// @param position Public notification-stack position value.
 void rt_toast_set_position(int64_t position) {
     RT_ASSERT_MAIN_THREAD();
     vg_notification_manager_t *mgr = rt_get_notification_manager(rt_gui_get_active_app());
@@ -1073,6 +1186,7 @@ void rt_toast_set_position(int64_t position) {
 }
 
 /// @brief Set the max visible of the toast.
+/// @param count Maximum simultaneously visible notifications, clamped to `[1,100]`.
 void rt_toast_set_max_visible(int64_t count) {
     RT_ASSERT_MAIN_THREAD();
     if (count < 1)
@@ -1141,6 +1255,8 @@ static rt_drag_drop_data_t rt_widget_drag_drop_snapshot(const vg_widget_t *widge
 }
 
 /// @brief Set the draggable of the widget.
+/// @param widget Live widget handle.
+/// @param draggable Non-zero to allow initiating drags.
 void rt_widget_set_draggable(void *widget, int64_t draggable) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *w = rt_gui_widget_handle_checked(widget);
@@ -1150,6 +1266,9 @@ void rt_widget_set_draggable(void *widget, int64_t draggable) {
 }
 
 /// @brief Set the drag data of the widget.
+/// @param widget Live widget handle.
+/// @param type Runtime drag payload type; embedded NUL bytes are rejected.
+/// @param data Runtime drag payload data; embedded NUL bytes are rejected.
 void rt_widget_set_drag_data(void *widget, rt_string type, rt_string data) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *w = rt_gui_widget_handle_checked(widget);
@@ -1171,6 +1290,8 @@ void rt_widget_set_drag_data(void *widget, rt_string type, rt_string data) {
 }
 
 /// @brief Check whether a widget is currently being dragged.
+/// @param widget Live widget handle.
+/// @return `1` while the widget is the active drag source; otherwise `0`.
 int64_t rt_widget_is_being_dragged(void *widget) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *w = rt_gui_widget_handle_checked(widget);
@@ -1181,6 +1302,8 @@ int64_t rt_widget_is_being_dragged(void *widget) {
 }
 
 /// @brief Get a value from the widget.
+/// @param widget Live widget handle.
+/// @param target Non-zero to accept drops on the widget.
 void rt_widget_set_drop_target(void *widget, int64_t target) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *w = rt_gui_widget_handle_checked(widget);
@@ -1190,6 +1313,8 @@ void rt_widget_set_drop_target(void *widget, int64_t target) {
 }
 
 /// @brief Set the accepted drop types of the widget.
+/// @param widget Live widget handle.
+/// @param types Runtime accepted-type specification; embedded NUL bytes are rejected.
 void rt_widget_set_accepted_drop_types(void *widget, rt_string types) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *w = rt_gui_widget_handle_checked(widget);
@@ -1205,6 +1330,8 @@ void rt_widget_set_accepted_drop_types(void *widget, rt_string types) {
 }
 
 /// @brief Check whether a dragged item is hovering over this drop target.
+/// @param widget Live widget handle.
+/// @return `1` while a compatible drag is over the widget; otherwise `0`.
 int64_t rt_widget_is_drag_over(void *widget) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *w = rt_gui_widget_handle_checked(widget);
@@ -1215,6 +1342,8 @@ int64_t rt_widget_is_drag_over(void *widget) {
 }
 
 /// @brief Check whether a drop was completed on this widget this frame.
+/// @param widget Live widget handle.
+/// @return `1` once after a completed drop; otherwise `0`.
 int64_t rt_widget_was_dropped(void *widget) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *w = rt_gui_widget_handle_checked(widget);
@@ -1227,6 +1356,8 @@ int64_t rt_widget_was_dropped(void *widget) {
 }
 
 /// @brief Get the drop type of the widget.
+/// @param widget Live widget handle.
+/// @return Owned type of the most recent drop, or an empty runtime string.
 rt_string rt_widget_get_drop_type(void *widget) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *w = rt_gui_widget_handle_checked(widget);
@@ -1239,6 +1370,8 @@ rt_string rt_widget_get_drop_type(void *widget) {
 }
 
 /// @brief Get the drop data of the widget.
+/// @param widget Live widget handle.
+/// @return Owned data from the most recent drop, or an empty runtime string.
 rt_string rt_widget_get_drop_data(void *widget) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *w = rt_gui_widget_handle_checked(widget);
@@ -1250,7 +1383,27 @@ rt_string rt_widget_get_drop_data(void *widget) {
     return rt_str_empty();
 }
 
+/// @brief The pointer x recorded when the last drop landed on this widget.
+/// @param widget Live widget handle.
+/// @return Recorded horizontal coordinate, or `0.0` for an invalid handle.
+double rt_widget_get_drop_x(void *widget) {
+    RT_ASSERT_MAIN_THREAD();
+    vg_widget_t *w = rt_gui_widget_handle_checked(widget);
+    return w ? (double)w->_drop_received_x : 0.0;
+}
+
+/// @brief The pointer y recorded when the last drop landed on this widget.
+/// @param widget Live widget handle.
+/// @return Recorded vertical coordinate, or `0.0` for an invalid handle.
+double rt_widget_get_drop_y(void *widget) {
+    RT_ASSERT_MAIN_THREAD();
+    vg_widget_t *w = rt_gui_widget_handle_checked(widget);
+    return w ? (double)w->_drop_received_y : 0.0;
+}
+
 /// @brief Check whether files were dropped onto the app window this frame.
+/// @param app Runtime application handle.
+/// @return `1` once for a pending file-drop batch; otherwise `0`.
 int64_t rt_app_was_file_dropped(void *app) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_gui_app_handle_checked(app);
@@ -1262,6 +1415,8 @@ int64_t rt_app_was_file_dropped(void *app) {
 }
 
 /// @brief Get the number of files dropped onto the app window.
+/// @param app Runtime application handle.
+/// @return Number of paths in the current drop batch, or zero for invalid input.
 int64_t rt_app_get_dropped_file_count(void *app) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_gui_app_handle_checked(app);
@@ -1269,6 +1424,9 @@ int64_t rt_app_get_dropped_file_count(void *app) {
 }
 
 /// @brief Get the dropped file of the app.
+/// @param app Runtime application handle.
+/// @param index Zero-based path index in the current drop batch.
+/// @return Owned path string, or an empty runtime string for invalid input.
 rt_string rt_app_get_dropped_file(void *app, int64_t index) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_gui_app_handle_checked(app);
@@ -1283,6 +1441,8 @@ rt_string rt_app_get_dropped_file(void *app, int64_t index) {
 }
 
 /// @brief Add an element to the file.
+/// @param app Application receiving the platform file-drop event.
+/// @param path Null-terminated path copied into the current batch.
 void rt_gui_file_drop_add(rt_gui_app_t *app, const char *path) {
     if (!app || !path)
         return;
@@ -1317,6 +1477,7 @@ void rt_gui_file_drop_add(rt_gui_app_t *app, const char *path) {
 }
 
 /// @brief Cleanup the features.
+/// @param app Application whose feature widgets and file-drop state are released.
 void rt_gui_features_cleanup(rt_gui_app_t *app) {
     if (!app)
         return;
@@ -1357,17 +1518,24 @@ void rt_gui_features_cleanup(rt_gui_app_t *app) {
 // ===========================================================================
 
 /// @brief Stub: returns NULL — command palette requires graphics.
+/// @param parent Ignored parent handle.
+/// @return Always `NULL`.
 void *rt_commandpalette_new(void *parent) {
     (void)parent;
     return NULL;
 }
 
 /// @brief Release resources and destroy the commandpalette.
+/// @param palette Ignored CommandPalette handle.
 void rt_commandpalette_destroy(void *palette) {
     (void)palette;
 }
 
 /// @brief Register a command in the palette's fuzzy-searchable list.
+/// @param palette Ignored CommandPalette handle.
+/// @param id Ignored command identifier.
+/// @param label Ignored display label.
+/// @param category Ignored category.
 void rt_commandpalette_add_command(void *palette,
                                    rt_string id,
                                    rt_string label,
@@ -1379,6 +1547,11 @@ void rt_commandpalette_add_command(void *palette,
 }
 
 /// @brief Stub: `CommandPalette.AddCommandWithShortcut` is a no-op without graphics.
+/// @param palette Ignored CommandPalette handle.
+/// @param id Ignored command identifier.
+/// @param label Ignored display label.
+/// @param category Ignored category.
+/// @param shortcut Ignored shortcut text.
 void rt_commandpalette_add_command_with_shortcut(
     void *palette, rt_string id, rt_string label, rt_string category, rt_string shortcut) {
     (void)palette;
@@ -1389,72 +1562,99 @@ void rt_commandpalette_add_command_with_shortcut(
 }
 
 /// @brief Remove a command from the palette by its ID.
+/// @param palette Ignored CommandPalette handle.
+/// @param id Ignored command identifier.
 void rt_commandpalette_remove_command(void *palette, rt_string id) {
     (void)palette;
     (void)id;
 }
 
 /// @brief Remove all entries from the commandpalette.
+/// @param palette Ignored CommandPalette handle.
 void rt_commandpalette_clear(void *palette) {
     (void)palette;
 }
 
 /// @brief Show the commandpalette.
+/// @param palette Ignored CommandPalette handle.
 void rt_commandpalette_show(void *palette) {
     (void)palette;
 }
 
 /// @brief Hide the commandpalette.
+/// @param palette Ignored CommandPalette handle.
 void rt_commandpalette_hide(void *palette) {
     (void)palette;
 }
 
 /// @brief Check whether the command palette is currently visible.
+/// @param palette Ignored CommandPalette handle.
+/// @return Always `0`.
 int64_t rt_commandpalette_is_visible(void *palette) {
     (void)palette;
     return 0;
 }
 
 /// @brief Set the placeholder of the commandpalette.
+/// @param palette Ignored CommandPalette handle.
+/// @param text Ignored placeholder text.
 void rt_commandpalette_set_placeholder(void *palette, rt_string text) {
     (void)palette;
     (void)text;
 }
 
 /// @brief Get the selected command of the commandpalette.
+/// @param palette Ignored CommandPalette handle.
+/// @return Empty runtime string.
 rt_string rt_commandpalette_get_selected_command(void *palette) {
     (void)palette;
     return rt_str_empty();
 }
 
 /// @brief Check if a command was selected since the last call (edge-triggered, resets).
+/// @param palette Ignored CommandPalette handle.
+/// @return Always `0`.
 int64_t rt_commandpalette_was_command_selected(void *palette) {
     (void)palette;
     return 0;
 }
 
 /// @brief Stub: no query text without graphics.
+/// @param palette Ignored CommandPalette handle.
+/// @return Empty runtime string.
 rt_string rt_commandpalette_get_query(void *palette) {
     (void)palette;
     return rt_str_empty();
 }
 
+/// @brief Return the neutral query generation without graphics.
+/// @param palette Ignored CommandPalette handle.
+/// @return Always `0`.
 int64_t rt_commandpalette_get_query_generation(void *palette) {
     (void)palette;
     return 0;
 }
 
+/// @brief Ignore query assignment without graphics.
+/// @param palette Ignored CommandPalette handle.
+/// @param text Ignored query text.
 void rt_commandpalette_set_query(void *palette, rt_string text) {
     (void)palette;
     (void)text;
 }
 
+/// @brief Ignore client-filter mode assignment without graphics.
+/// @param palette Ignored CommandPalette handle.
+/// @param enabled Ignored filtering flag.
 void rt_commandpalette_set_client_filtered(void *palette, int64_t enabled) {
     (void)palette;
     (void)enabled;
 }
 
 /// @brief Show the tooltip.
+/// @param text Ignored tooltip text.
+/// @param x Ignored horizontal coordinate.
+/// @param y Ignored vertical coordinate.
 void rt_tooltip_show(rt_string text, int64_t x, int64_t y) {
     (void)text;
     (void)x;
@@ -1462,6 +1662,10 @@ void rt_tooltip_show(rt_string text, int64_t x, int64_t y) {
 }
 
 /// @brief Show a rich tooltip with a title and body at a specific screen position.
+/// @param title Ignored title text.
+/// @param body Ignored body text.
+/// @param x Ignored horizontal coordinate.
+/// @param y Ignored vertical coordinate.
 void rt_tooltip_show_rich(rt_string title, rt_string body, int64_t x, int64_t y) {
     (void)title;
     (void)body;
@@ -1473,17 +1677,23 @@ void rt_tooltip_show_rich(rt_string title, rt_string body, int64_t x, int64_t y)
 void rt_tooltip_hide(void) {}
 
 /// @brief Set the delay of the tooltip.
+/// @param delay_ms Ignored tooltip delay.
 void rt_tooltip_set_delay(int64_t delay_ms) {
     (void)delay_ms;
 }
 
 /// @brief Set the tooltip of the widget.
+/// @param widget Ignored widget handle.
+/// @param text Ignored tooltip text.
 void rt_widget_set_tooltip(void *widget, rt_string text) {
     (void)widget;
     (void)text;
 }
 
 /// @brief Attach a rich tooltip (title + body) to a widget for hover display.
+/// @param widget Ignored widget handle.
+/// @param title Ignored title text.
+/// @param body Ignored body text.
 void rt_widget_set_tooltip_rich(void *widget, rt_string title, rt_string body) {
     (void)widget;
     (void)title;
@@ -1491,31 +1701,40 @@ void rt_widget_set_tooltip_rich(void *widget, rt_string title, rt_string body) {
 }
 
 /// @brief Clear the tooltip of the widget.
+/// @param widget Ignored widget handle.
 void rt_widget_clear_tooltip(void *widget) {
     (void)widget;
 }
 
 /// @brief Show an informational toast notification (auto-dismisses after 3 seconds).
+/// @param message Ignored notification message.
 void rt_toast_info(rt_string message) {
     (void)message;
 }
 
 /// @brief Show a success toast notification (auto-dismisses after 3 seconds).
+/// @param message Ignored notification message.
 void rt_toast_success(rt_string message) {
     (void)message;
 }
 
 /// @brief Show a warning toast notification (auto-dismisses after 5 seconds).
+/// @param message Ignored notification message.
 void rt_toast_warning(rt_string message) {
     (void)message;
 }
 
 /// @brief Show an error toast notification (does not auto-dismiss; user must close).
+/// @param message Ignored notification message.
 void rt_toast_error(rt_string message) {
     (void)message;
 }
 
 /// @brief Stub: returns NULL — toast notifications require graphics.
+/// @param message Ignored notification message.
+/// @param type Ignored toast severity.
+/// @param duration_ms Ignored auto-dismiss duration.
+/// @return Always `NULL`.
 void *rt_toast_new(rt_string message, int64_t type, int64_t duration_ms) {
     (void)message;
     (void)type;
@@ -1524,34 +1743,43 @@ void *rt_toast_new(rt_string message, int64_t type, int64_t duration_ms) {
 }
 
 /// @brief Set the action of the toast.
+/// @param toast Ignored Toast handle.
+/// @param label Ignored action label.
 void rt_toast_set_action(void *toast, rt_string label) {
     (void)toast;
     (void)label;
 }
 
 /// @brief Check if the toast's action button was clicked (edge-triggered).
+/// @param toast Ignored Toast handle.
+/// @return Always `0`.
 int64_t rt_toast_was_action_clicked(void *toast) {
     (void)toast;
     return 0;
 }
 
 /// @brief Check if the toast was dismissed (expired or manually closed).
+/// @param toast Ignored Toast handle.
+/// @return Always `0`.
 int64_t rt_toast_was_dismissed(void *toast) {
     (void)toast;
     return 0;
 }
 
 /// @brief Dismiss the toast.
+/// @param toast Ignored Toast handle.
 void rt_toast_dismiss(void *toast) {
     (void)toast;
 }
 
 /// @brief Set the position of the toast.
+/// @param position Ignored notification-stack position.
 void rt_toast_set_position(int64_t position) {
     (void)position;
 }
 
 /// @brief Set the max visible of the toast.
+/// @param count Ignored maximum visible count.
 void rt_toast_set_max_visible(int64_t count) {
     (void)count;
 }
@@ -1560,12 +1788,17 @@ void rt_toast_set_max_visible(int64_t count) {
 void rt_toast_dismiss_all(void) {}
 
 /// @brief Set the draggable of the widget.
+/// @param widget Ignored widget handle.
+/// @param draggable Ignored draggable flag.
 void rt_widget_set_draggable(void *widget, int64_t draggable) {
     (void)widget;
     (void)draggable;
 }
 
 /// @brief Set the drag data of the widget.
+/// @param widget Ignored widget handle.
+/// @param type Ignored payload type.
+/// @param data Ignored payload data.
 void rt_widget_set_drag_data(void *widget, rt_string type, rt_string data) {
     (void)widget;
     (void)type;
@@ -1573,60 +1806,97 @@ void rt_widget_set_drag_data(void *widget, rt_string type, rt_string data) {
 }
 
 /// @brief Check whether a widget is currently being dragged.
+/// @param widget Ignored widget handle.
+/// @return Always `0`.
 int64_t rt_widget_is_being_dragged(void *widget) {
     (void)widget;
     return 0;
 }
 
 /// @brief Get a value from the widget.
+/// @param widget Ignored widget handle.
+/// @param target Ignored drop-target flag.
 void rt_widget_set_drop_target(void *widget, int64_t target) {
     (void)widget;
     (void)target;
 }
 
 /// @brief Set the accepted drop types of the widget.
+/// @param widget Ignored widget handle.
+/// @param types Ignored accepted-type specification.
 void rt_widget_set_accepted_drop_types(void *widget, rt_string types) {
     (void)widget;
     (void)types;
 }
 
 /// @brief Check whether a dragged item is hovering over this drop target.
+/// @param widget Ignored widget handle.
+/// @return Always `0`.
 int64_t rt_widget_is_drag_over(void *widget) {
     (void)widget;
     return 0;
 }
 
 /// @brief Check whether a drop was completed on this widget this frame.
+/// @param widget Ignored widget handle.
+/// @return Always `0`.
 int64_t rt_widget_was_dropped(void *widget) {
     (void)widget;
     return 0;
 }
 
 /// @brief Get the drop type of the widget.
+/// @param widget Ignored widget handle.
+/// @return Empty runtime string.
 rt_string rt_widget_get_drop_type(void *widget) {
     (void)widget;
     return rt_str_empty();
 }
 
 /// @brief Get the drop data of the widget.
+/// @param widget Ignored widget handle.
+/// @return Empty runtime string.
 rt_string rt_widget_get_drop_data(void *widget) {
     (void)widget;
     return rt_str_empty();
 }
 
+/// @brief Stub: no drop position exists when graphics is disabled.
+/// @param widget Ignored widget handle.
+/// @return Always `0.0`.
+double rt_widget_get_drop_x(void *widget) {
+    (void)widget;
+    return 0.0;
+}
+
+/// @brief Stub: no drop position exists when graphics is disabled.
+/// @param widget Ignored widget handle.
+/// @return Always `0.0`.
+double rt_widget_get_drop_y(void *widget) {
+    (void)widget;
+    return 0.0;
+}
+
 /// @brief Check whether files were dropped onto the app window this frame.
+/// @param app Ignored application handle.
+/// @return Always `0`.
 int64_t rt_app_was_file_dropped(void *app) {
     (void)app;
     return 0;
 }
 
 /// @brief Get the number of files dropped onto the app window.
+/// @param app Ignored application handle.
+/// @return Always `0`.
 int64_t rt_app_get_dropped_file_count(void *app) {
     (void)app;
     return 0;
 }
 
 /// @brief Get the dropped file of the app.
+/// @param app Ignored application handle.
+/// @param index Ignored path index.
+/// @return Empty runtime string.
 rt_string rt_app_get_dropped_file(void *app, int64_t index) {
     (void)app;
     (void)index;
@@ -1634,12 +1904,15 @@ rt_string rt_app_get_dropped_file(void *app, int64_t index) {
 }
 
 /// @brief Add an element to the file.
+/// @param app Ignored application pointer.
+/// @param path Ignored file path.
 void rt_gui_file_drop_add(rt_gui_app_t *app, const char *path) {
     (void)app;
     (void)path;
 }
 
 /// @brief Cleanup the features.
+/// @param app Ignored application pointer.
 void rt_gui_features_cleanup(rt_gui_app_t *app) {
     (void)app;
 }

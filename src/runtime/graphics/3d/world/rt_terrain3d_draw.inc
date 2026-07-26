@@ -4,9 +4,20 @@
 // standalone translation unit) Purpose: Terrain3D culling, prewarm, draw, nav-mesh build, and
 // public LOD/stat API
 //===----------------------------------------------------------------------===//
+/**
+ * @file rt_terrain3d_draw.inc
+ * @brief Implements Terrain3D culling, LOD configuration, draw telemetry, and nav-mesh export.
+ *
+ * This implementation fragment is included by `rt_terrain3d.c`; it combines conservative
+ * heightfield bounds with resident per-LOD geometry and submits translated chunks through
+ * Canvas3D without becoming a standalone translation unit.
+ */
+
 /// @brief Return the terrain-specific CPU frustum padding in render/world units.
 /// @details The union AABB is already conservative for LOD geometry; this extra half-cell guard
 ///   covers float rounding and camera-relative conversion differences at the horizon.
+/// @param t Terrain supplying x/z sample spacing.
+/// @return Finite padding equal to half the larger horizontal cell size, clamped to safe limits.
 static float terrain_chunk_culling_pad(const rt_terrain3d *t) {
     double sx = terrain_scale_axis_or(t, 0, 1.0);
     double sz = terrain_scale_axis_or(t, 2, 1.0);
@@ -23,6 +34,11 @@ static float terrain_chunk_culling_pad(const rt_terrain3d *t) {
 /// @details Frustum culling can reject a chunk before any LOD mesh exists. This helper mirrors the
 ///          generated mesh bounds, including adaptive skirt depth, using only the heightfield and
 ///          scale. The result is stored by the caller in a regular chunk AABB slot.
+/// @param t Terrain containing the heightfield and construction settings.
+/// @param cx Chunk x coordinate.
+/// @param cz Chunk z coordinate.
+/// @param out_aabb Six-float output receiving minimum then maximum world-space bounds.
+/// @return Nonzero when valid conservative bounds were produced.
 static int terrain_compute_chunk_culling_aabb(rt_terrain3d *t,
                                               int32_t cx,
                                               int32_t cz,
@@ -85,6 +101,11 @@ static int terrain_compute_chunk_culling_aabb(rt_terrain3d *t,
 /// @details If resident LOD AABBs are available, their union remains preferred because it exactly
 ///          tracks generated skirt geometry. Otherwise a heightfield-only AABB is cached in the
 ///          union slot so culled chunks do not allocate LOD0 just to get bounds.
+/// @param t Terrain owning chunk bounds.
+/// @param cx Chunk x coordinate.
+/// @param cz Chunk z coordinate.
+/// @param idx Flat chunk-cache index.
+/// @return Borrowed six-float conservative AABB, or NULL for invalid state.
 static const float *terrain_chunk_culling_aabb(rt_terrain3d *t,
                                                int32_t cx,
                                                int32_t cz,
@@ -106,6 +127,9 @@ static const float *terrain_chunk_culling_aabb(rt_terrain3d *t,
 /// @brief Set chunk LOD switch distances. Within `near_dist` chunks render at full resolution;
 /// between near and far they use step=2 (¼ triangles); beyond `far_dist` they use step=4
 /// (1/16 triangles). Lower distances trade visual quality for triangle count.
+/// @param obj Terrain3D handle; invalid handles are ignored.
+/// @param near_dist LOD0-to-LOD1 distance in world units.
+/// @param far_dist LOD1-to-LOD2 distance; sanitized to remain greater than @p near_dist.
 void rt_terrain3d_set_lod_distances(void *obj, double near_dist, double far_dist) {
     rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
     if (!t)
@@ -139,6 +163,8 @@ void rt_terrain3d_set_lod_distances(void *obj, double near_dist, double far_dist
 ///   close to `SetLODDistances` thresholds. The value is clamped to a finite non-negative range;
 ///   final selection also clamps it below half the near/far threshold gap, so setting a large value
 ///   remains safe and simply means "use the widest stable band possible."
+/// @param obj Terrain3D handle; invalid handles are ignored.
+/// @param distance Requested nonnegative hysteresis width in world units.
 void rt_terrain3d_set_lod_hysteresis(void *obj, double distance) {
     rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
     if (!t)
@@ -154,8 +180,10 @@ void rt_terrain3d_set_lod_hysteresis(void *obj, double distance) {
 }
 
 /// @brief Set the depth (world units) of the downward-extruded skirt geometry generated along
-/// LOD>0 chunk edges. Skirts hide T-junction cracks where adjacent chunks render at different
+/// all chunk edges. Skirts hide T-junction cracks where adjacent chunks render at different
 /// LODs. Set to 0 to disable. Invalidates cached chunks (skirts are baked into the mesh).
+/// @param obj Terrain3D handle; invalid handles are ignored.
+/// @param depth Requested skirt depth, clamped to `[0, 1000]`.
 void rt_terrain3d_set_skirt_depth(void *obj, double depth) {
     rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
     if (!t)
@@ -174,6 +202,8 @@ void rt_terrain3d_set_skirt_depth(void *obj, double depth) {
 /// @details Terrain remains frustum-culled in both modes. When disabled (the default), chunks are
 ///   submitted with conservative bounds and cannot become coarse AABB occluders, preventing
 ///   horizon/floor cracks caused by over-aggressive CPU occlusion.
+/// @param obj Terrain3D handle; invalid handles are ignored.
+/// @param enabled Nonzero to opt in to CPU occlusion-grid participation.
 void rt_terrain3d_set_cpu_occlusion(void *obj, int8_t enabled) {
     rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
     if (!t)
@@ -182,47 +212,64 @@ void rt_terrain3d_set_cpu_occlusion(void *obj, int8_t enabled) {
 }
 
 /// @brief Return whether Terrain3D CPU occlusion-grid participation is enabled.
+/// @param obj Terrain3D handle.
+/// @return 1 when CPU occlusion is enabled, otherwise 0.
 int8_t rt_terrain3d_get_cpu_occlusion(void *obj) {
     rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
     return t && t->cpu_occlusion_enabled ? 1 : 0;
 }
 
 /// @brief Clamp an internal terrain diagnostic counter to the public non-negative int64 range.
+/// @param value Signed internal diagnostic count.
+/// @return @p value widened to `int64_t` when positive, otherwise zero.
 static int64_t terrain_stat_or_zero(int32_t value) {
     return value > 0 ? (int64_t)value : 0;
 }
 
 /// @brief Number of chunks in the most recent terrain draw attempt.
+/// @param obj Terrain3D handle.
+/// @return Latest total chunk count, or zero for invalid state.
 int64_t rt_terrain3d_get_last_chunk_count(void *obj) {
     rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
     return t ? terrain_stat_or_zero(t->last_chunk_count) : 0;
 }
 
 /// @brief Number of chunks submitted to Canvas3D by the most recent terrain draw.
+/// @param obj Terrain3D handle.
+/// @return Latest submitted chunk count, or zero for invalid state.
 int64_t rt_terrain3d_get_last_drawn_chunk_count(void *obj) {
     rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
     return t ? terrain_stat_or_zero(t->last_drawn_chunk_count) : 0;
 }
 
 /// @brief Number of chunks rejected by Terrain3D's conservative frustum pre-pass.
+/// @param obj Terrain3D handle.
+/// @return Latest frustum-rejected chunk count, or zero for invalid state.
 int64_t rt_terrain3d_get_last_frustum_culled_chunk_count(void *obj) {
     rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
     return t ? terrain_stat_or_zero(t->last_frustum_culled_chunk_count) : 0;
 }
 
 /// @brief Number of chunks whose selected LOD was absent and required fallback or skipping.
+/// @param obj Terrain3D handle.
+/// @return Latest missing-LOD count, or zero for invalid state.
 int64_t rt_terrain3d_get_last_missing_lod_count(void *obj) {
     rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
     return t ? terrain_stat_or_zero(t->last_missing_lod_count) : 0;
 }
 
 /// @brief Number of chunks clamped to keep neighboring LOD levels crack-safe.
+/// @param obj Terrain3D handle.
+/// @return Latest neighbor-clamped chunk count, or zero for invalid state.
 int64_t rt_terrain3d_get_last_lod_clamped_chunk_count(void *obj) {
     rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
     return t ? terrain_stat_or_zero(t->last_lod_clamped_chunk_count) : 0;
 }
 
 /// @brief Number of chunks drawn at the requested/actual LOD index.
+/// @param t Terrain containing latest draw telemetry.
+/// @param lod LOD index from 0 through 2.
+/// @return Latest draw count for the selected LOD, or zero for invalid input.
 static int64_t terrain_last_lod_count(rt_terrain3d *t, int32_t lod) {
     if (!t || lod < 0 || lod >= TERRAIN_LOD_LEVELS)
         return 0;
@@ -230,18 +277,24 @@ static int64_t terrain_last_lod_count(rt_terrain3d *t, int32_t lod) {
 }
 
 /// @brief Number of chunks drawn at LOD0 during the most recent terrain draw.
+/// @param obj Terrain3D handle.
+/// @return Latest LOD0 draw count, or zero for invalid state.
 int64_t rt_terrain3d_get_last_lod0_chunk_count(void *obj) {
     return terrain_last_lod_count(
         (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID), 0);
 }
 
 /// @brief Number of chunks drawn at LOD1 during the most recent terrain draw.
+/// @param obj Terrain3D handle.
+/// @return Latest LOD1 draw count, or zero for invalid state.
 int64_t rt_terrain3d_get_last_lod1_chunk_count(void *obj) {
     return terrain_last_lod_count(
         (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID), 1);
 }
 
 /// @brief Number of chunks drawn at LOD2 during the most recent terrain draw.
+/// @param obj Terrain3D handle.
+/// @return Latest LOD2 draw count, or zero for invalid state.
 int64_t rt_terrain3d_get_last_lod2_chunk_count(void *obj) {
     return terrain_last_lod_count(
         (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID), 2);
@@ -250,6 +303,9 @@ int64_t rt_terrain3d_get_last_lod2_chunk_count(void *obj) {
 /// @brief Number of nav-mesh grid samples along an axis of @p max_index cells decimated by @p step.
 /// @details Always includes the final cell (adds an extra sample when max_index isn't a multiple of
 ///          step) and yields at least 2, so the nav source spans the full terrain footprint.
+/// @param max_index Final source-grid coordinate on the axis.
+/// @param step Positive decimation stride.
+/// @return Number of samples required to include both endpoints.
 static int32_t terrain_nav_sample_count(int32_t max_index, int32_t step) {
     int32_t count;
     if (max_index <= 0)
@@ -266,6 +322,11 @@ static int32_t terrain_nav_sample_count(int32_t max_index, int32_t step) {
 
 /// @brief Map a decimated nav sample @p index to its grid coordinate, snapping the ends to
 /// 0/max_index.
+/// @param index Zero-based decimated sample index.
+/// @param count Total number of decimated samples on the axis.
+/// @param max_index Final source-grid coordinate.
+/// @param step Positive decimation stride.
+/// @return Source-grid coordinate clamped to `[0, max_index]`.
 static int32_t terrain_nav_sample_coord(int32_t index,
                                         int32_t count,
                                         int32_t max_index,
@@ -283,6 +344,10 @@ static int32_t terrain_nav_sample_coord(int32_t index,
 ///   stable triangle source that follows the terrain's heightmap and scale, while rendering
 ///   keeps its own LOD/skirt chunk meshes. `step` decimates grid samples but always includes
 ///   the final row/column so the nav source keeps the streamed tile footprint.
+/// @param terrain_obj Terrain3D handle containing the source grid.
+/// @param step64 Requested grid stride, clamped to `[1, 16]`.
+/// @return New Mesh3D navigation source excluding authored holes, or NULL on invalid state or
+/// construction failure.
 void *rt_terrain3d_build_nav_mesh(void *terrain_obj, int64_t step64) {
     rt_terrain3d *t =
         (rt_terrain3d *)rt_g3d_checked_or_null(terrain_obj, RT_G3D_TERRAIN3D_CLASS_ID);
@@ -337,6 +402,8 @@ void *rt_terrain3d_build_nav_mesh(void *terrain_obj, int64_t step64) {
 }
 
 /// @brief Render the terrain at the origin via the Canvas3D.
+/// @param canvas_obj Canvas3D handle receiving draw commands.
+/// @param terrain_obj Terrain3D handle to render.
 void rt_canvas3d_draw_terrain(void *canvas_obj, void *terrain_obj) {
     rt_canvas3d_draw_terrain_at(canvas_obj, terrain_obj, 0.0, 0.0, 0.0);
 }
@@ -345,6 +412,11 @@ void rt_canvas3d_draw_terrain(void *canvas_obj, void *terrain_obj) {
 /// @details Lazily builds chunk meshes on first draw, bakes the splat texture if needed, then
 ///   for each chunk: frustum-cull the translated AABB, pick LOD by translated chunk distance
 ///   to camera (XZ), and enqueue the chosen mesh with a translated model matrix.
+/// @param canvas_obj Canvas3D handle receiving draw commands.
+/// @param terrain_obj Terrain3D handle to render.
+/// @param tx World-space x translation.
+/// @param ty World-space y translation.
+/// @param tz World-space z translation.
 void rt_canvas3d_draw_terrain_at(
     void *canvas_obj, void *terrain_obj, double tx, double ty, double tz) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(canvas_obj);

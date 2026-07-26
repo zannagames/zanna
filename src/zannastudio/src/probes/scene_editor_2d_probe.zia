@@ -439,10 +439,9 @@ func main() {
        or editor.scene.GetBool("dark", false) == false
        or editor.scene.PropertyKind("nextObjective") != "null"
        or editor.GetRevision() != scenePropertyRevision + 6
-       or editor.sceneProperties.list.Count != 5
-       or editor.sceneProperties.keyInput.IsEnabled() == false
-       or editor.sceneProperties.typeDropdown.IsEnabled() == false
-       or editor.sceneProperties.setButton.IsEnabled() == false {
+       or editor.sceneProperties.rows.RowCount() != 5
+       or editor.sceneProperties.keys.count() != 5
+       or editor.sceneProperties.rows.addButton.IsEnabled() == false {
         fail(shell, "typed scene-property inspector did not commit exact metadata");
         return;
     }
@@ -472,22 +471,19 @@ func main() {
         fail(shell, "typed scene properties did not survive canonical round trip");
         return;
     }
+    // Focusing a row is presentation-only and rows rebuild per tab.
+    var scenePropertyFocusContent = sceneDoc.content;
     editor.sceneProperties.SelectByKey(editor.scene, "worldSeed");
     editor.Pump(sceneDoc);
-    if editor.selectedSceneProperty < 0
-       or editor.sceneProperties.SelectedKey() != "worldSeed" {
-        fail(shell, "scene-property selection was not captured for its tab");
+    if sceneDoc.content != scenePropertyFocusContent {
+        fail(shell, "focusing a scene-property row changed content");
         return;
     }
     editor.Pump(otherSceneDoc);
-    if editor.selectedSceneProperty != -1
-       or editor.sceneProperties.SelectedKey() != "" {
-        fail(shell, "scene-property selection leaked into another 2D tab");
-        return;
-    }
     editor.Pump(sceneDoc);
-    if editor.sceneProperties.SelectedKey() != "worldSeed" {
-        fail(shell, "scene-property selection was not restored with its tab");
+    if editor.sceneProperties.rows.RowCount() != 5
+       or sceneDoc.content != scenePropertyFocusContent {
+        fail(shell, "scene-property rows were not rebuilt with their tab");
         return;
     }
 
@@ -734,11 +730,20 @@ func main() {
     editor.componentPalette.SelectField("hp");
     editor.SelectSceneObjects(singleComponentSelection, 0);
     editor.componentPalette.SelectField("hp");
+    var hpRow = -1;
+    var propScan = 0;
+    while propScan < editor.objectPropertyKeys.count() {
+        if editor.objectPropertyKeys.get(propScan) == "hp" {
+            hpRow = propScan;
+        }
+        propScan = propScan + 1;
+    }
     if editor.EditSelectedComponentField() == false
-       or editor.objectPropertyKeyInput.Text != "hp"
-       or editor.objectPropertyTypeDropdown.Selected
+       or hpRow < 0
+       or editor.objectProperties.KeyTextAt(hpRow) != "hp"
+       or editor.objectProperties.KindIndexAt(hpRow)
           != scene_editor_2d.PROPERTY_TYPE_INT
-       or editor.objectPropertyValueInput.Text != "25"
+       or editor.objectProperties.ValueTextAt(hpRow) != "25"
        or sceneDoc.content != authoredContent {
         sceneDoc.filePath = previousComponentScenePath;
         componentProject.CloseProject();
@@ -758,9 +763,8 @@ func main() {
        or editor.objectTypeInput.IsEnabled()
        or editor.objectArrangeDropdown.IsEnabled() == false
        or editor.arrangeObjectButton.IsEnabled() == false
-       or editor.objectPropertyKeyInput.IsEnabled() == false
-       or editor.objectPropertyTypeDropdown.IsEnabled() == false
-       or editor.setObjectPropertyButton.IsEnabled() == false
+       or editor.objectProperties.RowCount() != 1
+       or editor.objectProperties.hasDraftRow == false
        or editor.removeObjectPropertyButton.IsEnabled() == false
        or editor.duplicateObjectButton.IsEnabled() == false
        or editor.removeObjectButton.IsEnabled() == false {
@@ -768,8 +772,9 @@ func main() {
         return;
     }
 
-    editor.objectPropertyKeyInput.Focus();
-    if editor.objectPropertyKeyInput.IsFocused() == false
+    var batchDraftRow = editor.objectProperties.rows.get(0);
+    batchDraftRow.keyInput.Focus();
+    if batchDraftRow.keyInput.IsFocused() == false
        or editor.SceneSelectionCommandsOwnFocus() {
         fail(shell, "2D scene selection shortcuts escaped a property input");
         return;
@@ -793,7 +798,7 @@ func main() {
     var nudgeRevision = editor.GetRevision();
     var nudgeFirstX = editor.scene.ObjectX(0);
     var nudgeSecondX = editor.scene.ObjectX(1);
-    editor.objectPropertyKeyInput.Focus();
+    batchDraftRow.keyInput.Focus();
     nudgeHarness.SendKey("right", 0);
     nudgeHarness.DispatchPending();
     editor.Pump(sceneDoc);

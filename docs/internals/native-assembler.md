@@ -70,7 +70,7 @@ The native assembler has three layers:
 | Architecture | Format | Platform | Status |
 |--------------|--------|----------|--------|
 | x86_64 | ELF | Linux | Complete |
-| x86_64 | Mach-O | macOS | Complete |
+| x86_64 | Mach-O | macOS | Object writer only — macOS x86-64 is not a supported Zanna target (the native linker does not link it) |
 | x86_64 | COFF | Windows | Complete |
 | AArch64 | ELF | Linux | Complete |
 | AArch64 | Mach-O | macOS | Complete |

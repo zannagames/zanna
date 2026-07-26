@@ -3,6 +3,15 @@
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
 //
+/// @file rt_gui_accessibility_platform.h
+/// @brief Declares the internal native accessibility adapter contract.
+///
+/// @details
+/// Platform implementations normalize desktop appearance preferences and
+/// project the toolkit's authoritative semantic tree into native accessibility
+/// APIs. All handles are borrowed, unsupported integrations remain safe no-ops,
+/// and the runtime's headless accessibility snapshot remains available.
+///
 // File: src/runtime/graphics/gui/rt_gui_accessibility_platform.h
 // Purpose: Internal platform-adapter contract for native GUI accessibility preferences.
 //
@@ -83,6 +92,8 @@ void rt_gui_accessibility_platform_detach(vgfx_window_t window);
 void rt_gui_accessibility_platform_notify(vgfx_window_t window, vg_widget_t *widget);
 
 /// @brief Publish coalesced native accessibility-tree changes after layout is current.
+/// @param window Borrowed ZannaGFX window owning the semantic tree; may be NULL.
+/// @param root Borrowed live semantic-tree root; NULL removes stale native descendants.
 void rt_gui_accessibility_platform_sync(vgfx_window_t window, vg_widget_t *root);
 
 /// @brief Project one semantic live-region announcement through the native bridge.

@@ -2319,6 +2319,78 @@ void *rt_treeview_get_activated_node_option(void *tree) {
     return rt_treeview_node_option(tv ? vg_treeview_get_activated_node(tv) : NULL);
 }
 
+/// @brief `TreeView.BeginEditNode` — start an inline edit of one row.
+/// @details The row is revealed and overlaid with a focused single-line
+///          editor pre-filled with @p initial_text. Enter and focus loss
+///          commit; Escape cancels. Virtual-mode trees decline.
+/// @param tree TreeView widget handle.
+/// @param node Live node handle owned by @p tree.
+/// @param initial_text Editor contents at start.
+/// @return 1 when the edit began, otherwise 0.
+int64_t rt_treeview_begin_edit_node(void *tree, void *node, rt_string initial_text) {
+    RT_ASSERT_MAIN_THREAD();
+    vg_treeview_t *tv =
+        (vg_treeview_t *)rt_gui_widget_handle_checked_type(tree, VG_WIDGET_TREEVIEW);
+    vg_tree_node_t *n = node ? rt_gui_tree_node_from_handle(node) : NULL;
+    if (!tv || !n || n->owner != tv)
+        return 0;
+    char *ctext = rt_string_to_gui_cstr(initial_text);
+    bool began = vg_treeview_begin_edit(tv, n, ctext ? ctext : "");
+    free(ctext);
+    return began ? 1 : 0;
+}
+
+/// @brief `TreeView.IsEditing` — whether an inline row edit is in progress.
+/// @param tree TreeView widget handle.
+/// @return 1 while editing, otherwise 0.
+int64_t rt_treeview_is_editing(void *tree) {
+    RT_ASSERT_MAIN_THREAD();
+    vg_treeview_t *tv =
+        (vg_treeview_t *)rt_gui_widget_handle_checked_type(tree, VG_WIDGET_TREEVIEW);
+    return tv && vg_treeview_is_editing(tv) ? 1 : 0;
+}
+
+/// @brief `TreeView.WasEditCommitted` — consume the inline-edit commit edge.
+/// @param tree TreeView widget handle.
+/// @return 1 exactly once per committed edit, otherwise 0.
+int64_t rt_treeview_was_edit_committed(void *tree) {
+    RT_ASSERT_MAIN_THREAD();
+    vg_treeview_t *tv =
+        (vg_treeview_t *)rt_gui_widget_handle_checked_type(tree, VG_WIDGET_TREEVIEW);
+    return tv && vg_treeview_was_edit_committed(tv) ? 1 : 0;
+}
+
+/// @brief `TreeView.GetEditText` — most recently committed inline-edit text.
+/// @param tree TreeView widget handle.
+/// @return Owned runtime string; empty when nothing has committed.
+rt_string rt_treeview_get_edit_text(void *tree) {
+    RT_ASSERT_MAIN_THREAD();
+    vg_treeview_t *tv =
+        (vg_treeview_t *)rt_gui_widget_handle_checked_type(tree, VG_WIDGET_TREEVIEW);
+    const char *text = tv ? vg_treeview_get_edit_text(tv) : NULL;
+    return text ? rt_string_from_bytes(text, strlen(text)) : rt_str_empty();
+}
+
+/// @brief `TreeView.GetEditedNodeOption` — node whose edit most recently committed.
+/// @param tree TreeView widget handle.
+/// @return Owned Some(TreeView.Node), or None when unavailable.
+void *rt_treeview_get_edited_node_option(void *tree) {
+    RT_ASSERT_MAIN_THREAD();
+    vg_treeview_t *tv =
+        (vg_treeview_t *)rt_gui_widget_handle_checked_type(tree, VG_WIDGET_TREEVIEW);
+    return rt_treeview_node_option(tv ? vg_treeview_get_edited_node(tv) : NULL);
+}
+
+/// @brief `TreeView.CancelEdit` — cancel any inline edit without committing.
+/// @param tree TreeView widget handle.
+void rt_treeview_cancel_edit(void *tree) {
+    RT_ASSERT_MAIN_THREAD();
+    vg_treeview_t *tv =
+        (vg_treeview_t *)rt_gui_widget_handle_checked_type(tree, VG_WIDGET_TREEVIEW);
+    if (tv)
+        vg_treeview_cancel_edit(tv);
+}
+
 /// @brief Return the TreeView's non-consuming state revision.
 /// @param tree TreeView widget handle.
 /// @return Monotonic signed revision, or zero when the handle is invalid.
@@ -3551,6 +3623,43 @@ void *rt_treeview_get_load_requested_node_option(void *tree) {
 void *rt_treeview_get_activated_node_option(void *tree) {
     (void)tree;
     return rt_option_none();
+}
+
+/// @brief Stub: inline row editing never begins without graphics.
+int64_t rt_treeview_begin_edit_node(void *tree, void *node, rt_string initial_text) {
+    (void)tree;
+    (void)node;
+    (void)initial_text;
+    return 0;
+}
+
+/// @brief Stub: no inline row edit is ever in progress without graphics.
+int64_t rt_treeview_is_editing(void *tree) {
+    (void)tree;
+    return 0;
+}
+
+/// @brief Stub: no inline-edit commit edge exists without graphics.
+int64_t rt_treeview_was_edit_committed(void *tree) {
+    (void)tree;
+    return 0;
+}
+
+/// @brief Stub: return empty committed inline-edit text without graphics.
+rt_string rt_treeview_get_edit_text(void *tree) {
+    (void)tree;
+    return rt_str_empty();
+}
+
+/// @brief Stub: return an owned empty Option for the edited node.
+void *rt_treeview_get_edited_node_option(void *tree) {
+    (void)tree;
+    return rt_option_none();
+}
+
+/// @brief Stub: ignore inline-edit cancellation without graphics.
+void rt_treeview_cancel_edit(void *tree) {
+    (void)tree;
 }
 
 /// @brief Stub: no TreeView revision exists when graphics is disabled.

@@ -24,6 +24,14 @@
 //        src/runtime/graphics/3d/render/rt_canvas3d.c and sibling rt_*3d.c consumers
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares stable Graphics3D/Game3D class identifiers and handle validators.
+/// @details Opaque runtime handles must pass these helpers before being cast to
+/// private 3D payloads. Tagged math values additionally validate their heap
+/// shape so malformed or unrelated heap objects cannot be read as Vec3/Quat
+/// component arrays.
+
 #pragma once
 
 #include <stddef.h>
@@ -34,11 +42,15 @@
 #include "rt_vec3.h"
 
 /// @brief Return the runtime class id of an object (0 if none/plain value).
+/// @param p Borrowed object handle to inspect.
+/// @return Stable runtime class identifier, or zero for a null or class-less value.
 extern int64_t rt_obj_class_id(void *p);
 
-// Permanent ABI class-id sentinels, one per Graphics3D/Game3D runtime type. Each
-// names the class it tags (RT_G3D_<TYPE>_CLASS_ID); values are frozen negative
-// constants — append new ids at the end, never renumber or reuse an existing one.
+/// @name Permanent Graphics3D and Game3D class identifiers
+/// @brief Frozen negative ABI sentinels used to tag opaque runtime objects.
+/// @details Append identifiers at the end of this sequence; never renumber,
+/// reuse, or reinterpret an existing value.
+/// @{
 #define RT_G3D_CUBEMAP3D_CLASS_ID INT64_C(-0x603001)
 #define RT_G3D_RENDERTARGET3D_CLASS_ID INT64_C(-0x603002)
 #define RT_G3D_CANVAS3D_CLASS_ID INT64_C(-0x603003)
@@ -142,6 +154,7 @@ extern int64_t rt_obj_class_id(void *p);
 #define RT_G3D_CLOTH3D_CLASS_ID INT64_C(-0x603065)
 #define RT_G3D_GAME3D_MINIMAP_CLASS_ID INT64_C(-0x603066)
 #define RT_G3D_VEHICLE3D_CLASS_ID INT64_C(-0x603067)
+/// @}
 
 #if defined(RT_G3D_INTERNAL_ASSUME_STRUCT_HANDLE) && RT_G3D_INTERNAL_ASSUME_STRUCT_HANDLE &&       \
     !defined(RT_G3D_TRUSTED_STRUCT_HANDLES)
@@ -152,6 +165,9 @@ extern int64_t rt_obj_class_id(void *p);
 /// @brief True if @p obj is a live object of runtime class @p class_id.
 /// @details Under RT_G3D_INTERNAL_ASSUME_STRUCT_HANDLE this only checks for
 ///          non-NULL (trusted-handle fast path).
+/// @param obj Borrowed opaque runtime handle.
+/// @param class_id Expected stable runtime class identifier.
+/// @return Nonzero when the handle is non-null and matches the expected class.
 static inline int32_t rt_g3d_has_class(void *obj, int64_t class_id) {
 #if defined(RT_G3D_INTERNAL_ASSUME_STRUCT_HANDLE) && RT_G3D_INTERNAL_ASSUME_STRUCT_HANDLE
     (void)class_id;
@@ -162,12 +178,18 @@ static inline int32_t rt_g3d_has_class(void *obj, int64_t class_id) {
 }
 
 /// @brief Return @p obj if it is class @p class_id, else NULL (safe cast).
+/// @param obj Borrowed opaque runtime handle.
+/// @param class_id Expected stable runtime class identifier.
+/// @return The unchanged borrowed handle on a class match, otherwise `NULL`.
 static inline void *rt_g3d_checked_or_null(void *obj, int64_t class_id) {
     return rt_g3d_has_class(obj, class_id) ? obj : NULL;
 }
 
 /// @brief True if @p obj is a plain (class-less) heap value of exactly
 ///        @p payload_bytes — used to recognize boxed Vec3/Quat passed as void*.
+/// @param obj Borrowed opaque heap handle to inspect.
+/// @param payload_bytes Exact byte length required for the class-less payload.
+/// @return Nonzero only for a plain object with the exact requested payload shape.
 static inline int32_t rt_g3d_is_plain_value_object(void *obj, size_t payload_bytes) {
     if (!obj)
         return 0;
@@ -185,6 +207,10 @@ static inline int32_t rt_g3d_is_plain_value_object(void *obj, size_t payload_byt
 ///          still expose the old class id 0 shape. The helper accepts only the requested tag and
 ///          enough inline payload space; legacy id 0 is handled separately by
 ///          @ref rt_g3d_is_plain_value_object.
+/// @param obj Borrowed opaque heap handle to inspect.
+/// @param class_id Required tagged math class identifier.
+/// @param payload_bytes Minimum inline payload capacity in bytes.
+/// @return Nonzero only when heap kind, element kind, tag, and capacity are valid.
 static inline int32_t rt_g3d_is_tagged_value_object(void *obj,
                                                     int64_t class_id,
                                                     size_t payload_bytes) {
@@ -198,12 +224,16 @@ static inline int32_t rt_g3d_is_tagged_value_object(void *obj,
 }
 
 /// @brief True if @p obj is a Vec3, accepting both tagged and legacy class-less payloads.
+/// @param obj Borrowed opaque heap handle to inspect.
+/// @return Nonzero for a valid three-double tagged or legacy Vec3 payload.
 static inline int32_t rt_g3d_is_vec3(void *obj) {
     return rt_g3d_is_tagged_value_object(obj, RT_VEC3_CLASS_ID, sizeof(double) * 3u) ||
            rt_g3d_is_plain_value_object(obj, sizeof(double) * 3u);
 }
 
 /// @brief True if @p obj is a Quat, accepting both tagged and legacy class-less payloads.
+/// @param obj Borrowed opaque heap handle to inspect.
+/// @return Nonzero for a valid four-double tagged or legacy quaternion payload.
 static inline int32_t rt_g3d_is_quat(void *obj) {
     return rt_g3d_is_tagged_value_object(obj, RT_QUAT_CLASS_ID, sizeof(double) * 4u) ||
            rt_g3d_is_plain_value_object(obj, sizeof(double) * 4u);

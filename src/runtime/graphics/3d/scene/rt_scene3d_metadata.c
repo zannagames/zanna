@@ -19,6 +19,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements bounded, typed gameplay metadata on SceneNode3D values.
+/// @details Metadata is stored in deterministic bytewise key order. Native key
+///   and string allocations are owned by the node, mutations allocate fallible
+///   replacement data before publishing it, and all public reads return runtime
+///   values with their documented ownership.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_canvas3d_internal.h"
@@ -35,11 +42,15 @@
 #include <string.h>
 
 /// @brief Borrow one validated SceneNode payload.
+/// @param obj Borrowed candidate runtime handle.
+/// @return Borrowed SceneNode3D payload on a class match, otherwise `NULL`.
 static rt_scene_node3d *metadata_node(void *obj) {
     return (rt_scene_node3d *)rt_g3d_checked_or_null(obj, RT_G3D_SCENENODE3D_CLASS_ID);
 }
 
 /// @brief Reject structurally corrupt table bounds before indexing native data.
+/// @param node Borrowed node whose metadata storage invariants are checked.
+/// @return Nonzero when counts, capacity, limit, and backing storage agree.
 static int metadata_table_valid(const rt_scene_node3d *node) {
     if (!node || node->metadata_count < 0 || node->metadata_capacity < 0 ||
         node->metadata_count > node->metadata_capacity ||
@@ -51,6 +62,12 @@ static int metadata_table_valid(const rt_scene_node3d *node) {
 }
 
 /// @brief Validate one runtime string as bounded, NUL-free UTF-8 bytes.
+/// @param value Borrowed runtime string handle.
+/// @param maximum Maximum accepted byte length.
+/// @param allow_empty Nonzero to permit a zero-byte string.
+/// @param out_data Output receiving a borrowed pointer into @p value.
+/// @param out_length Output receiving the validated byte length.
+/// @return Nonzero when the handle and bounded byte view are valid.
 static int metadata_string_view(
     rt_string value, int32_t maximum, int allow_empty, const char **out_data, int32_t *out_length) {
     const char *data;
@@ -68,6 +85,11 @@ static int metadata_string_view(
 }
 
 /// @brief Compare exact byte strings without relying on NUL termination.
+/// @param left Borrowed first byte string.
+/// @param left_length Non-negative first byte count.
+/// @param right Borrowed second byte string.
+/// @param right_length Non-negative second byte count.
+/// @return A value below, equal to, or above zero under bytewise lexical ordering.
 static int metadata_key_compare(const char *left,
                                 int32_t left_length,
                                 const char *right,
@@ -84,6 +106,11 @@ static int metadata_key_compare(const char *left,
 }
 
 /// @brief Locate a key and its insertion point in the sorted table.
+/// @param node Borrowed node with a structurally valid sorted metadata table.
+/// @param key Borrowed exact key bytes.
+/// @param key_length Non-negative key byte count.
+/// @param out_found Optional output set nonzero when an equal key occupies the returned index.
+/// @return Zero-based matching index or insertion position.
 static int32_t metadata_find(const rt_scene_node3d *node,
                              const char *key,
                              int32_t key_length,
@@ -109,6 +136,9 @@ static int32_t metadata_find(const rt_scene_node3d *node,
 }
 
 /// @brief Allocate one NUL-terminated native byte copy.
+/// @param data Borrowed source bytes.
+/// @param length Non-negative number of bytes to copy.
+/// @return Caller-owned NUL-terminated allocation, or `NULL` on invalid input/failure.
 static char *metadata_copy_bytes(const char *data, int32_t length) {
     char *copy;
     if (!data || length < 0 || (size_t)length > SIZE_MAX - 1u)
@@ -123,6 +153,7 @@ static char *metadata_copy_bytes(const char *data, int32_t length) {
 }
 
 /// @brief Release only the value payload of one entry.
+/// @param entry Borrowed mutable entry whose owned string value is cleared when present.
 static void metadata_release_value(rt_scene3d_metadata_entry *entry) {
     if (!entry)
         return;
@@ -134,6 +165,9 @@ static void metadata_release_value(rt_scene3d_metadata_entry *entry) {
 }
 
 /// @brief Grow the bounded table without publishing a partial allocation.
+/// @param node Borrowed node whose native entry allocation may grow.
+/// @param needed Minimum required entry capacity.
+/// @return Nonzero on success or when capacity already suffices, otherwise zero.
 static int metadata_reserve(rt_scene_node3d *node, int32_t needed) {
     int32_t capacity;
     rt_scene3d_metadata_entry *grown;
@@ -156,6 +190,19 @@ static int metadata_reserve(rt_scene_node3d *node, int32_t needed) {
 }
 
 /// @brief Publish a validated scalar as an insert or transactional replacement.
+/// @details The selected scalar argument is copied according to @p kind. For a
+///   new key, native key storage and any string value are allocated before the
+///   sorted table is shifted and the entry count is published.
+/// @param node Borrowed destination node with a valid metadata table.
+/// @param key Borrowed nonempty key bytes.
+/// @param key_length Bounded key byte count.
+/// @param kind Scalar kind selecting the active value argument.
+/// @param bool_value Boolean value used for `RT_SCENE3D_METADATA_BOOL`.
+/// @param int_value Integer value used for `RT_SCENE3D_METADATA_INT`.
+/// @param float_value Finite value used for `RT_SCENE3D_METADATA_FLOAT`.
+/// @param string_value Borrowed bytes used for `RT_SCENE3D_METADATA_STRING`.
+/// @param string_length Bounded byte count for @p string_value.
+/// @return Nonzero after insertion or replacement, otherwise zero with the table unchanged.
 static int8_t metadata_set(rt_scene_node3d *node,
                            const char *key,
                            int32_t key_length,
@@ -228,6 +275,11 @@ static int8_t metadata_set(rt_scene_node3d *node,
 }
 
 /// @brief Validate a public metadata key and find it.
+/// @param obj Borrowed candidate SceneNode3D handle.
+/// @param key Borrowed bounded, nonempty runtime-string key.
+/// @param out_node Optional output receiving the validated node, even when the key is absent.
+/// @param out_index Optional output receiving the matching or insertion index.
+/// @return Borrowed matching entry, or `NULL` for invalid input or an absent key.
 static const rt_scene3d_metadata_entry *metadata_get_entry(void *obj,
                                                            rt_string key,
                                                            rt_scene_node3d **out_node,
@@ -250,6 +302,7 @@ static const rt_scene3d_metadata_entry *metadata_get_entry(void *obj,
 }
 
 /// @brief Release every native allocation owned by one node metadata table.
+/// @param node Borrowed node whose keys, string values, and entry array are cleared.
 void rt_scene_node3d_metadata_clear_internal(rt_scene_node3d *node) {
     if (!node)
         return;
@@ -265,6 +318,9 @@ void rt_scene_node3d_metadata_clear_internal(rt_scene_node3d *node) {
     node->metadata_capacity = 0;
 }
 
+/// @brief Return all metadata keys in deterministic bytewise order.
+/// @param obj Borrowed SceneNode3D handle.
+/// @return New owned runtime sequence containing newly referenced string keys.
 void *rt_scene_node3d_metadata_keys(void *obj) {
     rt_scene_node3d *node = metadata_node(obj);
     void *keys = rt_seq_new_owned();
@@ -281,6 +337,11 @@ void *rt_scene_node3d_metadata_keys(void *obj) {
     return keys;
 }
 
+/// @brief Report the scalar kind stored for a metadata key.
+/// @param obj Borrowed SceneNode3D handle.
+/// @param key Borrowed metadata key.
+/// @return Runtime string `"null"`, `"bool"`, `"int"`, `"float"`, or `"string"`;
+///   returns the empty runtime string when the key/input is invalid or absent.
 rt_string rt_scene_node3d_metadata_kind(void *obj, rt_string key) {
     const rt_scene3d_metadata_entry *entry = metadata_get_entry(obj, key, NULL, NULL);
     if (!entry)
@@ -300,15 +361,29 @@ rt_string rt_scene_node3d_metadata_kind(void *obj, rt_string key) {
     return rt_const_cstr("");
 }
 
+/// @brief Determine whether a node contains an exact metadata key.
+/// @param obj Borrowed SceneNode3D handle.
+/// @param key Borrowed metadata key.
+/// @return Nonzero when the validated key is present.
 int8_t rt_scene_node3d_metadata_has(void *obj, rt_string key) {
     return metadata_get_entry(obj, key, NULL, NULL) ? 1 : 0;
 }
 
+/// @brief Read an integer metadata value without coercing other kinds.
+/// @param obj Borrowed SceneNode3D handle.
+/// @param key Borrowed metadata key.
+/// @param def Fallback returned for invalid input, absence, or a kind mismatch.
+/// @return Stored integer or @p def.
 int64_t rt_scene_node3d_metadata_get_int(void *obj, rt_string key, int64_t def) {
     const rt_scene3d_metadata_entry *entry = metadata_get_entry(obj, key, NULL, NULL);
     return entry && entry->kind == RT_SCENE3D_METADATA_INT ? entry->value.int_value : def;
 }
 
+/// @brief Read floating-point metadata, widening stored integers when necessary.
+/// @param obj Borrowed SceneNode3D handle.
+/// @param key Borrowed metadata key.
+/// @param def Fallback returned for invalid input, absence, or an incompatible kind.
+/// @return Stored float, widened integer, or @p def.
 double rt_scene_node3d_metadata_get_float(void *obj, rt_string key, double def) {
     const rt_scene3d_metadata_entry *entry = metadata_get_entry(obj, key, NULL, NULL);
     if (!entry)
@@ -320,12 +395,23 @@ double rt_scene_node3d_metadata_get_float(void *obj, rt_string key, double def) 
     return def;
 }
 
+/// @brief Read a Boolean metadata value without coercing other kinds.
+/// @param obj Borrowed SceneNode3D handle.
+/// @param key Borrowed metadata key.
+/// @param def Fallback truth value for invalid input, absence, or a kind mismatch.
+/// @return Canonical `0` or `1` stored/fallback truth value.
 int8_t rt_scene_node3d_metadata_get_bool(void *obj, rt_string key, int8_t def) {
     const rt_scene3d_metadata_entry *entry = metadata_get_entry(obj, key, NULL, NULL);
     return entry && entry->kind == RT_SCENE3D_METADATA_BOOL ? (entry->value.bool_value ? 1 : 0)
                                                             : (def ? 1 : 0);
 }
 
+/// @brief Read string metadata with caller-supplied fallback semantics.
+/// @param obj Borrowed SceneNode3D handle.
+/// @param key Borrowed metadata key.
+/// @param def Borrowed fallback string, or an invalid/NULL handle for an empty fallback.
+/// @return New runtime string containing the stored bytes, a retained @p def, or
+///   the empty runtime string.
 rt_string rt_scene_node3d_metadata_get_string(void *obj, rt_string key, rt_string def) {
     const rt_scene3d_metadata_entry *entry = metadata_get_entry(obj, key, NULL, NULL);
     if (entry && entry->kind == RT_SCENE3D_METADATA_STRING)
@@ -336,6 +422,10 @@ rt_string rt_scene_node3d_metadata_get_string(void *obj, rt_string key, rt_strin
     return rt_const_cstr("");
 }
 
+/// @brief Insert or replace a metadata key with the explicit null kind.
+/// @param obj Borrowed SceneNode3D handle.
+/// @param key Borrowed bounded, nonempty metadata key.
+/// @return Nonzero after a successful mutation, otherwise zero.
 int8_t rt_scene_node3d_metadata_set_null(void *obj, rt_string key) {
     rt_scene_node3d *node = metadata_node(obj);
     const char *key_data;
@@ -346,6 +436,11 @@ int8_t rt_scene_node3d_metadata_set_null(void *obj, rt_string key) {
     return metadata_set(node, key_data, key_length, RT_SCENE3D_METADATA_NULL, 0, 0, 0.0, NULL, 0);
 }
 
+/// @brief Insert or replace an integer metadata value.
+/// @param obj Borrowed SceneNode3D handle.
+/// @param key Borrowed bounded, nonempty metadata key.
+/// @param value Integer value to store.
+/// @return Nonzero after a successful mutation, otherwise zero.
 int8_t rt_scene_node3d_metadata_set_int(void *obj, rt_string key, int64_t value) {
     rt_scene_node3d *node = metadata_node(obj);
     const char *key_data;
@@ -357,6 +452,11 @@ int8_t rt_scene_node3d_metadata_set_int(void *obj, rt_string key, int64_t value)
         node, key_data, key_length, RT_SCENE3D_METADATA_INT, 0, value, 0.0, NULL, 0);
 }
 
+/// @brief Insert or replace a finite floating-point metadata value.
+/// @param obj Borrowed SceneNode3D handle.
+/// @param key Borrowed bounded, nonempty metadata key.
+/// @param value Finite double-precision value to store.
+/// @return Nonzero after a successful mutation, otherwise zero.
 int8_t rt_scene_node3d_metadata_set_float(void *obj, rt_string key, double value) {
     rt_scene_node3d *node = metadata_node(obj);
     const char *key_data;
@@ -369,6 +469,11 @@ int8_t rt_scene_node3d_metadata_set_float(void *obj, rt_string key, double value
         node, key_data, key_length, RT_SCENE3D_METADATA_FLOAT, 0, 0, value, NULL, 0);
 }
 
+/// @brief Insert or replace a Boolean metadata value.
+/// @param obj Borrowed SceneNode3D handle.
+/// @param key Borrowed bounded, nonempty metadata key.
+/// @param value Truth value canonicalized to zero or one.
+/// @return Nonzero after a successful mutation, otherwise zero.
 int8_t rt_scene_node3d_metadata_set_bool(void *obj, rt_string key, int8_t value) {
     rt_scene_node3d *node = metadata_node(obj);
     const char *key_data;
@@ -380,6 +485,11 @@ int8_t rt_scene_node3d_metadata_set_bool(void *obj, rt_string key, int8_t value)
         node, key_data, key_length, RT_SCENE3D_METADATA_BOOL, value, 0, 0.0, NULL, 0);
 }
 
+/// @brief Insert or replace a bounded string metadata value.
+/// @param obj Borrowed SceneNode3D handle.
+/// @param key Borrowed bounded, nonempty metadata key.
+/// @param value Borrowed bounded, NUL-free runtime string; an empty value is allowed.
+/// @return Nonzero after copying and publishing the value, otherwise zero.
 int8_t rt_scene_node3d_metadata_set_string(void *obj, rt_string key, rt_string value) {
     rt_scene_node3d *node = metadata_node(obj);
     const char *key_data;
@@ -403,6 +513,10 @@ int8_t rt_scene_node3d_metadata_set_string(void *obj, rt_string key, rt_string v
                         value_length);
 }
 
+/// @brief Remove an exact metadata key and release its native storage.
+/// @param obj Borrowed SceneNode3D handle.
+/// @param key Borrowed metadata key.
+/// @return Nonzero when an entry was removed, otherwise zero.
 int8_t rt_scene_node3d_metadata_remove(void *obj, rt_string key) {
     rt_scene_node3d *node = NULL;
     int32_t index = 0;

@@ -23,6 +23,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file rt_gui_color.c
+/// @brief Implements runtime bindings for swatch, palette, and picker color controls.
+///
+/// @details
+/// The bindings translate the public `0x00RRGGBB` representation to the
+/// widget layer's opaque ARGB form, validate live handles, and provide neutral
+/// ABI-compatible behavior when graphics support is disabled.
+
 #include "rt_gui_internal.h"
 #include "rt_platform.h"
 
