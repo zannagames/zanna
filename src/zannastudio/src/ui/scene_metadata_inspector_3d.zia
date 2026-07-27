@@ -82,9 +82,7 @@ class SceneMetadataInspector3D {
     }
 
     /// @brief Rebuild bounded rows from canonical runtime state.
-    expose func Refresh(node: SceneNode,
-                        enabled: Boolean,
-                        selectedIndex: Integer) {
+    expose func Refresh(node: SceneNode, enabled: Boolean) {
         selectedProperty = -1;
         keys = [];
         editorEnabled = enabled and node != null;
@@ -173,7 +171,7 @@ class SceneMetadataInspector3D {
     }
 
     /// @brief Focus one live metadata row's value by exact key.
-    expose func SelectByKey(node: SceneNode, key: String) {
+    expose func SelectByKey(key: String) {
         var index = RowIndexOf(key);
         if index < 0 { return; }
         var row = rows.rows.get(index);

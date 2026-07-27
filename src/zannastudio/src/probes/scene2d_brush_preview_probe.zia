@@ -1,0 +1,339 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene2d_brush_preview_probe.zia
+// Purpose: Verify atlas-true, non-destructive 2D tile-tool previews.
+// Key invariants:
+//   - Paint, fill, stamps, and captured shapes composite real atlas frames.
+//   - Switching tools repaints immediately and clears an active stamp.
+//   - Line and ellipse tool choices follow their owning scene document.
+//   - Every preview leaves scene bytes, revision, dirty state, and history exact.
+// Ownership/Lifetime:
+//   - The probe owns one hidden AppShell, input harness, and temporary atlas.
+// Links: zannastudio/src/ui/scene_editor_2d.zia,
+//        zannastudio/src/ui/scene_tileset_2d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene2d_brush_preview_probe;
+
+// ============================================================================
+// MODULE: scene2d_brush_preview_probe
+// PURPOSE: Pin WYSIWYG tile-brush feedback and per-tab tool identity.
+//
+// WHERE-THIS-FITS: Transaction probes own tile mutations. This focused display
+//          probe owns the disposable pixels shown before a mutation.
+//
+// TEACHING-NOTE: The fixture keeps target cells empty, samples their centers,
+//          and freezes canonical state around every hover/captured gesture.
+// ============================================================================
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_2d";
+bind "../ui/scene_panels_2d";
+
+bind Color = Zanna.Graphics.Color;
+bind Convert = Zanna.Core.Convert;
+bind Dir = Zanna.IO.Dir;
+bind GUI = Zanna.GUI;
+bind Input = Zanna.Input;
+bind Path = Zanna.IO.Path;
+bind Pixels = Zanna.Graphics.Pixels;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind TempFile = Zanna.IO.TempFile;
+bind Terminal = Zanna.Terminal;
+
+func HarnessCoordinate(shell: app_shell.AppShell,
+                       logical: Number) -> Integer {
+    var scale = shell.app.GetEffectiveScale();
+    if scale <= 0.0 { scale = 1.0; }
+    return Convert.NumToInt(logical * scale + 0.999999);
+}
+
+func CanvasCoordinate(shell: app_shell.AppShell,
+                      editor: scene_editor_2d.SceneEditor2D,
+                      cell: Integer,
+                      horizontal: Boolean) -> Integer {
+    var origin = editor.canvasImage.GetScreenY();
+    if horizontal { origin = editor.canvasImage.GetScreenX(); }
+    return HarnessCoordinate(
+        shell, origin + cell * editor.displayCellSize
+            + editor.displayCellSize / 2.0);
+}
+
+func PumpTwice(shell: app_shell.AppShell,
+               editor: scene_editor_2d.SceneEditor2D,
+               sceneDoc: document.Document) {
+    editor.Pump(sceneDoc);
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+}
+
+func MoveToCell(shell: app_shell.AppShell,
+                harness: GUI.TestHarness,
+                editor: scene_editor_2d.SceneEditor2D,
+                sceneDoc: document.Document,
+                cellX: Integer,
+                cellY: Integer) {
+    harness.SendMouse(
+        "move",
+        CanvasCoordinate(shell, editor, cellX, true),
+        CanvasCoordinate(shell, editor, cellY, false),
+        0);
+    harness.DispatchPending();
+    PumpTwice(shell, editor, sceneDoc);
+}
+
+func SampleCell(editor: scene_editor_2d.SceneEditor2D,
+                cellX: Integer,
+                cellY: Integer) -> Integer {
+    return editor.framePixels.GetColor(
+        cellX * editor.displayCellSize + editor.displayCellSize / 2,
+        cellY * editor.displayCellSize + editor.displayCellSize / 2);
+}
+
+func LooksRed(color: Integer) -> Boolean {
+    return Color.GetRed(color) > 110
+        and Color.GetRed(color) > Color.GetGreen(color) * 2
+        and Color.GetRed(color) > Color.GetBlue(color) * 2;
+}
+
+func LooksGreen(color: Integer) -> Boolean {
+    return Color.GetGreen(color) > 110
+        and Color.GetGreen(color) > Color.GetRed(color) * 2
+        and Color.GetGreen(color) > Color.GetBlue(color) * 2;
+}
+
+func Cleanup(shell: app_shell.AppShell,
+             harness: GUI.TestHarness,
+             tempDir: String) {
+    if harness != null { harness.UnbindApp(); }
+    if shell != null { shell.Destroy(); }
+    if tempDir != "" { Dir.RemoveAll(tempDir); }
+}
+
+func Fail(shell: app_shell.AppShell,
+          harness: GUI.TestHarness,
+          tempDir: String,
+          reason: String) {
+    Cleanup(shell, harness, tempDir);
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func main() {
+    var tempDir =
+        TempFile.CreateDirWithPrefix("zannastudio_brush_preview_");
+    var atlasPath = Path.Join(tempDir, "brush-atlas.png");
+    var atlas = Pixels.New(32, 16);
+    if tempDir == "" or atlas == null {
+        Fail(null, null, tempDir, "temporary atlas allocation");
+        return;
+    }
+    atlas.DrawBox(0, 0, 16, 16, Color.RGB(240, 36, 28));
+    atlas.DrawBox(16, 0, 16, 16, Color.RGB(28, 224, 58));
+    if Pixels.SavePng(atlas, atlasPath) != 1 {
+        Fail(null, null, tempDir, "temporary atlas write");
+        return;
+    }
+
+    var fixture = SceneDocument.New(8, 6, 16, 16);
+    if fixture == null {
+        Fail(null, null, tempDir, "scene fixture");
+        return;
+    }
+    fixture.SetLayerAsset(0, "brush-atlas.png");
+    fixture.SetTile(0, 0, 0, 1);
+    fixture.SetTile(0, 1, 0, 2);
+
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio 2D Brush Preview Probe", 1080, 760);
+    shell.SetSceneWorkspaceMode(true);
+    var editor = new scene_editor_2d.SceneEditor2D();
+    scene_panels_2d.Build(
+        editor, shell.workbench.scene2DHost, shell.app);
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene2DDocument();
+    sceneDoc.fileName = "brush-preview.scene2d";
+    sceneDoc.filePath = Path.Join(tempDir, sceneDoc.fileName);
+    sceneDoc.content = fixture.ToJson();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_2D);
+    editor.Activate(sceneDoc);
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    PumpTwice(shell, editor, sceneDoc);
+    editor.canvasScroll.SetScroll(0.0, 0.0);
+    PumpTwice(shell, editor, sceneDoc);
+    if editor.tilesets.TileCount(0) != 2 {
+        Fail(shell, null, tempDir, "atlas did not load");
+        return;
+    }
+
+    var baseline = sceneDoc.content;
+    var baselineRevision = editor.GetRevision();
+    var baselineUndo = editor.undoStack.count();
+    var baselineDirty = sceneDoc.isModified;
+
+    // Newly-added shape modes retain their exact identity per scene tab.
+    editor.SetToolMode(scene_editor_2d.MODE_ELLIPSE);
+    editor.Pump(sceneDoc);
+    var otherDoc = documents.NewScene2DDocument();
+    PumpTwice(shell, editor, otherDoc);
+    editor.SetToolMode(scene_editor_2d.MODE_LINE);
+    editor.Pump(otherDoc);
+    PumpTwice(shell, editor, sceneDoc);
+    if editor.mode != scene_editor_2d.MODE_ELLIPSE {
+        Fail(shell, null, tempDir, "ellipse tool did not follow its scene tab");
+        return;
+    }
+    PumpTwice(shell, editor, otherDoc);
+    if editor.mode != scene_editor_2d.MODE_LINE {
+        Fail(shell, null, tempDir, "line tool did not follow its scene tab");
+        return;
+    }
+    PumpTwice(shell, editor, sceneDoc);
+
+    var harness = GUI.TestHarness.New();
+    if harness.BindApp(shell.app) == false {
+        Fail(shell, harness, tempDir, "automation app binding");
+        return;
+    }
+
+    // Paint hover uses the selected atlas frame, not an outline-only box.
+    editor.SetToolMode(scene_editor_2d.MODE_PAINT);
+    editor.tileSpinner.SetValue(1);
+    MoveToCell(shell, harness, editor, sceneDoc, 3, 2);
+    var paintPixel = SampleCell(editor, 3, 2);
+    if LooksRed(paintPixel) == false {
+        Fail(shell, harness, tempDir,
+             "paint hover was not atlas-true: "
+             + Color.GetRed(paintPixel) + ","
+             + Color.GetGreen(paintPixel) + ","
+             + Color.GetBlue(paintPixel));
+        return;
+    }
+
+    // Tool changes repaint immediately, even while the pointer stays still.
+    editor.SetToolMode(scene_editor_2d.MODE_ERASE);
+    PumpTwice(shell, editor, sceneDoc);
+    var erasedGhostPixel = SampleCell(editor, 3, 2);
+    if Color.GetRed(erasedGhostPixel) > 70
+       or Color.GetGreen(erasedGhostPixel) > 70 {
+        Fail(shell, harness, tempDir, "stale paint ghost survived tool switch");
+        return;
+    }
+
+    // Fill hover shares the same atlas-true preview path.
+    editor.SetToolMode(scene_editor_2d.MODE_FILL);
+    editor.tileSpinner.SetValue(2);
+    PumpTwice(shell, editor, sceneDoc);
+    var fillPixel = SampleCell(editor, 3, 2);
+    if LooksGreen(fillPixel) == false {
+        Fail(shell, harness, tempDir, "fill hover was not atlas-true");
+        return;
+    }
+
+    // A canvas-sourced stamp previews every non-empty source frame.
+    editor.tileRegionMinX = 0;
+    editor.tileRegionMinY = 0;
+    editor.tileRegionMaxX = 1;
+    editor.tileRegionMaxY = 0;
+    if editor.UseTileRegionAsStamp() == false {
+        Fail(shell, harness, tempDir, "stamp fixture");
+        return;
+    }
+    MoveToCell(shell, harness, editor, sceneDoc, 4, 3);
+    var stampRed = SampleCell(editor, 4, 3);
+    var stampGreen = SampleCell(editor, 5, 3);
+    if LooksRed(stampRed) == false or LooksGreen(stampGreen) == false {
+        Fail(shell, harness, tempDir,
+             "stamp ghost did not preserve source frames");
+        return;
+    }
+    editor.SetToolMode(scene_editor_2d.MODE_LINE);
+    PumpTwice(shell, editor, sceneDoc);
+    if editor.stampActive {
+        Fail(shell, harness, tempDir, "tool switch did not clear stamp");
+        return;
+    }
+
+    // Captured rectangles preview every would-be committed tile, then Escape
+    // removes the ghost and releases capture without a transaction.
+    editor.SetToolMode(scene_editor_2d.MODE_RECTANGLE);
+    editor.tileSpinner.SetValue(1);
+    var startX = CanvasCoordinate(shell, editor, 2, true);
+    var startY = CanvasCoordinate(shell, editor, 2, false);
+    var endX = CanvasCoordinate(shell, editor, 4, true);
+    var endY = CanvasCoordinate(shell, editor, 3, false);
+    harness.SendMouse("move", startX, startY, 0);
+    harness.SendMouse("down", startX, startY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    harness.SendMouse("move", endX, endY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    var rectanglePixel = SampleCell(editor, 3, 3);
+    if editor.tileRectangleActive == false
+       or Input.Mouse.IsCaptured() == false
+       or LooksRed(rectanglePixel) == false
+       or editor.scene.GetTile(0, 3, 3) != 0 {
+        Fail(shell, harness, tempDir,
+             "captured rectangle was not an atlas-true preview");
+        return;
+    }
+    harness.SendKey("escape", 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    harness.SendMouse("up", endX, endY, 0);
+    harness.DispatchPending();
+    PumpTwice(shell, editor, sceneDoc);
+
+    if editor.tileRectangleActive
+       or Input.Mouse.IsCaptured()
+       or sceneDoc.content != baseline
+       or editor.GetRevision() != baselineRevision
+       or editor.undoStack.count() != baselineUndo
+       or sceneDoc.isModified != baselineDirty {
+        Fail(shell, harness, tempDir,
+             "preview changed canonical state or leaked capture");
+        return;
+    }
+
+    // Every newly-added tool follows the same invalid-scene enablement gate.
+    var brokenDoc = documents.NewScene2DDocument();
+    brokenDoc.content = "{";
+    PumpTwice(shell, editor, brokenDoc);
+    if editor.lineButton.IsEnabled()
+       or editor.ellipseButton.IsEnabled() {
+        Fail(shell, harness, tempDir,
+             "shape tools stayed enabled for an invalid scene");
+        return;
+    }
+    PumpTwice(shell, editor, sceneDoc);
+    if editor.lineButton.IsEnabled() == false
+       or editor.ellipseButton.IsEnabled() == false {
+        Fail(shell, harness, tempDir,
+             "shape tools did not re-enable with the valid scene");
+        return;
+    }
+
+    var metric = "paint="
+        + Color.GetRed(paintPixel) + ","
+        + Color.GetGreen(paintPixel) + ","
+        + Color.GetBlue(paintPixel)
+        + " stamp=" + Color.GetRed(stampRed)
+        + "/" + Color.GetGreen(stampGreen)
+        + " rectangle=" + Color.GetRed(rectanglePixel);
+    Cleanup(shell, harness, tempDir);
+    Terminal.Say("METRIC: " + metric);
+    Terminal.Say("RESULT: ok");
+}

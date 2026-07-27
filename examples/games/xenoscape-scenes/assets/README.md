@@ -19,9 +19,11 @@ required; `zanna.project` bundles this directory into packaged builds.
 
 ## Deterministic production atlases
 
-The following QA reference PNGs are baked by `tools/build_release_assets.zia` from the
-in-tree first-party SpriteFactory recipes and fixed XENOSCAPE palette. They have
-no external source material and are reproducible without a network connection:
+The following QA reference PNGs are baked from in-tree first-party renderers
+and the fixed XENOSCAPE palette. They have no external source material and are
+reproducible without a network connection. Sprite/tile/icon/UI assets come from
+`tools/build_release_assets.zia`; scene backdrops come from
+`tools/build_scene_preview_backgrounds.zia`:
 
 - `sprites/player-release-sheet.png` — all 41 stable right-facing release poses
   in an 8x6 grid; the game mirrors left-facing frames after decode.
@@ -33,6 +35,9 @@ no external source material and are reproducible without a network connection:
   Studio's project-owned object visualization rules.
 - `ui/title-menu-panel.png` — translucent circuit-frame texture behind the live
   title menu.
+- `backgrounds/scene-region-01.png` through `scene-region-10.png` — fixed-time
+  captures from the live biome background renderer used by Studio's
+  project-owned 2D scene preview profile.
 
 The player sheet is consumed at runtime. The tile/icon/panel atlases are visual
 regression references for the code-native renderer and are not falsely counted
@@ -42,4 +47,7 @@ Rebuild the deterministic atlases from the game directory with:
 ```sh
 mkdir -p assets/sprites assets/tiles assets/icons assets/ui
 ../../../build/src/tools/zia/zia tools/build_release_assets.zia
+
+# Requires a display because it captures the live Canvas renderer:
+../../../build/src/tools/zia/zia tools/build_scene_preview_backgrounds.zia
 ```

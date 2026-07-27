@@ -22,8 +22,10 @@ directly.
   stations, shrines, teleporters, lore terminals, region gates), the boss,
   the player start, the checkpoint, and structural `marker` anchors
   (landmark/tutorial/mastery/setpiece/secret) with typed properties defined
-  by `scene-components.json` (schema v2 with an enum marker kind).
-- **Scene properties**: theme and player-start coordinates.
+  by `scene-components.json` (schema v8 with an enum marker kind and
+  project-owned object/background preview profiles).
+- **Scene properties**: one-based campaign region, gameplay theme, and
+  player-start coordinates.
 
 `asset-library.json` tags the canonical tileset with its 64x64 grid for the
 Studio asset browser.
@@ -54,8 +56,11 @@ source of truth — edit them in Zanna Studio, not in code.
 
 Open `examples/games/xenoscape-scenes` as a workspace folder in Zanna Studio
 and open any `assets/scenes/region-NN.scene2d` to edit tiles, tile behavior,
-spawns, and markers visually; the **Run Scene** toolbar button launches the
-game at that region.
+spawns, and markers visually. Studio uses the scene's `region` property and the
+project's version-8 preview profile to composite a fixed-time capture from the
+same runtime biome renderer behind the exact tiles and objects; the first-open
+grid default is off, but the normal Grid control remains available. The
+**Run Scene** toolbar button launches the game at that region.
 
 ## Validation
 

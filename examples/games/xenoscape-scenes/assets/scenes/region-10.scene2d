@@ -7,6 +7,7 @@
   "tileHeight": 64,
   "tilesetAsset": "",
   "properties": {
+    "region": 10,
     "playerStartX": 192,
     "playerStartY": 1152,
     "theme": 10

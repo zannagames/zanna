@@ -6,18 +6,21 @@
 //===----------------------------------------------------------------------===//
 //
 // File: zannastudio/src/ui/scene_tileset_2d.zia
-// Purpose: Bounded tileset loading, palette rendering, and canvas blitting for
-//          Studio's editable 2D scene surface.
+// Purpose: Bounded tileset/background loading, palette rendering, and canvas
+//          blitting for Studio's editable 2D scene surface.
 // Key invariants:
 //   - Authored relative paths resolve beside the saved scene document.
-//   - Image source, decoded-pixel, palette, and scaled-tile caches are bounded.
+//   - Image source, decoded-pixel, palette, scaled-tile, and scene-background
+//     caches are bounded.
 //   - Translucent frames composite source-over; opaque frames use a fast copy.
+//   - Zero-rotation sprite fast paths use an epsilon-safe degree comparison.
 //   - Invalid or missing assets produce ordinary inline state, never traps.
 //   - Tile IDs remain SceneDocument's one-based tileset frame indexes.
 // Ownership/Lifetime: SceneEditor2D owns one library; entries own decoded
 //                     Pixels handles until the scene or layer assets change.
 // Links: zannastudio/src/ui/scene_editor_2d.zia,
 //        zannastudio/src/probes/scene_editor_2d_probe.zia,
+//        docs/adr/0202-project-owned-2d-scene-background-previews.md,
 //        docs/zannalib/game/scene.md
 //
 //===----------------------------------------------------------------------===//
@@ -56,10 +59,19 @@ final MAX_SCALED_CACHE_PIXELS: Integer = 8388608;
 final MAX_PALETTE_TILES: Integer = 512;
 final MAX_SPRITE_ENTRIES: Integer = 64;
 final MAX_TRANSFORMED_SPRITE_AXIS: Integer = 4096;
+final MAX_BACKGROUND_SCALED_AXIS: Integer = 4096;
+final MAX_BACKGROUND_SCALED_PIXELS: Integer = 8388608;
+final ROTATION_ZERO_EPSILON_DEGREES: Number = 0.000001;
 final TINT_NONE_2D: Integer = 4294967295;
 final PALETTE_COLUMNS: Integer = 8;
 final PALETTE_TILE_SIZE: Integer = 28;
 final PALETTE_STRIDE: Integer = 30;
+
+/// @brief Whether a degree rotation is visually indistinguishable from zero.
+func RotationIsEffectivelyZero(rotation: Number) -> Boolean {
+    return rotation > 0.0 - ROTATION_ZERO_EPSILON_DEGREES
+        and rotation < ROTATION_ZERO_EPSILON_DEGREES;
+}
 
 /// @brief One decoded layer tileset plus truthful load metadata.
 class TilesetEntry2D {
@@ -159,6 +171,15 @@ class SceneTilesetLibrary2D {
     hide List[TilesetEntry2D] spriteEntries;
     hide Integer spriteTileWidth;
     hide Integer spriteTileHeight;
+    hide TilesetEntry2D backgroundEntry;
+    hide String backgroundReferencePath;
+    hide Pixels scaledBackground;
+    hide String scaledBackgroundFit;
+    hide Integer scaledBackgroundViewportWidth;
+    hide Integer scaledBackgroundViewportHeight;
+    hide Integer scaledBackgroundX;
+    hide Integer scaledBackgroundY;
+    hide Boolean scaledBackgroundHasTransparency;
 
     expose func init() {
         entries = [];
@@ -175,10 +196,20 @@ class SceneTilesetLibrary2D {
         spriteEntries = [];
         spriteTileWidth = 0;
         spriteTileHeight = 0;
+        backgroundEntry = null;
+        backgroundReferencePath = "";
+        scaledBackground = null;
+        scaledBackgroundFit = "";
+        scaledBackgroundViewportWidth = 0;
+        scaledBackgroundViewportHeight = 0;
+        scaledBackgroundX = 0;
+        scaledBackgroundY = 0;
+        scaledBackgroundHasTransparency = false;
     }
 
     /// @brief Rebuild every layer preview from the current canonical scene.
     expose func Reload(scene: SceneDocument, nextDocumentPath: String) {
+        ClearSceneBackground();
         entries = [];
         documentPath = nextDocumentPath;
         sourcePixelCount = 0;
@@ -233,7 +264,13 @@ class SceneTilesetLibrary2D {
             return false;
         }
         lastExternalPollMs = now;
-        var total = entries.count() + spriteEntries.count();
+        var backgroundCount = 0;
+        if backgroundEntry != null
+           and backgroundEntry.authoredPath != "" {
+            backgroundCount = 1;
+        }
+        var total =
+            entries.count() + spriteEntries.count() + backgroundCount;
         if total == 0 { return false; }
 
         var visited = 0;
@@ -244,9 +281,12 @@ class SceneTilesetLibrary2D {
             var entry: TilesetEntry2D = null;
             if externalPollLayer < entries.count() {
                 entry = entries.get(externalPollLayer);
-            } else {
+            } else if externalPollLayer
+                      < entries.count() + spriteEntries.count() {
                 entry = spriteEntries.get(
                     externalPollLayer - entries.count());
+            } else {
+                entry = backgroundEntry;
             }
             externalPollLayer = externalPollLayer + 1;
             visited = visited + 1;
@@ -401,6 +441,90 @@ class SceneTilesetLibrary2D {
         return false;
     }
 
+    /// @brief Composite one project-owned screen-space scene backdrop.
+    /// @details The image resolves beside `referencePath`, normally the
+    ///          project's scene-components.json. Scaling is cached per image,
+    ///          fit mode, and visible render-window size. Failure leaves the
+    ///          caller's existing opaque editor clear color untouched.
+    expose func DrawSceneBackground(destination: Pixels,
+                                    authoredPath: String,
+                                    referencePath: String,
+                                    fit: String) -> Boolean {
+        if destination == null or destination.Width <= 0
+           or destination.Height <= 0 {
+            return false;
+        }
+        var entry = EnsureSceneBackground(
+            authoredPath, referencePath);
+        if entry == null or entry.pixels == null
+           or entry.width <= 0 or entry.height <= 0 {
+            return false;
+        }
+        var mode = Str.ToLower(Str.Trim(fit));
+        if mode != "contain" and mode != "stretch" {
+            mode = "cover";
+        }
+        var viewportWidth = destination.Width;
+        var viewportHeight = destination.Height;
+        if scaledBackground == null
+           or scaledBackgroundFit != mode
+           or scaledBackgroundViewportWidth != viewportWidth
+           or scaledBackgroundViewportHeight != viewportHeight {
+            if ScaleSceneBackground(
+                   entry, mode, viewportWidth, viewportHeight) == false {
+                return false;
+            }
+        }
+        if scaledBackground == null { return false; }
+
+        var sourceX = 0;
+        var sourceY = 0;
+        var destinationX = scaledBackgroundX;
+        var destinationY = scaledBackgroundY;
+        var width = scaledBackground.Width;
+        var height = scaledBackground.Height;
+        if destinationX < 0 {
+            sourceX = 0 - destinationX;
+            width = width - sourceX;
+            destinationX = 0;
+        }
+        if destinationY < 0 {
+            sourceY = 0 - destinationY;
+            height = height - sourceY;
+            destinationY = 0;
+        }
+        if destinationX + width > viewportWidth {
+            width = viewportWidth - destinationX;
+        }
+        if destinationY + height > viewportHeight {
+            height = viewportHeight - destinationY;
+        }
+        if width <= 0 or height <= 0 { return false; }
+        if scaledBackgroundHasTransparency {
+            CompositeImageRegion(
+                destination, scaledBackground,
+                destinationX, destinationY,
+                sourceX, sourceY, width, height);
+        } else {
+            destination.Copy(
+                destinationX, destinationY,
+                scaledBackground, sourceX, sourceY, width, height);
+        }
+        return true;
+    }
+
+    /// @brief Drop one decoded/scaled project scene background.
+    expose func ClearSceneBackground() {
+        if backgroundEntry != null and backgroundEntry.pixels != null {
+            sourcePixelCount = sourcePixelCount
+                - backgroundEntry.width * backgroundEntry.height;
+            if sourcePixelCount < 0 { sourcePixelCount = 0; }
+        }
+        backgroundEntry = null;
+        backgroundReferencePath = "";
+        ClearScaledSceneBackground();
+    }
+
     /// @brief Blit one tileset frame into a square editor-preview cell.
     /// @return False for missing assets, invalid IDs, or exhausted cache budget.
     expose func DrawTile(destination: Pixels,
@@ -547,7 +671,7 @@ class SceneTilesetLibrary2D {
         // the anchor plus the pivot's base offset minus its scaled one.
         var pivotCanvasX = anchorX + baseWidth * pivotX;
         var pivotCanvasY = anchorY + baseHeight * pivotY;
-        if rotation == 0.0 {
+        if RotationIsEffectivelyZero(rotation) {
             CompositeRect(
                 destination, working,
                 Convert.NumToInt(pivotCanvasX - scaledWidth * pivotX),
@@ -675,6 +799,138 @@ class SceneTilesetLibrary2D {
         }
     }
 
+    /// @brief Source-over composite one clipped arbitrary-size image region.
+    hide func CompositeImageRegion(destination: Pixels,
+                                   source: Pixels,
+                                   destinationX: Integer,
+                                   destinationY: Integer,
+                                   sourceX: Integer,
+                                   sourceY: Integer,
+                                   width: Integer,
+                                   height: Integer) {
+        var y = 0;
+        while y < height {
+            var x = 0;
+            while x < width {
+                var rgba = source.GetRgba(sourceX + x, sourceY + y);
+                var alpha = rgba % 256;
+                if alpha > 0 {
+                    destination.BlendPixel(
+                        destinationX + x,
+                        destinationY + y,
+                        rgba / 256,
+                        alpha);
+                }
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+    }
+
+    /// @brief Decode or reuse the one active project scene backdrop.
+    hide func EnsureSceneBackground(
+        authoredPath: String,
+        referencePath: String) -> TilesetEntry2D {
+        var path = Str.Trim(authoredPath);
+        var reference = Str.Trim(referencePath);
+        if backgroundEntry != null
+           and backgroundEntry.authoredPath == path
+           and backgroundReferencePath == reference {
+            return backgroundEntry;
+        }
+        ClearSceneBackground();
+        if path == "" { return null; }
+        backgroundReferencePath = reference;
+        backgroundEntry =
+            DecodeSceneBackground(path, reference);
+        if backgroundEntry.pixels != null {
+            var pixelCount =
+                backgroundEntry.width * backgroundEntry.height;
+            if sourcePixelCount + pixelCount
+               > MAX_SCENE_TILESET_PIXELS {
+                backgroundEntry.pixels = null;
+                backgroundEntry.error =
+                    "Scene image previews exceed the 32 MB decoded limit.";
+            } else {
+                sourcePixelCount = sourcePixelCount + pixelCount;
+            }
+        }
+        return backgroundEntry;
+    }
+
+    /// @brief Scale one background according to a bounded viewport fit mode.
+    hide func ScaleSceneBackground(entry: TilesetEntry2D,
+                                   fit: String,
+                                   viewportWidth: Integer,
+                                   viewportHeight: Integer) -> Boolean {
+        ClearScaledSceneBackground();
+        if entry == null or entry.pixels == null
+           or viewportWidth <= 0 or viewportHeight <= 0 {
+            return false;
+        }
+        var width = viewportWidth;
+        var height = viewportHeight;
+        if fit != "stretch" {
+            var sourceWider =
+                entry.width * viewportHeight
+                    > entry.height * viewportWidth;
+            if (fit == "contain" and sourceWider)
+               or (fit == "cover" and sourceWider == false) {
+                width = viewportWidth;
+                height =
+                    entry.height * viewportWidth / entry.width;
+                if fit == "cover"
+                   and entry.height * viewportWidth % entry.width != 0 {
+                    height = height + 1;
+                }
+            } else {
+                height = viewportHeight;
+                width =
+                    entry.width * viewportHeight / entry.height;
+                if fit == "cover"
+                   and entry.width * viewportHeight % entry.height != 0 {
+                    width = width + 1;
+                }
+            }
+        }
+        if width < 1 { width = 1; }
+        if height < 1 { height = 1; }
+        if width > MAX_BACKGROUND_SCALED_AXIS
+           or height > MAX_BACKGROUND_SCALED_AXIS
+           or width * height > MAX_BACKGROUND_SCALED_PIXELS {
+            return false;
+        }
+        try {
+            if width == entry.width and height == entry.height {
+                scaledBackground = entry.pixels.Clone();
+            } else {
+                scaledBackground = entry.pixels.Resize(width, height);
+            }
+        } catch {
+            scaledBackground = null;
+        }
+        if scaledBackground == null { return false; }
+        scaledBackgroundFit = fit;
+        scaledBackgroundViewportWidth = viewportWidth;
+        scaledBackgroundViewportHeight = viewportHeight;
+        scaledBackgroundX = (viewportWidth - width) / 2;
+        scaledBackgroundY = (viewportHeight - height) / 2;
+        scaledBackgroundHasTransparency =
+            ImageHasTransparency(scaledBackground, width, height);
+        return true;
+    }
+
+    /// @brief Drop the active scaled backdrop without touching decoded art.
+    hide func ClearScaledSceneBackground() {
+        scaledBackground = null;
+        scaledBackgroundFit = "";
+        scaledBackgroundViewportWidth = 0;
+        scaledBackgroundViewportHeight = 0;
+        scaledBackgroundX = 0;
+        scaledBackgroundY = 0;
+        scaledBackgroundHasTransparency = false;
+    }
+
     /// @brief Return one cached sprite entry index, decoding on first use.
     hide func SpriteEntryIndex(authoredPath: String) -> Integer {
         var path = Str.Trim(authoredPath);
@@ -797,11 +1053,18 @@ class SceneTilesetLibrary2D {
     /// @brief Decide once whether a cached frame needs source-over blending.
     hide func HasTransparency(pixels: Pixels,
                               cellSize: Integer) -> Boolean {
-        if pixels == null or cellSize <= 0 { return true; }
+        return ImageHasTransparency(pixels, cellSize, cellSize);
+    }
+
+    /// @brief Return whether any pixel in one bounded image has partial alpha.
+    hide func ImageHasTransparency(pixels: Pixels,
+                                   width: Integer,
+                                   height: Integer) -> Boolean {
+        if pixels == null or width <= 0 or height <= 0 { return true; }
         var y = 0;
-        while y < cellSize {
+        while y < height {
             var x = 0;
-            while x < cellSize {
+            while x < width {
                 if pixels.GetRgba(x, y) % 256 < 255 { return true; }
                 x = x + 1;
             }
@@ -833,6 +1096,52 @@ class SceneTilesetLibrary2D {
             }
             y = y + 1;
         }
+    }
+
+    /// @brief Decode one project scene backdrop independently of scene data.
+    hide func DecodeSceneBackground(
+        authoredPath: String,
+        referencePath: String) -> TilesetEntry2D {
+        var entry = new TilesetEntry2D();
+        entry.authoredPath = Str.Trim(authoredPath);
+        if entry.authoredPath == "" { return entry; }
+        entry.resolvedPath = ResolveAssetPath(
+            entry.authoredPath, referencePath);
+        if entry.resolvedPath == "" {
+            entry.error = "The scene background path could not be resolved.";
+            return entry;
+        }
+        entry.sourceBytes = safe_io.SizeBytes(entry.resolvedPath);
+        entry.sourceModified = safe_io.Modified(entry.resolvedPath);
+        if entry.sourceBytes < 0 {
+            entry.error = "Scene background is missing or unreadable: "
+                + entry.authoredPath;
+            return entry;
+        }
+        if entry.sourceBytes > MAX_TILESET_SOURCE_BYTES {
+            entry.error = "Scene background exceeds the 16 MB source limit.";
+            return entry;
+        }
+        try {
+            entry.pixels = Pixels.Load(entry.resolvedPath);
+        } catch {
+            entry.pixels = null;
+        }
+        if entry.pixels == null {
+            entry.error =
+                "Scene background is not a valid PNG, JPEG, BMP, or GIF.";
+            return entry;
+        }
+        entry.width = entry.pixels.Width;
+        entry.height = entry.pixels.Height;
+        if entry.width <= 0 or entry.height <= 0
+           or entry.width * entry.height > MAX_TILESET_SOURCE_PIXELS {
+            entry.pixels = null;
+            entry.error =
+                "Scene background exceeds the 4,194,304 decoded-pixel limit.";
+            return entry;
+        }
+        return entry;
     }
 
     /// @brief Decode and validate one image independently of scene mutation.

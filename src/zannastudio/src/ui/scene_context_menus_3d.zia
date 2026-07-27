@@ -13,6 +13,8 @@
 //   - Menus never open over a fly gesture: the viewport menu requires a
 //     right-click released within a small movement threshold.
 //   - Item enablement mirrors the selection contract each time a menu opens.
+//   - Visibility and pick-lock items resolve complete mixed selections through
+//     the same hierarchy action surface as the persistent pane controls.
 // Ownership/Lifetime:
 //   - main.zia owns one instance; GUI owns the menu widgets after Setup.
 // Links: zannastudio/src/ui/scene_editor_3d.zia,
@@ -57,6 +59,8 @@ class SceneContextMenus3D {
     expose GUI.MenuItem hierarchyCreateLight;
     expose GUI.MenuItem hierarchyCreateCamera;
     expose GUI.MenuItem hierarchyRename;
+    expose GUI.MenuItem hierarchyShow;
+    expose GUI.MenuItem hierarchyHide;
     expose GUI.MenuItem hierarchyPickLock;
     expose GUI.MenuItem hierarchyDuplicate;
     expose GUI.MenuItem hierarchyDelete;
@@ -85,6 +89,8 @@ class SceneContextMenus3D {
         hierarchyCreateLight = null;
         hierarchyCreateCamera = null;
         hierarchyRename = null;
+        hierarchyShow = null;
+        hierarchyHide = null;
         hierarchyPickLock = null;
         hierarchyDuplicate = null;
         hierarchyDelete = null;
@@ -115,7 +121,9 @@ class SceneContextMenus3D {
         hierarchyCreateCamera = hierarchyMenu.AddItem("Create Camera");
         hierarchyMenu.AddSeparator();
         hierarchyRename = hierarchyMenu.AddItemWithShortcut("Rename", "F2");
-        hierarchyPickLock = hierarchyMenu.AddItem("Toggle Pick Lock");
+        hierarchyShow = hierarchyMenu.AddItem("Show Selected");
+        hierarchyHide = hierarchyMenu.AddItem("Hide Selected");
+        hierarchyPickLock = hierarchyMenu.AddItem("Lock Viewport Picking");
         hierarchyDuplicate = hierarchyMenu.AddItem("Duplicate");
         hierarchyDelete = hierarchyMenu.AddItem("Delete");
         hierarchyMenu.AddSeparator();
@@ -184,7 +192,14 @@ class SceneContextMenus3D {
         var count = editor.selectedIndices.count();
         hierarchyCreateChild.SetEnabled(count == 1);
         hierarchyRename.SetEnabled(count == 1);
-        hierarchyPickLock.SetEnabled(count == 1);
+        hierarchyShow.SetEnabled(editor.CanShowSelectedNodes());
+        hierarchyHide.SetEnabled(editor.CanHideSelectedNodes());
+        hierarchyPickLock.SetEnabled(count > 0);
+        if editor.SelectedAllPickLocked() {
+            hierarchyPickLock.SetText("Unlock Viewport Picking");
+        } else {
+            hierarchyPickLock.SetText("Lock Viewport Picking");
+        }
         hierarchyDuplicate.SetEnabled(count > 0);
         hierarchyDelete.SetEnabled(count > 0);
         hierarchyFrame.SetEnabled(true);
@@ -260,8 +275,14 @@ class SceneContextMenus3D {
         if hierarchyRename.WasClicked() {
             editor.BeginRenameSelected();
         }
+        if hierarchyShow.WasClicked() {
+            changed = editor.ApplySelectedVisibility(true) or changed;
+        }
+        if hierarchyHide.WasClicked() {
+            changed = editor.ApplySelectedVisibility(false) or changed;
+        }
         if hierarchyPickLock.WasClicked() {
-            editor.ToggleSelectedPickLock();
+            editor.ToggleSelectedPickLocks();
         }
         if hierarchyDuplicate.WasClicked() {
             changed = editor.DuplicateSelectedNodes() > 0 or changed;

@@ -6,18 +6,21 @@
 //===----------------------------------------------------------------------===//
 //
 // File: zannastudio/src/probes/scene_object_preview_probe.zia
-// Purpose: Verify object sprite previews, marker fallback, route polylines,
-//          and light halos in the 2D scene canvas.
+// Purpose: Verify project scene backgrounds, object sprite previews, marker
+//          fallback, route polylines, and light halos in the 2D scene canvas.
 // Key invariants:
 //   - `editor.sprite`/`editor.frame` draw the exact authored atlas frame.
 //   - Project-owned type/property rules select atlas frames without scene edits.
+//   - Project-owned scene variants draw behind content and set first-open grid
+//     defaults without changing canonical scene data.
 //   - Missing sprites fall back to the existing marker deterministically.
 //   - Route and halo overlays render without changing canonical content.
 // Ownership/Lifetime:
 //   - The probe owns one hidden AppShell, document, editor, and PNG fixture.
 // Links: zannastudio/src/ui/scene_editor_2d.zia,
 //        zannastudio/src/ui/scene_tileset_2d.zia,
-//        docs/adr/0179-2d-object-sprite-preview-and-route-conventions.md
+//        docs/adr/0179-2d-object-sprite-preview-and-route-conventions.md,
+//        docs/adr/0202-project-owned-2d-scene-background-previews.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -48,9 +51,11 @@ bind Pixels = Zanna.Graphics.Pixels;
 bind Terminal = Zanna.Terminal;
 
 final SPRITE_FIXTURE: String = "__preview_sprite_probe.png";
+final BACKGROUND_FIXTURE: String = "__preview_background_probe.png";
 
 func Fail(shell: app_shell.AppShell, reason: String) {
     File.Delete(SPRITE_FIXTURE);
+    File.Delete(BACKGROUND_FIXTURE);
     if shell != null { shell.Destroy(); }
     Terminal.Say("RESULT: fail " + reason);
 }
@@ -73,6 +78,13 @@ func main() {
         Terminal.Say("RESULT: fail sprite fixture write");
         return;
     }
+    var background = Pixels.New(64, 32);
+    background.FillColor(Color.RGB(12, 42, 96));
+    if background.SavePng(BACKGROUND_FIXTURE) != 1 {
+        File.Delete(SPRITE_FIXTURE);
+        Terminal.Say("RESULT: fail background fixture write");
+        return;
+    }
 
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Object Preview Probe", 1120, 760);
@@ -80,6 +92,20 @@ func main() {
     scene_panels_2d.Build(editor,shell.workbench.scene2DHost, shell.app);
     var documents = new document_manager.DocumentManager();
     var sceneDoc = documents.NewScene2DDocument();
+    editor.componentSchema = scene_component_schema.ParseText(
+        "{\"version\":8,\"components\":[],\"objectPreviews\":["
+        + "{\"objectType\":\"pickup\",\"sprite\":\""
+        + SPRITE_FIXTURE + "\",\"frame\":0,"
+        + "\"frameProperty\":\"pickup.type\",\"frameMap\":[0,1]}],"
+        + "\"scenePreview2D\":{"
+        + "\"variantProperty\":\"region\",\"variantOffset\":-1,"
+        + "\"variantImages\":[\"" + BACKGROUND_FIXTURE + "\"],"
+        + "\"fit\":\"stretch\",\"showGrid\":false}}",
+        "scene-components.json");
+    if editor.componentSchema.valid == false {
+        Fail(shell, "project preview schema fixture");
+        return;
+    }
     shell.SelectSurface(file_utils.DOC_KIND_SCENE_2D);
     editor.Activate(sceneDoc);
     editor.Pump(sceneDoc);
@@ -88,6 +114,11 @@ func main() {
 
     if editor.ReplaceScene(10, 8, 16) == false {
         Fail(shell, "scene fixture");
+        return;
+    }
+    if editor.showGrid
+       or editor.SetSceneProperty("", "region", "int", "1") == false {
+        Fail(shell, "project background first-open defaults");
         return;
     }
 
@@ -111,17 +142,6 @@ func main() {
         Fail(shell, "project preview property fixture");
         return;
     }
-    editor.componentSchema = scene_component_schema.ParseText(
-        "{\"version\":3,\"components\":[],\"objectPreviews\":["
-        + "{\"objectType\":\"pickup\",\"sprite\":\""
-        + SPRITE_FIXTURE + "\",\"frame\":0,"
-        + "\"frameProperty\":\"pickup.type\",\"frameMap\":[0,1]}]}",
-        "memory");
-    if editor.componentSchema.valid == false {
-        Fail(shell, "project preview schema fixture");
-        return;
-    }
-
     // Route with two waypoints, then a light emitter (selected last).
     var routeIndex = editor.AddSceneObject("route", "route-1", 16, 96);
     var waypointA = editor.AddSceneChildObject(
@@ -147,6 +167,12 @@ func main() {
     }
     if editor.framePixels == null {
         Fail(shell, "no rendered canvas");
+        return;
+    }
+    var backgroundPixel =
+        Rgb(editor.framePixels.GetColor(4, 4));
+    if backgroundPixel != Rgb(Color.RGB(12, 42, 96)) {
+        Fail(shell, "project scene background pixel " + backgroundPixel);
         return;
     }
 
@@ -199,6 +225,7 @@ func main() {
     }
 
     File.Delete(SPRITE_FIXTURE);
+    File.Delete(BACKGROUND_FIXTURE);
     shell.Destroy();
     Terminal.Say("RESULT: ok");
 }

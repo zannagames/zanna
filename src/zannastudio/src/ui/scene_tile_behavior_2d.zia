@@ -12,6 +12,8 @@
 //   - This presentation object never mutates SceneDocument or Document state.
 //   - Rows and drafts always rebuild from canonical typed runtime state.
 //   - Every control returns intent; SceneEditor2D owns validation and history.
+//   - Live autotile preview is presentation state independent of the selected
+//     tile draft and never rewrites canonical base-tile cells.
 // Ownership/Lifetime: SceneEditor2D owns one inspector; GUI owns its widgets.
 // Links: zannastudio/src/ui/scene_editor_2d.zia,
 //        docs/adr/0176-typed-tile-behavior-sections.md
@@ -67,11 +69,13 @@ class SceneTileBehavior2D {
     expose GUI.Button animSetButton;
     expose GUI.Button animClearButton;
     expose GUI.TextInput autotileInput;
+    expose GUI.Checkbox autotilePreviewCheck;
     expose GUI.Button autotileSetButton;
     expose GUI.Button autotileClearButton;
     expose List[String] propertyKeys;
     expose Integer selectedProperty;
     hide Integer shownTile;
+    hide Boolean sceneEnabled;
     hide Boolean editorEnabled;
 
     expose func init() {
@@ -90,11 +94,13 @@ class SceneTileBehavior2D {
         animSetButton = null;
         animClearButton = null;
         autotileInput = null;
+        autotilePreviewCheck = null;
         autotileSetButton = null;
         autotileClearButton = null;
         propertyKeys = [];
         selectedProperty = -1;
         shownTile = 0;
+        sceneEnabled = false;
         editorEnabled = false;
     }
 
@@ -171,6 +177,12 @@ class SceneTileBehavior2D {
 
         var autotileLabel = GUI.Label.New(group, "Autotile variants (16 ids)");
         autotileLabel.SetWordWrap(true);
+        autotilePreviewCheck =
+            GUI.Checkbox.New(group, "Live runtime autotile preview");
+        autotilePreviewCheck.SetChecked(true);
+        autotilePreviewCheck.SetTooltip(
+            "Resolve base-layer N/E/S/W neighbor masks exactly like "
+            + "Tilemap.ApplyAutoTile without changing scene cells");
         autotileInput = GUI.TextInput.New(group);
         autotileInput.SetAccessibleName("Autotile variants");
         autotileInput.SetPlaceholder("16 neighbor-mask variant tile ids");
@@ -189,7 +201,8 @@ class SceneTileBehavior2D {
     /// @brief Rebuild every row and draft from canonical typed runtime state.
     expose func Refresh(scene: SceneDocument, tile: Integer, enabled: Boolean) {
         shownTile = tile;
-        editorEnabled = enabled and scene != null and tile >= 1 and tile <= 4095;
+        sceneEnabled = enabled and scene != null;
+        editorEnabled = sceneEnabled and tile >= 1 and tile <= 4095;
         propertyList.Clear();
         propertyKeys = [];
         selectedProperty = -1;
@@ -211,8 +224,9 @@ class SceneTileBehavior2D {
             return;
         }
 
-        summary.SetText("Behavior for tile " + tile
-                        + ". BuildTilemap applies it scene-wide.");
+        summary.SetText(
+            "Behavior for tile " + tile
+            + ". BuildTilemap carries it into the runtime copy.");
         collisionDropdown.SetSelected(scene.TileCollision(tile));
 
         var keys = scene.TilePropertyKeys(tile);
@@ -306,6 +320,23 @@ class SceneTileBehavior2D {
         return autotileClearButton.WasClicked();
     }
 
+    /// @brief Consume a workspace-only live-autotile preview toggle.
+    expose func TakeAutotilePreviewChanged() -> Boolean {
+        return autotilePreviewCheck.WasChanged();
+    }
+
+    /// @brief Return the retained live-autotile preview choice.
+    expose func AutotilePreviewEnabled() -> Boolean {
+        return autotilePreviewCheck.IsChecked();
+    }
+
+    /// @brief Restore one document's live-autotile preview choice.
+    expose func SetAutotilePreviewEnabled(enabled: Boolean) {
+        autotilePreviewCheck.SetChecked(enabled);
+        // Programmatic restoration must not become next frame's user intent.
+        autotilePreviewCheck.WasChanged();
+    }
+
     /// @brief Return the exact selected property key, or empty without a row.
     expose func SelectedPropertyKey() -> String {
         if selectedProperty < 0 or selectedProperty >= propertyKeys.count() {
@@ -324,6 +355,7 @@ class SceneTileBehavior2D {
 
     /// @brief Reconcile all controls with scene validity.
     expose func SetEnabled(enabled: Boolean) {
+        sceneEnabled = enabled;
         editorEnabled = enabled;
         if group == null { return; }
         RefreshEnabledState();
@@ -343,6 +375,7 @@ class SceneTileBehavior2D {
         animDurationsInput.SetEnabled(editorEnabled);
         animSetButton.SetEnabled(editorEnabled);
         animClearButton.SetEnabled(editorEnabled);
+        autotilePreviewCheck.SetEnabled(sceneEnabled);
         autotileInput.SetEnabled(editorEnabled);
         autotileSetButton.SetEnabled(editorEnabled);
         autotileClearButton.SetEnabled(editorEnabled);

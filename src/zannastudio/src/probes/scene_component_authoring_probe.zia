@@ -11,7 +11,9 @@
 //   - Every proposed edit is reparsed before it can replace schema text.
 //   - Unknown supported-version JSON members survive edits to known fields.
 //   - Editing fields preserves version-3 object, version-4 scene, version-5
-//     node prefab, version-6 sky/light, and version-7 lens/atmosphere previews.
+//     node prefab, version-6 sky/light, version-7 lens/atmosphere, and
+//     version-8 2D backdrop, version-9 3D environment, and version-10 post-FX
+//     previews.
 //   - File writes are atomic, conflict-aware, and exactly undoable/redoable.
 // Ownership/Lifetime: The probe owns only temporary schema files and records.
 // Links: zannastudio/src/ui/scene_component_authoring.zia,
@@ -21,7 +23,10 @@
 //        docs/adr/0198-project-owned-3d-scene-preview-profiles.md,
 //        docs/adr/0199-project-owned-3d-node-prefab-previews.md,
 //        docs/adr/0200-project-owned-3d-sky-and-light-preview-rigs.md,
-//        docs/adr/0201-project-owned-3d-lens-and-atmosphere-previews.md
+//        docs/adr/0201-project-owned-3d-lens-and-atmosphere-previews.md,
+//        docs/adr/0202-project-owned-2d-scene-background-previews.md,
+//        docs/adr/0203-project-owned-3d-scene-environment-previews.md,
+//        docs/adr/0204-project-owned-3d-post-processing-previews.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -412,6 +417,145 @@ func main() {
         fail(
             "",
             "component edit discarded a version-7 atmosphere profile");
+        return;
+    }
+
+    var backgroundPreviewText =
+        "{\"version\":8,\"components\":["
+        + "{\"name\":\"environment\",\"target\":\"2d-object\","
+        + "\"fields\":[{\"key\":\"env.tag\",\"type\":\"string\","
+        + "\"default\":\"preview\"}]}],"
+        + "\"scenePreview2D\":{"
+        + "\"variantProperty\":\"region\",\"variantOffset\":-1,"
+        + "\"variantImages\":[\"assets/backgrounds/region-01.png\"],"
+        + "\"fit\":\"cover\",\"showGrid\":false}}";
+    var backgroundPreviewEdit = scene_component_authoring.UpdateField(
+        backgroundPreviewText,
+        "environment",
+        "env.tag",
+        "env.tag",
+        "Environment tag",
+        "string",
+        "preview",
+        "",
+        "");
+    var backgroundPreviewSchema =
+        scene_component_schema.ParseText(
+            backgroundPreviewEdit.content, "memory");
+    if backgroundPreviewEdit.ok == false
+       or backgroundPreviewEdit.changed == false
+       or backgroundPreviewSchema.valid == false
+       or backgroundPreviewSchema.version
+          != scene_component_schema.SCENE_PREVIEW_2D_SCHEMA_VERSION
+       or backgroundPreviewSchema.scenePreview2D.present == false
+       or backgroundPreviewSchema.scenePreview2D.variantProperty
+          != "region"
+       or backgroundPreviewSchema.scenePreview2D.variantOffset != -1
+       or backgroundPreviewSchema.scenePreview2D.variantImages.count() != 1
+       or backgroundPreviewSchema.scenePreview2D.showGrid {
+        fail(
+            "",
+            "component edit discarded a version-8 2D scene profile");
+        return;
+    }
+
+    var environmentPreviewText =
+        "{\"version\":9,\"components\":["
+        + "{\"name\":\"environment\",\"target\":\"3d-node\","
+        + "\"fields\":[{\"key\":\"env.tag\",\"type\":\"string\","
+        + "\"default\":\"terrain\"}]}],"
+        + "\"scenePreview3D\":{"
+        + "\"environmentPrefab\":\"assets/editor/fallback.scene3d\","
+        + "\"environmentVariantProperty\":\"terrain.kind\","
+        + "\"environmentVariantOffset\":-1,"
+        + "\"environmentVariantPrefabs\":["
+        + "\"assets/editor/canyon.scene3d\"]}}";
+    var environmentPreviewEdit =
+        scene_component_authoring.UpdateField(
+            environmentPreviewText,
+            "environment",
+            "env.tag",
+            "env.tag",
+            "Environment tag",
+            "string",
+            "preview",
+            "",
+            "");
+    var environmentPreviewSchema =
+        scene_component_schema.ParseText(
+            environmentPreviewEdit.content, "memory");
+    if environmentPreviewEdit.ok == false
+       or environmentPreviewEdit.changed == false
+       or environmentPreviewSchema.valid == false
+       or environmentPreviewSchema.version
+          != scene_component_schema
+              .SCENE_ENVIRONMENT_PREVIEW_3D_SCHEMA_VERSION
+       or environmentPreviewSchema.scenePreview3D
+              .environmentVariantProperty
+          != "terrain.kind"
+       or environmentPreviewSchema.scenePreview3D
+              .environmentVariantOffset
+          != -1
+       or environmentPreviewSchema.scenePreview3D
+              .EnvironmentPrefabForVariant(1)
+          != "assets/editor/canyon.scene3d"
+       or environmentPreviewSchema.scenePreview3D
+              .EnvironmentPrefabForVariant(2)
+          != "assets/editor/fallback.scene3d" {
+        fail(
+            "",
+            "component edit discarded a version-9 environment profile");
+        return;
+    }
+
+    var postFXPreviewText =
+        "{\"version\":10,\"components\":["
+        + "{\"name\":\"environment\",\"target\":\"3d-node\","
+        + "\"fields\":[{\"key\":\"env.tag\",\"type\":\"string\","
+        + "\"default\":\"terrain\"}]}],"
+        + "\"scenePreview3D\":{"
+        + "\"tonemapMode\":2,\"tonemapExposure\":1.17,"
+        + "\"bloomThreshold\":0.9,\"bloomIntensity\":0.25,"
+        + "\"bloomPasses\":3,"
+        + "\"colorGradeBrightness\":0.03,"
+        + "\"colorGradeContrast\":1.03,"
+        + "\"colorGradeSaturation\":1.07,"
+        + "\"vignetteRadius\":0.98,\"vignetteSoftness\":0.12,"
+        + "\"fxaa\":true}}";
+    var postFXPreviewEdit =
+        scene_component_authoring.UpdateField(
+            postFXPreviewText,
+            "environment",
+            "env.tag",
+            "env.tag",
+            "Environment tag",
+            "string",
+            "preview",
+            "",
+            "");
+    var postFXPreviewSchema =
+        scene_component_schema.ParseText(
+            postFXPreviewEdit.content, "memory");
+    if postFXPreviewEdit.ok == false
+       or postFXPreviewEdit.changed == false
+       or postFXPreviewSchema.valid == false
+       or postFXPreviewSchema.version
+          != scene_component_schema
+              .SCENE_POSTFX_PREVIEW_3D_SCHEMA_VERSION
+       or postFXPreviewSchema.scenePreview3D.HasPostFX() == false
+       or postFXPreviewSchema.scenePreview3D.PostFXEffectCount() != 5
+       or near(
+              postFXPreviewSchema.scenePreview3D.tonemapExposure,
+              1.17) == false
+       or postFXPreviewSchema.scenePreview3D.bloomPasses != 3
+       or near(
+              postFXPreviewSchema.scenePreview3D
+                  .colorGradeBrightness,
+              0.03) == false
+       or postFXPreviewSchema.scenePreview3D.fxaa == false {
+        fail(
+            "",
+            "component edit discarded a version-10 post-FX profile");
         return;
     }
 

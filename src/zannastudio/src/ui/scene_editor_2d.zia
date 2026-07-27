@@ -13,6 +13,8 @@
 //   - Every accepted mutation immediately refreshes Document.content as
 //     canonical JSON, so normal save/session/recovery paths remain authoritative.
 //   - One paint or object-drag gesture creates one gap-free history snapshot.
+//   - The visible History timeline is a presentation of those snapshots;
+//     jumping rows runs ordinary undo operations and keeps redo available.
 //   - Compact windows cycle objects, canvas/palette, and inspector at full
 //     width; no authoring surface becomes an inaccessible sliver.
 //   - Focus presentation temporarily collapses every non-floating scene pane
@@ -20,13 +22,23 @@
 //   - Raster work is viewport-windowed: only visible cells rasterize, 100%
 //     zoom is the authored tile resolution, wheel zoom anchors at the
 //     pointer, and every cell of every scene stays scroll-reachable.
+//   - Toggleable rulers share exact scroll/zoom geometry with the raster;
+//     clicks toggle and captured drags manipulate bounded tab-local guides
+//     without scene mutation or transient-state leakage across documents.
+//   - Layer lock/solo state follows its document, remaps exactly across live
+//     structural edits, and is visible directly in the layer navigator.
+//   - Pointer, Alt+Arrow, and explicit-button layer ordering share one
+//     application-directed canonical transaction path.
 //   - Layer images resolve through bounded preview caches; broken references
 //     never invalidate or rewrite authored scene JSON.
+//   - Project-owned scene backgrounds composite behind tiles in screen space
+//     without executing game code or changing canonical scene/history state.
 //   - Multi-object property, layout, nudge, and selection commands commit once
 //     or restore the complete prior selection/content; inspector inputs never
 //     own scene keys.
 //   - Scene-level typed metadata follows the same canonical, no-op-safe history
 //     path as object properties.
+//   - Zero-rotation render and hit-test fast paths share one epsilon predicate.
 //   - Project components add only missing typed object properties across a
 //     selection, aborting atomically on every type conflict.
 //   - Project schema authoring has independent conflict-safe file history and
@@ -40,6 +52,11 @@
 //   - Paint/erase, rectangle, flood-fill, and tile-pick tools are active-layer
 //     scoped; mutations commit once while previews, picks, and canceled
 //     captured gestures never enter canonical scene history.
+//   - Paint-family hover and captured-shape previews composite the real active
+//     atlas frames without changing scene bytes, revision, dirty state, or
+//     history; every tool mode follows its owning document across tab switches.
+//   - Default-on autotile preview resolves base-layer N/E/S/W masks with the
+//     runtime's exact 64-rule precedence while retaining canonical base cells.
 //   - Hierarchy Find keeps all bounded rows visible, wraps deterministically,
 //     reveals nested matches, and never changes canonical scene history.
 // Ownership/Lifetime:
@@ -65,7 +82,9 @@
 //        docs/adr/0164-backward-compatible-2d-scene-object-hierarchy.md,
 //        docs/adr/0165-scrollview-descendant-reveal.md,
 //        docs/adr/0170-studio-2d-canvas-marquee-selection.md,
-//        docs/adr/0171-bounded-scene-flood-fill-and-studio-tile-tools.md
+//        docs/adr/0171-bounded-scene-flood-fill-and-studio-tile-tools.md,
+//        docs/adr/0202-project-owned-2d-scene-background-previews.md,
+//        docs/adr/0205-listbox-application-directed-reordering.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -124,6 +143,7 @@ final MODE_LINE: Integer = 7;
 final MODE_ELLIPSE: Integer = 8;
 final RECT_ROTATE_HANDLE_OFFSET: Number = 18.0;
 final RECT_HANDLE_RADIUS_SQUARED: Number = 36.0;
+final ROTATION_ZERO_EPSILON_DEGREES: Number = 0.000001;
 final MODE_PAINT: Integer = 1;
 final MODE_ERASE: Integer = 2;
 final MODE_OBJECT: Integer = 3;
@@ -158,10 +178,27 @@ final OBJECT_PARENT_TARGET_MIXED: Integer = -2;
 // still giving the canvas the full editor lane.
 final COMPACT_SCENE_2D_WIDTH: Number = 920.0;
 final COMPACT_SCENE_2D_CHROME_WIDTH: Number = 640.0;
+final WRAPPED_SCENE_2D_CHROME_WIDTH: Number = 1180.0;
 final COMPACT_SCENE_2D_PALETTE_HEIGHT: Number = 520.0;
-final HIERARCHY_PANE_MIN_WIDTH_2D: Number = 1050.0;
+// Three persistent columns need enough room for readable object names, a
+// useful canvas, and an inspector that does not collapse every field. Below
+// this width the hierarchy remains one click away as a full-width master.
+final HIERARCHY_PANE_MIN_WIDTH_2D: Number = 1400.0;
 final CANVAS_MARQUEE_COLOR: Integer = 0x70BEFF;
 final TILE_RECTANGLE_COLOR: Integer = 0xFFC86B;
+final TILE_GHOST_OPACITY: Number = 0.58;
+final AUTOTILE_NEIGHBOR_GHOST_OPACITY: Number = 0.82;
+final CANVAS_GUIDE_COLOR: Integer = 0x66D9EF;
+final CANVAS_GUIDE_VERTICAL: Integer = 0;
+final CANVAS_GUIDE_HORIZONTAL: Integer = 1;
+final CANVAS_RULER_TOP_HEIGHT: Integer = 24;
+final CANVAS_RULER_LEFT_WIDTH: Integer = 42;
+final CANVAS_RULER_MIN_LABEL_SPACING: Integer = 56;
+final MAX_CANVAS_GUIDES_PER_AXIS: Integer = 64;
+final CANVAS_GUIDE_HIT_RADIUS: Integer = 6;
+final CANVAS_GUIDE_DRAG_THRESHOLD: Integer = 3;
+final MAX_AUTOTILE_PREVIEW_RULES: Integer = 64;
+final AUTOTILE_LOOKUP_MAX_TILE: Integer = 4095;
 
 final PROPERTY_TYPE_STRING: Integer = 0;
 final PROPERTY_TYPE_INT: Integer = 1;
@@ -175,6 +212,12 @@ final ARRANGE_DISTRIBUTE_X: Integer =
     scene_layout_2d.LAYOUT_DISTRIBUTE_X;
 final ARRANGE_DISTRIBUTE_Y: Integer =
     scene_layout_2d.LAYOUT_DISTRIBUTE_Y;
+
+/// @brief Whether a degree rotation is visually indistinguishable from zero.
+func RotationIsEffectivelyZero(rotation: Number) -> Boolean {
+    return rotation > 0.0 - ROTATION_ZERO_EPSILON_DEGREES
+        and rotation < ROTATION_ZERO_EPSILON_DEGREES;
+}
 
 /// @brief Deterministic preview color for a nonzero tile id.
 func TilePreviewColor(tile: Integer, layer: Integer) -> Integer {
@@ -259,6 +302,44 @@ expose func UsesCompactPaletteLayout(height: Number) -> Boolean {
     return height > 0.0 and height <= COMPACT_SCENE_2D_PALETTE_HEIGHT;
 }
 
+/// @brief Return whether the object hierarchy may remain docked beside detail.
+/// @details Ordinary laptop-width scene lanes prioritize a readable canvas and
+///          inspector; the hierarchy stays available through the Objects
+///          master action until all three columns have useful width.
+expose func UsesDockedHierarchy(width: Number) -> Boolean {
+    return width >= HIERARCHY_PANE_MIN_WIDTH_2D;
+}
+
+/// @brief Choose a readable power-of-two cell interval for ruler labels.
+/// @details Minor ticks may remain denser; labels never target less than the
+///          fixed minimum spacing at the current canvas zoom.
+expose func CanvasRulerMajorStride(cellSize: Integer) -> Integer {
+    if cellSize < 1 { return 1; }
+    var stride = 1;
+    while stride * cellSize < CANVAS_RULER_MIN_LABEL_SPACING
+          and stride < 1048576 {
+        stride = stride * 2;
+    }
+    return stride;
+}
+
+/// @brief Map one ruler-local pointer coordinate to its nearest cell boundary.
+/// @return A bounded guide coordinate, or -1 outside the scene extent.
+expose func CanvasRulerGuideCoordinate(localPosition: Integer,
+                                       viewOrigin: Integer,
+                                       centerPad: Integer,
+                                       cellSize: Integer,
+                                       maximum: Integer) -> Integer {
+    if cellSize < 1 or maximum < 0 { return -1; }
+    var contentPosition = localPosition + viewOrigin - centerPad;
+    if contentPosition < 0 - cellSize / 2
+       or contentPosition > maximum * cellSize + cellSize / 2 {
+        return -1;
+    }
+    return ClampInt(
+        (contentPosition + cellSize / 2) / cellSize, 0, maximum);
+}
+
 /// @brief One object's transformed canvas footprint (ADR 0192).
 /// @details Axis-aligned bounds of the rotated sprite rectangle in canvas
 ///          pixels, plus the pivot point the transform turns about.
@@ -312,6 +393,11 @@ class SceneEditor2D {
     expose GUI.Button previewButton;
     expose GUI.Button runSceneButton;
     hide Boolean previewActive;
+    expose Boolean autotilePreviewEnabled;
+    expose Integer autotilePreviewRuleCount;
+    hide List[Integer] autotilePreviewBases;
+    hide List[Integer] autotilePreviewVariants;
+    hide List[Integer] autotilePreviewLookup;
     hide Integer previewLastTickMs;
     hide Integer previewElapsedMs;
     hide String previewFrameStamp;
@@ -323,6 +409,7 @@ class SceneEditor2D {
     expose GUI.Button fitButton;
     expose GUI.Button actualSizeButton;
     expose GUI.Button gridButton;
+    expose GUI.Button rulersButton;
     expose GUI.Button hierarchyButton;
     expose GUI.Button inspectorButton;
     expose GUI.Button paletteButton;
@@ -350,7 +437,18 @@ class SceneEditor2D {
     expose GUI.VBox sceneTabHost;
     expose Boolean inspectorSceneTab;
     hide Boolean inspectorAutoFollowHadSelection;
+    expose GUI.GroupBox historyGroup;
+    expose GUI.ListBox historyList;
+    hide List[String] undoLabels;
+    hide List[String] redoLabels;
+    hide Boolean historyListRefreshing;
     expose GUI.ScrollView canvasScroll;
+    expose GUI.VBox canvasFrame;
+    expose GUI.HBox rulerTopRow;
+    expose GUI.HBox canvasContentRow;
+    expose GUI.Image rulerCornerImage;
+    expose GUI.Image horizontalRulerImage;
+    expose GUI.Image verticalRulerImage;
     expose GUI.VBox canvasStage;
     expose GUI.Image canvasImage;
     expose GUI.ScrollView inspectorScroll;
@@ -359,6 +457,7 @@ class SceneEditor2D {
     expose GUI.Spinner sceneHeightSpinner;
     expose GUI.Spinner sceneTileSizeSpinner;
     expose GUI.ListBox layerList;
+    expose List[Any] layerListItems;
     expose GUI.Button addLayerButton;
     expose GUI.Button removeLayerButton;
     expose GUI.Button layerUpButton;
@@ -460,6 +559,17 @@ class SceneEditor2D {
     expose Integer viewOriginX;
     expose Integer viewOriginY;
     expose Boolean showGrid;
+    expose Boolean showRulers;
+    expose List[Integer] verticalGuides;
+    expose List[Integer] horizontalGuides;
+    expose Boolean canvasGuideDragActive;
+    expose Integer canvasGuideDragAxis;
+    expose Integer canvasGuideDragOrigin;
+    expose Integer canvasGuideDragCurrent;
+    expose Boolean canvasGuideDragMoved;
+    expose Pixels rulerCornerPixels;
+    expose Pixels horizontalRulerPixels;
+    expose Pixels verticalRulerPixels;
     expose Integer revision;
     expose Boolean compactLayout;
     hide Boolean compactChrome;
@@ -506,6 +616,9 @@ class SceneEditor2D {
     hide Boolean canvasMarqueeAdditive;
     hide Boolean canvasMarqueeToggle;
     hide Boolean gestureEscapeConsumed;
+    hide Integer canvasGuideDragIndex;
+    hide Integer canvasGuideDragStartX;
+    hide Integer canvasGuideDragStartY;
     hide Boolean objectTransformDraftActive;
     hide Integer objectDraftOriginX;
     hide Integer objectDraftOriginY;
@@ -559,6 +672,11 @@ class SceneEditor2D {
         previewButton = null;
         runSceneButton = null;
         previewActive = false;
+        autotilePreviewEnabled = true;
+        autotilePreviewRuleCount = 0;
+        autotilePreviewBases = [];
+        autotilePreviewVariants = [];
+        autotilePreviewLookup = [];
         previewLastTickMs = -1;
         previewElapsedMs = 0;
         previewFrameStamp = "";
@@ -570,6 +688,7 @@ class SceneEditor2D {
         fitButton = null;
         actualSizeButton = null;
         gridButton = null;
+        rulersButton = null;
         hierarchyButton = null;
         inspectorButton = null;
         paletteButton = null;
@@ -597,6 +716,12 @@ class SceneEditor2D {
         inspectorSceneTab = true;
         inspectorAutoFollowHadSelection = false;
         canvasScroll = null;
+        canvasFrame = null;
+        rulerTopRow = null;
+        canvasContentRow = null;
+        rulerCornerImage = null;
+        horizontalRulerImage = null;
+        verticalRulerImage = null;
         canvasStage = null;
         canvasImage = null;
         inspectorScroll = null;
@@ -605,6 +730,7 @@ class SceneEditor2D {
         sceneHeightSpinner = null;
         sceneTileSizeSpinner = null;
         layerList = null;
+        layerListItems = [];
         addLayerButton = null;
         removeLayerButton = null;
         layerUpButton = null;
@@ -680,6 +806,11 @@ class SceneEditor2D {
             new scene_component_palette.SceneComponentPalette();
         componentAuthoring =
             new scene_component_authoring_controller.SceneComponentAuthoringController();
+        historyGroup = null;
+        historyList = null;
+        undoLabels = [];
+        redoLabels = [];
+        historyListRefreshing = false;
         detailLabel = null;
         projectManager = null;
         currentDoc = null;
@@ -722,6 +853,17 @@ class SceneEditor2D {
         viewOriginX = 0;
         viewOriginY = 0;
         showGrid = true;
+        showRulers = true;
+        verticalGuides = [];
+        horizontalGuides = [];
+        canvasGuideDragActive = false;
+        canvasGuideDragAxis = -1;
+        canvasGuideDragOrigin = -1;
+        canvasGuideDragCurrent = -1;
+        canvasGuideDragMoved = false;
+        rulerCornerPixels = null;
+        horizontalRulerPixels = null;
+        verticalRulerPixels = null;
         revision = 0;
         compactLayout = false;
         compactChrome = false;
@@ -773,6 +915,9 @@ class SceneEditor2D {
         canvasMarqueeAdditive = false;
         canvasMarqueeToggle = false;
         gestureEscapeConsumed = false;
+        canvasGuideDragIndex = -1;
+        canvasGuideDragStartX = 0;
+        canvasGuideDragStartY = 0;
         objectTransformDraftActive = false;
         objectDraftOriginX = 0;
         objectDraftOriginY = 0;
@@ -817,6 +962,8 @@ class SceneEditor2D {
             componentSchema =
                 scene_component_schema.LoadPath(componentSchemaPath);
         }
+        if tilesets != null { tilesets.ClearSceneBackground(); }
+        renderDirty = true;
     }
 
     /// @brief Keep multi-root schema ownership aligned with document ownership.
@@ -878,9 +1025,18 @@ class SceneEditor2D {
         changed = PumpObjectTransformDraft() or changed;
         changed = PumpObjectFlipControls() or changed;
         changed = PumpObjectTintInput() or changed;
-        if hierarchyDock.Pump() { renderDirty = true; }
-        if inspectorDock.Pump() { renderDirty = true; }
-        if paletteDock.Pump() { renderDirty = true; }
+        if hierarchyDock.Pump() {
+            ApplyInspectorLayout();
+            renderDirty = true;
+        }
+        if inspectorDock.Pump() {
+            ApplyInspectorLayout();
+            renderDirty = true;
+        }
+        if paletteDock.Pump() {
+            ApplyPaletteLayout();
+            renderDirty = true;
+        }
         if newSceneButton.WasClicked() {
             changed = ReplaceScene(
                 Convert.NumToInt(sceneWidthSpinner.Value),
@@ -961,6 +1117,11 @@ class SceneEditor2D {
             RefreshGridButton();
             renderDirty = true;
         }
+        if rulersButton.WasClicked() {
+            showRulers = showRulers == false;
+            RefreshRulerPresentation();
+            renderDirty = true;
+        }
         if fitButton.WasClicked() {
             initialFramePending = false;
             fitPending = false;
@@ -975,8 +1136,12 @@ class SceneEditor2D {
             fitPending = false;
             renderDirty = true;
         }
-        if tileSpinner.WasChanged() { RefreshTilesetPalette(); }
+        if tileSpinner.WasChanged() {
+            RefreshTilesetPalette();
+            renderDirty = true;
+        }
 
+        changed = PumpHistoryPanel() or changed;
         changed = PumpScenePropertyControls() or changed;
         changed = PumpLayerControls() or changed;
         changed = PumpObjectControls() or changed;
@@ -984,9 +1149,11 @@ class SceneEditor2D {
         changed = PumpTileBehaviorControls() or changed;
         changed = PumpCameraLightingControls() or changed;
         PumpTilesetPalette();
+        PumpCanvasRulers();
         changed = PumpCanvas() or changed;
         changed = PumpCanvasKeyboard() or changed;
 
+        if changed { RefreshHistoryPanel(); }
         if renderDirty { RenderScene(); }
         ApplyPendingWorkspaceScroll();
         // User input only arrives between frames, so any object-spinner
@@ -1016,10 +1183,18 @@ class SceneEditor2D {
     /// @brief Restore the preceding canonical scene snapshot.
     expose func Undo() -> Boolean {
         if currentDoc == null or undoStack.count() == 0 { return false; }
+        SyncHistoryLabels();
         var index = undoStack.count() - 1;
         var target = undoStack.get(index);
         undoStack.removeAt(index);
+        var label = "Edit";
+        if undoLabels.count() > 0 {
+            label = undoLabels.get(undoLabels.count() - 1);
+            undoLabels.removeAt(undoLabels.count() - 1);
+        }
         PushHistory(redoStack, currentSerialized);
+        redoLabels.add(label);
+        SyncHistoryLabels();
         currentDoc.content = target;
         currentDoc.isModified = target != cleanSerialized;
         revision = revision + 1;
@@ -1031,10 +1206,18 @@ class SceneEditor2D {
     /// @brief Reapply the next canonical scene snapshot.
     expose func Redo() -> Boolean {
         if currentDoc == null or redoStack.count() == 0 { return false; }
+        SyncHistoryLabels();
         var index = redoStack.count() - 1;
         var target = redoStack.get(index);
         redoStack.removeAt(index);
+        var label = "Edit";
+        if redoLabels.count() > 0 {
+            label = redoLabels.get(redoLabels.count() - 1);
+            redoLabels.removeAt(redoLabels.count() - 1);
+        }
         PushHistory(undoStack, currentSerialized);
+        undoLabels.add(label);
+        SyncHistoryLabels();
         currentDoc.content = target;
         currentDoc.isModified = target != cleanSerialized;
         revision = revision + 1;
@@ -1049,7 +1232,9 @@ class SceneEditor2D {
         if paintStrokeActive { CancelPaintStroke(); }
         if tileRectangleActive { CancelTileRectangle(); }
         if canvasMarqueeActive { CancelCanvasMarquee(); }
+        if canvasGuideDragActive { ResetCanvasGuideDrag(true); }
         var switchingDocument = currentDoc != doc;
+        var reloadingDocument = currentDoc == doc;
         if currentDoc != null { CaptureWorkspaceState(); }
         if preserveHistory == false {
             var savedState = doc.scene2DWorkspace;
@@ -1059,10 +1244,14 @@ class SceneEditor2D {
             if canRestoreHistory {
                 undoStack = savedState.undoStack;
                 redoStack = savedState.redoStack;
+                undoLabels = savedState.undoLabels;
+                redoLabels = savedState.redoLabels;
                 cleanSerialized = savedState.cleanSerialized;
             } else {
                 undoStack = [];
                 redoStack = [];
+                undoLabels = [];
+                redoLabels = [];
                 if doc.isModified == false { cleanSerialized = doc.content; }
                 else { cleanSerialized = ""; }
             }
@@ -1072,6 +1261,23 @@ class SceneEditor2D {
         EnsureComponentSchema(false);
         loadError = "";
         RestoreWorkspaceState(doc);
+        if reloadingDocument {
+            // A canonical reload creates new layer identities. Clearing is
+            // safer than applying an old numeric index to a different layer;
+            // ordinary live add/remove/reorder operations remap exactly.
+            lockedLayers = [];
+            soloLayer = -1;
+            if doc.scene2DWorkspace != null {
+                doc.scene2DWorkspace.lockedLayers = [];
+                doc.scene2DWorkspace.soloLayer = -1;
+            }
+        }
+        // Restoring divider positions intentionally clears SplitPane collapse
+        // state. Reconcile the current responsive presentation once here:
+        // the host dimensions may be unchanged, so the idle resize cache will
+        // correctly have no reason to reapply it on the next Pump.
+        ApplyInspectorLayout();
+        ApplyPaletteLayout();
         ResetCanvasMarquee(true);
         ResetTileRectangle(true);
         lastPaintX = -1;
@@ -1098,10 +1304,12 @@ class SceneEditor2D {
             detailLabel.SetText("Scene could not be parsed. The original JSON "
                                 + "is preserved.\n\n" + loadError);
         }
+        RefreshAutotilePreviewRules();
         ReloadTilesets();
         RefreshInspector();
         RefreshSceneSetupFields();
         RefreshTilesetPalette();
+        RefreshHistoryPanel();
         renderDirty = true;
     }
 
@@ -1110,7 +1318,7 @@ class SceneEditor2D {
         if currentDoc == null or currentDoc.scene2DWorkspace == null { return; }
         var state = currentDoc.scene2DWorkspace;
         state.initialized = true;
-        state.mode = ClampInt(mode, MODE_SELECT, MODE_PICKER);
+        state.mode = ClampInt(mode, MODE_SELECT, MODE_ELLIPSE);
         state.zoomPercent = ClampInt(
             zoomPercent, MIN_ZOOM_PERCENT, MAX_ZOOM_PERCENT);
         state.activeLayer = activeLayer;
@@ -1153,9 +1361,17 @@ class SceneEditor2D {
         state.paletteRequestedVisible = paletteRequestedVisible;
         state.compactPaletteShown = compactPaletteShown;
         state.previewActive = previewActive;
+        state.autotilePreviewEnabled = autotilePreviewEnabled;
         state.showGrid = showGrid;
+        state.showRulers = showRulers;
+        state.verticalGuides = verticalGuides;
+        state.horizontalGuides = horizontalGuides;
+        state.lockedLayers = lockedLayers;
+        state.soloLayer = soloLayer;
         state.undoStack = undoStack;
         state.redoStack = redoStack;
+        state.undoLabels = undoLabels;
+        state.redoLabels = redoLabels;
         state.cleanSerialized = cleanSerialized;
         state.historyContent = currentSerialized;
     }
@@ -1185,8 +1401,26 @@ class SceneEditor2D {
             compactInspectorShown = false;
             paletteRequestedVisible = true;
             compactPaletteShown = false;
+            autotilePreviewEnabled = true;
             showGrid = true;
+            showRulers = true;
+            verticalGuides = [];
+            horizontalGuides = [];
+            lockedLayers = [];
+            soloLayer = -1;
+            if componentSchema != null and componentSchema.valid
+               and componentSchema.scenePreview2D != null
+               and componentSchema.scenePreview2D.present
+               and componentSchema.scenePreview2D.hasShowGrid {
+                showGrid = componentSchema.scenePreview2D.showGrid;
+            }
             RefreshGridButton();
+            RefreshRulerPresentation();
+            if tileBehavior != null
+               and tileBehavior.autotilePreviewCheck != null {
+                tileBehavior.SetAutotilePreviewEnabled(
+                    autotilePreviewEnabled);
+            }
             restoreScrollPending = true;
             fitPending = false;
             initialFramePending = true;
@@ -1194,7 +1428,7 @@ class SceneEditor2D {
             return;
         }
 
-        mode = ClampInt(state.mode, MODE_SELECT, MODE_PICKER);
+        mode = ClampInt(state.mode, MODE_SELECT, MODE_ELLIPSE);
         zoomPercent = ClampInt(
             state.zoomPercent, MIN_ZOOM_PERCENT, MAX_ZOOM_PERCENT);
         activeLayer = ClampInt(state.activeLayer, 0, 1023);
@@ -1235,9 +1469,21 @@ class SceneEditor2D {
         paletteRequestedVisible = state.paletteRequestedVisible;
         compactPaletteShown = state.compactPaletteShown;
         previewActive = state.previewActive;
+        autotilePreviewEnabled = state.autotilePreviewEnabled;
         showGrid = state.showGrid;
+        showRulers = state.showRulers;
+        verticalGuides = state.verticalGuides;
+        horizontalGuides = state.horizontalGuides;
+        lockedLayers = state.lockedLayers;
+        soloLayer = ClampInt(state.soloLayer, -1, 1023);
         RefreshPreviewButton();
         RefreshGridButton();
+        RefreshRulerPresentation();
+        if tileBehavior != null
+           and tileBehavior.autotilePreviewCheck != null {
+            tileBehavior.SetAutotilePreviewEnabled(
+                autotilePreviewEnabled);
+        }
         restoreScrollPending = true;
         fitPending = false;
         initialFramePending = false;
@@ -1271,7 +1517,7 @@ class SceneEditor2D {
     /// @brief Toggle a full-width object hierarchy on viewport-priority hosts.
     expose func ToggleHierarchyPane() {
         if focusModeActive or hierarchyDock.floating
-           or lastHostWidth >= HIERARCHY_PANE_MIN_WIDTH_2D {
+           or UsesDockedHierarchy(lastHostWidth) {
             return;
         }
         compactHierarchyShown = compactHierarchyShown == false;
@@ -1385,12 +1631,18 @@ class SceneEditor2D {
             ApplyResponsiveChrome();
         }
         var nextCompactPalette = UsesCompactPaletteLayout(height);
-        if nextCompactPalette != compactPaletteLayout {
+        var paletteChanged =
+            nextCompactPalette != compactPaletteLayout;
+        if paletteChanged {
             compactPaletteLayout = nextCompactPalette;
             renderDirty = true;
         }
-        ApplyInspectorLayout();
-        ApplyPaletteLayout();
+        if layoutChanged or widthChanged {
+            ApplyInspectorLayout();
+        }
+        if layoutChanged or widthChanged or paletteChanged {
+            ApplyPaletteLayout();
+        }
     }
 
     /// @brief Keep essential scene actions reachable when toolbar rows wrap.
@@ -1414,7 +1666,7 @@ class SceneEditor2D {
             viewToolbar.SetPadding(2.0);
             toolbarStatus.SetVisible(false);
             viewStatusLabel.SetVisible(false);
-        } else if lastHostWidth < 1180.0 {
+        } else if lastHostWidth < WRAPPED_SCENE_2D_CHROME_WIDTH {
             toolbar.SetPreferredSize(0.0, 0.0);
             toolbar.SetMinSize(0.0, 68.0);
             // The hierarchy master action may wrap the view controls to a
@@ -1431,6 +1683,26 @@ class SceneEditor2D {
             toolbar.SetPadding(2.0);
             viewToolbar.SetGap(2.0);
             viewToolbar.SetPadding(2.0);
+            toolbarStatus.SetVisible(false);
+            viewStatusLabel.SetVisible(false);
+        } else if UsesDockedHierarchy(lastHostWidth) == false {
+            // Laptop-width scene-layout mode fits the concise actions in one
+            // row. Do not keep the narrower tier's defensive two-row floor:
+            // that would consume canvas height as an empty band.
+            toolbar.SetPreferredSize(0.0, 0.0);
+            toolbar.SetMinSize(0.0, 0.0);
+            viewToolbar.SetPreferredSize(0.0, 0.0);
+            viewToolbar.SetMinSize(0.0, 0.0);
+            newSceneButton.SetText("New");
+            importButton.SetText("Import");
+            rectangleButton.SetText("Rect");
+            ellipseButton.SetText("Oval");
+            previewButton.SetText("Play");
+            runSceneButton.SetText("Run");
+            toolbar.SetGap(4.0);
+            toolbar.SetPadding(4.0);
+            viewToolbar.SetGap(4.0);
+            viewToolbar.SetPadding(4.0);
             toolbarStatus.SetVisible(false);
             viewStatusLabel.SetVisible(false);
         } else {
@@ -1468,12 +1740,12 @@ class SceneEditor2D {
                 compactLayout == false
                 and focusModeActive == false
                 and hierarchyDock.floating == false
-                and lastHostWidth >= HIERARCHY_PANE_MIN_WIDTH_2D;
+                and UsesDockedHierarchy(lastHostWidth);
             showHierarchyMaster =
                 compactHierarchyShown
                 and focusModeActive == false
                 and hierarchyDock.floating == false
-                and lastHostWidth < HIERARCHY_PANE_MIN_WIDTH_2D;
+                and UsesDockedHierarchy(lastHostWidth) == false;
             var desiredHierarchySide = 1;
             if wantHierarchyPane { desiredHierarchySide = 0; }
             else if showHierarchyMaster { desiredHierarchySide = 2; }
@@ -1560,7 +1832,7 @@ class SceneEditor2D {
         if hierarchyButton == null { return; }
         var needsMaster =
             lastHostWidth > 0.0
-            and lastHostWidth < HIERARCHY_PANE_MIN_WIDTH_2D;
+            and UsesDockedHierarchy(lastHostWidth) == false;
         hierarchyButton.SetVisible(needsMaster);
         if needsMaster == false { return; }
         if focusModeActive {
@@ -1690,7 +1962,8 @@ class SceneEditor2D {
                     + "this scene's internal pane layout");
             workspaceButton.SetStyle(1);
         } else {
-            if compactChrome or lastHostWidth < 1350.0 {
+            if compactChrome
+               or UsesDockedHierarchy(lastHostWidth) == false {
                 workspaceButton.SetText("Layout");
             } else {
                 workspaceButton.SetText("Scene Layout");
@@ -2315,15 +2588,14 @@ class SceneEditor2D {
     /// @return True when a loaded scene owns a usable search field.
     expose func FocusHierarchySearch() -> Boolean {
         if scene == null or hierarchySearchInput == null { return false; }
-        if compactLayout {
-            compactInspectorShown = true;
-        } else {
-            inspectorRequestedVisible = true;
+        if hierarchyDock.floating == false
+           and UsesDockedHierarchy(lastHostWidth) == false {
+            compactHierarchyShown = true;
+            compactInspectorShown = false;
+            compactPaletteShown = false;
         }
         ApplyInspectorLayout();
-        if inspectorScroll != null {
-            inspectorScroll.ScrollTo(hierarchySearchInput);
-        }
+        ApplyPaletteLayout();
         hierarchySearchInput.Focus();
         CaptureWorkspaceState();
         return true;
@@ -3587,7 +3859,7 @@ class SceneEditor2D {
 
         detailLabel.SetText("");
         RefreshInspector();
-        sceneProperties.SelectByKey(scene, nextKey);
+        sceneProperties.SelectByKey(nextKey);
         selectedSceneProperty = sceneProperties.selectedProperty;
         return true;
     }
@@ -3623,6 +3895,10 @@ class SceneEditor2D {
         tileBehavior.Pump(scene);
         var tile = Convert.NumToInt(tileSpinner.Value);
         var changed = false;
+        if tileBehavior.TakeAutotilePreviewChanged() {
+            SetAutotilePreviewEnabled(
+                tileBehavior.AutotilePreviewEnabled());
+        }
         var collisionKind = tileBehavior.TakeCollisionKind();
         if collisionKind >= 0 {
             changed = SetTileBehaviorCollision(tile, collisionKind) or changed;
@@ -3838,6 +4114,7 @@ class SceneEditor2D {
             RestoreSceneSnapshot(snapshot);
             return false;
         }
+        RefreshAutotilePreviewRules();
         detailLabel.SetText("");
         RefreshTilesetPalette();
         return true;
@@ -3853,6 +4130,7 @@ class SceneEditor2D {
             RestoreSceneSnapshot(snapshot);
             return false;
         }
+        RefreshAutotilePreviewRules();
         detailLabel.SetText("");
         RefreshTilesetPalette();
         return true;
@@ -3936,6 +4214,34 @@ class SceneEditor2D {
         }
         return componentSchema.PreviewForObjectType(
             scene.ObjectType(objectIndex));
+    }
+
+    /// @brief Resolve the active project-owned screen-space scene backdrop.
+    /// @details A missing/wrong-typed variant key uses the declared fallback.
+    hide func ProjectSceneBackground() -> String {
+        if componentSchema == null or componentSchema.valid == false
+           or scene == null or componentSchema.scenePreview2D == null
+           or componentSchema.scenePreview2D.present == false {
+            return "";
+        }
+        var profile = componentSchema.scenePreview2D;
+        if profile.variantProperty == ""
+           or scene.PropertyKind(profile.variantProperty) != "int" {
+            return profile.background;
+        }
+        return profile.BackgroundForVariant(
+            scene.GetInt(profile.variantProperty, 0));
+    }
+
+    /// @brief Composite the current project backdrop behind scene content.
+    hide func DrawProjectSceneBackground() -> Boolean {
+        var path = ProjectSceneBackground();
+        if path == "" or componentSchema == null { return false; }
+        return tilesets.DrawSceneBackground(
+            framePixels,
+            path,
+            componentSchema.sourcePath,
+            componentSchema.scenePreview2D.fit);
     }
 
     /// @brief Draw workspace-only polylines for route objects (ADR 0179).
@@ -4198,6 +4504,24 @@ class SceneEditor2D {
         renderDirty = true;
     }
 
+    /// @brief Set one document's non-destructive runtime-autotile preview.
+    expose func SetAutotilePreviewEnabled(enabled: Boolean) {
+        autotilePreviewEnabled = enabled;
+        if tileBehavior != null
+           and tileBehavior.autotilePreviewCheck != null {
+            tileBehavior.SetAutotilePreviewEnabled(enabled);
+        }
+        renderDirty = true;
+        CaptureWorkspaceState();
+        if toolbarStatus != null {
+            if enabled {
+                toolbarStatus.SetText("Live autotile preview on");
+            } else {
+                toolbarStatus.SetText("Live autotile preview off");
+            }
+        }
+    }
+
     /// @brief Deterministically advance the preview clock (probes and tests).
     expose func AdvancePreviewClock(deltaMs: Integer) {
         if previewActive == false or deltaMs <= 0 { return; }
@@ -4245,6 +4569,227 @@ class SceneEditor2D {
         }
     }
 
+    /// @brief Cache the runtime-visible prefix of canonical autotile rules.
+    /// @details Tilemap owns 64 rule slots and SceneDocument enumerates bases
+    ///          in ascending order, so retaining the first 64 exactly matches
+    ///          BuildTilemap registration precedence. A bounded direct lookup
+    ///          keeps the windowed renderer independent of rule count.
+    hide func RefreshAutotilePreviewRules() {
+        autotilePreviewRuleCount = 0;
+        autotilePreviewBases = [];
+        autotilePreviewVariants = [];
+        autotilePreviewLookup = [];
+        if scene == null { return; }
+
+        var runtimeBases = scene.AutotileBases();
+        var baseIndex = 0;
+        while baseIndex < Seq.get_Count(runtimeBases)
+              and autotilePreviewRuleCount
+                  < MAX_AUTOTILE_PREVIEW_RULES {
+            var base = Box.ToI64(Seq.Get(runtimeBases, baseIndex));
+            var variants = scene.AutotileVariants(base);
+            if Seq.get_Count(variants) == 16 {
+                autotilePreviewBases.add(base);
+                var variant = 0;
+                while variant < 16 {
+                    autotilePreviewVariants.add(
+                        Box.ToI64(Seq.Get(variants, variant)));
+                    variant = variant + 1;
+                }
+                autotilePreviewRuleCount =
+                    autotilePreviewRuleCount + 1;
+            }
+            baseIndex = baseIndex + 1;
+        }
+        if autotilePreviewRuleCount == 0 { return; }
+
+        var tile = 0;
+        while tile <= AUTOTILE_LOOKUP_MAX_TILE {
+            autotilePreviewLookup.add(-1);
+            tile = tile + 1;
+        }
+        // Runtime variant classification keeps the first registered rule.
+        var rule = 0;
+        while rule < autotilePreviewRuleCount {
+            var variant = 0;
+            while variant < 16 {
+                tile = autotilePreviewVariants.get(rule * 16 + variant);
+                if tile >= 0 and tile <= AUTOTILE_LOOKUP_MAX_TILE
+                   and autotilePreviewLookup.get(tile) < 0 {
+                    autotilePreviewLookup.set(tile, rule);
+                }
+                variant = variant + 1;
+            }
+            rule = rule + 1;
+        }
+        // An exact base match wins before runtime scans every variant table.
+        rule = 0;
+        while rule < autotilePreviewRuleCount {
+            tile = autotilePreviewBases.get(rule);
+            if tile >= 0 and tile <= AUTOTILE_LOOKUP_MAX_TILE {
+                autotilePreviewLookup.set(tile, rule);
+            }
+            rule = rule + 1;
+        }
+    }
+
+    /// @brief Classify one tile with Tilemap's exact base-before-variant rule.
+    hide func AutotilePreviewRuleForTile(tile: Integer) -> Integer {
+        if autotilePreviewRuleCount <= 0 { return -1; }
+        if tile >= 0 and tile < autotilePreviewLookup.count() {
+            return autotilePreviewLookup.get(tile);
+        }
+        var rule = 0;
+        while rule < autotilePreviewRuleCount {
+            if autotilePreviewBases.get(rule) == tile { return rule; }
+            rule = rule + 1;
+        }
+        rule = 0;
+        while rule < autotilePreviewRuleCount {
+            var variant = 0;
+            while variant < 16 {
+                if autotilePreviewVariants.get(rule * 16 + variant)
+                   == tile {
+                    return rule;
+                }
+                variant = variant + 1;
+            }
+            rule = rule + 1;
+        }
+        return -1;
+    }
+
+    /// @brief Whether one tile connects to a specific cached autotile rule.
+    hide func AutotilePreviewRuleContains(rule: Integer,
+                                          tile: Integer) -> Boolean {
+        if rule < 0 or rule >= autotilePreviewRuleCount {
+            return false;
+        }
+        if autotilePreviewBases.get(rule) == tile { return true; }
+        var variant = 0;
+        while variant < 16 {
+            if autotilePreviewVariants.get(rule * 16 + variant)
+               == tile {
+                return true;
+            }
+            variant = variant + 1;
+        }
+        return false;
+    }
+
+    /// @brief Compute Tilemap's up/right/down/left neighbor mask.
+    hide func AutotilePreviewMask(layer: Integer,
+                                  x: Integer,
+                                  y: Integer,
+                                  rule: Integer) -> Integer {
+        var mask = 0;
+        if y > 0
+           and AutotilePreviewRuleContains(
+               rule, scene.GetTile(layer, x, y - 1)) {
+            mask = mask + 1;
+        }
+        if x < scene.Width - 1
+           and AutotilePreviewRuleContains(
+               rule, scene.GetTile(layer, x + 1, y)) {
+            mask = mask + 2;
+        }
+        if y < scene.Height - 1
+           and AutotilePreviewRuleContains(
+               rule, scene.GetTile(layer, x, y + 1)) {
+            mask = mask + 4;
+        }
+        if x > 0
+           and AutotilePreviewRuleContains(
+               rule, scene.GetTile(layer, x - 1, y)) {
+            mask = mask + 8;
+        }
+        return mask;
+    }
+
+    /// @brief Resolve one canonical cell exactly as Tilemap.ApplyAutoTile.
+    /// @details Runtime autotile application is base-layer-only. Studio keeps
+    ///          that same boundary and never writes the resolved variant back.
+    expose func AutotileResolvedSceneTile(layer: Integer,
+                                          x: Integer,
+                                          y: Integer) -> Integer {
+        if scene == null or layer < 0 or layer >= scene.LayerCount()
+           or x < 0 or y < 0 or x >= scene.Width or y >= scene.Height {
+            return 0;
+        }
+        var tile = scene.GetTile(layer, x, y);
+        if autotilePreviewEnabled == false or layer != 0
+           or autotilePreviewRuleCount <= 0 {
+            return tile;
+        }
+        var rule = AutotilePreviewRuleForTile(tile);
+        if rule < 0 { return tile; }
+        var mask = AutotilePreviewMask(layer, x, y, rule);
+        return autotilePreviewVariants.get(rule * 16 + mask);
+    }
+
+    /// @brief Read one prospective single-cell paint without mutating scene.
+    hide func AutotilePreviewTileWithOverride(layer: Integer,
+                                              x: Integer,
+                                              y: Integer,
+                                              overrideX: Integer,
+                                              overrideY: Integer,
+                                              overrideTile: Integer)
+                                              -> Integer {
+        if x == overrideX and y == overrideY { return overrideTile; }
+        return scene.GetTile(layer, x, y);
+    }
+
+    /// @brief Resolve one prospective brush cell through the runtime mask.
+    hide func AutotileResolvedTileWithOverride(layer: Integer,
+                                               x: Integer,
+                                               y: Integer,
+                                               tile: Integer,
+                                               overrideX: Integer,
+                                               overrideY: Integer,
+                                               overrideTile: Integer)
+                                               -> Integer {
+        if autotilePreviewEnabled == false or layer != 0
+           or autotilePreviewRuleCount <= 0 {
+            return tile;
+        }
+        var rule = AutotilePreviewRuleForTile(tile);
+        if rule < 0 { return tile; }
+        var mask = 0;
+        if y > 0
+           and AutotilePreviewRuleContains(
+               rule,
+               AutotilePreviewTileWithOverride(
+                   layer, x, y - 1,
+                   overrideX, overrideY, overrideTile)) {
+            mask = mask + 1;
+        }
+        if x < scene.Width - 1
+           and AutotilePreviewRuleContains(
+               rule,
+               AutotilePreviewTileWithOverride(
+                   layer, x + 1, y,
+                   overrideX, overrideY, overrideTile)) {
+            mask = mask + 2;
+        }
+        if y < scene.Height - 1
+           and AutotilePreviewRuleContains(
+               rule,
+               AutotilePreviewTileWithOverride(
+                   layer, x, y + 1,
+                   overrideX, overrideY, overrideTile)) {
+            mask = mask + 4;
+        }
+        if x > 0
+           and AutotilePreviewRuleContains(
+               rule,
+               AutotilePreviewTileWithOverride(
+                   layer, x - 1, y,
+                   overrideX, overrideY, overrideTile)) {
+            mask = mask + 8;
+        }
+        return autotilePreviewVariants.get(rule * 16 + mask);
+    }
+
     /// @brief Resolve one tile through preview animation state when active.
     hide func PreviewResolvedTile(tile: Integer) -> Integer {
         if previewActive == false or scene == null or tile <= 0 {
@@ -4255,6 +4800,14 @@ class SceneEditor2D {
         var frame = PreviewFrameForBase(tile);
         if frame < 0 or frame >= Seq.get_Count(frames) { return tile; }
         return Box.ToI64(Seq.Get(frames, frame));
+    }
+
+    /// @brief Resolve authored autotile and optional animation preview layers.
+    expose func ResolvedSceneTileForPreview(layer: Integer,
+                                            x: Integer,
+                                            y: Integer) -> Integer {
+        return PreviewResolvedTile(
+            AutotileResolvedSceneTile(layer, x, y));
     }
 
     /// @brief Return one base tile's current frame index from durations.
@@ -4812,6 +5365,7 @@ class SceneEditor2D {
         scene = SceneDocument.New(nextWidth, nextHeight,
                                   nextTileSize, nextTileSize);
         if scene == null { return false; }
+        RefreshAutotilePreviewRules();
         loadError = "";
         activeLayer = 0;
         selectedObject = -1;
@@ -4962,6 +5516,7 @@ class SceneEditor2D {
             return false;
         }
         scene = imported.Unwrap() as SceneDocument;
+        RefreshAutotilePreviewRules();
         loadError = "";
         activeLayer = 0;
         selectedObject = -1;
@@ -5000,8 +5555,12 @@ class SceneEditor2D {
             return false;
         }
         if serialized == currentSerialized { return false; }
+        SyncHistoryLabels();
         PushHistory(undoStack, currentSerialized);
+        undoLabels.add(message);
+        SyncHistoryLabels();
         redoStack = [];
+        redoLabels = [];
         currentSerialized = serialized;
         currentDoc.content = serialized;
         currentDoc.isModified = serialized != cleanSerialized;
@@ -5022,6 +5581,82 @@ class SceneEditor2D {
             stack, MAX_2D_SCENE_HISTORY, MAX_2D_HISTORY_BYTES);
     }
 
+    /// @brief Reconcile best-effort labels with bounded snapshot stacks.
+    /// @details Budget trims can drop old snapshots. Front-trimming and
+    ///          padding keep labels aligned without making presentation text
+    ///          part of canonical scene history.
+    hide func SyncHistoryLabels() {
+        while undoLabels.count() > undoStack.count() {
+            undoLabels.removeAt(0);
+        }
+        while undoLabels.count() < undoStack.count() {
+            var rebuilt: List[String] = [];
+            rebuilt.add("Edit");
+            var undoIndex = 0;
+            while undoIndex < undoLabels.count() {
+                rebuilt.add(undoLabels.get(undoIndex));
+                undoIndex = undoIndex + 1;
+            }
+            undoLabels = rebuilt;
+        }
+        while redoLabels.count() > redoStack.count() {
+            redoLabels.removeAt(0);
+        }
+        while redoLabels.count() < redoStack.count() {
+            redoLabels.add("Edit");
+        }
+    }
+
+    /// @brief Rebuild the visible 2D History timeline oldest-first.
+    expose func RefreshHistoryPanel() {
+        if historyList == null { return; }
+        SyncHistoryLabels();
+        historyListRefreshing = true;
+        historyList.Clear();
+        var index = 0;
+        while index < undoLabels.count() {
+            historyList.AddItem(
+                (index + 1) + ". " + undoLabels.get(index));
+            index = index + 1;
+        }
+        historyList.AddItem("● Current");
+        historyList.SelectIndex(undoLabels.count());
+        // Programmatic selection raises a normal selection edge. Drain it so
+        // the next frame cannot mistake refresh for a user jump.
+        historyList.WasSelectionChanged();
+        historyListRefreshing = false;
+    }
+
+    /// @brief Jump to the snapshot immediately before one listed edit.
+    /// @details Row k is oldest-first; the Current row is intentionally a
+    ///          no-op and completed jumps retain the equivalent redo chain.
+    expose func JumpToHistoryRow(row: Integer) -> Boolean {
+        SyncHistoryLabels();
+        if row < 0 or row >= undoStack.count() { return false; }
+        var undos = undoStack.count() - row;
+        var step = 0;
+        while step < undos {
+            if Undo() == false { return false; }
+            step = step + 1;
+        }
+        toolbarStatus.SetText("Jumped back " + undos + " edit(s)");
+        RefreshHistoryPanel();
+        return true;
+    }
+
+    /// @brief Route one History row selection into the normal undo path.
+    hide func PumpHistoryPanel() -> Boolean {
+        if historyList == null or historyListRefreshing { return false; }
+        if historyList.WasSelectionChanged() == false { return false; }
+        var row = historyList.SelectedIndex;
+        SyncHistoryLabels();
+        if row >= 0 and row < undoStack.count() {
+            return JumpToHistoryRow(row);
+        }
+        RefreshHistoryPanel();
+        return false;
+    }
+
     hide func SetMode(nextMode: Integer) {
         var normalizedMode = nextMode;
         if nextMode < MODE_SELECT or nextMode > MODE_ELLIPSE {
@@ -5036,10 +5671,13 @@ class SceneEditor2D {
         if canvasMarqueeActive and normalizedMode != MODE_SELECT {
             CancelCanvasMarquee();
         }
+        if normalizedMode != MODE_PAINT { ClearTileStamp(); }
+        var modeChanged = mode != normalizedMode;
         mode = normalizedMode;
         lastPaintX = -1;
         lastPaintY = -1;
         UpdateModeButtons();
+        if modeChanged { renderDirty = true; }
     }
 
     expose func UpdateModeButtons() {
@@ -5048,6 +5686,8 @@ class SceneEditor2D {
         paintButton.SetEnabled(editorControlsEnabled);
         eraseButton.SetEnabled(editorControlsEnabled);
         rectangleButton.SetEnabled(editorControlsEnabled);
+        lineButton.SetEnabled(editorControlsEnabled);
+        ellipseButton.SetEnabled(editorControlsEnabled);
         fillButton.SetEnabled(editorControlsEnabled);
         pickerButton.SetEnabled(editorControlsEnabled);
         objectButton.SetEnabled(editorControlsEnabled);
@@ -5091,14 +5731,9 @@ class SceneEditor2D {
         fitButton.SetEnabled(enabled);
         actualSizeButton.SetEnabled(enabled);
         gridButton.SetEnabled(enabled);
-        addLayerButton.SetEnabled(enabled);
-        removeLayerButton.SetEnabled(enabled);
-        layerUpButton.SetEnabled(enabled);
-        layerDownButton.SetEnabled(enabled);
-        layerVisibleCheck.SetEnabled(enabled);
-        layerNameInput.SetEnabled(enabled);
-        layerAssetInput.SetEnabled(enabled);
-        chooseLayerAssetButton.SetEnabled(enabled);
+        rulersButton.SetEnabled(enabled);
+        layerList.SetEnabled(enabled);
+        UpdateLayerActionControls();
         sceneProperties.SetEnabled(enabled);
         tilesetInspector.SetEnabled(enabled);
         hierarchySearchInput.SetEnabled(enabled);
@@ -5122,6 +5757,26 @@ class SceneEditor2D {
         objectYSpinner.SetEnabled(enabled);
         UpdateHierarchySearchControls();
         UpdateInspectorScope();
+    }
+
+    /// @brief Keep layer controls truthful at empty and draw-order boundaries.
+    hide func UpdateLayerActionControls() {
+        if addLayerButton == null { return; }
+        var valid = editorControlsEnabled and scene != null
+            and activeLayer >= 0 and activeLayer < scene.LayerCount();
+        addLayerButton.SetEnabled(editorControlsEnabled and scene != null);
+        removeLayerButton.SetEnabled(
+            valid and scene.LayerCount() > 1);
+        layerUpButton.SetEnabled(valid and activeLayer > 0);
+        layerDownButton.SetEnabled(
+            valid and activeLayer + 1 < scene.LayerCount());
+        layerVisibleCheck.SetEnabled(valid);
+        layerOpacitySpinner.SetEnabled(valid);
+        layerLockCheck.SetEnabled(valid);
+        layerSoloCheck.SetEnabled(valid);
+        layerNameInput.SetEnabled(valid);
+        layerAssetInput.SetEnabled(valid);
+        chooseLayerAssetButton.SetEnabled(valid);
     }
 
     /// @brief Rebuild bounded inspector rows from the active model.
@@ -5417,11 +6072,115 @@ class SceneEditor2D {
         UpdateInspectorScope();
     }
 
+    /// @brief Remove hostile, duplicate, or stale layer workspace indices.
+    hide func NormalizeLayerWorkspaceState() {
+        if scene == null {
+            lockedLayers = [];
+            soloLayer = -1;
+            return;
+        }
+        var normalized: List[Integer] = [];
+        var index = 0;
+        while index < lockedLayers.count() {
+            var layer = lockedLayers.get(index);
+            var duplicate = false;
+            var prior = 0;
+            while prior < normalized.count() {
+                if normalized.get(prior) == layer { duplicate = true; }
+                prior = prior + 1;
+            }
+            if layer >= 0 and layer < scene.LayerCount()
+               and duplicate == false {
+                normalized.add(layer);
+            }
+            index = index + 1;
+        }
+        lockedLayers = normalized;
+        if soloLayer < 0 or soloLayer >= scene.LayerCount() {
+            soloLayer = -1;
+        }
+        if currentDoc != null and currentDoc.scene2DWorkspace != null {
+            currentDoc.scene2DWorkspace.lockedLayers = lockedLayers;
+            currentDoc.scene2DWorkspace.soloLayer = soloLayer;
+        }
+    }
+
+    /// @brief Compose one scannable layer navigator row.
+    hide func LayerNavigatorLabel(layer: Integer) -> String {
+        if scene == null or layer < 0 or layer >= scene.LayerCount() {
+            return "○ (missing layer)";
+        }
+        var label = "○ ";
+        if scene.LayerVisible(layer) { label = "● "; }
+        if LayerLocked(layer) { label = label + "⊘ "; }
+        if soloLayer == layer { label = label + "SOLO "; }
+        label = label + scene.LayerName(layer);
+        var opacityPercent = Convert.NumToInt(
+            scene.LayerOpacity(layer) * 100.0 + 0.5);
+        if opacityPercent < 100 {
+            label = label + "  " + opacityPercent + "%";
+        }
+        return label;
+    }
+
+    /// @brief Tint exceptional layer states without obscuring row text.
+    hide func LayerNavigatorColor(layer: Integer) -> Integer {
+        if soloLayer == layer { return Color.RGB(102, 220, 190); }
+        if LayerLocked(layer) { return Color.RGB(239, 190, 86); }
+        if scene != null and layer >= 0 and layer < scene.LayerCount()
+           and scene.LayerVisible(layer) == false {
+            return Color.RGB(142, 151, 164);
+        }
+        return Color.RGB(225, 231, 238);
+    }
+
+    /// @brief Refresh only fixed-height layer rows and their active selection.
+    hide func RefreshLayerNavigator() {
+        if layerList == null { return; }
+        layerList.Clear();
+        layerListItems = [];
+        if scene == null { return; }
+        var layerCount = scene.LayerCount();
+        if activeLayer < 0 or activeLayer >= layerCount { activeLayer = 0; }
+        NormalizeLayerWorkspaceState();
+        var layer = 0;
+        while layer < layerCount {
+            var item = layerList.AddItem(LayerNavigatorLabel(layer));
+            layerListItems.add(item);
+            if item != null {
+                GUI.ListBox.ItemSetData(item, "" + layer);
+                GUI.ListBox.ItemSetTextColor(
+                    item, LayerNavigatorColor(layer));
+            }
+            layer = layer + 1;
+        }
+        if layerCount > 0 { layerList.SelectIndex(activeLayer); }
+        UpdateLayerActionControls();
+    }
+
+    /// @brief Update live row cues without rebuilding or scrolling the list.
+    hide func RefreshLayerNavigatorRows() {
+        if scene == null { return; }
+        var layer = 0;
+        while layer < layerListItems.count()
+              and layer < scene.LayerCount() {
+            var item = layerListItems.get(layer);
+            if item != null {
+                GUI.ListBox.ItemSetText(
+                    item, LayerNavigatorLabel(layer));
+                GUI.ListBox.ItemSetTextColor(
+                    item, LayerNavigatorColor(layer));
+            }
+            layer = layer + 1;
+        }
+        UpdateLayerActionControls();
+    }
+
     hide func RefreshInspector() {
         UpdateInspectorScope();
         layerList.Clear();
-        sceneProperties.Refresh(
-            scene, editorControlsEnabled, selectedSceneProperty);
+        layerListItems = [];
+        sceneProperties.Refresh(scene, editorControlsEnabled);
         selectedSceneProperty = sceneProperties.selectedProperty;
         cameraLighting.Refresh(scene, editorControlsEnabled);
         if scene == null {
@@ -5437,21 +6196,12 @@ class SceneEditor2D {
         }
 
         sceneInfoLabel.SetText(
-            scene.Width + " x " + scene.Height
-            + " tiles  |  tile " + scene.TileWidth + " x " + scene.TileHeight
+            scene.Width + " x " + scene.Height + " tiles\n"
+            + scene.TileWidth + " x " + scene.TileHeight + " px tiles"
             + "  |  " + scene.LayerCount() + " layer(s)"
             + "  |  " + scene.ObjectCount() + " object(s)");
 
-        var layerCount = scene.LayerCount();
-        if activeLayer < 0 or activeLayer >= layerCount { activeLayer = 0; }
-        var i = 0;
-        while i < layerCount {
-            var marker = "[ ] ";
-            if scene.LayerVisible(i) { marker = "[x] "; }
-            layerList.AddItem(marker + scene.LayerName(i));
-            i = i + 1;
-        }
-        if layerCount > 0 { layerList.SelectIndex(activeLayer); }
+        RefreshLayerNavigator();
         RefreshLayerFields();
 
         RefreshObjectTree();
@@ -5935,6 +6685,7 @@ class SceneEditor2D {
             layerSoloRevision = layerSoloCheck.GetRevision();
             layerNameInput.SetText("");
             layerAssetInput.SetText("");
+            UpdateLayerActionControls();
             RefreshTilesetPalette();
             return;
         }
@@ -5948,6 +6699,7 @@ class SceneEditor2D {
         layerSoloRevision = layerSoloCheck.GetRevision();
         layerNameInput.SetText(scene.LayerName(activeLayer));
         layerAssetInput.SetText(scene.LayerAsset(activeLayer));
+        UpdateLayerActionControls();
         RefreshTilesetPalette();
     }
 
@@ -6383,6 +7135,7 @@ class SceneEditor2D {
         var restored = SceneDocument.LoadJsonResult(snapshot);
         if restored.IsOk {
             scene = restored.Unwrap() as SceneDocument;
+            RefreshAutotilePreviewRules();
             renderDirty = true;
             RefreshInspector();
         }
@@ -6406,15 +7159,167 @@ class SceneEditor2D {
         return true;
     }
 
-    /// @brief Reset workspace lock/solo when layer identity shifts.
-    /// @details Lock and solo key by index, so structural layer changes
-    ///          (add/remove/move) clear them rather than misapply them.
-    hide func ResetLayerWorkspaceState() {
-        if lockedLayers.count() == 0 and soloLayer < 0 { return; }
-        lockedLayers = [];
-        soloLayer = -1;
-        RefreshLayerFields();
+    /// @brief Map one old index through a stable layer move.
+    hide func RemapLayerIndexForMove(index: Integer,
+                                     source: Integer,
+                                     destination: Integer) -> Integer {
+        if index == source { return destination; }
+        if source < destination
+           and index > source and index <= destination {
+            return index - 1;
+        }
+        if destination < source
+           and index >= destination and index < source {
+            return index + 1;
+        }
+        return index;
+    }
+
+    /// @brief Preserve lock/solo identity across one accepted layer move.
+    hide func RemapLayerWorkspaceForMove(source: Integer,
+                                         destination: Integer) {
+        var remapped: List[Integer] = [];
+        var index = 0;
+        while index < lockedLayers.count() {
+            remapped.add(RemapLayerIndexForMove(
+                lockedLayers.get(index), source, destination));
+            index = index + 1;
+        }
+        lockedLayers = remapped;
+        if soloLayer >= 0 {
+            soloLayer = RemapLayerIndexForMove(
+                soloLayer, source, destination);
+        }
+        NormalizeLayerWorkspaceState();
         renderDirty = true;
+    }
+
+    /// @brief Preserve surviving layer state after one accepted removal.
+    hide func RemapLayerWorkspaceForRemoval(removed: Integer) {
+        var remapped: List[Integer] = [];
+        var index = 0;
+        while index < lockedLayers.count() {
+            var layer = lockedLayers.get(index);
+            if layer < removed {
+                remapped.add(layer);
+            } else if layer > removed {
+                remapped.add(layer - 1);
+            }
+            index = index + 1;
+        }
+        lockedLayers = remapped;
+        if soloLayer == removed {
+            soloLayer = -1;
+        } else if soloLayer > removed {
+            soloLayer = soloLayer - 1;
+        }
+        NormalizeLayerWorkspaceState();
+        renderDirty = true;
+    }
+
+    /// @brief Move one layer through the shared canonical transaction path.
+    /// @details Direct ListBox requests, Alt+Arrow, and explicit buttons all
+    ///          preserve Lock/Solo identity and commit exactly one history.
+    hide func MoveSceneLayer(source: Integer,
+                             destination: Integer,
+                             action: String) -> Boolean {
+        if scene == null or source < 0 or destination < 0
+           or source >= scene.LayerCount()
+           or destination >= scene.LayerCount()
+           or source == destination {
+            return false;
+        }
+        var before = scene.ToJson();
+        if before == "" { return false; }
+        scene.MoveLayer(source, destination);
+        var after = scene.ToJson();
+        if after == "" or after == before { return false; }
+        RemapLayerWorkspaceForMove(source, destination);
+        activeLayer = destination;
+        if CommitScene(action) == false {
+            scene.MoveLayer(destination, source);
+            RemapLayerWorkspaceForMove(destination, source);
+            activeLayer = source;
+            RefreshInspector();
+            return false;
+        }
+        ReloadTilesets();
+        RefreshInspector();
+        return true;
+    }
+
+    /// @brief Set one layer's workspace-only tile edit lock.
+    /// @return True only when lock state changed.
+    expose func SetLayerLocked(layer: Integer,
+                               nextLocked: Boolean) -> Boolean {
+        if scene == null or layer < 0 or layer >= scene.LayerCount()
+           or LayerLocked(layer) == nextLocked {
+            return false;
+        }
+        if nextLocked {
+            lockedLayers.add(layer);
+        } else {
+            var kept: List[Integer] = [];
+            var index = 0;
+            while index < lockedLayers.count() {
+                if lockedLayers.get(index) != layer {
+                    kept.add(lockedLayers.get(index));
+                }
+                index = index + 1;
+            }
+            lockedLayers = kept;
+        }
+        NormalizeLayerWorkspaceState();
+        RefreshLayerNavigatorRows();
+        RefreshLayerFields();
+        CaptureWorkspaceState();
+        if nextLocked {
+            toolbarStatus.SetText("Layer locked against tile edits");
+        } else {
+            toolbarStatus.SetText("Layer unlocked");
+        }
+        return true;
+    }
+
+    /// @brief Isolate one layer in the canvas, or pass -1 to clear Solo.
+    /// @return True only when workspace presentation changed.
+    expose func SetSoloLayer(nextSolo: Integer) -> Boolean {
+        if scene == null or nextSolo < -1
+           or nextSolo >= scene.LayerCount()
+           or nextSolo == soloLayer {
+            return false;
+        }
+        soloLayer = nextSolo;
+        NormalizeLayerWorkspaceState();
+        renderDirty = true;
+        RefreshLayerNavigatorRows();
+        RefreshLayerFields();
+        CaptureWorkspaceState();
+        if soloLayer >= 0 {
+            toolbarStatus.SetText(
+                "Soloing layer " + (soloLayer + 1));
+        } else {
+            toolbarStatus.SetText("Layer Solo cleared");
+        }
+        return true;
+    }
+
+    /// @brief Set one authored layer's visibility through canonical history.
+    expose func SetLayerVisibility(layer: Integer,
+                                   nextVisible: Boolean) -> Boolean {
+        if scene == null or layer < 0 or layer >= scene.LayerCount()
+           or scene.LayerVisible(layer) == nextVisible {
+            return false;
+        }
+        scene.SetLayerVisible(layer, nextVisible);
+        var action = "Hidden layer";
+        if nextVisible { action = "Shown layer"; }
+        if CommitScene(action) == false { return false; }
+        activeLayer = layer;
+        renderDirty = true;
+        RefreshLayerNavigatorRows();
+        RefreshLayerFields();
+        return true;
     }
 
     hide func PumpLayerControls() -> Boolean {
@@ -6428,12 +7333,23 @@ class SceneEditor2D {
                 renderDirty = true;
             }
         }
+        if layerList.WasActivated()
+           and activeLayer >= 0 and activeLayer < scene.LayerCount() {
+            changed = SetLayerVisibility(
+                activeLayer,
+                scene.LayerVisible(activeLayer) == false) or changed;
+        }
+        if layerList.WasReorderRequested() {
+            var source = layerList.GetReorderSourceIndex();
+            var destination = layerList.GetReorderTargetIndex();
+            changed = MoveSceneLayer(
+                source, destination, "Reordered layer") or changed;
+        }
         if addLayerButton.WasClicked() {
             var added = scene.AddLayer("Layer " + (scene.LayerCount() + 1));
             if added >= 0 {
                 activeLayer = added;
-                ResetLayerWorkspaceState();
-                changed = CommitScene("Added layer");
+                changed = CommitScene("Added layer") or changed;
                 ReloadTilesets();
                 RefreshInspector();
             }
@@ -6442,31 +7358,28 @@ class SceneEditor2D {
             var before = scene.LayerCount();
             scene.RemoveLayer(activeLayer);
             if scene.LayerCount() != before {
+                var removed = activeLayer;
+                RemapLayerWorkspaceForRemoval(removed);
                 if activeLayer >= scene.LayerCount() {
                     activeLayer = scene.LayerCount() - 1;
                 }
-                ResetLayerWorkspaceState();
                 changed = CommitScene("Removed layer") or changed;
                 ReloadTilesets();
                 RefreshInspector();
             }
         }
         if layerUpButton.WasClicked() and activeLayer > 0 {
-            scene.MoveLayer(activeLayer, activeLayer - 1);
-            activeLayer = activeLayer - 1;
-            ResetLayerWorkspaceState();
-            changed = CommitScene("Moved layer up") or changed;
-            ReloadTilesets();
-            RefreshInspector();
+            var source = activeLayer;
+            var destination = activeLayer - 1;
+            changed = MoveSceneLayer(
+                source, destination, "Moved layer up") or changed;
         }
         if layerDownButton.WasClicked()
            and activeLayer + 1 < scene.LayerCount() {
-            scene.MoveLayer(activeLayer, activeLayer + 1);
-            activeLayer = activeLayer + 1;
-            ResetLayerWorkspaceState();
-            changed = CommitScene("Moved layer down") or changed;
-            ReloadTilesets();
-            RefreshInspector();
+            var source = activeLayer;
+            var destination = activeLayer + 1;
+            changed = MoveSceneLayer(
+                source, destination, "Moved layer down") or changed;
         }
         if layerNameInput.WasSubmitted() {
             changed = RenameSceneLayer(
@@ -6475,9 +7388,9 @@ class SceneEditor2D {
         var nextVisibleRevision = layerVisibleCheck.GetRevision();
         if nextVisibleRevision != layerVisibleRevision {
             layerVisibleRevision = nextVisibleRevision;
-            scene.SetLayerVisible(activeLayer, layerVisibleCheck.IsChecked());
-            changed = CommitScene("Updated layer visibility") or changed;
-            RefreshInspector();
+            var nextVisible = layerVisibleCheck.IsChecked();
+            changed = SetLayerVisibility(
+                activeLayer, nextVisible) or changed;
         }
         var nextOpacityRevision = layerOpacitySpinner.GetRevision();
         if nextOpacityRevision != layerOpacityRevision {
@@ -6495,21 +7408,7 @@ class SceneEditor2D {
         if nextLockRevision != layerLockRevision {
             layerLockRevision = nextLockRevision;
             var wantLocked = layerLockCheck.IsChecked();
-            if wantLocked != LayerLocked(activeLayer) {
-                if wantLocked {
-                    lockedLayers.add(activeLayer);
-                } else {
-                    var kept: List[Integer] = [];
-                    var lockIndex = 0;
-                    while lockIndex < lockedLayers.count() {
-                        if lockedLayers.get(lockIndex) != activeLayer {
-                            kept.add(lockedLayers.get(lockIndex));
-                        }
-                        lockIndex = lockIndex + 1;
-                    }
-                    lockedLayers = kept;
-                }
-            }
+            SetLayerLocked(activeLayer, wantLocked);
         }
         var nextSoloRevision = layerSoloCheck.GetRevision();
         if nextSoloRevision != layerSoloRevision {
@@ -6517,10 +7416,7 @@ class SceneEditor2D {
             var wantSolo = layerSoloCheck.IsChecked();
             var nextSolo = -1;
             if wantSolo { nextSolo = activeLayer; }
-            if nextSolo != soloLayer {
-                soloLayer = nextSolo;
-                renderDirty = true;
-            }
+            SetSoloLayer(nextSolo);
         }
         if chooseLayerAssetButton.WasClicked() {
             var baseDir = "";
@@ -6859,7 +7755,7 @@ class SceneEditor2D {
         }
     }
 
-    /// @brief Begin a non-destructive inclusive tile-rectangle preview.
+    /// @brief Begin a non-destructive inclusive tile-shape preview.
     hide func BeginTileRectangle(cellX: Integer,
                                  cellY: Integer) {
         tileRectangleShape = 0;
@@ -6876,8 +7772,12 @@ class SceneEditor2D {
             Input.Mouse.Capture();
         }
         renderDirty = true;
+        var shapeName = "rectangle";
+        if tileRectangleShape == 1 { shapeName = "line"; }
+        if tileRectangleShape == 2 { shapeName = "ellipse"; }
         toolbarStatus.SetText(
-            "Drag a tile rectangle; release applies and Escape cancels");
+            "Drag a tile " + shapeName
+            + "; release applies and Escape cancels");
     }
 
     /// @brief Clear transient rectangle state and optionally release capture.
@@ -7469,8 +8369,11 @@ class SceneEditor2D {
         BeginRenameSelectedObject();
     }
 
-    /// @brief Begin an inline rename of the single selected object's row.
-    /// @details Shared by the F2 shortcut and the hierarchy context menu.
+    /// @brief Begin a visible inline rename of the selected object's row.
+    /// @details Shared by F2, context menus, and create-and-rename flows.
+    ///          Viewport-priority layouts reveal the full-width hierarchy
+    ///          master before opening the row editor. Focus mode refuses the
+    ///          edit unless the hierarchy already owns a floating pane.
     /// @return True when the row editor opened.
     expose func BeginRenameSelectedObject() -> Boolean {
         if objectTree == null or scene == null { return false; }
@@ -7480,6 +8383,18 @@ class SceneEditor2D {
            or selectedObject >= objectTreeNodes.count()
            or objectTreeNodes.get(selectedObject) == null {
             return false;
+        }
+        if focusModeActive and hierarchyDock.floating == false {
+            return false;
+        }
+        if hierarchyDock.floating == false
+           and UsesDockedHierarchy(lastHostWidth) == false {
+            compactHierarchyShown = true;
+            compactInspectorShown = false;
+            compactPaletteShown = false;
+            ApplyInspectorLayout();
+            ApplyPaletteLayout();
+            CaptureWorkspaceState();
         }
         return objectTree.BeginEditNode(
             objectTreeNodes.get(selectedObject),
@@ -7563,7 +8478,7 @@ class SceneEditor2D {
         var rect = ObjectScaledRect(objectIndex);
         if rect.valid == false { return rect; }
         var rotation = scene.ObjectRotation(objectIndex);
-        if rotation == 0.0 { return rect; }
+        if RotationIsEffectivelyZero(rotation) { return rect; }
         var footprint = new ObjectFootprint2D();
         footprint.pivotCanvasX = rect.pivotCanvasX;
         footprint.pivotCanvasY = rect.pivotCanvasY;
@@ -7662,7 +8577,7 @@ class SceneEditor2D {
         var footprint = ObjectCanvasFootprint(objectIndex);
         if footprint.valid == false { return false; }
         var rotation = scene.ObjectRotation(objectIndex);
-        if rotation == 0.0 {
+        if RotationIsEffectivelyZero(rotation) {
             return canvasX >= footprint.minX and canvasX <= footprint.maxX
                 and canvasY >= footprint.minY and canvasY <= footprint.maxY;
         }
@@ -7703,7 +8618,7 @@ class SceneEditor2D {
             localY = rect.minY - RECT_ROTATE_HANDLE_OFFSET;
         }
         var rotation = scene.ObjectRotation(objectIndex);
-        if rotation == 0.0 {
+        if RotationIsEffectivelyZero(rotation) {
             point.x = localX;
             point.y = localY;
             return point;
@@ -8233,9 +9148,7 @@ class SceneEditor2D {
     /// @brief Switch the active canvas tool as workspace-only state.
     /// @details Shared by the toolbar buttons and the canvas context menu.
     expose func SetToolMode(nextMode: Integer) {
-        mode = ClampInt(nextMode, MODE_SELECT, MODE_ELLIPSE);
-        if mode != MODE_PAINT { ClearTileStamp(); }
-        UpdateModeButtons();
+        SetMode(nextMode);
     }
 
     /// @brief Apply a committed inline object-id rename as one undoable edit.
@@ -8734,6 +9647,941 @@ class SceneEditor2D {
         }
     }
 
+    /// @brief Return one guide's index or -1 when it is absent.
+    hide func CanvasGuideIndex(guides: List[Integer],
+                               coordinate: Integer) -> Integer {
+        var index = 0;
+        while index < guides.count() {
+            if guides.get(index) == coordinate { return index; }
+            index = index + 1;
+        }
+        return -1;
+    }
+
+    /// @brief Retain unique in-range guide coordinates under the axis cap.
+    hide func BoundedCanvasGuides(values: List[Integer],
+                                  maximum: Integer) -> List[Integer] {
+        var bounded: List[Integer] = [];
+        var index = 0;
+        while index < values.count()
+              and bounded.count() < MAX_CANVAS_GUIDES_PER_AXIS {
+            var coordinate = values.get(index);
+            if coordinate >= 0 and coordinate <= maximum
+               and CanvasGuideIndex(bounded, coordinate) < 0 {
+                bounded.add(coordinate);
+            }
+            index = index + 1;
+        }
+        return bounded;
+    }
+
+    /// @brief Drop stale or hostile guide state without touching scene bytes.
+    hide func NormalizeCanvasGuides() {
+        var maximumX = MAX_SELECTED_CELL;
+        var maximumY = MAX_SELECTED_CELL;
+        if scene != null {
+            maximumX = scene.Width;
+            maximumY = scene.Height;
+        }
+        verticalGuides =
+            BoundedCanvasGuides(verticalGuides, maximumX);
+        horizontalGuides =
+            BoundedCanvasGuides(horizontalGuides, maximumY);
+    }
+
+    /// @brief Report whether one axis-aligned canvas guide exists.
+    expose func HasCanvasGuide(axis: Integer,
+                               coordinate: Integer) -> Boolean {
+        if axis == CANVAS_GUIDE_VERTICAL {
+            return CanvasGuideIndex(verticalGuides, coordinate) >= 0;
+        }
+        if axis == CANVAS_GUIDE_HORIZONTAL {
+            return CanvasGuideIndex(horizontalGuides, coordinate) >= 0;
+        }
+        return false;
+    }
+
+    /// @brief Add or remove one bounded per-document guide.
+    /// @return True when the guide collection changed.
+    expose func ToggleCanvasGuide(axis: Integer,
+                                  coordinate: Integer) -> Boolean {
+        if scene == null { return false; }
+        var maximum = scene.Width;
+        if axis == CANVAS_GUIDE_HORIZONTAL {
+            maximum = scene.Height;
+        } else if axis != CANVAS_GUIDE_VERTICAL {
+            return false;
+        }
+        if coordinate < 0 or coordinate > maximum { return false; }
+        var existing = -1;
+        if axis == CANVAS_GUIDE_VERTICAL {
+            existing = CanvasGuideIndex(verticalGuides, coordinate);
+            if existing >= 0 {
+                verticalGuides.removeAt(existing);
+            } else {
+                if verticalGuides.count()
+                   >= MAX_CANVAS_GUIDES_PER_AXIS {
+                    return false;
+                }
+                verticalGuides.add(coordinate);
+            }
+        } else {
+            existing = CanvasGuideIndex(horizontalGuides, coordinate);
+            if existing >= 0 {
+                horizontalGuides.removeAt(existing);
+            } else {
+                if horizontalGuides.count()
+                   >= MAX_CANVAS_GUIDES_PER_AXIS {
+                    return false;
+                }
+                horizontalGuides.add(coordinate);
+            }
+        }
+        renderDirty = true;
+        CaptureWorkspaceState();
+        return true;
+    }
+
+    /// @brief Move one existing guide without creating duplicates.
+    /// @return True only when a valid guide changed coordinates.
+    expose func MoveCanvasGuide(axis: Integer,
+                                source: Integer,
+                                target: Integer) -> Boolean {
+        if scene == null or source == target { return false; }
+        var guides = verticalGuides;
+        var maximum = scene.Width;
+        if axis == CANVAS_GUIDE_HORIZONTAL {
+            guides = horizontalGuides;
+            maximum = scene.Height;
+        } else if axis != CANVAS_GUIDE_VERTICAL {
+            return false;
+        }
+        if target < 0 or target > maximum { return false; }
+        var sourceIndex = CanvasGuideIndex(guides, source);
+        if sourceIndex < 0 or CanvasGuideIndex(guides, target) >= 0 {
+            return false;
+        }
+        guides.set(sourceIndex, target);
+        if axis == CANVAS_GUIDE_VERTICAL {
+            verticalGuides = guides;
+        } else {
+            horizontalGuides = guides;
+        }
+        renderDirty = true;
+        CaptureWorkspaceState();
+        return true;
+    }
+
+    /// @brief Return one guide's coordinate in its ruler image.
+    /// @details Vertical guides map to the horizontal ruler; horizontal guides
+    ///          map to the vertical ruler.
+    expose func CanvasRulerTickPosition(axis: Integer,
+                                        coordinate: Integer) -> Integer {
+        if axis == CANVAS_GUIDE_VERTICAL {
+            return coordinate * displayCellSize
+                - viewOriginX + centerPadX;
+        }
+        if axis == CANVAS_GUIDE_HORIZONTAL {
+            return coordinate * displayCellSize
+                - viewOriginY + centerPadY;
+        }
+        return -1;
+    }
+
+    /// @brief Return the closest guide marker within the ruler hit radius.
+    hide func CanvasGuideHitIndex(axis: Integer,
+                                  localPosition: Integer) -> Integer {
+        var guides = verticalGuides;
+        if axis == CANVAS_GUIDE_HORIZONTAL {
+            guides = horizontalGuides;
+        } else if axis != CANVAS_GUIDE_VERTICAL {
+            return -1;
+        }
+        var closestIndex = -1;
+        var closestDistance = CANVAS_GUIDE_HIT_RADIUS + 1;
+        var index = 0;
+        while index < guides.count() {
+            var position =
+                CanvasRulerTickPosition(axis, guides.get(index));
+            var distance = AbsInt2D(position - localPosition);
+            if distance <= CANVAS_GUIDE_HIT_RADIUS
+               and distance < closestDistance {
+                closestIndex = index;
+                closestDistance = distance;
+            }
+            index = index + 1;
+        }
+        return closestIndex;
+    }
+
+    /// @brief Pointer coordinate along one captured guide's ruler axis.
+    hide func CanvasGuidePointerLocalPosition(axis: Integer) -> Integer {
+        if axis == CANVAS_GUIDE_VERTICAL {
+            return Convert.NumToInt(
+                PhysicalPointerToUi(Input.Mouse.X())
+                - horizontalRulerImage.GetScreenX());
+        }
+        if axis == CANVAS_GUIDE_HORIZONTAL {
+            return Convert.NumToInt(
+                PhysicalPointerToUi(Input.Mouse.Y())
+                - verticalRulerImage.GetScreenY());
+        }
+        return -1;
+    }
+
+    /// @brief Convert the captured pointer to one bounded guide coordinate.
+    hide func CanvasGuidePointerCoordinate(axis: Integer) -> Integer {
+        if scene == null { return -1; }
+        var origin = viewOriginX;
+        var pad = centerPadX;
+        var maximum = scene.Width;
+        var extent = Convert.NumToInt(
+            horizontalRulerImage.GetScreenWidth());
+        if axis == CANVAS_GUIDE_HORIZONTAL {
+            origin = viewOriginY;
+            pad = centerPadY;
+            maximum = scene.Height;
+            extent = Convert.NumToInt(
+                verticalRulerImage.GetScreenHeight());
+        } else if axis != CANVAS_GUIDE_VERTICAL {
+            return -1;
+        }
+        var localPosition =
+            CanvasGuidePointerLocalPosition(axis);
+        // Captured motion may leave the widget. Treat leaving the visible
+        // ruler lane as an explicit removal preview rather than teleporting
+        // a guide to a valid but currently off-screen scene coordinate.
+        if localPosition < 0 - CANVAS_GUIDE_HIT_RADIUS
+           or localPosition > extent + CANVAS_GUIDE_HIT_RADIUS {
+            return -1;
+        }
+        return CanvasRulerGuideCoordinate(
+            localPosition,
+            origin, pad, displayCellSize, maximum);
+    }
+
+    /// @brief Arm one click-or-drag ruler gesture with pointer capture.
+    hide func BeginCanvasGuideDrag(axis: Integer,
+                                   guideIndex: Integer,
+                                   coordinate: Integer) {
+        if Input.Mouse.IsCaptured() { return; }
+        canvasGuideDragActive = true;
+        canvasGuideDragAxis = axis;
+        canvasGuideDragIndex = guideIndex;
+        canvasGuideDragOrigin = -1;
+        if guideIndex >= 0 {
+            if axis == CANVAS_GUIDE_VERTICAL {
+                canvasGuideDragOrigin = verticalGuides.get(guideIndex);
+            } else {
+                canvasGuideDragOrigin = horizontalGuides.get(guideIndex);
+            }
+        }
+        canvasGuideDragCurrent = coordinate;
+        if canvasGuideDragOrigin >= 0 {
+            canvasGuideDragCurrent = canvasGuideDragOrigin;
+        }
+        canvasGuideDragMoved = false;
+        canvasGuideDragStartX = Convert.NumToInt(
+            PhysicalPointerToUi(Input.Mouse.X()));
+        canvasGuideDragStartY = Convert.NumToInt(
+            PhysicalPointerToUi(Input.Mouse.Y()));
+        Input.Mouse.Capture();
+        renderDirty = true;
+        toolbarStatus.SetText("Drag guide; Escape cancels");
+    }
+
+    /// @brief Clear transient ruler manipulation and optionally release capture.
+    hide func ResetCanvasGuideDrag(releaseCapture: Boolean) {
+        var wasActive = canvasGuideDragActive;
+        canvasGuideDragActive = false;
+        canvasGuideDragAxis = -1;
+        canvasGuideDragIndex = -1;
+        canvasGuideDragOrigin = -1;
+        canvasGuideDragCurrent = -1;
+        canvasGuideDragMoved = false;
+        canvasGuideDragStartX = 0;
+        canvasGuideDragStartY = 0;
+        if releaseCapture and wasActive and Input.Mouse.IsCaptured() {
+            Input.Mouse.Release();
+        }
+        if wasActive { renderDirty = true; }
+    }
+
+    /// @brief Cancel one live ruler gesture without changing workspace guides.
+    hide func CancelCanvasGuideDrag() {
+        if canvasGuideDragActive == false { return; }
+        ResetCanvasGuideDrag(true);
+        gestureEscapeConsumed = true;
+        toolbarStatus.SetText("Guide move canceled");
+    }
+
+    /// @brief Update the live guide preview from the captured pointer.
+    hide func UpdateCanvasGuideDrag() {
+        if canvasGuideDragActive == false { return; }
+        var pointerX = Convert.NumToInt(
+            PhysicalPointerToUi(Input.Mouse.X()));
+        var pointerY = Convert.NumToInt(
+            PhysicalPointerToUi(Input.Mouse.Y()));
+        if AbsInt2D(pointerX - canvasGuideDragStartX)
+              >= CANVAS_GUIDE_DRAG_THRESHOLD
+           or AbsInt2D(pointerY - canvasGuideDragStartY)
+              >= CANVAS_GUIDE_DRAG_THRESHOLD {
+            canvasGuideDragMoved = true;
+        }
+        if canvasGuideDragMoved {
+            var nextCoordinate =
+                CanvasGuidePointerCoordinate(canvasGuideDragAxis);
+            if nextCoordinate != canvasGuideDragCurrent {
+                canvasGuideDragCurrent = nextCoordinate;
+                renderDirty = true;
+            }
+            if nextCoordinate < 0 {
+                toolbarStatus.SetText("Release to remove guide");
+            } else {
+                toolbarStatus.SetText(
+                    "Move guide to " + nextCoordinate
+                    + "; Escape cancels");
+            }
+        }
+    }
+
+    /// @brief Complete one ruler click, create-drag, move, or drag-out removal.
+    hide func FinishCanvasGuideDrag() {
+        if canvasGuideDragActive == false { return; }
+        var axis = canvasGuideDragAxis;
+        var origin = canvasGuideDragOrigin;
+        var target = canvasGuideDragCurrent;
+        var moved = canvasGuideDragMoved;
+        ResetCanvasGuideDrag(true);
+
+        var orientation = "vertical";
+        if axis == CANVAS_GUIDE_HORIZONTAL {
+            orientation = "horizontal";
+        }
+        if moved == false {
+            var removing = origin >= 0;
+            var coordinate = target;
+            if removing { coordinate = origin; }
+            if ToggleCanvasGuide(axis, coordinate) {
+                var action = "Added";
+                if removing { action = "Removed"; }
+                toolbarStatus.SetText(
+                    action + " " + orientation + " guide "
+                    + coordinate);
+            }
+            return;
+        }
+        if target < 0 {
+            if origin >= 0 and ToggleCanvasGuide(axis, origin) {
+                toolbarStatus.SetText(
+                    "Removed " + orientation + " guide " + origin);
+            } else {
+                toolbarStatus.SetText("Guide drag canceled");
+            }
+            return;
+        }
+        if origin < 0 {
+            if HasCanvasGuide(axis, target) {
+                toolbarStatus.SetText(
+                    "A guide already exists at " + target);
+            } else if ToggleCanvasGuide(axis, target) {
+                toolbarStatus.SetText(
+                    "Added " + orientation + " guide " + target);
+            }
+            return;
+        }
+        if origin == target {
+            toolbarStatus.SetText(
+                "Kept " + orientation + " guide " + origin);
+        } else if MoveCanvasGuide(axis, origin, target) {
+            toolbarStatus.SetText(
+                "Moved " + orientation + " guide "
+                + origin + " to " + target);
+        } else {
+            toolbarStatus.SetText(
+                "A guide already exists at " + target);
+        }
+    }
+
+    /// @brief Reflect visibility in both the toolbar and retained layout.
+    hide func RefreshRulerPresentation() {
+        if rulersButton != null {
+            if showRulers {
+                rulersButton.SetText("Rulers: on");
+                rulersButton.SetStyle(1);
+            } else {
+                rulersButton.SetText("Rulers");
+                rulersButton.SetStyle(0);
+            }
+        }
+        if rulerTopRow != null { rulerTopRow.SetVisible(showRulers); }
+        if verticalRulerImage != null {
+            verticalRulerImage.SetVisible(showRulers);
+        }
+    }
+
+    /// @brief Pump click, create-drag, move, cancel, and removal gestures.
+    hide func PumpCanvasRulers() {
+        if canvasGuideDragActive {
+            if showRulers == false or scene == null
+               or horizontalRulerImage == null
+               or verticalRulerImage == null
+               or displayCellSize < 1 {
+                ResetCanvasGuideDrag(true);
+                return;
+            }
+            if Input.Keyboard.WasPressed(Input.Key.Escape) {
+                CancelCanvasGuideDrag();
+                return;
+            }
+            UpdateCanvasGuideDrag();
+            if Input.Mouse.IsDown(Input.Mouse.ButtonLeft) == false {
+                FinishCanvasGuideDrag();
+            }
+            return;
+        }
+        if showRulers == false or scene == null
+           or horizontalRulerImage == null
+           or verticalRulerImage == null
+           or displayCellSize < 1
+           or Input.Mouse.WasPressed(Input.Mouse.ButtonLeft) == false
+           or Input.Mouse.IsCaptured() {
+            return;
+        }
+        var axis = -1;
+        var localPosition = -1;
+        var origin = 0;
+        var pad = 0;
+        var maximum = 0;
+        if horizontalRulerImage.IsHovered() {
+            axis = CANVAS_GUIDE_VERTICAL;
+            localPosition = Convert.NumToInt(
+                PhysicalPointerToUi(Input.Mouse.X())
+                - horizontalRulerImage.GetScreenX());
+            origin = viewOriginX;
+            pad = centerPadX;
+            maximum = scene.Width;
+        } else if verticalRulerImage.IsHovered() {
+            axis = CANVAS_GUIDE_HORIZONTAL;
+            localPosition = Convert.NumToInt(
+                PhysicalPointerToUi(Input.Mouse.Y())
+                - verticalRulerImage.GetScreenY());
+            origin = viewOriginY;
+            pad = centerPadY;
+            maximum = scene.Height;
+        }
+        if axis < 0 { return; }
+        var coordinate = CanvasRulerGuideCoordinate(
+            localPosition, origin, pad, displayCellSize, maximum);
+        if coordinate < 0 { return; }
+        var guideIndex =
+            CanvasGuideHitIndex(axis, localPosition);
+        if guideIndex < 0 {
+            var guideCount = verticalGuides.count();
+            if axis == CANVAS_GUIDE_HORIZONTAL {
+                guideCount = horizontalGuides.count();
+            }
+            if guideCount >= MAX_CANVAS_GUIDES_PER_AXIS {
+                toolbarStatus.SetText("Guide limit reached");
+                return;
+            }
+        }
+        BeginCanvasGuideDrag(axis, guideIndex, coordinate);
+    }
+
+    /// @brief Draw scroll/zoom-aware cell rulers into their retained images.
+    hide func RenderCanvasRulers() {
+        if showRulers == false
+           or rulerCornerImage == null
+           or horizontalRulerImage == null
+           or verticalRulerImage == null {
+            return;
+        }
+        var width = lastCanvasViewportWidth;
+        var height = lastCanvasViewportHeight;
+        if width < 1 { width = 1; }
+        if height < 1 { height = 1; }
+        var background = Color.RGB(31, 37, 47);
+        var border = Color.RGB(75, 87, 104);
+        var minor = Color.RGB(91, 104, 123);
+        var major = Color.RGB(181, 192, 208);
+
+        rulerCornerPixels = Pixels.New(
+            CANVAS_RULER_LEFT_WIDTH, CANVAS_RULER_TOP_HEIGHT);
+        rulerCornerPixels.FillColor(background);
+        rulerCornerPixels.DrawLine(
+            0, CANVAS_RULER_TOP_HEIGHT - 1,
+            CANVAS_RULER_LEFT_WIDTH - 1,
+            CANVAS_RULER_TOP_HEIGHT - 1, border);
+        rulerCornerPixels.DrawLine(
+            CANVAS_RULER_LEFT_WIDTH - 1, 0,
+            CANVAS_RULER_LEFT_WIDTH - 1,
+            CANVAS_RULER_TOP_HEIGHT - 1, border);
+        rulerCornerPixels.DrawText(
+            5, 8, "CELL", Color.RGB(143, 158, 178));
+        rulerCornerImage.SetPixels(
+            rulerCornerPixels,
+            CANVAS_RULER_LEFT_WIDTH,
+            CANVAS_RULER_TOP_HEIGHT);
+        rulerCornerImage.SetSize(
+            CANVAS_RULER_LEFT_WIDTH,
+            CANVAS_RULER_TOP_HEIGHT);
+
+        horizontalRulerPixels =
+            Pixels.New(width, CANVAS_RULER_TOP_HEIGHT);
+        horizontalRulerPixels.FillColor(background);
+        horizontalRulerPixels.DrawLine(
+            0, CANVAS_RULER_TOP_HEIGHT - 1,
+            width - 1, CANVAS_RULER_TOP_HEIGHT - 1, border);
+        verticalRulerPixels =
+            Pixels.New(CANVAS_RULER_LEFT_WIDTH, height);
+        verticalRulerPixels.FillColor(background);
+        verticalRulerPixels.DrawLine(
+            CANVAS_RULER_LEFT_WIDTH - 1, 0,
+            CANVAS_RULER_LEFT_WIDTH - 1, height - 1, border);
+
+        if scene != null and displayCellSize > 0 {
+            NormalizeCanvasGuides();
+            var stride = CanvasRulerMajorStride(displayCellSize);
+            var firstColumn = viewOriginX / displayCellSize - 1;
+            if firstColumn < 0 { firstColumn = 0; }
+            var lastColumn =
+                (viewOriginX + width) / displayCellSize + 1;
+            if lastColumn > scene.Width { lastColumn = scene.Width; }
+            var column = firstColumn;
+            while column <= lastColumn {
+                var x = CanvasRulerTickPosition(
+                    CANVAS_GUIDE_VERTICAL, column);
+                if x >= 0 and x < width {
+                    var tickTop = CANVAS_RULER_TOP_HEIGHT - 5;
+                    var tickColor = minor;
+                    if column % stride == 0 {
+                        tickTop = CANVAS_RULER_TOP_HEIGHT - 10;
+                        tickColor = major;
+                        var label = "" + column;
+                        var labelWidth = Str.get_Length(label) * 8;
+                        if x + 2 + labelWidth < width {
+                            horizontalRulerPixels.DrawText(
+                                x + 2, 3, label, major);
+                        }
+                    }
+                    horizontalRulerPixels.DrawLine(
+                        x, tickTop, x,
+                        CANVAS_RULER_TOP_HEIGHT - 1, tickColor);
+                }
+                column = column + 1;
+            }
+
+            var firstRow = viewOriginY / displayCellSize - 1;
+            if firstRow < 0 { firstRow = 0; }
+            var lastRow =
+                (viewOriginY + height) / displayCellSize + 1;
+            if lastRow > scene.Height { lastRow = scene.Height; }
+            var row = firstRow;
+            while row <= lastRow {
+                var y = CanvasRulerTickPosition(
+                    CANVAS_GUIDE_HORIZONTAL, row);
+                if y >= 0 and y < height {
+                    var tickLeft = CANVAS_RULER_LEFT_WIDTH - 5;
+                    var tickColorY = minor;
+                    if row % stride == 0 {
+                        tickLeft = CANVAS_RULER_LEFT_WIDTH - 10;
+                        tickColorY = major;
+                        var rowLabel = "" + row;
+                        if y + 10 < height {
+                            verticalRulerPixels.DrawText(
+                                3, y + 2, rowLabel, major);
+                        }
+                    }
+                    verticalRulerPixels.DrawLine(
+                        tickLeft, y,
+                        CANVAS_RULER_LEFT_WIDTH - 1, y, tickColorY);
+                }
+                row = row + 1;
+            }
+
+            var guideIndex = 0;
+            while guideIndex < verticalGuides.count() {
+                var guideCoordinate =
+                    verticalGuides.get(guideIndex);
+                if canvasGuideDragActive
+                   and canvasGuideDragAxis == CANVAS_GUIDE_VERTICAL
+                   and canvasGuideDragIndex == guideIndex {
+                    guideCoordinate = canvasGuideDragCurrent;
+                }
+                var guideX = -1;
+                if guideCoordinate >= 0 {
+                    guideX = CanvasRulerTickPosition(
+                        CANVAS_GUIDE_VERTICAL,
+                        guideCoordinate);
+                }
+                if guideX >= 0 and guideX < width {
+                    horizontalRulerPixels.DrawLine(
+                        guideX, CANVAS_RULER_TOP_HEIGHT - 12,
+                        guideX, CANVAS_RULER_TOP_HEIGHT - 1,
+                        CANVAS_GUIDE_COLOR);
+                }
+                guideIndex = guideIndex + 1;
+            }
+            guideIndex = 0;
+            while guideIndex < horizontalGuides.count() {
+                var guideCoordinateY =
+                    horizontalGuides.get(guideIndex);
+                if canvasGuideDragActive
+                   and canvasGuideDragAxis == CANVAS_GUIDE_HORIZONTAL
+                   and canvasGuideDragIndex == guideIndex {
+                    guideCoordinateY = canvasGuideDragCurrent;
+                }
+                var guideY = -1;
+                if guideCoordinateY >= 0 {
+                    guideY = CanvasRulerTickPosition(
+                        CANVAS_GUIDE_HORIZONTAL,
+                        guideCoordinateY);
+                }
+                if guideY >= 0 and guideY < height {
+                    verticalRulerPixels.DrawLine(
+                        CANVAS_RULER_LEFT_WIDTH - 12, guideY,
+                        CANVAS_RULER_LEFT_WIDTH - 1, guideY,
+                        CANVAS_GUIDE_COLOR);
+                }
+                guideIndex = guideIndex + 1;
+            }
+            if canvasGuideDragActive
+               and canvasGuideDragIndex < 0
+               and canvasGuideDragCurrent >= 0 {
+                if canvasGuideDragAxis == CANVAS_GUIDE_VERTICAL {
+                    var pendingGuideX = CanvasRulerTickPosition(
+                        CANVAS_GUIDE_VERTICAL,
+                        canvasGuideDragCurrent);
+                    if pendingGuideX >= 0 and pendingGuideX < width {
+                        horizontalRulerPixels.DrawLine(
+                            pendingGuideX,
+                            CANVAS_RULER_TOP_HEIGHT - 12,
+                            pendingGuideX,
+                            CANVAS_RULER_TOP_HEIGHT - 1,
+                            CANVAS_GUIDE_COLOR);
+                    }
+                } else if canvasGuideDragAxis
+                              == CANVAS_GUIDE_HORIZONTAL {
+                    var pendingGuideY = CanvasRulerTickPosition(
+                        CANVAS_GUIDE_HORIZONTAL,
+                        canvasGuideDragCurrent);
+                    if pendingGuideY >= 0 and pendingGuideY < height {
+                        verticalRulerPixels.DrawLine(
+                            CANVAS_RULER_LEFT_WIDTH - 12,
+                            pendingGuideY,
+                            CANVAS_RULER_LEFT_WIDTH - 1,
+                            pendingGuideY,
+                            CANVAS_GUIDE_COLOR);
+                    }
+                }
+            }
+
+            if selectedCellX >= 0 {
+                var cursorX = CanvasRulerTickPosition(
+                    CANVAS_GUIDE_VERTICAL, selectedCellX)
+                    + displayCellSize / 2;
+                if cursorX >= 0 and cursorX < width {
+                    horizontalRulerPixels.DrawLine(
+                        cursorX, 0, cursorX, 5,
+                        Color.RGB(255, 195, 78));
+                }
+            }
+            if selectedCellY >= 0 {
+                var cursorY = CanvasRulerTickPosition(
+                    CANVAS_GUIDE_HORIZONTAL, selectedCellY)
+                    + displayCellSize / 2;
+                if cursorY >= 0 and cursorY < height {
+                    verticalRulerPixels.DrawLine(
+                        0, cursorY, 5, cursorY,
+                        Color.RGB(255, 195, 78));
+                }
+            }
+        }
+
+        horizontalRulerImage.SetPixels(
+            horizontalRulerPixels, width, CANVAS_RULER_TOP_HEIGHT);
+        horizontalRulerImage.SetSize(
+            width, CANVAS_RULER_TOP_HEIGHT);
+        verticalRulerImage.SetPixels(
+            verticalRulerPixels, CANVAS_RULER_LEFT_WIDTH, height);
+        verticalRulerImage.SetSize(
+            CANVAS_RULER_LEFT_WIDTH, height);
+        horizontalRulerImage.SetAccessibleDescription(
+            verticalGuides.count()
+            + " vertical guides; click a boundary to toggle, "
+            + "or drag a guide to move it.");
+        verticalRulerImage.SetAccessibleDescription(
+            horizontalGuides.count()
+            + " horizontal guides; click a boundary to toggle, "
+            + "or drag a guide to move it.");
+    }
+
+    /// @brief Draw workspace-only guide lines over the visible scene window.
+    hide func DrawCanvasGuides() {
+        if framePixels == null or scene == null { return; }
+        var index = 0;
+        while index < verticalGuides.count() {
+            var guideCoordinate = verticalGuides.get(index);
+            if canvasGuideDragActive
+               and canvasGuideDragAxis == CANVAS_GUIDE_VERTICAL
+               and canvasGuideDragIndex == index {
+                guideCoordinate = canvasGuideDragCurrent;
+            }
+            var x = guideCoordinate * displayCellSize
+                - viewOriginX;
+            if x >= 0 and x < framePixels.Width {
+                framePixels.DrawLine(
+                    x, 0, x, framePixels.Height - 1,
+                    CANVAS_GUIDE_COLOR);
+            }
+            index = index + 1;
+        }
+        index = 0;
+        while index < horizontalGuides.count() {
+            var guideCoordinateY = horizontalGuides.get(index);
+            if canvasGuideDragActive
+               and canvasGuideDragAxis == CANVAS_GUIDE_HORIZONTAL
+               and canvasGuideDragIndex == index {
+                guideCoordinateY = canvasGuideDragCurrent;
+            }
+            var y = guideCoordinateY * displayCellSize
+                - viewOriginY;
+            if y >= 0 and y < framePixels.Height {
+                framePixels.DrawLine(
+                    0, y, framePixels.Width - 1, y,
+                    CANVAS_GUIDE_COLOR);
+            }
+            index = index + 1;
+        }
+        if canvasGuideDragActive
+           and canvasGuideDragIndex < 0
+           and canvasGuideDragCurrent >= 0 {
+            if canvasGuideDragAxis == CANVAS_GUIDE_VERTICAL {
+                var pendingX = canvasGuideDragCurrent
+                    * displayCellSize - viewOriginX;
+                if pendingX >= 0 and pendingX < framePixels.Width {
+                    framePixels.DrawLine(
+                        pendingX, 0,
+                        pendingX, framePixels.Height - 1,
+                        CANVAS_GUIDE_COLOR);
+                }
+            } else if canvasGuideDragAxis
+                          == CANVAS_GUIDE_HORIZONTAL {
+                var pendingY = canvasGuideDragCurrent
+                    * displayCellSize - viewOriginY;
+                if pendingY >= 0 and pendingY < framePixels.Height {
+                    framePixels.DrawLine(
+                        0, pendingY,
+                        framePixels.Width - 1, pendingY,
+                        CANVAS_GUIDE_COLOR);
+                }
+            }
+        }
+    }
+
+    /// @brief Composite one already-resolved active-layer brush ghost.
+    /// @return True when a real atlas frame was composited.
+    hide func DrawResolvedTileGhostCell(tile: Integer,
+                                        cellX: Integer,
+                                        cellY: Integer,
+                                        opacity: Number) -> Boolean {
+        if framePixels == null or scene == null or tilesets == null
+           or activeLayer < 0 or activeLayer >= scene.LayerCount()
+           or displayCellSize <= 0 or tile <= 0
+           or cellX < 0 or cellY < 0
+           or cellX >= scene.Width or cellY >= scene.Height {
+            return false;
+        }
+        var x = cellX * displayCellSize - viewOriginX;
+        var y = cellY * displayCellSize - viewOriginY;
+        if x + displayCellSize <= 0 or y + displayCellSize <= 0
+           or x >= framePixels.Width or y >= framePixels.Height {
+            return false;
+        }
+        if tilesets.DrawTileWithOpacity(
+               framePixels, activeLayer, tile, x, y,
+               displayCellSize, opacity) {
+            return true;
+        }
+        framePixels.DrawFrame(
+            x + 1, y + 1,
+            displayCellSize - 1, displayCellSize - 1,
+            TilePreviewColor(tile, activeLayer));
+        return false;
+    }
+
+    /// @brief Composite one image-true prospective brush cell.
+    /// @details Autotile substitution runs before optional animation, matching
+    ///          the canonical canvas renderer. Missing atlas frames retain a
+    ///          bounded outline fallback instead of hiding the tool position.
+    hide func DrawTileGhostCell(tile: Integer,
+                                cellX: Integer,
+                                cellY: Integer) -> Boolean {
+        if scene == null or activeLayer < 0
+           or activeLayer >= scene.LayerCount()
+           or tile <= 0 or cellX < 0 or cellY < 0
+           or cellX >= scene.Width or cellY >= scene.Height {
+            return false;
+        }
+        var resolved = PreviewResolvedTile(
+            AutotileResolvedTileWithOverride(
+                activeLayer, cellX, cellY, tile,
+                cellX, cellY, tile));
+        return DrawResolvedTileGhostCell(
+            resolved, cellX, cellY, TILE_GHOST_OPACITY);
+    }
+
+    /// @brief Preview one neighbor changed by a prospective paint cell.
+    hide func DrawAutotileNeighborGhost(pendingTile: Integer,
+                                        pendingX: Integer,
+                                        pendingY: Integer,
+                                        neighborX: Integer,
+                                        neighborY: Integer) {
+        if neighborX < 0 or neighborY < 0
+           or neighborX >= scene.Width or neighborY >= scene.Height {
+            return;
+        }
+        var raw = scene.GetTile(activeLayer, neighborX, neighborY);
+        var current = AutotileResolvedSceneTile(
+            activeLayer, neighborX, neighborY);
+        var prospective = AutotileResolvedTileWithOverride(
+            activeLayer, neighborX, neighborY, raw,
+            pendingX, pendingY, pendingTile);
+        if prospective == current { return; }
+        DrawResolvedTileGhostCell(
+            PreviewResolvedTile(prospective),
+            neighborX, neighborY,
+            AUTOTILE_NEIGHBOR_GHOST_OPACITY);
+    }
+
+    /// @brief Preview every adjacent variant the next paint click would change.
+    hide func DrawAutotileNeighborGhosts(tile: Integer,
+                                         cellX: Integer,
+                                         cellY: Integer) {
+        if scene == null or activeLayer != 0
+           or autotilePreviewEnabled == false
+           or autotilePreviewRuleCount <= 0 {
+            return;
+        }
+        DrawAutotileNeighborGhost(tile, cellX, cellY, cellX, cellY - 1);
+        DrawAutotileNeighborGhost(tile, cellX, cellY, cellX + 1, cellY);
+        DrawAutotileNeighborGhost(tile, cellX, cellY, cellX, cellY + 1);
+        DrawAutotileNeighborGhost(tile, cellX, cellY, cellX - 1, cellY);
+    }
+
+    /// @brief Paint non-destructive atlas-true previews for tile tools.
+    /// @details A hover previews one tile for Paint, Fill, Rectangle, Line, and
+    ///          Ellipse. Active stamps preview every non-empty source cell, and
+    ///          captured shapes preview exactly the cells their commit path
+    ///          will write. Rectangle iteration is clipped to the visible
+    ///          raster window so huge scenes cannot turn a hover into
+    ///          unbounded work.
+    hide func DrawTileBrushGhosts() {
+        if framePixels == null or scene == null
+           or selectedCellX < 0 or selectedCellY < 0
+           or LayerLocked(activeLayer) {
+            return;
+        }
+        var selectedTile = ClampInt(
+            Convert.NumToInt(tileSpinner.Value), 0, 1000000);
+        if mode == MODE_PAINT {
+            if stampActive and stampWidth > 0 and stampHeight > 0 {
+                var anchorX =
+                    selectedCellX / stampWidth * stampWidth;
+                var anchorY =
+                    selectedCellY / stampHeight * stampHeight;
+                var row = 0;
+                while row < stampHeight {
+                    var column = 0;
+                    while column < stampWidth {
+                        DrawTileGhostCell(
+                            stampTiles.get(row * stampWidth + column),
+                            anchorX + column, anchorY + row);
+                        column = column + 1;
+                    }
+                    row = row + 1;
+                }
+            } else {
+                DrawAutotileNeighborGhosts(
+                    selectedTile, selectedCellX, selectedCellY);
+                DrawTileGhostCell(
+                    selectedTile, selectedCellX, selectedCellY);
+            }
+            return;
+        }
+        if mode == MODE_ERASE {
+            DrawAutotileNeighborGhosts(
+                0, selectedCellX, selectedCellY);
+            return;
+        }
+        if mode == MODE_FILL {
+            DrawTileGhostCell(
+                selectedTile, selectedCellX, selectedCellY);
+            return;
+        }
+        if mode != MODE_RECTANGLE and mode != MODE_LINE
+           and mode != MODE_ELLIPSE {
+            return;
+        }
+        if tileRectangleActive == false {
+            DrawTileGhostCell(
+                selectedTile, selectedCellX, selectedCellY);
+            return;
+        }
+        if tileRectangleShape != 0 {
+            var cells = ShapeCells(
+                tileRectangleShape,
+                tileRectangleStartX, tileRectangleStartY,
+                tileRectangleCurrentX, tileRectangleCurrentY);
+            var index = 0;
+            while index + 1 < cells.count() {
+                DrawTileGhostCell(
+                    tileRectangleTile,
+                    cells.get(index), cells.get(index + 1));
+                index = index + 2;
+            }
+            return;
+        }
+
+        var minimumX = tileRectangleStartX;
+        var maximumX = tileRectangleCurrentX;
+        if maximumX < minimumX {
+            minimumX = tileRectangleCurrentX;
+            maximumX = tileRectangleStartX;
+        }
+        var minimumY = tileRectangleStartY;
+        var maximumY = tileRectangleCurrentY;
+        if maximumY < minimumY {
+            minimumY = tileRectangleCurrentY;
+            maximumY = tileRectangleStartY;
+        }
+        var firstVisibleX = viewOriginX / displayCellSize;
+        var firstVisibleY = viewOriginY / displayCellSize;
+        var lastVisibleX =
+            (viewOriginX + framePixels.Width - 1) / displayCellSize;
+        var lastVisibleY =
+            (viewOriginY + framePixels.Height - 1) / displayCellSize;
+        if maximumX < firstVisibleX or minimumX > lastVisibleX
+           or maximumY < firstVisibleY or minimumY > lastVisibleY {
+            return;
+        }
+        minimumX = ClampInt(minimumX, firstVisibleX, lastVisibleX);
+        maximumX = ClampInt(maximumX, firstVisibleX, lastVisibleX);
+        minimumY = ClampInt(minimumY, firstVisibleY, lastVisibleY);
+        maximumY = ClampInt(maximumY, firstVisibleY, lastVisibleY);
+        if minimumX > maximumX or minimumY > maximumY { return; }
+        var y = minimumY;
+        while y <= maximumY {
+            var x = minimumX;
+            while x <= maximumX {
+                DrawTileGhostCell(tileRectangleTile, x, y);
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+    }
+
     /// @brief Re-render when the viewport or scroll offset changes.
     /// @details The image holds only the visible window, so unlike the old
     ///          full-scene buffer, every scroll movement (scrollbar, wheel
@@ -8837,6 +10685,7 @@ class SceneEditor2D {
             viewOriginX = 0;
             viewOriginY = 0;
             viewStatusLabel.SetText("");
+            RenderCanvasRulers();
             return;
         }
 
@@ -8901,6 +10750,7 @@ class SceneEditor2D {
 
         framePixels = Pixels.New(windowWidth, windowHeight);
         framePixels.FillColor(Color.RGB(24, 28, 36));
+        DrawProjectSceneBackground();
 
         var layer = 0;
         while layer < scene.LayerCount() {
@@ -8912,8 +10762,8 @@ class SceneEditor2D {
                 while y <= lastRow {
                     var x = firstColumn;
                     while x <= lastColumn {
-                        var tile = PreviewResolvedTile(
-                            scene.GetTile(layer, x, y));
+                        var tile =
+                            ResolvedSceneTileForPreview(layer, x, y);
                         if tile > 0 {
                             var drawX = x * displayCellSize - viewOriginX;
                             var drawY = y * displayCellSize - viewOriginY;
@@ -9039,6 +10889,8 @@ class SceneEditor2D {
             objectIndex = objectIndex + 1;
         }
 
+        DrawTileBrushGhosts();
+
         if selectedCellX >= 0 and selectedCellY >= 0
            and selectedCellX < sceneColumns
            and selectedCellY < sceneRows {
@@ -9143,6 +10995,10 @@ class SceneEditor2D {
                 CANVAS_MARQUEE_COLOR);
         }
 
+        // Guides are editor chrome: keep them legible above authored pixels
+        // and transient tool previews without changing either source.
+        DrawCanvasGuides();
+        RenderCanvasRulers();
         canvasImage.SetPixels(framePixels, windowWidth, windowHeight);
         canvasImage.SetSize(windowWidth, windowHeight);
         // Pin the rendered window under the viewport: the ScrollView places
@@ -9171,7 +11027,10 @@ class SceneEditor2D {
         }
         var rectangleStatus = "";
         if tileRectangleActive {
-            rectangleStatus = "  |  rectangle "
+            var shapeName = "rectangle";
+            if tileRectangleShape == 1 { shapeName = "line"; }
+            if tileRectangleShape == 2 { shapeName = "ellipse"; }
+            rectangleStatus = "  |  " + shapeName + " "
                 + (AbsInt2D(
                     tileRectangleCurrentX - tileRectangleStartX) + 1)
                 + "x"
@@ -9185,8 +11044,10 @@ class SceneEditor2D {
         canvasImage.SetAccessibleDescription(
             scene.ObjectCount() + " authored objects on a "
             + renderedColumns + " by " + renderedRows
-            + " cell preview. Tile tools support freehand Paint and Erase, "
-            + "captured Rectangle, connected Fill, and active-layer Pick. "
+            + " cell preview. Tile tools preview real atlas frames and "
+            + "support freehand Paint and Erase, captured Rectangle, Line, "
+            + "and Ellipse, connected Fill, and active-layer Pick. "
+            + "Cell rulers can toggle workspace-only alignment guides. "
             + "In Select mode, click objects or drag blank space to box-select; "
             + "Shift adds and Control or Command toggles.");
     }

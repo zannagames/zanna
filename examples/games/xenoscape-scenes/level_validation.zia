@@ -9,6 +9,7 @@
 // Purpose: Validates campaign geometry, spawns, and authored interaction data.
 // Key invariants:
 //   - Every campaign builder is loaded through the production enrichment path.
+//   - Every scene's one-based region identity matches its campaign slot.
 //   - Validation is deterministic and does not mutate persistent player stores.
 // Ownership/Lifetime:
 //   - Each validation call owns a temporary Level and one aggregate report.
@@ -126,6 +127,9 @@ class LevelValidator {
         }
         if lvl.levelHeight <= 0 {
             fail(levelNum, "level height must be positive");
+        }
+        if lvl.authoredRegion != levelNum {
+            fail(levelNum, "authored region identity does not match file slot");
         }
 
         validatePoint(levelNum, "player start",

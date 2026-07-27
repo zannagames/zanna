@@ -255,6 +255,10 @@ void testAvailabilityContract() {
     assert(rt_listbox_was_changed(nullptr) == 0);
     assert(rt_listbox_was_activated(nullptr) == 0);
     assert(rt_listbox_get_revision(nullptr) == 0);
+    rt_listbox_set_reorderable(nullptr, 1);
+    assert(rt_listbox_was_reorder_requested(nullptr) == 0);
+    assert(rt_listbox_get_reorder_source_index(nullptr) == -1);
+    assert(rt_listbox_get_reorder_target_index(nullptr) == -1);
     void *availabilityVirtualList = rt_virtual_list_new(10, 20, 100);
     assert(availabilityVirtualList != nullptr);
     assert(rt_virtual_list_bind(availabilityVirtualList, nullptr) == 0);

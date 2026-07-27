@@ -22,6 +22,7 @@
 //        docs/adr/0163-stable-multiselect-and-row-aware-treeview-editing.md,
 //        docs/adr/0165-scrollview-descendant-reveal.md,
 //        docs/adr/0167-spinner-mixed-value-state.md,
+//        docs/adr/0205-listbox-application-directed-reordering.md,
 //        src/tools/zanna/main.cpp
 //
 //===----------------------------------------------------------------------===//
@@ -36,10 +37,10 @@
 
 namespace {
 
-constexpr std::size_t kExpectedFunctionCount = 1133;
+constexpr std::size_t kExpectedFunctionCount = 1137;
 constexpr std::size_t kExpectedClassCount = 79;
 constexpr std::size_t kExpectedPropertyCount = 110;
-constexpr std::size_t kExpectedMethodCount = 1024;
+constexpr std::size_t kExpectedMethodCount = 1028;
 
 /// @brief Test whether a canonical runtime name belongs to the GUI boundary.
 /// @param name Function or class name from the live runtime registry.
@@ -212,7 +213,7 @@ int main() {
 
     // Set after deliberate review of every registry row. Any future mismatch prints the new value
     // and requires an explicit count/signature/class-binding review before this constant changes.
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x948426252073da6b);
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x8b043c01714023c9);
     if (hash.value() != kExpectedManifestHash) {
         std::cerr << "FAIL: GUI ABI manifest changed; reviewed hash is 0x" << std::hex
                   << hash.value() << '\n';

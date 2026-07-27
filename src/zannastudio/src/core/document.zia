@@ -74,9 +74,17 @@ class Scene2DWorkspaceState {
     expose Boolean paletteRequestedVisible;
     expose Boolean compactPaletteShown;
     expose Boolean previewActive;
+    expose Boolean autotilePreviewEnabled;
     expose Boolean showGrid;
+    expose Boolean showRulers;
+    expose List[Integer] verticalGuides;
+    expose List[Integer] horizontalGuides;
+    expose List[Integer] lockedLayers;
+    expose Integer soloLayer;
     expose List[String] undoStack;
     expose List[String] redoStack;
+    expose List[String] undoLabels;
+    expose List[String] redoLabels;
     expose String cleanSerialized;
     expose String historyContent;
 
@@ -103,9 +111,17 @@ class Scene2DWorkspaceState {
         paletteRequestedVisible = true;
         compactPaletteShown = false;
         previewActive = false;
+        autotilePreviewEnabled = true;
         showGrid = true;
+        showRulers = true;
+        verticalGuides = [];
+        horizontalGuides = [];
+        lockedLayers = [];
+        soloLayer = -1;
         undoStack = [];
         redoStack = [];
+        undoLabels = [];
+        redoLabels = [];
         cleanSerialized = "";
         historyContent = "";
     }
@@ -114,7 +130,8 @@ class Scene2DWorkspaceState {
 /// @brief Per-document 3D hierarchy, camera, inspector, and history state.
 /// @details Camera targets remain Numbers in memory; SessionManager stores them
 ///          as validated fixed-point integers to avoid locale-sensitive text.
-///          Viewport mode is presentation state and never enters VSCN content.
+///          Viewport mode and hierarchy pick locks are presentation state and
+///          never enter VSCN content. Pick locks remain process-local.
 class Scene3DWorkspaceState {
     expose Boolean initialized;
     expose Integer selectedIndex;
@@ -141,6 +158,10 @@ class Scene3DWorkspaceState {
     expose Number viewTargetX;
     expose Number viewTargetY;
     expose Number viewTargetZ;
+    expose Boolean gameplayViewAnchored;
+    expose Number gameplayEyeX;
+    expose Number gameplayEyeY;
+    expose Number gameplayEyeZ;
     expose Number splitPosition;
     expose Number hierarchySplitPosition;
     expose Number inspectorScrollY;
@@ -148,6 +169,7 @@ class Scene3DWorkspaceState {
     expose Boolean compactInspectorShown;
     expose Boolean previewActive;
     expose List[String] cameraBookmarks;
+    expose List[String] pickLockedPaths;
     expose List[String] undoStack;
     expose List[String] redoStack;
     expose String cleanSerialized;
@@ -179,6 +201,10 @@ class Scene3DWorkspaceState {
         viewTargetX = 0.0;
         viewTargetY = 0.0;
         viewTargetZ = 0.0;
+        gameplayViewAnchored = false;
+        gameplayEyeX = 0.0;
+        gameplayEyeY = 0.0;
+        gameplayEyeZ = 0.0;
         splitPosition = 0.62;
         hierarchySplitPosition = 0.22;
         inspectorScrollY = 0.0;
@@ -186,6 +212,7 @@ class Scene3DWorkspaceState {
         compactInspectorShown = false;
         previewActive = false;
         cameraBookmarks = [];
+        pickLockedPaths = [];
         undoStack = [];
         redoStack = [];
         cleanSerialized = "";

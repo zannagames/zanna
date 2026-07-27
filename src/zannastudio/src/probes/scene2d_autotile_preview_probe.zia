@@ -1,0 +1,380 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene2d_autotile_preview_probe.zia
+// Purpose: Verify runtime-exact, non-destructive 2D autotile previews.
+// Key invariants:
+//   - Studio matches Tilemap.ApplyAutoTile's N/E/S/W masks and base-layer scope.
+//   - Resolved atlas frames render while canonical cells retain their base ids.
+//   - Hover painting previews the prospective resolved variant without an edit.
+//   - The default-on toggle follows its scene tab and never changes history.
+//   - Animation preview resolves after autotile substitution.
+// Ownership/Lifetime:
+//   - The probe owns one hidden AppShell, input harness, and temporary atlas.
+// Links: zannastudio/src/ui/scene_editor_2d.zia,
+//        runtime/graphics/2d/rt_tilemap_io.c
+//
+//===----------------------------------------------------------------------===//
+
+module scene2d_autotile_preview_probe;
+
+// ============================================================================
+// MODULE: scene2d_autotile_preview_probe
+// PURPOSE: Pin game/editor autotile parity at both model and rendered pixels.
+//
+// WHERE-THIS-FITS: Tile-behavior tests own rule transactions. This display
+//          probe owns live neighbor resolution and workspace-only preview state.
+//
+// TEACHING-NOTE: Canonical cells remain base tile 1. The runtime copy and Studio
+//          independently resolve those cells, so equality cannot be accidental
+//          shared mutation.
+// ============================================================================
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_2d";
+bind "../ui/scene_panels_2d";
+
+bind Color = Zanna.Graphics.Color;
+bind Convert = Zanna.Core.Convert;
+bind Dir = Zanna.IO.Dir;
+bind GUI = Zanna.GUI;
+bind Path = Zanna.IO.Path;
+bind Pixels = Zanna.Graphics.Pixels;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Seq = Zanna.Collections.Seq;
+bind TempFile = Zanna.IO.TempFile;
+bind Terminal = Zanna.Terminal;
+
+func HarnessCoordinate(shell: app_shell.AppShell,
+                       logical: Number) -> Integer {
+    var scale = shell.app.GetEffectiveScale();
+    if scale <= 0.0 { scale = 1.0; }
+    return Convert.NumToInt(logical * scale + 0.999999);
+}
+
+func PumpTwice(shell: app_shell.AppShell,
+               editor: scene_editor_2d.SceneEditor2D,
+               sceneDoc: document.Document) {
+    editor.Pump(sceneDoc);
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+}
+
+func MoveToCell(shell: app_shell.AppShell,
+                harness: GUI.TestHarness,
+                editor: scene_editor_2d.SceneEditor2D,
+                sceneDoc: document.Document,
+                cellX: Integer,
+                cellY: Integer) {
+    var x = HarnessCoordinate(
+        shell,
+        editor.canvasImage.GetScreenX()
+            + cellX * editor.displayCellSize
+            + editor.displayCellSize / 2.0);
+    var y = HarnessCoordinate(
+        shell,
+        editor.canvasImage.GetScreenY()
+            + cellY * editor.displayCellSize
+            + editor.displayCellSize / 2.0);
+    harness.SendMouse("move", x, y, 0);
+    harness.DispatchPending();
+    PumpTwice(shell, editor, sceneDoc);
+}
+
+func SampleCell(editor: scene_editor_2d.SceneEditor2D,
+                cellX: Integer,
+                cellY: Integer) -> Integer {
+    return editor.framePixels.GetColor(
+        cellX * editor.displayCellSize
+            + editor.displayCellSize / 2,
+        cellY * editor.displayCellSize
+            + editor.displayCellSize / 2);
+}
+
+func LooksRed(color: Integer) -> Boolean {
+    return Color.GetRed(color) > 130
+        and Color.GetRed(color) > Color.GetGreen(color) * 2
+        and Color.GetRed(color) > Color.GetBlue(color) * 2;
+}
+
+func LooksGreen(color: Integer) -> Boolean {
+    return Color.GetGreen(color) > 140
+        and Color.GetGreen(color) > Color.GetRed(color) * 2
+        and Color.GetGreen(color) > Color.GetBlue(color) * 2;
+}
+
+func LooksBlue(color: Integer) -> Boolean {
+    return Color.GetBlue(color) > 140
+        and Color.GetBlue(color) > Color.GetRed(color) * 2
+        and Color.GetBlue(color) > Color.GetGreen(color) * 2;
+}
+
+func LooksYellow(color: Integer) -> Boolean {
+    return Color.GetRed(color) > 150
+        and Color.GetGreen(color) > 140
+        and Color.GetBlue(color) < 90;
+}
+
+func LooksCyan(color: Integer) -> Boolean {
+    return Color.GetGreen(color) > 85
+        and Color.GetBlue(color) > 85
+        and Color.GetRed(color) < Color.GetGreen(color);
+}
+
+func LooksOrange(color: Integer) -> Boolean {
+    return Color.GetRed(color) > 160
+        and Color.GetGreen(color) > 70
+        and Color.GetGreen(color) < Color.GetRed(color)
+        and Color.GetBlue(color) < 80;
+}
+
+func Cleanup(shell: app_shell.AppShell,
+             harness: GUI.TestHarness,
+             tempDir: String) {
+    if harness != null { harness.UnbindApp(); }
+    if shell != null { shell.Destroy(); }
+    if tempDir != "" { Dir.RemoveAll(tempDir); }
+}
+
+func Fail(shell: app_shell.AppShell,
+          harness: GUI.TestHarness,
+          tempDir: String,
+          reason: String) {
+    Cleanup(shell, harness, tempDir);
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func main() {
+    var tempDir =
+        TempFile.CreateDirWithPrefix("zannastudio_autotile_preview_");
+    var atlasPath = Path.Join(tempDir, "autotile-atlas.png");
+    var atlas = Pixels.New(256, 16);
+    if tempDir == "" or atlas == null {
+        Fail(null, null, tempDir, "temporary atlas allocation");
+        return;
+    }
+    atlas.FillColor(Color.RGB(92, 72, 122));
+    // Tile ids are one-based; each frame begins at (tile - 1) * 16.
+    atlas.DrawBox(0, 0, 16, 16, Color.RGB(238, 34, 30));       // 1
+    atlas.DrawBox(16, 0, 16, 16, Color.RGB(26, 210, 224));    // 2
+    atlas.DrawBox(48, 0, 16, 16, Color.RGB(28, 224, 52));     // 4
+    atlas.DrawBox(64, 0, 16, 16, Color.RGB(32, 58, 232));     // 5
+    atlas.DrawBox(80, 0, 16, 16, Color.RGB(188, 42, 220));    // 6
+    atlas.DrawBox(112, 0, 16, 16, Color.RGB(236, 108, 22));   // 8
+    atlas.DrawBox(128, 0, 16, 16, Color.RGB(232, 210, 26));   // 9
+    if Pixels.SavePng(atlas, atlasPath) != 1 {
+        Fail(null, null, tempDir, "temporary atlas write");
+        return;
+    }
+
+    var fixture = SceneDocument.New(6, 5, 16, 16);
+    if fixture == null {
+        Fail(null, null, tempDir, "scene fixture");
+        return;
+    }
+    fixture.SetLayerAsset(0, "autotile-atlas.png");
+    // Center sees up + right: mask 1 + 2 = 3 => tile 4.
+    fixture.SetTile(0, 2, 2, 1);
+    fixture.SetTile(0, 2, 1, 1);
+    fixture.SetTile(0, 3, 2, 1);
+    var overlay = fixture.AddLayer("overlay");
+    if overlay != 1 {
+        Fail(null, null, tempDir, "overlay fixture");
+        return;
+    }
+    fixture.SetTile(overlay, 2, 2, 1);
+    fixture.SetLayerVisible(overlay, false);
+
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio 2D Autotile Preview Probe", 1080, 760);
+    shell.SetSceneWorkspaceMode(true);
+    var editor = new scene_editor_2d.SceneEditor2D();
+    scene_panels_2d.Build(
+        editor, shell.workbench.scene2DHost, shell.app);
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene2DDocument();
+    sceneDoc.fileName = "autotile-preview.scene2d";
+    sceneDoc.filePath = Path.Join(tempDir, sceneDoc.fileName);
+    sceneDoc.content = fixture.ToJson();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_2D);
+    editor.Activate(sceneDoc);
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    PumpTwice(shell, editor, sceneDoc);
+    if editor.SetTileBehaviorAutotile(
+           1, "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16")
+           == false {
+        Fail(shell, null, tempDir, "autotile rule fixture");
+        return;
+    }
+    PumpTwice(shell, editor, sceneDoc);
+
+    var baseline = sceneDoc.content;
+    var baselineRevision = editor.GetRevision();
+    var baselineUndo = editor.undoStack.count();
+    var baselineDirty = sceneDoc.isModified;
+
+    // Runtime and editor resolve independently to the same exact mask values.
+    var runtimeMap = editor.scene.BuildTilemap();
+    if runtimeMap == null {
+        Fail(shell, null, tempDir, "runtime tilemap fixture");
+        return;
+    }
+    runtimeMap.ApplyAutoTile();
+    if editor.autotilePreviewEnabled == false
+       or editor.autotilePreviewRuleCount != 1
+       or editor.AutotileResolvedSceneTile(0, 2, 2) != 4
+       or editor.AutotileResolvedSceneTile(0, 2, 1) != 5
+       or editor.AutotileResolvedSceneTile(0, 3, 2) != 9
+       or editor.AutotileResolvedSceneTile(1, 2, 2) != 1
+       or runtimeMap.GetTile(2, 2) != 4
+       or runtimeMap.GetTile(2, 1) != 5
+       or runtimeMap.GetTile(3, 2) != 9
+       or editor.scene.GetTile(0, 2, 2) != 1
+       or editor.scene.GetTile(0, 2, 1) != 1
+       or editor.scene.GetTile(0, 3, 2) != 1 {
+        Fail(shell, null, tempDir, "runtime/editor autotile parity");
+        return;
+    }
+
+    var centerPixel = SampleCell(editor, 2, 2);
+    var upPixel = SampleCell(editor, 2, 1);
+    var rightPixel = SampleCell(editor, 3, 2);
+    if LooksGreen(centerPixel) == false
+       or LooksBlue(upPixel) == false
+       or LooksYellow(rightPixel) == false {
+        Fail(shell, null, tempDir,
+             "resolved atlas frames were not rendered");
+        return;
+    }
+
+    // Preview is per-tab presentation. Turning it off reveals raw base frames
+    // without changing canonical bytes, history, revision, or dirty state.
+    editor.SetAutotilePreviewEnabled(false);
+    PumpTwice(shell, editor, sceneDoc);
+    var rawPixel = SampleCell(editor, 2, 2);
+    if editor.AutotileResolvedSceneTile(0, 2, 2) != 1
+       or LooksRed(rawPixel) == false
+       or sceneDoc.content != baseline
+       or editor.GetRevision() != baselineRevision
+       or editor.undoStack.count() != baselineUndo
+       or sceneDoc.isModified != baselineDirty {
+        Fail(shell, null, tempDir, "preview-off canonical isolation");
+        return;
+    }
+
+    var otherDoc = documents.NewScene2DDocument();
+    otherDoc.fileName = "other-autotile.scene2d";
+    otherDoc.filePath = Path.Join(tempDir, otherDoc.fileName);
+    otherDoc.content = baseline;
+    PumpTwice(shell, editor, otherDoc);
+    if editor.autotilePreviewEnabled == false
+       or editor.AutotileResolvedSceneTile(0, 2, 2) != 4 {
+        Fail(shell, null, tempDir, "new tab did not default preview on");
+        return;
+    }
+    PumpTwice(shell, editor, sceneDoc);
+    if editor.autotilePreviewEnabled
+       or editor.AutotileResolvedSceneTile(0, 2, 2) != 1 {
+        Fail(shell, null, tempDir, "preview choice did not follow its tab");
+        return;
+    }
+    editor.SetAutotilePreviewEnabled(true);
+    PumpTwice(shell, editor, sceneDoc);
+
+    // Hovering an empty connected cell previews its prospective mask-1 tile 2
+    // while the canonical cell and complete document state remain untouched.
+    var harness = GUI.TestHarness.New();
+    if harness.BindApp(shell.app) == false {
+        Fail(shell, harness, tempDir, "automation app binding");
+        return;
+    }
+    editor.SetToolMode(scene_editor_2d.MODE_PAINT);
+    editor.tileSpinner.SetValue(1);
+    MoveToCell(shell, harness, editor, sceneDoc, 2, 3);
+    var hoverPixel = SampleCell(editor, 2, 3);
+    var hoverNeighborPixel = SampleCell(editor, 2, 2);
+    if LooksCyan(hoverPixel) == false
+       or LooksOrange(hoverNeighborPixel) == false
+       or editor.scene.GetTile(0, 2, 3) != 0
+       or sceneDoc.content != baseline
+       or editor.GetRevision() != baselineRevision
+       or editor.undoStack.count() != baselineUndo
+       or sceneDoc.isModified != baselineDirty {
+        Fail(shell, harness, tempDir, "prospective autotile hover");
+        return;
+    }
+
+    // A real tile transaction retains base ids but immediately updates every
+    // affected resolved neighbor; the runtime copy reaches the same result.
+    if editor.PaintTileLine(0, 2, 3, 2, 3, 1) == false {
+        Fail(shell, harness, tempDir, "live autotile paint");
+        return;
+    }
+    PumpTwice(shell, editor, sceneDoc);
+    var paintedRuntime = editor.scene.BuildTilemap();
+    if paintedRuntime == null {
+        Fail(shell, harness, tempDir, "painted runtime tilemap");
+        return;
+    }
+    paintedRuntime.ApplyAutoTile();
+    var paintedCenterPixel = SampleCell(editor, 2, 2);
+    if editor.scene.GetTile(0, 2, 2) != 1
+       or editor.scene.GetTile(0, 2, 3) != 1
+       or editor.AutotileResolvedSceneTile(0, 2, 2) != 8
+       or editor.AutotileResolvedSceneTile(0, 2, 3) != 2
+       or paintedRuntime.GetTile(2, 2) != 8
+       or paintedRuntime.GetTile(2, 3) != 2
+       or LooksOrange(paintedCenterPixel) == false
+       or editor.GetRevision() != baselineRevision + 1
+       or editor.undoStack.count() != baselineUndo + 1 {
+        Fail(shell, harness, tempDir, "live paint did not update parity");
+        return;
+    }
+
+    // Animation preview consumes the resolved variant, not the canonical base.
+    if editor.Undo() == false
+       or editor.SetTileBehaviorAnim(4, "4, 6", "100, 100") == false {
+        Fail(shell, harness, tempDir, "animation composition fixture");
+        return;
+    }
+    editor.SetPreviewActive(true);
+    if editor.ResolvedSceneTileForPreview(0, 2, 2) != 4 {
+        Fail(shell, harness, tempDir, "autotile animation initial frame");
+        return;
+    }
+    editor.AdvancePreviewClock(150);
+    if editor.ResolvedSceneTileForPreview(0, 2, 2) != 6 {
+        Fail(shell, harness, tempDir,
+             "animation did not follow autotile: resolved="
+             + editor.ResolvedSceneTileForPreview(0, 2, 2)
+             + " auto="
+             + editor.AutotileResolvedSceneTile(0, 2, 2)
+             + " active=" + editor.PreviewActive()
+             + " frames="
+             + Seq.get_Count(editor.scene.TileAnimFrames(4))
+             + " durations="
+             + Seq.get_Count(editor.scene.TileAnimDurations(4)));
+        return;
+    }
+
+    var metric = "resolved="
+        + editor.AutotileResolvedSceneTile(0, 2, 2)
+        + " colors=" + Color.GetGreen(centerPixel)
+        + "/" + Color.GetBlue(upPixel)
+        + "/" + Color.GetGreen(rightPixel)
+        + " hover=" + Color.GetGreen(hoverPixel)
+        + "/" + Color.GetRed(hoverNeighborPixel);
+    Cleanup(shell, harness, tempDir);
+    Terminal.Say("METRIC: " + metric);
+    Terminal.Say("RESULT: ok");
+}

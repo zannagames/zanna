@@ -1,0 +1,293 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_hierarchy_affordances_probe.zia
+// Purpose: Verify persistent 3D hierarchy visibility and pick-lock controls.
+// Key invariants:
+//   - Show/Hide resolves complete selections through one canonical transaction.
+//   - Pick locks are workspace-only, tab-local, and visible on retained rows.
+//   - Live reorder/delete refreshes remap locks by SceneNode identity so a
+//     structural path can never transfer a lock to a different node.
+//   - The responsive hierarchy action strip remains reachable and contained.
+// Ownership/Lifetime:
+//   - The probe owns one hidden AppShell, two documents, and an input harness.
+// Links: zannastudio/src/ui/scene_editor_3d.zia,
+//        zannastudio/src/ui/scene_panels_3d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_hierarchy_affordances_probe;
+
+// ============================================================================
+// MODULE: scene_hierarchy_affordances_probe
+// PURPOSE: Pin the hierarchy's common visibility and viewport-picking actions.
+//
+// WHERE-THIS-FITS: The broad 3D probe owns the full transaction surface. This
+//          focused probe owns discoverable hierarchy actions and lock identity.
+//
+// TEACHING-NOTE: A hierarchy path is only a presentation address. The reorder
+//          case deliberately moves a locked node onto another row to prove the
+//          lock follows the live object rather than that stale address.
+// ============================================================================
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_3d";
+bind "../ui/scene_panels_3d";
+
+bind Convert = Zanna.Core.Convert;
+bind GUI = Zanna.GUI;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind Str = Zanna.String;
+bind Terminal = Zanna.Terminal;
+
+func HarnessCoordinate(shell: app_shell.AppShell,
+                       logical: Number) -> Integer {
+    var scale = shell.app.GetEffectiveScale();
+    if scale <= 0.0 { scale = 1.0; }
+    return Convert.NumToInt(logical * scale + 0.999999);
+}
+
+func ClickWidget(shell: app_shell.AppShell,
+                 harness: GUI.TestHarness,
+                 widget: GUI.Widget) {
+    var x = HarnessCoordinate(
+        shell, widget.GetScreenX() + widget.GetScreenWidth() / 2.0);
+    var y = HarnessCoordinate(
+        shell, widget.GetScreenY() + widget.GetScreenHeight() / 2.0);
+    harness.SendMouse("move", x, y, 0);
+    harness.SendMouse("down", x, y, 0);
+    harness.SendMouse("up", x, y, 0);
+    harness.DispatchPending();
+}
+
+func WidgetContained(parent: GUI.Widget,
+                     child: GUI.Widget) -> Boolean {
+    if parent == null or child == null or child.IsVisible() == false {
+        return false;
+    }
+    return child.GetScreenWidth() > 0.0
+        and child.GetScreenHeight() > 0.0
+        and child.GetScreenX() + 1.0 >= parent.GetScreenX()
+        and child.GetScreenY() + 1.0 >= parent.GetScreenY()
+        and child.GetScreenX() + child.GetScreenWidth()
+            <= parent.GetScreenX() + parent.GetScreenWidth() + 1.0
+        and child.GetScreenY() + child.GetScreenHeight()
+            <= parent.GetScreenY() + parent.GetScreenHeight() + 1.0;
+}
+
+func FindNodeIndex(editor: scene_editor_3d.SceneEditor3D,
+                   target: SceneNode) -> Integer {
+    var index = 0;
+    while index < editor.flatNodes.count() {
+        if editor.flatNodes.get(index) == target { return index; }
+        index = index + 1;
+    }
+    return -1;
+}
+
+func Cleanup(shell: app_shell.AppShell,
+             harness: GUI.TestHarness) {
+    if harness != null { harness.UnbindApp(); }
+    if shell != null { shell.Destroy(); }
+}
+
+func Fail(shell: app_shell.AppShell,
+          harness: GUI.TestHarness,
+          reason: String) {
+    Cleanup(shell, harness);
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func Pump(editor: scene_editor_3d.SceneEditor3D,
+          sceneDoc: document.Document,
+          shell: app_shell.AppShell) -> Boolean {
+    var changed = editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    return changed;
+}
+
+func main() {
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Hierarchy Affordances Probe", 1600, 850);
+    shell.SetSceneWorkspaceMode(true);
+
+    var editor = new scene_editor_3d.SceneEditor3D();
+    scene_panels_3d.Build(
+        editor, shell.workbench.scene3DHost, shell.app);
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene3DDocument();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_3D);
+    editor.Activate(sceneDoc);
+    Pump(editor, sceneDoc, shell);
+    Pump(editor, sceneDoc, shell);
+
+    if editor.AddEmptyNode("Alpha", -1) != 0
+       or editor.AddEmptyNode("Bravo", -1) != 1
+       or editor.AddEmptyNode("Charlie", -1) != 2 {
+        Fail(shell, null, "three-node hierarchy fixture");
+        return;
+    }
+    editor.SelectSceneNodes([0, 1], 0);
+    Pump(editor, sceneDoc, shell);
+
+    if WidgetContained(
+           editor.hierarchyPaneBox, editor.hierarchyShowButton) == false
+       or WidgetContained(
+           editor.hierarchyPaneBox, editor.hierarchyHideButton) == false
+       or WidgetContained(
+           editor.hierarchyPaneBox,
+           editor.hierarchyPickLockButton) == false
+       or editor.hierarchyShowButton.IsEnabled()
+       or editor.hierarchyHideButton.IsEnabled() == false
+       or editor.hierarchyPickLockButton.GetAccessibleName()
+           != "Lock viewport picking for selected 3D scene nodes" {
+        Fail(shell, null, "wide hierarchy action presentation");
+        return;
+    }
+
+    var harness = GUI.TestHarness.New();
+    if harness.BindApp(shell.app) == false {
+        Fail(shell, harness, "automation app binding");
+        return;
+    }
+
+    // The persistent Hide action is a real pointer-routed group transaction.
+    var visibleBaseline = sceneDoc.content;
+    var visibleRevision = editor.GetRevision();
+    var visibleUndoCount = editor.undoStack.count();
+    ClickWidget(shell, harness, editor.hierarchyHideButton);
+    if Pump(editor, sceneDoc, shell) == false
+       or editor.flatNodes.get(0).Visible
+       or editor.flatNodes.get(1).Visible
+       or editor.flatNodes.get(2).Visible == false
+       or sceneDoc.content == visibleBaseline
+       or editor.GetRevision() != visibleRevision + 1
+       or editor.undoStack.count() != visibleUndoCount + 1
+       or editor.hierarchyShowButton.IsEnabled() == false
+       or editor.hierarchyHideButton.IsEnabled()
+       or Str.Contains(
+              GUI.TreeView.Node.GetText(
+                  editor.hierarchyTreeNodes.get(0)), "○ ") == false {
+        Fail(shell, harness, "real group Hide transaction");
+        return;
+    }
+    if editor.Undo() == false
+       or sceneDoc.content != visibleBaseline
+       or editor.flatNodes.get(0).Visible == false
+       or editor.flatNodes.get(1).Visible == false {
+        Fail(shell, harness, "group visibility exact undo");
+        return;
+    }
+    Pump(editor, sceneDoc, shell);
+
+    // Locks resolve a group, decorate retained rows, and never touch VSCN.
+    editor.SelectSceneNodes([0, 1], 0);
+    var lockCanonical = sceneDoc.content;
+    var lockRevision = editor.GetRevision();
+    var lockUndoCount = editor.undoStack.count();
+    if editor.SetSelectedPickLocked(true) == false
+       or editor.NodePickLocked(0) == false
+       or editor.NodePickLocked(1) == false
+       or editor.NodePickLocked(2)
+       or editor.SelectedAllPickLocked() == false
+       or editor.hierarchyPickLockButton.GetAccessibleName()
+           != "Unlock viewport picking for selected 3D scene nodes"
+       or Str.Contains(
+              GUI.TreeView.Node.GetText(
+                  editor.hierarchyTreeNodes.get(0)), "⊘") == false
+       or sceneDoc.content != lockCanonical
+       or editor.GetRevision() != lockRevision
+       or editor.undoStack.count() != lockUndoCount {
+        Fail(shell, harness, "workspace-only group pick lock");
+        return;
+    }
+
+    // The shared editor controller must not leak locks into another scene tab.
+    var otherDoc = documents.NewScene3DDocument();
+    editor.Pump(otherDoc);
+    editor.AddEmptyNode("Other", -1);
+    if editor.NodePickLocked(0)
+       or otherDoc.scene3DWorkspace.pickLockedPaths.count() != 0 {
+        Fail(shell, harness, "pick lock leaked into another scene tab");
+        return;
+    }
+    editor.Pump(sceneDoc);
+    if editor.NodePickLocked(0) == false
+       or editor.NodePickLocked(1) == false
+       or sceneDoc.scene3DWorkspace.pickLockedPaths.count() != 2 {
+        Fail(shell, harness, "pick locks did not follow their scene tab");
+        return;
+    }
+
+    // Isolate Bravo, move it onto Alpha's old path, and verify identity remap.
+    editor.SelectSceneNodes([0, 1], 0);
+    if editor.SetSelectedPickLocked(false) == false {
+        Fail(shell, harness, "group pick unlock");
+        return;
+    }
+    editor.SelectSceneNodes([1], 1);
+    var lockedNode = editor.flatNodes.get(1);
+    if editor.SetSelectedPickLocked(true) == false
+       or editor.MoveSelectedSiblings(-1) == false {
+        Fail(shell, harness, "locked sibling reorder");
+        return;
+    }
+    var movedIndex = FindNodeIndex(editor, lockedNode);
+    if movedIndex != 0
+       or editor.NodePickLocked(0) == false
+       or editor.NodePickLocked(1)
+       or Str.Contains(
+              GUI.TreeView.Node.GetText(
+                  editor.hierarchyTreeNodes.get(0)), "⊘") == false
+       or Str.Contains(
+              GUI.TreeView.Node.GetText(
+                  editor.hierarchyTreeNodes.get(1)), "⊘") {
+        Fail(shell, harness, "pick lock did not remap by live node identity");
+        return;
+    }
+
+    // Removing the locked node drops the address instead of transferring it.
+    editor.SelectSceneNodes([movedIndex], movedIndex);
+    if editor.DeleteSelectedNodes() == false
+       or editor.NodePickLocked(0)
+       or sceneDoc.scene3DWorkspace.pickLockedPaths.count() != 0 {
+        Fail(shell, harness, "deleted pick lock retargeted a surviving node");
+        return;
+    }
+    editor.SelectSceneNodes([0], 0);
+
+    // At laptop width the hierarchy becomes a full-width master; its wrapped
+    // action strip must remain entirely contained and reachable.
+    shell.app.SetSize(900, 700);
+    Pump(editor, sceneDoc, shell);
+    if editor.hierarchyPaneBox.IsVisible() == false {
+        editor.ToggleHierarchyPane();
+        Pump(editor, sceneDoc, shell);
+    }
+    if WidgetContained(
+           editor.hierarchyPaneBox, editor.hierarchyShowButton) == false
+       or WidgetContained(
+           editor.hierarchyPaneBox, editor.hierarchyHideButton) == false
+       or WidgetContained(
+           editor.hierarchyPaneBox,
+           editor.hierarchyPickLockButton) == false {
+        Fail(shell, harness, "narrow hierarchy action containment");
+        return;
+    }
+
+    var narrowMetric = Convert.NumToInt(
+        editor.hierarchyPaneBox.GetScreenWidth());
+    Cleanup(shell, harness);
+    Terminal.Say(
+        "METRIC: hierarchy_actions=3 narrow_width=" + narrowMetric
+        + " tab_local_locks=ok identity_remap=ok");
+    Terminal.Say("RESULT: ok");
+}

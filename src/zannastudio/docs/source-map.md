@@ -98,6 +98,15 @@ centralized here instead of being spread across the frame loop.
 Owns active-file watcher state and timestamp polling for inactive open tabs.
 `main.zia` calls its `Pump` method instead of carrying watcher variables inline.
 
+### `app/language_tool_frame.zia`
+
+Coordinates one frame of language-service capability, completion, diagnostics,
+hover, signature, inlay, symbol, index, and breakpoint work. It publishes a
+language status only while the active document actually uses the text editor;
+visual scenes publish their own status later in the frame, so the two surfaces
+cannot invalidate the retained status bar by overwriting one another every
+idle frame.
+
 ### `app/settings_applier.zia`
 
 Applies persisted settings to the shell and editor. Settings parsing belongs in
@@ -770,6 +779,20 @@ This file is also too large. Add new UI state here only when it truly belongs to
 the persistent shell. For complex new surfaces, prefer a dedicated controller or
 view module that AppShell wires.
 
+### `ui/menu_chrome.zia`
+
+Owns persistent menu, toolbar, and context-menu widgets plus their command
+availability state. Text-editor, visual-surface edit, undo/redo, and execution
+states are transition-cached: callers may publish current truth every frame,
+but identical inputs must not mutate retained widgets or trigger repaint.
+
+### `ui/status_shell.zia`
+
+Owns status-bar presentation and visibility policy. It caches project,
+language, index, job, task, diagnostics, and left-status values before touching
+widgets; surface orchestration must still publish only the active surface's
+identity rather than toggling through an invisible intermediate value.
+
 ### `ui/workbench_shell.zia`
 
 Builds the stable nested splitter topology for the activity rail, primary
@@ -820,7 +843,15 @@ button/scroll sizing. It has no build-system or debug-session dependency.
 Document-backed 2D layer/tile/object authoring surface. It owns responsive
 canvas coordination, layer selection and asset assignment, gap-free
 captured paint/erase strokes with exact Escape rollback, inclusive rectangle
-painting with a non-destructive preview, runtime-backed four-connected fill,
+painting, integer-walk lines, ellipse outlines, runtime-backed four-connected
+fill, and active-layer atlas-true hover/captured-shape/stamp previews that never
+enter canonical state. Palette/tool changes invalidate those disposable pixels
+immediately, stamps clear consistently on every tool path, and all nine tool
+modes follow their owning scene tab. A bounded cached autotile lookup mirrors
+the runtime's first-64-rule, N/E/S/W base-layer resolution. It substitutes only
+rendered tile IDs, composes animation afterward, and previews the affected
+neighbors for prospective single-cell Paint/Erase input while canonical base
+cells and history remain untouched. The controller also owns
 active-layer tile picking, modifier-aware point selection and inclusive
 authored-cell marquees with pointer capture/Escape cancelation, a bounded retained object
 hierarchy with preserved expansion, stable multi-object selection,
@@ -830,10 +861,25 @@ selection for subtree groups, hierarchy-preserving duplicate/paste, group
 drag/delete, focus-scoped pixel/tile nudging, primary-axis alignment,
 deterministic distribution, typed scene-wide and object properties, atomic
 multi-object component application, Tiled import, external-image reload, and
-process-local canonical history. Canvas selection state and feedback never
-enter canonical scene history. Real atlas decoding/rendering, project-asset
-discovery, selection normalization, precision-layout rules, hierarchy
-matching, and palette presentation live in smaller leaf modules.
+process-local canonical history with an oldest-first labeled Scene-tab
+timeline that jumps through normal undo and retains redo. Timeline labels
+follow the owning document across tab switches. The layer navigator presents
+authored visibility/opacity plus tab-owned Lock/Solo state, toggles visibility
+through one canonical transaction, remaps workspace state across live layer
+structure edits, and keeps wrapped boundary-aware actions truthful. Its
+application-directed ListBox reorder requests, Alt+Arrow requests, and
+explicit buttons converge on one canonical transaction (ADR 0205). Canonical
+reloads clear numeric layer workspace identities. Canvas selection state and
+feedback never enter canonical scene history. The surrounding ruler surfaces
+derive exact ticks from window origin, zoom, and centered padding; their
+bounded vertical/horizontal guides are tab-local presentation layered over the
+canvas. Captured ruler gestures provide live create, move, drag-out removal,
+collision refusal, and Escape rollback without leaking transient coordinates
+into document state. Project-owned 2D background profiles resolve typed scene
+variants and composite bounded fixed-screen imagery behind the editable layers
+without executing project code. Real atlas decoding/rendering, project-asset
+discovery, selection normalization, precision-layout rules, hierarchy matching,
+and palette presentation live in smaller leaf modules.
 
 ### `ui/scene_property_inspector_2d.zia`
 
@@ -860,9 +906,11 @@ before either controller can reconstruct selected 2D objects or 3D subtrees.
 ### `ui/scene_component_schema.zia`
 
 Document-independent, fail-closed loader for project-root
-`scene-components.json`. It validates version, target, identifiers, limits,
-scalar kinds, and exact defaults into value-only component/field records. It
-does not own widgets, scenes, project state, or document mutation.
+`scene-components.json`. It validates versions 1 through 10, target,
+identifiers, limits, scalar kinds, exact defaults, asset/object/node preview
+conventions, 3D gameplay-view profiles, scene environments and portable
+post-processing, and 2D scene backgrounds into value-only records. It does not
+own widgets, scenes, project state, or document mutation.
 
 ### `ui/scene_component_authoring.zia`
 
@@ -902,7 +950,7 @@ recorded by ADR 0163; ADR 0156 covers the ListBox counterpart.
 Pure shared case-insensitive hierarchy Find semantics. It trims and normalizes
 queries, matches a primary and optional secondary row identity, and advances a
 previous/next cursor with deterministic wrapping. Scene controllers own bounded
-match lists, retained TreeView selection/reveal, inspector focus, and all scene
+match lists, retained TreeView selection/reveal, hierarchy-master focus, and all scene
 state; this helper cannot filter widgets or mutate documents.
 
 ### `ui/scene_history.zia`
@@ -916,10 +964,20 @@ the lists; the helper owns no widgets, documents, or scene state.
 
 Shared presentation-only project asset chooser for both scene editors. It
 cooperatively warms `ProjectManager`'s multi-root file cache, applies exact
-extension and case-insensitive text filters, realizes at most 512 rows, retains
-absolute row identity, previews one bounded common image, and reports selection
-intent without mutating a document. It also owns the conservative
-saved-scene-relative path spelling used by 2D layer assets.
+extension and case-insensitive text filters, realizes at most 512 list rows and
+48 responsive thumbnail cards, retains one absolute selection identity across
+both views, schedules only visible thumbnails at one per frame, and reports
+selection/typed-drag intent without mutating a document. It also owns the
+conservative saved-scene-relative path spelling used by 2D layer assets.
+
+### `ui/scene_asset_thumbnails.zia`
+
+Read-only bounded preview renderer for the shared browser. Common raster
+formats decode into contained neutral squares. Supported 3D scene/model formats
+load through `SceneAsset`, frame complete subtree bounds, and render under a
+deterministic neutral camera/light rig through windowless Canvas3D. Source
+bytes, decoded pixels, output edges, and scene-node counts reject before the
+browser uploads a widget-owned copy.
 
 ### `ui/scene_tileset_2d.zia`
 
@@ -932,21 +990,35 @@ remain deterministic fallback state.
 ### `ui/scene_tileset_inspector_2d.zia`
 
 Presentation-only 2D layer-image status and scrollable palette. It owns
-accessible Reload/Clear controls, cached thumbnails, selection outlines, and
-pointer intent while `SceneEditor2D` owns document mutation and history.
+accessible Reload/Clear controls, 50–300% nearest-neighbor presentation zoom,
+numeric tile-ID search/reveal, cached thumbnails, selection outlines, and
+zoom-aware pointer intent while `SceneEditor2D` owns document mutation and
+history.
+
+### `ui/scene_tile_behavior_2d.zia`
+
+Presentation-only per-tile collision, typed-property, animation, and 16-variant
+autotile editor. It returns validated-draft intent to `SceneEditor2D` and owns
+the scene-wide live-autotile-preview checkbox; canonical mutation, lookup-cache
+refresh, history, and dirty state stay in the editor controller.
 
 ### `ui/scene_editor_3d.zia`
 
 Document-backed VSCN hierarchy and runtime-backed shaded/triangle-wireframe
 viewport. It retains one windowless Canvas3D, RenderTarget3D, and exactly
-matched orthographic camera, then draws deterministic editor overlays on the
-readback. The same camera unprojects pointer rays for closest-visible-mesh
-bounds picking before a meshless origin-marker fallback. It owns
+matched projection-switchable camera, then draws deterministic editor overlays
+on the readback. The same camera unprojects pointer rays for
+closest-visible-mesh bounds picking before a meshless origin-marker fallback.
+The responsive corner orientation navigator owns six axis views, projection
+switching, active/hover presentation, and priority pointer routing entirely as
+per-document workspace state. It owns
 replace/add/toggle/blank selection policy, camera-plane pan, import and
 primitive creation, camera navigation,
 responsive hierarchy/inspector state,
 true retained parent/child rows with preserved expansion, stable multi-node
-selection, non-destructive bounded hierarchy Find, transactional
+selection, non-destructive bounded hierarchy Find, wrapped group-aware
+Show/Hide/pick-lock actions, tab-owned lock state with identity-safe structural
+remapping and retained-row cues, transactional
 before/into/after hierarchy drops, parent-aware group Move/Rotate/Scale handles,
 conditioned XY/XZ/YZ Move/Scale-plane picking and transactional two-axis
 dragging,
@@ -956,7 +1028,10 @@ transforms, relative multi-node numeric transform batches, compact PBR
 material component coordination, cycle-safe exact preserve-world reparenting
 with preserve-local opt-out, mixed-state batch visibility, bounded native
 texture selection, stable contiguous sibling-block ordering, typed
-gameplay-metadata transactions, atomic multi-node component application, and
+gameplay-metadata transactions, exact responsive gameplay-eye anchoring,
+transient project node/environment preview composition, retained project
+post-FX construction with finalized shaded readback, atomic multi-node
+component application, and
 canonical one-step edit history.
 
 ### `ui/scene_metadata_inspector_3d.zia`
@@ -1215,6 +1290,19 @@ Important probe groups:
   four-connected exact-count fill, active-layer picker isolation, real captured
   rectangle preview and release, Escape cancelation, and freehand snapshot
   rollback.
+- `scene2d_history_palette_probe.zia`: labeled oldest-first 2D history rows,
+  click-equivalent row jumps with retained redo, per-document label ownership,
+  bounded palette zoom geometry, numeric tile search/reveal, exact scaled
+  pointer selection, and canonical-content/history isolation.
+- `scene2d_rulers_guides_probe.zia`: scroll/zoom ruler geometry, real
+  click-to-toggle guides, captured create/move previews on both axes,
+  drag-out removal, collision/Escape rollback, visibility reflow, per-tab
+  state, bounded guide capacity, captured ruler/canvas pixels, and
+  canonical-content/history isolation.
+- `scene2d_layer_navigator_probe.zia`: retained layer state cues, Enter
+  visibility with exact undo, real retained-row drag ordering, tab-local
+  Lock/Solo isolation, live add/move/remove identity remapping, boundary-aware
+  actions, and responsive containment.
 - `scene_light_authoring_probe.zia`: every runtime light constructor,
   normalized public cone readback, independent replacement, exact no-op
   suppression, add/apply/remove history, VSCN round trips, hierarchy and
@@ -1223,10 +1311,31 @@ Important probe groups:
   seam-safe angular math, real hover/down/move/up input, stable viewport
   geometry during status changes, one-step snapped rotation history, and exact
   undo.
+- `scene_orientation_navigator_probe.zia`: production navigator geometry,
+  six axis-aligned camera poses, per-tab camera restoration, real hover/click
+  and projection-chip routing, overlay input priority, captured pixels, and
+  canonical-content/history isolation.
+- `scene_hierarchy_affordances_probe.zia`: real Show/Hide action input,
+  exact group visibility history/undo, tab-local multi-node pick locks,
+  retained-row cues, live reorder identity remapping, deleted-lock pruning,
+  and wide/narrow action-strip containment.
 - `scene_shaded_viewport_probe.zia`: retained windowless Canvas3D/RenderTarget
   identity, exact runtime-camera/editor-overlay projection, authored shaded and
   triangle-wireframe pixel differences, accessible real-pointer mode
   switching, per-document preference, and canonical-history isolation.
+- `scene_asset_thumbnail_probe.zia`: real PNG and VSCN preview rendering,
+  visible-card one-per-frame scheduling, responsive wrapping geometry,
+  grid-click/list-model selection identity, mode-switch retention, selected
+  model detail rendering, and captured thumbnail pixels.
+- `scene_gameplay_preview_2d_probe.zia`: real Xenoscape project loading,
+  native-scale player-start framing, schema-v8 biome and object art decoding,
+  exact 150-by-17/530-tile/82-object fixture retention, actual canvas capture,
+  and canonical content/history isolation across native control realization.
+- `scene_gameplay_preview_probe.zia`: real Ashfall project loading, exact
+  gameplay eye/FOV retention across responsive dock changes, schema-v9
+  environment composition, schema-v10 retained five-pass post-FX and finalized
+  high-key luminance, explicit Gameplay View recovery, actual viewport capture,
+  and canonical content/history isolation.
 - `scene_viewport_picking_probe.zia`: off-origin nearest-depth mesh-bounds
   selection, shaded/wireframe parity, meshless marker fallback, additive and
   primary-modifier selection policy, blank clear/preserve behavior, exact
@@ -1278,7 +1387,8 @@ Use this practical decision table:
 | Debug transport/session state | `build/debug_session.zia` |
 | Debug command behavior | `commands/debug_commands.zia` |
 | Run and Debug activity presentation | `ui/run_debug_view.zia` |
-| Shared scene project-asset search/preview | `ui/scene_asset_browser.zia` |
+| Shared scene project-asset search/selection | `ui/scene_asset_browser.zia` |
+| Shared image/model asset-thumbnail rendering | `ui/scene_asset_thumbnails.zia` |
 | Shared typed scene clipboard envelope | `ui/scene_clipboard.zia` |
 | Shared project scene-component schema | `ui/scene_component_schema.zia` |
 | Shared project scene-component structured edits/file history | `ui/scene_component_authoring.zia` |
@@ -1292,6 +1402,7 @@ Use this practical decision table:
 | 2D precision layout rules | `ui/scene_layout_2d.zia` |
 | 2D tileset decode/palette rendering | `ui/scene_tileset_2d.zia` |
 | 2D tileset inspector presentation | `ui/scene_tileset_inspector_2d.zia` |
+| 2D tile-behavior inspector presentation | `ui/scene_tile_behavior_2d.zia` |
 | 3D visual scene authoring | `ui/scene_editor_3d.zia` |
 | 3D node gameplay-metadata presentation | `ui/scene_metadata_inspector_3d.zia` |
 | 3D hierarchy reparent rules | `ui/scene_hierarchy_3d.zia` |

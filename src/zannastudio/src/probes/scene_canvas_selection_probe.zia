@@ -67,6 +67,12 @@ func HarnessCoordinate(shell: app_shell.AppShell,
     return Convert.NumToInt(logical * scale + 0.999999);
 }
 
+func NumbersNear(actual: Number, expected: Number) -> Boolean {
+    var difference = actual - expected;
+    if difference < 0.0 { difference = 0.0 - difference; }
+    return difference < 0.000001;
+}
+
 func CanvasCoordinate(shell: app_shell.AppShell,
                       editor: scene_editor_2d.SceneEditor2D,
                       cell: Integer,
@@ -89,6 +95,7 @@ func Fail(shell: app_shell.AppShell,
 func main() {
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio 2D Canvas Selection Probe", 1120, 760);
+    shell.SetSceneWorkspaceMode(true);
 
     var editor = new scene_editor_2d.SceneEditor2D();
     scene_panels_2d.Build(editor,shell.workbench.scene2DHost, shell.app);
@@ -353,7 +360,7 @@ func main() {
     editor.objectRotationSpinner.SetValue(90.0);
     if editor.Pump(sceneDoc) == false
        or editor.GetRevision() != transformRevision + 1
-       or editor.scene.ObjectRotation(0) != 90.0
+       or NumbersNear(editor.scene.ObjectRotation(0), 90.0) == false
        or Str.IndexOf(sceneDoc.content, "\"rotation\"") <= 0 {
         Fail(shell, harness,
              "a rotation edit did not live-commit a first-class key: rot="
@@ -362,15 +369,15 @@ func main() {
     }
     editor.objectScaleXSpinner.SetValue(2.0);
     if editor.Pump(sceneDoc) == false
-       or editor.scene.ObjectScaleX(0) != 2.0
+       or NumbersNear(editor.scene.ObjectScaleX(0), 2.0) == false
        or Str.IndexOf(sceneDoc.content, "\"scaleX\"") <= 0 {
         Fail(shell, harness, "a scale edit did not live-commit");
         return;
     }
     if editor.Undo() == false or editor.Undo() == false
        or sceneDoc.content != transformBaseline
-       or editor.scene.ObjectRotation(0) != 0.0
-       or editor.scene.ObjectScaleX(0) != 1.0 {
+       or NumbersNear(editor.scene.ObjectRotation(0), 0.0) == false
+       or NumbersNear(editor.scene.ObjectScaleX(0), 1.0) == false {
         Fail(shell, harness,
              "undoing transform edits did not restore default bytes");
         return;

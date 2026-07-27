@@ -59,6 +59,12 @@ func HarnessCoordinate(shell: app_shell.AppShell,
     return Convert.NumToInt(logical * scale + 0.999999);
 }
 
+func NumbersNear(actual: Number, expected: Number) -> Boolean {
+    var difference = actual - expected;
+    if difference < 0.0 { difference = 0.0 - difference; }
+    return difference < 0.000001;
+}
+
 func ClickWidget2D(shell: app_shell.AppShell,
                    harness: GUI.TestHarness,
                    widget: GUI.Widget) {
@@ -84,6 +90,7 @@ func main() {
     // ------------------------------------------------------------------ 3D
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Scene Context Menu Probe", 1240, 800);
+    shell.SetSceneWorkspaceMode(true);
     var editor3d = new scene_editor_3d.SceneEditor3D();
     scene_panels_3d.Build(editor3d,shell.workbench.scene3DHost, shell.app);
     var menus3d = new scene_context_menus_3d.SceneContextMenus3D();
@@ -116,7 +123,16 @@ func main() {
     var canonical = doc3d.content;
     var revision = editor3d.GetRevision();
 
-    // Hierarchy right-click opens the menu with truthful enablement.
+    // Hierarchy right-click opens the menu with truthful enablement. At this
+    // viewport-priority width, first open the hierarchy's full-width master.
+    var hierarchy3dStartedHidden =
+        editor3d.hierarchyPaneBox.IsVisible() == false;
+    if hierarchy3dStartedHidden {
+        editor3d.ToggleHierarchyPane();
+        editor3d.Pump(doc3d);
+        shell.Poll();
+        shell.Render();
+    }
     var treeX = HarnessCoordinate(
         shell, editor3d.hierarchyTree.GetScreenX() + 40.0);
     var treeY = HarnessCoordinate(
@@ -133,6 +149,11 @@ func main() {
     }
     if menus3d.hierarchyRename.IsEnabled() == false
        or menus3d.hierarchyCreateChild.IsEnabled() == false
+       or menus3d.hierarchyShow.IsEnabled()
+       or menus3d.hierarchyHide.IsEnabled() == false
+       or menus3d.hierarchyPickLock.IsEnabled() == false
+       or menus3d.hierarchyPickLock.GetText()
+           != "Lock Viewport Picking"
        or menus3d.hierarchyDuplicate.IsEnabled() == false
        or menus3d.hierarchyDelete.IsEnabled() == false {
         Fail(shell, harness, "3D single-selection enablement was wrong");
@@ -141,6 +162,12 @@ func main() {
     menus3d.hierarchyMenu.Hide();
     shell.Poll();
     shell.Render();
+    if hierarchy3dStartedHidden {
+        editor3d.ToggleHierarchyPane();
+        editor3d.Pump(doc3d);
+        shell.Poll();
+        shell.Render();
+    }
 
     // A right-click released in place opens the viewport menu.
     var viewX = HarnessCoordinate(
@@ -202,10 +229,13 @@ func main() {
     if spawnDeltaX < 0.0 { spawnDeltaX = 0.0 - spawnDeltaX; }
     if createdNode.Mesh == null
        or spawnDeltaX > 0.000001
-       or editor3d.hierarchyTree.IsEditing() == false {
+       or editor3d.hierarchyTree.IsEditing() == false
+       or editor3d.hierarchyPaneBox.IsVisible() == false
+       or editor3d.compactHierarchyShown == false {
         Fail(shell, harness,
              "menu create did not spawn a mesh at the view target with "
-             + "rename armed: x=" + createdNode.WorldPosition.X);
+             + "a visible rename armed: x="
+             + createdNode.WorldPosition.X);
         return;
     }
     editor3d.hierarchyTree.CancelEdit();
@@ -221,6 +251,7 @@ func main() {
     // ------------------------------------------------------------------ 2D
     shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Scene Context Menu Probe 2D", 1240, 800);
+    shell.SetSceneWorkspaceMode(true);
     var editor2d = new scene_editor_2d.SceneEditor2D();
     scene_panels_2d.Build(editor2d,shell.workbench.scene2DHost, shell.app);
     var menus2d = new scene_context_menus_2d.SceneContextMenus2D();
@@ -250,6 +281,14 @@ func main() {
     }
     var canonical2d = doc2d.content;
 
+    var hierarchy2dStartedHidden =
+        editor2d.objectPaneBox.IsVisible() == false;
+    if hierarchy2dStartedHidden {
+        editor2d.ToggleHierarchyPane();
+        editor2d.Pump(doc2d);
+        shell.Poll();
+        shell.Render();
+    }
     var objTreeX = HarnessCoordinate(
         shell, editor2d.objectTree.GetScreenX() + 40.0);
     var objTreeY = HarnessCoordinate(
@@ -272,6 +311,12 @@ func main() {
     menus2d.hierarchyMenu.Hide();
     shell.Poll();
     shell.Render();
+    if hierarchy2dStartedHidden {
+        editor2d.ToggleHierarchyPane();
+        editor2d.Pump(doc2d);
+        shell.Poll();
+        shell.Render();
+    }
 
     var canvasX = HarnessCoordinate(
         shell, editor2d.canvasImage.GetScreenX() + 24.0);
@@ -313,9 +358,11 @@ func main() {
        or editor2d.scene.ObjectY(created)
           != addCellY * editor2d.scene.TileHeight
        or editor2d.selectedObject != created
-       or editor2d.objectTree.IsEditing() == false {
+       or editor2d.objectTree.IsEditing() == false
+       or editor2d.objectPaneBox.IsVisible() == false
+       or editor2d.compactHierarchyShown == false {
         Fail(shell, harness,
-             "Add Object Here did not create a selected rename-armed "
+             "Add Object Here did not create a selected, visibly renamed "
              + "entity at the click cell: index=" + created);
         return;
     }
@@ -552,7 +599,7 @@ func main() {
     var layerUndo = editor2d.undoStack.count();
     editor2d.layerOpacitySpinner.SetValue(0.5);
     editor2d.Pump(doc2d);
-    if editor2d.scene.LayerOpacity(0) != 0.5
+    if NumbersNear(editor2d.scene.LayerOpacity(0), 0.5) == false
        or editor2d.undoStack.count() != layerUndo + 1
        or Str.IndexOf(doc2d.content, "\"opacity\"") <= 0 {
         Fail(shell, harness,
@@ -586,7 +633,11 @@ func main() {
     ClickWidget2D(shell, harness, editor2d.layerLockCheck);
     editor2d.Pump(doc2d);
     if editor2d.LayerLocked(0) {
-        Fail(shell, harness, "unlock click did not release the layer");
+        Fail(shell, harness,
+             "unlock click did not release the layer: checked="
+             + editor2d.layerLockCheck.IsChecked()
+             + " enabled=" + editor2d.layerLockCheck.IsEnabled()
+             + " visible=" + editor2d.layerLockCheck.IsVisible());
         return;
     }
     shell.Poll();

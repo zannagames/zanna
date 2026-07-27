@@ -18,6 +18,9 @@
 //   - Version-5 3D node prefab rules are variant-safe and project-relative.
 //   - Version-6 sky palettes and sun/fill rigs are complete and fail closed.
 //   - Version-7 gameplay lens, IBL, and typed height-fog controls are bounded.
+//   - Version-8 2D scene backdrops are variant-safe and project-relative.
+//   - Version-9 3D scene environment prefabs are variant-safe and transient.
+//   - Version-10 portable post-FX groups are complete, bounded, and ordered.
 //   - Explicitly opened nested scenes discover their nearest project manifest.
 // Ownership/Lifetime: The probe owns only in-memory schema fixtures.
 // Links: zannastudio/src/ui/scene_component_schema.zia,
@@ -26,7 +29,10 @@
 //        docs/adr/0198-project-owned-3d-scene-preview-profiles.md,
 //        docs/adr/0199-project-owned-3d-node-prefab-previews.md,
 //        docs/adr/0200-project-owned-3d-sky-and-light-preview-rigs.md,
-//        docs/adr/0201-project-owned-3d-lens-and-atmosphere-previews.md
+//        docs/adr/0201-project-owned-3d-lens-and-atmosphere-previews.md,
+//        docs/adr/0202-project-owned-2d-scene-background-previews.md,
+//        docs/adr/0203-project-owned-3d-scene-environment-previews.md,
+//        docs/adr/0204-project-owned-3d-post-processing-previews.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -156,7 +162,7 @@ func main() {
         + "]}",
         "bad-default");
     var badVersion = scene_component_schema.ParseText(
-        "{\"version\":8,\"components\":[]}", "bad-version");
+        "{\"version\":11,\"components\":[]}", "bad-version");
     if duplicateName.valid or duplicateName.components.count() != 0
        or duplicateKey.valid or duplicateKey.components.count() != 0
        or badDefault.valid or badDefault.components.count() != 0
@@ -550,6 +556,196 @@ func main() {
        or invalidFov.valid
        or partialHeightFog.scenePreview3D.present {
         fail("invalid version-7 lens/atmosphere profiles were not fail-closed");
+        return;
+    }
+
+    var v8Text =
+        "{\"version\":8,\"components\":[],\"scenePreview2D\":{"
+        + "\"background\":\"assets/backgrounds/fallback.png\","
+        + "\"variantProperty\":\"region\","
+        + "\"variantOffset\":-1,"
+        + "\"variantImages\":["
+        + "\"assets/backgrounds/region-01.png\","
+        + "\"assets/backgrounds/region-02.png\"],"
+        + "\"fit\":\"contain\",\"showGrid\":false}}";
+    var v8 = scene_component_schema.ParseText(v8Text, "v8");
+    var profile8 = v8.scenePreview2D;
+    if v8.valid == false or v8.version != 8
+       or profile8 == null or profile8.present == false
+       or profile8.background
+          != "assets/backgrounds/fallback.png"
+       or profile8.variantProperty != "region"
+       or profile8.variantOffset != -1
+       or profile8.variantImages.count() != 2
+       or profile8.BackgroundForVariant(1)
+          != "assets/backgrounds/region-01.png"
+       or profile8.BackgroundForVariant(2)
+          != "assets/backgrounds/region-02.png"
+       or profile8.BackgroundForVariant(3)
+          != "assets/backgrounds/fallback.png"
+       or profile8.fit != scene_component_schema.BACKGROUND_FIT_CONTAIN
+       or profile8.hasShowGrid == false or profile8.showGrid {
+        fail("valid version-8 2D scene preview profile did not round trip");
+        return;
+    }
+    var v7Backdrop = scene_component_schema.ParseText(
+        "{\"version\":7,\"components\":[],\"scenePreview2D\":{"
+        + "\"background\":\"assets/background.png\"}}",
+        "v7-backdrop");
+    var orphanBackdropVariants = scene_component_schema.ParseText(
+        "{\"version\":8,\"components\":[],\"scenePreview2D\":{"
+        + "\"variantImages\":[\"assets/background.png\"]}}",
+        "orphan-backdrop-variants");
+    var unsafeBackdrop = scene_component_schema.ParseText(
+        "{\"version\":8,\"components\":[],\"scenePreview2D\":{"
+        + "\"background\":\"../outside.png\"}}",
+        "unsafe-backdrop");
+    var invalidBackdropFit = scene_component_schema.ParseText(
+        "{\"version\":8,\"components\":[],\"scenePreview2D\":{"
+        + "\"background\":\"assets/background.png\","
+        + "\"fit\":\"tile\"}}",
+        "invalid-backdrop-fit");
+    var orphanBackdropOffset = scene_component_schema.ParseText(
+        "{\"version\":8,\"components\":[],\"scenePreview2D\":{"
+        + "\"showGrid\":false,\"variantOffset\":1}}",
+        "orphan-backdrop-offset");
+    if v7Backdrop.valid or orphanBackdropVariants.valid
+       or unsafeBackdrop.valid or invalidBackdropFit.valid
+       or orphanBackdropOffset.valid
+       or unsafeBackdrop.scenePreview2D.present {
+        fail("invalid version-8 2D scene previews were not fail-closed");
+        return;
+    }
+
+    // ADR 0203: project environment prefabs visualize runtime-generated scene
+    // structure without entering the canonical graph or executing project code.
+    var v9Text =
+        "{\"version\":9,\"components\":[],\"scenePreview3D\":{"
+        + "\"environmentPrefab\":"
+        + "\"assets/editor-previews/environment-fallback.scene3d\","
+        + "\"environmentVariantProperty\":\"af.terrain\","
+        + "\"environmentVariantOffset\":-1,"
+        + "\"environmentVariantPrefabs\":["
+        + "\"assets/editor-previews/terrain-01.scene3d\","
+        + "\"assets/editor-previews/terrain-02.vscn\"]}}";
+    var v9 = scene_component_schema.ParseText(v9Text, "v9");
+    var profile9 = v9.scenePreview3D;
+    if v9.valid == false or v9.version != 9
+       or profile9 == null or profile9.present == false
+       or profile9.environmentPrefab
+          != "assets/editor-previews/environment-fallback.scene3d"
+       or profile9.environmentVariantProperty != "af.terrain"
+       or profile9.environmentVariantOffset != -1
+       or profile9.environmentVariantPrefabs.count() != 2
+       or profile9.EnvironmentPrefabForVariant(1)
+          != "assets/editor-previews/terrain-01.scene3d"
+       or profile9.EnvironmentPrefabForVariant(2)
+          != "assets/editor-previews/terrain-02.vscn"
+       or profile9.EnvironmentPrefabForVariant(3)
+          != "assets/editor-previews/environment-fallback.scene3d" {
+        fail("valid version-9 3D environment preview did not round trip");
+        return;
+    }
+    var v8Environment = scene_component_schema.ParseText(
+        "{\"version\":8,\"components\":[],\"scenePreview3D\":{"
+        + "\"environmentPrefab\":\"assets/environment.scene3d\"}}",
+        "v8-environment");
+    var orphanEnvironmentVariants = scene_component_schema.ParseText(
+        "{\"version\":9,\"components\":[],\"scenePreview3D\":{"
+        + "\"environmentVariantPrefabs\":["
+        + "\"assets/environment.scene3d\"]}}",
+        "orphan-environment-variants");
+    var unsafeEnvironment = scene_component_schema.ParseText(
+        "{\"version\":9,\"components\":[],\"scenePreview3D\":{"
+        + "\"environmentPrefab\":\"../outside.scene3d\"}}",
+        "unsafe-environment");
+    var fractionalEnvironmentOffset = scene_component_schema.ParseText(
+        "{\"version\":9,\"components\":[],\"scenePreview3D\":{"
+        + "\"environmentVariantProperty\":\"terrain\","
+        + "\"environmentVariantPrefabs\":["
+        + "\"assets/environment.scene3d\"],"
+        + "\"environmentVariantOffset\":0.5}}",
+        "fractional-environment-offset");
+    if v8Environment.valid or orphanEnvironmentVariants.valid
+       or unsafeEnvironment.valid or fractionalEnvironmentOffset.valid
+       or unsafeEnvironment.scenePreview3D.present {
+        fail("invalid version-9 3D environments were not fail-closed");
+        return;
+    }
+
+    // ADR 0204: portable post-processing values mirror the runtime's
+    // deterministic color pipeline without project code or backend-only passes.
+    var v10Text =
+        "{\"version\":10,\"components\":[],\"scenePreview3D\":{"
+        + "\"tonemapMode\":2,\"tonemapExposure\":1.17,"
+        + "\"bloomThreshold\":0.9,\"bloomIntensity\":0.25,"
+        + "\"bloomPasses\":3,"
+        + "\"colorGradeBrightness\":0.03,"
+        + "\"colorGradeContrast\":1.03,"
+        + "\"colorGradeSaturation\":1.07,"
+        + "\"vignetteRadius\":0.98,\"vignetteSoftness\":0.12,"
+        + "\"fxaa\":true}}";
+    var v10 =
+        scene_component_schema.ParseText(v10Text, "v10-postfx");
+    var profile10 = v10.scenePreview3D;
+    if v10.valid == false or v10.version != 10
+       or profile10 == null or profile10.present == false
+       or profile10.hasTonemap == false
+       or profile10.tonemapMode != 2
+       or near(profile10.tonemapExposure, 1.17) == false
+       or profile10.hasBloom == false
+       or near(profile10.bloomThreshold, 0.9) == false
+       or near(profile10.bloomIntensity, 0.25) == false
+       or profile10.bloomPasses != 3
+       or profile10.hasColorGrade == false
+       or near(profile10.colorGradeBrightness, 0.03) == false
+       or near(profile10.colorGradeContrast, 1.03) == false
+       or near(profile10.colorGradeSaturation, 1.07) == false
+       or profile10.hasVignette == false
+       or near(profile10.vignetteRadius, 0.98) == false
+       or near(profile10.vignetteSoftness, 0.12) == false
+       or profile10.hasFxaa == false or profile10.fxaa == false
+       or profile10.HasPostFX() == false
+       or profile10.PostFXEffectCount() != 5 {
+        fail("valid version-10 3D post-FX preview did not round trip");
+        return;
+    }
+    var v9PostFX = scene_component_schema.ParseText(
+        "{\"version\":9,\"components\":[],\"scenePreview3D\":{"
+        + "\"tonemapMode\":2,\"tonemapExposure\":1.0}}",
+        "v9-postfx");
+    var partialTonemap = scene_component_schema.ParseText(
+        "{\"version\":10,\"components\":[],\"scenePreview3D\":{"
+        + "\"tonemapMode\":2}}",
+        "partial-tonemap");
+    var fractionalTonemap = scene_component_schema.ParseText(
+        "{\"version\":10,\"components\":[],\"scenePreview3D\":{"
+        + "\"tonemapMode\":1.5,\"tonemapExposure\":1.0}}",
+        "fractional-tonemap");
+    var partialBloom = scene_component_schema.ParseText(
+        "{\"version\":10,\"components\":[],\"scenePreview3D\":{"
+        + "\"bloomThreshold\":0.8,\"bloomPasses\":3}}",
+        "partial-bloom");
+    var invalidGrade = scene_component_schema.ParseText(
+        "{\"version\":10,\"components\":[],\"scenePreview3D\":{"
+        + "\"colorGradeBrightness\":0.0,"
+        + "\"colorGradeContrast\":5.0,"
+        + "\"colorGradeSaturation\":1.0}}",
+        "invalid-grade");
+    var invalidVignette = scene_component_schema.ParseText(
+        "{\"version\":10,\"components\":[],\"scenePreview3D\":{"
+        + "\"vignetteRadius\":0.8,\"vignetteSoftness\":0.0}}",
+        "invalid-vignette");
+    var invalidFxaa = scene_component_schema.ParseText(
+        "{\"version\":10,\"components\":[],\"scenePreview3D\":{"
+        + "\"fxaa\":\"yes\"}}",
+        "invalid-fxaa");
+    if v9PostFX.valid or partialTonemap.valid
+       or fractionalTonemap.valid or partialBloom.valid
+       or invalidGrade.valid or invalidVignette.valid
+       or invalidFxaa.valid
+       or invalidFxaa.scenePreview3D.present {
+        fail("invalid version-10 3D post-FX previews were not fail-closed");
         return;
     }
 

@@ -13,8 +13,9 @@
 //     within one component.
 //   - Every default is validated against its declared scalar kind before use.
 //   - Version-3 object, version-4 scene, version-5 node, version-6 sky/light,
-//     and version-7 lens/atmosphere preview profiles are bounded and fail
-//     closed instead of publishing partial project state.
+//     version-7 lens/atmosphere, version-8 2D backdrops, version-9 scene
+//     environment prefabs, and version-10 post-FX chains are bounded and fail
+//     closed.
 //   - Limits are below the backing 2D/3D scene metadata limits.
 // Ownership/Lifetime: Returned schemas own value-only component/field records.
 // Links: zannastudio/src/ui/scene_component_authoring.zia,
@@ -26,7 +27,10 @@
 //        docs/adr/0198-project-owned-3d-scene-preview-profiles.md,
 //        docs/adr/0199-project-owned-3d-node-prefab-previews.md,
 //        docs/adr/0200-project-owned-3d-sky-and-light-preview-rigs.md,
-//        docs/adr/0201-project-owned-3d-lens-and-atmosphere-previews.md
+//        docs/adr/0201-project-owned-3d-lens-and-atmosphere-previews.md,
+//        docs/adr/0202-project-owned-2d-scene-background-previews.md,
+//        docs/adr/0203-project-owned-3d-scene-environment-previews.md,
+//        docs/adr/0204-project-owned-3d-post-processing-previews.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -45,12 +49,15 @@ bind Fmt = Zanna.Text.Fmt;
 
 final SCHEMA_FILE_NAME: String = "scene-components.json";
 final SCHEMA_VERSION: Integer = 1;
-final SCHEMA_VERSION_MAX: Integer = 7;
+final SCHEMA_VERSION_MAX: Integer = 10;
 final OBJECT_PREVIEW_SCHEMA_VERSION: Integer = 3;
 final SCENE_PREVIEW_3D_SCHEMA_VERSION: Integer = 4;
 final NODE_PREVIEW_3D_SCHEMA_VERSION: Integer = 5;
 final SKY_LIGHT_PREVIEW_3D_SCHEMA_VERSION: Integer = 6;
 final LENS_ATMOSPHERE_PREVIEW_3D_SCHEMA_VERSION: Integer = 7;
+final SCENE_PREVIEW_2D_SCHEMA_VERSION: Integer = 8;
+final SCENE_ENVIRONMENT_PREVIEW_3D_SCHEMA_VERSION: Integer = 9;
+final SCENE_POSTFX_PREVIEW_3D_SCHEMA_VERSION: Integer = 10;
 final MAX_ENUM_CHOICES: Integer = 64;
 final MAX_ENUM_CHOICE_CHARS: Integer = 64;
 final MAX_ASSET_KINDS: Integer = 4;
@@ -75,6 +82,16 @@ final MAX_PREVIEW_FRAME_OFFSET: Integer = 1000000;
 final MAX_NODE_PREVIEWS_3D: Integer = 128;
 final MAX_NODE_PREVIEW_VARIANTS: Integer = 256;
 final MAX_NODE_PREVIEW_PREFAB_CHARS: Integer = 1024;
+final MAX_SCENE_PREVIEW_2D_VARIANTS: Integer = 64;
+final MAX_SCENE_PREVIEW_2D_IMAGE_CHARS: Integer = 1024;
+final MIN_SCENE_PREVIEW_2D_OFFSET: Integer = -1000000;
+final MAX_SCENE_PREVIEW_2D_OFFSET: Integer = 1000000;
+final MAX_SCENE_ENVIRONMENT_PREVIEW_VARIANTS: Integer = 64;
+final MIN_SCENE_ENVIRONMENT_PREVIEW_OFFSET: Integer = -1000000;
+final MAX_SCENE_ENVIRONMENT_PREVIEW_OFFSET: Integer = 1000000;
+final BACKGROUND_FIT_COVER: String = "cover";
+final BACKGROUND_FIT_CONTAIN: String = "contain";
+final BACKGROUND_FIT_STRETCH: String = "stretch";
 
 /// @brief One validated typed field in a project scene-component template.
 class SceneComponentField {
@@ -175,6 +192,40 @@ class SceneObjectPreviewDefinition {
     }
 }
 
+/// @brief One bounded project-owned gameplay-like 2D scene backdrop profile.
+/// @details Images resolve beside the project schema, not beside scene files.
+///          Integer variants are read-only editor presentation conventions.
+class ScenePreview2DDefinition {
+    expose Boolean present;
+    expose String background;
+    expose String variantProperty;
+    expose Integer variantOffset;
+    expose List[String] variantImages;
+    expose String fit;
+    expose Boolean hasShowGrid;
+    expose Boolean showGrid;
+
+    expose func init() {
+        present = false;
+        background = "";
+        variantProperty = "";
+        variantOffset = 0;
+        variantImages = [];
+        fit = BACKGROUND_FIT_COVER;
+        hasShowGrid = false;
+        showGrid = false;
+    }
+
+    /// @brief Resolve one integer variant or the optional fallback image.
+    expose func BackgroundForVariant(value: Integer) -> String {
+        var index = value + variantOffset;
+        if index >= 0 and index < variantImages.count() {
+            return variantImages.get(index);
+        }
+        return background;
+    }
+}
+
 /// @brief Project root-metadata mappings for a gameplay-like 3D preview.
 /// @details Property groups are either complete or absent. The editor reads
 ///          only typed scalar metadata and never executes project code.
@@ -244,6 +295,26 @@ class ScenePreview3DDefinition {
     expose Boolean showColliders;
     expose Boolean hasShowRoutes;
     expose Boolean showRoutes;
+    expose String environmentPrefab;
+    expose String environmentVariantProperty;
+    expose List[String] environmentVariantPrefabs;
+    expose Integer environmentVariantOffset;
+    expose Boolean hasTonemap;
+    expose Integer tonemapMode;
+    expose Number tonemapExposure;
+    expose Boolean hasBloom;
+    expose Number bloomThreshold;
+    expose Number bloomIntensity;
+    expose Integer bloomPasses;
+    expose Boolean hasColorGrade;
+    expose Number colorGradeBrightness;
+    expose Number colorGradeContrast;
+    expose Number colorGradeSaturation;
+    expose Boolean hasVignette;
+    expose Number vignetteRadius;
+    expose Number vignetteSoftness;
+    expose Boolean hasFxaa;
+    expose Boolean fxaa;
 
     expose func init() {
         present = false;
@@ -311,6 +382,26 @@ class ScenePreview3DDefinition {
         showColliders = false;
         hasShowRoutes = false;
         showRoutes = false;
+        environmentPrefab = "";
+        environmentVariantProperty = "";
+        environmentVariantPrefabs = [];
+        environmentVariantOffset = 0;
+        hasTonemap = false;
+        tonemapMode = 0;
+        tonemapExposure = 1.0;
+        hasBloom = false;
+        bloomThreshold = 0.8;
+        bloomIntensity = 1.0;
+        bloomPasses = 3;
+        hasColorGrade = false;
+        colorGradeBrightness = 0.0;
+        colorGradeContrast = 1.0;
+        colorGradeSaturation = 1.0;
+        hasVignette = false;
+        vignetteRadius = 0.7;
+        vignetteSoftness = 0.3;
+        hasFxaa = false;
+        fxaa = false;
     }
 
     expose func HasStart() -> Boolean {
@@ -363,6 +454,31 @@ class ScenePreview3DDefinition {
             and hasHeightFogDensity
             and hasHeightFogOpacity;
     }
+
+    /// @brief Number of enabled deterministic post-processing passes.
+    expose func PostFXEffectCount() -> Integer {
+        var count = 0;
+        if hasTonemap { count = count + 1; }
+        if hasBloom { count = count + 1; }
+        if hasColorGrade { count = count + 1; }
+        if hasVignette { count = count + 1; }
+        if hasFxaa and fxaa { count = count + 1; }
+        return count;
+    }
+
+    /// @brief Return whether this profile owns any active post-processing.
+    expose func HasPostFX() -> Boolean {
+        return PostFXEffectCount() > 0;
+    }
+
+    /// @brief Resolve one root-metadata environment variant or its fallback.
+    expose func EnvironmentPrefabForVariant(value: Integer) -> String {
+        var index = value + environmentVariantOffset;
+        if index >= 0 and index < environmentVariantPrefabs.count() {
+            return environmentVariantPrefabs.get(index);
+        }
+        return environmentPrefab;
+    }
 }
 
 /// @brief One metadata-matched transient 3D prefab visualization rule.
@@ -405,6 +521,7 @@ class SceneComponentSchema {
     expose Integer version;
     expose List[SceneComponentDefinition] components;
     expose List[SceneObjectPreviewDefinition] objectPreviews;
+    expose ScenePreview2DDefinition scenePreview2D;
     expose ScenePreview3DDefinition scenePreview3D;
     expose List[SceneNodePreview3DDefinition] nodePreviews3D;
 
@@ -416,6 +533,7 @@ class SceneComponentSchema {
         version = SCHEMA_VERSION;
         components = [];
         objectPreviews = [];
+        scenePreview2D = new ScenePreview2DDefinition();
         scenePreview3D = new ScenePreview3DDefinition();
         nodePreviews3D = [];
     }
@@ -595,6 +713,7 @@ expose func ParseText(text: String,
 
     schema.components = staged;
     if ParseObjectPreviews(root, schema) == false { return schema; }
+    if ParseScenePreview2D(root, schema) == false { return schema; }
     if ParseScenePreview3D(root, schema) == false { return schema; }
     if ParseNodePreviews3D(root, schema) == false { return schema; }
     schema.valid = true;
@@ -827,6 +946,29 @@ func PortablePreviewPrefab(value: String) -> Boolean {
         or Str.EndsWith(folded, ".vscn");
 }
 
+/// @brief Validate one project-root-relative 2D preview image reference.
+func PortablePreviewImage(value: String) -> Boolean {
+    var length = Str.get_Length(value);
+    if length <= 0 or length > MAX_SCENE_PREVIEW_2D_IMAGE_CHARS {
+        return false;
+    }
+    if Path.IsAbsolute(value)
+       or Str.Contains(value, "\\")
+       or Str.Contains(value, ":")
+       or value == ".."
+       or Str.StartsWith(value, "../")
+       or Str.Contains(value, "/../")
+       or Str.EndsWith(value, "/..") {
+        return false;
+    }
+    var folded = Str.ToLower(value);
+    return Str.EndsWith(folded, ".png")
+        or Str.EndsWith(folded, ".jpg")
+        or Str.EndsWith(folded, ".jpeg")
+        or Str.EndsWith(folded, ".bmp")
+        or Str.EndsWith(folded, ".gif");
+}
+
 /// @brief Parse the optional schema-v4 project 3D preview profile.
 func ParseScenePreview3D(root: Any,
                          schema: SceneComponentSchema) -> Boolean {
@@ -880,8 +1022,55 @@ func ParseScenePreview3D(root: Any,
         }
         versionSevenIndex = versionSevenIndex + 1;
     }
+    var versionNineNames: List[String] = [
+        "environmentPrefab",
+        "environmentVariantProperty",
+        "environmentVariantPrefabs",
+        "environmentVariantOffset"
+    ];
+    var versionNineIndex = 0;
+    while versionNineIndex < versionNineNames.count() {
+        if Map.Has(raw, versionNineNames.get(versionNineIndex))
+           and schema.version
+               < SCENE_ENVIRONMENT_PREVIEW_3D_SCHEMA_VERSION {
+            Reject(
+                schema,
+                "Project 3D scene environment previews require "
+                    + "schema version 9.");
+            return false;
+        }
+        versionNineIndex = versionNineIndex + 1;
+    }
+    var versionTenNames: List[String] = [
+        "tonemapMode", "tonemapExposure",
+        "bloomThreshold", "bloomIntensity", "bloomPasses",
+        "colorGradeBrightness", "colorGradeContrast",
+        "colorGradeSaturation",
+        "vignetteRadius", "vignetteSoftness",
+        "fxaa"
+    ];
+    var versionTenIndex = 0;
+    while versionTenIndex < versionTenNames.count() {
+        if Map.Has(raw, versionTenNames.get(versionTenIndex))
+           and schema.version
+               < SCENE_POSTFX_PREVIEW_3D_SCHEMA_VERSION {
+            Reject(
+                schema,
+                "Project 3D post-processing previews require "
+                    + "schema version 10.");
+            return false;
+        }
+        versionTenIndex = versionTenIndex + 1;
+    }
 
     var profile = new ScenePreview3DDefinition();
+    if ParseSceneEnvironmentPreview3D(
+           raw, profile, schema) == false {
+        return false;
+    }
+    if ParseScenePostFXPreview3D(raw, profile, schema) == false {
+        return false;
+    }
     profile.startXProperty =
         ParsePreview3DProperty(raw, "startXProperty", schema);
     profile.startYProperty =
@@ -1175,6 +1364,252 @@ func ParseScenePreview3D(root: Any,
     return true;
 }
 
+/// @brief Parse one optional schema-v9 transient scene-environment prefab.
+/// @details Paths remain project-relative and variants resolve only from exact
+///          integer root metadata; no project code executes in Studio.
+func ParseSceneEnvironmentPreview3D(
+    raw: Any,
+    profile: ScenePreview3DDefinition,
+    schema: SceneComponentSchema) -> Boolean {
+    if Map.Has(raw, "environmentPrefab") {
+        if Json.TypeOf(Map.Get(raw, "environmentPrefab")) != "string" {
+            Reject(
+                schema,
+                "scenePreview3D environmentPrefab must be a string.");
+            return false;
+        }
+        profile.environmentPrefab =
+            Str.Trim(Map.GetStr(raw, "environmentPrefab"));
+        if PortablePreviewPrefab(profile.environmentPrefab) == false {
+            Reject(
+                schema,
+                "scenePreview3D environmentPrefab must be a safe "
+                    + "project-relative scene path.");
+            return false;
+        }
+    }
+
+    var hasVariantProperty =
+        Map.Has(raw, "environmentVariantProperty");
+    var hasVariantPrefabs =
+        Map.Has(raw, "environmentVariantPrefabs");
+    if hasVariantProperty != hasVariantPrefabs {
+        Reject(
+            schema,
+            "scenePreview3D environmentVariantProperty and "
+                + "environmentVariantPrefabs must be supplied together.");
+        return false;
+    }
+    if hasVariantProperty {
+        if Json.TypeOf(
+               Map.Get(raw, "environmentVariantProperty")) != "string" {
+            Reject(
+                schema,
+                "scenePreview3D environmentVariantProperty "
+                    + "must be a string.");
+            return false;
+        }
+        profile.environmentVariantProperty =
+            Str.Trim(Map.GetStr(raw, "environmentVariantProperty"));
+        if PortableIdentifier(
+               profile.environmentVariantProperty,
+               MAX_FIELD_KEY_CHARS) == false {
+            Reject(
+                schema,
+                "scenePreview3D environmentVariantProperty "
+                    + "must be a portable key.");
+            return false;
+        }
+        var variants =
+            Map.Get(raw, "environmentVariantPrefabs");
+        if variants == null or Json.TypeOf(variants) != "array" {
+            Reject(
+                schema,
+                "scenePreview3D environmentVariantPrefabs "
+                    + "must be an array.");
+            return false;
+        }
+        var count = Seq.get_Count(variants);
+        if count <= 0
+           or count > MAX_SCENE_ENVIRONMENT_PREVIEW_VARIANTS {
+            Reject(
+                schema,
+                "scenePreview3D requires between 1 and 64 "
+                    + "environment variants.");
+            return false;
+        }
+        var index = 0;
+        while index < count {
+            var rawPath = Seq.Get(variants, index);
+            if rawPath == null
+               or Json.TypeOf(rawPath) != "string" {
+                Reject(
+                    schema,
+                    "scenePreview3D environment variant paths "
+                        + "must be strings.");
+                return false;
+            }
+            var path = Str.Trim(Seq.GetStr(variants, index));
+            if PortablePreviewPrefab(path) == false {
+                Reject(
+                    schema,
+                    "scenePreview3D environment variants must be "
+                        + "safe project-relative scene paths.");
+                return false;
+            }
+            profile.environmentVariantPrefabs.add(path);
+            index = index + 1;
+        }
+    }
+    if Map.Has(raw, "environmentVariantOffset") {
+        if hasVariantPrefabs == false
+           or Json.TypeOf(
+               Map.Get(raw, "environmentVariantOffset")) != "number" {
+            Reject(
+                schema,
+                "scenePreview3D environmentVariantOffset requires "
+                    + "variant prefabs and must be an integer.");
+            return false;
+        }
+        var parsed = Parse.TryInt(
+            Json.Format(Map.Get(raw, "environmentVariantOffset")));
+        if parsed.IsNone
+           or parsed.UnwrapI64()
+              < MIN_SCENE_ENVIRONMENT_PREVIEW_OFFSET
+           or parsed.UnwrapI64()
+              > MAX_SCENE_ENVIRONMENT_PREVIEW_OFFSET {
+            Reject(
+                schema,
+                "scenePreview3D environmentVariantOffset "
+                    + "exceeds the supported range.");
+            return false;
+        }
+        profile.environmentVariantOffset = parsed.UnwrapI64();
+    }
+    return true;
+}
+
+/// @brief Parse deterministic schema-v10 viewport post-processing passes.
+/// @details Each parameter group is complete or absent. The fixed chain order
+///          matches the portable runtime path and excludes depth-dependent
+///          effects whose availability differs by backend.
+func ParseScenePostFXPreview3D(
+    raw: Any,
+    profile: ScenePreview3DDefinition,
+    schema: SceneComponentSchema) -> Boolean {
+    var hasTonemapMode = Map.Has(raw, "tonemapMode");
+    var hasTonemapExposure = Map.Has(raw, "tonemapExposure");
+    if hasTonemapMode != hasTonemapExposure {
+        Reject(
+            schema,
+            "scenePreview3D tonemapMode and tonemapExposure "
+                + "must be supplied together.");
+        return false;
+    }
+    if hasTonemapMode {
+        if ParsePreview3DInteger(
+               raw, "tonemapMode", 0, 2, profile, schema) == false
+           or ParsePreview3DNumber(
+               raw, "tonemapExposure", 0.0, 16.0,
+               profile, schema) == false {
+            return false;
+        }
+        profile.hasTonemap = true;
+    }
+
+    var hasBloomThreshold = Map.Has(raw, "bloomThreshold");
+    var hasBloomIntensity = Map.Has(raw, "bloomIntensity");
+    var hasBloomPasses = Map.Has(raw, "bloomPasses");
+    var bloomCount = 0;
+    if hasBloomThreshold { bloomCount = bloomCount + 1; }
+    if hasBloomIntensity { bloomCount = bloomCount + 1; }
+    if hasBloomPasses { bloomCount = bloomCount + 1; }
+    if bloomCount != 0 and bloomCount != 3 {
+        Reject(
+            schema,
+            "scenePreview3D bloom threshold/intensity/passes "
+                + "must be complete.");
+        return false;
+    }
+    if bloomCount == 3 {
+        if ParsePreview3DNumber(
+               raw, "bloomThreshold", 0.0, 16.0,
+               profile, schema) == false
+           or ParsePreview3DNumber(
+               raw, "bloomIntensity", 0.0, 16.0,
+               profile, schema) == false
+           or ParsePreview3DInteger(
+               raw, "bloomPasses", 0, 32,
+               profile, schema) == false {
+            return false;
+        }
+        profile.hasBloom = true;
+    }
+
+    var hasGradeBrightness =
+        Map.Has(raw, "colorGradeBrightness");
+    var hasGradeContrast =
+        Map.Has(raw, "colorGradeContrast");
+    var hasGradeSaturation =
+        Map.Has(raw, "colorGradeSaturation");
+    var gradeCount = 0;
+    if hasGradeBrightness { gradeCount = gradeCount + 1; }
+    if hasGradeContrast { gradeCount = gradeCount + 1; }
+    if hasGradeSaturation { gradeCount = gradeCount + 1; }
+    if gradeCount != 0 and gradeCount != 3 {
+        Reject(
+            schema,
+            "scenePreview3D color-grade brightness/contrast/saturation "
+                + "must be complete.");
+        return false;
+    }
+    if gradeCount == 3 {
+        if ParsePreview3DNumber(
+               raw, "colorGradeBrightness", -1.0, 1.0,
+               profile, schema) == false
+           or ParsePreview3DNumber(
+               raw, "colorGradeContrast", 0.0, 4.0,
+               profile, schema) == false
+           or ParsePreview3DNumber(
+               raw, "colorGradeSaturation", 0.0, 4.0,
+               profile, schema) == false {
+            return false;
+        }
+        profile.hasColorGrade = true;
+    }
+
+    var hasVignetteRadius = Map.Has(raw, "vignetteRadius");
+    var hasVignetteSoftness = Map.Has(raw, "vignetteSoftness");
+    if hasVignetteRadius != hasVignetteSoftness {
+        Reject(
+            schema,
+            "scenePreview3D vignetteRadius and vignetteSoftness "
+                + "must be supplied together.");
+        return false;
+    }
+    if hasVignetteRadius {
+        if ParsePreview3DNumber(
+               raw, "vignetteRadius", 0.0, 1.0,
+               profile, schema) == false
+           or ParsePreview3DNumber(
+               raw, "vignetteSoftness", 0.001, 1.0,
+               profile, schema) == false {
+            return false;
+        }
+        profile.hasVignette = true;
+    }
+
+    if Map.Has(raw, "fxaa") {
+        if Json.TypeOf(Map.Get(raw, "fxaa")) != "boolean" {
+            Reject(schema, "scenePreview3D fxaa must be a boolean.");
+            return false;
+        }
+        profile.hasFxaa = true;
+        profile.fxaa = Map.GetBool(raw, "fxaa");
+    }
+    return true;
+}
+
 /// @brief Parse one optional portable metadata key from a 3D preview profile.
 func ParsePreview3DProperty(raw: Any,
                             name: String,
@@ -1237,9 +1672,64 @@ func ParsePreview3DNumber(
     } else if name == "heightFogDensity" {
         profile.hasHeightFogDensity = true;
         profile.heightFogDensity = value;
-    } else {
+    } else if name == "heightFogOpacity" {
         profile.hasHeightFogOpacity = true;
         profile.heightFogOpacity = value;
+    } else if name == "tonemapExposure" {
+        profile.tonemapExposure = value;
+    } else if name == "bloomThreshold" {
+        profile.bloomThreshold = value;
+    } else if name == "bloomIntensity" {
+        profile.bloomIntensity = value;
+    } else if name == "colorGradeBrightness" {
+        profile.colorGradeBrightness = value;
+    } else if name == "colorGradeContrast" {
+        profile.colorGradeContrast = value;
+    } else if name == "colorGradeSaturation" {
+        profile.colorGradeSaturation = value;
+    } else if name == "vignetteRadius" {
+        profile.vignetteRadius = value;
+    } else if name == "vignetteSoftness" {
+        profile.vignetteSoftness = value;
+    } else {
+        Reject(schema, "Unsupported numeric 3D preview member.");
+        return false;
+    }
+    return true;
+}
+
+/// @brief Parse one exact bounded schema-v10 post-processing integer.
+func ParsePreview3DInteger(
+    raw: Any,
+    name: String,
+    minimum: Integer,
+    maximum: Integer,
+    profile: ScenePreview3DDefinition,
+    schema: SceneComponentSchema) -> Boolean {
+    if Map.Has(raw, name) == false { return true; }
+    if Json.TypeOf(Map.Get(raw, name)) != "number" {
+        Reject(
+            schema,
+            "scenePreview3D " + name + " must be an integer.");
+        return false;
+    }
+    var parsed = Parse.TryInt(Json.Format(Map.Get(raw, name)));
+    if parsed.IsNone
+       or parsed.UnwrapI64() < minimum
+       or parsed.UnwrapI64() > maximum {
+        Reject(
+            schema,
+            "scenePreview3D " + name
+                + " is outside its supported integer range.");
+        return false;
+    }
+    if name == "tonemapMode" {
+        profile.tonemapMode = parsed.UnwrapI64();
+    } else if name == "bloomPasses" {
+        profile.bloomPasses = parsed.UnwrapI64();
+    } else {
+        Reject(schema, "Unsupported integer 3D preview member.");
+        return false;
     }
     return true;
 }
@@ -1288,6 +1778,161 @@ func ParsePreview3DBoolean(
         profile.hasShowRoutes = true;
         profile.showRoutes = value;
     }
+    return true;
+}
+
+/// @brief Parse the optional schema-v8 project 2D scene backdrop profile.
+func ParseScenePreview2D(root: Any,
+                         schema: SceneComponentSchema) -> Boolean {
+    if Map.Has(root, "scenePreview2D") == false { return true; }
+    if schema.version < SCENE_PREVIEW_2D_SCHEMA_VERSION {
+        Reject(schema, "Project 2D scene previews require schema version 8.");
+        return false;
+    }
+    var raw = Map.Get(root, "scenePreview2D");
+    if raw == null or Json.TypeOf(raw) != "object" {
+        Reject(schema, "scenePreview2D must be an object.");
+        return false;
+    }
+
+    var profile = new ScenePreview2DDefinition();
+    if Map.Has(raw, "background") {
+        if Json.TypeOf(Map.Get(raw, "background")) != "string" {
+            Reject(schema, "scenePreview2D background must be a string.");
+            return false;
+        }
+        profile.background = Str.Trim(Map.GetStr(raw, "background"));
+        if PortablePreviewImage(profile.background) == false {
+            Reject(
+                schema,
+                "scenePreview2D background must be a safe project-relative "
+                    + "image path.");
+            return false;
+        }
+    }
+
+    var hasVariantProperty = Map.Has(raw, "variantProperty");
+    var hasVariantImages = Map.Has(raw, "variantImages");
+    if hasVariantProperty != hasVariantImages {
+        Reject(
+            schema,
+            "scenePreview2D variantProperty and variantImages "
+                + "must be supplied together.");
+        return false;
+    }
+    if hasVariantProperty {
+        if Json.TypeOf(Map.Get(raw, "variantProperty")) != "string" {
+            Reject(
+                schema,
+                "scenePreview2D variantProperty must be a string.");
+            return false;
+        }
+        profile.variantProperty =
+            Str.Trim(Map.GetStr(raw, "variantProperty"));
+        if PortableIdentifier(
+               profile.variantProperty, MAX_FIELD_KEY_CHARS) == false {
+            Reject(
+                schema,
+                "scenePreview2D variantProperty must be a portable key.");
+            return false;
+        }
+        var variants = Map.Get(raw, "variantImages");
+        if variants == null or Json.TypeOf(variants) != "array" {
+            Reject(
+                schema,
+                "scenePreview2D variantImages must be an array.");
+            return false;
+        }
+        var count = Seq.get_Count(variants);
+        if count <= 0 or count > MAX_SCENE_PREVIEW_2D_VARIANTS {
+            Reject(
+                schema,
+                "scenePreview2D requires between 1 and 64 variant images.");
+            return false;
+        }
+        var index = 0;
+        while index < count {
+            var rawPath = Seq.Get(variants, index);
+            if rawPath == null or Json.TypeOf(rawPath) != "string" {
+                Reject(
+                    schema,
+                    "scenePreview2D variant image paths must be strings.");
+                return false;
+            }
+            var path = Str.Trim(Seq.GetStr(variants, index));
+            if PortablePreviewImage(path) == false {
+                Reject(
+                    schema,
+                    "scenePreview2D variants must be safe project-relative "
+                        + "image paths.");
+                return false;
+            }
+            profile.variantImages.add(path);
+            index = index + 1;
+        }
+    }
+
+    if Map.Has(raw, "variantOffset") {
+        if hasVariantImages == false
+           or Json.TypeOf(Map.Get(raw, "variantOffset")) != "number" {
+            Reject(
+                schema,
+                "scenePreview2D variantOffset requires variant images "
+                    + "and must be an integer.");
+            return false;
+        }
+        var parsed =
+            Parse.TryInt(Json.Format(Map.Get(raw, "variantOffset")));
+        if parsed.IsNone
+           or parsed.UnwrapI64() < MIN_SCENE_PREVIEW_2D_OFFSET
+           or parsed.UnwrapI64() > MAX_SCENE_PREVIEW_2D_OFFSET {
+            Reject(
+                schema,
+                "scenePreview2D variantOffset exceeds the supported range.");
+            return false;
+        }
+        profile.variantOffset = parsed.UnwrapI64();
+    }
+
+    if Map.Has(raw, "fit") {
+        if Json.TypeOf(Map.Get(raw, "fit")) != "string" {
+            Reject(schema, "scenePreview2D fit must be a string.");
+            return false;
+        }
+        profile.fit = Str.ToLower(Str.Trim(Map.GetStr(raw, "fit")));
+        if profile.fit != BACKGROUND_FIT_COVER
+           and profile.fit != BACKGROUND_FIT_CONTAIN
+           and profile.fit != BACKGROUND_FIT_STRETCH {
+            Reject(
+                schema,
+                "scenePreview2D fit must be cover, contain, or stretch.");
+            return false;
+        }
+        if profile.background == "" and profile.variantImages.count() == 0 {
+            Reject(
+                schema,
+                "scenePreview2D fit requires a background image.");
+            return false;
+        }
+    }
+
+    if Map.Has(raw, "showGrid") {
+        if Json.TypeOf(Map.Get(raw, "showGrid")) != "boolean" {
+            Reject(schema, "scenePreview2D showGrid must be a boolean.");
+            return false;
+        }
+        profile.hasShowGrid = true;
+        profile.showGrid = Map.GetBool(raw, "showGrid");
+    }
+    if profile.background == "" and profile.variantImages.count() == 0
+       and profile.hasShowGrid == false {
+        Reject(
+            schema,
+            "scenePreview2D requires a background mapping or showGrid.");
+        return false;
+    }
+    profile.present = true;
+    schema.scenePreview2D = profile;
     return true;
 }
 
@@ -1914,6 +2559,7 @@ func Reject(schema: SceneComponentSchema,
     schema.error = message;
     schema.components = [];
     schema.objectPreviews = [];
+    schema.scenePreview2D = new ScenePreview2DDefinition();
     schema.scenePreview3D = new ScenePreview3DDefinition();
     schema.nodePreviews3D = [];
     return schema;

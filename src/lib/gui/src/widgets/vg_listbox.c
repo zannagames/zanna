@@ -18,6 +18,8 @@
 //     malloc/free churn during rapid updates.
 //   - Overflowing row text paints with an ellipsis and temporarily becomes the
 //     widget tooltip while hovered; the caller's original tooltip is restored.
+//   - Opt-in retained-row reordering latches application-directed source/target
+//     requests without mutating owned item linkage.
 // Ownership/Lifetime:
 //   - Items are owned by the listbox; freed on remove, clear, or destroy.
 // Links: lib/gui/include/vg_widgets.h,
@@ -83,6 +85,11 @@ static void listbox_compute_virtual_range(vg_listbox_t *lb,
                                           float viewport_height,
                                           size_t *out_start,
                                           size_t *out_count);
+static void listbox_cancel_reorder_drag(vg_listbox_t *lb);
+static void listbox_reset_reorder_state(vg_listbox_t *lb, bool clear_request);
+static size_t listbox_reorder_slot_at_y(vg_listbox_t *lb, float local_y);
+static size_t listbox_reorder_target_for_slot(vg_listbox_t *lb, size_t source, size_t slot);
+static void listbox_latch_reorder_request(vg_listbox_t *lb, size_t source, size_t target);
 
 //=============================================================================
 // VTable
@@ -331,6 +338,102 @@ static void listbox_clamp_scroll(vg_listbox_t *lb, float viewport_height) {
         max_scroll = 0.0f;
     if (lb->scroll_y > max_scroll)
         lb->scroll_y = max_scroll;
+}
+
+/// @brief Cancel one retained-row reorder gesture and release owned capture.
+/// @param lb List box whose transient pointer state is cleared.
+static void listbox_cancel_reorder_drag(vg_listbox_t *lb) {
+    if (!lb)
+        return;
+    bool repaint =
+        lb->reorder_armed || lb->reorder_dragging || lb->reorder_insertion_slot != SIZE_MAX;
+    if (vg_widget_get_input_capture() == &lb->base)
+        vg_widget_release_input_capture();
+    lb->reorder_armed = false;
+    lb->reorder_dragging = false;
+    lb->reorder_start_x = 0.0f;
+    lb->reorder_start_y = 0.0f;
+    lb->reorder_drag_source_index = SIZE_MAX;
+    lb->reorder_insertion_slot = SIZE_MAX;
+    if (repaint)
+        lb->base.needs_paint = true;
+}
+
+/// @brief Cancel transient reordering and optionally invalidate latched indices.
+/// @param lb List box whose reorder state is reset.
+/// @param clear_request true to clear the pending edge and most recent indices.
+static void listbox_reset_reorder_state(vg_listbox_t *lb, bool clear_request) {
+    if (!lb)
+        return;
+    listbox_cancel_reorder_drag(lb);
+    if (clear_request) {
+        lb->reorder_request_pending = false;
+        lb->reorder_request_source_index = SIZE_MAX;
+        lb->reorder_request_target_index = SIZE_MAX;
+    }
+}
+
+/// @brief Map a local pointer Y to one retained-row insertion gap.
+/// @details Gaps are numbered from zero before the first row through
+///          `item_count` after the final row. Row midpoints divide adjacent
+///          gaps and scroll offset is included.
+/// @param lb Retained list box receiving a reorder drag.
+/// @param local_y Pointer Y relative to the list-box viewport.
+/// @return Insertion gap in `[0, item_count]`, or SIZE_MAX when unavailable.
+static size_t listbox_reorder_slot_at_y(vg_listbox_t *lb, float local_y) {
+    if (!lb || lb->virtual_mode || lb->item_count <= 0 || lb->item_height <= 0.0f ||
+        !isfinite(lb->item_height) || !isfinite(local_y))
+        return SIZE_MAX;
+    size_t count = (size_t)lb->item_count;
+    if (local_y <= 0.0f)
+        return 0u;
+    if (local_y >= lb->base.height)
+        return count;
+    float content_y = local_y + lb->scroll_y;
+    if (content_y <= 0.0f)
+        return 0u;
+    float content_height = (float)count * lb->item_height;
+    if (content_y >= content_height)
+        return count;
+    size_t row = (size_t)(content_y / lb->item_height);
+    if (row >= count)
+        return count;
+    float row_top = (float)row * lb->item_height;
+    return content_y - row_top >= lb->item_height * 0.5f ? row + 1u : row;
+}
+
+/// @brief Convert one insertion gap to the source-removed final row index.
+/// @param lb Retained list box defining the valid row count.
+/// @param source Row being removed.
+/// @param slot Gap in the pre-removal list.
+/// @return Final target row, or SIZE_MAX for invalid input.
+static size_t listbox_reorder_target_for_slot(vg_listbox_t *lb, size_t source, size_t slot) {
+    if (!lb || lb->virtual_mode || lb->item_count <= 0)
+        return SIZE_MAX;
+    size_t count = (size_t)lb->item_count;
+    if (source >= count || slot > count)
+        return SIZE_MAX;
+    size_t target = slot;
+    if (slot > source)
+        target--;
+    if (target >= count)
+        target = count - 1u;
+    return target;
+}
+
+/// @brief Publish one validated non-no-op application reorder request.
+/// @param lb Retained list box owning the request edge.
+/// @param source Existing row index.
+/// @param target Final row index after source removal.
+static void listbox_latch_reorder_request(vg_listbox_t *lb, size_t source, size_t target) {
+    if (!lb || !lb->reorderable || lb->virtual_mode || lb->item_count <= 0)
+        return;
+    size_t count = (size_t)lb->item_count;
+    if (source >= count || target >= count || source == target)
+        return;
+    lb->reorder_request_source_index = source;
+    lb->reorder_request_target_index = target;
+    lb->reorder_request_pending = true;
 }
 
 /// @brief Compute virtual viewport bounds without fetching or allocating row text.
@@ -1120,6 +1223,22 @@ static void listbox_paint(vg_widget_t *widget, void *canvas) {
         }
     }
 
+    if (lb->reorder_dragging && !lb->virtual_mode && lb->reorder_insertion_slot != SIZE_MAX &&
+        lb->reorder_insertion_slot <= (size_t)lb->item_count) {
+        float marker_y = widget->y + (float)lb->reorder_insertion_slot * ih - lb->scroll_y;
+        float scale = theme->ui_scale > 0.0f ? theme->ui_scale : 1.0f;
+        int32_t thickness = (int32_t)(3.0f * scale + 0.5f);
+        if (thickness < 2)
+            thickness = 2;
+        int32_t marker = (int32_t)(marker_y - (float)thickness * 0.5f);
+        if (marker < y + 1)
+            marker = y + 1;
+        if (marker + thickness > y + h - 1)
+            marker = y + h - 1 - thickness;
+        if (w > 12 && marker >= y + 1)
+            vgfx_fill_rect(win, x + 6, marker, w - 12, thickness, theme->colors.accent_primary);
+    }
+
     vgfx_clear_clip(win);
 
     /* Border: use focus color when the listbox has keyboard focus */
@@ -1165,6 +1284,15 @@ static bool listbox_handle_event(vg_widget_t *widget, vg_event_t *event) {
                         listbox_select_nonvirtual_with_modifiers(lb, item, toggle, range);
                         if (lb->on_select)
                             lb->on_select(widget, item, lb->on_select_data);
+                        if (lb->reorderable && event->mouse.button == VG_MOUSE_LEFT) {
+                            listbox_cancel_reorder_drag(lb);
+                            lb->reorder_armed = true;
+                            lb->reorder_start_x = event->mouse.x;
+                            lb->reorder_start_y = event->mouse.y;
+                            lb->reorder_drag_source_index = (size_t)idx32;
+                            lb->reorder_insertion_slot = (size_t)idx32;
+                            vg_widget_set_input_capture(widget);
+                        }
                         widget->needs_paint = true;
                         event->handled = true;
                         return true;
@@ -1174,7 +1302,58 @@ static bool listbox_handle_event(vg_widget_t *widget, vg_event_t *event) {
             break;
         }
 
+        case VG_EVENT_MOUSE_UP: {
+            if (event->mouse.button != VG_MOUSE_LEFT || !lb->reorder_armed)
+                break;
+            bool was_dragging = lb->reorder_dragging;
+            size_t source = lb->reorder_drag_source_index;
+            size_t slot = listbox_reorder_slot_at_y(lb, event->mouse.y);
+            size_t target = listbox_reorder_target_for_slot(lb, source, slot);
+            listbox_cancel_reorder_drag(lb);
+            if (was_dragging)
+                listbox_latch_reorder_request(lb, source, target);
+            if (was_dragging) {
+                event->handled = true;
+                return true;
+            }
+            break;
+        }
+
         case VG_EVENT_MOUSE_MOVE: {
+            if (lb->reorder_armed && vg_widget_get_input_capture() != widget)
+                listbox_cancel_reorder_drag(lb);
+            if (lb->reorder_armed && vg_widget_get_input_capture() == widget) {
+                float scale = vg_theme_get_current()->ui_scale;
+                if (scale <= 0.0f)
+                    scale = 1.0f;
+                float dx = event->mouse.x - lb->reorder_start_x;
+                float dy = event->mouse.y - lb->reorder_start_y;
+                float threshold = 6.0f * scale;
+                if (!lb->reorder_dragging && dx * dx + dy * dy >= threshold * threshold)
+                    lb->reorder_dragging = true;
+                if (lb->reorder_dragging) {
+                    float edge = lb->item_height * 0.75f;
+                    float maximum_edge = widget->height * 0.25f;
+                    if (edge > maximum_edge)
+                        edge = maximum_edge;
+                    if (edge > 0.0f && event->mouse.y < edge)
+                        lb->scroll_y -= lb->item_height * 0.35f;
+                    else if (edge > 0.0f && event->mouse.y > widget->height - edge)
+                        lb->scroll_y += lb->item_height * 0.35f;
+                    listbox_clamp_scroll(lb, widget->height);
+                    lb->reorder_insertion_slot = listbox_reorder_slot_at_y(lb, event->mouse.y);
+                    float content_y = event->mouse.y + lb->scroll_y;
+                    int hovered_index =
+                        lb->item_height > 0.0f ? (int)(content_y / lb->item_height) : -1;
+                    lb->hovered = hovered_index >= 0 && hovered_index < lb->item_count
+                                      ? listbox_item_at_index_nonvirtual(lb, (size_t)hovered_index)
+                                      : NULL;
+                    listbox_sync_hover_tooltip(lb);
+                    widget->needs_paint = true;
+                    event->handled = true;
+                    return true;
+                }
+            }
             if (lb->virtual_mode) {
                 listbox_sync_virtual_cache(lb, widget->height);
                 size_t idx = 0;
@@ -1242,6 +1421,11 @@ static bool listbox_handle_event(vg_widget_t *widget, vg_event_t *event) {
         }
 
         case VG_EVENT_KEY_DOWN: {
+            if (event->key.key == VG_KEY_ESCAPE && (lb->reorder_armed || lb->reorder_dragging)) {
+                listbox_cancel_reorder_drag(lb);
+                event->handled = true;
+                return true;
+            }
             size_t total = lb->virtual_mode ? lb->total_item_count
                                             : (lb->item_count > 0 ? (size_t)lb->item_count : 0u);
             if (total == 0)
@@ -1257,6 +1441,18 @@ static bool listbox_handle_event(vg_widget_t *widget, vg_event_t *event) {
             bool has_current = current_idx != SIZE_MAX && current_idx < total;
             size_t new_idx = has_current ? current_idx : 0u;
             bool navigated = true;
+
+            if (lb->reorderable && !lb->virtual_mode && has_current && (mods & VG_MOD_ALT) != 0 &&
+                (event->key.key == VG_KEY_UP || event->key.key == VG_KEY_DOWN)) {
+                size_t target = current_idx;
+                if (event->key.key == VG_KEY_UP && current_idx > 0)
+                    target = current_idx - 1u;
+                else if (event->key.key == VG_KEY_DOWN && current_idx + 1u < total)
+                    target = current_idx + 1u;
+                listbox_latch_reorder_request(lb, current_idx, target);
+                event->handled = true;
+                return true;
+            }
 
             switch (event->key.key) {
                 case VG_KEY_UP:
@@ -1371,6 +1567,10 @@ vg_listbox_t *vg_listbox_create(vg_widget_t *parent) {
     listbox->prev_selected_index = SIZE_MAX;
     listbox->anchor_selected_index = SIZE_MAX;
     listbox->hovered_index = SIZE_MAX;
+    listbox->reorder_drag_source_index = SIZE_MAX;
+    listbox->reorder_insertion_slot = SIZE_MAX;
+    listbox->reorder_request_source_index = SIZE_MAX;
+    listbox->reorder_request_target_index = SIZE_MAX;
     listbox->item_height = listbox_default_item_height(listbox);
 
     if (parent) {
@@ -1390,6 +1590,7 @@ vg_listbox_t *vg_listbox_create(vg_widget_t *parent) {
 vg_listbox_item_t *vg_listbox_add_item(vg_listbox_t *listbox, const char *text, void *user_data) {
     if (!listbox || !text)
         return NULL;
+    listbox_reset_reorder_state(listbox, true);
 
     vg_listbox_item_t *item = calloc(1, sizeof(vg_listbox_item_t));
     if (!item)
@@ -1429,6 +1630,7 @@ vg_listbox_item_t *vg_listbox_add_item(vg_listbox_t *listbox, const char *text, 
 void vg_listbox_remove_item(vg_listbox_t *listbox, vg_listbox_item_t *item) {
     if (!listbox || !vg_listbox_item_is_live(item) || item->owner != listbox)
         return;
+    listbox_reset_reorder_state(listbox, true);
 
     if (item->prev)
         item->prev->next = item->next;
@@ -1468,6 +1670,7 @@ void vg_listbox_clear(vg_listbox_t *listbox) {
     if (!listbox)
         return;
 
+    listbox_reset_reorder_state(listbox, true);
     listbox_notify_virtual_unbound(listbox);
 
     bool had_selection = listbox_has_nonvirtual_selection(listbox);
@@ -1579,6 +1782,48 @@ void vg_listbox_set_font(vg_listbox_t *listbox, vg_font_t *font, float size) {
     listbox->base.needs_paint = true;
 }
 
+/// @brief Enable application-directed retained-row reorder requests.
+/// @details Reordering is opt-in and never mutates item linkage. Disabling
+///          cancels capture and invalidates pending indices.
+/// @param listbox List box to configure.
+/// @param enabled true to recognize pointer and Alt+Arrow requests.
+void vg_listbox_set_reorderable(vg_listbox_t *listbox, bool enabled) {
+    if (!listbox)
+        return;
+    if (listbox->reorderable == enabled) {
+        if (!enabled)
+            listbox_reset_reorder_state(listbox, true);
+        return;
+    }
+    listbox->reorderable = enabled;
+    listbox_reset_reorder_state(listbox, true);
+    listbox->base.needs_paint = true;
+}
+
+/// @brief Consume the pending application-directed reorder edge.
+/// @param listbox List box to inspect.
+/// @return true exactly once for each latched non-no-op request.
+bool vg_listbox_was_reorder_requested(vg_listbox_t *listbox) {
+    if (!listbox || !listbox->reorder_request_pending)
+        return false;
+    listbox->reorder_request_pending = false;
+    return true;
+}
+
+/// @brief Return the most recently latched retained-row source index.
+/// @param listbox List box to inspect.
+/// @return Source index, or SIZE_MAX before/after invalidation.
+size_t vg_listbox_get_reorder_source_index(vg_listbox_t *listbox) {
+    return listbox ? listbox->reorder_request_source_index : SIZE_MAX;
+}
+
+/// @brief Return the most recently latched final target index.
+/// @param listbox List box to inspect.
+/// @return Final target index, or SIZE_MAX before/after invalidation.
+size_t vg_listbox_get_reorder_target_index(vg_listbox_t *listbox) {
+    return listbox ? listbox->reorder_request_target_index : SIZE_MAX;
+}
+
 /// @brief Set the selection callback invoked when the selected item changes.
 ///
 /// @param listbox   The list box to configure.
@@ -1617,6 +1862,7 @@ void vg_listbox_set_virtual_mode(vg_listbox_t *listbox,
     if (enabled && (total_count > SIZE_MAX - 7u || (item_height > 0.0f && !isfinite(item_height))))
         return;
 
+    listbox_reset_reorder_state(listbox, true);
     listbox_notify_virtual_unbound(listbox);
 
     size_t old_virtual_selected = listbox->selected_index;
@@ -1745,6 +1991,7 @@ bool vg_listbox_bind_virtual_model(vg_listbox_t *listbox,
     }
 
     bool had_selection = listbox->virtual_mode && listbox->selected_index != SIZE_MAX;
+    listbox_reset_reorder_state(listbox, true);
     listbox_notify_virtual_unbound(listbox);
     listbox_free_virtual_cache(listbox);
     free(listbox->visible_cache);

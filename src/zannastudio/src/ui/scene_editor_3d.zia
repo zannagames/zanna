@@ -34,6 +34,9 @@
 //     refresh, selected data identifies rows, and row drops are transactional.
 //   - Visibility presents a native mixed state for node groups and resolves the
 //     complete selection through one rollback-safe canonical transaction.
+//   - Hierarchy Show/Hide and pick-lock actions remain selection-truthful;
+//     locks follow their document, remap by live node identity after hierarchy
+//     edits, and never mutate canonical VSCN bytes or history.
 //   - Material groups expose truthful mixed values; resolved sparse fields and
 //     maps stage clone-safe assignments before one canonical transaction.
 //   - Light components are reconstructed independently across all seven
@@ -52,8 +55,13 @@
 //     into bounded cached viewport-only resources, never canonical nodes.
 //   - Project gameplay lens, IBL, and height-fog settings remain validated,
 //     bounded viewport presentation and never enter scene serialization.
+//   - Project post-FX profiles build one retained portable runtime chain for
+//     shaded views; wireframe remains unprocessed and no effect mutates VSCN.
 //   - Hierarchy Find keeps all bounded rows visible, wraps deterministically,
 //     reveals nested matches, and never changes VSCN history or camera state.
+//   - The responsive in-viewport orientation navigator owns its corner hit
+//     region, exposes six camera faces plus projection, and changes workspace
+//     camera state without selecting nodes or touching canonical VSCN bytes.
 //   - World-space groups execute in hierarchy preorder so selected descendants
 //     never inherit an already-requested ancestor delta a second time.
 //   - Move/Scale plane gestures solve both projected axes together, reject
@@ -102,7 +110,8 @@
 //        docs/adr/0198-project-owned-3d-scene-preview-profiles.md,
 //        docs/adr/0199-project-owned-3d-node-prefab-previews.md,
 //        docs/adr/0200-project-owned-3d-sky-and-light-preview-rigs.md,
-//        docs/adr/0201-project-owned-3d-lens-and-atmosphere-previews.md
+//        docs/adr/0201-project-owned-3d-lens-and-atmosphere-previews.md,
+//        docs/adr/0204-project-owned-3d-post-processing-previews.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -160,6 +169,7 @@ bind Light3D = Zanna.Graphics3D.Light3D;
 bind Canvas3D = Zanna.Graphics3D.Canvas3D;
 bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
 bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
 bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
 bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
 bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
@@ -212,7 +222,15 @@ final GIZMO_PLANE_OUTER_FRACTION: Number = 0.55;
 // hosts, keeping dock-heavy desktop windows concise without oversized rows.
 final COMPACT_SCENE_3D_WIDTH: Number = 980.0;
 final COMPACT_SCENE_3D_CHROME_WIDTH: Number = 700.0;
-final HIERARCHY_PANE_MIN_WIDTH: Number = 1120.0;
+// The concise creation strip fits sooner than the denser view strip. Keep
+// independent wrap floors so a one-row creation strip never reserves an
+// invisible second row while view controls still receive defensive height.
+final WRAPPED_SCENE_3D_CREATION_WIDTH: Number = 1100.0;
+final WRAPPED_SCENE_3D_VIEW_WIDTH: Number = 1180.0;
+// Three persistent columns need enough room for readable node paths, a useful
+// viewport, and an inspector that does not collapse every field. Below this
+// width the hierarchy remains one click away as a full-width master.
+final HIERARCHY_PANE_MIN_WIDTH: Number = 1400.0;
 final RESPONSIVE_WIDTH_EPSILON: Number = 0.01;
 final VIEWPORT_CLEAR_RED: Number = 0.08627450980392157;
 final VIEWPORT_CLEAR_GREEN: Number = 0.10196078431372549;
@@ -220,6 +238,9 @@ final VIEWPORT_CLEAR_BLUE: Number = 0.13333333333333333;
 final VIEWPORT_CAMERA_NEAR: Number = 0.1;
 final VIEWPORT_CAMERA_MIN_DISTANCE: Number = 100.0;
 final VIEWPORT_FOV_DEGREES: Number = 60.0;
+// Stable default-lens contract for projection probes; project preview
+// profiles may override the active editor lens at runtime.
+final VIEWPORT_FOV_HALF_TAN: Number = 0.5773502691896257;
 final FLY_LOOK_DEGREES_PER_PIXEL: Number = 0.25;
 final FLY_BASE_SPEED_PER_SECOND: Number = 0.6;
 final FLY_FAST_MULTIPLIER: Number = 4.0;
@@ -228,6 +249,27 @@ final FLY_MAX_SPEED_MULTIPLIER: Number = 10.0;
 final VIEWPORT_DOUBLE_CLICK_MS: Integer = 400;
 final MARQUEE_THRESHOLD_SQUARED_3D: Integer = 16;
 final VIEWPORT_DOUBLE_CLICK_RADIUS_SQUARED: Integer = 64;
+
+// Top-right in-viewport navigator. Its fixed pixel geometry remains stable
+// across UI scale because viewport pixels and pointer conversion share the
+// same logical coordinate space.
+final ORIENTATION_FACE_NONE: Integer = -1;
+final ORIENTATION_FACE_TOP: Integer = 0;
+final ORIENTATION_FACE_FRONT: Integer = 1;
+final ORIENTATION_FACE_RIGHT: Integer = 2;
+final ORIENTATION_FACE_BOTTOM: Integer = 3;
+final ORIENTATION_FACE_BACK: Integer = 4;
+final ORIENTATION_FACE_LEFT: Integer = 5;
+final ORIENTATION_PROJECTION_TOGGLE: Integer = 6;
+final ORIENTATION_PANEL_BACKGROUND: Integer = 7;
+final ORIENTATION_PANEL_WIDTH: Integer = 148;
+final ORIENTATION_PANEL_HEIGHT: Integer = 80;
+final ORIENTATION_PANEL_MARGIN: Integer = 10;
+final ORIENTATION_FACE_WIDTH: Integer = 42;
+final ORIENTATION_FACE_HEIGHT: Integer = 22;
+final ORIENTATION_FACE_GAP: Integer = 4;
+final ORIENTATION_FACE_LEFT_PAD: Integer = 7;
+final ORIENTATION_FACE_TOP_PAD: Integer = 27;
 
 final VIEWPORT_MODE_SHADED: Integer = 0;
 final VIEWPORT_MODE_WIREFRAME: Integer = 1;
@@ -580,6 +622,14 @@ expose func UsesCompactChrome(width: Number) -> Boolean {
     return width > 0.0 and width <= COMPACT_SCENE_3D_CHROME_WIDTH;
 }
 
+/// @brief Return whether the hierarchy may remain docked beside viewport detail.
+/// @details Ordinary laptop-width scene lanes prioritize a readable viewport
+///          and inspector; the hierarchy stays available through the
+///          Hierarchy master action until all three columns have useful width.
+expose func UsesDockedHierarchy(width: Number) -> Boolean {
+    return width >= HIERARCHY_PANE_MIN_WIDTH;
+}
+
 /// @brief One projected viewport coordinate.
 class ProjectedPoint {
     expose Integer x;
@@ -865,6 +915,9 @@ class SceneEditor3D {
     expose GUI.Button hierarchySearchPreviousButton;
     expose GUI.Button hierarchySearchNextButton;
     expose GUI.Label hierarchySearchStatus;
+    expose GUI.Button hierarchyShowButton;
+    expose GUI.Button hierarchyHideButton;
+    expose GUI.Button hierarchyPickLockButton;
     expose GUI.TreeView hierarchyTree;
     expose GUI.Dropdown parentDropdown;
     expose GUI.Button reparentButton;
@@ -912,6 +965,8 @@ class SceneEditor3D {
     expose Canvas3D viewportRenderCanvas;
     expose RenderTarget3D viewportRenderTarget;
     expose Camera3D viewportRenderCamera;
+    expose PostFX3D viewportRenderPostFX;
+    hide Boolean viewportPostFXDirty;
     hide Boolean viewportAccelerationRequested;
     hide Integer viewportTargetWidth;
     hide Integer viewportTargetHeight;
@@ -985,6 +1040,10 @@ class SceneEditor3D {
     expose Number viewTargetX;
     expose Number viewTargetY;
     expose Number viewTargetZ;
+    hide Boolean gameplayViewAnchored;
+    hide Number gameplayEyeX;
+    hide Number gameplayEyeY;
+    hide Number gameplayEyeZ;
     expose Boolean hierarchyClipped;
     expose Boolean compactLayout;
     hide Boolean compactChrome;
@@ -1029,6 +1088,7 @@ class SceneEditor3D {
     hide SceneNode hierarchyPreferredNode;
     hide List[SceneNode] hierarchyExpandedNodes;
     hide List[String] hierarchyExpandedPaths;
+    hide List[SceneNode] hierarchyPickLockedNodes;
     hide Boolean hierarchyPreserveExpansionByIdentity;
     hide Boolean hierarchyExpandByDefault;
     hide String hierarchySearchQuery;
@@ -1037,6 +1097,7 @@ class SceneEditor3D {
     hide Integer lastViewportClickY;
     hide Integer lastViewportClickMs;
     expose Integer hoveredViewportNode;
+    expose Integer orientationHoverFace;
     hide List[String] cameraBookmarks;
     hide List[String] pickLockedPaths;
     hide Boolean runSceneRequested;
@@ -1209,6 +1270,9 @@ class SceneEditor3D {
         hierarchySearchPreviousButton = null;
         hierarchySearchNextButton = null;
         hierarchySearchStatus = null;
+        hierarchyShowButton = null;
+        hierarchyHideButton = null;
+        hierarchyPickLockButton = null;
         hierarchyTree = null;
         parentDropdown = null;
         reparentButton = null;
@@ -1263,6 +1327,8 @@ class SceneEditor3D {
         viewportRenderCanvas = null;
         viewportRenderTarget = null;
         viewportRenderCamera = null;
+        viewportRenderPostFX = null;
+        viewportPostFXDirty = true;
         viewportAccelerationRequested = false;
         viewportTargetWidth = 0;
         viewportTargetHeight = 0;
@@ -1337,6 +1403,10 @@ class SceneEditor3D {
         viewTargetX = 0.0;
         viewTargetY = 0.0;
         viewTargetZ = 0.0;
+        gameplayViewAnchored = false;
+        gameplayEyeX = 0.0;
+        gameplayEyeY = 0.0;
+        gameplayEyeZ = 0.0;
         hierarchyClipped = false;
         compactLayout = false;
         compactChrome = false;
@@ -1380,6 +1450,7 @@ class SceneEditor3D {
         hierarchyPreferredNode = null;
         hierarchyExpandedNodes = [];
         hierarchyExpandedPaths = [];
+        hierarchyPickLockedNodes = [];
         hierarchyPreserveExpansionByIdentity = false;
         hierarchyExpandByDefault = true;
         hierarchySearchQuery = "";
@@ -1388,6 +1459,7 @@ class SceneEditor3D {
         lastViewportClickY = 0;
         lastViewportClickMs = 0;
         hoveredViewportNode = -1;
+        orientationHoverFace = ORIENTATION_FACE_NONE;
         cameraBookmarks = [];
         pickLockedPaths = [];
         marqueeCandidate = false;
@@ -1428,6 +1500,8 @@ class SceneEditor3D {
             componentSchema =
                 scene_component_schema.LoadPath(componentSchemaPath);
         }
+        viewportPostFXDirty = true;
+        renderDirty = true;
     }
 
     /// @brief Keep multi-root schema ownership aligned with document ownership.
@@ -1490,6 +1564,27 @@ class SceneEditor3D {
                 node.MetadataGetInt(rule.variantProperty, -1));
         }
         return rule.prefab;
+    }
+
+    /// @brief Resolve one scene-level environment prefab from root metadata.
+    hide func ProjectEnvironmentPreviewPrefab() -> String {
+        if scene == null or scene.Root == null
+           or componentSchema == null
+           or componentSchema.valid == false
+           or componentSchema.scenePreview3D == null {
+            return "";
+        }
+        var profile = componentSchema.scenePreview3D;
+        if profile.environmentVariantProperty != ""
+           and scene.Root.MetadataHas(
+               profile.environmentVariantProperty)
+           and scene.Root.MetadataKind(
+               profile.environmentVariantProperty) == "int" {
+            return profile.EnvironmentPrefabForVariant(
+                scene.Root.MetadataGetInt(
+                    profile.environmentVariantProperty, 0));
+        }
+        return profile.environmentPrefab;
     }
 
     /// @brief Load and cache one validated project preview asset.
@@ -1576,14 +1671,52 @@ class SceneEditor3D {
         projectPreviewAssets = [];
         projectPreviewNodes = [];
         projectPreviewOwners = [];
+        var environmentReference =
+            ProjectEnvironmentPreviewPrefab();
         if scene == null or componentSchema == null
            or componentSchema.valid == false
-           or componentSchema.nodePreviews3D.count() == 0 {
+           or (componentSchema.nodePreviews3D.count() == 0
+               and environmentReference == "") {
             return;
         }
         var projectRoot = ComponentSchemaRoot();
         if projectRoot == "" { return; }
         projectPreviewScene = SceneGraph.New();
+        if environmentReference != "" {
+            var environmentPath = Path.Normalize(Path.Absolute(
+                Path.Join(projectRoot, environmentReference)));
+            var environmentAsset =
+                ProjectNodePreviewAsset(environmentPath);
+            var environmentInstance: SceneGraph = null;
+            if environmentAsset != null {
+                environmentInstance =
+                    environmentAsset.InstantiateScene() as SceneGraph;
+            }
+            if environmentInstance == null
+               or environmentInstance.Root == null
+               or environmentInstance.Root.ChildCount == 0 {
+                projectPreviewMissingCount =
+                    projectPreviewMissingCount + 1;
+            } else if environmentInstance.NodeCount
+                      > MAX_PROJECT_PREVIEW_NODES {
+                projectPreviewClipped = true;
+            } else {
+                var environmentWrapper = SceneNode.New();
+                environmentWrapper.Name = "Scene environment preview";
+                var environmentRoot = environmentInstance.Root;
+                while environmentRoot.ChildCount > 0 {
+                    var environmentChild =
+                        environmentRoot.GetChild(0);
+                    environmentRoot.RemoveChild(environmentChild);
+                    environmentWrapper.AddChild(environmentChild);
+                }
+                projectPreviewScene.Add(environmentWrapper);
+                AppendProjectPreviewOwners(
+                    environmentWrapper, -1);
+                projectPreviewInstanceCount =
+                    projectPreviewInstanceCount + 1;
+            }
+        }
         var sourceIndex = 0;
         while sourceIndex < flatNodes.count()
               and projectPreviewNodes.count()
@@ -1701,6 +1834,7 @@ class SceneEditor3D {
             viewTargetX = 0.0;
             viewTargetY = 0.0;
             viewTargetZ = 0.0;
+            ReleaseGameplayViewAnchor();
             SetEditorControlsEnabled(true);
             RefreshHierarchy(null);
             changed = CommitScene("Created empty 3D scene") or changed;
@@ -1814,6 +1948,15 @@ class SceneEditor3D {
         }
 
         PumpHierarchySearchControls();
+        if hierarchyShowButton.WasClicked() {
+            changed = ApplySelectedVisibility(true) or changed;
+        }
+        if hierarchyHideButton.WasClicked() {
+            changed = ApplySelectedVisibility(false) or changed;
+        }
+        if hierarchyPickLockButton.WasClicked() {
+            ToggleSelectedPickLocks();
+        }
         if addEmptyButton.WasClicked() {
             changed = AddPrimitive(PRIMITIVE_EMPTY, false) or changed;
         }
@@ -2026,26 +2169,32 @@ class SceneEditor3D {
         if frontViewButton.WasClicked() { SetQuickView(1); }
         if rightViewButton.WasClicked() { SetQuickView(2); }
         if orbitLeftButton.WasClicked() {
+            ReleaseGameplayViewAnchor();
             viewYawDegrees = NormalizeYawDegrees(viewYawDegrees - 15);
             renderDirty = true;
         }
         if orbitRightButton.WasClicked() {
+            ReleaseGameplayViewAnchor();
             viewYawDegrees = NormalizeYawDegrees(viewYawDegrees + 15);
             renderDirty = true;
         }
         if orbitUpButton.WasClicked() {
+            ReleaseGameplayViewAnchor();
             viewPitchDegrees = ClampInt3D(viewPitchDegrees + 10, -80, 80);
             renderDirty = true;
         }
         if orbitDownButton.WasClicked() {
+            ReleaseGameplayViewAnchor();
             viewPitchDegrees = ClampInt3D(viewPitchDegrees - 10, -80, 80);
             renderDirty = true;
         }
         if zoomOutButton.WasClicked() {
+            ReleaseGameplayViewAnchor();
             viewScale = ClampInt3D(viewScale - 4, 4, 120);
             renderDirty = true;
         }
         if zoomInButton.WasClicked() {
+            ReleaseGameplayViewAnchor();
             viewScale = ClampInt3D(viewScale + 4, 4, 120);
             renderDirty = true;
         }
@@ -2060,8 +2209,14 @@ class SceneEditor3D {
 
         PumpCameraBookmarks();
         PumpHistoryPanel();
-        if hierarchyDock.Pump() { renderDirty = true; }
-        if inspectorDock.Pump() { renderDirty = true; }
+        if hierarchyDock.Pump() {
+            ApplyInspectorLayout();
+            renderDirty = true;
+        }
+        if inspectorDock.Pump() {
+            ApplyInspectorLayout();
+            renderDirty = true;
+        }
         if changed { RefreshHistoryPanel(); }
         changed = PumpViewportNavigation() or changed;
         if viewportTargetWidth != 0
@@ -2074,11 +2229,6 @@ class SceneEditor3D {
         }
         if renderDirty { RenderViewport(); }
         ApplyPendingWorkspaceScroll();
-        // Document activation and undo can restore the persisted divider
-        // fraction during this pump. Reassert the responsive one-pane policy
-        // before capturing state so compact mode cannot silently reopen both
-        // panes for one or more frames.
-        ApplyInspectorLayout();
         // User input only arrives between frames, so any transform-spinner
         // change edges still set here came from this pump's programmatic
         // refreshes; drain them so the live-edit path never mistakes them
@@ -2172,6 +2322,11 @@ class SceneEditor3D {
         currentSerialized = doc.content;
         EnsureComponentSchema(false);
         RestoreWorkspaceState(doc);
+        // Restoring divider positions intentionally clears SplitPane collapse
+        // state. Reconcile the current responsive presentation once here so
+        // activation, Undo, and Redo cannot reopen hidden compact panes when
+        // the host dimensions—and therefore the resize cache—did not change.
+        ApplyInspectorLayout();
         gizmoHoverAxis = GIZMO_AXIS_NONE;
         ResetGizmoDrag(true);
         lookThroughNode = null;
@@ -2217,6 +2372,13 @@ class SceneEditor3D {
             viewTargetY, -1000000.0, 1000000.0);
         state.viewTargetZ = ClampNumber3D(
             viewTargetZ, -1000000.0, 1000000.0);
+        state.gameplayViewAnchored = gameplayViewAnchored;
+        state.gameplayEyeX = ClampNumber3D(
+            gameplayEyeX, -1000000.0, 1000000.0);
+        state.gameplayEyeY = ClampNumber3D(
+            gameplayEyeY, -1000000.0, 1000000.0);
+        state.gameplayEyeZ = ClampNumber3D(
+            gameplayEyeZ, -1000000.0, 1000000.0);
         state.viewPerspective = viewPerspective;
         state.showGrid = showGrid;
         state.showMarkers = showMarkers;
@@ -2248,6 +2410,7 @@ class SceneEditor3D {
         }
         state.inspectorRequestedVisible = inspectorRequestedVisible;
         state.compactInspectorShown = compactInspectorShown;
+        state.pickLockedPaths = pickLockedPaths;
         state.undoStack = undoStack;
         state.redoStack = redoStack;
         state.cleanSerialized = cleanSerialized;
@@ -2274,6 +2437,10 @@ class SceneEditor3D {
             viewTargetX = 0.0;
             viewTargetY = 0.0;
             viewTargetZ = 0.0;
+            gameplayViewAnchored = false;
+            gameplayEyeX = 0.0;
+            gameplayEyeY = 0.0;
+            gameplayEyeZ = 0.0;
             viewPerspective = true;
             showGrid = true;
             showMarkers = true;
@@ -2296,6 +2463,7 @@ class SceneEditor3D {
             inspectorRequestedVisible = true;
             compactHierarchyShown = false;
             compactInspectorShown = false;
+            pickLockedPaths = [];
             restoreInspectorScrollPending = true;
             SyncGizmoModeControls();
             UpdateViewportModeControls();
@@ -2330,6 +2498,13 @@ class SceneEditor3D {
             state.viewTargetY, -1000000.0, 1000000.0);
         viewTargetZ = ClampNumber3D(
             state.viewTargetZ, -1000000.0, 1000000.0);
+        gameplayViewAnchored = state.gameplayViewAnchored;
+        gameplayEyeX = ClampNumber3D(
+            state.gameplayEyeX, -1000000.0, 1000000.0);
+        gameplayEyeY = ClampNumber3D(
+            state.gameplayEyeY, -1000000.0, 1000000.0);
+        gameplayEyeZ = ClampNumber3D(
+            state.gameplayEyeZ, -1000000.0, 1000000.0);
         viewPerspective = state.viewPerspective;
         showGrid = state.showGrid;
         showMarkers = state.showMarkers;
@@ -2356,6 +2531,7 @@ class SceneEditor3D {
         inspectorRequestedVisible = state.inspectorRequestedVisible;
         compactHierarchyShown = false;
         compactInspectorShown = state.compactInspectorShown;
+        pickLockedPaths = state.pickLockedPaths;
         restoreInspectorScrollPending = true;
         SyncGizmoModeControls();
         UpdateViewportModeControls();
@@ -2368,6 +2544,7 @@ class SceneEditor3D {
     ///          the ordinary editor view, while independent overlay defaults
     ///          remain useful.
     hide func ApplyInitialProjectPreview() {
+        gameplayViewAnchored = false;
         if scene == null or componentSchema == null
            or componentSchema.valid == false {
             return;
@@ -2408,20 +2585,11 @@ class SceneEditor3D {
                     NormalizeYawDegrees(
                         0 - Convert.NumToInt(mappedYaw));
                 viewPitchDegrees = 0;
-                var eyeDistance = PerspectiveEyeDistance();
-                var yawRadians = viewYawDegrees * DEG_TO_RAD;
-                viewTargetX = ClampNumber3D(
-                    startX - Math.Sin(yawRadians) * eyeDistance,
-                    -1000000.0,
-                    1000000.0);
-                viewTargetY = ClampNumber3D(
-                    startY + profile.startEyeHeight,
-                    -1000000.0,
-                    1000000.0);
-                viewTargetZ = ClampNumber3D(
-                    startZ - Math.Cos(yawRadians) * eyeDistance,
-                    -1000000.0,
-                    1000000.0);
+                gameplayEyeX = startX;
+                gameplayEyeY = startY + profile.startEyeHeight;
+                gameplayEyeZ = startZ;
+                gameplayViewAnchored = true;
+                ReanchorGameplayViewTarget();
             } else {
                 viewTargetX = startX;
                 viewTargetY = startY;
@@ -2457,6 +2625,33 @@ class SceneEditor3D {
         }
         SyncViewOptionControls();
         renderDirty = true;
+    }
+
+    /// @brief Recompute the orbit target without moving the gameplay eye.
+    /// @details The editor stores orbit target + pixels-per-unit while game
+    ///          profiles store an eye pose. Responsive layout can change the
+    ///          derived orbit distance, so the target must follow that distance
+    ///          to keep the actual retained camera at the runtime spawn.
+    hide func ReanchorGameplayViewTarget() {
+        if gameplayViewAnchored == false or viewPerspective == false {
+            return;
+        }
+        var eyeUnit = ViewportEyeUnit();
+        var eyeDistance = PerspectiveEyeDistance();
+        viewTargetX = ClampNumber3D(
+            gameplayEyeX - eyeUnit.X * eyeDistance,
+            -1000000.0, 1000000.0);
+        viewTargetY = ClampNumber3D(
+            gameplayEyeY - eyeUnit.Y * eyeDistance,
+            -1000000.0, 1000000.0);
+        viewTargetZ = ClampNumber3D(
+            gameplayEyeZ - eyeUnit.Z * eyeDistance,
+            -1000000.0, 1000000.0);
+    }
+
+    /// @brief Leave exact runtime-eye mode once the user navigates manually.
+    hide func ReleaseGameplayViewAnchor() {
+        gameplayViewAnchored = false;
     }
 
     /// @brief Return whether this scene owns a valid project preview profile.
@@ -2731,7 +2926,7 @@ class SceneEditor3D {
     ///          unreachable; this action swaps it with the viewport/inspector.
     expose func ToggleHierarchyPane() {
         if focusModeActive or hierarchyDock.floating
-           or lastHostWidth >= HIERARCHY_PANE_MIN_WIDTH {
+           or UsesDockedHierarchy(lastHostWidth) {
             return;
         }
         compactHierarchyShown = compactHierarchyShown == false;
@@ -2772,7 +2967,9 @@ class SceneEditor3D {
             // width bracket, so re-apply chrome on width changes too.
             ApplyResponsiveChrome();
         }
-        ApplyInspectorLayout();
+        if layoutChanged or widthChanged {
+            ApplyInspectorLayout();
+        }
     }
 
     /// @brief Publish a one-shot request for outer-only scene layout.
@@ -2855,14 +3052,23 @@ class SceneEditor3D {
             runSceneButton.SetText("Run");
             toolbarStatus.SetVisible(false);
             viewStatusLabel.SetVisible(false);
-        } else if lastHostWidth < 1350.0 {
-            // Concise labels keep the production dock-heavy lane to two
-            // predictable rows at ordinary widths. These are minimums rather
-            // than exact heights, so a third measured row stays reachable.
+        } else if UsesDockedHierarchy(lastHostWidth) == false {
+            // Concise labels keep the production dock-heavy lane reachable.
+            // Narrow lanes retain a defensive two-row floor; laptop-width
+            // lanes use Flex's measured height so a one-row creation strip
+            // does not consume a second empty row.
             toolbar.SetPreferredSize(0.0, 0.0);
-            toolbar.SetMinSize(0.0, 76.0);
             viewToolbar.SetPreferredSize(0.0, 0.0);
-            viewToolbar.SetMinSize(0.0, 76.0);
+            if lastHostWidth < WRAPPED_SCENE_3D_CREATION_WIDTH {
+                toolbar.SetMinSize(0.0, 76.0);
+            } else {
+                toolbar.SetMinSize(0.0, 0.0);
+            }
+            if lastHostWidth < WRAPPED_SCENE_3D_VIEW_WIDTH {
+                viewToolbar.SetMinSize(0.0, 76.0);
+            } else {
+                viewToolbar.SetMinSize(0.0, 0.0);
+            }
             viewSectionLabel.SetVisible(false);
             transformSectionLabel.SetVisible(false);
             zoomSectionLabel.SetVisible(false);
@@ -2933,12 +3139,12 @@ class SceneEditor3D {
                 compactLayout == false
                 and focusModeActive == false
                 and hierarchyDock.floating == false
-                and lastHostWidth >= HIERARCHY_PANE_MIN_WIDTH;
+                and UsesDockedHierarchy(lastHostWidth);
             showHierarchyMaster =
                 compactHierarchyShown
                 and focusModeActive == false
                 and hierarchyDock.floating == false
-                and lastHostWidth < HIERARCHY_PANE_MIN_WIDTH;
+                and UsesDockedHierarchy(lastHostWidth) == false;
             var desiredHierarchySide = 1;
             if wantHierarchyPane { desiredHierarchySide = 0; }
             else if showHierarchyMaster { desiredHierarchySide = 2; }
@@ -2999,7 +3205,7 @@ class SceneEditor3D {
         if hierarchyButton == null { return; }
         var needsMaster =
             lastHostWidth > 0.0
-            and lastHostWidth < HIERARCHY_PANE_MIN_WIDTH;
+            and UsesDockedHierarchy(lastHostWidth) == false;
         hierarchyButton.SetVisible(needsMaster);
         if needsMaster == false { return; }
         if focusModeActive {
@@ -3080,7 +3286,8 @@ class SceneEditor3D {
                     + "this scene's internal pane layout");
             workspaceButton.SetStyle(1);
         } else {
-            if compactChrome or lastHostWidth < 1350.0 {
+            if compactChrome
+               or UsesDockedHierarchy(lastHostWidth) == false {
                 workspaceButton.SetText("Layout");
             } else {
                 workspaceButton.SetText("Scene Layout");
@@ -3280,7 +3487,8 @@ class SceneEditor3D {
                     scene_transform_3d.SpaceLabel(gizmoTransformSpace))
                 + " space. Click meshes to select; Shift adds and Ctrl/Cmd "
                 + "toggles. Middle/right-drag to orbit, or add Shift to pan. "
-                + "Use the wheel to zoom.");
+                + "Use the wheel to zoom. The top-right View navigator snaps "
+                + "six directions and toggles perspective/orthographic.");
         }
     }
 
@@ -3473,7 +3681,7 @@ class SceneEditor3D {
         // Metadata keys feed component badges; rebuild rows in place.
         RefreshHierarchy(node);
         RefreshMetadataFields(node);
-        metadataInspector.SelectByKey(node, nextKey);
+        metadataInspector.SelectByKey(nextKey);
         selectedNodeMetadata = metadataInspector.selectedProperty;
         CaptureWorkspaceState();
         return true;
@@ -4940,6 +5148,7 @@ class SceneEditor3D {
 
     /// @brief Toggle authored-camera look-through; workspace-only.
     expose func ToggleLookThrough() -> Boolean {
+        ReleaseGameplayViewAnchor();
         if lookThroughNode != null {
             lookThroughNode = null;
             renderDirty = true;
@@ -7888,7 +8097,10 @@ class SceneEditor3D {
         return true;
     }
 
-    hide func ApplySelectedVisibility(nextVisible: Boolean) -> Boolean {
+    /// @brief Resolve the complete selection to one canonical visibility.
+    /// @details This is shared by the inspector, hierarchy action strip, and
+    ///          context menu; one group operation creates one history entry.
+    expose func ApplySelectedVisibility(nextVisible: Boolean) -> Boolean {
         if scene == null { return false; }
         selectedIndices = scene_selection.Normalize(
             selectedIndices, flatNodes.count(), selectedIndex);
@@ -8134,6 +8346,7 @@ class SceneEditor3D {
         applyTransformButton.SetTooltip(
             "Set the selected node's name, visibility, and local transform");
         UpdateHierarchySearchControls();
+        RefreshHierarchyActionControls();
         if selectedIndices.count() > 1 {
             duplicateNodeButton.SetText(
                 "Duplicate (" + selectedIndices.count() + ")");
@@ -8155,6 +8368,85 @@ class SceneEditor3D {
         UpdateInspectorScope();
     }
 
+    /// @brief Whether at least one selected node can be made visible.
+    expose func CanShowSelectedNodes() -> Boolean {
+        var selection = 0;
+        while selection < selectedIndices.count() {
+            var index = selectedIndices.get(selection);
+            if index >= 0 and index < flatNodes.count()
+               and flatNodes.get(index).Visible == false {
+                return true;
+            }
+            selection = selection + 1;
+        }
+        return false;
+    }
+
+    /// @brief Whether at least one selected node can be hidden.
+    expose func CanHideSelectedNodes() -> Boolean {
+        var selection = 0;
+        while selection < selectedIndices.count() {
+            var index = selectedIndices.get(selection);
+            if index >= 0 and index < flatNodes.count()
+               and flatNodes.get(index).Visible {
+                return true;
+            }
+            selection = selection + 1;
+        }
+        return false;
+    }
+
+    /// @brief Whether every selected node ignores viewport picking.
+    expose func SelectedAllPickLocked() -> Boolean {
+        var valid = 0;
+        var selection = 0;
+        while selection < selectedIndices.count() {
+            var index = selectedIndices.get(selection);
+            if index >= 0 and index < flatNodes.count() {
+                valid = valid + 1;
+                if NodePickLocked(index) == false { return false; }
+            }
+            selection = selection + 1;
+        }
+        return valid > 0;
+    }
+
+    /// @brief Keep hierarchy actions enabled, labeled, and mixed-state truthful.
+    hide func RefreshHierarchyActionControls() {
+        if hierarchyShowButton == null
+           or hierarchyHideButton == null
+           or hierarchyPickLockButton == null {
+            return;
+        }
+        var hasSelection = scene != null
+            and selectedIndices.count() > 0;
+        hierarchyShowButton.SetEnabled(
+            hasSelection and CanShowSelectedNodes());
+        hierarchyHideButton.SetEnabled(
+            hasSelection and CanHideSelectedNodes());
+        hierarchyPickLockButton.SetEnabled(hasSelection);
+        if hasSelection and SelectedAllPickLocked() {
+            hierarchyPickLockButton.SetText("Unlock Pick");
+            hierarchyPickLockButton.SetAccessibleName(
+                "Unlock viewport picking for selected 3D scene nodes");
+            hierarchyPickLockButton.SetTooltip(
+                "Return every selected node to viewport click and marquee "
+                + "selection; this does not edit the scene");
+        } else {
+            var label = "⊘ Lock Pick";
+            if hasSelection and selectedIndices.count() > 1 {
+                label = "⊘ Lock All";
+            }
+            hierarchyPickLockButton.SetText(label);
+            hierarchyPickLockButton.SetAccessibleName(
+                "Lock viewport picking for selected 3D scene nodes");
+            hierarchyPickLockButton.SetTooltip(
+                "Keep the selected nodes visible but ignore them during "
+                + "viewport click and marquee selection; this follows the "
+                + "scene tab");
+        }
+    }
+
     /// @brief Refresh typed metadata without rebuilding hierarchy identity.
     hide func RefreshMetadataFields(node: SceneNode) {
         if metadataInspector == null { return; }
@@ -8164,8 +8456,7 @@ class SceneEditor3D {
         }
         var enabled = scene != null and node != null
             and selectedIndices.count() == 1;
-        metadataInspector.Refresh(
-            node, enabled, selectedNodeMetadata);
+        metadataInspector.Refresh(node, enabled);
         selectedNodeMetadata = metadataInspector.selectedProperty;
     }
 
@@ -8317,6 +8608,7 @@ class SceneEditor3D {
         if schemaChanged or schemaAuthored
            or componentAuthoring.handled {
             componentSchema = componentAuthoring.schema;
+            viewportPostFXDirty = true;
             RefreshComponentPalette();
             RebuildProjectNodePreviews();
             if componentAuthoring.message != "" {
@@ -8448,15 +8740,12 @@ class SceneEditor3D {
     /// @return True when a loaded scene owns a usable search field.
     expose func FocusHierarchySearch() -> Boolean {
         if scene == null or hierarchySearchInput == null { return false; }
-        if compactLayout {
-            compactInspectorShown = true;
-        } else {
-            inspectorRequestedVisible = true;
+        if hierarchyDock.floating == false
+           and UsesDockedHierarchy(lastHostWidth) == false {
+            compactHierarchyShown = true;
+            compactInspectorShown = false;
         }
         ApplyInspectorLayout();
-        if inspectorScroll != null {
-            inspectorScroll.ScrollTo(hierarchySearchInput);
-        }
         hierarchySearchInput.Focus();
         CaptureWorkspaceState();
         return true;
@@ -9570,6 +9859,8 @@ class SceneEditor3D {
         } else {
             hierarchySceneRoot = null;
         }
+        ReconcilePickLocksAfterHierarchyRefresh();
+        RefreshHierarchyRowLabels();
         hierarchyDocument = currentDoc;
 
         var i = 0;
@@ -9598,6 +9889,7 @@ class SceneEditor3D {
         hierarchyPreferredNode = null;
         hierarchyExpandedNodes = [];
         hierarchyExpandedPaths = [];
+        hierarchyPickLockedNodes = [];
         RefreshSelectedFields();
         SetEditorControlsEnabled(scene != null);
         RebuildProjectNodePreviews();
@@ -9611,6 +9903,7 @@ class SceneEditor3D {
     hide func CaptureHierarchyExpansion() {
         hierarchyExpandedNodes = [];
         hierarchyExpandedPaths = [];
+        hierarchyPickLockedNodes = [];
         var sameDocument =
             currentDoc != null and hierarchyDocument == currentDoc;
         hierarchyPreserveExpansionByIdentity =
@@ -9628,6 +9921,10 @@ class SceneEditor3D {
                and GUI.TreeView.Node.IsExpanded(treeNode) {
                 hierarchyExpandedNodes.add(flatNodes.get(index));
                 hierarchyExpandedPaths.add(flatPaths.get(index));
+            }
+            if hierarchyPreserveExpansionByIdentity
+               and PickLockedPath(flatPaths.get(index)) {
+                hierarchyPickLockedNodes.add(flatNodes.get(index));
             }
             index = index + 1;
         }
@@ -9654,6 +9951,75 @@ class SceneEditor3D {
         return false;
     }
 
+    /// @brief Return whether an exact bounded hierarchy path is pick-locked.
+    hide func PickLockedPath(path: String) -> Boolean {
+        var index = 0;
+        while index < pickLockedPaths.count() {
+            if pickLockedPaths.get(index) == path { return true; }
+            index = index + 1;
+        }
+        return false;
+    }
+
+    hide func StringListContains(values: List[String],
+                                 value: String) -> Boolean {
+        var index = 0;
+        while index < values.count() {
+            if values.get(index) == value { return true; }
+            index = index + 1;
+        }
+        return false;
+    }
+
+    hide func FlatPathIndex(path: String) -> Integer {
+        var index = 0;
+        while index < flatPaths.count() {
+            if flatPaths.get(index) == path { return index; }
+            index = index + 1;
+        }
+        return -1;
+    }
+
+    /// @brief Rebind workspace locks safely after one hierarchy rebuild.
+    /// @details Live graph edits follow SceneNode identity so reordered or
+    ///          deleted paths cannot transfer a lock to another node.
+    ///          Canonical reloads have new identities and retain only exact,
+    ///          still-existing paths from the document's workspace state.
+    hide func ReconcilePickLocksAfterHierarchyRefresh() {
+        var reconciled: List[String] = [];
+        if hierarchyPreserveExpansionByIdentity {
+            var nodeIndex = 0;
+            while nodeIndex < hierarchyPickLockedNodes.count()
+                  and reconciled.count() < MAX_EDITOR_NODES {
+                var flatIndex = FindFlatIndex(
+                    hierarchyPickLockedNodes.get(nodeIndex));
+                if flatIndex >= 0 and flatIndex < flatPaths.count() {
+                    var mappedPath = flatPaths.get(flatIndex);
+                    if StringListContains(reconciled, mappedPath) == false {
+                        reconciled.add(mappedPath);
+                    }
+                }
+                nodeIndex = nodeIndex + 1;
+            }
+        } else {
+            var lockIndex = 0;
+            while lockIndex < pickLockedPaths.count()
+                  and reconciled.count() < MAX_EDITOR_NODES {
+                var path = pickLockedPaths.get(lockIndex);
+                if FlatPathIndex(path) >= 0
+                   and StringListContains(reconciled, path) == false {
+                    reconciled.add(path);
+                }
+                lockIndex = lockIndex + 1;
+            }
+        }
+        pickLockedPaths = reconciled;
+        if currentDoc != null and currentDoc.scene3DWorkspace != null {
+            currentDoc.scene3DWorkspace.pickLockedPaths =
+                pickLockedPaths;
+        }
+    }
+
     /// @brief Decide expansion without confusing reordered live nodes by path.
     hide func ShouldExpandHierarchyNode(node: SceneNode,
                                         path: String) -> Boolean {
@@ -9669,17 +10035,10 @@ class SceneEditor3D {
         return ExpandedPathContains(path);
     }
 
-    /// @brief Append one true retained parent/child row and its bounded subtree.
-    hide func AppendHierarchy(node: SceneNode,
-                              depth: Integer,
-                              path: String,
-                              parentTreeNode: Any) {
-        if node == null { return; }
-        if flatNodes.count() >= MAX_EDITOR_NODES
-           or depth > MAX_HIERARCHY_DEPTH {
-            hierarchyClipped = true;
-            return;
-        }
+    /// @brief Compose one hierarchy row's visibility, name, and component cues.
+    hide func HierarchyRowLabel(node: SceneNode,
+                                path: String) -> String {
+        if node == null { return "○ (missing)"; }
         var visibleMarker = "○ ";
         if node.Visible { visibleMarker = "● "; }
         var componentMarker = "";
@@ -9705,9 +10064,42 @@ class SceneEditor3D {
         }
         var name = node.Name;
         if name == "" { name = "(unnamed)"; }
+        var lockMarker = "";
+        if PickLockedPath(path) { lockMarker = "  ⊘"; }
+        return visibleMarker + name + lockMarker + componentMarker;
+    }
+
+    /// @brief Refresh retained row labels without disturbing tree identity.
+    hide func RefreshHierarchyRowLabels() {
+        var index = 0;
+        while index < hierarchyTreeNodes.count()
+              and index < flatNodes.count()
+              and index < flatPaths.count() {
+            var treeNode = hierarchyTreeNodes.get(index);
+            if treeNode != null {
+                GUI.TreeView.Node.SetText(
+                    treeNode,
+                    HierarchyRowLabel(
+                        flatNodes.get(index), flatPaths.get(index)));
+            }
+            index = index + 1;
+        }
+    }
+
+    /// @brief Append one true retained parent/child row and its bounded subtree.
+    hide func AppendHierarchy(node: SceneNode,
+                              depth: Integer,
+                              path: String,
+                              parentTreeNode: Any) {
+        if node == null { return; }
+        if flatNodes.count() >= MAX_EDITOR_NODES
+           or depth > MAX_HIERARCHY_DEPTH {
+            hierarchyClipped = true;
+            return;
+        }
         var treeNode = hierarchyTree.AddNode(
             parentTreeNode,
-            visibleMarker + name + componentMarker);
+            HierarchyRowLabel(node, path));
         if treeNode == null {
             hierarchyClipped = true;
             return;
@@ -9741,6 +10133,7 @@ class SceneEditor3D {
     }
 
     expose func FrameAll() {
+        ReleaseGameplayViewAnchor();
         if flatNodes.count() == 0 {
             viewScale = 28;
             viewTargetX = 0.0;
@@ -9793,6 +10186,7 @@ class SceneEditor3D {
         selectedIndices = scene_selection.Normalize(
             selectedIndices, flatNodes.count(), selectedIndex);
         if selectedIndices.count() == 0 { return; }
+        ReleaseGameplayViewAnchor();
         var first = flatNodes.get(selectedIndices.get(0)).WorldPosition;
         var minimumX = first.X;
         var minimumY = first.Y;
@@ -9855,6 +10249,7 @@ class SceneEditor3D {
            or height != renderedViewportHeight {
             renderedViewportWidth = width;
             renderedViewportHeight = height;
+            ReanchorGameplayViewTarget();
             renderDirty = true;
         }
     }
@@ -9939,6 +10334,7 @@ class SceneEditor3D {
         if (stationaryX and stationaryY) or viewScale <= 0 {
             return false;
         }
+        ReleaseGameplayViewAnchor();
         ShiftViewTargetInScreenBasis(
             (0.0 - deltaX) / viewScale,
             deltaY / viewScale);
@@ -9980,6 +10376,7 @@ class SceneEditor3D {
         var previousScale = viewScale;
         viewScale = ClampInt3D(viewScale + direction * 4, 4, 120);
         if viewScale == previousScale { return; }
+        ReleaseGameplayViewAnchor();
         renderDirty = true;
         var mouseX = PhysicalPointerToUi(Input.Mouse.X())
             - viewportImage.GetScreenX();
@@ -10011,6 +10408,7 @@ class SceneEditor3D {
 
     /// @brief Begin captured right-mouse fly-look with WASD movement.
     hide func BeginFlyNavigation() {
+        ReleaseGameplayViewAnchor();
         flyActive = true;
         flyLastMs = Zanna.Time.Clock.NowMs();
         flyYawRemainder = 0.0;
@@ -10170,6 +10568,7 @@ class SceneEditor3D {
     /// @brief Switch the shared viewport camera projection; workspace-only.
     expose func SetViewProjection(perspective: Boolean) {
         if viewPerspective == perspective { return; }
+        ReleaseGameplayViewAnchor();
         viewPerspective = perspective;
         UpdateProjectionControls();
         renderDirty = true;
@@ -10426,61 +10825,255 @@ class SceneEditor3D {
     }
 
     /// @brief Whether one flattened node is workspace pick-locked.
-    /// @details Lock keys by hierarchy path, so it survives refreshes and
-    ///          selection changes but clears naturally when the node moves.
+    /// @details The active path set follows its document. RefreshHierarchy
+    ///          remaps live structural changes by node identity, preventing a
+    ///          reordered or deleted path from locking a different node.
     expose func NodePickLocked(index: Integer) -> Boolean {
         if index < 0 or index >= flatPaths.count() { return false; }
-        var path = flatPaths.get(index);
-        var lockIndex = 0;
-        while lockIndex < pickLockedPaths.count() {
-            if pickLockedPaths.get(lockIndex) == path { return true; }
-            lockIndex = lockIndex + 1;
+        return PickLockedPath(flatPaths.get(index));
+    }
+
+    /// @brief Set pick-lock for the complete selection without editing VSCN.
+    /// @return True only when workspace lock state changed.
+    expose func SetSelectedPickLocked(nextLocked: Boolean) -> Boolean {
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 { return false; }
+
+        var changed = false;
+        if nextLocked {
+            var selection = 0;
+            while selection < selectedIndices.count()
+                  and pickLockedPaths.count() < MAX_EDITOR_NODES {
+                var index = selectedIndices.get(selection);
+                if index >= 0 and index < flatPaths.count() {
+                    var path = flatPaths.get(index);
+                    if PickLockedPath(path) == false {
+                        pickLockedPaths.add(path);
+                        changed = true;
+                    }
+                }
+                selection = selection + 1;
+            }
+        } else {
+            var kept: List[String] = [];
+            var lockIndex = 0;
+            while lockIndex < pickLockedPaths.count() {
+                var path = pickLockedPaths.get(lockIndex);
+                var selectedPath = false;
+                var selection = 0;
+                while selection < selectedIndices.count() {
+                    var index = selectedIndices.get(selection);
+                    if index >= 0 and index < flatPaths.count()
+                       and flatPaths.get(index) == path {
+                        selectedPath = true;
+                    }
+                    selection = selection + 1;
+                }
+                if selectedPath {
+                    changed = true;
+                } else if StringListContains(kept, path) == false {
+                    kept.add(path);
+                }
+                lockIndex = lockIndex + 1;
+            }
+            pickLockedPaths = kept;
         }
-        return false;
+        if changed == false { return false; }
+
+        RefreshHierarchyRowLabels();
+        RefreshHierarchyActionControls();
+        CaptureWorkspaceState();
+        if nextLocked {
+            toolbarStatus.SetText(
+                "Viewport picking locked for "
+                + selectedIndices.count() + " node(s)");
+        } else {
+            toolbarStatus.SetText(
+                "Viewport picking unlocked for "
+                + selectedIndices.count() + " node(s)");
+        }
+        return true;
+    }
+
+    /// @brief Resolve a mixed selection to locked, or unlock an all-locked one.
+    /// @return True when every selected node is locked after the toggle.
+    expose func ToggleSelectedPickLocks() -> Boolean {
+        if selectedIndices.count() == 0 { return false; }
+        var nextLocked = SelectedAllPickLocked() == false;
+        SetSelectedPickLocked(nextLocked);
+        return nextLocked;
     }
 
     /// @brief Toggle pick-lock on the single selected node (workspace-only).
     /// @return True when the node is locked after the toggle.
     expose func ToggleSelectedPickLock() -> Boolean {
-        if selectedIndices.count() != 1 or selectedIndex < 0
-           or selectedIndex >= flatPaths.count() {
-            return false;
-        }
-        var path = flatPaths.get(selectedIndex);
-        if NodePickLocked(selectedIndex) {
-            var kept: List[String] = [];
-            var lockIndex = 0;
-            while lockIndex < pickLockedPaths.count() {
-                if pickLockedPaths.get(lockIndex) != path {
-                    kept.add(pickLockedPaths.get(lockIndex));
-                }
-                lockIndex = lockIndex + 1;
-            }
-            pickLockedPaths = kept;
-            toolbarStatus.SetText("Picking unlocked for the node");
-            return false;
-        }
-        pickLockedPaths.add(path);
-        toolbarStatus.SetText(
-            "Picking locked; the node ignores viewport clicks");
-        return true;
+        if selectedIndices.count() != 1 { return false; }
+        return ToggleSelectedPickLocks();
     }
 
-    /// @brief Snap the camera to one axis-aligned quick view.
-    /// @param kind 0 = Top (looking down), 1 = Front, 2 = Right.
+    /// @brief Snap the camera to one of six axis-aligned views.
+    /// @param kind Top/Front/Right/Bottom/Back/Left orientation face.
     expose func SetQuickView(kind: Integer) {
-        if kind == 0 {
+        if kind < ORIENTATION_FACE_TOP
+           or kind > ORIENTATION_FACE_LEFT {
+            return;
+        }
+        ReleaseGameplayViewAnchor();
+        if kind == ORIENTATION_FACE_TOP {
             viewYawDegrees = 0;
             viewPitchDegrees = 80;
-        } else if kind == 1 {
+        } else if kind == ORIENTATION_FACE_FRONT {
             viewYawDegrees = 0;
             viewPitchDegrees = 0;
-        } else {
+        } else if kind == ORIENTATION_FACE_RIGHT {
             viewYawDegrees = 90;
+            viewPitchDegrees = 0;
+        } else if kind == ORIENTATION_FACE_BOTTOM {
+            viewYawDegrees = 0;
+            viewPitchDegrees = -80;
+        } else if kind == ORIENTATION_FACE_BACK {
+            viewYawDegrees = 180;
+            viewPitchDegrees = 0;
+        } else {
+            viewYawDegrees = -90;
             viewPitchDegrees = 0;
         }
         renderDirty = true;
         CaptureWorkspaceState();
+    }
+
+    /// @brief Return whether the complete navigator fits the viewport.
+    expose func OrientationNavigatorVisible() -> Boolean {
+        return renderedViewportWidth
+                   >= ORIENTATION_PANEL_WIDTH
+                      + ORIENTATION_PANEL_MARGIN * 2
+            and renderedViewportHeight
+                   >= ORIENTATION_PANEL_HEIGHT
+                      + ORIENTATION_PANEL_MARGIN * 2;
+    }
+
+    /// @brief Return the navigator face under one viewport-local point.
+    /// @return Six direction faces, projection toggle, or NONE.
+    expose func OrientationFaceAt(mouseX: Integer,
+                                  mouseY: Integer) -> Integer {
+        if OrientationNavigatorVisible() == false {
+            return ORIENTATION_FACE_NONE;
+        }
+        var panelLeft = renderedViewportWidth
+            - ORIENTATION_PANEL_MARGIN - ORIENTATION_PANEL_WIDTH;
+        var face = ORIENTATION_FACE_TOP;
+        while face <= ORIENTATION_FACE_LEFT {
+            var column = face % 3;
+            var row = face / 3;
+            var left = panelLeft + ORIENTATION_FACE_LEFT_PAD
+                + column
+                    * (ORIENTATION_FACE_WIDTH + ORIENTATION_FACE_GAP);
+            var top = ORIENTATION_PANEL_MARGIN
+                + ORIENTATION_FACE_TOP_PAD
+                + row
+                    * (ORIENTATION_FACE_HEIGHT + ORIENTATION_FACE_GAP);
+            if mouseX >= left
+               and mouseX < left + ORIENTATION_FACE_WIDTH
+               and mouseY >= top
+               and mouseY < top + ORIENTATION_FACE_HEIGHT {
+                return face;
+            }
+            face = face + 1;
+        }
+        var projectionLeft = panelLeft + 91;
+        var projectionTop = ORIENTATION_PANEL_MARGIN + 5;
+        if mouseX >= projectionLeft and mouseX < projectionLeft + 50
+           and mouseY >= projectionTop and mouseY < projectionTop + 17 {
+            return ORIENTATION_PROJECTION_TOGGLE;
+        }
+        if mouseX >= panelLeft
+           and mouseX < panelLeft + ORIENTATION_PANEL_WIDTH
+           and mouseY >= ORIENTATION_PANEL_MARGIN
+           and mouseY
+              < ORIENTATION_PANEL_MARGIN + ORIENTATION_PANEL_HEIGHT {
+            return ORIENTATION_PANEL_BACKGROUND;
+        }
+        return ORIENTATION_FACE_NONE;
+    }
+
+    /// @brief Return the center of one live navigator hit target.
+    /// @details Display probes use production geometry instead of duplicating
+    ///          top-right placement math.
+    expose func OrientationFaceCenter(face: Integer) -> ProjectedPoint {
+        var point = new ProjectedPoint();
+        point.visible = false;
+        if OrientationNavigatorVisible() == false { return point; }
+        var panelLeft = renderedViewportWidth
+            - ORIENTATION_PANEL_MARGIN - ORIENTATION_PANEL_WIDTH;
+        if face >= ORIENTATION_FACE_TOP
+           and face <= ORIENTATION_FACE_LEFT {
+            var column = face % 3;
+            var row = face / 3;
+            point.x = panelLeft + ORIENTATION_FACE_LEFT_PAD
+                + column
+                    * (ORIENTATION_FACE_WIDTH + ORIENTATION_FACE_GAP)
+                + ORIENTATION_FACE_WIDTH / 2;
+            point.y = ORIENTATION_PANEL_MARGIN
+                + ORIENTATION_FACE_TOP_PAD
+                + row
+                    * (ORIENTATION_FACE_HEIGHT + ORIENTATION_FACE_GAP)
+                + ORIENTATION_FACE_HEIGHT / 2;
+            point.visible = true;
+        } else if face == ORIENTATION_PROJECTION_TOGGLE {
+            point.x = panelLeft + 116;
+            point.y = ORIENTATION_PANEL_MARGIN + 13;
+            point.visible = true;
+        }
+        return point;
+    }
+
+    /// @brief Name one navigator target for status/accessibility text.
+    expose func OrientationFaceLabel(face: Integer) -> String {
+        if face == ORIENTATION_FACE_TOP { return "Top"; }
+        if face == ORIENTATION_FACE_FRONT { return "Front"; }
+        if face == ORIENTATION_FACE_RIGHT { return "Right"; }
+        if face == ORIENTATION_FACE_BOTTOM { return "Bottom"; }
+        if face == ORIENTATION_FACE_BACK { return "Back"; }
+        if face == ORIENTATION_FACE_LEFT { return "Left"; }
+        if face == ORIENTATION_PROJECTION_TOGGLE {
+            if viewPerspective { return "Orthographic"; }
+            return "Perspective";
+        }
+        if face == ORIENTATION_PANEL_BACKGROUND { return "Navigator"; }
+        return "";
+    }
+
+    /// @brief Activate one navigator target without touching VSCN content.
+    /// @return True only for one recognized direction/projection target.
+    expose func ActivateOrientationFace(face: Integer) -> Boolean {
+        if face >= ORIENTATION_FACE_TOP
+           and face <= ORIENTATION_FACE_LEFT {
+            SetQuickView(face);
+            toolbarStatus.SetText(
+                OrientationFaceLabel(face) + " view");
+            return true;
+        }
+        if face == ORIENTATION_PROJECTION_TOGGLE {
+            SetViewProjection(!viewPerspective);
+            var projection = "Orthographic";
+            if viewPerspective { projection = "Perspective"; }
+            toolbarStatus.SetText(projection + " projection");
+            return true;
+        }
+        return false;
+    }
+
+    /// @brief Return the navigator face nearest the current camera heading.
+    hide func ActiveOrientationFace() -> Integer {
+        if viewPitchDegrees >= 45 { return ORIENTATION_FACE_TOP; }
+        if viewPitchDegrees <= -45 { return ORIENTATION_FACE_BOTTOM; }
+        var yaw = NormalizeYawDegrees(viewYawDegrees);
+        if yaw < 0 { yaw = yaw + 360; }
+        if yaw < 45 or yaw >= 315 { return ORIENTATION_FACE_FRONT; }
+        if yaw < 135 { return ORIENTATION_FACE_RIGHT; }
+        if yaw < 225 { return ORIENTATION_FACE_BACK; }
+        return ORIENTATION_FACE_LEFT;
     }
 
     /// @brief Encode the live camera pose as one bookmark string.
@@ -10536,6 +11129,7 @@ class SceneEditor3D {
         if encoded == "" { return false; }
         var parts = Str.Split(encoded, ",");
         if Seq.get_Count(parts) != 7 { return false; }
+        ReleaseGameplayViewAnchor();
         viewYawDegrees = NormalizeYawDegrees(
             Parse.IntOr(Seq.GetStr(parts, 0), viewYawDegrees));
         viewPitchDegrees = ClampInt3D(
@@ -10911,6 +11505,40 @@ class SceneEditor3D {
                 hoveredViewportNode = -1;
                 renderDirty = true;
             }
+            if orientationHoverFace != ORIENTATION_FACE_NONE {
+                orientationHoverFace = ORIENTATION_FACE_NONE;
+                renderDirty = true;
+            }
+            return false;
+        }
+        var mouseX = Convert.NumToInt(
+            PhysicalPointerToUi(Input.Mouse.X())
+            - viewportImage.GetScreenX());
+        var mouseY = Convert.NumToInt(
+            PhysicalPointerToUi(Input.Mouse.Y())
+            - viewportImage.GetScreenY());
+        var orientationFace = OrientationFaceAt(mouseX, mouseY);
+        if orientationFace != orientationHoverFace {
+            orientationHoverFace = orientationFace;
+            renderDirty = true;
+        }
+        if orientationFace != ORIENTATION_FACE_NONE {
+            if gizmoHoverAxis != GIZMO_AXIS_NONE {
+                gizmoHoverAxis = GIZMO_AXIS_NONE;
+                renderDirty = true;
+            }
+            if hoveredViewportNode != -1 {
+                hoveredViewportNode = -1;
+                renderDirty = true;
+            }
+            if Input.Mouse.WasPressed(Input.Mouse.ButtonLeft) {
+                FocusActiveGizmoButton();
+            }
+            if Input.Mouse.WasClicked(Input.Mouse.ButtonLeft) {
+                ActivateOrientationFace(orientationFace);
+            }
+            // The navigator owns its complete panel. Wheel/right/middle input
+            // cannot leak into dolly/orbit or arm a selection marquee.
             return false;
         }
         var navigationOwned = ActiveLookThroughNode() == null;
@@ -10943,6 +11571,7 @@ class SceneEditor3D {
                 if ViewportShiftDown() {
                     PanViewportByPixels(deltaX, deltaY);
                 } else {
+                    ReleaseGameplayViewAnchor();
                     viewYawDegrees = NormalizeYawDegrees(
                         viewYawDegrees + deltaX);
                     viewPitchDegrees = ClampInt3D(
@@ -10952,12 +11581,6 @@ class SceneEditor3D {
             }
             return false;
         }
-        var mouseX = Convert.NumToInt(
-            PhysicalPointerToUi(Input.Mouse.X())
-            - viewportImage.GetScreenX());
-        var mouseY = Convert.NumToInt(
-            PhysicalPointerToUi(Input.Mouse.Y())
-            - viewportImage.GetScreenY());
         var hoveredAxis = GizmoHandleAtViewportPoint(mouseX, mouseY);
         if hoveredAxis != gizmoHoverAxis {
             gizmoHoverAxis = hoveredAxis;
@@ -11070,8 +11693,11 @@ class SceneEditor3D {
         BeginRenameSelected();
     }
 
-    /// @brief Begin an inline rename of the single selected node's row.
-    /// @details Shared by the F2 shortcut and the hierarchy context menu.
+    /// @brief Begin a visible inline rename of the selected node's row.
+    /// @details Shared by F2, context menus, and create-and-rename flows.
+    ///          Viewport-priority layouts reveal the full-width hierarchy
+    ///          master before opening the row editor. Focus mode refuses the
+    ///          edit unless the hierarchy already owns a floating pane.
     /// @return True when the row editor opened.
     expose func BeginRenameSelected() -> Boolean {
         if hierarchyTree == null or scene == null { return false; }
@@ -11084,6 +11710,16 @@ class SceneEditor3D {
         }
         var node = SelectedNode();
         if node == null { return false; }
+        if focusModeActive and hierarchyDock.floating == false {
+            return false;
+        }
+        if hierarchyDock.floating == false
+           and UsesDockedHierarchy(lastHostWidth) == false {
+            compactHierarchyShown = true;
+            compactInspectorShown = false;
+            ApplyInspectorLayout();
+            CaptureWorkspaceState();
+        }
         return hierarchyTree.BeginEditNode(
             hierarchyTreeNodes.get(selectedIndex), node.Name);
     }
@@ -12194,6 +12830,8 @@ class SceneEditor3D {
         viewportRenderTarget = null;
         viewportRenderCanvas = null;
         viewportRenderCamera = null;
+        viewportRenderPostFX = null;
+        viewportPostFXDirty = true;
         projectionCameraReady = false;
         renderDirty = true;
     }
@@ -12260,6 +12898,8 @@ class SceneEditor3D {
         viewportRenderTarget = target;
         viewportRenderCanvas = canvas;
         viewportRenderCamera = camera;
+        viewportRenderPostFX = null;
+        viewportPostFXDirty = true;
         viewportTargetWidth = targetWidth;
         viewportTargetHeight = targetHeight;
         // The fresh camera has never been configured for the current view
@@ -12364,6 +13004,69 @@ class SceneEditor3D {
     }
 
 
+    /// @brief Rebuild one retained portable project post-processing chain.
+    /// @details Static schema values are copied into runtime state only when
+    ///          the schema or render canvas changes, avoiding per-frame
+    ///          allocation while keeping project code outside Studio.
+    hide func RebuildProjectPreviewPostFX() {
+        viewportRenderPostFX = null;
+        viewportPostFXDirty = false;
+        if componentSchema == null
+           or componentSchema.valid == false
+           or componentSchema.scenePreview3D == null {
+            return;
+        }
+        var profile = componentSchema.scenePreview3D;
+        if profile.present == false or profile.HasPostFX() == false {
+            return;
+        }
+        var chain = PostFX3D.New();
+        if chain == null { return; }
+        if profile.hasTonemap {
+            PostFX3D.AddTonemap(
+                chain, profile.tonemapMode, profile.tonemapExposure);
+        }
+        if profile.hasBloom {
+            PostFX3D.AddBloom(
+                chain,
+                profile.bloomThreshold,
+                profile.bloomIntensity,
+                profile.bloomPasses);
+        }
+        if profile.hasColorGrade {
+            PostFX3D.AddColorGrade(
+                chain,
+                profile.colorGradeBrightness,
+                profile.colorGradeContrast,
+                profile.colorGradeSaturation);
+        }
+        if profile.hasVignette {
+            PostFX3D.AddVignette(
+                chain,
+                profile.vignetteRadius,
+                profile.vignetteSoftness);
+        }
+        if profile.hasFxaa and profile.fxaa {
+            PostFX3D.AddFxaa(chain);
+        }
+        if chain.EffectCount > 0 {
+            viewportRenderPostFX = chain;
+        }
+    }
+
+    /// @brief Attach project effects only to the main shaded scene viewport.
+    hide func ApplyProjectPreviewPostFX() {
+        if viewportRenderCanvas == null { return; }
+        if viewportPostFXDirty { RebuildProjectPreviewPostFX(); }
+        if viewportMode == VIEWPORT_MODE_WIREFRAME
+           or viewportRenderPostFX == null {
+            Canvas3D.SetPostFX(viewportRenderCanvas, null);
+            return;
+        }
+        Canvas3D.SetPostFX(
+            viewportRenderCanvas, viewportRenderPostFX);
+    }
+
     /// @brief Rasterize authored meshes and materials into the embedded image.
     hide func RenderAuthoredViewport() -> Boolean {
         if ConfigureViewportCamera() == false { return false; }
@@ -12380,6 +13083,7 @@ class SceneEditor3D {
             projectPreview,
             authoredSkyPresent,
             editorLightAssist);
+        ApplyProjectPreviewPostFX();
         scene.Draw(viewportRenderCanvas, viewportRenderCamera);
         if projectPreviewScene != null {
             projectPreviewScene.Draw(
@@ -12396,7 +13100,17 @@ class SceneEditor3D {
             }
             viewportRenderCanvas.Wireframe = false;
         }
-        var rendered = viewportRenderTarget.AsPixels() as Pixels;
+        var rendered: Pixels = null;
+        if viewportRenderPostFX != null
+           and viewportMode != VIEWPORT_MODE_WIREFRAME {
+            // RenderTarget.AsPixels is the pre-finalization attachment.
+            // ScreenshotFinal is the runtime boundary that actually applies
+            // the retained chain before readback (ADR 0204).
+            rendered =
+                viewportRenderCanvas.ScreenshotFinal() as Pixels;
+        } else {
+            rendered = viewportRenderTarget.AsPixels() as Pixels;
+        }
         if rendered == null { return false; }
         if viewportTargetWidth != renderedViewportWidth
            or viewportTargetHeight != renderedViewportHeight {
@@ -12633,6 +13347,7 @@ class SceneEditor3D {
         }
 
         DrawCameraPreviewInset();
+        DrawOrientationNavigator();
         viewportImage.SetPixels(
             viewportPixels, renderedViewportWidth, renderedViewportHeight);
         viewportImage.SetSize(renderedViewportWidth, renderedViewportHeight);
@@ -12661,6 +13376,9 @@ class SceneEditor3D {
             }
         } else if gizmoHoverAxis != GIZMO_AXIS_NONE {
             interaction = "  |  " + GizmoHandleLabel(gizmoHoverAxis);
+        } else if orientationHoverFace != ORIENTATION_FACE_NONE {
+            interaction = "  |  view "
+                + OrientationFaceLabel(orientationHoverFace);
         }
         var snapStatus = "";
         if gizmoSnapEnabled {
@@ -12722,7 +13440,120 @@ class SceneEditor3D {
             + " project previews in " + renderStatus
             + " mode at " + viewScale + " pixels per world unit. "
             + "Click visible meshes to select; Shift adds and Control or "
-            + "Command toggles. Middle or right drag orbits; add Shift to pan.");
+            + "Command toggles. Middle or right drag orbits; add Shift to pan. "
+            + "The top-right View navigator exposes Top, Front, Right, Bottom, "
+            + "Back, Left, and the perspective/orthographic toggle.");
+    }
+
+    /// @brief Draw the responsive six-face camera navigator.
+    /// @details The navigator is a pure viewport overlay. Stable geometry is
+    ///          shared with OrientationFaceAt, active heading is amber, hover
+    ///          is cyan, and axis-family tint keeps directions scannable.
+    hide func DrawOrientationNavigator() {
+        if viewportPixels == null
+           or OrientationNavigatorVisible() == false {
+            return;
+        }
+        var panelLeft = renderedViewportWidth
+            - ORIENTATION_PANEL_MARGIN - ORIENTATION_PANEL_WIDTH;
+        var panelTop = ORIENTATION_PANEL_MARGIN;
+        viewportPixels.DrawBox(
+            panelLeft, panelTop,
+            ORIENTATION_PANEL_WIDTH, ORIENTATION_PANEL_HEIGHT,
+            Color.RGB(25, 30, 39));
+        viewportPixels.DrawFrame(
+            panelLeft, panelTop,
+            ORIENTATION_PANEL_WIDTH, ORIENTATION_PANEL_HEIGHT,
+            Color.RGB(84, 95, 112));
+        viewportPixels.DrawText(
+            panelLeft + 7, panelTop + 8,
+            "VIEW", Color.RGB(188, 198, 214));
+
+        // Tiny XYZ triad gives the compact face grid an immediate spatial cue.
+        var triadX = panelLeft + 57;
+        var triadY = panelTop + 14;
+        viewportPixels.DrawDisc(
+            triadX, triadY, 2, Color.RGB(215, 220, 228));
+        viewportPixels.DrawLine(
+            triadX, triadY, triadX + 15, triadY,
+            Color.RGB(218, 88, 88));
+        viewportPixels.DrawLine(
+            triadX, triadY, triadX, triadY - 9,
+            Color.RGB(88, 205, 112));
+        viewportPixels.DrawLine(
+            triadX, triadY, triadX + 9, triadY + 7,
+            Color.RGB(86, 138, 226));
+
+        var projectionLeft = panelLeft + 91;
+        var projectionTop = panelTop + 5;
+        var projectionFill = Color.RGB(48, 57, 70);
+        var projectionOutline = Color.RGB(104, 117, 136);
+        if orientationHoverFace == ORIENTATION_PROJECTION_TOGGLE {
+            projectionFill = Color.RGB(43, 94, 110);
+            projectionOutline = Color.RGB(104, 220, 255);
+        }
+        viewportPixels.DrawBox(
+            projectionLeft, projectionTop, 50, 17, projectionFill);
+        viewportPixels.DrawFrame(
+            projectionLeft, projectionTop, 50, 17, projectionOutline);
+        var projectionText = "PERSP";
+        if viewPerspective == false { projectionText = "ORTHO"; }
+        viewportPixels.DrawText(
+            projectionLeft + 5, projectionTop + 5,
+            projectionText, Color.RGB(224, 229, 236));
+
+        var active = ActiveOrientationFace();
+        var face = ORIENTATION_FACE_TOP;
+        while face <= ORIENTATION_FACE_LEFT {
+            var column = face % 3;
+            var row = face / 3;
+            var left = panelLeft + ORIENTATION_FACE_LEFT_PAD
+                + column
+                    * (ORIENTATION_FACE_WIDTH + ORIENTATION_FACE_GAP);
+            var top = panelTop + ORIENTATION_FACE_TOP_PAD
+                + row
+                    * (ORIENTATION_FACE_HEIGHT + ORIENTATION_FACE_GAP);
+            var fill = Color.RGB(52, 61, 74);
+            if face == ORIENTATION_FACE_TOP
+               or face == ORIENTATION_FACE_BOTTOM {
+                fill = Color.RGB(38, 82, 51);
+            } else if face == ORIENTATION_FACE_FRONT
+                      or face == ORIENTATION_FACE_BACK {
+                fill = Color.RGB(37, 65, 104);
+            } else {
+                fill = Color.RGB(96, 48, 51);
+            }
+            var outline = Color.RGB(91, 104, 123);
+            if face == active {
+                fill = Color.RGB(124, 91, 35);
+                outline = Color.RGB(255, 195, 78);
+            }
+            if face == orientationHoverFace {
+                fill = Color.RGB(39, 105, 122);
+                outline = Color.RGB(104, 220, 255);
+            }
+            viewportPixels.DrawBox(
+                left, top,
+                ORIENTATION_FACE_WIDTH, ORIENTATION_FACE_HEIGHT,
+                fill);
+            viewportPixels.DrawFrame(
+                left, top,
+                ORIENTATION_FACE_WIDTH, ORIENTATION_FACE_HEIGHT,
+                outline);
+            var label = "TOP";
+            if face == ORIENTATION_FACE_FRONT { label = "FRONT"; }
+            else if face == ORIENTATION_FACE_RIGHT { label = "RIGHT"; }
+            else if face == ORIENTATION_FACE_BOTTOM { label = "BOT"; }
+            else if face == ORIENTATION_FACE_BACK { label = "BACK"; }
+            else if face == ORIENTATION_FACE_LEFT { label = "LEFT"; }
+            var labelWidth = Str.get_Length(label) * 8;
+            viewportPixels.DrawText(
+                left + (ORIENTATION_FACE_WIDTH - labelWidth) / 2,
+                top + 7,
+                label,
+                Color.RGB(235, 239, 244));
+            face = face + 1;
+        }
     }
 
     /// @brief Draw a mode-specific endpoint so tools are distinguishable.

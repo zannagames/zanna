@@ -258,7 +258,8 @@ func main() {
     if editor.viewYawDegrees != yawBefore
        or editor.viewPitchDegrees != pitchBefore
        or editor.viewScale != scaleBefore
-       or near(editor.viewTargetX, targetXBefore) == false {
+       or near(editor.viewTargetX, targetXBefore) == false
+       or editor.GetRevision() != lookRevision {
         fail(shell, "look-through modified the editor camera pose");
         return;
     }

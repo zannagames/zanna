@@ -18,6 +18,8 @@
 //     recovery text, prioritizing the active document when truncation is needed.
 //   - Scene view state is fixed-point, versioned, and bounded before it reaches
 //     a live canvas, hierarchy, split pane, or camera.
+//   - All nine 2D authoring modes, including Line and Ellipse, retain their
+//     exact bounded identity through named-scene session restoration.
 //   - Structured split panes map through validated durable slots; a rejected
 //     pane owner never falls back to an unrelated open document.
 //   - Visual surfaces and read-only previews never become split-pane owners.
@@ -938,7 +940,7 @@ class SessionManager {
             Ini.Set(ini, section, "scene2dVersion",
                     "" + SCENE_WORKSPACE_STATE_VERSION);
             Ini.Set(ini, section, "scene2dMode",
-                    "" + ClampSessionInt(state2D.mode, 0, 6));
+                    "" + ClampSessionInt(state2D.mode, 0, 8));
             Ini.Set(ini, section, "scene2dZoom",
                     "" + ClampSessionInt(state2D.zoomPercent, 25, 1600));
             Ini.Set(ini, section, "scene2dLayer",
@@ -1044,7 +1046,7 @@ class SessionManager {
             var state2D = doc.scene2DWorkspace;
             state2D.initialized = true;
             state2D.mode = ReadSessionInt(
-                ini, section, "scene2dMode", 0, 0, 6);
+                ini, section, "scene2dMode", 0, 0, 8);
             state2D.zoomPercent = ReadSessionInt(
                 ini, section, "scene2dZoom", 100, 25, 1600);
             state2D.activeLayer = ReadSessionInt(

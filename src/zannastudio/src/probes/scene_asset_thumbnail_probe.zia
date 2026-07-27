@@ -1,0 +1,250 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_asset_thumbnail_probe.zia
+// Purpose: Verify Studio's bounded project-asset thumbnail grid.
+// Key invariants:
+//   - Image and 3D scene assets produce real square previews.
+//   - Discovery, preview rendering, and layout stay incrementally bounded.
+//   - Grid clicks select the canonical list row and list/grid mode preserves it.
+//   - Selection and previews never mutate either fixture.
+// Ownership/Lifetime:
+//   - The probe owns one temporary project, AppShell, and ProjectManager.
+//   - Cleanup removes only the exact temporary directory created here.
+// Links: zannastudio/src/ui/scene_asset_browser.zia,
+//        zannastudio/src/ui/scene_asset_thumbnails.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_asset_thumbnail_probe;
+
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_asset_browser";
+bind "../ui/scene_asset_thumbnails";
+
+bind Convert = Zanna.Core.Convert;
+bind Color = Zanna.Graphics.Color;
+bind Pixels = Zanna.Graphics.Pixels;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind GUI = Zanna.GUI;
+bind Dir = Zanna.IO.Dir;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind TempFile = Zanna.IO.TempFile;
+bind Terminal = Zanna.Terminal;
+
+func HarnessCoordinate(shell: app_shell.AppShell,
+                       logical: Number) -> Integer {
+    var scale = shell.app.GetEffectiveScale();
+    if scale <= 0.0 { scale = 1.0; }
+    return Convert.NumToInt(logical * scale + 0.999999);
+}
+
+func cleanup(shell: app_shell.AppShell,
+             harness: GUI.TestHarness,
+             root: String) {
+    if harness != null { harness.UnbindApp(); }
+    if shell != null { shell.Destroy(); }
+    if root != "" { Dir.RemoveAll(root); }
+}
+
+func fail(shell: app_shell.AppShell,
+          harness: GUI.TestHarness,
+          root: String,
+          reason: String) {
+    cleanup(shell, harness, root);
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func main() {
+    var root =
+        TempFile.CreateDirWithPrefix("zannastudio_asset_thumbnails_");
+    var imagePath = Path.Join(root, "hero-preview.png");
+    var modelPath = Path.Join(root, "crate.scene3d");
+    if root == "" {
+        Terminal.Say("RESULT: fail temporary project");
+        return;
+    }
+
+    var image = Pixels.New(24, 12);
+    image.DrawBox(0, 0, 12, 12, Color.RGB(225, 64, 45));
+    image.DrawBox(12, 0, 12, 12, Color.RGB(45, 130, 225));
+    var graph = SceneGraph.New();
+    var node = SceneNode.New();
+    node.Name = "Thumbnail crate";
+    node.Mesh = Mesh3D.Box(1.0, 1.5, 0.75);
+    node.Material = Material3D.PBR(0.25, 0.62, 0.92);
+    graph.Add(node);
+    if Pixels.SavePng(image, imagePath) != 1
+       or graph.Save(modelPath) == 0 {
+        cleanup(null, null, root);
+        Terminal.Say("RESULT: fail fixture write");
+        return;
+    }
+
+    var imagePreview =
+        scene_asset_thumbnails.Load(imagePath, 80);
+    var modelPreview =
+        scene_asset_thumbnails.Load(modelPath, 80);
+    var capturePath = Path.Join(
+        TempFile.Dir(), "zannastudio_asset_model_thumbnail.png");
+    if imagePreview == null or modelPreview == null
+       or imagePreview.Width != 80 or imagePreview.Height != 80
+       or modelPreview.Width != 80 or modelPreview.Height != 80
+       or Pixels.SavePng(modelPreview, capturePath) != 1 {
+        cleanup(null, null, root);
+        Terminal.Say("RESULT: fail direct image/model thumbnail render");
+        return;
+    }
+
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Asset Thumbnail Probe", 960, 700);
+    shell.SetSceneWorkspaceMode(true);
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_2D);
+    var fixtureHost =
+        GUI.GroupBox.New(shell.workbench.scene2DHost, "Asset browser fixture");
+    fixtureHost.SetFlex(1.0);
+
+    var browser = new scene_asset_browser.SceneAssetBrowser();
+    browser.Setup(
+        fixtureHost,
+        "Browse project assets",
+        ".png,.scene3d",
+        "Use asset");
+    browser.Open();
+
+    var project = new project_manager.ProjectManager();
+    if project.OpenFolder(root) == false {
+        fail(shell, null, root, "project open");
+        return;
+    }
+
+    var frames = 0;
+    while frames < 120
+          and (browser.assetList.Count < 2
+               or browser.thumbnailAttemptedCount < 2) {
+        browser.Pump(project, true);
+        shell.Poll();
+        shell.Render();
+        frames = frames + 1;
+    }
+    browser.Pump(project, true);
+    shell.Render();
+
+    if browser.gridView == false
+       or browser.thumbnailScroll.IsVisible() == false
+       or browser.assetList.IsVisible()
+       or browser.assetList.Count != 2
+       or browser.thumbnailCards.count() != 2
+       or browser.thumbnailAttemptedCount != 2
+       or browser.thumbnailReadyCount != 2
+       or browser.thumbnailGrid.GetLogicalHeight()
+          < scene_asset_browser.ASSET_CARD_HEIGHT {
+        fail(shell, null, root,
+             "bounded responsive thumbnail grid did not settle"
+             + " rows=" + browser.assetList.Count
+             + " cards=" + browser.thumbnailCards.count()
+             + " attempts=" + browser.thumbnailAttemptedCount
+             + " ready=" + browser.thumbnailReadyCount
+             + " height=" + browser.thumbnailGrid.GetLogicalHeight());
+        return;
+    }
+    var index = 0;
+    while index < browser.thumbnailCards.count() {
+        if browser.thumbnailCards.get(index).thumbnailReady == false {
+            fail(shell, null, root,
+                 "a supported thumbnail remained a placeholder");
+            return;
+        }
+        index = index + 1;
+    }
+
+    var harness = GUI.TestHarness.New();
+    if harness.BindApp(shell.app) == false {
+        fail(shell, harness, root, "automation app binding");
+        return;
+    }
+    var firstCard = browser.thumbnailCards.get(0);
+    browser.thumbnailScroll.SetScroll(0.0, 0.0);
+    shell.Render();
+    var clickX = HarnessCoordinate(
+        shell,
+        firstCard.labelButton.GetScreenX()
+            + firstCard.labelButton.GetScreenWidth() * 0.5);
+    var clickY = HarnessCoordinate(
+        shell,
+        firstCard.labelButton.GetScreenY()
+            + firstCard.labelButton.GetScreenHeight() * 0.5);
+    harness.SendMouse("move", clickX, clickY, 0);
+    harness.SendMouse("down", clickX, clickY, 0);
+    harness.SendMouse("up", clickX, clickY, 0);
+    harness.DispatchPending();
+    browser.Pump(project, true);
+    shell.Poll();
+    shell.Render();
+    if Path.Normalize(browser.SelectedPath())
+       != Path.Normalize(firstCard.path)
+       or firstCard.labelButton.IsEnabled() == false {
+        fail(shell, harness, root,
+             "grid click did not select the canonical asset row");
+        return;
+    }
+
+    var selectedBeforeToggle = browser.SelectedPath();
+    browser.SetGridView(false);
+    if browser.gridView
+       or browser.assetList.IsVisible() == false
+       or browser.thumbnailScroll.IsVisible()
+       or browser.SelectedPath() != selectedBeforeToggle {
+        fail(shell, harness, root,
+             "list mode lost visibility or canonical selection");
+        return;
+    }
+    browser.SetGridView(true);
+
+    var modelRow = -1;
+    index = 0;
+    while index < browser.assetList.Count {
+        browser.assetList.SelectIndex(index);
+        if Path.Normalize(browser.SelectedPath())
+           == Path.Normalize(modelPath) {
+            modelRow = index;
+            index = browser.assetList.Count;
+        } else {
+            index = index + 1;
+        }
+    }
+    if modelRow < 0 {
+        fail(shell, harness, root, "model row lookup");
+        return;
+    }
+    browser.Pump(project, true);
+    shell.Render();
+    if browser.previewPixels == null
+       or browser.previewPixels.Width != 128
+       or browser.previewPixels.Height != 128
+       or imagePreview.GetRgba(40, 40)
+          == modelPreview.GetRgba(40, 40)
+       or File.ReadAllText(modelPath) == "" {
+        fail(shell, harness, root,
+             "selected 3D detail preview was unavailable or aliased");
+        return;
+    }
+
+    Terminal.Say(
+        "METRIC: rows=" + browser.assetList.Count
+        + " cards=" + browser.thumbnailCards.count()
+        + " ready=" + browser.thumbnailReadyCount
+        + " capture=" + capturePath);
+    cleanup(shell, harness, root);
+    Terminal.Say("RESULT: ok");
+}

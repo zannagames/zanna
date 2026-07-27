@@ -1,0 +1,245 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_gameplay_preview_2d_probe.zia
+// Purpose: Verify a real project's gameplay-aligned Studio 2D scene preview.
+// Key invariants:
+//   - Xenoscape region 01 opens at native art scale around the player start.
+//   - Project-owned biome and object art decode through the retained canvas.
+//   - The canonical 150x17 world, terrain, and 82 objects remain unchanged.
+//   - The actual canvas remains capturable for editor/game visual comparison.
+// Ownership/Lifetime:
+//   - The probe owns one AppShell and ProjectManager until process exit.
+//   - It reads repository fixtures and writes only one temporary screenshot.
+// Links: zannastudio/src/ui/scene_editor_2d.zia,
+//        examples/games/xenoscape-scenes/scene-components.json,
+//        examples/games/xenoscape-scenes/assets/scenes/region-01.scene2d,
+//        docs/adr/0202-project-owned-2d-scene-background-previews.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_gameplay_preview_2d_probe;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_2d";
+bind "../ui/scene_panels_2d";
+
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind TempFile = Zanna.IO.TempFile;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Terminal = Zanna.Terminal;
+bind Env = Zanna.System.Environment;
+
+final EXPECTED_TILE_SOURCE_PIXELS: Integer = 512 * 448;
+final EXPECTED_BACKGROUND_SOURCE_PIXELS: Integer = 1280 * 720;
+
+func HasArg(name: String) -> Boolean {
+    // VM `zanna run -- ...` arguments begin at zero; native probe binaries may
+    // include an executable slot, so scan every entry for this explicit flag.
+    var index = 0;
+    while index < Env.GetArgumentCount() {
+        if Env.GetArgument(index) == name { return true; }
+        index = index + 1;
+    }
+    return false;
+}
+
+func projectRoot() -> String {
+    var fromProbe =
+        "../../../../examples/games/xenoscape-scenes";
+    if File.Exists(Path.Join(fromProbe, "scene-components.json")) {
+        return fromProbe;
+    }
+    return "examples/games/xenoscape-scenes";
+}
+
+func fail(shell: app_shell.AppShell,
+          project: project_manager.ProjectManager,
+          reason: String) {
+    project.CloseProject();
+    shell.Destroy();
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func pump(editor: scene_editor_2d.SceneEditor2D,
+          doc: document.Document,
+          shell: app_shell.AppShell) -> Boolean {
+    var changed = editor.Pump(doc);
+    shell.Render();
+    return changed;
+}
+
+func main() {
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Xenoscape Preview Probe", 1180, 780);
+    shell.SetSceneWorkspaceMode(true);
+
+    var project = new project_manager.ProjectManager();
+    project.Setup(null);
+    var root = projectRoot();
+    var scenePath =
+        Path.Join(root, "assets/scenes/region-01.scene2d");
+    if File.Exists(scenePath) == false
+       or project.OpenFolder(root) == false {
+        fail(shell, project,
+             "could not open the Xenoscape project fixture at " + root);
+        return;
+    }
+
+    var editor = new scene_editor_2d.SceneEditor2D();
+    scene_panels_2d.Build(
+        editor, shell.workbench.scene2DHost, shell.app);
+    editor.SetWorkspaceContext(project);
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_2D);
+
+    var sceneDoc = new document.Document();
+    sceneDoc.fileName = "region-01.scene2d";
+    sceneDoc.filePath = scenePath;
+    sceneDoc.language = "scene2d";
+    sceneDoc.kind = file_utils.DOC_KIND_SCENE_2D;
+    sceneDoc.content = File.ReadAllText(scenePath);
+    var baseline = sceneDoc.content;
+    editor.Activate(sceneDoc);
+    var firstChanged = pump(editor, sceneDoc, shell);
+    if sceneDoc.content != baseline
+       or sceneDoc.isModified
+       or editor.currentSerialized != baseline {
+        fail(shell, project,
+             "first production pump changed canonical state"
+             + " returned=" + firstChanged
+             + " content=" + (sceneDoc.content != baseline)
+             + " modified=" + sceneDoc.isModified
+             + " snapshot=" + (editor.currentSerialized != baseline));
+        return;
+    }
+    var secondChanged = pump(editor, sceneDoc, shell);
+    if sceneDoc.content != baseline
+       or sceneDoc.isModified
+       or editor.currentSerialized != baseline {
+        fail(shell, project,
+             "second production pump changed canonical state"
+             + " returned=" + secondChanged
+             + " content=" + (sceneDoc.content != baseline)
+             + " modified=" + sceneDoc.isModified
+             + " snapshot=" + (editor.currentSerialized != baseline));
+        return;
+    }
+    var thirdChanged = pump(editor, sceneDoc, shell);
+    if sceneDoc.content != baseline
+       or sceneDoc.isModified
+       or editor.currentSerialized != baseline {
+        fail(shell, project,
+             "third production pump changed canonical state"
+             + " returned=" + thirdChanged
+             + " content=" + (sceneDoc.content != baseline)
+             + " modified=" + sceneDoc.isModified
+             + " snapshot=" + (editor.currentSerialized != baseline));
+        return;
+    }
+
+    if editor.loadError != ""
+       or editor.scene == null
+       or editor.framePixels == null
+       or editor.scene.Width != 150
+       or editor.scene.Height != 17
+       or editor.scene.TileWidth != 64
+       or editor.scene.TileHeight != 64
+       or editor.scene.LayerCount() != 1
+       or editor.scene.ObjectCount() != 82 {
+        fail(shell, project,
+             "the Xenoscape region did not become its canonical "
+             + "rendered Studio scene");
+        return;
+    }
+
+    if editor.componentSchema == null
+       or editor.componentSchema.valid == false
+       or editor.componentSchema.version != 8
+       or editor.componentSchema.scenePreview2D == null
+       or editor.componentSchema.scenePreview2D
+              .BackgroundForVariant(1)
+          != "assets/backgrounds/scene-region-01.png"
+       or editor.showGrid
+       or editor.tilesets.TileCount(0) != 56
+       or editor.tilesets.sourcePixelCount
+          < EXPECTED_TILE_SOURCE_PIXELS
+              + EXPECTED_BACKGROUND_SOURCE_PIXELS {
+        fail(shell, project,
+             "the project-owned biome, tile, or grid profile "
+             + "did not reach the production canvas");
+        return;
+    }
+
+    // Large gameplay worlds must remain legible instead of opening as a
+    // whole-world thumbnail. Region 01's authored player start is near the
+    // left edge, so native-scale framing clamps horizontal scroll to zero and
+    // centers vertically near the gameplay floor.
+    if editor.zoomPercent != 100
+       or editor.displayCellSize != 64
+       or editor.viewOriginX != 0
+       or editor.viewOriginY <= 0
+       or editor.renderedColumns < 6
+       or editor.renderedRows < 6 {
+        fail(shell, project,
+             "first-open gameplay framing diverged: zoom="
+             + editor.zoomPercent + " cell=" + editor.displayCellSize
+             + " origin=" + editor.viewOriginX + ","
+             + editor.viewOriginY + " rendered="
+             + editor.renderedColumns + "x" + editor.renderedRows);
+        return;
+    }
+
+    // Loading, background compositing, and sprite resolution are presentation
+    // work. They must not add editor metadata or dirty the real game scene.
+    if sceneDoc.content != baseline
+       or sceneDoc.isModified
+       or editor.currentSerialized != baseline {
+        fail(shell, project,
+             "rendering the real project changed canonical state"
+             + " content=" + (sceneDoc.content != baseline)
+             + " modified=" + sceneDoc.isModified
+             + " snapshot=" + (editor.currentSerialized != baseline));
+        return;
+    }
+
+    var screenshotPath =
+        Path.Join(TempFile.Dir(),
+                  "zannastudio_xenoscape_gameplay_preview.png");
+    if Pixels.SavePng(editor.framePixels, screenshotPath) != 1 {
+        fail(shell, project,
+             "could not capture the actual Studio 2D viewport");
+        return;
+    }
+
+    Terminal.Say(
+        "METRIC: scene=150x17 tiles=530 objects=82"
+        + " zoom=" + editor.zoomPercent
+        + "% origin=" + editor.viewOriginX + "," + editor.viewOriginY
+        + " viewport=" + editor.framePixels.Width
+        + "x" + editor.framePixels.Height
+        + " decodedPixels=" + editor.tilesets.sourcePixelCount
+        + " screenshot=" + screenshotPath);
+
+    if HasArg("--visual-hold") {
+        Terminal.Say(
+            "VISUAL: Xenoscape production editor is held for screenshot QA");
+        while true {
+            shell.PollWait(16);
+            if shell.WasCloseRequested() { break; }
+            editor.Pump(sceneDoc);
+            shell.Render();
+        }
+    }
+
+    project.CloseProject();
+    shell.Destroy();
+    Terminal.Say("RESULT: ok");
+}

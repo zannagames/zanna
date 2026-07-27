@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-24
+last-verified: 2026-07-27
 ---
 
 # Editable Scene Documents
@@ -179,7 +179,11 @@ allocation failure cannot leave a partial fill. See
 The `collision`, `tileProperties`, `animations`, and `autotiles` sections load
 into typed document state, serialize canonically, and retain unrecognized
 members verbatim ([ADR 0176](../../adr/0176-typed-tile-behavior-sections.md)).
-`BuildTilemap()` applies them exactly as before.
+`BuildTilemap()` registers them on the returned runtime copy. Autotile rules do
+not rewrite document cells; call `Tilemap.ApplyAutoTile()` on that copy when the
+game wants base-layer cells resolved to their N/E/S/W variants. Zanna Studio's
+default live autotile preview performs the same bounded resolution for display
+only, then applies optional animation preview to the resolved tile ID.
 
 | Method | Description |
 |---|---|

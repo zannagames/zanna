@@ -465,6 +465,16 @@ In virtual mode, `Count` reports the logical model total rather than the number 
 cache rows. `WasSelectionChanged()` reports real selection transitions, including selected-item
 removal and `Clear()` calls that remove a selection.
 
+Retained lists can opt into application-directed ordering with
+`SetReorderable(true)`. A captured row drag paints an insertion marker and
+auto-scrolls near the viewport edges; Alt+Up/Down provides the keyboard
+equivalent. The control does not mutate its linked rows. Instead,
+`WasReorderRequested()` publishes one edge and the source/final-target getters
+identify the requested move so an application can validate, update its model,
+commit or roll back, and rebuild the presentation. A click below the drag
+threshold and a drop back at the source are no-ops. Escape cancels a drag.
+Virtual lists do not publish retained-index reorder requests.
+
 **Constructor:** `NEW Zanna.GUI.ListBox(parent)`
 
 ### Properties
@@ -483,6 +493,8 @@ removal and `Clear()` calls that remove a selection.
 | `Clear()`                 | `Void()`               | Remove all items                  |
 | `GetSelectedData()`       | `Seq[String]()`        | Copy selected retained-row data in row order |
 | `GetSelectedText()`       | `String()`             | Get selected text, or empty if none |
+| `GetReorderSourceIndex()` | `Integer()`            | Most recently requested retained source, or -1 |
+| `GetReorderTargetIndex()` | `Integer()`            | Most recently requested final target, or -1 |
 | `ItemGetData(item)`       | `String(Object)`       | Get item user data                |
 | `ItemGetText(item)`       | `String(Object)`       | Get item display text             |
 | `ItemSetData(item, data)` | `Void(Object, String)` | Set item user data                |
@@ -495,10 +507,12 @@ removal and `Clear()` calls that remove a selection.
 | `SelectIndex(index)`      | `Void(Integer)`        | Select item by index              |
 | `SetFont(font, size)`     | `Void(Font, Double)`   | Set font for list items           |
 | `SetMultiSelect(enabled)` | `Void(Boolean)`        | Enable or disable multiple selection |
+| `SetReorderable(enabled)` | `Void(Boolean)`        | Enable direct retained-row reorder requests |
 | `SetVirtualModel(model)`  | `Boolean(VirtualList)` | Bind a viewport-backed model without copying all rows |
 | `ClearVirtualModel()`     | `Void()`               | Detach the model and restore retained-item mode |
 | `GetVisibleFirst()`       | `Integer()`            | First model row intersecting the viewport |
 | `GetVisibleCount()`       | `Integer()`            | Number of rows requested for this viewport |
+| `WasReorderRequested()`   | `Boolean()`            | Consume one application reorder edge |
 | `WasSelectionChanged()`   | `Boolean()`            | True if selection changed this frame |
 
 `GetSelectedData()` preserves one entry per selected retained row, including an

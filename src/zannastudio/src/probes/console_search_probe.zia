@@ -247,6 +247,25 @@ func main() {
         fail(shell, "visual-surface standard edit action state");
         return;
     }
+    var idleTextContextApplyCount =
+        shell.menuChrome.textEditorContextApplyCount;
+    var idleSurfaceEditApplyCount =
+        shell.menuChrome.surfaceEditStateApplyCount;
+    var idleEditHistoryApplyCount =
+        shell.menuChrome.editHistoryStateApplyCount;
+    shell.SetTextEditorContextAvailable(false);
+    shell.SetSurfaceEditActionsAvailable(
+        true, true, false, true, true, true, true);
+    shell.SetEditHistoryAvailable(false, false);
+    if shell.menuChrome.textEditorContextApplyCount
+           != idleTextContextApplyCount
+       or shell.menuChrome.surfaceEditStateApplyCount
+           != idleSurfaceEditApplyCount
+       or shell.menuChrome.editHistoryStateApplyCount
+           != idleEditHistoryApplyCount {
+        fail(shell, "idle visual-surface command chrome churn");
+        return;
+    }
     shell.SetTextEditorContextAvailable(true);
 
     // Palette and shortcut dispatch must honor the same workspace/job/debug

@@ -819,9 +819,10 @@ hide func HandleSurfaceSelectAll(ctx: command_context.CommandContext) {
 }
 
 /// @brief Route standard Find to the visible source or scene hierarchy.
-/// @details Scene Find reveals its inspector and focuses a non-destructive
-///          retained-hierarchy query. A damaged visual scene never falls
-///          through to the hidden CodeEditor FindBar.
+/// @details Scene Find reveals its docked hierarchy or full-width hierarchy
+///          master and focuses a non-destructive retained-hierarchy query. A
+///          damaged visual scene never falls through to the hidden CodeEditor
+///          FindBar.
 /// @param ctx Active command dependencies and visible document.
 /// @return True when a source or scene surface consumed the command.
 expose func HandleSurfaceFind(

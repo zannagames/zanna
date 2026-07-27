@@ -13,6 +13,7 @@
 //   - Spawn, pickup, and interaction lists compare record-for-record in order.
 //   - Built-tilemap collision, tile properties, and lava animation resolve
 //     identically between the code registry and the scene sections.
+//   - Each exported scene retains its one-based campaign-region identity.
 // Ownership/Lifetime:
 //   - The probe owns one Level and one SceneDocument per region pass.
 // Links: tools/export_scenes.zia, ../level.zia,
@@ -52,6 +53,7 @@ func CheckRegion(num: Integer) -> Boolean {
     if scene.Width != region.levelWidth
        or scene.Height != region.levelHeight
        or scene.TileWidth != TILE_SIZE
+       or scene.GetInt("region", -1) != num
        or scene.GetInt("theme", -1) != region.levelTheme
        or scene.GetInt("playerStartX", -1) != region.playerStartX
        or scene.GetInt("playerStartY", -1) != region.playerStartY {

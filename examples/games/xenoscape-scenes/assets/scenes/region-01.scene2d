@@ -9,6 +9,7 @@
   "properties": {
     "playerStartX": 192,
     "playerStartY": 832,
+    "region": 1,
     "theme": 0
   },
   "layers": [

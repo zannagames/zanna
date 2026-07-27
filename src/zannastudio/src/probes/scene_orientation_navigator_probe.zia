@@ -1,0 +1,287 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_orientation_navigator_probe.zia
+// Purpose: Verify the 3D viewport's six-face orientation navigator.
+// Key invariants:
+//   - Every drawn face and projection chip shares exact production hit geometry.
+//   - Face clicks snap camera workspace state without selecting or editing.
+//   - The complete panel suppresses orbit/fly/select input behind its chrome.
+//   - Active/hover presentation remains visible in the rendered viewport.
+// Ownership/Lifetime:
+//   - The probe owns one hidden AppShell, two documents, and an input harness.
+// Links: zannastudio/src/ui/scene_editor_3d.zia,
+//        zannastudio/src/ui/scene_panels_3d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_orientation_navigator_probe;
+
+// ============================================================================
+// MODULE: scene_orientation_navigator_probe
+// PURPOSE: Pin the production top-right camera navigator with real pointer
+//          input and a captured viewport image.
+//
+// WHERE-THIS-FITS: The broad 3D probe owns scene transactions and gizmos. This
+//          focused probe owns orientation chrome, camera state, and hit priority.
+//
+// TEACHING-NOTE: Pointer coordinates come from OrientationFaceCenter so this
+//          test fails when either rendering or hit geometry drifts.
+// ============================================================================
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_3d";
+bind "../ui/scene_panels_3d";
+
+bind Color = Zanna.Graphics.Color;
+bind Convert = Zanna.Core.Convert;
+bind GUI = Zanna.GUI;
+bind Pixels = Zanna.Graphics.Pixels;
+bind TempFile = Zanna.IO.TempFile;
+bind Terminal = Zanna.Terminal;
+
+func HarnessCoordinate(shell: app_shell.AppShell,
+                       logical: Number) -> Integer {
+    var scale = shell.app.GetEffectiveScale();
+    if scale <= 0.0 { scale = 1.0; }
+    return Convert.NumToInt(logical * scale + 0.999999);
+}
+
+func Cleanup(shell: app_shell.AppShell,
+             harness: GUI.TestHarness) {
+    if harness != null { harness.UnbindApp(); }
+    if shell != null { shell.Destroy(); }
+}
+
+func Fail(shell: app_shell.AppShell,
+          harness: GUI.TestHarness,
+          reason: String) {
+    Cleanup(shell, harness);
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func Pump(editor: scene_editor_3d.SceneEditor3D,
+          sceneDoc: document.Document,
+          shell: app_shell.AppShell) {
+    editor.Pump(sceneDoc);
+    shell.Render();
+}
+
+func FacePoseMatches(editor: scene_editor_3d.SceneEditor3D,
+                     face: Integer) -> Boolean {
+    if face == scene_editor_3d.ORIENTATION_FACE_TOP {
+        return editor.viewYawDegrees == 0
+            and editor.viewPitchDegrees == 80;
+    }
+    if face == scene_editor_3d.ORIENTATION_FACE_FRONT {
+        return editor.viewYawDegrees == 0
+            and editor.viewPitchDegrees == 0;
+    }
+    if face == scene_editor_3d.ORIENTATION_FACE_RIGHT {
+        return editor.viewYawDegrees == 90
+            and editor.viewPitchDegrees == 0;
+    }
+    if face == scene_editor_3d.ORIENTATION_FACE_BOTTOM {
+        return editor.viewYawDegrees == 0
+            and editor.viewPitchDegrees == -80;
+    }
+    if face == scene_editor_3d.ORIENTATION_FACE_BACK {
+        return editor.viewYawDegrees == 180
+            and editor.viewPitchDegrees == 0;
+    }
+    if face == scene_editor_3d.ORIENTATION_FACE_LEFT {
+        return editor.viewYawDegrees == -90
+            and editor.viewPitchDegrees == 0;
+    }
+    return false;
+}
+
+func main() {
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Orientation Navigator Probe", 1180, 780);
+    shell.SetSceneWorkspaceMode(true);
+
+    var editor = new scene_editor_3d.SceneEditor3D();
+    scene_panels_3d.Build(
+        editor, shell.workbench.scene3DHost, shell.app);
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene3DDocument();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_3D);
+    editor.Activate(sceneDoc);
+    Pump(editor, sceneDoc, shell);
+    shell.Poll();
+    Pump(editor, sceneDoc, shell);
+
+    if editor.OrientationNavigatorVisible() == false {
+        Fail(shell, null, "navigator did not fit the production viewport");
+        return;
+    }
+    var face = scene_editor_3d.ORIENTATION_FACE_TOP;
+    while face <= scene_editor_3d.ORIENTATION_PROJECTION_TOGGLE {
+        var center = editor.OrientationFaceCenter(face);
+        if center.visible == false
+           or editor.OrientationFaceAt(center.x, center.y) != face {
+            Fail(shell, null,
+                 "render/hit geometry drift for face " + face);
+            return;
+        }
+        face = face + 1;
+    }
+    var panelLeft = editor.renderedViewportWidth
+        - scene_editor_3d.ORIENTATION_PANEL_MARGIN
+        - scene_editor_3d.ORIENTATION_PANEL_WIDTH;
+    if editor.OrientationFaceAt(
+           panelLeft + 2,
+           scene_editor_3d.ORIENTATION_PANEL_MARGIN + 2)
+       != scene_editor_3d.ORIENTATION_PANEL_BACKGROUND {
+        Fail(shell, null, "panel background did not own its hit region");
+        return;
+    }
+
+    var baseline = sceneDoc.content;
+    var revision = editor.GetRevision();
+    var undoCount = editor.undoStack.count();
+    face = scene_editor_3d.ORIENTATION_FACE_TOP;
+    while face <= scene_editor_3d.ORIENTATION_FACE_LEFT {
+        if editor.ActivateOrientationFace(face) == false
+           or FacePoseMatches(editor, face) == false
+           or sceneDoc.content != baseline
+           or editor.GetRevision() != revision
+           or editor.undoStack.count() != undoCount {
+            Fail(shell, null,
+                 "workspace-only face activation " + face);
+            return;
+        }
+        face = face + 1;
+    }
+    if editor.ActivateOrientationFace(999) {
+        Fail(shell, null, "invalid navigator target was accepted");
+        return;
+    }
+
+    // Camera workspace state follows its owning document.
+    var otherSceneDoc = documents.NewScene3DDocument();
+    editor.Pump(otherSceneDoc);
+    editor.Pump(sceneDoc);
+    if FacePoseMatches(
+           editor, scene_editor_3d.ORIENTATION_FACE_LEFT) == false {
+        Fail(shell, null, "orientation did not follow the scene tab");
+        return;
+    }
+    editor.ActivateOrientationFace(
+        scene_editor_3d.ORIENTATION_FACE_FRONT);
+    Pump(editor, sceneDoc, shell);
+
+    var harness = GUI.TestHarness.New();
+    if harness.BindApp(shell.app) == false {
+        Fail(shell, harness, "automation app binding");
+        return;
+    }
+    var backCenter = editor.OrientationFaceCenter(
+        scene_editor_3d.ORIENTATION_FACE_BACK);
+    var backX = HarnessCoordinate(
+        shell, editor.viewportImage.GetScreenX() + backCenter.x);
+    var backY = HarnessCoordinate(
+        shell, editor.viewportImage.GetScreenY() + backCenter.y);
+    harness.SendMouse("move", backX, backY, 0);
+    harness.DispatchPending();
+    Pump(editor, sceneDoc, shell);
+    var hoverSample = editor.viewportPixels.GetColor(
+        backCenter.x - scene_editor_3d.ORIENTATION_FACE_WIDTH / 2 + 2,
+        backCenter.y);
+    if editor.orientationHoverFace
+          != scene_editor_3d.ORIENTATION_FACE_BACK
+       or hoverSample % 16777216
+          != Color.RGB(39, 105, 122) % 16777216 {
+        Fail(shell, harness, "navigator hover feedback");
+        return;
+    }
+    harness.SendMouse("down", backX, backY, 0);
+    harness.SendMouse("up", backX, backY, 0);
+    harness.DispatchPending();
+    Pump(editor, sceneDoc, shell);
+    if FacePoseMatches(
+           editor, scene_editor_3d.ORIENTATION_FACE_BACK) == false
+       or editor.selectedIndices.count() != 0
+       or sceneDoc.content != baseline
+       or editor.GetRevision() != revision {
+        Fail(shell, harness, "real Back-face click routing");
+        return;
+    }
+
+    var projectionCenter = editor.OrientationFaceCenter(
+        scene_editor_3d.ORIENTATION_PROJECTION_TOGGLE);
+    var projectionX = HarnessCoordinate(
+        shell, editor.viewportImage.GetScreenX() + projectionCenter.x);
+    var projectionY = HarnessCoordinate(
+        shell, editor.viewportImage.GetScreenY() + projectionCenter.y);
+    harness.SendMouse("move", projectionX, projectionY, 0);
+    harness.SendMouse("down", projectionX, projectionY, 0);
+    harness.SendMouse("up", projectionX, projectionY, 0);
+    harness.DispatchPending();
+    Pump(editor, sceneDoc, shell);
+    if editor.viewPerspective
+       or sceneDoc.content != baseline
+       or editor.GetRevision() != revision {
+        Fail(shell, harness, "real projection-chip click routing");
+        return;
+    }
+
+    // Right input on unused panel chrome cannot leak into fly/orbit.
+    var backgroundX = HarnessCoordinate(
+        shell,
+        editor.viewportImage.GetScreenX() + panelLeft + 2);
+    var backgroundY = HarnessCoordinate(
+        shell,
+        editor.viewportImage.GetScreenY()
+            + scene_editor_3d.ORIENTATION_PANEL_MARGIN + 2);
+    var protectedYaw = editor.viewYawDegrees;
+    var protectedPitch = editor.viewPitchDegrees;
+    harness.SendMouse("move", backgroundX, backgroundY, 1);
+    harness.SendMouse("down", backgroundX, backgroundY, 1);
+    harness.DispatchPending();
+    Pump(editor, sceneDoc, shell);
+    harness.SendMouse("up", backgroundX, backgroundY, 1);
+    harness.DispatchPending();
+    Pump(editor, sceneDoc, shell);
+    if editor.IsFlyNavigationActive()
+       or editor.viewYawDegrees != protectedYaw
+       or editor.viewPitchDegrees != protectedPitch {
+        Fail(shell, harness, "panel leaked right-button navigation");
+        return;
+    }
+
+    // Clear hover before capturing the active amber Back face and ORTHO chip.
+    var clearX = HarnessCoordinate(
+        shell,
+        editor.viewportImage.GetScreenX()
+            + editor.renderedViewportWidth / 2);
+    var clearY = HarnessCoordinate(
+        shell,
+        editor.viewportImage.GetScreenY()
+            + editor.renderedViewportHeight / 2);
+    harness.SendMouse("move", clearX, clearY, 0);
+    harness.DispatchPending();
+    Pump(editor, sceneDoc, shell);
+    var capturePath = TempFile.Dir()
+        + "/zannastudio_orientation_navigator.png";
+    if Pixels.SavePng(editor.viewportPixels, capturePath) != 1 {
+        Fail(shell, harness, "viewport capture");
+        return;
+    }
+
+    var viewportMetric = editor.renderedViewportWidth
+        + "x" + editor.renderedViewportHeight;
+    Cleanup(shell, harness);
+    Terminal.Say(
+        "METRIC: capture=" + capturePath
+        + " viewport=" + viewportMetric);
+    Terminal.Say("RESULT: ok");
+}

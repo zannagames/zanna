@@ -11,11 +11,13 @@
 //   - Optional downloaded art can never make the fallback render path impure.
 //   - Every metadata variant referenced by Studio has a loadable, nonempty
 //     self-contained preview prefab.
+//   - Procedural terrain variants have deterministic scene-level previews.
 // Ownership/Lifetime:
 //   - Each probe game and loaded preview graph is process-local and temporary.
 //   - The probe never writes or mutates source assets.
 // Links: ../tools/build_studio_previews.zia, ../scene-components.json,
-//        docs/adr/0199-project-owned-3d-node-prefab-previews.md
+//        docs/adr/0199-project-owned-3d-node-prefab-previews.md,
+//        docs/adr/0203-project-owned-3d-scene-environment-previews.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -68,7 +70,27 @@ func validateStudioPreviews() -> Boolean {
     if validatePreviewFamily(root, "prop", 24) == false { return false; }
     if validatePreviewFamily(root, "enemy", 14) == false { return false; }
     if validatePreviewFamily(root, "pickup", 5) == false { return false; }
-    Terminal.Say("studioPreviews=ok count=43");
+    // Terrain ids start at one; variant zero intentionally has no asset.
+    var terrainIndex = 1;
+    while terrainIndex <= 3 {
+        var terrainPath =
+            root + "/environment-terrain-"
+            + variantSuffix(terrainIndex) + ".scene3d";
+        if File.Exists(terrainPath) == false {
+            Terminal.Say(
+                "FAIL: missing Studio preview " + terrainPath);
+            return false;
+        }
+        var terrain = G3D.SceneGraph.Load(terrainPath);
+        if terrain == null or terrain.Root == null
+           or terrain.Root.ChildCount == 0 {
+            Terminal.Say(
+                "FAIL: invalid Studio preview " + terrainPath);
+            return false;
+        }
+        terrainIndex = terrainIndex + 1;
+    }
+    Terminal.Say("studioPreviews=ok count=46");
     return true;
 }
 

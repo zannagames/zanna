@@ -481,7 +481,19 @@ func main() {
         Fail(shell, harness,
              "marquee drag did not select exactly the covered boxes: count="
              + editor.selectedIndices.count()
-             + " primary=" + editor.selectedIndex);
+             + " primary=" + editor.selectedIndex
+             + " viewport=" + editor.renderedViewportWidth + "x"
+             + editor.renderedViewportHeight
+             + " cached-center=" + centerX + "," + centerY
+             + " projected=" + editor.projectedX.get(0) + ","
+             + editor.projectedY.get(0) + ";"
+             + editor.projectedX.get(1) + ","
+             + editor.projectedY.get(1) + ";"
+             + editor.projectedX.get(emptyIndex) + ","
+             + editor.projectedY.get(emptyIndex)
+             + " rect=" + rectLeft + "," + rectTop + "-"
+             + rectRight + "," + rectBottom
+             + " scale=" + editor.viewScale);
         return;
     }
 

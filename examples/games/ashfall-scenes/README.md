@@ -32,21 +32,32 @@ zenith/horizon/ground sky palette, sky IBL, key/fill lights, distance and
 height fog, and overlay defaults into Studio. Large missions therefore open at
 player-eye scale with their runtime atmosphere and diagnostic mesh/collider
 clutter hidden. It also maps every authored prop, enemy spawn, and pickup
-marker to one of 43 real prefab previews under
+marker to one of 43 real node prefab previews under
 `assets/editor-previews/`. Those self-contained previews are baked from the
 same procedural mesh builders and palette choices as Ashfall's runtime
 fallback art, so Studio shows recognizable gameplay silhouettes instead of
 generic marker glyphs. They are read-only authoring visuals: preview loading
 does not add nodes to the saved mission or change runtime instancing.
+Three additional scene-level prefabs sample the runtime's deterministic
+terrain formula across the same 256-meter footprint. The root `af.terrain`
+value selects the canyon, ash-sea, or terrace variant, so the gameplay view
+includes the runtime-generated horizon without placing derived terrain in the
+mission hierarchy or save data.
+The schema also carries the balanced runtime tonemap, bloom, color-grade,
+vignette, and FXAA values. Studio finalizes that retained chain before viewport
+readback, giving the mission the same pale high-key atmosphere as the running
+game while leaving selection and transform overlays ungraded.
 `materials.scene3d` seeds the project material library with the campaign's
 surface-class palette. The generic contracts are documented by
 [ADR 0198](../../../docs/adr/0198-project-owned-3d-scene-preview-profiles.md),
 [ADR 0199](../../../docs/adr/0199-project-owned-3d-node-prefab-previews.md),
 [ADR 0200](../../../docs/adr/0200-project-owned-3d-sky-and-light-preview-rigs.md),
-and [ADR 0201](../../../docs/adr/0201-project-owned-3d-lens-and-atmosphere-previews.md).
+[ADR 0201](../../../docs/adr/0201-project-owned-3d-lens-and-atmosphere-previews.md),
+[ADR 0203](../../../docs/adr/0203-project-owned-3d-scene-environment-previews.md),
+and [ADR 0204](../../../docs/adr/0204-project-owned-3d-post-processing-previews.md).
 
 Regenerate the preview prefabs deterministically after changing production
-prop, enemy, or pickup art:
+prop, enemy, pickup, or terrain presentation:
 
 ```sh
 (
@@ -55,7 +66,7 @@ prop, enemy, or pickup art:
 )
 ```
 
-`probes/assets_probe.zia` loads all 43 files as part of the portable asset
+`probes/assets_probe.zia` loads all 46 files as part of the portable asset
 check, in addition to exercising optional art and the complete runtime fallback
 path.
 

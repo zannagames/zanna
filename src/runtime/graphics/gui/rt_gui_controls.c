@@ -14,6 +14,8 @@
 //   - Mirrors rt_gui_widgets_complex.c's ZANNA_ENABLE_GRAPHICS guard: real
 //     widgets when graphics is enabled, no-op stubs otherwise.
 //   - Handles are validated via the rt_*_checked casts before use.
+//   - ListBox reorder requests remain application-directed: bindings expose
+//     source/target edges without mutating retained row linkage.
 //
 // Ownership/Lifetime:
 //   - Widgets are owned by the GUI widget tree; this layer borrows them.
@@ -563,6 +565,45 @@ void rt_listbox_set_multi_select(void *listbox, int64_t enabled) {
     vg_listbox_select(lb, keep);
 }
 
+/// @brief Enable application-directed retained-row reorder requests.
+/// @param listbox ListBox widget handle.
+/// @param enabled Non-zero to enable pointer and Alt+Arrow gestures.
+void rt_listbox_set_reorderable(void *listbox, int64_t enabled) {
+    RT_ASSERT_MAIN_THREAD();
+    vg_listbox_t *lb = rt_listbox_checked(listbox);
+    if (lb)
+        vg_listbox_set_reorderable(lb, enabled != 0);
+}
+
+/// @brief Consume one application-directed retained-row reorder edge.
+/// @param listbox ListBox widget handle.
+/// @return 1 once for each valid non-no-op request, otherwise zero.
+int64_t rt_listbox_was_reorder_requested(void *listbox) {
+    RT_ASSERT_MAIN_THREAD();
+    vg_listbox_t *lb = rt_listbox_checked(listbox);
+    return lb && vg_listbox_was_reorder_requested(lb) ? 1 : 0;
+}
+
+/// @brief Return the most recently latched retained-row source index.
+/// @param listbox ListBox widget handle.
+/// @return Signed source index, or -1 when unavailable.
+int64_t rt_listbox_get_reorder_source_index(void *listbox) {
+    RT_ASSERT_MAIN_THREAD();
+    vg_listbox_t *lb = rt_listbox_checked(listbox);
+    size_t index = lb ? vg_listbox_get_reorder_source_index(lb) : SIZE_MAX;
+    return index == SIZE_MAX || index > (size_t)INT64_MAX ? -1 : (int64_t)index;
+}
+
+/// @brief Return the most recently latched retained-row final target index.
+/// @param listbox ListBox widget handle.
+/// @return Signed target index, or -1 when unavailable.
+int64_t rt_listbox_get_reorder_target_index(void *listbox) {
+    RT_ASSERT_MAIN_THREAD();
+    vg_listbox_t *lb = rt_listbox_checked(listbox);
+    size_t index = lb ? vg_listbox_get_reorder_target_index(lb) : SIZE_MAX;
+    return index == SIZE_MAX || index > (size_t)INT64_MAX ? -1 : (int64_t)index;
+}
+
 /// @brief Append one selected row's text to a newline-delimited dynamic buffer.
 /// @param[in,out] buffer Address of the allocated output buffer.
 /// @param[in,out] length Current byte length, updated after the append.
@@ -1096,6 +1137,38 @@ void rt_listbox_scroll_to_bottom(void *listbox) {
 void rt_listbox_set_multi_select(void *listbox, int64_t enabled) {
     (void)listbox;
     (void)enabled;
+}
+
+/// @brief Stub: graphics disabled — no retained-row reorder gesture exists.
+/// @param listbox Ignored ListBox handle.
+/// @param enabled Ignored reorderable flag.
+void rt_listbox_set_reorderable(void *listbox, int64_t enabled) {
+    (void)listbox;
+    (void)enabled;
+}
+
+/// @brief Stub: graphics disabled — no reorder request edge exists.
+/// @param listbox Ignored ListBox handle.
+/// @return Always zero.
+int64_t rt_listbox_was_reorder_requested(void *listbox) {
+    (void)listbox;
+    return 0;
+}
+
+/// @brief Stub: graphics disabled — no reorder source exists.
+/// @param listbox Ignored ListBox handle.
+/// @return Always -1.
+int64_t rt_listbox_get_reorder_source_index(void *listbox) {
+    (void)listbox;
+    return -1;
+}
+
+/// @brief Stub: graphics disabled — no reorder target exists.
+/// @param listbox Ignored ListBox handle.
+/// @return Always -1.
+int64_t rt_listbox_get_reorder_target_index(void *listbox) {
+    (void)listbox;
+    return -1;
 }
 
 /// @brief Stub: graphics disabled — no selected row text exists.

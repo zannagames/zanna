@@ -47,6 +47,7 @@ class PropertyRow {
     expose GUI.Flex box;
     expose GUI.TextInput keyInput;
     expose GUI.Dropdown kindDropdown;
+    expose GUI.HBox valueBox;
     expose GUI.TextInput valueInput;
     expose GUI.Button removeButton;
     expose String canonicalKey;
@@ -58,6 +59,7 @@ class PropertyRow {
         box = null;
         keyInput = null;
         kindDropdown = null;
+        valueBox = null;
         valueInput = null;
         removeButton = null;
         canonicalKey = "";
@@ -78,7 +80,7 @@ class PropertyRow {
         keyInput = GUI.TextInput.New(box);
         keyInput.SetText(key);
         keyInput.SetPlaceholder("key");
-        keyInput.SetPreferredSize(96.0, 0.0);
+        keyInput.SetPreferredSize(88.0, 0.0);
         keyInput.SetAccessibleName(noun + " key");
         kindDropdown = GUI.Dropdown.New(box);
         var k = 0;
@@ -89,14 +91,30 @@ class PropertyRow {
         var kindIndex = kind;
         if kindIndex < 0 or kindIndex >= kinds.count() { kindIndex = 0; }
         kindDropdown.SetSelected(kindIndex);
+        // SetSelected publishes the same edge used for a user re-type. A row
+        // rebuilt from canonical data is presentation-only, so consume that
+        // programmatic edge before the owner's first Pump.
+        kindDropdown.WasChanged();
+        // Constrain the kind chooser so an ordinary inspector can retain the
+        // complete [key][kind][value][×] affordance on one line.
+        kindDropdown.SetPreferredSize(96.0, 0.0);
         kindDropdown.SetAccessibleName(noun + " type");
-        valueInput = GUI.TextInput.New(box);
+        // Value and removal are one unbreakable pair. If a genuinely narrow
+        // inspector must wrap, the pair moves together instead of stranding
+        // × on a visually unrelated line.
+        valueBox = GUI.HBox.New();
+        valueBox.SetSpacing(4.0);
+        valueBox.SetFlex(1.0);
+        box.AddChild(valueBox);
+        valueInput = GUI.TextInput.New(valueBox);
         valueInput.SetText(value);
         valueInput.SetPlaceholder("value");
         valueInput.SetFlex(1.0);
-        valueInput.SetPreferredSize(110.0, 0.0);
+        valueInput.SetMinSize(48.0, 0.0);
+        valueInput.SetPreferredSize(72.0, 0.0);
         valueInput.SetAccessibleName(noun + " value");
-        removeButton = GUI.Button.New(box, "×");
+        removeButton = GUI.Button.New(valueBox, "×");
+        removeButton.SetPreferredSize(32.0, 0.0);
         removeButton.SetTooltip("Remove this " + noun);
         removeButton.SetAccessibleName("Remove " + noun);
         canonicalKey = key;

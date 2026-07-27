@@ -489,10 +489,11 @@ new content, and creates one undo entry. The envelope is capped at 64 MB and
 unreconstructable data is rejected without changing the destination.
 
 Find also follows the active surface. In a 2D or 3D scene,
-`Ctrl`/`Cmd`+`F` restores the inspector when necessary, scrolls its hierarchy
-query into view, and focuses it. The 2D query matches object ID or type; the 3D
-query matches node name. Matching is case-insensitive. Press Enter or choose
-Next to advance, and choose Previous to move backward; both directions wrap.
+`Ctrl`/`Cmd`+`F` reveals the docked hierarchy or its full-width master,
+then focuses the hierarchy query. It does not change the user's inspector
+visibility preference. The 2D query matches object ID or type; the 3D query
+matches node name. Matching is case-insensitive. Press Enter or choose Next to
+advance, and choose Previous to move backward; both directions wrap.
 
 Hierarchy Find is a jump operation, not a filter. Every represented row remains
 visible, the target's ancestors expand, and the selected row scrolls into view.
@@ -500,21 +501,47 @@ The status says when matching is limited to the editor's bounded represented
 hierarchy. Searching and jumping do not change canonical scene bytes, revision,
 undo/redo, dirty state, 2D coordinates, or the 3D camera.
 
-The 2D toolbar switches among Select, Paint, Erase, Rectangle, Fill, Pick, and
-Object modes. Paint and Erase interpolate missed cells during a fast pointer
-stroke and capture the pointer until release. Escape restores the pre-stroke
-scene exactly and adds no history; a changed release commits the entire stroke
-once.
+Both scene editors expose a **History** list on the Scene inspector tab.
+Rows are oldest-first transaction labels followed by **Current**. Selecting an
+older row runs the equivalent normal Undo sequence, so the exact canonical
+bytes are restored and every later edit remains available through Redo. The 2D
+timeline and its labels follow the owning document when tabs change; snapshot
+count and aggregate bytes remain bounded, and presentation labels never become
+part of the scene format.
 
-Rectangle draws a non-destructive inclusive cell outline while captured, then
-fills the forward or reverse drag once on release. Escape discards the preview
+The 2D toolbar switches among Select, Paint, Erase, Rectangle, Line, Ellipse,
+Fill, Pick, and Object modes. Paint, Fill, and the shape tools composite the
+selected active-layer atlas frame under the pointer before anything is written.
+Captured Rectangle, Line, and Ellipse gestures show image-true translucent
+frames on every cell their release will commit; a multi-cell region stamp shows
+each non-empty source frame in its grid-anchored footprint. Missing atlas frames
+fall back to bounded outlines. Palette and tool changes repaint immediately,
+tool switches clear a stamp, and the complete tool choice follows the owning
+scene tab. All preview pixels are workspace-only.
+
+The Tile behavior inspector's default-on **Live runtime autotile preview**
+resolves base-layer tiles with the runtime's exact N/E/S/W mask order and
+first-64-rule precedence. Authored cells keep their base IDs: Studio substitutes
+only the displayed atlas frame, then applies optional animation preview to that
+resolved variant. A single-cell Paint or Erase hover also previews the adjacent
+variants the next click would change. The toggle follows its owning scene tab
+and never changes canonical bytes, revision, dirty state, or history.
+
+Paint and Erase interpolate missed cells during a fast pointer stroke and
+capture the pointer until release. Escape restores the pre-stroke scene exactly
+and adds no history; a changed release commits the entire stroke once.
+
+Rectangle draws a non-destructive inclusive cell and atlas preview while
+captured, then fills the forward or reverse drag once on release. Line uses an
+integer walk and Ellipse samples the inclusive drag boundary; their previews
+and commits share the same cell generator. Escape discards any captured shape
 without changing the scene. Fill replaces the clicked cell's exact
 four-connected active-layer region, so diagonal-only neighbors remain separate.
 Pick samples the clicked active-layer tile into the numeric tile field and
 returns to Paint without changing canonical scene data. Tile ID `0` is empty,
-so Rectangle and Fill can also clear regions. Each changed Rectangle or Fill is
-one undo entry, and exact no-ops add none. Tool and selected-tile choices follow
-the owning scene tab and bounded session state.
+so Rectangle and Fill can also clear regions. Each changed shape or Fill is one
+undo entry, and exact no-ops add none. Tool and selected-tile choices follow the
+owning scene tab and bounded session state.
 
 In Select mode, a plain click on an unselected object replaces the selection;
 pressing an already-selected object preserves the complete selection so it can
@@ -535,6 +562,35 @@ drag creates one undo entry. After the canvas has been clicked in Select mode,
 Arrow keys nudge the complete selection by one authored pixel and Shift+Arrow
 uses one tile on the relevant axis. Inspector fields and the Objects TreeView
 keep their native arrow behavior. Middle-drag pans and the wheel zooms.
+
+The default-on **Rulers** action adds a numbered X ruler above the canvas and Y
+ruler at its left edge. Ticks follow every scroll and zoom, including centered
+small scenes. Click a top-ruler cell boundary to add a vertical guide or a
+left-ruler boundary to add a horizontal guide; click the same coordinate again
+to remove it. Drag from empty ruler space to create at another boundary, or
+drag a cyan marker to reposition its guide with a live canvas preview. Escape
+restores the exact source, a duplicate destination is refused, and dragging
+outside the visible ruler removes the guide. Pointer capture keeps release
+deterministic even outside the widget. Guides are capped at 64 per axis and
+follow the owning tab. Ruler visibility, guides, live drag state, and the amber
+live-cell cue are workspace presentation only: they do not dirty the scene or
+add undo history.
+
+The Scene inspector's layer navigator summarizes each row with `●` visible or
+`○` hidden, `⊘` locked, `SOLO` when isolated, and an opacity percentage when
+the authored value is below 100%. Double-click a row, or focus it and press
+Enter, to toggle authored visibility as one undoable edit. Lock prevents every
+tile-writing tool from changing that layer; Solo previews only that layer.
+Lock and Solo are workspace-only choices that follow the owning open scene tab
+and the same live layer through Add, Remove, Up, and Down. Removing their layer
+prunes the choice, while a canonical reload clears these process-local indices.
+Drag a row to the insertion marker to reorder it directly; the list
+auto-scrolls near either edge. With the list focused, Alt+Up/Down requests the
+same adjacent move. Direct gestures and the explicit Up/Down buttons all keep
+the moved row active, preserve Lock/Solo identity, and commit one exact
+canonical history transaction. Add, Remove, Up, and Down wrap at compact
+widths and disable when the action would remove the final layer or cross a
+draw-order boundary.
 
 The Scene properties group authors level-wide adapter metadata independently
 of placed objects. Select New or an existing row, enter a key, choose String,
@@ -593,19 +649,36 @@ Parents outside the clipboard selection become scene roots.
 Each layer can reference a PNG, JPEG, BMP, or GIF tileset image. Relative paths
 resolve beside a saved `.scene`; untitled-scene relative paths resolve from the
 working directory until the scene has a path. The inspector shows a scrollable
-eight-column palette for the first 512 atlas frames. Clicking a frame selects
-tile ID `frame + 1`, switches to Paint, and the canvas composites real atlas
-frames across visible layers. The numeric tile field remains available for
-larger atlases.
+eight-column palette for the first 512 atlas frames. **−**/**+** scales the
+palette from 50% to 300% with nearest-neighbor artwork and exact zoom-aware
+pointer hits; this is presentation-only and never resamples the source or
+changes scene bytes. Enter a one-based numeric **Tile ID** and choose **Find**
+to select and reveal that frame. Clicking a frame likewise selects tile ID
+`frame + 1`, switches to Paint, and the canvas composites real atlas frames
+across visible layers. The numeric tile field remains available for larger
+atlases.
 
 Tileset references are external and are not embedded in `.scene`. Choose Image
 and Clear Image each create one canonical undo entry when the reference changes;
 choosing the same image is a no-op. Invalid candidates leave content and history
 untouched. Project Layer Images opens a non-modal searchable view of supported
 images from every open workspace root. It incrementally reuses the project file
-index, realizes at most 512 matching rows, previews one bounded image, and only
-changes the scene after Use Image is requested. A native picker remains
-available for files outside the workspace.
+index and opens in a responsive thumbnail grid; **Grid**/**List** switches to a
+complete compact list without changing the canonical selection. Image cards
+show real bounded pixels. Supported 3D import cards frame the asset's complete
+mesh bounds through a neutral windowless Canvas3D render, while other asset
+kinds retain an explicit file icon. Only cards intersecting the visible grid
+render, at most one per frame; scrolling reveals and schedules more. The grid
+retains at most 48 cards and the alternate list at most 512 rows.
+
+Click any thumbnail or its filename to select it, then use the browser's
+contextual action. The detail area retains the existing larger image preview
+and now renders selected 3D assets as well. Drag either a card or a compact-list
+row directly onto a compatible scene surface. Grid/list switching, filtering,
+preview rendering, selection, and dragging are presentation-only; scene bytes
+change only after **Use Image**, **Import Asset**, **Use Map**, or the
+corresponding drop is accepted. A native picker remains available for files
+outside the workspace.
 
 Studio checks one referenced layer image per 250 ms polling opportunity.
 Metadata changes quietly reread the pixels and redraw the canvas without
@@ -617,6 +690,22 @@ applies the same
 8,388,608-pixel bound to scaled preview caches. Missing, invalid, over-budget,
 or out-of-range frames use a deterministic placeholder and report their state
 in the layer inspector.
+
+A project can also make the 2D canvas resemble its running game by declaring
+`scenePreview2D` in the owning root's `scene-components.json` (schema version
+8). The profile may name one fallback background or map an integer scene
+property to bounded project-relative images with an optional integer offset.
+Studio composites the resolved image behind layers and objects in fixed
+screen space using `cover`, `contain`, or `stretch`; it never executes game
+code or writes preview pixels into the scene. A profile can choose the
+first-open grid default, while a restored per-tab grid choice still wins.
+Background decoding, scaling, and external-change polling share the same
+bounded image policy as layer and object previews. See
+[scene-components.md](scene-components.md#version-8-2d-scene-backgrounds)
+for the exact fail-closed schema. The scene test gate opens Xenoscape's real
+150-by-17 region 01 fixture, retains its authored player-start framing and
+canonical bytes, and captures the production canvas so game/editor visual
+parity cannot regress behind synthetic fixtures alone.
 
 The 3D viewport starts in **Shaded** mode. It renders the live scene hierarchy,
 visibility, meshes, PBR materials, assigned maps, and scene lights through the
@@ -630,6 +719,33 @@ selection, and transform handles remain editor overlays in either mode. Studio
 rerenders when content, camera, selection, mode, or viewport dimensions change;
 an allocation/readback failure reports a fallback and preserves the
 deterministic marker view.
+
+A project can align that viewport with its running game through
+`scenePreview3D`. The profile maps typed scene-root metadata to the initial
+player position plus eye height and yaw, gameplay FOV, atmosphere, and overlay
+defaults. **Gameplay View** restores the exact eye after navigation without
+editing the scene; responsive hierarchy or inspector changes preserve that eye
+while deliberate camera navigation releases the anchor.
+
+Schema version 9 can additionally map exact integer root metadata to one of
+1–64 project-relative `.scene3d`/`.vscn` environment prefabs. Studio draws the
+resolved environment under the same camera, depth, lighting, sky, fog, and
+shaded/wireframe mode as the editable scene. It remains transient and
+non-pickable: the hierarchy, VSCN, dirty state, and undo history contain only
+canonical nodes. Bake procedural environments into ordinary self-contained
+preview assets rather than executing project code in Studio. See
+[scene-components.md](scene-components.md#version-9-3d-scene-environments)
+for the fail-closed path and variant contract.
+
+Schema version 10 can add a portable post-processing recipe to that same
+profile. Complete tonemap, bloom, color-grade, and vignette groups plus optional
+FXAA are validated against runtime bounds and applied in a fixed order to
+Shaded and Shaded+Wire views. Studio reads the offscreen canvas only after
+frame finalization, then adds selections and gizmos, so the scene resembles the
+game without degrading authoring overlays. Pure Wireframe stays unprocessed.
+See
+[scene-components.md](scene-components.md#version-10-3d-post-processing)
+for the fields, ranges, and portable-effect boundary.
 
 Click anywhere inside a visible mesh's transformed bounds to select the nearest
 depth hit; if no mesh is hit, bounded node-origin markers keep empty
@@ -650,11 +766,20 @@ when Escape cancels it. Tool and snap selection belong to the scene tab and
 survive session restore. With the viewport or one of its transform-tool buttons
 focused, W selects Move, E selects Rotate, and R selects Scale. Those keys
 remain ordinary input while an inspector, editor, terminal, or other workbench
-control owns focus. Middle- or right-drag orbits; the wheel zooms; Frame All and
-Frame Selected reposition the view around the whole selection. Hold Shift
-while middle- or right-dragging to pan in the current camera plane; selection,
-orbit, pan, zoom, and framing change workspace state without adding VSCN
-history.
+control owns focus. Middle-drag orbits and Shift+middle-drag pans in the current
+camera plane. Holding right-mouse enters fly navigation: mouse movement looks,
+WASD moves in the camera basis, Q/E moves vertically, Shift accelerates, and
+the wheel adjusts fly speed until release or Escape. Outside fly mode the wheel
+zooms, and Frame All/Frame Selected reposition the view around the complete
+scene or selection.
+
+The top-right **VIEW** navigator snaps to Top, Front, Right, Bottom, Back, or
+Left without moving the view target. Its projection chip switches between
+Perspective and Orthographic, the highlighted face follows the current camera,
+and the complete panel blocks scene picks and orbit/fly input beneath it.
+Navigator actions, selection, orbit, pan, zoom, framing, projection, and camera
+bookmarks are per-document workspace state: they do not add VSCN history or
+dirty the scene.
 
 Move adds filled, outlined **XY**, **XZ**, and **YZ** squares near the primary
 pivot. Drag inside a square to translate on both named axes; the status line
@@ -706,6 +831,18 @@ a mixed visible/hidden selection shows the native indeterminate mark. Choosing
 a determined value sets every selected node, verifies the complete live graph,
 and commits one VSCN history entry. Undo restores the exact prior mixture and
 the complete node selection.
+
+The hierarchy action strip makes those frequent operations available without
+leaving the tree. **● Show** is enabled when any selected node is hidden;
+**○ Hide** is enabled when any selected node is visible. **⊘ Lock Pick** keeps
+the complete selection visible and editable through the hierarchy and
+inspector while excluding it from viewport clicks and marquee selection. A
+`⊘` row cue identifies locked nodes, and an all-locked selection changes the
+action to **Unlock Pick**. Mixed lock state resolves to locked. These lock
+choices follow the owning open scene tab, survive ordinary hierarchy refreshes,
+and remap to the same live nodes after reorder or reparent; they do not change
+VSCN bytes, dirty state, revision, or undo history. Show, Hide, Lock, and Unlock
+are also available from the hierarchy context menu.
 
 Duplicate preserves each selected top-level node's complete serializable
 subtree, components, and original parent, gives the clone a unique Copy name,

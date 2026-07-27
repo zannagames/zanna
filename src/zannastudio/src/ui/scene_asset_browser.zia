@@ -6,11 +6,12 @@
 //===----------------------------------------------------------------------===//
 //
 // File: zannastudio/src/ui/scene_asset_browser.zia
-// Purpose: Bounded, searchable project-asset selection shared by Studio's
-//          visual scene editors.
+// Purpose: Bounded, searchable list/grid project-asset selection shared by
+//          Studio's visual scene editors.
 // Key invariants:
 //   - Project discovery is cooperative and consumes a fixed per-frame budget.
-//   - At most 512 concrete rows and one bounded image preview are retained.
+//   - At most 512 rows, 48 thumbnail cards, and one detail preview are retained.
+//   - Thumbnail decoding/rendering advances at most one asset per frame.
 //   - Selection reports intent; this module never mutates scene documents.
 //   - Multi-root labels are unambiguous and paths remain absolute in row data.
 // Ownership/Lifetime: A scene inspector owns each browser; ProjectManager owns
@@ -27,6 +28,7 @@ bind "../core/project_manager";
 bind "../services/asset_library";
 bind "../services/safe_io";
 bind "inspector_rows";
+bind "scene_asset_thumbnails";
 
 bind GUI = Zanna.GUI;
 bind Pixels = Zanna.Graphics.Pixels;
@@ -36,6 +38,7 @@ bind Str = Zanna.String;
 bind Seq = Zanna.Collections.Seq;
 bind Obj = Zanna.Core.Object;
 bind Parse = Zanna.Core.Parse;
+bind Convert = Zanna.Core.Convert;
 
 // ============================================================================
 // MODULE: scene_asset_browser
@@ -50,11 +53,136 @@ bind Parse = Zanna.Core.Parse;
 // ============================================================================
 
 final MAX_VISIBLE_SCENE_ASSETS: Integer = 512;
+final MAX_VISIBLE_ASSET_THUMBNAILS: Integer = 48;
 final ASSET_CACHE_WORK_PER_FRAME: Integer = 128;
 final ASSET_ROW_WORK_PER_FRAME: Integer = 256;
 final MAX_ASSET_PREVIEW_SOURCE_BYTES: Integer = 16000000;
 final MAX_ASSET_PREVIEW_PIXELS: Integer = 4194304;
 final MAX_ASSET_PREVIEW_EDGE: Integer = 128;
+final ASSET_THUMBNAIL_EDGE: Integer = 80;
+final ASSET_CARD_WIDTH: Integer = 96;
+final ASSET_CARD_HEIGHT: Integer = 116;
+final ASSET_CARD_GAP: Integer = 6;
+
+/// @brief One bounded, clickable, draggable asset-grid card.
+class SceneAssetThumbnailCard {
+    expose GUI.VBox host;
+    expose GUI.Image image;
+    expose GUI.Button placeholder;
+    expose GUI.Button labelButton;
+    expose String path;
+    expose Integer rowIndex;
+    expose Boolean thumbnailAttempted;
+    expose Boolean thumbnailReady;
+
+    expose func init() {
+        host = null;
+        image = null;
+        placeholder = null;
+        labelButton = null;
+        path = "";
+        rowIndex = -1;
+        thumbnailAttempted = false;
+        thumbnailReady = false;
+    }
+
+    /// @brief Build a fixed-size card whose controls share one drag payload.
+    expose func Build(parent: GUI.Flex,
+                      assetPath: String,
+                      assetLabel: String,
+                      listRow: Integer) {
+        path = assetPath;
+        rowIndex = listRow;
+        host = GUI.VBox.New();
+        host.SetSpacing(3.0);
+        host.SetAlign(GUI.Align.Center);
+        host.SetPreferredSize(
+            ASSET_CARD_WIDTH + 0.0, ASSET_CARD_HEIGHT + 0.0);
+        host.SetMinSize(
+            ASSET_CARD_WIDTH + 0.0, ASSET_CARD_HEIGHT + 0.0);
+        host.SetMaxSize(
+            ASSET_CARD_WIDTH + 0.0, ASSET_CARD_HEIGHT + 0.0);
+        parent.AddChild(host);
+
+        image = GUI.Image.New(host);
+        image.SetPreferredSize(
+            ASSET_THUMBNAIL_EDGE + 0.0,
+            ASSET_THUMBNAIL_EDGE + 0.0);
+        image.SetMinSize(
+            ASSET_THUMBNAIL_EDGE + 0.0,
+            ASSET_THUMBNAIL_EDGE + 0.0);
+        image.SetMaxSize(
+            ASSET_THUMBNAIL_EDGE + 0.0,
+            ASSET_THUMBNAIL_EDGE + 0.0);
+        image.SetScaleMode(0);
+        image.SetFilter(1);
+        image.SetFocusable(true);
+        image.SetAccessibleName(
+            "Thumbnail for " + assetLabel);
+        image.SetTooltip(assetLabel);
+        image.SetDraggable(true);
+        image.SetDragData("zanna/asset", path);
+        image.SetVisible(false);
+
+        placeholder = GUI.Button.New(host, "");
+        placeholder.SetPreferredSize(
+            ASSET_THUMBNAIL_EDGE + 0.0,
+            ASSET_THUMBNAIL_EDGE + 0.0);
+        placeholder.SetMinSize(
+            ASSET_THUMBNAIL_EDGE + 0.0,
+            ASSET_THUMBNAIL_EDGE + 0.0);
+        placeholder.SetMaxSize(
+            ASSET_THUMBNAIL_EDGE + 0.0,
+            ASSET_THUMBNAIL_EDGE + 0.0);
+        placeholder.SetStyle(2);
+        if scene_asset_thumbnails.IsImageAsset(path) {
+            placeholder.SetIconName("file-image");
+        } else {
+            placeholder.SetIconName("file");
+        }
+        placeholder.SetAccessibleName(
+            "Asset preview placeholder for " + assetLabel);
+        placeholder.SetTooltip(assetLabel);
+        placeholder.SetDraggable(true);
+        placeholder.SetDragData("zanna/asset", path);
+
+        labelButton = GUI.Button.New(host, Path.Name(path));
+        labelButton.SetPreferredSize(ASSET_CARD_WIDTH + 0.0, 28.0);
+        labelButton.SetMinSize(ASSET_CARD_WIDTH + 0.0, 28.0);
+        labelButton.SetMaxSize(ASSET_CARD_WIDTH + 0.0, 28.0);
+        labelButton.SetStyle(2);
+        labelButton.SetAccessibleName("Select asset " + assetLabel);
+        labelButton.SetTooltip(assetLabel);
+        labelButton.SetDraggable(true);
+        labelButton.SetDragData("zanna/asset", path);
+    }
+
+    /// @brief Replace the placeholder with one widget-owned pixel upload.
+    expose func SetThumbnail(pixels: Pixels) {
+        if pixels == null or image == null { return; }
+        image.SetPixels(pixels, pixels.Width, pixels.Height);
+        image.SetVisible(true);
+        placeholder.SetVisible(false);
+        thumbnailReady = true;
+    }
+
+    /// @brief Drain click edges from every interactive part of the card.
+    expose func TakeClicked() -> Boolean {
+        var clickedImage = image != null and image.WasClicked();
+        var clickedPlaceholder =
+            placeholder != null and placeholder.WasClicked();
+        var clickedLabel =
+            labelButton != null and labelButton.WasClicked();
+        return clickedImage or clickedPlaceholder or clickedLabel;
+    }
+
+    /// @brief Present the hidden list's canonical selection on this card.
+    expose func SetSelected(selected: Boolean) {
+        if labelButton == null { return; }
+        if selected { labelButton.SetStyle(1); }
+        else { labelButton.SetStyle(2); }
+    }
+}
 
 /// @brief Normalize a comma/semicolon extension list for exact membership.
 expose func NormalizeAssetExtensions(extensions: String) -> String {
@@ -154,9 +282,16 @@ class SceneAssetBrowser {
     expose GUI.GroupBox group;
     expose GUI.TextInput filterInput;
     expose GUI.Button clearFilterButton;
+    expose GUI.Button viewModeButton;
     expose GUI.Button refreshButton;
     expose GUI.Button closeButton;
     expose GUI.ListBox assetList;
+    expose GUI.ScrollView thumbnailScroll;
+    expose GUI.Flex thumbnailGrid;
+    expose List[SceneAssetThumbnailCard] thumbnailCards;
+    expose Boolean gridView;
+    expose Integer thumbnailAttemptedCount;
+    expose Integer thumbnailReadyCount;
     expose GUI.Label statusLabel;
     expose GUI.VBox previewStage;
     expose GUI.Image previewImage;
@@ -205,9 +340,16 @@ class SceneAssetBrowser {
         group = null;
         filterInput = null;
         clearFilterButton = null;
+        viewModeButton = null;
         refreshButton = null;
         closeButton = null;
         assetList = null;
+        thumbnailScroll = null;
+        thumbnailGrid = null;
+        thumbnailCards = [];
+        gridView = true;
+        thumbnailAttemptedCount = 0;
+        thumbnailReadyCount = 0;
         statusLabel = null;
         previewStage = null;
         previewImage = null;
@@ -246,6 +388,12 @@ class SceneAssetBrowser {
         filterInput.SetAccessibleName("Filter project scene assets");
         clearFilterButton = GUI.Button.New(filterRow, "Clear");
         clearFilterButton.SetAccessibleName("Clear project asset filter");
+        viewModeButton = GUI.Button.New(filterRow, "Grid");
+        viewModeButton.SetStyle(1);
+        viewModeButton.SetAccessibleName(
+            "Switch project asset browser to list view");
+        viewModeButton.SetTooltip(
+            "Toggle between visual thumbnails and the compact asset list");
 
         var libraryRow = inspector_rows.NewWrapRow();
         group.AddChild(libraryRow);
@@ -266,6 +414,19 @@ class SceneAssetBrowser {
         // "zanna/asset" payloads carrying the absolute workspace path.
         assetList.SetDraggable(true);
         assetList.SetDragData("zanna/asset", "");
+        assetList.SetVisible(false);
+
+        thumbnailScroll = GUI.ScrollView.New(group);
+        thumbnailScroll.SetPreferredSize(0.0, 238.0);
+        thumbnailScroll.SetAccessibleName("Project asset thumbnail grid");
+        thumbnailGrid = GUI.Flex.New();
+        thumbnailGrid.SetDirection(GUI.FlexDirection.Row);
+        thumbnailGrid.SetWrap(GUI.FlexWrap.Wrap);
+        thumbnailGrid.SetAlign(GUI.Align.Start);
+        thumbnailGrid.SetJustify(GUI.Justify.Start);
+        thumbnailGrid.SetGap(ASSET_CARD_GAP + 0.0);
+        thumbnailGrid.SetPadding(2.0);
+        thumbnailScroll.AddChild(thumbnailGrid);
 
         previewStage = GUI.VBox.New();
         previewStage.SetAlign(GUI.Align.Center);
@@ -325,10 +486,35 @@ class SceneAssetBrowser {
         ResetRows();
     }
 
+    /// @brief Switch between the visual grid and complete compact list.
+    /// @details The hidden list remains the canonical selection model in both
+    ///          modes, preserving accessibility, keyboard selection, and drag
+    ///          payload identity without duplicating project state.
+    expose func SetGridView(enabled: Boolean) {
+        gridView = enabled;
+        if assetList != null { assetList.SetVisible(enabled == false); }
+        if thumbnailScroll != null { thumbnailScroll.SetVisible(enabled); }
+        if viewModeButton != null {
+            if enabled {
+                viewModeButton.SetText("Grid");
+                viewModeButton.SetStyle(1);
+                viewModeButton.SetAccessibleName(
+                    "Switch project asset browser to list view");
+            } else {
+                viewModeButton.SetText("List");
+                viewModeButton.SetStyle(1);
+                viewModeButton.SetAccessibleName(
+                    "Switch project asset browser to grid view");
+            }
+        }
+        RefreshCardSelection();
+    }
+
     /// @brief Show and focus the browser without creating document state.
     expose func Open() {
         if group == null { return; }
         group.SetVisible(true);
+        SetGridView(gridView);
         if filterInput != null { filterInput.Focus(); }
     }
 
@@ -347,6 +533,9 @@ class SceneAssetBrowser {
             if group.IsVisible() { Close(); } else { Open(); }
         }
         if group.IsVisible() == false { return ""; }
+        if viewModeButton.WasClicked() {
+            SetGridView(gridView == false);
+        }
 
         canUseSelection = canUse;
         var projectOpen =
@@ -399,17 +588,22 @@ class SceneAssetBrowser {
         PumpLibraryEntryActions();
 
         PumpRows(projectManager);
-        RefreshStatus(projectManager);
-        if assetList.WasSelectionChanged() {
+        RefreshThumbnailGeometry();
+        PumpThumbnailPreviews();
+        var cardSelectionChanged = PumpThumbnailCards();
+        var listSelectionChanged = assetList.WasSelectionChanged();
+        if cardSelectionChanged or listSelectionChanged {
             RefreshSelection(projectManager);
             assetList.SetDragData("zanna/asset", SelectedPath());
+            RefreshCardSelection();
         } else {
             useButton.SetEnabled(
                 canUseSelection and selectedUsable
                 and SelectedPath() != "");
         }
+        RefreshStatus(projectManager);
 
-        var activated = assetList.WasActivated();
+        var activated = gridView == false and assetList.WasActivated();
         var useRequested = useButton.WasClicked() or activated;
         if closeButton.WasClicked() {
             Close();
@@ -598,7 +792,11 @@ class SceneAssetBrowser {
     /// @brief Rebuild browser state for a changed query or cache generation.
     hide func ResetRows() {
         if assetList != null { assetList.Clear(); }
+        if thumbnailGrid != null { thumbnailGrid.ClearChildren(); }
+        thumbnailCards = [];
         scanIndex = 0;
+        thumbnailAttemptedCount = 0;
+        thumbnailReadyCount = 0;
         realizedCount = 0;
         matchedCount = 0;
         resultTruncated = false;
@@ -625,15 +823,135 @@ class SceneAssetBrowser {
                    and LibraryAllowsPath(path) {
                     matchedCount = matchedCount + 1;
                     if realizedCount < MAX_VISIBLE_SCENE_ASSETS {
+                        var listRow = realizedCount;
                         var item =
                             assetList.AddItem(LibraryBadgedLabel(label, path));
                         GUI.ListBox.ItemSetData(item, path);
                         realizedCount = realizedCount + 1;
+                        if thumbnailCards.count()
+                           < MAX_VISIBLE_ASSET_THUMBNAILS {
+                            var card =
+                                new SceneAssetThumbnailCard();
+                            card.Build(
+                                thumbnailGrid,
+                                path,
+                                label,
+                                listRow);
+                            thumbnailCards.add(card);
+                        }
                     } else {
                         resultTruncated = true;
                     }
                 }
             }
+        }
+    }
+
+    /// @brief Keep the wrapping content width equal to its scroll viewport.
+    /// @details ScrollView otherwise measures a detached wrapping Flex at its
+    ///          unconstrained one-row width. Explicit logical geometry gives
+    ///          compact inspectors two columns and wider docks more.
+    hide func RefreshThumbnailGeometry() {
+        if thumbnailScroll == null or thumbnailGrid == null { return; }
+        var available =
+            Convert.NumToInt(thumbnailScroll.GetLogicalWidth()) - 12;
+        if available < ASSET_CARD_WIDTH {
+            available = Convert.NumToInt(group.GetLogicalWidth()) - 24;
+        }
+        if available < ASSET_CARD_WIDTH {
+            available = ASSET_CARD_WIDTH;
+        }
+        var columns =
+            (available + ASSET_CARD_GAP)
+            / (ASSET_CARD_WIDTH + ASSET_CARD_GAP);
+        if columns < 1 { columns = 1; }
+        var rows = 0;
+        if thumbnailCards.count() > 0 {
+            rows =
+                (thumbnailCards.count() + columns - 1) / columns;
+        }
+        var contentHeight = 1;
+        if rows > 0 {
+            contentHeight =
+                rows * ASSET_CARD_HEIGHT
+                + (rows - 1) * ASSET_CARD_GAP + 4;
+        }
+        thumbnailGrid.SetSize(available, contentHeight);
+        thumbnailScroll.SetContentSize(
+            available + 0.0, contentHeight + 0.0);
+    }
+
+    /// @brief Decode or render at most one visible thumbnail this frame.
+    /// @details Offscreen cards remain cheap placeholders until scrolling
+    ///          reveals them. This keeps large model folders responsive
+    ///          without background-threading GUI or Canvas3D work.
+    hide func PumpThumbnailPreviews() {
+        if gridView == false { return; }
+        var index = 0;
+        while index < thumbnailCards.count() {
+            var card = thumbnailCards.get(index);
+            if card.thumbnailAttempted == false
+               and ThumbnailCardVisible(card, index) {
+                card.thumbnailAttempted = true;
+                thumbnailAttemptedCount =
+                    thumbnailAttemptedCount + 1;
+                var pixels = scene_asset_thumbnails.Load(
+                    card.path, ASSET_THUMBNAIL_EDGE);
+                if pixels != null {
+                    card.SetThumbnail(pixels);
+                    thumbnailReadyCount = thumbnailReadyCount + 1;
+                }
+                return;
+            }
+            index = index + 1;
+        }
+    }
+
+    /// @brief Return whether one card intersects the live grid viewport.
+    hide func ThumbnailCardVisible(
+        card: SceneAssetThumbnailCard,
+        index: Integer) -> Boolean {
+        if card == null or card.host == null { return false; }
+        var viewportHeight = thumbnailScroll.GetScreenHeight();
+        var viewportWidth = thumbnailScroll.GetScreenWidth();
+        // Before the first native layout, seed only the first visible row.
+        if viewportHeight <= 1.0 or viewportWidth <= 1.0 {
+            return index < 4;
+        }
+        var viewportTop = thumbnailScroll.GetScreenY();
+        var viewportBottom = viewportTop + viewportHeight;
+        var cardTop = card.host.GetScreenY();
+        var cardBottom = cardTop + card.host.GetScreenHeight();
+        return cardBottom > viewportTop and cardTop < viewportBottom;
+    }
+
+    /// @brief Route card clicks into the complete hidden list model.
+    hide func PumpThumbnailCards() -> Boolean {
+        if gridView == false { return false; }
+        var selectedCard = -1;
+        var index = 0;
+        while index < thumbnailCards.count() {
+            if thumbnailCards.get(index).TakeClicked()
+               and selectedCard < 0 {
+                selectedCard = index;
+            }
+            index = index + 1;
+        }
+        if selectedCard < 0 { return false; }
+        assetList.SelectIndex(
+            thumbnailCards.get(selectedCard).rowIndex);
+        return true;
+    }
+
+    /// @brief Mirror canonical list selection into card button styling.
+    hide func RefreshCardSelection() {
+        var selectedRow = -1;
+        if assetList != null { selectedRow = assetList.SelectedIndex; }
+        var index = 0;
+        while index < thumbnailCards.count() {
+            var card = thumbnailCards.get(index);
+            card.SetSelected(card.rowIndex == selectedRow);
+            index = index + 1;
         }
     }
 
@@ -653,6 +971,18 @@ class SceneAssetBrowser {
         if projectManager.IsFileCacheComplete()
            and projectManager.fileCacheTruncated {
             text = text + " • workspace index truncated";
+        }
+        if gridView and thumbnailCards.count() > 0 {
+            text = text + " • previews "
+                + thumbnailAttemptedCount + "/"
+                + thumbnailCards.count();
+            if thumbnailAttemptedCount < thumbnailCards.count() {
+                text = text + " (scroll to load more)";
+            }
+            if realizedCount > thumbnailCards.count() {
+                text = text + " • List shows all "
+                    + realizedCount + " rows";
+            }
         }
         statusLabel.SetText(text);
     }
@@ -681,6 +1011,30 @@ class SceneAssetBrowser {
         if sourceBytes > MAX_ASSET_PREVIEW_SOURCE_BYTES {
             selectionLabel.SetText(
                 selectedLabel + "\nPreview omitted above 16 MB.");
+            useButton.SetEnabled(canUseSelection);
+            return;
+        }
+        if scene_asset_thumbnails.IsModelAsset(path) {
+            previewPixels = scene_asset_thumbnails.Load(
+                path, MAX_ASSET_PREVIEW_EDGE);
+            if previewPixels != null {
+                previewImage.SetPixels(
+                    previewPixels,
+                    previewPixels.Width,
+                    previewPixels.Height);
+                previewImage.SetSize(
+                    previewPixels.Width, previewPixels.Height);
+                previewStage.SetSize(
+                    previewPixels.Width, previewPixels.Height);
+                previewImage.SetVisible(true);
+                selectionLabel.SetText(
+                    selectedLabel
+                    + "\nDeterministic framed 3D preview");
+            } else {
+                selectionLabel.SetText(
+                    selectedLabel
+                    + "\nThe 3D preview could not be rendered.");
+            }
             useButton.SetEnabled(canUseSelection);
             return;
         }

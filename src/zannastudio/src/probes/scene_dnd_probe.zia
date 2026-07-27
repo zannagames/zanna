@@ -28,14 +28,15 @@ module scene_dnd_probe;
 // ============================================================================
 // MODULE: scene_dnd_probe
 // PURPOSE: Pin the cross-widget drag contract end to end through the real
-//          compositor drag path: press a browser row, cross the threshold,
+//          compositor drag path: press a browser thumbnail, cross the threshold,
 //          release over a scene surface.
 //
 // WHERE-THIS-FITS: The dock system pins widget-level DnD mechanics; this
 //          probe owns the scene wirings built on the same typed payloads.
 //
-// TEACHING-NOTE: The asset list populates from the project file cache, so
-//          the probe pumps until rows appear before pressing one.
+// TEACHING-NOTE: The browser populates from the project file cache and renders
+//          at most one thumbnail per frame, so the probe pumps until its real
+//          image card appears before pressing it.
 // ============================================================================
 
 bind "../core/document";
@@ -64,6 +65,12 @@ func HarnessCoordinate(shell: app_shell.AppShell,
     var scale = shell.app.GetEffectiveScale();
     if scale <= 0.0 { scale = 1.0; }
     return Convert.NumToInt(logical * scale + 0.999999);
+}
+
+func NumbersNear(actual: Number, expected: Number) -> Boolean {
+    var difference = actual - expected;
+    if difference < 0.0 { difference = 0.0 - difference; }
+    return difference < 0.000001;
 }
 
 func removeTempDir(path: String) {
@@ -97,6 +104,7 @@ func main() {
     // ------------------------------------------------------------------ 2D
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Scene DnD Probe", 1240, 800);
+    shell.SetSceneWorkspaceMode(true);
     var editor2d = new scene_editor_2d.SceneEditor2D();
     scene_panels_2d.Build(editor2d,shell.workbench.scene2DHost, shell.app);
     var project = new project_manager.ProjectManager();
@@ -133,7 +141,8 @@ func main() {
         shell.Render();
         warm = warm + 1;
     }
-    if editor2d.componentAssetBrowser.assetList.Count == 0 {
+    if editor2d.componentAssetBrowser.assetList.Count == 0
+       or editor2d.componentAssetBrowser.thumbnailCards.count() == 0 {
         Fail(shell, null, tempDir, "asset cache did not surface hero.png");
         return;
     }
@@ -149,20 +158,28 @@ func main() {
     }
     // The asset browser sits low in the inspector column: reveal it first,
     // exactly as a user would scroll to it before dragging.
-    editor2d.inspectorScroll.ScrollTo(
-        editor2d.componentAssetBrowser.assetList);
+    var dragCard =
+        editor2d.componentAssetBrowser.thumbnailCards.get(0);
+    editor2d.inspectorScroll.ScrollTo(dragCard.host);
     editor2d.Pump(doc2d);
     shell.Poll();
     shell.Render();
 
     var objectsBefore = editor2d.scene.ObjectCount();
     var undoBefore = editor2d.undoStack.count();
-    var listX = HarnessCoordinate(
-        shell,
-        editor2d.componentAssetBrowser.assetList.GetScreenX() + 40.0);
-    var listY = HarnessCoordinate(
-        shell,
-        editor2d.componentAssetBrowser.assetList.GetScreenY() + 12.0);
+    var listX = 0;
+    var listY = 0;
+    if dragCard.image.IsVisible() {
+        listX = HarnessCoordinate(
+            shell, dragCard.image.GetScreenX() + 40.0);
+        listY = HarnessCoordinate(
+            shell, dragCard.image.GetScreenY() + 40.0);
+    } else {
+        listX = HarnessCoordinate(
+            shell, dragCard.placeholder.GetScreenX() + 40.0);
+        listY = HarnessCoordinate(
+            shell, dragCard.placeholder.GetScreenY() + 40.0);
+    }
     var canvasX = HarnessCoordinate(
         shell, editor2d.canvasImage.GetScreenX() + 40.0);
     var canvasY = HarnessCoordinate(
@@ -245,7 +262,7 @@ func main() {
     editor2d.Pump(doc2d);
     shell.Poll();
     shell.Render();
-    if editor2d.scene.ObjectRotation(dropped) == 0.0
+    if NumbersNear(editor2d.scene.ObjectRotation(dropped), 0.0)
        or editor2d.undoStack.count() != undoBeforeRotate + 1 {
         Fail(shell, harness, tempDir,
              "rotate handle drag did not commit one rotation: rot="
@@ -255,7 +272,7 @@ func main() {
         return;
     }
     if editor2d.Undo() == false
-       or editor2d.scene.ObjectRotation(dropped) != 0.0 {
+       or NumbersNear(editor2d.scene.ObjectRotation(dropped), 0.0) == false {
         Fail(shell, harness, tempDir,
              "undoing the rotation did not restore the default");
         return;
@@ -267,6 +284,7 @@ func main() {
     // ------------------------------------------------------------------ 3D
     shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Scene DnD Probe 3D", 1240, 800);
+    shell.SetSceneWorkspaceMode(true);
     var editor3d = new scene_editor_3d.SceneEditor3D();
     scene_panels_3d.Build(editor3d,shell.workbench.scene3DHost, shell.app);
     editor3d.SetWorkspaceContext(project);

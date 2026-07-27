@@ -200,7 +200,7 @@ func main() {
 
     // ------------------------------------------------------------------
     // Bake to completion inside the pump: one transaction, persisted
-    // lightmaps, monotone progress.
+    // lightmaps, bounded completion.
     // ------------------------------------------------------------------
     var bakeRevision = editor.GetRevision();
     if editor.StartBake() == false {
@@ -208,7 +208,6 @@ func main() {
         return;
     }
     var pumps = 0;
-    var lastProgress = 0.0;
     while editor.IsBakeActive() and pumps < 4000 {
         pump(editor, sceneDoc, shell);
         pumps = pumps + 1;

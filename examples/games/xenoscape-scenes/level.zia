@@ -11,10 +11,13 @@
 // Key invariants:
 //   - Tile coordinates are bounds-checked before mutation or property lookup.
 //   - Dynamic durability state is reset whenever an authored level is rebuilt.
+//   - The scene's one-based region identity remains available for validation
+//     and project-owned Studio preview selection.
 // Ownership/Lifetime:
 //   - Game owns one Level and replaces its content on regional transitions.
 //   - Level owns the active Tilemap and all parallel spawn/dynamic-state lists.
 // Links: physics.zia, projectile.zia, renderer.zia, game.zia,
+//        docs/adr/0202-project-owned-2d-scene-background-previews.md,
 //        misc/plans/demos/xenoscape-release-upgrade.md
 //
 //===----------------------------------------------------------------------===//
@@ -116,6 +119,7 @@ class Level {
     expose Integer levelWidth;
     expose Integer levelHeight;
     expose Integer levelTheme;
+    expose Integer authoredRegion;
 
     // Spawn points (world pixel coordinates)
     expose Integer playerStartX;
@@ -174,6 +178,7 @@ class Level {
         levelWidth = 0;
         levelHeight = 0;
         levelTheme = 0;
+        authoredRegion = 0;
         playerStartX = 0;
         playerStartY = 0;
         checkpointX = 0;
@@ -227,6 +232,7 @@ class Level {
         masteryStartCol = -1;
         setPieceCol = -1;
         secretCols = [];
+        authoredRegion = 0;
         hasCheckpoint = false;
         hasBoss = false;
         bossType = ENEMY_BOSS;
@@ -265,6 +271,7 @@ class Level {
         levelWidth = scene.Width;
         levelHeight = scene.Height;
         levelTheme = scene.GetInt("theme", 0);
+        authoredRegion = scene.GetInt("region", 0);
         tilemap = scene.BuildTilemap();
         playerStartX = scene.GetInt("playerStartX", 0);
         playerStartY = scene.GetInt("playerStartY", 0);

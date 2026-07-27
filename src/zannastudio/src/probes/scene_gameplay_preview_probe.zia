@@ -1,0 +1,314 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_gameplay_preview_probe.zia
+// Purpose: Verify a real project's gameplay-aligned Studio scene preview.
+// Key invariants:
+//   - Ashfall mission 01 opens at the authored player eye and heading.
+//   - The retained render camera, projection, and project profile agree.
+//   - Runtime-generated terrain appears through a read-only environment prefab.
+//   - The real project's portable post-FX chain is retained on the viewport.
+//   - Finalized pixels retain Ashfall's pale high-key visual envelope.
+//   - Applying Gameplay View is read-only and survives prior navigation.
+//   - The actual shaded viewport remains capturable for visual comparison.
+// Ownership/Lifetime:
+//   - The probe owns one AppShell and ProjectManager until process exit.
+//   - It reads repository fixtures and writes only one temporary screenshot.
+// Links: zannastudio/src/ui/scene_editor_3d.zia,
+//        examples/games/ashfall-scenes/scene-components.json,
+//        examples/games/ashfall-scenes/player/camera_rig.zia,
+//        docs/adr/0203-project-owned-3d-scene-environment-previews.md,
+//        docs/adr/0204-project-owned-3d-post-processing-previews.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_gameplay_preview_probe;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_3d";
+bind "../ui/scene_panels_3d";
+
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind TempFile = Zanna.IO.TempFile;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Terminal = Zanna.Terminal;
+bind Env = Zanna.System.Environment;
+
+func HasArg(name: String) -> Boolean {
+    // VM `zanna run -- ...` arguments begin at zero; native probe binaries may
+    // include an executable slot, so scan every entry for this explicit flag.
+    var index = 0;
+    while index < Env.GetArgumentCount() {
+        if Env.GetArgument(index) == name { return true; }
+        index = index + 1;
+    }
+    return false;
+}
+
+func near(actual: Number, expected: Number) -> Boolean {
+    var difference = actual - expected;
+    if difference < 0.0 { difference = 0.0 - difference; }
+    return difference < 0.000001;
+}
+
+func luminance(pixel: Integer) -> Integer {
+    var red = (pixel / 16777216) % 256;
+    var green = (pixel / 65536) % 256;
+    var blue = (pixel / 256) % 256;
+    return (red * 30 + green * 59 + blue * 11) / 100;
+}
+
+/// @brief Sample the central frame without making the visual probe expensive.
+func sceneMeanLuma(pixels: Pixels,
+                   width: Integer,
+                   height: Integer) -> Number {
+    var samples = 0;
+    var total = 0;
+    var y = height / 8;
+    while y < height * 7 / 8 {
+        var x = width / 8;
+        while x < width * 7 / 8 {
+            total = total + luminance(Pixels.Get(pixels, x, y));
+            samples = samples + 1;
+            x = x + 6;
+        }
+        y = y + 6;
+    }
+    if samples <= 0 { return 0.0; }
+    return (total + 0.0) / (samples + 0.0);
+}
+
+func projectRoot() -> String {
+    var fromProbe =
+        "../../../../examples/games/ashfall-scenes";
+    if File.Exists(Path.Join(fromProbe, "scene-components.json")) {
+        return fromProbe;
+    }
+    return "examples/games/ashfall-scenes";
+}
+
+func fail(shell: app_shell.AppShell,
+          project: project_manager.ProjectManager,
+          reason: String) {
+    project.CloseProject();
+    shell.Destroy();
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func pump(editor: scene_editor_3d.SceneEditor3D,
+          doc: document.Document,
+          shell: app_shell.AppShell) {
+    editor.Pump(doc);
+    shell.Render();
+}
+
+func main() {
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Gameplay Preview Probe", 1180, 780);
+    shell.SetSceneWorkspaceMode(true);
+
+    var project = new project_manager.ProjectManager();
+    project.Setup(null);
+    var root = projectRoot();
+    var scenePath =
+        Path.Join(root, "assets/scenes/mission-01.scene3d");
+    if File.Exists(scenePath) == false
+       or project.OpenFolder(root) == false {
+        fail(shell, project,
+             "could not open the Ashfall project fixture at " + root);
+        return;
+    }
+
+    var editor = new scene_editor_3d.SceneEditor3D();
+    scene_panels_3d.Build(
+        editor, shell.workbench.scene3DHost, shell.app);
+    editor.SetWorkspaceContext(project);
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_3D);
+
+    var sceneDoc = new document.Document();
+    sceneDoc.fileName = "mission-01.scene3d";
+    sceneDoc.filePath = scenePath;
+    sceneDoc.language = "scene3d";
+    sceneDoc.kind = file_utils.DOC_KIND_SCENE_3D;
+    sceneDoc.content = File.ReadAllText(scenePath);
+    var baseline = sceneDoc.content;
+    editor.Activate(sceneDoc);
+    pump(editor, sceneDoc, shell);
+    pump(editor, sceneDoc, shell);
+
+    if editor.loadError != ""
+       or editor.scene == null
+       or editor.flatNodes.count() != 134
+       or editor.viewportRenderCamera == null
+       or editor.viewportPixels == null {
+        fail(shell, project,
+             "the Ashfall mission did not become a rendered Studio scene");
+        return;
+    }
+
+    var hasEnvironmentPreview = false;
+    if editor.projectPreviewScene != null
+       and editor.projectPreviewScene.Root != null {
+        var previewIndex = 0;
+        while previewIndex
+              < editor.projectPreviewScene.Root.ChildCount {
+            if editor.projectPreviewScene.Root
+                   .GetChild(previewIndex).Name
+               == "Scene environment preview" {
+                hasEnvironmentPreview = true;
+            }
+            previewIndex = previewIndex + 1;
+        }
+    }
+    if editor.componentSchema == null
+       or editor.componentSchema.version != 10
+       or editor.componentSchema.scenePreview3D == null
+       or editor.componentSchema.scenePreview3D
+              .EnvironmentPrefabForVariant(1)
+          != "assets/editor-previews/environment-terrain-01.scene3d"
+       or hasEnvironmentPreview == false
+       or editor.projectPreviewInstanceCount <= 0
+       or editor.projectPreviewMissingCount != 0
+       or editor.projectPreviewClipped {
+        fail(shell, project,
+             "the runtime terrain did not become a bounded "
+             + "scene environment preview");
+        return;
+    }
+    var previewProfile = editor.componentSchema.scenePreview3D;
+    if previewProfile.HasPostFX() == false
+       or previewProfile.PostFXEffectCount() != 5
+       or editor.viewportRenderPostFX == null
+       or editor.viewportRenderPostFX.EffectCount != 5
+       or editor.viewportRenderCanvas.FrameFinalized == false
+       or near(previewProfile.tonemapExposure, 1.17) == false
+       or near(previewProfile.bloomIntensity, 0.25) == false
+       or near(previewProfile.colorGradeBrightness, 0.03) == false
+       or near(previewProfile.vignetteSoftness, 0.12) == false
+       or previewProfile.fxaa == false {
+        fail(shell, project,
+             "the Ashfall runtime post-FX recipe did not reach "
+             + "the retained Studio viewport");
+        return;
+    }
+    var meanLuma = sceneMeanLuma(
+        editor.viewportPixels,
+        editor.renderedViewportWidth,
+        editor.renderedViewportHeight);
+    if meanLuma < 175.0 or meanLuma > 250.0 {
+        fail(shell, project,
+             "finalized Ashfall viewport escaped its pale visual "
+             + "envelope (mean luma " + meanLuma + ")");
+        return;
+    }
+
+    var eye = editor.viewportRenderCamera.Position;
+    var forward = editor.viewportRenderCamera.Forward;
+    var projectedCenter =
+        editor.ProjectWorldPoint(0.0, 1.82, 0.0);
+    var expectedCenterX = editor.renderedViewportWidth / 2;
+    var expectedCenterY = editor.renderedViewportHeight / 2;
+    if near(eye.X, 0.0) == false
+       or near(eye.Y, 1.82) == false
+       or near(eye.Z, 34.0) == false
+       or near(forward.X, 0.0) == false
+       or near(forward.Y, 0.0) == false
+       or near(forward.Z, -1.0) == false
+       or projectedCenter.visible == false
+       or projectedCenter.x != expectedCenterX
+       or projectedCenter.y != expectedCenterY {
+        fail(shell, project,
+             "gameplay camera diverged: eye="
+             + eye.X + "," + eye.Y + "," + eye.Z
+             + " forward="
+             + forward.X + "," + forward.Y + "," + forward.Z
+             + " center="
+             + projectedCenter.x + "," + projectedCenter.y
+             + " expected="
+             + expectedCenterX + "," + expectedCenterY);
+        return;
+    }
+
+    // A dock change replaces the retained camera at a different aspect.
+    // Gameplay eye anchoring must survive that responsive layout transition.
+    editor.ToggleInspectorPane();
+    pump(editor, sceneDoc, shell);
+    pump(editor, sceneDoc, shell);
+    eye = editor.viewportRenderCamera.Position;
+    if near(eye.X, 0.0) == false
+       or near(eye.Y, 1.82) == false
+       or near(eye.Z, 34.0) == false {
+        fail(shell, project,
+             "responsive dock layout moved the gameplay camera");
+        return;
+    }
+
+    // Deliberately navigate away, then prove the user-facing recovery action
+    // reinstates the real render camera without touching canonical bytes.
+    editor.viewYawDegrees = 73;
+    editor.viewPitchDegrees = -24;
+    editor.viewTargetX = 80.0;
+    editor.viewTargetY = 70.0;
+    editor.viewTargetZ = 60.0;
+    pump(editor, sceneDoc, shell);
+    if editor.ApplyProjectPreviewView() == false {
+        fail(shell, project, "Gameplay View action was unavailable");
+        return;
+    }
+    pump(editor, sceneDoc, shell);
+    eye = editor.viewportRenderCamera.Position;
+    forward = editor.viewportRenderCamera.Forward;
+    if near(eye.X, 0.0) == false
+       or near(eye.Y, 1.82) == false
+       or near(eye.Z, 34.0) == false
+       or near(forward.X, 0.0) == false
+       or near(forward.Y, 0.0) == false
+       or near(forward.Z, -1.0) == false
+       or sceneDoc.content != baseline
+       or sceneDoc.isModified {
+        fail(shell, project,
+             "Gameplay View did not restore the read-only runtime pose");
+        return;
+    }
+
+    var screenshotPath =
+        Path.Join(TempFile.Dir(),
+                  "zannastudio_ashfall_gameplay_preview.png");
+    if Pixels.SavePng(editor.viewportPixels, screenshotPath) != 1 {
+        fail(shell, project,
+             "could not capture the actual Studio viewport");
+        return;
+    }
+
+    Terminal.Say(
+        "METRIC: camera=0,1.82,34 forward=0,0,-1"
+        + " viewport=" + editor.renderedViewportWidth
+        + "x" + editor.renderedViewportHeight
+        + " previews=" + editor.projectPreviewInstanceCount
+        + " postfx=" + editor.viewportRenderPostFX.EffectCount
+        + " mean_luma=" + meanLuma
+        + " screenshot=" + screenshotPath);
+
+    if HasArg("--visual-hold") {
+        Terminal.Say(
+            "VISUAL: Ashfall production editor is held for screenshot QA");
+        while true {
+            shell.PollWait(16);
+            if shell.WasCloseRequested() { break; }
+            editor.Pump(sceneDoc);
+            shell.Render();
+        }
+    }
+
+    project.CloseProject();
+    shell.Destroy();
+    Terminal.Say("RESULT: ok");
+}

@@ -10,9 +10,9 @@
 // Key invariants:
 //   - Every candidate is reparsed by scene_component_schema before publication.
 //   - Known-member edits preserve unknown supported-version JSON members.
-//   - Version inference recognizes object, scene, node, sky/light, and
-//     lens/atmosphere preview extensions before replacing otherwise unrelated
-//     component fields.
+//   - Version inference recognizes object, 2D scene, 3D scene, node,
+//     sky/light, lens/atmosphere, environment, and post-FX preview extensions
+//     before replacing otherwise unrelated component fields.
 //   - Existing files are replaced through expected-metadata workspace edits;
 //     new files use a no-overwrite same-directory atomic create.
 //   - Bounded file snapshots make each accepted edit exactly undoable/redoable.
@@ -23,7 +23,10 @@
 //        zannastudio/src/services/safe_io.zia,
 //        docs/adr/0160-project-scene-component-schemas.md,
 //        docs/adr/0200-project-owned-3d-sky-and-light-preview-rigs.md,
-//        docs/adr/0201-project-owned-3d-lens-and-atmosphere-previews.md
+//        docs/adr/0201-project-owned-3d-lens-and-atmosphere-previews.md,
+//        docs/adr/0202-project-owned-2d-scene-background-previews.md,
+//        docs/adr/0203-project-owned-3d-scene-environment-previews.md,
+//        docs/adr/0204-project-owned-3d-post-processing-previews.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -723,9 +726,14 @@ func FinishEdit(root: Any,
 /// @brief Write the lowest schema version the authored content requires.
 func SyncSchemaVersion(root: Any) {
     var required = scene_component_schema.SCHEMA_VERSION;
-    if Map.Has(root, "nodePreviews3D") {
+    if Map.Has(root, "scenePreview2D") {
         required =
+            scene_component_schema.SCENE_PREVIEW_2D_SCHEMA_VERSION;
+    }
+    if Map.Has(root, "nodePreviews3D") {
+        var nodeVersion =
             scene_component_schema.NODE_PREVIEW_3D_SCHEMA_VERSION;
+        if nodeVersion > required { required = nodeVersion; }
     }
     if Map.Has(root, "scenePreview3D") {
         var scenePreviewVersion =
@@ -733,7 +741,15 @@ func SyncSchemaVersion(root: Any) {
         var scenePreview = Map.Get(root, "scenePreview3D");
         if scenePreview != null
            and Json.TypeOf(scenePreview) == "object" {
-            if ScenePreviewHasLensAtmosphereMembers(scenePreview) {
+            if ScenePreviewHasPostFXMembers(scenePreview) {
+                scenePreviewVersion =
+                    scene_component_schema
+                        .SCENE_POSTFX_PREVIEW_3D_SCHEMA_VERSION;
+            } else if ScenePreviewHasEnvironmentMembers(scenePreview) {
+                scenePreviewVersion =
+                    scene_component_schema
+                        .SCENE_ENVIRONMENT_PREVIEW_3D_SCHEMA_VERSION;
+            } else if ScenePreviewHasLensAtmosphereMembers(scenePreview) {
                 scenePreviewVersion =
                     scene_component_schema
                         .LENS_ATMOSPHERE_PREVIEW_3D_SCHEMA_VERSION;
@@ -777,6 +793,40 @@ func SyncSchemaVersion(root: Any) {
         }
     }
     Map.SetInt(root, "version", required);
+}
+
+/// @brief Return whether one raw scene profile requires schema version 10.
+func ScenePreviewHasPostFXMembers(raw: Any) -> Boolean {
+    var names: List[String] = [
+        "tonemapMode", "tonemapExposure",
+        "bloomThreshold", "bloomIntensity", "bloomPasses",
+        "colorGradeBrightness", "colorGradeContrast",
+        "colorGradeSaturation",
+        "vignetteRadius", "vignetteSoftness",
+        "fxaa"
+    ];
+    var index = 0;
+    while index < names.count() {
+        if Map.Has(raw, names.get(index)) { return true; }
+        index = index + 1;
+    }
+    return false;
+}
+
+/// @brief Return whether one raw scene profile requires schema version 9.
+func ScenePreviewHasEnvironmentMembers(raw: Any) -> Boolean {
+    var names: List[String] = [
+        "environmentPrefab",
+        "environmentVariantProperty",
+        "environmentVariantPrefabs",
+        "environmentVariantOffset"
+    ];
+    var index = 0;
+    while index < names.count() {
+        if Map.Has(raw, names.get(index)) { return true; }
+        index = index + 1;
+    }
+    return false;
 }
 
 /// @brief Return whether one raw scene profile requires schema version 6.

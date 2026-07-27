@@ -352,17 +352,66 @@ inspector operations stay controller-side: 2D typed property set/remove uses
 `SceneDocument` property APIs, while 3D relative transforms mutate selected
 `SceneNode` local values before one canonical serialization.
 
+The 2D labeled History list is likewise controller presentation over the
+existing bounded canonical snapshots. Tile-palette zoom/search needs no new
+runtime or ABI surface: Studio scales the existing nearest-filtered `GUI.Image`,
+maps pointer coordinates back through that presentation ratio, and uses
+`ScrollView.SetScroll` to reveal a validated numeric frame.
+
+The 2D canvas rulers and guides also require no runtime or ABI surface. Studio
+renders bounded `Pixels` into ordinary top/left `GUI.Image` widgets, derives
+ticks from the same logical scroll origin, display-cell size, and centering
+padding as the windowed canvas, and maps ruler pointer coordinates back to
+cell boundaries. Guide coordinates live only in `Scene2DWorkspaceState`; their
+lines are drawn with the existing editor overlays after the tile grid.
+
+ADR 0205 adds an opt-in, application-directed retained `GUI.ListBox` reorder
+surface: `SetReorderable`, `WasReorderRequested`,
+`GetReorderSourceIndex`, and `GetReorderTargetIndex`, with matching additive C
+ABI entry points. The lower control owns threshold recognition, pointer
+capture, insertion feedback, edge scrolling, Escape cancellation, and
+Alt+Arrow requests, but never mutates row linkage or revision. Studio consumes
+the request and applies the existing `SceneDocument.MoveLayer` operation
+through one canonical transaction. Lock and Solo indices remain only in
+`Scene2DWorkspaceState`; Studio remaps them around live layer edits and clears
+them on canonical reload. No scene schema or serialization surface changes.
+
+The 3D corner orientation navigator likewise adds no runtime or ABI surface.
+`SceneEditor3D` draws its six camera targets, projection chip, and XYZ cue into
+the existing post-readback editor-overlay pixels. Its hit geometry shares those
+exact dimensions, receives pointer priority ahead of gizmos and scene picking,
+and updates only the existing per-document camera workspace fields.
+
+The hierarchy action strip and pick-lock row cues also use only existing GUI
+and scene surfaces. Buttons and context-menu items dispatch to the established
+one-serialization visibility transaction; `TreeView.Node.SetText` refreshes
+the `⊘` presentation cue. Pick paths remain process-local in
+`Scene3DWorkspaceState`, while live structural refreshes temporarily retain
+`SceneNode` identities to remap or prune those paths. No runtime class, C ABI,
+VSCN schema, or serialization surface changes.
+
 ADR 0168 adds `Canvas3D.NewOffscreen(RenderTarget3D)` and read-only
 `IsOffscreen`. `SceneEditor3D` retains one windowless canvas, explicit target,
-and orthographic camera sized to the embedded GUI image. The camera half-height
-is `viewportHeight / (2 * pixelsPerUnit)`, and its orbit matches Studio's
-marker/gizmo projection exactly. `SceneGraph.Draw` therefore supplies the
-authored hierarchy, visibility, transforms, meshes, PBR materials, maps, and
-scene lights for both shaded and triangle-wireframe modes. Studio reads the
-target back only when scene or camera state is dirty, then draws the editor
-grid, hierarchy links, node markers, selection, and gizmos on that copy. A
-target/readback allocation failure retains a deterministic marker fallback and
-never changes VSCN content.
+and projection-switchable camera sized to the embedded GUI image. Orthographic
+half-height is `viewportHeight / (2 * pixelsPerUnit)`; the perspective eye
+distance derives from the same target scale, and both projections match
+Studio's marker/gizmo coordinates exactly. `SceneGraph.Draw` therefore
+supplies the authored hierarchy, visibility, transforms, meshes, PBR
+materials, maps, and scene lights for both shaded and triangle-wireframe modes.
+Studio reads the target back only when scene or camera state is dirty, then
+draws the editor grid, hierarchy links, node markers, selection, and gizmos on
+that copy. A target/readback allocation failure retains a deterministic marker
+fallback and never changes VSCN content.
+
+ADR 0204 reuses the existing `PostFX3D` and `Canvas3D.SetPostFX` surface for
+project-owned scene-preview recipes. `SceneEditor3D` retains one validated
+portable chain per schema/canvas and attaches it only to the main shaded
+viewport. A render target's `AsPixels()` view is pre-finalization, so an active
+chain is read with `Canvas3D.ScreenshotFinal()` instead; this is the boundary
+that actually runs tonemap, bloom, color grade, vignette, and FXAA. Editor
+overlays are composed onto that returned `Pixels` object afterward. This adds
+no runtime ABI: pure wireframe detaches the chain, and schemas omit
+backend-dependent or temporal effects.
 
 ADR 0191 adds `Canvas3D.NewOffscreenAccelerated(RenderTarget3D)`: the same
 windowless contract, but requesting the platform GPU backend with the standard
@@ -418,6 +467,15 @@ ADR 0157 adds read-only decoded `*MapPixels` properties to `Material3D`.
 Studio uses those managed borrowed views for bounded assigned-map thumbnails,
 so the inspector follows the canonical material after load, undo/redo, import,
 clone, and VSCN round trips without parsing scene text or caching picker paths.
+
+The shared project asset browser requires no additional runtime ABI. Ordinary
+image cards use bounded `Pixels.Load`/`Resize`; 3D cards reuse
+`SceneAsset.LoadResult`, subtree `BoundsMin`/`BoundsMax`, windowless
+`RenderTarget3D`/`Canvas3D`, and `Camera3D.LookAt`. The browser schedules only
+cards intersecting its live scroll viewport and uploads at most one resulting
+square per frame. `GUI.Image.SetPixels` copies the upload into widget-owned
+storage, so temporary asset, canvas, camera, and Pixels handles do not become
+long-lived browser state.
 
 ADR 0167 adds `Spinner.SetIndeterminate(Boolean)` and
 `Spinner.IsIndeterminate()`. A mixed spinner retains the primary node's bounded

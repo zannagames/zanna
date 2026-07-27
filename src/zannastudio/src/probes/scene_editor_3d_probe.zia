@@ -179,7 +179,10 @@ func main() {
        or scene_editor_3d.UsesCompactLayout(980.01)
        or scene_editor_3d.UsesCompactLayout(0.0)
        or scene_editor_3d.UsesCompactChrome(700.0) == false
-       or scene_editor_3d.UsesCompactChrome(700.01) {
+       or scene_editor_3d.UsesCompactChrome(700.01)
+       or scene_editor_3d.UsesDockedHierarchy(1399.99)
+       or scene_editor_3d.UsesDockedHierarchy(1400.0) == false
+       or scene_editor_3d.UsesDockedHierarchy(0.0) {
         fail(shell, tempPath,
              "3D viewport-priority thresholds were unstable");
         return;
@@ -530,6 +533,58 @@ func main() {
         return;
     }
     editor.SetWorkspaceModeActive(false);
+
+    // A laptop-width Scene Layout has room for one creation row. Its Flex
+    // measurement must reclaim the old defensive second-row reservation
+    // instead of leaving a dead band above the viewport.
+    shell.app.SetWindowSize(1320, 760);
+    shell.SetSceneWorkspaceMode(true);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    var laptopLaneWidth = editor.root.GetScreenWidth();
+    var laptopToolbarBottom = editor.toolbar.GetScreenY()
+        + editor.toolbar.GetScreenHeight();
+    var laptopLastActionBottom = editor.deleteNodeButton.GetScreenY()
+        + editor.deleteNodeButton.GetScreenHeight();
+    if laptopLaneWidth < 1180.0 or laptopLaneWidth >= 1400.0
+       or laptopToolbarBottom - laptopLastActionBottom > 12.0 {
+        fail(shell, tempPath,
+             "laptop 3D creation toolbar retained an empty wrapped row: lane="
+             + laptopLaneWidth + " toolbarBottom=" + laptopToolbarBottom
+             + " actionBottom=" + laptopLastActionBottom);
+        return;
+    }
+
+    // The real workbench's activity rail leaves an approximately 1120-pixel
+    // scene lane in a 1180-pixel laptop window. The concise creation actions
+    // still fit on one row there; a width-bracket floor must not reserve an
+    // invisible second row after the native widgets finish realizing.
+    shell.app.SetWindowSize(1180, 760);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    var ordinaryLaneWidth = editor.root.GetScreenWidth();
+    var ordinaryToolbarBottom = editor.toolbar.GetScreenY()
+        + editor.toolbar.GetScreenHeight();
+    var ordinaryLastActionBottom = editor.deleteNodeButton.GetScreenY()
+        + editor.deleteNodeButton.GetScreenHeight();
+    if ordinaryLaneWidth >= 1180.0
+       or ordinaryToolbarBottom - ordinaryLastActionBottom > 12.0 {
+        fail(shell, tempPath,
+             "ordinary 3D creation toolbar retained an empty wrapped row: lane="
+             + ordinaryLaneWidth + " toolbarBottom="
+             + ordinaryToolbarBottom + " actionBottom="
+             + ordinaryLastActionBottom);
+        return;
+    }
+    shell.SetSceneWorkspaceMode(false);
 
     shell.app.SetWindowSize(560, 420);
     shell.Poll();
@@ -991,8 +1046,7 @@ func main() {
     editor.Pump(sceneDoc);
     var tabMetadataContent = sceneDoc.content;
     var tabMetadataRevision = editor.GetRevision();
-    editor.metadataInspector.SelectByKey(
-        editor.flatNodes.get(childIndex), "health");
+    editor.metadataInspector.SelectByKey("health");
     editor.Pump(sceneDoc);
     if sceneDoc.content != tabMetadataContent
        or editor.GetRevision() != tabMetadataRevision {
@@ -1779,14 +1833,21 @@ func main() {
     findContext3D.shell = shell;
     findContext3D.docMgr = documents;
     findContext3D.scene3DEditor = editor;
+    var findInspectorTemporarilyHidden = false;
     if editor.compactLayout == false
        and editor.inspectorRequestedVisible {
         editor.ToggleInspectorPane();
         shell.Render();
+        findInspectorTemporarilyHidden = true;
     }
+    var findHierarchyWasHidden =
+        editor.hierarchyPaneBox.IsVisible() == false;
+    var findInspectorRequested = editor.inspectorRequestedVisible;
     if main_command_dispatcher.HandleSurfaceFind(findContext3D) == false
        or editor.hierarchySearchInput.IsFocused() == false
        or editor.SceneSelectionCommandsOwnFocus()
+       or editor.hierarchyPaneBox.IsVisible() == false
+       or editor.inspectorRequestedVisible != findInspectorRequested
        or sceneDoc.content != hierarchySearchContent
        or editor.GetRevision() != hierarchySearchRevision {
         fail(shell, tempPath,
@@ -1798,19 +1859,34 @@ func main() {
         editor.hierarchySearchInput.GetScreenY();
     var hierarchySearchBottom = hierarchySearchTop
         + editor.hierarchySearchInput.GetScreenHeight();
-    if editor.bodySplit.GetCollapsedSide() != 0
-       or hierarchySearchTop < editor.inspectorScroll.GetScreenY() - 1.0
+    var expectedFindHierarchySide = 0;
+    if findHierarchyWasHidden { expectedFindHierarchySide = 2; }
+    if editor.hierarchySplit.GetCollapsedSide()
+          != expectedFindHierarchySide
+       or hierarchySearchTop < editor.hierarchyPaneBox.GetScreenY() - 1.0
        or hierarchySearchBottom
-          > editor.inspectorScroll.GetScreenY()
-            + editor.inspectorScroll.GetScreenHeight() + 1.0 {
+          > editor.hierarchyPaneBox.GetScreenY()
+            + editor.hierarchyPaneBox.GetScreenHeight() + 1.0 {
         fail(shell, tempPath,
-             "3D Find did not reveal its hidden inspector query");
+             "3D Find did not reveal its hierarchy query");
         return;
     }
     if editor.FindHierarchy("", 1)
        or editor.hierarchySearchMatches.count() != 0 {
         fail(shell, tempPath, "empty 3D hierarchy search produced a match");
         return;
+    }
+    if findHierarchyWasHidden {
+        editor.ToggleHierarchyPane();
+        shell.Render();
+        editor.Pump(sceneDoc);
+        shell.Render();
+    }
+    if findInspectorTemporarilyHidden {
+        editor.ToggleInspectorPane();
+        shell.Render();
+        editor.Pump(sceneDoc);
+        shell.Render();
     }
 
     // Existing nodes need the same hierarchy-authoring path as newly-created
@@ -2348,12 +2424,25 @@ func main() {
              "3D scene selection shortcuts escaped a transform input");
         return;
     }
+    var hierarchyWasMaster = editor.hierarchyPaneBox.IsVisible() == false;
+    if hierarchyWasMaster {
+        editor.ToggleHierarchyPane();
+        shell.Render();
+        editor.Pump(sceneDoc);
+        shell.Render();
+    }
     editor.hierarchyTree.Focus();
     if editor.hierarchyTree.IsFocused() == false
        or editor.SceneSelectionCommandsOwnFocus() == false {
         fail(shell, tempPath,
              "3D hierarchy focus did not own scene selection shortcuts");
         return;
+    }
+    if hierarchyWasMaster {
+        editor.ToggleHierarchyPane();
+        shell.Render();
+        editor.Pump(sceneDoc);
+        shell.Render();
     }
 
     var rootPosition = editor.flatNodes.get(0).Position;

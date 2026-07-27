@@ -247,7 +247,10 @@ func main() {
     wv.SetShown(true);
     shell.Poll();
     shell.Render();
-    if shell.workbench.leftViewStack.GetWidth() > 1 {
+    if shell.workbench.IsSidebarVisible()
+       or shell.workbench.leftViewStack.IsVisible()
+       or shell.workbench.splitPane.GetCollapsedSide() != 1
+       or shell.workbench.rightSidebarSplit.GetCollapsedSide() != 2 {
         fail(shell, "empty startup sidebar still consumes width");
         return;
     }

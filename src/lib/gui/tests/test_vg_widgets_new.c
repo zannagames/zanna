@@ -557,8 +557,7 @@ TEST(treeview_inline_edit_commit_cancel_lifecycle) {
     vg_treeview_t *tree = vg_treeview_create(NULL);
     ASSERT_NOT_NULL(tree);
     vg_widget_arrange(&tree->base, 0.0f, 0.0f, 240.0f, 120.0f);
-    vg_tree_node_t *node =
-        vg_treeview_add_node(tree, vg_treeview_get_root(tree), "Box 0 [mesh]");
+    vg_tree_node_t *node = vg_treeview_add_node(tree, vg_treeview_get_root(tree), "Box 0 [mesh]");
     ASSERT_NOT_NULL(node);
 
     /* Begin pre-fills the raw name, shows and focuses the editor. */
@@ -988,6 +987,96 @@ TEST(listbox_mutations_invalidate_layout_and_paint) {
     vg_widget_destroy(&lb->base);
 }
 
+TEST(listbox_pointer_reorder_latches_request_without_mutation) {
+    vg_listbox_t *lb = vg_listbox_create(NULL);
+    ASSERT_NOT_NULL(lb);
+    vg_listbox_item_t *a = vg_listbox_add_item(lb, "A", NULL);
+    vg_listbox_item_t *b = vg_listbox_add_item(lb, "B", NULL);
+    vg_listbox_item_t *c = vg_listbox_add_item(lb, "C", NULL);
+    vg_listbox_item_t *d = vg_listbox_add_item(lb, "D", NULL);
+    ASSERT_NOT_NULL(a);
+    ASSERT_NOT_NULL(b);
+    ASSERT_NOT_NULL(c);
+    ASSERT_NOT_NULL(d);
+    vg_widget_arrange(&lb->base, 0.0f, 0.0f, 200.0f, lb->item_height * 4.0f);
+    vg_listbox_set_reorderable(lb, true);
+
+    vg_event_t down = vg_event_mouse(
+        VG_EVENT_MOUSE_DOWN, 20.0f, lb->item_height * 1.5f, VG_MOUSE_LEFT, VG_MOD_NONE);
+    vg_event_t move = vg_event_mouse(
+        VG_EVENT_MOUSE_MOVE, 20.0f, lb->item_height * 3.8f, VG_MOUSE_LEFT, VG_MOD_NONE);
+    vg_event_t up = vg_event_mouse(
+        VG_EVENT_MOUSE_UP, 20.0f, lb->item_height * 3.8f, VG_MOUSE_LEFT, VG_MOD_NONE);
+    ASSERT(vg_event_send(&lb->base, &down));
+    ASSERT(vg_event_send(&lb->base, &move));
+    ASSERT(vg_event_send(&lb->base, &up));
+
+    ASSERT(vg_listbox_was_reorder_requested(lb));
+    ASSERT(!vg_listbox_was_reorder_requested(lb));
+    ASSERT_EQ(vg_listbox_get_reorder_source_index(lb), 1u);
+    ASSERT_EQ(vg_listbox_get_reorder_target_index(lb), 3u);
+    ASSERT_EQ(vg_listbox_get_selected_index(lb), 1u);
+    ASSERT_EQ(lb->first_item, a);
+    ASSERT_EQ(a->next, b);
+    ASSERT_EQ(b->next, c);
+    ASSERT_EQ(c->next, d);
+    ASSERT_NULL(vg_widget_get_input_capture());
+
+    vg_widget_destroy(&lb->base);
+}
+
+TEST(listbox_reorder_threshold_escape_and_keyboard_contract) {
+    vg_listbox_t *lb = vg_listbox_create(NULL);
+    ASSERT_NOT_NULL(lb);
+    vg_listbox_add_item(lb, "A", NULL);
+    vg_listbox_add_item(lb, "B", NULL);
+    vg_listbox_add_item(lb, "C", NULL);
+    vg_widget_arrange(&lb->base, 0.0f, 0.0f, 180.0f, lb->item_height * 3.0f);
+    vg_listbox_set_reorderable(lb, true);
+
+    vg_event_t down = vg_event_mouse(
+        VG_EVENT_MOUSE_DOWN, 10.0f, lb->item_height * 1.5f, VG_MOUSE_LEFT, VG_MOD_NONE);
+    vg_event_t jitter = vg_event_mouse(
+        VG_EVENT_MOUSE_MOVE, 12.0f, lb->item_height * 1.5f, VG_MOUSE_LEFT, VG_MOD_NONE);
+    vg_event_t up = vg_event_mouse(
+        VG_EVENT_MOUSE_UP, 12.0f, lb->item_height * 1.5f, VG_MOUSE_LEFT, VG_MOD_NONE);
+    ASSERT(vg_event_send(&lb->base, &down));
+    (void)vg_event_send(&lb->base, &jitter);
+    (void)vg_event_send(&lb->base, &up);
+    ASSERT(!vg_listbox_was_reorder_requested(lb));
+    ASSERT_NULL(vg_widget_get_input_capture());
+
+    down = vg_event_mouse(
+        VG_EVENT_MOUSE_DOWN, 10.0f, lb->item_height * 1.5f, VG_MOUSE_LEFT, VG_MOD_NONE);
+    vg_event_t drag = vg_event_mouse(
+        VG_EVENT_MOUSE_MOVE, 10.0f, lb->item_height * 0.2f, VG_MOUSE_LEFT, VG_MOD_NONE);
+    vg_event_t escape = vg_event_key(VG_EVENT_KEY_DOWN, VG_KEY_ESCAPE, 0, VG_MOD_NONE);
+    ASSERT(vg_event_send(&lb->base, &down));
+    ASSERT(vg_event_send(&lb->base, &drag));
+    ASSERT(vg_event_send(&lb->base, &escape));
+    ASSERT(!vg_listbox_was_reorder_requested(lb));
+    ASSERT_NULL(vg_widget_get_input_capture());
+
+    vg_listbox_select_index(lb, 2u);
+    uint64_t revision = lb->base.revision;
+    vg_event_t alt_up = vg_event_key(VG_EVENT_KEY_DOWN, VG_KEY_UP, 0, VG_MOD_ALT);
+    ASSERT(vg_event_send(&lb->base, &alt_up));
+    ASSERT(vg_listbox_was_reorder_requested(lb));
+    ASSERT_EQ(vg_listbox_get_reorder_source_index(lb), 2u);
+    ASSERT_EQ(vg_listbox_get_reorder_target_index(lb), 1u);
+    ASSERT_EQ(vg_listbox_get_selected_index(lb), 2u);
+    ASSERT_EQ(lb->base.revision, revision);
+
+    vg_listbox_select_index(lb, 0u);
+    ASSERT(vg_event_send(&lb->base, &alt_up));
+    ASSERT(!vg_listbox_was_reorder_requested(lb));
+    vg_listbox_set_reorderable(lb, false);
+    ASSERT_EQ(vg_listbox_get_reorder_source_index(lb), SIZE_MAX);
+    ASSERT_EQ(vg_listbox_get_reorder_target_index(lb), SIZE_MAX);
+
+    vg_widget_destroy(&lb->base);
+}
+
 //=============================================================================
 // Group D-other — vg_breadcrumb max_items (new feature)
 //=============================================================================
@@ -1368,6 +1457,8 @@ int main(void) {
     RUN(listbox_remove_clears_selection);
     RUN(listbox_clear_empties_list);
     RUN(listbox_mutations_invalidate_layout_and_paint);
+    RUN(listbox_pointer_reorder_latches_request_without_mutation);
+    RUN(listbox_reorder_threshold_escape_and_keyboard_contract);
 
     printf("\nGroup D-other — Breadcrumb max_items:\n");
     RUN(breadcrumb_push_pop_basic);

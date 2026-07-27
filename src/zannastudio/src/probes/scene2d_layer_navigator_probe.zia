@@ -1,0 +1,383 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene2d_layer_navigator_probe.zia
+// Purpose: Verify the 2D layer navigator's truthful state and stable actions.
+// Key invariants:
+//   - Enter activation toggles authored visibility through one exact history.
+//   - Lock/Solo state is workspace-only, tab-local, and visible on layer rows.
+//   - Add preserves existing state; move/removal remap or prune exact layers.
+//   - A real retained-row drag requests one canonical reorder and exact undo.
+//   - Wrapped boundary-aware actions stay contained at wide and narrow widths.
+// Ownership/Lifetime:
+//   - The probe owns one hidden AppShell, two documents, and an input harness.
+// Links: zannastudio/src/ui/scene_editor_2d.zia,
+//        zannastudio/src/ui/scene_panels_2d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene2d_layer_navigator_probe;
+
+// ============================================================================
+// MODULE: scene2d_layer_navigator_probe
+// PURPOSE: Pin the common 2D layer workflow and its per-document presentation.
+//
+// WHERE-THIS-FITS: The broad 2D probe owns tile/object transactions. This
+//          focused probe owns layer row cues, activation, state identity, and
+//          responsive action geometry.
+//
+// TEACHING-NOTE: Lock and Solo are intentionally not scene JSON. Their indices
+//          must still follow the same live layer when draw order changes.
+// ============================================================================
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_2d";
+bind "../ui/scene_panels_2d";
+
+bind Convert = Zanna.Core.Convert;
+bind GUI = Zanna.GUI;
+bind Str = Zanna.String;
+bind Terminal = Zanna.Terminal;
+
+func HarnessCoordinate(shell: app_shell.AppShell,
+                       logical: Number) -> Integer {
+    var scale = shell.app.GetEffectiveScale();
+    if scale <= 0.0 { scale = 1.0; }
+    return Convert.NumToInt(logical * scale + 0.999999);
+}
+
+func ClickWidget(shell: app_shell.AppShell,
+                 harness: GUI.TestHarness,
+                 widget: GUI.Widget) {
+    var x = HarnessCoordinate(
+        shell, widget.GetScreenX() + widget.GetScreenWidth() / 2.0);
+    var y = HarnessCoordinate(
+        shell, widget.GetScreenY() + widget.GetScreenHeight() / 2.0);
+    harness.SendMouse("move", x, y, 0);
+    harness.SendMouse("down", x, y, 0);
+    harness.SendMouse("up", x, y, 0);
+    harness.DispatchPending();
+}
+
+func DragLayerRow(shell: app_shell.AppShell,
+                  harness: GUI.TestHarness,
+                  list: GUI.ListBox,
+                  source: Integer,
+                  target: Integer) {
+    // The default ListBox row is the theme's 28-logical-pixel input height.
+    // Drop in the target row's lower half to request an AFTER insertion.
+    var rowHeight = 28.0;
+    var x = HarnessCoordinate(
+        shell, list.GetScreenX() + list.GetScreenWidth() * 0.5);
+    var sourceY = HarnessCoordinate(
+        shell,
+        list.GetScreenY() + rowHeight * source + rowHeight * 0.5);
+    var targetY = HarnessCoordinate(
+        shell,
+        list.GetScreenY() + rowHeight * target + rowHeight * 0.82);
+    harness.SendMouse("move", x, sourceY, 0);
+    harness.SendMouse("down", x, sourceY, 0);
+    harness.SendMouse("move", x, targetY, 0);
+    harness.SendMouse("up", x, targetY, 0);
+    harness.DispatchPending();
+}
+
+func WidgetContained(parent: GUI.Widget,
+                     child: GUI.Widget) -> Boolean {
+    if parent == null or child == null or child.IsVisible() == false {
+        return false;
+    }
+    return child.GetScreenWidth() > 0.0
+        and child.GetScreenHeight() > 0.0
+        and child.GetScreenX() + 1.0 >= parent.GetScreenX()
+        and child.GetScreenY() + 1.0 >= parent.GetScreenY()
+        and child.GetScreenX() + child.GetScreenWidth()
+            <= parent.GetScreenX() + parent.GetScreenWidth() + 1.0
+        and child.GetScreenY() + child.GetScreenHeight()
+            <= parent.GetScreenY() + parent.GetScreenHeight() + 1.0;
+}
+
+func Cleanup(shell: app_shell.AppShell,
+             harness: GUI.TestHarness) {
+    if harness != null { harness.UnbindApp(); }
+    if shell != null { shell.Destroy(); }
+}
+
+func Fail(shell: app_shell.AppShell,
+          harness: GUI.TestHarness,
+          reason: String) {
+    Cleanup(shell, harness);
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func Pump(editor: scene_editor_2d.SceneEditor2D,
+          sceneDoc: document.Document,
+          shell: app_shell.AppShell) -> Boolean {
+    var changed = editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    return changed;
+}
+
+func RevealLayerActions(editor: scene_editor_2d.SceneEditor2D,
+                        sceneDoc: document.Document,
+                        shell: app_shell.AppShell) {
+    editor.SetInspectorSceneTab(true);
+    editor.inspectorScroll.ScrollTo(editor.addLayerButton);
+    Pump(editor, sceneDoc, shell);
+}
+
+func LayerRowText(editor: scene_editor_2d.SceneEditor2D,
+                  layer: Integer) -> String {
+    if layer < 0 or layer >= editor.layerListItems.count()
+       or editor.layerListItems.get(layer) == null {
+        return "";
+    }
+    return GUI.ListBox.ItemGetText(
+        editor.layerListItems.get(layer));
+}
+
+func main() {
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio 2D Layer Navigator Probe", 1500, 850);
+    shell.SetSceneWorkspaceMode(true);
+
+    var editor = new scene_editor_2d.SceneEditor2D();
+    scene_panels_2d.Build(
+        editor, shell.workbench.scene2DHost, shell.app);
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene2DDocument();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_2D);
+    editor.Activate(sceneDoc);
+    Pump(editor, sceneDoc, shell);
+    Pump(editor, sceneDoc, shell);
+    RevealLayerActions(editor, sceneDoc, shell);
+
+    var harness = GUI.TestHarness.New();
+    if harness.BindApp(shell.app) == false {
+        Fail(shell, harness, "automation app binding");
+        return;
+    }
+
+    if WidgetContained(editor.sceneTabHost, editor.addLayerButton) == false
+       or WidgetContained(
+           editor.sceneTabHost, editor.removeLayerButton) == false
+       or WidgetContained(editor.sceneTabHost, editor.layerUpButton) == false
+       or WidgetContained(
+           editor.sceneTabHost, editor.layerDownButton) == false {
+        Fail(shell, harness, "wide layer action containment");
+        return;
+    }
+
+    // Build four layers through the production pointer-routed Add action.
+    var add = 0;
+    while add < 3 {
+        RevealLayerActions(editor, sceneDoc, shell);
+        ClickWidget(shell, harness, editor.addLayerButton);
+        if Pump(editor, sceneDoc, shell) == false {
+            Fail(shell, harness, "real Add layer action " + add);
+            return;
+        }
+        add = add + 1;
+    }
+    if editor.scene.LayerCount() != 4
+       or editor.activeLayer != 3
+       or editor.removeLayerButton.IsEnabled() == false
+       or editor.layerUpButton.IsEnabled() == false
+       or editor.layerDownButton.IsEnabled() {
+        Fail(shell, harness, "layer count or boundary action state");
+        return;
+    }
+
+    // Enter on the focused navigator is the keyboard equivalent of a
+    // double-click and creates one canonical visibility transaction.
+    editor.layerList.SelectIndex(1);
+    Pump(editor, sceneDoc, shell);
+    var visibilityBaseline = sceneDoc.content;
+    var visibilityRevision = editor.GetRevision();
+    var visibilityUndo = editor.undoStack.count();
+    editor.layerList.Focus();
+    harness.SendKey("enter", 0);
+    harness.DispatchPending();
+    if Pump(editor, sceneDoc, shell) == false
+       or editor.scene.LayerVisible(1)
+       or editor.GetRevision() != visibilityRevision + 1
+       or editor.undoStack.count() != visibilityUndo + 1
+       or Str.Contains(LayerRowText(editor, 1), "○ ") == false {
+        Fail(shell, harness, "Enter visibility transaction");
+        return;
+    }
+    if editor.Undo() == false
+       or sceneDoc.content != visibilityBaseline
+       or editor.scene.LayerVisible(1) == false {
+        Fail(shell, harness, "layer visibility exact undo");
+        return;
+    }
+    Pump(editor, sceneDoc, shell);
+
+    // Lock and Solo decorate the same row while leaving canonical state alone.
+    editor.layerList.SelectIndex(1);
+    Pump(editor, sceneDoc, shell);
+    var workspaceBaseline = sceneDoc.content;
+    var workspaceRevision = editor.GetRevision();
+    var workspaceUndo = editor.undoStack.count();
+    if editor.SetLayerLocked(1, true) == false
+       or editor.SetSoloLayer(1) == false
+       or editor.LayerLocked(1) == false
+       or editor.soloLayer != 1
+       or Str.Contains(LayerRowText(editor, 1), "⊘") == false
+       or Str.Contains(LayerRowText(editor, 1), "SOLO") == false
+       or sceneDoc.content != workspaceBaseline
+       or editor.GetRevision() != workspaceRevision
+       or editor.undoStack.count() != workspaceUndo {
+        Fail(shell, harness, "workspace-only layer cues");
+        return;
+    }
+
+    // Appending must not erase state from an existing layer.
+    RevealLayerActions(editor, sceneDoc, shell);
+    ClickWidget(shell, harness, editor.addLayerButton);
+    if Pump(editor, sceneDoc, shell) == false
+       or editor.scene.LayerCount() != 5
+       or editor.LayerLocked(1) == false
+       or editor.soloLayer != 1 {
+        Fail(shell, harness, "Add discarded existing Lock/Solo state");
+        return;
+    }
+
+    // The shared controller cannot leak that state into another scene tab.
+    var otherDoc = documents.NewScene2DDocument();
+    editor.Pump(otherDoc);
+    if editor.LayerLocked(0) or editor.soloLayer != -1
+       or otherDoc.scene2DWorkspace.lockedLayers.count() != 0 {
+        Fail(shell, harness, "layer workspace state leaked across tabs");
+        return;
+    }
+    editor.Pump(sceneDoc);
+    if editor.LayerLocked(1) == false
+       or editor.soloLayer != 1
+       or sceneDoc.scene2DWorkspace.lockedLayers.count() != 1 {
+        Fail(shell, harness, "layer workspace state did not follow its tab");
+        return;
+    }
+
+    // A real retained-row drag is application-directed: the ListBox requests
+    // the move, then Studio remaps workspace identity and commits one history.
+    editor.layerList.ScrollToTop();
+    editor.layerList.SelectIndex(1);
+    Pump(editor, sceneDoc, shell);
+    var draggedName = editor.scene.LayerName(1);
+    var dragBaseline = sceneDoc.content;
+    var dragRevision = editor.GetRevision();
+    var dragUndo = editor.undoStack.count();
+    DragLayerRow(shell, harness, editor.layerList, 1, 3);
+    if Pump(editor, sceneDoc, shell) == false
+       or editor.activeLayer != 3
+       or editor.scene.LayerName(3) != draggedName
+       or editor.LayerLocked(3) == false
+       or editor.soloLayer != 3
+       or editor.GetRevision() != dragRevision + 1
+       or editor.undoStack.count() != dragUndo + 1
+       or Str.Contains(LayerRowText(editor, 3), "⊘") == false {
+        Fail(shell, harness, "real layer drag transaction");
+        return;
+    }
+    if editor.Undo() == false
+       or sceneDoc.content != dragBaseline
+       or editor.scene.LayerName(1) != draggedName
+       or sceneDoc.scene2DWorkspace.lockedLayers.count() != 0
+       or editor.soloLayer != -1 {
+        Fail(shell, harness, "real layer drag exact undo");
+        return;
+    }
+    Pump(editor, sceneDoc, shell);
+    if editor.SetLayerLocked(1, true) == false
+       or editor.SetSoloLayer(1) == false {
+        Fail(shell, harness, "layer workspace restoration after undo");
+        return;
+    }
+
+    // Move the active locked layer up and back down. Lock and Solo must follow
+    // the same layer, not whichever row inherits its prior numeric index.
+    editor.layerList.SelectIndex(1);
+    Pump(editor, sceneDoc, shell);
+    RevealLayerActions(editor, sceneDoc, shell);
+    ClickWidget(shell, harness, editor.layerUpButton);
+    if Pump(editor, sceneDoc, shell) == false
+       or editor.activeLayer != 0
+       or editor.LayerLocked(0) == false
+       or editor.LayerLocked(1)
+       or editor.soloLayer != 0
+       or editor.layerUpButton.IsEnabled()
+       or editor.layerDownButton.IsEnabled() == false
+       or Str.Contains(LayerRowText(editor, 0), "⊘") == false {
+        Fail(shell, harness, "layer state did not remap upward");
+        return;
+    }
+    RevealLayerActions(editor, sceneDoc, shell);
+    ClickWidget(shell, harness, editor.layerDownButton);
+    if Pump(editor, sceneDoc, shell) == false
+       or editor.activeLayer != 1
+       or editor.LayerLocked(1) == false
+       or editor.soloLayer != 1 {
+        Fail(shell, harness, "layer state did not remap downward");
+        return;
+    }
+
+    // Removing a preceding row shifts state; removing the owned row prunes it.
+    editor.layerList.SelectIndex(0);
+    Pump(editor, sceneDoc, shell);
+    RevealLayerActions(editor, sceneDoc, shell);
+    ClickWidget(shell, harness, editor.removeLayerButton);
+    if Pump(editor, sceneDoc, shell) == false
+       or editor.LayerLocked(0) == false
+       or editor.soloLayer != 0 {
+        Fail(shell, harness, "preceding removal did not shift layer state");
+        return;
+    }
+    editor.layerList.SelectIndex(0);
+    Pump(editor, sceneDoc, shell);
+    RevealLayerActions(editor, sceneDoc, shell);
+    ClickWidget(shell, harness, editor.removeLayerButton);
+    if Pump(editor, sceneDoc, shell) == false
+       or editor.LayerLocked(0)
+       or editor.soloLayer != -1
+       or sceneDoc.scene2DWorkspace.lockedLayers.count() != 0 {
+        Fail(shell, harness, "owned layer removal did not prune state");
+        return;
+    }
+
+    // Compact mode presents the inspector at full width; wrapped layer actions
+    // remain inside that master instead of overflowing its scroll lane.
+    shell.app.SetSize(760, 700);
+    Pump(editor, sceneDoc, shell);
+    if editor.inspectorScroll.IsVisible() == false {
+        editor.ToggleInspectorPane();
+        Pump(editor, sceneDoc, shell);
+    }
+    RevealLayerActions(editor, sceneDoc, shell);
+    if WidgetContained(editor.sceneTabHost, editor.addLayerButton) == false
+       or WidgetContained(
+           editor.sceneTabHost, editor.removeLayerButton) == false
+       or WidgetContained(editor.sceneTabHost, editor.layerUpButton) == false
+       or WidgetContained(
+           editor.sceneTabHost, editor.layerDownButton) == false {
+        Fail(shell, harness, "narrow layer action containment");
+        return;
+    }
+
+    var narrowMetric = Convert.NumToInt(
+        editor.sceneTabHost.GetScreenWidth());
+    Cleanup(shell, harness);
+    Terminal.Say(
+        "METRIC: layers=3 narrow_width=" + narrowMetric
+        + " tab_local_state=ok structural_remap=ok direct_reorder=ok");
+    Terminal.Say("RESULT: ok");
+}

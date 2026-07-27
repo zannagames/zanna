@@ -222,7 +222,10 @@ func main() {
        or scene_editor_2d.UsesCompactChrome(640.0) == false
        or scene_editor_2d.UsesCompactChrome(640.01)
        or scene_editor_2d.UsesCompactPaletteLayout(520.0) == false
-       or scene_editor_2d.UsesCompactPaletteLayout(520.01) {
+       or scene_editor_2d.UsesCompactPaletteLayout(520.01)
+       or scene_editor_2d.UsesDockedHierarchy(1399.99)
+       or scene_editor_2d.UsesDockedHierarchy(1400.0) == false
+       or scene_editor_2d.UsesDockedHierarchy(0.0) {
         fail(shell, "2D viewport-priority thresholds were unstable");
         return;
     }
@@ -288,7 +291,25 @@ func main() {
        or editor.inspectorButton.IsEnabled() == false
        or editor.paletteButton.IsEnabled() == false {
         fail(shell,
-             "2D scene focus did not restore the exact internal layout");
+             "2D scene focus did not restore the exact internal layout "
+             + "(hierarchy=" + editor.hierarchySplit.GetCollapsedSide()
+             + "/" + focusHierarchySide2D
+             + ", body=" + editor.bodySplit.GetCollapsedSide()
+             + "/" + focusBodySide2D
+             + ", palette=" + editor.canvasSplit.GetCollapsedSide()
+             + "/" + focusPaletteSide2D
+             + ", inspector=" + editor.inspectorRequestedVisible
+             + "/" + focusInspectorRequested2D
+             + ", palette-request=" + editor.paletteRequestedVisible
+             + "/" + focusPaletteRequested2D
+             + ", buttons=" + editor.inspectorButton.IsEnabled()
+             + "/" + editor.paletteButton.IsEnabled()
+             + ", active=" + editor.IsFocusModeActive()
+             + ", compact=" + editor.compactLayout
+             + ", root-width=" + editor.root.GetLogicalWidth()
+             + ", floating=" + editor.hierarchyDock.floating
+             + "/" + editor.inspectorDock.floating
+             + "/" + editor.paletteDock.floating + ")");
         return;
     }
 
@@ -338,7 +359,9 @@ func main() {
        or editor.paletteStripBox.IsVisible()
        or editor.toolbarStatus.IsVisible()
        or editor.viewStatusLabel.IsVisible()
-       or editor.canvasScroll.GetScreenWidth() < compactBodyWidth - 8.0
+       or editor.canvasScroll.GetScreenWidth()
+            < compactBodyWidth
+                - scene_editor_2d.CANVAS_RULER_LEFT_WIDTH - 8.0
        or editor.objectButton.GetScreenX()
               + editor.objectButton.GetScreenWidth()
           > editor.toolbar.GetScreenX() + editor.toolbar.GetScreenWidth() + 1.0
@@ -433,7 +456,9 @@ func main() {
     }
 
     var compactCanvasHeight = editor.canvasSplit.GetScreenHeight();
-    if editor.canvasScroll.GetScreenHeight() < compactCanvasHeight - 8.0 {
+    if editor.canvasScroll.GetScreenHeight()
+          < compactCanvasHeight
+              - scene_editor_2d.CANVAS_RULER_TOP_HEIGHT - 8.0 {
         fail(shell, "short 2D host did not prioritize the canvas height");
         return;
     }
@@ -729,6 +754,30 @@ func main() {
         fail(shell, "typed scene-property inspector did not commit exact metadata");
         return;
     }
+    shell.Poll();
+    shell.Render();
+    var firstScenePropertyRow =
+        editor.sceneProperties.rows.rows.get(0);
+    var propertyRowDelta =
+        firstScenePropertyRow.removeButton.GetScreenY()
+        - firstScenePropertyRow.valueInput.GetScreenY();
+    if propertyRowDelta < -1.0 or propertyRowDelta > 1.0
+       or firstScenePropertyRow.removeButton.GetScreenX()
+            + firstScenePropertyRow.removeButton.GetScreenWidth()
+          > firstScenePropertyRow.valueBox.GetScreenX()
+            + firstScenePropertyRow.valueBox.GetScreenWidth() + 1.0 {
+        fail(shell,
+             "typed scene-property remove action split from its value: "
+             + firstScenePropertyRow.valueInput.GetScreenY() + "/"
+             + firstScenePropertyRow.removeButton.GetScreenY()
+             + " rowWidth=" + firstScenePropertyRow.box.GetScreenWidth()
+             + " controls="
+             + firstScenePropertyRow.keyInput.GetScreenWidth() + "+"
+             + firstScenePropertyRow.kindDropdown.GetScreenWidth() + "+"
+             + firstScenePropertyRow.valueInput.GetScreenWidth() + "+"
+             + firstScenePropertyRow.removeButton.GetScreenWidth());
+        return;
+    }
     var scenePropertyContent = sceneDoc.content;
     if editor.RemoveSceneProperty("nextObjective") == false
        or editor.scene.Has("nextObjective")
@@ -757,7 +806,7 @@ func main() {
     }
     // Focusing a row is presentation-only and rows rebuild per tab.
     var scenePropertyFocusContent = sceneDoc.content;
-    editor.sceneProperties.SelectByKey(editor.scene, "worldSeed");
+    editor.sceneProperties.SelectByKey("worldSeed");
     editor.Pump(sceneDoc);
     if sceneDoc.content != scenePropertyFocusContent {
         fail(shell, "focusing a scene-property row changed content");
@@ -1063,11 +1112,24 @@ func main() {
         fail(shell, "2D scene selection shortcuts escaped a property input");
         return;
     }
+    var hierarchyWasMaster = editor.objectPaneBox.IsVisible() == false;
+    if hierarchyWasMaster {
+        editor.ToggleHierarchyPane();
+        shell.Render();
+        editor.Pump(sceneDoc);
+        shell.Render();
+    }
     editor.objectTree.Focus();
     if editor.objectTree.IsFocused() == false
        or editor.SceneSelectionCommandsOwnFocus() == false {
         fail(shell, "2D hierarchy focus did not own scene selection shortcuts");
         return;
+    }
+    if hierarchyWasMaster {
+        editor.ToggleHierarchyPane();
+        shell.Render();
+        editor.Pump(sceneDoc);
+        shell.Render();
     }
 
     // Arrow nudging belongs only to the canvas focus proxy. A property field
@@ -1400,14 +1462,20 @@ func main() {
     findContext2D.shell = shell;
     findContext2D.docMgr = documents;
     findContext2D.scene2DEditor = editor;
+    var findInspectorTemporarilyHidden = false;
     if editor.compactLayout == false
        and editor.inspectorRequestedVisible {
         editor.ToggleInspectorPane();
         shell.Render();
+        findInspectorTemporarilyHidden = true;
     }
+    var findHierarchyWasHidden = editor.objectPaneBox.IsVisible() == false;
+    var findInspectorRequested = editor.inspectorRequestedVisible;
     if main_command_dispatcher.HandleSurfaceFind(findContext2D) == false
        or editor.hierarchySearchInput.IsFocused() == false
        or editor.SceneSelectionCommandsOwnFocus()
+       or editor.objectPaneBox.IsVisible() == false
+       or editor.inspectorRequestedVisible != findInspectorRequested
        or hierarchyDoc.content != hierarchySearchContent
        or editor.GetRevision() != hierarchySearchRevision {
         fail(shell, "standard Find did not focus the 2D hierarchy safely");
@@ -1418,18 +1486,33 @@ func main() {
         editor.hierarchySearchInput.GetScreenY();
     var hierarchySearchBottom = hierarchySearchTop
         + editor.hierarchySearchInput.GetScreenHeight();
-    if editor.bodySplit.GetCollapsedSide() != 0
-       or hierarchySearchTop < editor.inspectorScroll.GetScreenY() - 1.0
+    var expectedFindHierarchySide = 0;
+    if findHierarchyWasHidden { expectedFindHierarchySide = 2; }
+    if editor.hierarchySplit.GetCollapsedSide()
+          != expectedFindHierarchySide
+       or hierarchySearchTop < editor.objectPaneBox.GetScreenY() - 1.0
        or hierarchySearchBottom
-          > editor.inspectorScroll.GetScreenY()
-            + editor.inspectorScroll.GetScreenHeight() + 1.0 {
-        fail(shell, "2D Find did not reveal its hidden inspector query");
+          > editor.objectPaneBox.GetScreenY()
+            + editor.objectPaneBox.GetScreenHeight() + 1.0 {
+        fail(shell, "2D Find did not reveal its hierarchy query");
         return;
     }
     if editor.FindHierarchy("", 1)
        or editor.hierarchySearchMatches.count() != 0 {
         fail(shell, "empty 2D hierarchy search produced a match");
         return;
+    }
+    if findHierarchyWasHidden {
+        editor.ToggleHierarchyPane();
+        shell.Render();
+        editor.Pump(hierarchyDoc);
+        shell.Render();
+    }
+    if findInspectorTemporarilyHidden {
+        editor.ToggleInspectorPane();
+        shell.Render();
+        editor.Pump(hierarchyDoc);
+        shell.Render();
     }
 
     editor.objectTree.Collapse(editor.objectTreeNodes.get(0));

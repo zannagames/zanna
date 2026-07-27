@@ -1,0 +1,227 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_asset_thumbnails.zia
+// Purpose: Produce bounded square previews for project images and 3D assets.
+// Key invariants:
+//   - Preview generation reads files only and never mutates project state.
+//   - Source bytes, decoded pixels, output edges, and 3D scene complexity are
+//     bounded before expensive work is retained by the caller.
+//   - 3D previews use the portable software-capable Canvas3D path.
+// Ownership/Lifetime:
+//   - Returned Pixels values are owned by the caller.
+//   - Scene assets, render targets, canvases, and cameras are frame-local.
+// Cross-platform touchpoints:
+//   - Uses only registry-backed Zanna file, Pixels, and Graphics3D surfaces.
+// Links: zannastudio/src/ui/scene_asset_browser.zia,
+//        zannastudio/docs/status.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_asset_thumbnails;
+
+bind "../services/safe_io";
+
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Pixels = Zanna.Graphics.Pixels;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind Vec3 = Zanna.Math.Vec3;
+bind Math = Zanna.Math;
+
+// ============================================================================
+// MODULE: scene_asset_thumbnails
+// PURPOSE: Keep heavyweight preview decoding and model framing out of the
+//          browser's widget/selection controller.
+//
+// WHERE-THIS-FITS: SceneAssetBrowser schedules at most one call per frame and
+//          uploads the returned square into a GUI.Image that owns its copy.
+//
+// TEACHING-NOTE: A 3D asset may contain an authored camera or environment, but
+//          the browser deliberately frames its complete mesh bounds with a
+//          deterministic neutral camera and lighting rig. This makes different
+//          assets comparable and never executes project code.
+// ============================================================================
+
+final MAX_THUMBNAIL_SOURCE_BYTES: Integer = 16000000;
+final MAX_THUMBNAIL_SOURCE_PIXELS: Integer = 4194304;
+final MAX_THUMBNAIL_SCENE_NODES: Integer = 4096;
+final MIN_THUMBNAIL_EDGE: Integer = 32;
+final MAX_THUMBNAIL_EDGE: Integer = 128;
+
+/// @brief Return whether Pixels.Load can provide an ordinary image preview.
+expose func IsImageAsset(path: String) -> Boolean {
+    var extension = Str.ToLower(Path.Extension(path));
+    return extension == ".png"
+        or extension == ".jpg"
+        or extension == ".jpeg"
+        or extension == ".bmp"
+        or extension == ".gif";
+}
+
+/// @brief Return whether SceneAsset can provide a bounded model preview.
+expose func IsModelAsset(path: String) -> Boolean {
+    var extension = Str.ToLower(Path.Extension(path));
+    return extension == ".scene3d"
+        or extension == ".vscn"
+        or extension == ".gltf"
+        or extension == ".glb"
+        or extension == ".fbx"
+        or extension == ".obj"
+        or extension == ".stl";
+}
+
+/// @brief Render one supported asset into a square thumbnail.
+/// @return Owned Pixels, or null for unsupported, missing, oversized, empty,
+///         or invalid assets.
+expose func Load(path: String, requestedEdge: Integer) -> Pixels {
+    var edge = requestedEdge;
+    if edge < MIN_THUMBNAIL_EDGE { edge = MIN_THUMBNAIL_EDGE; }
+    if edge > MAX_THUMBNAIL_EDGE { edge = MAX_THUMBNAIL_EDGE; }
+    if path == "" or File.Exists(path) == false {
+        return null;
+    }
+    var sourceBytes = safe_io.SizeBytes(path);
+    if sourceBytes < 0 or sourceBytes > MAX_THUMBNAIL_SOURCE_BYTES {
+        return null;
+    }
+    if IsImageAsset(path) {
+        return LoadImage(path, edge);
+    }
+    if IsModelAsset(path) {
+        return LoadModel(path, edge);
+    }
+    return null;
+}
+
+/// @brief Decode and contain one image inside an opaque neutral square.
+hide func LoadImage(path: String, edge: Integer) -> Pixels {
+    var source: Pixels = null;
+    try {
+        source = Pixels.Load(path);
+    } catch {
+        return null;
+    }
+    if source == null or source.Width <= 0 or source.Height <= 0 {
+        return null;
+    }
+    if source.Width > MAX_THUMBNAIL_SOURCE_PIXELS / source.Height {
+        return null;
+    }
+    var sourcePixels = source.Width * source.Height;
+    if sourcePixels > MAX_THUMBNAIL_SOURCE_PIXELS {
+        return null;
+    }
+
+    var contained = Contain(source, edge - 8);
+    if contained == null { return null; }
+    var frame = Pixels.New(edge, edge);
+    if frame == null { return null; }
+    frame.FillRgba(0x171C24FF);
+    frame.Copy(
+        (edge - contained.Width) / 2,
+        (edge - contained.Height) / 2,
+        contained,
+        0,
+        0,
+        contained.Width,
+        contained.Height);
+    return frame;
+}
+
+/// @brief Load, frame, and software-render one 3D asset on neutral lighting.
+hide func LoadModel(path: String, edge: Integer) -> Pixels {
+    var loaded = SceneAsset.LoadResult(path);
+    if loaded == null or loaded.IsOk == false {
+        return null;
+    }
+    var asset = loaded.Unwrap() as SceneAsset;
+    if asset == null
+       or asset.MeshCount <= 0
+       or asset.NodeCount <= 0
+       or asset.NodeCount > MAX_THUMBNAIL_SCENE_NODES {
+        return null;
+    }
+    var scene = asset.InstantiateScene() as SceneGraph;
+    if scene == null or scene.Root == null
+       or scene.NodeCount <= 1
+       or scene.NodeCount > MAX_THUMBNAIL_SCENE_NODES + 1 {
+        return null;
+    }
+
+    var boundsMin = scene.Root.BoundsMin;
+    var boundsMax = scene.Root.BoundsMax;
+    if boundsMin == null or boundsMax == null { return null; }
+    var width = boundsMax.X - boundsMin.X;
+    var height = boundsMax.Y - boundsMin.Y;
+    var depth = boundsMax.Z - boundsMin.Z;
+    if width < 0.0 { width = 0.0 - width; }
+    if height < 0.0 { height = 0.0 - height; }
+    if depth < 0.0 { depth = 0.0 - depth; }
+    var diagonal =
+        Math.Sqrt(width * width + height * height + depth * depth);
+    if diagonal < 0.000001 { return null; }
+
+    var centerX = (boundsMin.X + boundsMax.X) * 0.5;
+    var centerY = (boundsMin.Y + boundsMax.Y) * 0.5;
+    var centerZ = (boundsMin.Z + boundsMax.Z) * 0.5;
+    var radius = diagonal * 0.5;
+    var distance = radius * 3.4;
+    if distance < 0.1 { distance = 0.1; }
+    var nearClip = distance - radius * 1.8;
+    if nearClip < 0.001 { nearClip = 0.001; }
+    var farClip = distance + radius * 2.5;
+    if farClip <= nearClip + 0.01 { farClip = nearClip + 0.01; }
+
+    var target = RenderTarget3D.New(edge, edge);
+    if target == null { return null; }
+    var canvas = Canvas3D.NewOffscreen(target);
+    if canvas == null { return null; }
+    canvas.SetDefaultLighting();
+    canvas.SetAmbient(0.32, 0.34, 0.38);
+
+    var camera = Camera3D.New(35.0, 1.0, nearClip, farClip);
+    if camera == null { return null; }
+    camera.LookAt(
+        Vec3.New(
+            centerX + distance * 0.64,
+            centerY + distance * 0.42,
+            centerZ + distance * 0.76),
+        Vec3.New(centerX, centerY, centerZ),
+        Vec3.New(0.0, 1.0, 0.0));
+
+    canvas.Clear(0.09, 0.11, 0.15);
+    scene.Draw(canvas, camera);
+    return target.AsPixels() as Pixels;
+}
+
+/// @brief Return an aspect-preserving clone no larger than maxEdge.
+hide func Contain(source: Pixels, maxEdge: Integer) -> Pixels {
+    if source == null or maxEdge <= 0 { return null; }
+    if source.Width <= maxEdge and source.Height <= maxEdge {
+        return source.Clone();
+    }
+    var width = maxEdge;
+    var height = source.Height * maxEdge / source.Width;
+    if source.Height > source.Width {
+        height = maxEdge;
+        width = source.Width * maxEdge / source.Height;
+    }
+    if width < 1 { width = 1; }
+    if height < 1 { height = 1; }
+    try {
+        return source.Resize(width, height);
+    } catch {
+        return null;
+    }
+    return null;
+}

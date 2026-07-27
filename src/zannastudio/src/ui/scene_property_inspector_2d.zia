@@ -83,9 +83,7 @@ class ScenePropertyInspector2D {
     }
 
     /// @brief Rebuild bounded rows from canonical runtime state.
-    expose func Refresh(scene: SceneDocument,
-                        enabled: Boolean,
-                        selectedIndex: Integer) {
+    expose func Refresh(scene: SceneDocument, enabled: Boolean) {
         selectedProperty = -1;
         keys = [];
         editorEnabled = enabled and scene != null;
@@ -171,7 +169,7 @@ class ScenePropertyInspector2D {
     }
 
     /// @brief Focus one live property row's value by exact key.
-    expose func SelectByKey(scene: SceneDocument, key: String) {
+    expose func SelectByKey(key: String) {
         var index = RowIndexOf(key);
         if index < 0 { return; }
         var row = rows.rows.get(index);

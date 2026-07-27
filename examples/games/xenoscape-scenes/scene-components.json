@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 8,
   "components": [
     {
       "name": "enemy-spawn",
@@ -100,5 +100,23 @@
       "sprite": "../sprites/scene-object-preview-atlas.png",
       "frame": 59
     }
-  ]
+  ],
+  "scenePreview2D": {
+    "variantProperty": "region",
+    "variantOffset": -1,
+    "variantImages": [
+      "assets/backgrounds/scene-region-01.png",
+      "assets/backgrounds/scene-region-02.png",
+      "assets/backgrounds/scene-region-03.png",
+      "assets/backgrounds/scene-region-04.png",
+      "assets/backgrounds/scene-region-05.png",
+      "assets/backgrounds/scene-region-06.png",
+      "assets/backgrounds/scene-region-07.png",
+      "assets/backgrounds/scene-region-08.png",
+      "assets/backgrounds/scene-region-09.png",
+      "assets/backgrounds/scene-region-10.png"
+    ],
+    "fit": "cover",
+    "showGrid": false
+  }
 }

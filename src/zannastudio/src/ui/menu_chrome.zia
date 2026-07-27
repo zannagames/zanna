@@ -176,6 +176,22 @@ class MenuChrome {
     hide Boolean debugSessionStopped;
     hide Boolean executionStateInitialized;
     expose Integer executionStateApplyCount;
+    hide Boolean textEditorContextInitialized;
+    hide Boolean textEditorContextAvailable;
+    expose Integer textEditorContextApplyCount;
+    hide Boolean surfaceEditStateInitialized;
+    hide Boolean surfaceCanCut;
+    hide Boolean surfaceCanCopy;
+    hide Boolean surfaceCanPaste;
+    hide Boolean surfaceCanSelectAll;
+    hide Boolean surfaceCanDuplicate;
+    hide Boolean surfaceCanDeleteScene;
+    hide Boolean surfaceCanFind;
+    expose Integer surfaceEditStateApplyCount;
+    hide Boolean editHistoryStateInitialized;
+    hide Boolean editHistoryCanUndo;
+    hide Boolean editHistoryCanRedo;
+    expose Integer editHistoryStateApplyCount;
     hide command_registry.CommandRegistry appliedShortcutRegistry;
 
     /// @brief Create an empty menu chrome controller.
@@ -192,6 +208,22 @@ class MenuChrome {
         debugSessionStopped = false;
         executionStateInitialized = false;
         executionStateApplyCount = 0;
+        textEditorContextInitialized = false;
+        textEditorContextAvailable = false;
+        textEditorContextApplyCount = 0;
+        surfaceEditStateInitialized = false;
+        surfaceCanCut = false;
+        surfaceCanCopy = false;
+        surfaceCanPaste = false;
+        surfaceCanSelectAll = false;
+        surfaceCanDuplicate = false;
+        surfaceCanDeleteScene = false;
+        surfaceCanFind = false;
+        surfaceEditStateApplyCount = 0;
+        editHistoryStateInitialized = false;
+        editHistoryCanUndo = false;
+        editHistoryCanRedo = false;
+        editHistoryStateApplyCount = 0;
         appliedShortcutRegistry = null;
     }
 
@@ -599,6 +631,9 @@ class MenuChrome {
             return;
         }
         commandContextInitialized = true;
+        textEditorContextInitialized = false;
+        surfaceEditStateInitialized = false;
+        editHistoryStateInitialized = false;
         documentContextAvailable = hasDocument;
         projectContextAvailable = hasProject;
         buildTargetAvailable = hasBuildTarget;
@@ -662,10 +697,20 @@ class MenuChrome {
     }
 
     /// @brief Grey code-editor actions while a visual scene surface is active.
-    /// @details This is applied after language capability state each frame so a
-    ///          stale Zia/Basic service cannot re-enable commands that would
-    ///          otherwise mutate the hidden CodeEditor buffer.
+    /// @details Shared Cut/Copy/Paste/Select All/Find actions are deliberately
+    ///          finalized by SetSurfaceEditActionsAvailable for text, scene,
+    ///          and empty surfaces. Both gates cache their inputs so Find may
+    ///          transition off/on once without repeating that repaint on every
+    ///          idle visual-scene frame.
     expose func SetTextEditorContextAvailable(available: Boolean) {
+        if textEditorContextInitialized
+           and textEditorContextAvailable == available {
+            return;
+        }
+        textEditorContextInitialized = true;
+        textEditorContextAvailable = available;
+        textEditorContextApplyCount =
+            textEditorContextApplyCount + 1;
         SetMenuEnabled(miCut, available);
         SetMenuEnabled(miCopy, available);
         SetMenuEnabled(miPaste, available);
@@ -714,6 +759,26 @@ class MenuChrome {
                                                canDuplicate: Boolean,
                                                canDeleteScene: Boolean,
                                                canFind: Boolean) {
+        if surfaceEditStateInitialized
+           and surfaceCanCut == canCut
+           and surfaceCanCopy == canCopy
+           and surfaceCanPaste == canPaste
+           and surfaceCanSelectAll == canSelectAll
+           and surfaceCanDuplicate == canDuplicate
+           and surfaceCanDeleteScene == canDeleteScene
+           and surfaceCanFind == canFind {
+            return;
+        }
+        surfaceEditStateInitialized = true;
+        surfaceCanCut = canCut;
+        surfaceCanCopy = canCopy;
+        surfaceCanPaste = canPaste;
+        surfaceCanSelectAll = canSelectAll;
+        surfaceCanDuplicate = canDuplicate;
+        surfaceCanDeleteScene = canDeleteScene;
+        surfaceCanFind = canFind;
+        surfaceEditStateApplyCount =
+            surfaceEditStateApplyCount + 1;
         SetMenuEnabled(miCut, canCut);
         SetMenuEnabled(miCopy, canCopy);
         SetMenuEnabled(miPaste, canPaste);
@@ -735,6 +800,16 @@ class MenuChrome {
     /// @brief Reflect undo/redo history owned by the active editor surface.
     expose func SetEditHistoryAvailable(canUndo: Boolean,
                                         canRedo: Boolean) {
+        if editHistoryStateInitialized
+           and editHistoryCanUndo == canUndo
+           and editHistoryCanRedo == canRedo {
+            return;
+        }
+        editHistoryStateInitialized = true;
+        editHistoryCanUndo = canUndo;
+        editHistoryCanRedo = canRedo;
+        editHistoryStateApplyCount =
+            editHistoryStateApplyCount + 1;
         SetMenuEnabled(miUndo, canUndo);
         SetMenuEnabled(miRedo, canRedo);
     }
@@ -847,6 +922,9 @@ class MenuChrome {
     /// @brief Apply active-language capability state to semantic menu actions.
     /// @param service Capability record selected for the active document.
     expose func ApplyLanguageCommandState(service: language_service.LanguageService) {
+        // The next frame must reapply the text/scene gate after semantic
+        // capabilities update source-only menu items.
+        textEditorContextInitialized = false;
         var canDefinition = false;
         var canReferences = false;
         var canRename = false;

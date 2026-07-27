@@ -1,0 +1,273 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene2d_history_palette_probe.zia
+// Purpose: Verify the visible 2D history timeline and navigable tile palette.
+// Key invariants:
+//   - History rows carry transaction labels and jump through normal undo.
+//   - A history jump keeps the complete redo chain and survives tab switches.
+//   - Palette zoom changes presentation only and pointer hits remain exact.
+//   - Numeric tile search reveals/selects valid IDs and rejects invalid IDs.
+// Ownership/Lifetime:
+//   - The probe owns one hidden AppShell, documents, harness, and exact
+//     temporary atlas directory.
+// Links: zannastudio/src/ui/scene_editor_2d.zia,
+//        zannastudio/src/ui/scene_tileset_inspector_2d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene2d_history_palette_probe;
+
+// ============================================================================
+// MODULE: scene2d_history_palette_probe
+// PURPOSE: Pin two high-frequency 2D authoring surfaces with real widgets.
+//
+// WHERE-THIS-FITS: The broad 2D editor probe covers canonical scene behavior.
+//          This focused probe owns history-row routing and scaled palette input.
+//
+// TEACHING-NOTE: Selection, reveal, and zoom are checked against frozen scene
+//          bytes/revision/history so presentation can never masquerade as an
+//          authored edit.
+// ============================================================================
+
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_2d";
+bind "../ui/scene_panels_2d";
+bind "../ui/scene_tileset_2d";
+
+bind Color = Zanna.Graphics.Color;
+bind Convert = Zanna.Core.Convert;
+bind Dir = Zanna.IO.Dir;
+bind GUI = Zanna.GUI;
+bind Path = Zanna.IO.Path;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Str = Zanna.String;
+bind TempFile = Zanna.IO.TempFile;
+bind Terminal = Zanna.Terminal;
+
+func HarnessCoordinate(shell: app_shell.AppShell,
+                       logical: Number) -> Integer {
+    var scale = shell.app.GetEffectiveScale();
+    if scale <= 0.0 { scale = 1.0; }
+    return Convert.NumToInt(logical * scale + 0.999999);
+}
+
+func Cleanup(shell: app_shell.AppShell,
+             harness: GUI.TestHarness,
+             root: String) {
+    if harness != null { harness.UnbindApp(); }
+    if shell != null { shell.Destroy(); }
+    if root != "" { Dir.RemoveAll(root); }
+}
+
+func Fail(shell: app_shell.AppShell,
+          harness: GUI.TestHarness,
+          root: String,
+          reason: String) {
+    Cleanup(shell, harness, root);
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func main() {
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio 2D History Palette Probe", 1180, 800);
+    shell.SetSceneWorkspaceMode(true);
+
+    var editor = new scene_editor_2d.SceneEditor2D();
+    scene_panels_2d.Build(
+        editor, shell.workbench.scene2DHost, shell.app);
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene2DDocument();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_2D);
+    editor.Activate(sceneDoc);
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+
+    var initialContent = sceneDoc.content;
+    if editor.historyList == null
+       or editor.historyList.Count != 1
+       or editor.historyList.SelectedIndex != 0
+       or editor.SetSceneTile(0, 0, 0, 1) == false {
+        Fail(shell, null, "", "initial 2D history surface");
+        return;
+    }
+    var firstContent = sceneDoc.content;
+    if editor.SetSceneTile(0, 1, 0, 2) == false {
+        Fail(shell, null, "", "history edit fixture");
+        return;
+    }
+    var secondContent = sceneDoc.content;
+    editor.RefreshHistoryPanel();
+    editor.historyList.SelectIndex(0);
+    if editor.historyList.Count != 3
+       or Str.Contains(
+              editor.historyList.GetSelectedText(),
+              "Tile 0, 0 updated") == false {
+        Fail(shell, null, "", "labeled oldest-first history rows");
+        return;
+    }
+
+    // Programmatic row selection raises the same edge as a click. The normal
+    // editor pump must route it through two Undo calls to the initial state.
+    editor.Pump(sceneDoc);
+    if sceneDoc.content != initialContent
+       or editor.undoStack.count() != 0
+       or editor.redoStack.count() != 2
+       or editor.historyList.Count != 1 {
+        Fail(shell, null, "", "history-row jump or redo retention");
+        return;
+    }
+    if editor.Redo() == false or sceneDoc.content != firstContent
+       or editor.Redo() == false or sceneDoc.content != secondContent {
+        Fail(shell, null, "", "history jump redo round trip");
+        return;
+    }
+    editor.RefreshHistoryPanel();
+    editor.historyList.SelectIndex(1);
+    if Str.Contains(
+           editor.historyList.GetSelectedText(),
+           "Tile 1, 0 updated") == false {
+        Fail(shell, null, "", "redo did not restore history labels");
+        return;
+    }
+    editor.RefreshHistoryPanel();
+
+    // The shared editor controller must not leak history labels between tabs.
+    var otherSceneDoc = documents.NewScene2DDocument();
+    editor.Pump(otherSceneDoc);
+    editor.Pump(sceneDoc);
+    editor.RefreshHistoryPanel();
+    editor.historyList.SelectIndex(0);
+    if editor.historyList.Count != 3
+       or Str.Contains(
+              editor.historyList.GetSelectedText(),
+              "Tile 0, 0 updated") == false {
+        Fail(shell, null, "", "per-document history labels");
+        return;
+    }
+    editor.RefreshHistoryPanel();
+
+    var root =
+        TempFile.CreateDirWithPrefix("zannastudio_scene2d_palette_");
+    if root == "" {
+        Fail(shell, null, "", "temporary palette directory");
+        return;
+    }
+    var tileWidth = editor.scene.TileWidth;
+    var tileHeight = editor.scene.TileHeight;
+    var atlas = Pixels.New(tileWidth * 8, tileHeight * 8);
+    if atlas == null {
+        Fail(shell, null, root, "palette atlas allocation");
+        return;
+    }
+    var tileY = 0;
+    while tileY < 8 {
+        var tileX = 0;
+        while tileX < 8 {
+            atlas.DrawBox(
+                tileX * tileWidth,
+                tileY * tileHeight,
+                tileWidth,
+                tileHeight,
+                Color.RGB(
+                    30 + tileX * 20,
+                    35 + tileY * 20,
+                    90 + (tileX + tileY) * 8));
+            tileX = tileX + 1;
+        }
+        tileY = tileY + 1;
+    }
+    var atlasPath = Path.Join(root, "tiles.png");
+    sceneDoc.filePath = Path.Join(root, "level.scene2d");
+    if Pixels.SavePng(atlas, atlasPath) != 1
+       or editor.ApplyLayerAssetPath(0, "tiles.png") == false
+       or editor.tilesets.TileCount(0) != 64 {
+        Fail(shell, null, root, "64-tile palette fixture");
+        return;
+    }
+    editor.Pump(sceneDoc);
+    shell.Render();
+
+    var inspector = editor.tilesetInspector;
+    var paletteContent = sceneDoc.content;
+    var paletteRevision = editor.GetRevision();
+    var paletteUndoCount = editor.undoStack.count();
+    if inspector.palettePixels == null
+       or inspector.palettePixels.Width
+          != scene_tileset_2d.PALETTE_COLUMNS
+             * scene_tileset_2d.PALETTE_STRIDE
+       or inspector.SetZoomPercent(200) == false {
+        Fail(shell, null, root, "palette zoom setup");
+        return;
+    }
+    shell.Render();
+    var expectedWidth = inspector.palettePixels.Width * 2;
+    if inspector.zoomPercent != 200
+       or inspector.image.GetScreenWidth() < expectedWidth - 1
+       or inspector.image.GetScreenWidth() > expectedWidth + 1
+       or Str.Contains(inspector.controlStatusText, "200%") == false {
+        Fail(shell, null, root, "palette zoom geometry");
+        return;
+    }
+
+    if inspector.FindTile(64, 64) == false {
+        Fail(shell, null, root, "valid tile search");
+        return;
+    }
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if Convert.NumToInt(editor.tileSpinner.Value) != 64
+       or editor.mode != scene_editor_2d.MODE_PAINT
+       or inspector.scroll.GetScrollY() <= 0.0
+       or inspector.FindTile(64, 65)
+       or Str.Contains(
+              inspector.controlStatusText,
+              "1–64") == false {
+        Fail(shell, null, root, "tile search selection/reveal/bounds");
+        return;
+    }
+
+    // At 200%, tile 2's center is exactly twice its unscaled palette offset.
+    var harness = GUI.TestHarness.New();
+    if harness.BindApp(shell.app) == false {
+        Fail(shell, harness, root, "automation app binding");
+        return;
+    }
+    inspector.scroll.SetScroll(0.0, 0.0);
+    shell.Render();
+    var clickX = HarnessCoordinate(
+        shell,
+        inspector.image.GetScreenX()
+            + (scene_tileset_2d.PALETTE_STRIDE
+               + scene_tileset_2d.PALETTE_STRIDE / 2.0) * 2.0);
+    var clickY = HarnessCoordinate(
+        shell,
+        inspector.image.GetScreenY()
+            + scene_tileset_2d.PALETTE_STRIDE / 2.0 * 2.0);
+    harness.SendMouse("move", clickX, clickY, 0);
+    harness.SendMouse("down", clickX, clickY, 0);
+    harness.SendMouse("up", clickX, clickY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    if Convert.NumToInt(editor.tileSpinner.Value) != 2
+       or sceneDoc.content != paletteContent
+       or editor.GetRevision() != paletteRevision
+       or editor.undoStack.count() != paletteUndoCount {
+        Fail(shell, harness, root, "zoom-aware palette hit or mutation boundary");
+        return;
+    }
+
+    Cleanup(shell, harness, root);
+    Terminal.Say("RESULT: ok");
+}

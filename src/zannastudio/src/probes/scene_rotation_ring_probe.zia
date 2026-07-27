@@ -62,6 +62,7 @@ func fail(shell: app_shell.AppShell,
 func main() {
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Rotation Ring Probe", 1180, 780);
+    shell.SetSceneWorkspaceMode(true);
 
     var editor = new scene_editor_3d.SceneEditor3D();
     scene_panels_3d.Build(editor,shell.workbench.scene3DHost, shell.app);
@@ -139,10 +140,24 @@ func main() {
     var revision = editor.GetRevision();
     var uiScale = shell.app.GetEffectiveScale();
     if uiScale <= 0.0 { uiScale = 1.0; }
+    // Find a visible, unambiguous arc point. Camera conventions may move the
+    // three projected ellipses through one another, so a fixed angle can land
+    // on an overlap even though the Z ring has plenty of pickable arc.
+    var startDegrees = 5.0;
     var startLocal = editor.SelectedGizmoRotationRingPoint(
-        scene_editor_3d.GIZMO_AXIS_Z, 45.0);
+        scene_editor_3d.GIZMO_AXIS_Z, startDegrees);
+    var startHandle =
+        editor.GizmoHandleAtViewportPoint(startLocal.x, startLocal.y);
+    while startDegrees < 360.0
+          and startHandle != scene_editor_3d.GIZMO_AXIS_Z {
+        startDegrees = startDegrees + 5.0;
+        startLocal = editor.SelectedGizmoRotationRingPoint(
+            scene_editor_3d.GIZMO_AXIS_Z, startDegrees);
+        startHandle =
+            editor.GizmoHandleAtViewportPoint(startLocal.x, startLocal.y);
+    }
     var targetLocal = editor.SelectedGizmoRotationRingPoint(
-        scene_editor_3d.GIZMO_AXIS_Z, 135.0);
+        scene_editor_3d.GIZMO_AXIS_Z, startDegrees + 90.0);
     var startX = Convert.NumToInt(
         (editor.viewportImage.GetScreenX() + startLocal.x)
         * uiScale + 0.999999);
@@ -157,10 +172,11 @@ func main() {
         * uiScale + 0.999999);
     var viewportX = editor.viewportImage.GetScreenX();
     var viewportY = editor.viewportImage.GetScreenY();
-    if editor.GizmoHandleAtViewportPoint(startLocal.x, startLocal.y)
-          != scene_editor_3d.GIZMO_AXIS_Z {
+    if startHandle != scene_editor_3d.GIZMO_AXIS_Z {
         harness.UnbindApp();
-        fail(shell, "rounded Z-ring geometry was not self-consistent");
+        fail(shell,
+             "rounded Z-ring had no unambiguous pickable arc: angle="
+             + startDegrees + " handle=" + startHandle);
         return;
     }
 

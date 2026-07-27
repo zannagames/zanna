@@ -110,7 +110,8 @@ func main() {
     shell.Render();
     if scm.repoPath != root1 or terminalCtrl.cwd != root1
        or indexer.workspaceSignature != projMgr.WorkspaceSignature()
-       or shell.workbench.leftViewStack.GetWidth() <= 1 {
+       or shell.workbench.IsSidebarVisible() == false
+       or shell.workbench.leftViewStack.IsVisible() == false {
         fail(shell, "primary workspace consumers diverged");
         return;
     }
@@ -309,7 +310,10 @@ func main() {
     if projMgr.IsOpen() or projMgr.RootCount() != 0
        or indexer.valid or indexer.rootPath != ""
        or scm.repoPath != "" or terminalCtrl.cwd != ""
-       or shell.workbench.leftViewStack.GetWidth() > 1 {
+       or shell.workbench.IsSidebarVisible()
+       or shell.workbench.leftViewStack.IsVisible()
+       or shell.workbench.splitPane.GetCollapsedSide() != 1
+       or shell.workbench.rightSidebarSplit.GetCollapsedSide() != 2 {
         fail(shell, "closed workspace retained attached consumers");
         return;
     }

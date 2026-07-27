@@ -1900,6 +1900,27 @@ void rt_listbox_scroll_to_bottom(void *listbox);
 /// @param enabled Non-zero to allow Ctrl/Shift range selection.
 void rt_listbox_set_multi_select(void *listbox, int64_t enabled);
 
+/// @brief Enable or disable application-directed retained-row reordering.
+/// @details The ListBox latches source/final-target requests but never mutates item linkage.
+/// @param listbox ListBox widget handle.
+/// @param enabled Non-zero to enable pointer and Alt+Arrow reorder requests.
+void rt_listbox_set_reorderable(void *listbox, int64_t enabled);
+
+/// @brief Consume one pending retained-row reorder request edge.
+/// @param listbox ListBox widget handle.
+/// @return 1 once after a valid non-no-op request, otherwise 0.
+int64_t rt_listbox_was_reorder_requested(void *listbox);
+
+/// @brief Return the source index from the most recently latched reorder request.
+/// @param listbox ListBox widget handle.
+/// @return Zero-based source index, or -1 when unavailable.
+int64_t rt_listbox_get_reorder_source_index(void *listbox);
+
+/// @brief Return the final target index from the most recently latched reorder request.
+/// @param listbox ListBox widget handle.
+/// @return Zero-based target index after source removal, or -1 when unavailable.
+int64_t rt_listbox_get_reorder_target_index(void *listbox);
+
 /// @brief Return selected row text joined by newlines.
 /// @param listbox ListBox widget handle.
 /// @return Newline-delimited selected row text, or empty when nothing is selected.

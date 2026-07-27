@@ -1,0 +1,583 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene2d_rulers_guides_probe.zia
+// Purpose: Verify professional 2D canvas rulers and workspace-only guides.
+// Key invariants:
+//   - Ruler ticks share the windowed canvas's exact scroll/zoom geometry.
+//   - Real ruler clicks toggle the nearest bounded cell-boundary guide.
+//   - Captured ruler drags preview and reposition both guide axes exactly;
+//     collisions and Escape preserve the complete prior workspace state.
+//   - Rulers and guides follow their owning tab without changing scene bytes.
+//   - Visibility reflows the canvas cleanly and guide counts remain bounded.
+// Ownership/Lifetime:
+//   - The probe owns one hidden AppShell, two documents, and an input harness.
+// Links: zannastudio/src/ui/scene_editor_2d.zia,
+//        zannastudio/src/ui/scene_panels_2d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene2d_rulers_guides_probe;
+
+// ============================================================================
+// MODULE: scene2d_rulers_guides_probe
+// PURPOSE: Pin ruler presentation, real input, and tab-local guide ownership.
+//
+// WHERE-THIS-FITS: The large-map probe owns window reachability. This probe
+//          owns the professional coordinate chrome layered around that window.
+//
+// TEACHING-NOTE: The probe samples both ruler and canvas pixels, then freezes
+//          content/revision/history so alignment aids cannot become edits.
+// ============================================================================
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_2d";
+bind "../ui/scene_panels_2d";
+
+bind Color = Zanna.Graphics.Color;
+bind Convert = Zanna.Core.Convert;
+bind GUI = Zanna.GUI;
+bind Pixels = Zanna.Graphics.Pixels;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind TempFile = Zanna.IO.TempFile;
+bind Terminal = Zanna.Terminal;
+
+func HarnessCoordinate(shell: app_shell.AppShell,
+                       logical: Number) -> Integer {
+    var scale = shell.app.GetEffectiveScale();
+    if scale <= 0.0 { scale = 1.0; }
+    return Convert.NumToInt(logical * scale + 0.999999);
+}
+
+func Cleanup(shell: app_shell.AppShell,
+             harness: GUI.TestHarness) {
+    if harness != null { harness.UnbindApp(); }
+    if shell != null { shell.Destroy(); }
+}
+
+func Fail(shell: app_shell.AppShell,
+          harness: GUI.TestHarness,
+          reason: String) {
+    Cleanup(shell, harness);
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func PumpTwice(shell: app_shell.AppShell,
+               editor: scene_editor_2d.SceneEditor2D,
+               sceneDoc: document.Document) {
+    editor.Pump(sceneDoc);
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+}
+
+func ClickButton(shell: app_shell.AppShell,
+                 harness: GUI.TestHarness,
+                 button: GUI.Button,
+                 editor: scene_editor_2d.SceneEditor2D,
+                 sceneDoc: document.Document) {
+    var x = HarnessCoordinate(
+        shell, button.GetScreenX() + button.GetScreenWidth() / 2.0);
+    var y = HarnessCoordinate(
+        shell, button.GetScreenY() + button.GetScreenHeight() / 2.0);
+    harness.SendMouse("move", x, y, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    harness.SendMouse("down", x, y, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    harness.SendMouse("up", x, y, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Render();
+}
+
+func main() {
+    if scene_editor_2d.CanvasRulerMajorStride(32) != 2
+       or scene_editor_2d.CanvasRulerMajorStride(8) != 8
+       or scene_editor_2d.CanvasRulerGuideCoordinate(
+              64, 0, 0, 32, 80) != 2
+       or scene_editor_2d.CanvasRulerGuideCoordinate(
+              164, 0, 100, 32, 80) != 2
+       or scene_editor_2d.CanvasRulerGuideCoordinate(
+              -40, 0, 0, 32, 80) != -1 {
+        Terminal.Say("RESULT: fail pure ruler geometry");
+        return;
+    }
+
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio 2D Rulers Guides Probe", 1180, 800);
+    shell.SetSceneWorkspaceMode(true);
+
+    var editor = new scene_editor_2d.SceneEditor2D();
+    scene_panels_2d.Build(
+        editor, shell.workbench.scene2DHost, shell.app);
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene2DDocument();
+    var fixture = SceneDocument.New(80, 50, 32, 32);
+    if fixture == null {
+        Fail(shell, null, "scene fixture");
+        return;
+    }
+    fixture.SetTile(0, 0, 0, 1);
+    sceneDoc.content = fixture.ToJson();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_2D);
+    editor.Activate(sceneDoc);
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    PumpTwice(shell, editor, sceneDoc);
+
+    if editor.showRulers == false
+       or editor.rulerTopRow.IsVisible() == false
+       or editor.verticalRulerImage.IsVisible() == false
+       or editor.horizontalRulerPixels == null
+       or editor.verticalRulerPixels == null
+       or editor.horizontalRulerPixels.Height
+          != scene_editor_2d.CANVAS_RULER_TOP_HEIGHT
+       or editor.verticalRulerPixels.Width
+          != scene_editor_2d.CANVAS_RULER_LEFT_WIDTH
+       or editor.horizontalRulerPixels.Width
+          != Convert.NumToInt(editor.canvasScroll.GetLogicalWidth())
+       or editor.verticalRulerPixels.Height
+          != Convert.NumToInt(editor.canvasScroll.GetLogicalHeight()) {
+        Fail(shell, null, "initial ruler layout or pixels");
+        return;
+    }
+
+    editor.canvasScroll.SetScroll(320.0, 160.0);
+    PumpTwice(shell, editor, sceneDoc);
+    var guideColumn =
+        editor.viewOriginX / editor.displayCellSize + 4;
+    var guideRow =
+        editor.viewOriginY / editor.displayCellSize + 3;
+    var guideX = editor.CanvasRulerTickPosition(
+        scene_editor_2d.CANVAS_GUIDE_VERTICAL, guideColumn);
+    var guideY = editor.CanvasRulerTickPosition(
+        scene_editor_2d.CANVAS_GUIDE_HORIZONTAL, guideRow);
+    if guideX < 0
+       or guideX >= editor.horizontalRulerPixels.Width
+       or guideY < 0
+       or guideY >= editor.verticalRulerPixels.Height {
+        Fail(shell, null, "scrolled ruler tick placement");
+        return;
+    }
+
+    var baseline = sceneDoc.content;
+    var baselineRevision = editor.GetRevision();
+    var baselineUndo = editor.undoStack.count();
+    var harness = GUI.TestHarness.New();
+    if harness.BindApp(shell.app) == false {
+        Fail(shell, harness, "automation app binding");
+        return;
+    }
+
+    // A real top-ruler click toggles the exact visible cell boundary.
+    var rulerX = HarnessCoordinate(
+        shell, editor.horizontalRulerImage.GetScreenX() + guideX);
+    var rulerY = HarnessCoordinate(
+        shell,
+        editor.horizontalRulerImage.GetScreenY()
+            + scene_editor_2d.CANVAS_RULER_TOP_HEIGHT / 2.0);
+    harness.SendMouse("move", rulerX, rulerY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    harness.SendMouse("down", rulerX, rulerY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    harness.SendMouse("up", rulerX, rulerY, 0);
+    harness.DispatchPending();
+    PumpTwice(shell, editor, sceneDoc);
+    var sampledGuide = editor.horizontalRulerPixels.GetColor(
+        guideX, scene_editor_2d.CANVAS_RULER_TOP_HEIGHT - 8);
+    var canvasGuideX = guideColumn * editor.displayCellSize
+        - editor.viewOriginX;
+    var sampledCanvasGuide = editor.framePixels.GetColor(
+        canvasGuideX, 11);
+    if editor.HasCanvasGuide(
+           scene_editor_2d.CANVAS_GUIDE_VERTICAL,
+           guideColumn) == false
+       or sampledGuide % 16777216
+          != scene_editor_2d.CANVAS_GUIDE_COLOR % 16777216
+       or sampledCanvasGuide % 16777216
+          != scene_editor_2d.CANVAS_GUIDE_COLOR % 16777216
+       or sceneDoc.content != baseline
+       or editor.GetRevision() != baselineRevision
+       or editor.undoStack.count() != baselineUndo {
+        Fail(shell, harness,
+             "real vertical-guide click or isolation: guide="
+             + editor.HasCanvasGuide(
+                 scene_editor_2d.CANVAS_GUIDE_VERTICAL,
+                 guideColumn)
+             + " ruler=" + (sampledGuide % 16777216)
+             + " canvas=" + (sampledCanvasGuide % 16777216)
+             + " expected="
+             + (scene_editor_2d.CANVAS_GUIDE_COLOR % 16777216)
+             + " content=" + (sceneDoc.content == baseline)
+             + " revision=" + editor.GetRevision() + "/"
+             + baselineRevision + " undo="
+             + editor.undoStack.count() + "/" + baselineUndo
+             + " hover=" + editor.horizontalRulerImage.IsHovered()
+             + " guideAt=" + guideColumn + ":" + guideX
+             + " origin=" + editor.viewOriginX
+             + " cell=" + editor.displayCellSize
+             + " image="
+             + editor.horizontalRulerImage.GetScreenX() + ","
+             + editor.horizontalRulerImage.GetScreenY() + " "
+             + editor.horizontalRulerImage.GetScreenWidth() + "x"
+             + editor.horizontalRulerImage.GetScreenHeight()
+             + " pointer=" + rulerX + "," + rulerY);
+        return;
+    }
+
+    // Clicking the same ruler coordinate removes, rather than duplicates, it.
+    harness.SendMouse("down", rulerX, rulerY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    harness.SendMouse("up", rulerX, rulerY, 0);
+    harness.DispatchPending();
+    PumpTwice(shell, editor, sceneDoc);
+    if editor.HasCanvasGuide(
+           scene_editor_2d.CANVAS_GUIDE_VERTICAL,
+           guideColumn) {
+        Fail(shell, harness, "guide click did not toggle removal");
+        return;
+    }
+
+    if editor.ToggleCanvasGuide(
+           scene_editor_2d.CANVAS_GUIDE_VERTICAL,
+           guideColumn) == false
+       or editor.ToggleCanvasGuide(
+              scene_editor_2d.CANVAS_GUIDE_HORIZONTAL,
+              guideRow) == false {
+        Fail(shell, harness, "direct guide fixture");
+        return;
+    }
+    PumpTwice(shell, editor, sceneDoc);
+
+    // A real captured top-ruler drag previews at the target while retaining
+    // the workspace source, then applies exactly once on release.
+    var movedColumn = guideColumn + 2;
+    var movedGuideX = editor.CanvasRulerTickPosition(
+        scene_editor_2d.CANVAS_GUIDE_VERTICAL, movedColumn);
+    var movedRulerX = HarnessCoordinate(
+        shell,
+        editor.horizontalRulerImage.GetScreenX() + movedGuideX);
+    harness.SendMouse("move", rulerX, rulerY, 0);
+    harness.SendMouse("down", rulerX, rulerY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    harness.SendMouse("move", movedRulerX, rulerY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    var movedPreview = editor.horizontalRulerPixels.GetColor(
+        movedGuideX, scene_editor_2d.CANVAS_RULER_TOP_HEIGHT - 8);
+    if editor.canvasGuideDragActive == false
+       or editor.canvasGuideDragMoved == false
+       or editor.canvasGuideDragCurrent != movedColumn
+       or Input.Mouse.IsCaptured() == false
+       or editor.HasCanvasGuide(
+              scene_editor_2d.CANVAS_GUIDE_VERTICAL,
+              guideColumn) == false
+       or editor.HasCanvasGuide(
+              scene_editor_2d.CANVAS_GUIDE_VERTICAL,
+              movedColumn)
+       or movedPreview % 16777216
+          != scene_editor_2d.CANVAS_GUIDE_COLOR % 16777216
+       or sceneDoc.content != baseline
+       or editor.GetRevision() != baselineRevision
+       or editor.undoStack.count() != baselineUndo {
+        Fail(shell, harness, "live vertical-guide drag preview");
+        return;
+    }
+    harness.SendMouse("up", movedRulerX, rulerY, 0);
+    harness.DispatchPending();
+    PumpTwice(shell, editor, sceneDoc);
+    if editor.canvasGuideDragActive
+       or Input.Mouse.IsCaptured()
+       or editor.HasCanvasGuide(
+              scene_editor_2d.CANVAS_GUIDE_VERTICAL,
+              guideColumn)
+       or editor.HasCanvasGuide(
+              scene_editor_2d.CANVAS_GUIDE_VERTICAL,
+              movedColumn) == false {
+        Fail(shell, harness, "vertical-guide release did not move once");
+        return;
+    }
+
+    // Escape restores the exact source after a live move and releases capture.
+    var canceledColumn = movedColumn + 2;
+    var canceledGuideX = editor.CanvasRulerTickPosition(
+        scene_editor_2d.CANVAS_GUIDE_VERTICAL, canceledColumn);
+    var canceledRulerX = HarnessCoordinate(
+        shell,
+        editor.horizontalRulerImage.GetScreenX() + canceledGuideX);
+    harness.SendMouse("move", movedRulerX, rulerY, 0);
+    harness.SendMouse("down", movedRulerX, rulerY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    harness.SendMouse("move", canceledRulerX, rulerY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    harness.SendKey("escape", 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    harness.SendMouse("up", canceledRulerX, rulerY, 0);
+    harness.DispatchPending();
+    PumpTwice(shell, editor, sceneDoc);
+    if editor.canvasGuideDragActive
+       or Input.Mouse.IsCaptured()
+       or editor.HasCanvasGuide(
+              scene_editor_2d.CANVAS_GUIDE_VERTICAL,
+              movedColumn) == false
+       or editor.HasCanvasGuide(
+              scene_editor_2d.CANVAS_GUIDE_VERTICAL,
+              canceledColumn)
+       or sceneDoc.content != baseline
+       or editor.GetRevision() != baselineRevision
+       or editor.undoStack.count() != baselineUndo {
+        Fail(shell, harness, "Escape did not roll back guide drag");
+        return;
+    }
+
+    // The left ruler owns the same captured behavior for horizontal guides.
+    var movedRow = guideRow + 2;
+    var sourceGuideY = editor.CanvasRulerTickPosition(
+        scene_editor_2d.CANVAS_GUIDE_HORIZONTAL, guideRow);
+    var movedGuideY = editor.CanvasRulerTickPosition(
+        scene_editor_2d.CANVAS_GUIDE_HORIZONTAL, movedRow);
+    var leftRulerX = HarnessCoordinate(
+        shell,
+        editor.verticalRulerImage.GetScreenX()
+            + scene_editor_2d.CANVAS_RULER_LEFT_WIDTH / 2.0);
+    var sourceRulerY = HarnessCoordinate(
+        shell, editor.verticalRulerImage.GetScreenY() + sourceGuideY);
+    var movedRulerY = HarnessCoordinate(
+        shell, editor.verticalRulerImage.GetScreenY() + movedGuideY);
+    harness.SendMouse("move", leftRulerX, sourceRulerY, 0);
+    harness.SendMouse("down", leftRulerX, sourceRulerY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    harness.SendMouse("move", leftRulerX, movedRulerY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.canvasGuideDragActive == false
+       or editor.canvasGuideDragAxis
+          != scene_editor_2d.CANVAS_GUIDE_HORIZONTAL
+       or editor.canvasGuideDragCurrent != movedRow {
+        Fail(shell, harness, "live horizontal-guide drag preview");
+        return;
+    }
+    harness.SendMouse("up", leftRulerX, movedRulerY, 0);
+    harness.DispatchPending();
+    PumpTwice(shell, editor, sceneDoc);
+    if editor.HasCanvasGuide(
+           scene_editor_2d.CANVAS_GUIDE_HORIZONTAL,
+           guideRow)
+       or editor.HasCanvasGuide(
+              scene_editor_2d.CANVAS_GUIDE_HORIZONTAL,
+              movedRow) == false {
+        Fail(shell, harness, "horizontal-guide release did not move");
+        return;
+    }
+
+    // Dragging from empty ruler space creates at the release coordinate,
+    // while dragging the resulting marker beyond the scene removes it.
+    var createSourceColumn = movedColumn + 5;
+    var createdColumn = createSourceColumn + 2;
+    var createSourceX = editor.CanvasRulerTickPosition(
+        scene_editor_2d.CANVAS_GUIDE_VERTICAL, createSourceColumn);
+    var createdGuideX = editor.CanvasRulerTickPosition(
+        scene_editor_2d.CANVAS_GUIDE_VERTICAL, createdColumn);
+    var createSourceRulerX = HarnessCoordinate(
+        shell,
+        editor.horizontalRulerImage.GetScreenX() + createSourceX);
+    var createdRulerX = HarnessCoordinate(
+        shell,
+        editor.horizontalRulerImage.GetScreenX() + createdGuideX);
+    harness.SendMouse("move", createSourceRulerX, rulerY, 0);
+    harness.SendMouse("down", createSourceRulerX, rulerY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    harness.SendMouse("move", createdRulerX, rulerY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    harness.SendMouse("up", createdRulerX, rulerY, 0);
+    harness.DispatchPending();
+    PumpTwice(shell, editor, sceneDoc);
+    if editor.HasCanvasGuide(
+           scene_editor_2d.CANVAS_GUIDE_VERTICAL,
+           createSourceColumn)
+       or editor.HasCanvasGuide(
+              scene_editor_2d.CANVAS_GUIDE_VERTICAL,
+              createdColumn) == false {
+        Fail(shell, harness, "empty-ruler drag did not create at target");
+        return;
+    }
+    var outsideRulerX = HarnessCoordinate(
+        shell,
+        editor.horizontalRulerImage.GetScreenX()
+            - editor.displayCellSize * 2.0);
+    harness.SendMouse("move", createdRulerX, rulerY, 0);
+    harness.SendMouse("down", createdRulerX, rulerY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    harness.SendMouse("move", outsideRulerX, rulerY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.canvasGuideDragCurrent >= 0 {
+        Fail(shell, harness, "drag-out did not preview guide removal");
+        return;
+    }
+    harness.SendMouse("up", outsideRulerX, rulerY, 0);
+    harness.DispatchPending();
+    PumpTwice(shell, editor, sceneDoc);
+    if editor.HasCanvasGuide(
+           scene_editor_2d.CANVAS_GUIDE_VERTICAL,
+           createdColumn)
+       or Input.Mouse.IsCaptured() {
+        Fail(shell, harness, "drag-out did not remove guide");
+        return;
+    }
+
+    // A captured destination collision never drops or duplicates either guide.
+    if editor.ToggleCanvasGuide(
+           scene_editor_2d.CANVAS_GUIDE_VERTICAL,
+           canceledColumn) == false {
+        Fail(shell, harness, "guide collision fixture");
+        return;
+    }
+    harness.SendMouse("move", movedRulerX, rulerY, 0);
+    harness.SendMouse("down", movedRulerX, rulerY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    harness.SendMouse("move", canceledRulerX, rulerY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    harness.SendMouse("up", canceledRulerX, rulerY, 0);
+    harness.DispatchPending();
+    PumpTwice(shell, editor, sceneDoc);
+    if editor.HasCanvasGuide(
+           scene_editor_2d.CANVAS_GUIDE_VERTICAL,
+           movedColumn) == false
+       or editor.HasCanvasGuide(
+              scene_editor_2d.CANVAS_GUIDE_VERTICAL,
+              canceledColumn) == false
+       or editor.canvasGuideDragActive
+       or Input.Mouse.IsCaptured()
+       or editor.ToggleCanvasGuide(
+              scene_editor_2d.CANVAS_GUIDE_VERTICAL,
+              canceledColumn) == false {
+        Fail(shell, harness, "guide collision changed workspace");
+        return;
+    }
+
+    // Visibility is a real layout action and follows the owning tab.
+    ClickButton(
+        shell, harness, editor.rulersButton, editor, sceneDoc);
+    PumpTwice(shell, editor, sceneDoc);
+    if editor.showRulers
+       or editor.rulerTopRow.IsVisible()
+       or editor.verticalRulerImage.IsVisible()
+       or sceneDoc.content != baseline
+       or editor.GetRevision() != baselineRevision
+       or editor.undoStack.count() != baselineUndo {
+        Fail(shell, harness,
+             "ruler visibility or canonical isolation: show="
+             + editor.showRulers + " top="
+             + editor.rulerTopRow.IsVisible() + " left="
+             + editor.verticalRulerImage.IsVisible()
+             + " content=" + (sceneDoc.content == baseline)
+             + " revision=" + editor.GetRevision() + "/"
+             + baselineRevision + " undo="
+             + editor.undoStack.count() + "/" + baselineUndo);
+        return;
+    }
+
+    var otherSceneDoc = documents.NewScene2DDocument();
+    otherSceneDoc.content = fixture.ToJson();
+    PumpTwice(shell, editor, otherSceneDoc);
+    if editor.showRulers == false
+       or editor.verticalGuides.count() != 0
+       or editor.horizontalGuides.count() != 0 {
+        Fail(shell, harness, "new scene inherited ruler workspace");
+        return;
+    }
+    var coordinate = 0;
+    while coordinate < scene_editor_2d.MAX_CANVAS_GUIDES_PER_AXIS {
+        if editor.ToggleCanvasGuide(
+               scene_editor_2d.CANVAS_GUIDE_VERTICAL,
+               coordinate) == false {
+            Fail(shell, harness, "guide capacity fixture");
+            return;
+        }
+        coordinate = coordinate + 1;
+    }
+    if editor.verticalGuides.count()
+          != scene_editor_2d.MAX_CANVAS_GUIDES_PER_AXIS
+       or editor.ToggleCanvasGuide(
+              scene_editor_2d.CANVAS_GUIDE_VERTICAL,
+              coordinate) {
+        Fail(shell, harness, "guide capacity bound");
+        return;
+    }
+
+    PumpTwice(shell, editor, sceneDoc);
+    if editor.showRulers
+       or editor.verticalGuides.count() != 1
+       or editor.horizontalGuides.count() != 1
+       or editor.HasCanvasGuide(
+              scene_editor_2d.CANVAS_GUIDE_VERTICAL,
+              movedColumn) == false
+       or editor.HasCanvasGuide(
+              scene_editor_2d.CANVAS_GUIDE_HORIZONTAL,
+              movedRow) == false {
+        Fail(shell, harness, "ruler workspace did not follow the scene tab");
+        return;
+    }
+
+    ClickButton(
+        shell, harness, editor.rulersButton, editor, sceneDoc);
+    PumpTwice(shell, editor, sceneDoc);
+    var rulerCapture = TempFile.Dir()
+        + "/zannastudio_2d_horizontal_ruler.png";
+    var canvasCapture = TempFile.Dir()
+        + "/zannastudio_2d_guides_canvas.png";
+    if editor.showRulers == false
+       or Pixels.SavePng(
+              editor.horizontalRulerPixels, rulerCapture) != 1
+       or Pixels.SavePng(editor.framePixels, canvasCapture) != 1
+       or sceneDoc.content != baseline
+       or editor.GetRevision() != baselineRevision
+       or editor.undoStack.count() != baselineUndo {
+        Fail(shell, harness, "ruler/guide capture or final isolation");
+        return;
+    }
+
+    var metric = editor.horizontalRulerPixels.Width
+        + "x" + editor.horizontalRulerPixels.Height
+        + " guides=" + editor.verticalGuides.count()
+        + "/" + editor.horizontalGuides.count();
+    Cleanup(shell, harness);
+    Terminal.Say(
+        "METRIC: ruler=" + rulerCapture
+        + " canvas=" + canvasCapture + " " + metric);
+    Terminal.Say("RESULT: ok");
+}

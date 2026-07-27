@@ -6,12 +6,14 @@
 //===----------------------------------------------------------------------===//
 //
 // File: zannastudio/src/ui/scene_tileset_inspector_2d.zia
-// Purpose: Accessible, scrollable visual tile palette for Studio's 2D scene
-//          inspector.
+// Purpose: Accessible, searchable, zoomable visual tile palette for Studio's
+//          2D scene inspector.
 // Key invariants:
 //   - This presentation object never mutates SceneDocument or Document state.
 //   - Palette visibility and status always reflect the active decoded library.
 //   - Pointer selection returns intent; SceneEditor2D owns tool/history changes.
+//   - Palette zoom changes presentation geometry only; hit testing maps back
+//     into the fixed authored-tile atlas exactly.
 // Ownership/Lifetime: SceneEditor2D owns one inspector; GUI owns its widgets.
 // Links: zannastudio/src/ui/scene_editor_2d.zia,
 //        zannastudio/src/ui/scene_tileset_2d.zia
@@ -27,6 +29,12 @@ bind GUI = Zanna.GUI;
 bind Pixels = Zanna.Graphics.Pixels;
 bind Input = Zanna.Input;
 bind Convert = Zanna.Core.Convert;
+bind Parse = Zanna.Core.Parse;
+bind Str = Zanna.String;
+
+final MIN_PALETTE_ZOOM_PERCENT = 50;
+final MAX_PALETTE_ZOOM_PERCENT = 300;
+final PALETTE_ZOOM_STEP_PERCENT = 25;
 
 // ============================================================================
 // MODULE: scene_tileset_inspector_2d
@@ -49,14 +57,22 @@ class SceneTilesetInspector2D {
     expose GUI.ScrollView scroll;
     expose GUI.VBox stage;
     expose GUI.Image image;
+    expose GUI.TextInput tileSearchInput;
+    expose GUI.Button tileSearchButton;
+    expose GUI.Button zoomOutButton;
+    expose GUI.Button zoomInButton;
+    expose GUI.Label paletteControlStatus;
     expose GUI.Button reloadButton;
     expose GUI.Button clearButton;
     expose scene_asset_browser.SceneAssetBrowser assetBrowser;
     expose Pixels palettePixels;
+    expose Integer zoomPercent;
+    expose String controlStatusText;
     hide Integer lastLibraryRevision;
     hide Integer lastLayer;
     hide Integer lastSelectedTile;
     hide Integer lastMarksRevision;
+    hide Integer pendingSelectedTile;
 
     expose func init() {
         guiApp = null;
@@ -65,14 +81,22 @@ class SceneTilesetInspector2D {
         scroll = null;
         stage = null;
         image = null;
+        tileSearchInput = null;
+        tileSearchButton = null;
+        zoomOutButton = null;
+        zoomInButton = null;
+        paletteControlStatus = null;
         reloadButton = null;
         clearButton = null;
         assetBrowser = new scene_asset_browser.SceneAssetBrowser();
         palettePixels = null;
+        zoomPercent = 100;
+        controlStatusText = "100%";
         lastLibraryRevision = -1;
         lastLayer = -1;
         lastSelectedTile = -1;
         lastMarksRevision = -1;
+        pendingSelectedTile = 0;
     }
 
     /// @brief Build the complete scrollable palette surface.
@@ -83,6 +107,29 @@ class SceneTilesetInspector2D {
             group,
             "No tileset image. Choose one to preview and paint visually.");
         status.SetWordWrap(true);
+        var navigation = GUI.Flex.New();
+        navigation.SetDirection(GUI.FlexDirection.Row);
+        navigation.SetWrap(GUI.FlexWrap.Wrap);
+        navigation.SetAlign(GUI.Align.Center);
+        navigation.SetGap(4.0);
+        group.AddChild(navigation);
+        tileSearchInput = GUI.TextInput.New(navigation);
+        tileSearchInput.SetPreferredSize(96.0, 0.0);
+        tileSearchInput.SetPlaceholder("Tile ID");
+        tileSearchInput.SetAccessibleName("Find tile by numeric ID");
+        tileSearchInput.SetTooltip(
+            "Enter a one-based tile ID to select and reveal it");
+        tileSearchButton = GUI.Button.New(navigation, "Find");
+        tileSearchButton.SetTooltip("Select and reveal the requested tile");
+        zoomOutButton = GUI.Button.New(navigation, "−");
+        zoomOutButton.SetAccessibleName("Zoom tile palette out");
+        zoomOutButton.SetTooltip("Make palette tiles smaller");
+        zoomInButton = GUI.Button.New(navigation, "+");
+        zoomInButton.SetAccessibleName("Zoom tile palette in");
+        zoomInButton.SetTooltip("Make palette tiles larger");
+        paletteControlStatus = GUI.Label.New(navigation, "100%");
+        paletteControlStatus.SetTooltip(
+            "Palette presentation zoom; authored tile pixels do not change");
         scroll = GUI.ScrollView.New(group);
         scroll.SetPreferredSize(0.0, 180.0);
         stage = GUI.VBox.New();
@@ -138,6 +185,7 @@ class SceneTilesetInspector2D {
             palettePixels = null;
             image.Clear();
             scroll.SetVisible(false);
+            SetNavigationEnabled(false);
             lastLibraryRevision = library.revision;
             lastLayer = layer;
             lastSelectedTile = selectedTile;
@@ -149,6 +197,7 @@ class SceneTilesetInspector2D {
            and lastLayer == layer
            and lastSelectedTile == selectedTile
            and lastMarksRevision == marksRevision {
+            SetNavigationEnabled(true);
             scroll.SetVisible(true);
             return;
         }
@@ -160,22 +209,29 @@ class SceneTilesetInspector2D {
         if palettePixels == null {
             image.Clear();
             scroll.SetVisible(false);
+            SetNavigationEnabled(false);
             return;
         }
-        var width = palettePixels.Width;
-        var height = palettePixels.Height;
-        image.SetPixels(palettePixels, width, height);
-        image.SetSize(width, height);
-        stage.SetSize(width, height);
-        var scale = EffectiveUiScale();
-        scroll.SetContentSize(width * scale, height * scale);
+        image.SetPixels(
+            palettePixels, palettePixels.Width, palettePixels.Height);
+        ApplyPaletteGeometry();
+        SetNavigationEnabled(true);
         scroll.SetVisible(true);
     }
 
-    /// @brief Return the clicked one-based tile ID, or zero without a click.
+    /// @brief Pump palette zoom/search actions and return one selection intent.
+    /// @details Search and pointer selection share the same one-based result;
+    ///          SceneEditor2D remains the only owner of tool/selection changes.
     expose func TakeSelectedTile(
         library: scene_tileset_2d.SceneTilesetLibrary2D,
         layer: Integer) -> Integer {
+        if library == null { return 0; }
+        PumpNavigation(library.TileCount(layer));
+        if pendingSelectedTile > 0 {
+            var requested = pendingSelectedTile;
+            pendingSelectedTile = 0;
+            return requested;
+        }
         if image == null or library == null
            or scroll.IsVisible() == false or image.IsHovered() == false
            or Input.Mouse.WasClicked(Input.Mouse.ButtonLeft) == false {
@@ -184,10 +240,129 @@ class SceneTilesetInspector2D {
         var scale = EffectiveUiScale();
         var relativeX = Input.Mouse.X() / scale - image.GetScreenX();
         var relativeY = Input.Mouse.Y() / scale - image.GetScreenY();
+        relativeX = relativeX * 100.0 / zoomPercent;
+        relativeY = relativeY * 100.0 / zoomPercent;
         return scene_tileset_2d.PaletteTileAt(
             library.TileCount(layer),
             Convert.NumToInt(relativeX),
             Convert.NumToInt(relativeY));
+    }
+
+    /// @brief Set bounded presentation zoom and preserve selected-tile context.
+    /// @return True when the zoom changed.
+    expose func SetZoomPercent(nextPercent: Integer) -> Boolean {
+        var bounded = nextPercent;
+        if bounded < MIN_PALETTE_ZOOM_PERCENT {
+            bounded = MIN_PALETTE_ZOOM_PERCENT;
+        }
+        if bounded > MAX_PALETTE_ZOOM_PERCENT {
+            bounded = MAX_PALETTE_ZOOM_PERCENT;
+        }
+        if bounded == zoomPercent { return false; }
+        zoomPercent = bounded;
+        ApplyPaletteGeometry();
+        RevealTile(lastSelectedTile);
+        UpdateControlStatus("");
+        return true;
+    }
+
+    /// @brief Select and reveal one valid one-based tile ID.
+    /// @return True when a selection intent was queued.
+    expose func FindTile(tileCount: Integer, tileId: Integer) -> Boolean {
+        if tileId < 1 or tileId > tileCount {
+            pendingSelectedTile = 0;
+            UpdateControlStatus("Tile ID must be 1–" + tileCount);
+            return false;
+        }
+        pendingSelectedTile = tileId;
+        RevealTile(tileId);
+        UpdateControlStatus("Tile " + tileId);
+        return true;
+    }
+
+    /// @brief Route navigation widgets without touching scene state.
+    hide func PumpNavigation(tileCount: Integer) {
+        if zoomOutButton != null and zoomOutButton.WasClicked() {
+            SetZoomPercent(zoomPercent - PALETTE_ZOOM_STEP_PERCENT);
+        }
+        if zoomInButton != null and zoomInButton.WasClicked() {
+            SetZoomPercent(zoomPercent + PALETTE_ZOOM_STEP_PERCENT);
+        }
+        var findRequested =
+            tileSearchButton != null and tileSearchButton.WasClicked();
+        if tileSearchInput != null and tileSearchInput.WasSubmitted() {
+            findRequested = true;
+        }
+        if findRequested {
+            var requested = Parse.IntOr(
+                Str.Trim(tileSearchInput.Text), -1);
+            FindTile(tileCount, requested);
+        }
+    }
+
+    /// @brief Apply scaled logical image geometry through the pixel-scroll API.
+    hide func ApplyPaletteGeometry() {
+        if palettePixels == null or image == null or stage == null
+           or scroll == null {
+            UpdateControlStatus("");
+            return;
+        }
+        var width = palettePixels.Width * zoomPercent / 100;
+        var height = palettePixels.Height * zoomPercent / 100;
+        if width < 1 { width = 1; }
+        if height < 1 { height = 1; }
+        image.SetSize(width, height);
+        stage.SetSize(width, height);
+        var scale = EffectiveUiScale();
+        scroll.SetContentSize(width * scale, height * scale);
+        UpdateControlStatus("");
+    }
+
+    /// @brief Scroll the requested tile near the center of the live viewport.
+    hide func RevealTile(tileId: Integer) {
+        if scroll == null or tileId < 1 { return; }
+        var row = (tileId - 1) / scene_tileset_2d.PALETTE_COLUMNS;
+        var stride = scene_tileset_2d.PALETTE_STRIDE
+            * zoomPercent / 100.0;
+        var logicalY = row * stride
+            - scroll.GetScreenHeight() / 2.0 + stride / 2.0;
+        if logicalY < 0.0 { logicalY = 0.0; }
+        var scale = EffectiveUiScale();
+        scroll.SetScroll(scroll.GetScrollX(), logicalY * scale);
+    }
+
+    /// @brief Keep search/zoom controls truthful when no palette is available.
+    hide func SetNavigationEnabled(enabled: Boolean) {
+        if tileSearchInput != null { tileSearchInput.SetEnabled(enabled); }
+        if tileSearchButton != null { tileSearchButton.SetEnabled(enabled); }
+        if zoomOutButton != null {
+            zoomOutButton.SetEnabled(
+                enabled and zoomPercent > MIN_PALETTE_ZOOM_PERCENT);
+        }
+        if zoomInButton != null {
+            zoomInButton.SetEnabled(
+                enabled and zoomPercent < MAX_PALETTE_ZOOM_PERCENT);
+        }
+        UpdateControlStatus("");
+    }
+
+    /// @brief Publish bounded zoom plus optional navigation feedback.
+    hide func UpdateControlStatus(message: String) {
+        var text = zoomPercent + "%";
+        if message != "" { text = text + " • " + message; }
+        controlStatusText = text;
+        if paletteControlStatus == null { return; }
+        paletteControlStatus.SetText(text);
+        if zoomOutButton != null {
+            zoomOutButton.SetEnabled(
+                palettePixels != null
+                and zoomPercent > MIN_PALETTE_ZOOM_PERCENT);
+        }
+        if zoomInButton != null {
+            zoomInButton.SetEnabled(
+                palettePixels != null
+                and zoomPercent < MAX_PALETTE_ZOOM_PERCENT);
+        }
     }
 
     /// @brief Return the logical-to-framebuffer scale used by GUI app polling.
@@ -211,6 +386,18 @@ class SceneTilesetInspector2D {
     /// @brief Reconcile pointer availability with the editor's model state.
     expose func SetEnabled(enabled: Boolean) {
         if image != null { image.SetEnabled(enabled); }
+        if tileSearchInput != null { tileSearchInput.SetEnabled(enabled); }
+        if tileSearchButton != null { tileSearchButton.SetEnabled(enabled); }
+        if zoomOutButton != null {
+            zoomOutButton.SetEnabled(
+                enabled and palettePixels != null
+                and zoomPercent > MIN_PALETTE_ZOOM_PERCENT);
+        }
+        if zoomInButton != null {
+            zoomInButton.SetEnabled(
+                enabled and palettePixels != null
+                and zoomPercent < MAX_PALETTE_ZOOM_PERCENT);
+        }
         if enabled == false {
             if reloadButton != null { reloadButton.SetEnabled(false); }
             if clearButton != null { clearButton.SetEnabled(false); }

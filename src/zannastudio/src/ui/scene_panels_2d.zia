@@ -77,22 +77,24 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
             + "Shift+Arrow nudges one tile");
         editor.paintButton = GUI.Button.New(editor.toolbar, "Paint");
         editor.paintButton.SetTooltip(
-            "Freehand paint the selected tile; Escape cancels a captured stroke");
+            "Preview the selected atlas tile, then freehand paint; Escape "
+            + "cancels a captured stroke");
         editor.eraseButton = GUI.Button.New(editor.toolbar, "Erase");
         editor.eraseButton.SetTooltip(
             "Freehand clear tiles; Escape cancels a captured stroke");
         editor.rectangleButton = GUI.Button.New(editor.toolbar, "Rectangle");
         editor.rectangleButton.SetTooltip(
-            "Drag an inclusive rectangle using the selected tile; tile 0 clears");
+            "Preview and drag an inclusive atlas-tile rectangle; tile 0 clears");
         editor.lineButton = GUI.Button.New(editor.toolbar, "Line");
         editor.lineButton.SetTooltip(
-            "Drag a straight tile line using the selected tile; tile 0 clears");
+            "Preview and drag a straight atlas-tile line; tile 0 clears");
         editor.ellipseButton = GUI.Button.New(editor.toolbar, "Ellipse");
         editor.ellipseButton.SetTooltip(
-            "Drag an ellipse outline using the selected tile; tile 0 clears");
+            "Preview and drag an atlas-tile ellipse outline; tile 0 clears");
         editor.fillButton = GUI.Button.New(editor.toolbar, "Fill");
         editor.fillButton.SetTooltip(
-            "Replace the clicked four-connected active-layer region");
+            "Preview the selected atlas tile, then replace the clicked "
+            + "four-connected active-layer region");
         editor.pickerButton = GUI.Button.New(editor.toolbar, "Pick");
         editor.previewButton = GUI.Button.New(editor.toolbar, "Preview");
         editor.previewButton.SetTooltip(
@@ -138,6 +140,11 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
             "Show artwork at its native tile resolution (100% zoom)");
         editor.gridButton = GUI.Button.New(editor.viewToolbar, "Grid: on");
         editor.gridButton.SetTooltip("Toggle the tile grid overlay");
+        editor.rulersButton =
+            GUI.Button.New(editor.viewToolbar, "Rulers: on");
+        editor.rulersButton.SetTooltip(
+            "Toggle scroll-aware canvas rulers; click to toggle a guide "
+            + "or drag one to move it");
         editor.hierarchyButton =
             GUI.Button.New(editor.viewToolbar, "Objects");
         editor.hierarchyButton.SetStyle(2);
@@ -199,7 +206,55 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
         editor.canvasSplit.SetMinFirst(220.0);
         editor.canvasSplit.SetMinSecond(140.0);
 
-        editor.canvasScroll = GUI.ScrollView.New(editor.canvasSplit.First);
+        editor.canvasFrame = GUI.VBox.New();
+        editor.canvasFrame.SetSpacing(0.0);
+        editor.canvasFrame.SetFlex(1.0);
+        editor.canvasSplit.First.AddChild(editor.canvasFrame);
+
+        editor.rulerTopRow = GUI.HBox.New();
+        editor.rulerTopRow.SetSpacing(0.0);
+        editor.canvasFrame.AddChild(editor.rulerTopRow);
+        editor.rulerCornerImage =
+            GUI.Image.New(editor.rulerTopRow);
+        editor.rulerCornerImage.SetSize(
+            scene_editor_2d.CANVAS_RULER_LEFT_WIDTH,
+            scene_editor_2d.CANVAS_RULER_TOP_HEIGHT);
+        editor.rulerCornerImage.SetScaleMode(0);
+        editor.rulerCornerImage.SetFilter(0);
+        editor.rulerCornerImage.SetAccessibleName(
+            "2D canvas ruler units");
+        editor.horizontalRulerImage =
+            GUI.Image.New(editor.rulerTopRow);
+        editor.horizontalRulerImage.SetFlex(1.0);
+        editor.horizontalRulerImage.SetSize(
+            1, scene_editor_2d.CANVAS_RULER_TOP_HEIGHT);
+        editor.horizontalRulerImage.SetScaleMode(0);
+        editor.horizontalRulerImage.SetFilter(0);
+        editor.horizontalRulerImage.SetFocusable(true);
+        editor.horizontalRulerImage.SetAccessibleName(
+            "Horizontal scene ruler");
+        editor.horizontalRulerImage.SetTooltip(
+            "Click to toggle a vertical guide; drag to create or move, "
+            + "drag outside to remove, Escape to cancel");
+
+        editor.canvasContentRow = GUI.HBox.New();
+        editor.canvasContentRow.SetSpacing(0.0);
+        editor.canvasContentRow.SetFlex(1.0);
+        editor.canvasFrame.AddChild(editor.canvasContentRow);
+        editor.verticalRulerImage =
+            GUI.Image.New(editor.canvasContentRow);
+        editor.verticalRulerImage.SetSize(
+            scene_editor_2d.CANVAS_RULER_LEFT_WIDTH, 1);
+        editor.verticalRulerImage.SetScaleMode(0);
+        editor.verticalRulerImage.SetFilter(0);
+        editor.verticalRulerImage.SetFocusable(true);
+        editor.verticalRulerImage.SetAccessibleName(
+            "Vertical scene ruler");
+        editor.verticalRulerImage.SetTooltip(
+            "Click to toggle a horizontal guide; drag to create or move, "
+            + "drag outside to remove, Escape to cancel");
+
+        editor.canvasScroll = GUI.ScrollView.New(editor.canvasContentRow);
         editor.canvasScroll.SetFlex(1.0);
         // The stage carries the full-editor.scene logical extent for the scrollbars
         // while the image renders only the visible window. Start alignment
@@ -306,6 +361,14 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
 
         editor.sceneInfoLabel = GUI.Label.New(editor.sceneTabHost, "No scene loaded");
         editor.sceneInfoLabel.SetWordWrap(true);
+        editor.sceneInfoLabel.SetMaxLines(2);
+
+        editor.historyGroup =
+            GUI.GroupBox.New(editor.sceneTabHost, "History");
+        editor.historyList = GUI.ListBox.New(editor.historyGroup);
+        editor.historyList.SetPreferredSize(0.0, 110.0);
+        editor.historyList.SetAccessibleName(
+            "Undoable 2D scene edits oldest first; click a row to jump");
 
         editor.sceneProperties.Setup(editor.sceneTabHost);
         editor.cameraLighting.Setup(editor.sceneTabHost);
@@ -313,14 +376,41 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
         GUI.Label.New(editor.sceneTabHost, "Layers");
         editor.layerList = GUI.ListBox.New(editor.sceneTabHost);
         editor.layerList.SetAccessibleName("Scene layers");
+        editor.layerList.SetAccessibleDescription(
+            "Visible, hidden, locked, solo, and opacity state. "
+            + "Drag or press Alt+Up/Down to reorder. "
+            + "Double-click or press Enter to toggle layer visibility.");
+        editor.layerList.SetTooltip(
+            "● visible, ○ hidden, ⊘ locked, SOLO isolated. "
+            + "Drag or press Alt+Up/Down to reorder; "
+            + "double-click or press Enter to toggle visibility.");
+        editor.layerList.SetReorderable(true);
         editor.layerList.SetPreferredSize(0.0, 132.0);
-        var layerButtons = GUI.HBox.New();
-        layerButtons.SetSpacing(4.0);
+        var layerButtons = GUI.Flex.New();
+        layerButtons.SetDirection(GUI.FlexDirection.Row);
+        layerButtons.SetWrap(GUI.FlexWrap.Wrap);
+        layerButtons.SetAlign(GUI.Align.Center);
+        layerButtons.SetGap(4.0);
         editor.sceneTabHost.AddChild(layerButtons);
         editor.addLayerButton = GUI.Button.New(layerButtons, "Add");
+        editor.addLayerButton.SetAccessibleName("Add 2D scene layer");
+        editor.addLayerButton.SetTooltip(
+            "Append a new layer as one undoable scene edit");
         editor.removeLayerButton = GUI.Button.New(layerButtons, "Remove");
+        editor.removeLayerButton.SetAccessibleName(
+            "Remove active 2D scene layer");
+        editor.removeLayerButton.SetTooltip(
+            "Remove the active layer; the final layer cannot be removed");
         editor.layerUpButton = GUI.Button.New(layerButtons, "Up");
+        editor.layerUpButton.SetAccessibleName(
+            "Move active 2D scene layer up");
+        editor.layerUpButton.SetTooltip(
+            "Move the active layer one draw-order position earlier");
         editor.layerDownButton = GUI.Button.New(layerButtons, "Down");
+        editor.layerDownButton.SetAccessibleName(
+            "Move active 2D scene layer down");
+        editor.layerDownButton.SetTooltip(
+            "Move the active layer one draw-order position later");
         editor.layerVisibleCheck = GUI.Checkbox.New(editor.sceneTabHost, "Layer visible");
         var layerStateRow = inspector_rows.NewWrapRow();
         editor.sceneTabHost.AddChild(layerStateRow);

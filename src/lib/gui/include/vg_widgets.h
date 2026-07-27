@@ -894,6 +894,18 @@ typedef struct vg_listbox {
 
     bool multi_select; ///< Allow multiple selection
 
+    // Application-directed retained-row reordering
+    bool reorderable;                    ///< Whether direct reorder requests are enabled
+    bool reorder_armed;                  ///< Primary press is waiting to cross the drag threshold
+    bool reorder_dragging;               ///< A captured reorder drag is active
+    bool reorder_request_pending;        ///< One unconsumed application reorder edge exists
+    float reorder_start_x;               ///< Local press X used for threshold recognition
+    float reorder_start_y;               ///< Local press Y used for threshold recognition
+    size_t reorder_drag_source_index;    ///< Retained row being dragged, or SIZE_MAX
+    size_t reorder_insertion_slot;       ///< Current gap in [0, item_count], or SIZE_MAX
+    size_t reorder_request_source_index; ///< Most recently latched source, or SIZE_MAX
+    size_t reorder_request_target_index; ///< Most recently latched final target, or SIZE_MAX
+
     // Virtual scrolling mode
     bool virtual_mode;                                   ///< Enable virtual scrolling
     size_t total_item_count;                             ///< Total items (when virtual)
@@ -991,6 +1003,28 @@ void vg_listbox_item_set_text_color(vg_listbox_item_t *item, uint32_t color);
 /// @param font    Font handle.
 /// @param size    Font size in pixels.
 void vg_listbox_set_font(vg_listbox_t *listbox, vg_font_t *font, float size);
+
+/// @brief Enable or disable application-directed retained-row reordering.
+/// @details The ListBox paints and latches a source/final-target request but never mutates item
+///          linkage. Disabling clears any active or pending request. Virtual rows never reorder.
+/// @param listbox ListBox widget.
+/// @param enabled true to recognize pointer and Alt+Arrow reorder requests.
+void vg_listbox_set_reorderable(vg_listbox_t *listbox, bool enabled);
+
+/// @brief Consume one application-directed reorder request edge.
+/// @param listbox ListBox widget.
+/// @return true once after a valid non-no-op pointer or keyboard request.
+bool vg_listbox_was_reorder_requested(vg_listbox_t *listbox);
+
+/// @brief Return the source index from the most recently latched reorder request.
+/// @param listbox ListBox widget.
+/// @return Retained source index, or SIZE_MAX when no valid request exists.
+size_t vg_listbox_get_reorder_source_index(vg_listbox_t *listbox);
+
+/// @brief Return the final target index from the most recently latched reorder request.
+/// @param listbox ListBox widget.
+/// @return Retained target index after source removal, or SIZE_MAX when unavailable.
+size_t vg_listbox_get_reorder_target_index(vg_listbox_t *listbox);
 
 /// @brief Set the callback fired when the selection changes.
 /// @param listbox   ListBox widget.

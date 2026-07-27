@@ -81,6 +81,7 @@ func main() {
     // ------------------------------------------------------------------ 2D
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Inline Rename Probe", 1240, 800);
+    shell.SetSceneWorkspaceMode(true);
 
     var editor2d = new scene_editor_2d.SceneEditor2D();
     scene_panels_2d.Build(editor2d,shell.workbench.scene2DHost, shell.app);
@@ -97,6 +98,14 @@ func main() {
         return;
     }
     Pump2D(shell, editor2d, doc2d);
+    if editor2d.objectPaneBox.IsVisible() == false {
+        editor2d.ToggleHierarchyPane();
+        Pump2D(shell, editor2d, doc2d);
+    }
+    if editor2d.objectPaneBox.IsVisible() == false {
+        Fail(shell, null, "2D hierarchy master did not open");
+        return;
+    }
 
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
@@ -179,6 +188,7 @@ func main() {
     // ------------------------------------------------------------------ 3D
     shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Inline Rename Probe 3D", 1240, 800);
+    shell.SetSceneWorkspaceMode(true);
     var editor3d = new scene_editor_3d.SceneEditor3D();
     scene_panels_3d.Build(editor3d,shell.workbench.scene3DHost, shell.app);
     var doc3d = documents.NewScene3DDocument();
@@ -193,6 +203,14 @@ func main() {
         return;
     }
     Pump3D(shell, editor3d, doc3d);
+    if editor3d.hierarchyPaneBox.IsVisible() == false {
+        editor3d.ToggleHierarchyPane();
+        Pump3D(shell, editor3d, doc3d);
+    }
+    if editor3d.hierarchyPaneBox.IsVisible() == false {
+        Fail(shell, null, "3D hierarchy master did not open");
+        return;
+    }
 
     harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {

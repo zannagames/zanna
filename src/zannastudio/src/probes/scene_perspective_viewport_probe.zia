@@ -88,6 +88,7 @@ func pump(editor: scene_editor_3d.SceneEditor3D,
 func main() {
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Perspective Viewport Probe", 1180, 780);
+    shell.SetSceneWorkspaceMode(true);
 
     var editor = new scene_editor_3d.SceneEditor3D();
     scene_panels_3d.Build(editor,shell.workbench.scene3DHost, shell.app);

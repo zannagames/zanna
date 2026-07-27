@@ -10,7 +10,7 @@
 // Key invariants:
 //   - Runtime package paths resolve from the project/package working directory.
 //   - Development feature toggles default on while fallbacks remain usable.
-//   - Studio's project preview atlas ships with the same deterministic art.
+//   - Studio's preview atlas and ten runtime-baked backdrops ship together.
 // Ownership/Lifetime:
 //   - Probe owns temporary decoded Pixels and procedural SpriteFactory objects.
 // Links: zanna.project, xenoscape.runtime.json, assets/manifest.txt,
@@ -48,6 +48,8 @@ func main() {
        File.Exists("assets/tiles/biome-tile-atlas.png") == false or
        File.Exists("assets/icons/hud-icon-atlas.png") == false or
        File.Exists("assets/ui/title-menu-panel.png") == false or
+       File.Exists("assets/backgrounds/scene-region-01.png") == false or
+       File.Exists("assets/backgrounds/scene-region-10.png") == false or
        File.Exists("xenoscape.runtime.json") == false {
         fail("runtime or QA-reference package path"); return;
     }
@@ -79,6 +81,29 @@ func main() {
        uiPanel == null or uiPanel.get_Width() != 440 or
        uiPanel.get_Height() != 330 {
         fail("runtime or QA-reference atlas decode or dimensions"); return;
+    }
+    var backgroundPaths: List[String] = [
+        "assets/backgrounds/scene-region-01.png",
+        "assets/backgrounds/scene-region-02.png",
+        "assets/backgrounds/scene-region-03.png",
+        "assets/backgrounds/scene-region-04.png",
+        "assets/backgrounds/scene-region-05.png",
+        "assets/backgrounds/scene-region-06.png",
+        "assets/backgrounds/scene-region-07.png",
+        "assets/backgrounds/scene-region-08.png",
+        "assets/backgrounds/scene-region-09.png",
+        "assets/backgrounds/scene-region-10.png"
+    ];
+    var backgroundIndex = 0;
+    while backgroundIndex < backgroundPaths.count() {
+        var background = Pixels.Load(
+            backgroundPaths.get(backgroundIndex));
+        if background == null or background.get_Width() != SCREEN_W
+           or background.get_Height() != SCREEN_H {
+            fail("Studio scene background decode or dimensions");
+            return;
+        }
+        backgroundIndex = backgroundIndex + 1;
     }
 
     var tuning = new RuntimeTuning("xenoscape.runtime.json");

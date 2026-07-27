@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-26
+last-verified: 2026-07-27
 ---
 
 # Architecture Decision Records
@@ -133,6 +133,7 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0163](0163-stable-multiselect-and-row-aware-treeview-editing.md) — Add Stable Multi-Select and Row-Aware TreeView Editing
 - [ADR 0165](0165-scrollview-descendant-reveal.md) — Expose ScrollView Descendant Reveal
 - [ADR 0167](0167-spinner-mixed-value-state.md) — Expose Spinner Mixed-Value State
+- [ADR 0205](0205-listbox-application-directed-reordering.md) — Add Application-Directed ListBox Reordering
 
 ## Graphics3D & Game Systems
 
@@ -232,3 +233,6 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0199](0199-project-owned-3d-node-prefab-previews.md) — Add Project-Owned 3D Node Prefab Previews
 - [ADR 0200](0200-project-owned-3d-sky-and-light-preview-rigs.md) — Add Project-Owned 3D Sky and Light Preview Rigs
 - [ADR 0201](0201-project-owned-3d-lens-and-atmosphere-previews.md) — Add Project-Owned 3D Lens and Atmosphere Previews
+- [ADR 0202](0202-project-owned-2d-scene-background-previews.md) — Add Project-Owned 2D Scene Background Previews
+- [ADR 0203](0203-project-owned-3d-scene-environment-previews.md) — Add Project-Owned 3D Scene Environment Previews
+- [ADR 0204](0204-project-owned-3d-post-processing-previews.md) — Add Project-Owned 3D Post-Processing Previews

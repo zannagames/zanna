@@ -9,13 +9,16 @@
 // Purpose: Bake self-contained Studio prefab previews from production game art.
 // Key invariants:
 //   - Prop and enemy geometry comes from the exact runtime fallback mesh bakers.
+//   - Environment meshes sample the runtime terrain formula at a bounded,
+//     authoring-friendly resolution without executing game code in Studio.
 //   - Stable numeric ordering matches scene metadata variant ids one-for-one.
 //   - Outputs contain no external resources and are deterministic across hosts.
 // Ownership/Lifetime:
 //   - The process owns all temporary graphs, nodes, meshes, and materials.
 //   - Saved scene assets are project-owned authoring data, never runtime nodes.
 // Links: ../world/props.zia, ../assets/enemy_models.zia,
-//        docs/adr/0199-project-owned-3d-node-prefab-previews.md
+//        docs/adr/0199-project-owned-3d-node-prefab-previews.md,
+//        docs/adr/0203-project-owned-3d-scene-environment-previews.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,6 +30,7 @@ bind "../config" as config;
 bind "../world/props" as props;
 bind Zanna.Graphics3D as G3D;
 bind Zanna.IO.Dir as Dir;
+bind Zanna.Math as Math;
 bind Zanna.Terminal as Terminal;
 
 var OUTPUT_ROOT: String = "assets/editor-previews";
@@ -132,6 +136,152 @@ func pickupMaterial(kind: Integer) -> G3D.Material3D {
     return material;
 }
 
+/// @brief Clamp one normalized terrain sample without relying on game state.
+func clamp01(value: Float) -> Float {
+    if value < 0.0 { return 0.0; }
+    if value > 1.0 { return 1.0; }
+    return value;
+}
+
+/// @brief Match the runtime terrain's eased transition outside its playfield.
+func smooth01(value: Float) -> Float {
+    var t = clamp01(value);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+/// @brief Return a readable fallback material for one runtime terrain kind.
+func terrainPreviewMaterial(kind: Integer) -> G3D.Material3D {
+    var material = G3D.Material3D.PBR(0.20, 0.17, 0.14);
+    if kind == 2 {
+        material = G3D.Material3D.PBR(0.22, 0.18, 0.14);
+    } else if kind == 3 {
+        material = G3D.Material3D.PBR(0.25, 0.25, 0.24);
+    }
+    material.Roughness = 0.94;
+    material.Metallic = 0.02;
+    return material;
+}
+
+/// @brief Bake one decimated copy of the runtime's procedural terrain.
+/// @details A 65x65 grid preserves the exact 256 m footprint, seed, radial
+///          profile, vertical scale, and offset while keeping editor assets
+///          bounded. Finite differences provide stable lighting normals.
+func saveTerrainPreview(kind: Integer) -> Boolean {
+    var grid = 65;
+    var spacing = 4.0;
+    var halfExtent = 128.0;
+    var scaleY = 16.0;
+    var flatRadius = 46.0;
+    var farRadius = 105.0;
+    var offsetY = -0.35;
+    if kind == 2 {
+        scaleY = 3.5;
+        flatRadius = 0.0;
+        farRadius = 1.0;
+        offsetY = -22.0;
+    } else if kind == 3 {
+        scaleY = 24.0;
+        flatRadius = 34.0;
+        farRadius = 110.0;
+    }
+
+    var heights: List[Float] = [];
+    var noise = Math.PerlinNoise.New(4242);
+    var gridZ = 0;
+    while gridZ < grid {
+        var gridX = 0;
+        while gridX < grid {
+            var worldX = gridX * spacing - halfExtent;
+            var worldZ = gridZ * spacing - halfExtent;
+            var distance = Math.Sqrt(
+                worldX * worldX + worldZ * worldZ);
+            var ridge = (
+                Math.PerlinNoise.Octave2D(
+                    noise,
+                    worldX * 0.02,
+                    worldZ * 0.02,
+                    3,
+                    0.55)
+                + 1.0) * 0.5;
+            var height01 = 0.0;
+            if kind == 2 {
+                height01 = 0.35 + 0.65 * ridge;
+            } else {
+                height01 =
+                    smooth01(
+                        (distance - flatRadius)
+                        / (farRadius - flatRadius))
+                    * (0.45 + 0.55 * ridge);
+            }
+            heights.add(height01 * scaleY + offsetY);
+            gridX = gridX + 1;
+        }
+        gridZ = gridZ + 1;
+    }
+
+    var mesh = G3D.Mesh3D.New();
+    gridZ = 0;
+    while gridZ < grid {
+        var gridX = 0;
+        while gridX < grid {
+            var leftX = gridX - 1;
+            var rightX = gridX + 1;
+            var nearZ = gridZ - 1;
+            var farZ = gridZ + 1;
+            if leftX < 0 { leftX = 0; }
+            if rightX >= grid { rightX = grid - 1; }
+            if nearZ < 0 { nearZ = 0; }
+            if farZ >= grid { farZ = grid - 1; }
+            var slopeX = (
+                heights.get(gridZ * grid + rightX)
+                - heights.get(gridZ * grid + leftX))
+                / ((rightX - leftX) * spacing);
+            var slopeZ = (
+                heights.get(farZ * grid + gridX)
+                - heights.get(nearZ * grid + gridX))
+                / ((farZ - nearZ) * spacing);
+            var normalLength =
+                Math.Sqrt(slopeX * slopeX + 1.0 + slopeZ * slopeZ);
+            mesh.AddVertex(
+                gridX * spacing - halfExtent,
+                heights.get(gridZ * grid + gridX),
+                gridZ * spacing - halfExtent,
+                (0.0 - slopeX) / normalLength,
+                1.0 / normalLength,
+                (0.0 - slopeZ) / normalLength,
+                gridX * 1.0 / (grid - 1),
+                gridZ * 1.0 / (grid - 1));
+            gridX = gridX + 1;
+        }
+        gridZ = gridZ + 1;
+    }
+
+    gridZ = 0;
+    while gridZ < grid - 1 {
+        var gridX = 0;
+        while gridX < grid - 1 {
+            var corner = gridZ * grid + gridX;
+            mesh.AddTriangle(corner, corner + grid, corner + 1);
+            mesh.AddTriangle(
+                corner + 1,
+                corner + grid,
+                corner + grid + 1);
+            gridX = gridX + 1;
+        }
+        gridZ = gridZ + 1;
+    }
+
+    var scene = G3D.SceneGraph.New();
+    var terrain = G3D.SceneNode.New();
+    terrain.Name = "Ashfall terrain " + kind;
+    terrain.Mesh = mesh;
+    terrain.Material = terrainPreviewMaterial(kind);
+    scene.Add(terrain);
+    return scene.Save(
+        OUTPUT_ROOT + "/environment-terrain-"
+        + variantSuffix(kind) + ".scene3d") != 0;
+}
+
 /// @brief Bake every metadata variant consumed by Ashfall scene loading.
 func main() {
     Dir.MakeAll(OUTPUT_ROOT);
@@ -205,8 +355,17 @@ func main() {
         index = index + 1;
     }
 
+    index = 1;
+    while index <= 3 {
+        if saveTerrainPreview(index) == false {
+            Terminal.Say("RESULT: fail terrain preview " + index);
+            return;
+        }
+        index = index + 1;
+    }
+
     Terminal.Say(
-        "Built " + (props.PROP_COUNT + config.EN_TYPE_COUNT + 5)
+        "Built " + (props.PROP_COUNT + config.EN_TYPE_COUNT + 8)
         + " Studio preview prefabs in " + OUTPUT_ROOT);
     Terminal.Say("RESULT: ok");
 }

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: users and contributors
-last-verified: 2026-07-23
+last-verified: 2026-07-27
 ---
 
 # Project Scene Components
@@ -77,7 +77,7 @@ scene revision, dirty state, or scene undo/redo. Removing or renaming a
 component or field also does not remove or rename values already authored in
 scenes.
 
-Studio preserves unknown version-1 JSON members on every retained root,
+Studio preserves unknown supported-version JSON members on every retained root,
 component, and field object, although an accepted structured edit
 pretty-formats the complete file. Existing files use an atomic rooted
 replacement guarded by expected metadata and exact current bytes; missing files
@@ -110,7 +110,7 @@ scene moves to another workspace root.
 
 | Member | Required | Contract |
 | --- | --- | --- |
-| Root `version` | Yes | Numeric integer `1` or `2`. |
+| Root `version` | Yes | Numeric integer `1` through `10`; use the lowest version required by the optional members below. |
 | Root `components` | Yes | Array with at most 128 entries. |
 | Component `name` | Yes | Stable portable identifier, at most 64 characters; unique without regard to case. |
 | Component `target` | Yes | `2d-object`, `3d-node`, or `both`. |
@@ -150,6 +150,146 @@ kind. An enum `default` must be a declared choice. The structured schema form
 always writes the lowest version its content requires, so a file that stops
 using version-2 kinds returns to `"version": 1`. A version-2 file presented to
 an older Studio is rejected wholesale, exactly like any unknown version.
+
+## Versions 3–10: Project Preview Profiles
+
+Later versions add declarative, editor-only visualization conventions while
+keeping component fields and canonical scene formats unchanged:
+
+| Version | Optional root member | Purpose |
+| --- | --- | --- |
+| 3 | `objectPreviews` | Map 2D object types/properties to sprite-atlas frames. |
+| 4 | `scenePreview3D` | Map root metadata to the initial 3D view, ambient/clear color, fog, and overlay defaults. |
+| 5 | `nodePreviews3D` | Map node metadata to transient project prefab previews. |
+| 6 | extended `scenePreview3D` | Map sky palettes and sun/fill preview rigs. |
+| 7 | extended `scenePreview3D` | Declare camera FOV, IBL intensity, and typed height fog. |
+| 8 | `scenePreview2D` | Map scene properties to screen-space background images and a first-open grid default. |
+| 9 | extended `scenePreview3D` | Map root metadata to a transient scene-level environment prefab. |
+| 10 | extended `scenePreview3D` | Reproduce a portable runtime post-processing chain in the shaded viewport. |
+
+Studio never executes project code to apply these profiles, and preview
+resolution never writes scene bytes, dirty state, revision, or history. The
+structured component form preserves supported profiles and their required
+schema version when editing ordinary component fields.
+
+### Version 8 2D Scene Backgrounds
+
+This example selects a runtime-baked region image from the scene's integer
+`region` property. Because regions are one-based, `variantOffset` converts them
+to the zero-based image list:
+
+```json
+{
+  "version": 8,
+  "components": [],
+  "scenePreview2D": {
+    "background": "assets/backgrounds/fallback.png",
+    "variantProperty": "region",
+    "variantOffset": -1,
+    "variantImages": [
+      "assets/backgrounds/region-01.png",
+      "assets/backgrounds/region-02.png"
+    ],
+    "fit": "cover",
+    "showGrid": false
+  }
+}
+```
+
+`background` is an optional fallback. `variantProperty` and `variantImages`
+must appear together; the list contains 1–64 images. `variantOffset` is
+optional and requires that pair. `fit` is `cover` (default), `contain`, or
+`stretch`. `showGrid` only supplies the first-open default; a restored workspace
+or explicit user toggle wins.
+
+Image paths resolve beside the project-root `scene-components.json`. They must
+be forward-slash project-relative PNG, JPEG, BMP, or GIF references with no
+absolute prefix, drive/URI syntax, backslash, or parent traversal. Missing,
+wrong-typed, and out-of-range variant values use `background`; without one the
+ordinary editor clear color remains visible.
+
+### Version 9 3D Scene Environments
+
+Version 9 can add large runtime-generated visual context without inserting it
+into the editable scene:
+
+```json
+{
+  "version": 9,
+  "components": [],
+  "scenePreview3D": {
+    "environmentPrefab": "assets/editor-previews/fallback.scene3d",
+    "environmentVariantProperty": "terrain.kind",
+    "environmentVariantOffset": -1,
+    "environmentVariantPrefabs": [
+      "assets/editor-previews/canyon.scene3d",
+      "assets/editor-previews/ash-sea.scene3d"
+    ]
+  }
+}
+```
+
+`environmentPrefab` is an optional fallback. `environmentVariantProperty` and
+`environmentVariantPrefabs` must appear together; the list contains 1–64
+assets. Studio reads an exact integer from scene-root metadata, adds the
+optional bounded `environmentVariantOffset`, and selects the resulting list
+entry. Missing, wrong-typed, and out-of-range values use the fallback; without
+one, no environment is added.
+
+Paths resolve beside the project-root schema and must be forward-slash,
+project-relative `.scene3d` or `.vscn` references with no absolute prefix,
+drive/URI syntax, backslash, or parent traversal. The resolved prefab is drawn
+through the same camera, depth, lighting, atmosphere, and viewport mode as the
+canonical graph, but remains outside the hierarchy, picking, save data, dirty
+state, and undo history. Procedural games should bake a deterministic ordinary
+scene asset; Studio never executes the generator or game code.
+
+### Version 10 3D Post-Processing
+
+Version 10 can reproduce the portable color pipeline that gives a running game
+its final look:
+
+```json
+{
+  "version": 10,
+  "components": [],
+  "scenePreview3D": {
+    "tonemapMode": 2,
+    "tonemapExposure": 1.17,
+    "bloomThreshold": 0.9,
+    "bloomIntensity": 0.25,
+    "bloomPasses": 3,
+    "colorGradeBrightness": 0.03,
+    "colorGradeContrast": 1.03,
+    "colorGradeSaturation": 1.07,
+    "vignetteRadius": 0.98,
+    "vignetteSoftness": 0.12,
+    "fxaa": true
+  }
+}
+```
+
+Each multi-value effect is complete or absent. `tonemapMode` is an integer from
+0 through 2 and `tonemapExposure` is 0–16. Bloom threshold/intensity are 0–16
+and passes are an integer from 0 through 32. Color-grade brightness is -1–1;
+contrast and saturation are 0–4. Vignette radius is 0–1 and softness is
+0.001–1. `fxaa` is Boolean. A wrong type, fractional integer, missing partner,
+or out-of-range value rejects the whole schema.
+
+Studio always builds the portable runtime order: tonemap, bloom, color grade,
+vignette, then FXAA. Shaded and Shaded+Wire views use the retained chain and
+read pixels after `Canvas3D` frame finalization, so the displayed image includes
+the effects. Pure Wireframe detaches the chain, and editor overlays are drawn
+after readback so selections and gizmos remain crisp. The camera inset stays
+unprocessed for inspection. SSAO, SSR, depth of field, temporal antialiasing,
+and motion blur are intentionally not schema members because their depth,
+history, or backend requirements cannot yet promise a consistent portable
+preview.
+
+See [ADR 0197](../../../docs/adr/0197-project-owned-2d-object-preview-profiles.md)
+through
+[ADR 0204](../../../docs/adr/0204-project-owned-3d-post-processing-previews.md)
+for the complete bounds, precedence, and 3D profile contracts.
 
 ## Migration Assistant
 

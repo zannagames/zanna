@@ -344,6 +344,31 @@ expose func Build(editor: scene_editor_3d.SceneEditor3D,
         editor.hierarchySearchStatus = GUI.Label.New(
             hierarchyPane, "Find by node name");
         editor.hierarchySearchStatus.SetWordWrap(true);
+        var hierarchyActionRow = GUI.Flex.New();
+        hierarchyActionRow.SetDirection(GUI.FlexDirection.Row);
+        hierarchyActionRow.SetWrap(GUI.FlexWrap.Wrap);
+        hierarchyActionRow.SetAlign(GUI.Align.Center);
+        hierarchyActionRow.SetGap(4.0);
+        hierarchyPane.AddChild(hierarchyActionRow);
+        editor.hierarchyShowButton =
+            GUI.Button.New(hierarchyActionRow, "● Show");
+        editor.hierarchyShowButton.SetAccessibleName(
+            "Show selected 3D scene nodes");
+        editor.hierarchyShowButton.SetTooltip(
+            "Make every selected hierarchy node visible as one undoable edit");
+        editor.hierarchyHideButton =
+            GUI.Button.New(hierarchyActionRow, "○ Hide");
+        editor.hierarchyHideButton.SetAccessibleName(
+            "Hide selected 3D scene nodes");
+        editor.hierarchyHideButton.SetTooltip(
+            "Hide every selected hierarchy node as one undoable edit");
+        editor.hierarchyPickLockButton =
+            GUI.Button.New(hierarchyActionRow, "⊘ Lock Pick");
+        editor.hierarchyPickLockButton.SetAccessibleName(
+            "Lock viewport picking for selected 3D scene nodes");
+        editor.hierarchyPickLockButton.SetTooltip(
+            "Keep the selected nodes visible but ignore them during viewport "
+            + "click and marquee selection; this follows the scene tab");
         editor.hierarchyTree = GUI.TreeView.New(hierarchyPane);
         editor.hierarchyTree.SetAccessibleName("3D scene hierarchy");
         // The dedicated pane gives the tree the full remaining height
@@ -352,7 +377,8 @@ expose func Build(editor: scene_editor_3d.SceneEditor3D,
         editor.hierarchyTree.SetMultiSelect(true);
         editor.hierarchyTree.SetDragDropMode(2);
         editor.hierarchyTree.SetTooltip(
-            "Expand real parent/child rows. Ctrl/Command-click toggles, "
+            "●/○ shows visibility and ⊘ marks viewport pick locks. Expand "
+            + "real parent/child rows. Ctrl/Command-click toggles, "
             + "Shift-click selects a range, and drag above/onto/below a row "
             + "to reorder or reparent one undoable selection.");
         var parentRow = GUI.HBox.New();

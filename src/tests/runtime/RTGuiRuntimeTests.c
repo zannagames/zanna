@@ -4842,7 +4842,8 @@ static void test_uniform_control_events_and_revisions(void) {
     vg_listbox_t *listbox = (vg_listbox_t *)rt_listbox_new(NULL);
     assert(listbox);
     void *list_item = rt_listbox_add_item(listbox, rt_const_cstr("Row"));
-    assert(list_item);
+    void *second_list_item = rt_listbox_add_item(listbox, rt_const_cstr("Second"));
+    assert(list_item && second_list_item);
     revision = rt_listbox_get_revision(listbox);
     rt_listbox_select(listbox, list_item);
     assert(rt_listbox_get_revision(listbox) > revision);
@@ -4855,6 +4856,23 @@ static void test_uniform_control_events_and_revisions(void) {
     assert(rt_listbox_was_activated(listbox) == 1);
     assert(rt_listbox_was_activated(listbox) == 0);
     assert(rt_listbox_was_changed(listbox) == 0);
+    rt_listbox_set_reorderable(listbox, 1);
+    rt_listbox_select_index(listbox, 1);
+    assert(rt_listbox_was_changed(listbox) == 1);
+    assert(rt_listbox_was_selection_changed(listbox) == 1);
+    revision = rt_listbox_get_revision(listbox);
+    vg_event_t alt_up = vg_event_key(VG_EVENT_KEY_DOWN, VG_KEY_UP, 0, VG_MOD_ALT);
+    assert(vg_event_send(&listbox->base, &alt_up));
+    assert(rt_listbox_was_reorder_requested(listbox) == 1);
+    assert(rt_listbox_was_reorder_requested(listbox) == 0);
+    assert(rt_listbox_get_reorder_source_index(listbox) == 1);
+    assert(rt_listbox_get_reorder_target_index(listbox) == 0);
+    assert(rt_listbox_get_selected_index(listbox) == 1);
+    assert(rt_listbox_get_revision(listbox) == revision);
+    assert(rt_listbox_was_changed(listbox) == 0);
+    rt_listbox_set_reorderable(listbox, 0);
+    assert(rt_listbox_get_reorder_source_index(listbox) == -1);
+    assert(rt_listbox_get_reorder_target_index(listbox) == -1);
 
     vg_treeview_t *tree = (vg_treeview_t *)rt_treeview_new(NULL);
     assert(tree);
@@ -4904,6 +4922,10 @@ static void test_uniform_control_events_and_revisions(void) {
     rt_spinner_set_indeterminate(tree, 1);
     assert(rt_spinner_is_indeterminate(tree) == 0);
     assert(rt_listbox_was_activated(tabbar) == 0);
+    rt_listbox_set_reorderable(tabbar, 1);
+    assert(rt_listbox_was_reorder_requested(tabbar) == 0);
+    assert(rt_listbox_get_reorder_source_index(tabbar) == -1);
+    assert(rt_listbox_get_reorder_target_index(tabbar) == -1);
     assert(rt_treeview_get_revision(grid) == 0);
     assert(rt_tabbar_get_revision(radio) == 0);
     assert(rt_datagrid_get_revision(spinner) == 0);

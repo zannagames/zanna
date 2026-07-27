@@ -14,10 +14,12 @@
 //   - Tile behavior is read back from the built Tilemap registry, never
 //     duplicated from constants, so exports cannot drift from the game.
 //   - Object record order matches the level's spawn-list order exactly.
+//   - Every export carries its one-based region identity for Studio previews.
 // Ownership/Lifetime:
 //   - The process owns each Level and SceneDocument for one export pass.
 // Links: ../level.zia, tools/scene_parity_probe.zia,
-//        ../../xenoscape-scenes/level.zia
+//        ../../xenoscape-scenes/level.zia,
+//        docs/adr/0202-project-owned-2d-scene-background-previews.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -95,6 +97,7 @@ func ExportRegion(num: Integer, path: String) -> Boolean {
     }
     ExportLavaAnimation(scene);
 
+    scene.SetInt("region", num);
     scene.SetInt("theme", region.levelTheme);
     scene.SetInt("playerStartX", region.playerStartX);
     scene.SetInt("playerStartY", region.playerStartY);

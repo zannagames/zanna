@@ -196,7 +196,12 @@ class LanguageToolFrameController {
         activeService = activeWorkbench.activeService;
         var activeToolPath = activeWorkbench.activePath;
 
-        if shell != null and activeService != null {
+        // Visual editors publish their own surface identity later in the frame.
+        // Writing the text-language label first would toggle the retained status
+        // item off and back on every idle scene frame, continuously invalidating
+        // the workbench even though the visible value never changed.
+        if shell != null and activeService != null
+           and ActiveUsesTextEditor() {
             var serviceLabel = activeService.displayName;
             if serviceLabel == "" { serviceLabel = activeService.name; }
             shell.SetWorkspaceStatus(activeWorkbench.activeProjectName, serviceLabel);

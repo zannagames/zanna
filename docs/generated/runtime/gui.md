@@ -1635,6 +1635,10 @@ Constructor: `Zanna.GUI.ListBox.New`
 | <a id="zanna-gui-listbox-scrolltotop"></a>`ScrollToTop` | `void()` | `Zanna.GUI.ListBox.ScrollToTop` |
 | <a id="zanna-gui-listbox-scrolltobottom"></a>`ScrollToBottom` | `void()` | `Zanna.GUI.ListBox.ScrollToBottom` |
 | <a id="zanna-gui-listbox-setmultiselect"></a>`SetMultiSelect` | `void(i1)` | `Zanna.GUI.ListBox.SetMultiSelect` |
+| <a id="zanna-gui-listbox-setreorderable"></a>`SetReorderable` | `void(i1)` | `Zanna.GUI.ListBox.SetReorderable` |
+| <a id="zanna-gui-listbox-wasreorderrequested"></a>`WasReorderRequested` | `i1()` | `Zanna.GUI.ListBox.WasReorderRequested` |
+| <a id="zanna-gui-listbox-getreordersourceindex"></a>`GetReorderSourceIndex` | `i64()` | `Zanna.GUI.ListBox.GetReorderSourceIndex` |
+| <a id="zanna-gui-listbox-getreordertargetindex"></a>`GetReorderTargetIndex` | `i64()` | `Zanna.GUI.ListBox.GetReorderTargetIndex` |
 | <a id="zanna-gui-listbox-getselectedtext"></a>`GetSelectedText` | `str()` | `Zanna.GUI.ListBox.GetSelectedText` |
 | <a id="zanna-gui-listbox-getselecteddata"></a>`GetSelectedData` | `seq<str>()` | `Zanna.GUI.ListBox.GetSelectedData` |
 | <a id="zanna-gui-listbox-wasselectionchanged"></a>`WasSelectionChanged` | `i1()` | `Zanna.GUI.ListBox.WasSelectionChanged` |
@@ -2781,6 +2785,10 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.ListBox.ScrollToTop` | `void(obj)` | `rt_listbox_scroll_to_top` |
 | `Zanna.GUI.ListBox.ScrollToBottom` | `void(obj)` | `rt_listbox_scroll_to_bottom` |
 | `Zanna.GUI.ListBox.SetMultiSelect` | `void(obj,i1)` | `rt_listbox_set_multi_select` |
+| `Zanna.GUI.ListBox.SetReorderable` | `void(obj,i1)` | `rt_listbox_set_reorderable` |
+| `Zanna.GUI.ListBox.WasReorderRequested` | `i1(obj)` | `rt_listbox_was_reorder_requested` |
+| `Zanna.GUI.ListBox.GetReorderSourceIndex` | `i64(obj)` | `rt_listbox_get_reorder_source_index` |
+| `Zanna.GUI.ListBox.GetReorderTargetIndex` | `i64(obj)` | `rt_listbox_get_reorder_target_index` |
 | `Zanna.GUI.ListBox.GetSelectedText` | `str(obj)` | `rt_listbox_get_selected_text` |
 | `Zanna.GUI.ListBox.GetSelectedData` | `seq<str>(obj)` | `rt_listbox_get_selected_data` |
 | `Zanna.GUI.ListBox.WasSelectionChanged` | `i1(obj)` | `rt_listbox_was_selection_changed` |
