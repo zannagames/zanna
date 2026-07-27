@@ -145,7 +145,7 @@ void rt_parallel_foreach_pool(void *seq, void *func, void *pool) {
         return;
     }
     LONG task_failed = 0;
-    HANDLE event = CreateEvent(NULL, TRUE, FALSE, NULL);
+    HANDLE event = CreateEventW(NULL, TRUE, FALSE, NULL);
     if (!event) {
         free(remaining);
         free(items);
@@ -154,7 +154,14 @@ void rt_parallel_foreach_pool(void *seq, void *func, void *pool) {
         return;
     }
     CRITICAL_SECTION error_lock;
-    InitializeCriticalSection(&error_lock);
+    if (!InitializeCriticalSectionEx(&error_lock, 0, 0)) {
+        CloseHandle(event);
+        free(remaining);
+        free(items);
+        parallel_release_default_pool(pool, actual_pool);
+        rt_trap("Parallel.ForEach: error mutex initialization failed");
+        return;
+    }
 #else
     int task_failed = 0;
     parallel_sync *sync = parallel_sync_new((int)task_count);
@@ -349,7 +356,7 @@ void *rt_parallel_map_pool(void *seq, void *func, void *pool) {
         return NULL;
     }
     LONG task_failed = 0;
-    HANDLE event = CreateEvent(NULL, TRUE, FALSE, NULL);
+    HANDLE event = CreateEventW(NULL, TRUE, FALSE, NULL);
     if (!event) {
         free(remaining);
         free(items);
@@ -359,7 +366,15 @@ void *rt_parallel_map_pool(void *seq, void *func, void *pool) {
         return NULL;
     }
     CRITICAL_SECTION error_lock;
-    InitializeCriticalSection(&error_lock);
+    if (!InitializeCriticalSectionEx(&error_lock, 0, 0)) {
+        CloseHandle(event);
+        free(remaining);
+        free(items);
+        free(results);
+        parallel_release_default_pool(pool, actual_pool);
+        rt_trap("Parallel.Map: error mutex initialization failed");
+        return NULL;
+    }
 #else
     int task_failed = 0;
     parallel_sync *sync = parallel_sync_new((int)task_count);
@@ -547,7 +562,7 @@ void rt_parallel_invoke_pool(void *funcs, void *pool) {
         return;
     }
     LONG task_failed = 0;
-    HANDLE event = CreateEvent(NULL, TRUE, FALSE, NULL);
+    HANDLE event = CreateEventW(NULL, TRUE, FALSE, NULL);
     if (!event) {
         free(remaining);
         parallel_release_default_pool(pool, actual_pool);
@@ -555,7 +570,13 @@ void rt_parallel_invoke_pool(void *funcs, void *pool) {
         return;
     }
     CRITICAL_SECTION error_lock;
-    InitializeCriticalSection(&error_lock);
+    if (!InitializeCriticalSectionEx(&error_lock, 0, 0)) {
+        CloseHandle(event);
+        free(remaining);
+        parallel_release_default_pool(pool, actual_pool);
+        rt_trap("Parallel.Invoke: error mutex initialization failed");
+        return;
+    }
 #else
     int task_failed = 0;
     parallel_sync *sync = parallel_sync_new((int)count);
@@ -743,7 +764,7 @@ void *rt_parallel_reduce_pool(void *seq, void *func, void *identity, void *pool)
         return identity;
     }
     LONG task_failed = 0;
-    HANDLE event = CreateEvent(NULL, TRUE, FALSE, NULL);
+    HANDLE event = CreateEventW(NULL, TRUE, FALSE, NULL);
     if (!event) {
         free(remaining);
         free(items);
@@ -752,7 +773,14 @@ void *rt_parallel_reduce_pool(void *seq, void *func, void *identity, void *pool)
         return identity;
     }
     CRITICAL_SECTION error_lock;
-    InitializeCriticalSection(&error_lock);
+    if (!InitializeCriticalSectionEx(&error_lock, 0, 0)) {
+        CloseHandle(event);
+        free(remaining);
+        free(items);
+        parallel_release_default_pool(pool, actual_pool);
+        rt_trap("Parallel.Reduce: error mutex initialization failed");
+        return identity;
+    }
 #else
     int task_failed = 0;
     parallel_sync *sync = parallel_sync_new((int)nworkers);
@@ -947,7 +975,7 @@ void rt_parallel_for_pool(int64_t start, int64_t end, void *func, void *pool) {
         return;
     }
     LONG task_failed = 0;
-    HANDLE event = CreateEvent(NULL, TRUE, FALSE, NULL);
+    HANDLE event = CreateEventW(NULL, TRUE, FALSE, NULL);
     if (!event) {
         free(remaining);
         parallel_release_default_pool(pool, actual_pool);
@@ -955,7 +983,13 @@ void rt_parallel_for_pool(int64_t start, int64_t end, void *func, void *pool) {
         return;
     }
     CRITICAL_SECTION error_lock;
-    InitializeCriticalSection(&error_lock);
+    if (!InitializeCriticalSectionEx(&error_lock, 0, 0)) {
+        CloseHandle(event);
+        free(remaining);
+        parallel_release_default_pool(pool, actual_pool);
+        rt_trap("Parallel.For: error mutex initialization failed");
+        return;
+    }
 #else
     int task_failed = 0;
     parallel_sync *sync = parallel_sync_new((int)task_count);
@@ -1093,9 +1127,7 @@ static void foreach_callback(void *arg) {
         LeaveCriticalSection(task->error_lock);
         InterlockedExchange(task->failed, 1);
     }
-    if (InterlockedDecrement(task->remaining) == 0) {
-        SetEvent(task->event);
-    }
+    parallel_win_complete_one(task->remaining, task->event);
 #else
     pthread_mutex_lock(task->mutex);
     if (task_failed) {
@@ -1152,9 +1184,7 @@ static void map_callback(void *arg) {
         LeaveCriticalSection(task->error_lock);
         InterlockedExchange(task->failed, 1);
     }
-    if (InterlockedDecrement(task->remaining) == 0) {
-        SetEvent(task->event);
-    }
+    parallel_win_complete_one(task->remaining, task->event);
 #else
     pthread_mutex_lock(task->mutex);
     if (task_failed) {
@@ -1204,9 +1234,7 @@ static void invoke_callback(void *arg) {
         LeaveCriticalSection(task->error_lock);
         InterlockedExchange(task->failed, 1);
     }
-    if (InterlockedDecrement(task->remaining) == 0) {
-        SetEvent(task->event);
-    }
+    parallel_win_complete_one(task->remaining, task->event);
 #else
     pthread_mutex_lock(task->mutex);
     if (task_failed) {
@@ -1267,9 +1295,7 @@ static void reduce_callback(void *arg) {
         LeaveCriticalSection(task->error_lock);
         InterlockedExchange(task->failed, 1);
     }
-    if (InterlockedDecrement(task->remaining) == 0) {
-        SetEvent(task->event);
-    }
+    parallel_win_complete_one(task->remaining, task->event);
 #else
     pthread_mutex_lock(task->mutex);
     if (task_failed) {
@@ -1320,9 +1346,7 @@ static void for_callback(void *arg) {
         LeaveCriticalSection(task->error_lock);
         InterlockedExchange(task->failed, 1);
     }
-    if (InterlockedDecrement(task->remaining) == 0) {
-        SetEvent(task->event);
-    }
+    parallel_win_complete_one(task->remaining, task->event);
 #else
     pthread_mutex_lock(task->mutex);
     if (task_failed) {

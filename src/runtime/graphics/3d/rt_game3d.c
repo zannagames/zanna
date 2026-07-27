@@ -34,7 +34,8 @@
 //===----------------------------------------------------------------------===//
 
 /// @file
-/// @brief Implements the Game3D world loop, shared helpers, input snapshots, and render orchestration.
+/// @brief Implements the Game3D world loop, shared helpers, input snapshots, and render
+/// orchestration.
 /// @details This translation unit provides cross-platform model-cache synchronization, callback
 ///   validation, retained-reference utilities, floating-origin and simulation coordination,
 ///   debugging, frame presentation, deterministic run modes, and hitch telemetry. Specialized
@@ -183,21 +184,23 @@ static CONDITION_VARIABLE g_game3d_model_cache_cv;
 /// @param once Windows one-time initialization token supplied by the operating system.
 /// @param parameter Optional initialization parameter; unused.
 /// @param context Optional context output address; unused.
-/// @return `TRUE` after initializing the critical section and condition variable.
+/// @return `TRUE` after initialization, or `FALSE` when native allocation fails.
 static BOOL CALLBACK game3d_model_cache_init_once(PINIT_ONCE once,
                                                   PVOID parameter,
                                                   PVOID *context) {
     (void)once;
     (void)parameter;
     (void)context;
-    InitializeCriticalSection(&g_game3d_model_cache_lock);
+    if (!InitializeCriticalSectionEx(&g_game3d_model_cache_lock, 0, 0))
+        return FALSE;
     InitializeConditionVariable(&g_game3d_model_cache_cv);
     return TRUE;
 }
 
 /// @brief Lazily initialize then acquire the process-wide model-cache lock.
 static void game3d_model_cache_lock(void) {
-    InitOnceExecuteOnce(&g_game3d_model_cache_once, game3d_model_cache_init_once, NULL, NULL);
+    if (!InitOnceExecuteOnce(&g_game3d_model_cache_once, game3d_model_cache_init_once, NULL, NULL))
+        rt_abort("Game3D: model-cache lock initialization failed");
     EnterCriticalSection(&g_game3d_model_cache_lock);
 }
 
@@ -1845,7 +1848,8 @@ int8_t rt_game3d_world_tick(void *obj) {
 /// @param tick Non-null per-entity callback.
 static void game3d_world_sweep_entities(rt_game3d_world *world,
                                         double dt,
-                                        void (*tick)(rt_game3d_world *, rt_game3d_entity *,
+                                        void (*tick)(rt_game3d_world *,
+                                                     rt_game3d_entity *,
                                                      double)) {
     if (!world || !world->entities || !tick)
         return;
@@ -1869,8 +1873,7 @@ static void game3d_world_sweep_entities(rt_game3d_world *world,
             /* entity_count is re-read every iteration (ticks mutate the
              * registry) and bounded by capacity so corrupt counts from
              * robustness fixtures cannot walk past the array. */
-            for (int32_t i = 0;
-                 i < world->entity_count && i < world->entity_capacity && i >= 0;
+            for (int32_t i = 0; i < world->entity_count && i < world->entity_capacity && i >= 0;
                  i++) {
                 rt_game3d_entity *entity = (rt_game3d_entity *)rt_g3d_checked_or_null(
                     world->entities[i], RT_G3D_GAME3D_ENTITY_CLASS_ID);

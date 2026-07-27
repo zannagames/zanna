@@ -653,7 +653,12 @@ void *rt_promise_new(void) {
 
     p->cond_uses_monotonic = 0;
 #if RT_PLATFORM_WINDOWS
-    InitializeCriticalSection(&p->mutex);
+    if (!InitializeCriticalSectionEx(&p->mutex, 0, 0)) {
+        if (rt_obj_release_check0(p))
+            rt_obj_free(p);
+        rt_trap("Promise: mutex initialization failed");
+        return NULL;
+    }
     InitializeConditionVariable(&p->cond);
 #else
     if (pthread_mutex_init(&p->mutex, NULL) != 0) {

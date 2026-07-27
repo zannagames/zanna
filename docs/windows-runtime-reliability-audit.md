@@ -22,7 +22,8 @@ repairs aimed at alpha-quality failure behavior. The 2026-07-25 pass adds WR-503
 58 remaining Unicode-I/O, persistence, synchronization, Direct3D cache, installer, and
 demo-automation repairs. The 2026-07-26 pass adds WR-561 through WR-657: 97 Direct3D resource,
 PE/installer, Windows storage, WASAPI, native-dialog, build/publication, and native-link hardening
-repairs.
+repairs. A second 2026-07-26 pass adds WR-658 through WR-715: 58 checked-synchronization,
+Direct3D object-identity/state, TLS contract, installer-cleanup, and native-link repairs.
 
 | ID | Area | Finding and repair |
 |----|------|--------------------|
@@ -683,6 +684,64 @@ repairs.
 | WR-655 | audio teardown tests | The core audio test double retained the old `void` shutdown contract, so the full warning-as-error build caught a late signature mismatch that focused runtime targets missed. The stub now returns status, and a behavioral regression proves failed destroy retains a retryable context before successful teardown. |
 | WR-656 | D3D11 sampler canonicalization | Real D3D11 hardware reports `MaxAnisotropy == 0` after creating a non-anisotropic sampler even when the valid input descriptor uses one, so byte-for-byte validation rejected working devices. Sampler checks now remain exact for behavior-bearing state but condition anisotropy, comparison, and border equality on the modes that use those fields; bounded mismatch diagnostics preserve debuggability. |
 | WR-657 | Windows CTest reliability | The strict full-tree platform-policy CTest had only a 60-second timeout and flaked while the complete parallel Windows Debug suite saturated process startup and storage, despite passing standalone in 10.55 seconds and again in the wrapper. Its bound now preserves three minutes of contention headroom without weakening the lint or pass expression. |
+| WR-658 | GC synchronization | The process-global garbage-collector lock used `InitializeCriticalSection`, whose allocation failure raises an exception instead of producing a checkable result. One-time initialization now uses checked `InitializeCriticalSectionEx` and aborts before publishing an unusable lock. |
+| WR-659 | string interning synchronization | The process-global intern-table lock had the same exception-only initialization contract. Its one-time callback now returns the checked result and first use aborts deterministically on failure. |
+| WR-660 | Game3D model cache synchronization | Model-cache startup assumed its critical section could not fail. It now checks `InitializeCriticalSectionEx` before reporting successful one-time initialization. |
+| WR-661 | Game3D surface synchronization | The global surface registry could publish an uninitialized critical section. Its `InitOnce` callback now propagates the checked native result and callers abort on initialization failure. |
+| WR-662 | asset registry synchronization | Asset-cache one-time initialization used the exception-only critical-section API. It now returns the checked `InitializeCriticalSectionEx` result through the already fail-closed caller contract. |
+| WR-663 | ZPAK synchronization | Reader-lock allocation could return a live wrapper after exception-only native initialization. The checked API now frees the wrapper and reports allocation failure without publishing it. |
+| WR-664 | HTTP client synchronization | HTTP-client mutex construction always reported success even when Windows could not allocate critical-section state. The platform macro now returns the checked initialization result to existing cleanup paths. |
+| WR-665 | HTTP server synchronization | HTTP-server mutex construction had the same unconditional-success macro. It now propagates `InitializeCriticalSectionEx` failure instead of entering an invalid lock. |
+| WR-666 | HTTPS server synchronization | HTTPS-server mutex construction likewise converted an exception-only initialization into a checked success value. Allocation failure now follows the server's ordinary initialization unwind. |
+| WR-667 | HTTP pool synchronization | An unused `HTTP_POOL_MUTEX_INIT` macro still encoded exception-only initialization and could be copied into a future call site. The dead, unsafe abstraction was removed. |
+| WR-668 | HTTP connection-pool synchronization | The live pool-mutex wrapper always returned success after `InitializeCriticalSection`. It now returns false when checked native initialization fails. |
+| WR-669 | REST client synchronization | REST-client mutex initialization could not report allocation failure to its callers. It now uses the checked Windows API and preserves the existing portable boolean contract. |
+| WR-670 | SMTP synchronization | SMTP mutex initialization had the same unconditional-success behavior. A failed Windows critical-section allocation now fails client construction cleanly. |
+| WR-671 | SSE synchronization | Server-sent-event mutex initialization could expose an unusable lock. It now propagates the checked native result. |
+| WR-672 | WebSocket server synchronization | The WebSocket server macro always returned zero after exception-only initialization. It now maps `InitializeCriticalSectionEx` success/failure to the server's zero/negative contract. |
+| WR-673 | secure WebSocket synchronization | The WSS server carried the same unchecked initialization path. It now returns a deterministic initialization error that existing teardown handles. |
+| WR-674 | regex cache synchronization | The process-global regular-expression cache could publish a failed critical section from its one-time callback. The callback now returns the checked result and first use aborts before accessing the cache. |
+| WR-675 | promise synchronization | Promise allocation initialized its mutex without a recoverable failure path. A failed checked initialization now frees the promise and reports allocation failure. |
+| WR-676 | parallel-pool synchronization | Process-global parallel-pool initialization could report `InitOnce` success with an unusable lock. The callback propagates `InitializeCriticalSectionEx`, and pool use aborts if the one-time operation fails. |
+| WR-677 | parallel `ForEach` synchronization | `ForEach` created its shared error lock with the exception-only API after allocating an event and task array. It now checks initialization and releases both prior allocations on failure. |
+| WR-678 | parallel `Map` synchronization | `Map` had the same uncheckable error-lock construction. Its failure path now closes the event and frees every staged allocation before trapping. |
+| WR-679 | parallel `Invoke` synchronization | `Invoke` could proceed with an invalid shared error lock. Checked construction now unwinds its event/task state transactionally. |
+| WR-680 | parallel `Reduce` synchronization | `Reduce` used exception-only error-lock initialization after allocating reduction state. It now cleans all staged state and fails deterministically if the lock cannot be created. |
+| WR-681 | parallel `For` synchronization | Indexed parallel iteration carried the fifth unchecked local error lock. Checked initialization now releases the event and task array before reporting failure. |
+| WR-682 | scheduler synchronization | Scheduler task allocation could publish a task whose mutex initialization failed. It now frees the task and returns null after a checked native failure. |
+| WR-683 | thread synchronization | The Windows thread wrapper used exception-only critical-section initialization after allocating its native object. It now frees the object and returns null when checked initialization fails. |
+| WR-684 | watcher events | The file watcher used generic `CreateEvent`, leaving its ABI spelling dependent on translation-unit character macros. Explicit `CreateEventW` makes the Unicode import invariant local. |
+| WR-685 | parallel `ForEach` events | `ForEach` used the generic event macro for its native completion event. It now calls `CreateEventW` explicitly. |
+| WR-686 | parallel `Map` events | `Map` had the same character-macro-dependent event call. Its completion event now uses the explicit wide entry point. |
+| WR-687 | parallel `Invoke` events | `Invoke` now uses `CreateEventW` instead of relying on ambient `UNICODE` state. |
+| WR-688 | parallel `Reduce` events | `Reduce` now pins the Unicode event ABI explicitly. |
+| WR-689 | parallel `For` events | Indexed parallel iteration now uses the same explicit `CreateEventW` contract as the other combinators. |
+| WR-690 | parallel `ForEach` completion | Its worker callback ignored `SetEvent` failure, allowing the owner to wait forever or later free task state while completion was not observable. The callback now routes through the shared checked signal helper and aborts before unsafe cleanup. |
+| WR-691 | parallel `Map` completion | The map worker carried an independent unchecked completion signal. It now uses the checked helper. |
+| WR-692 | parallel `Invoke` completion | Invoke workers could silently lose their last completion notification. Signal failure is now treated as an unrecoverable synchronization error. |
+| WR-693 | parallel `Reduce` completion | Reduction workers now check event publication through the shared helper instead of discarding the native result. |
+| WR-694 | parallel `For` completion | Indexed-loop workers carried the fifth unchecked `SetEvent` path. It now shares the fail-fast completion contract. |
+| WR-695 | TLS custom-root contract | The Windows TLS verifier's source contract still claimed `_wfopen` even though WR-605 moved the implementation to deny-write `_wsopen_s`. The stale documentation made the regression test reject the corrected implementation; it now describes the actual stable-snapshot API and sharing policy. |
+| WR-696 | D3D11 COM identity | Backend owner and view/resource validation could not safely compare arbitrary COM interface pointers, because one object may expose different interface addresses. A shared helper now compares controlling `IUnknown` identities and balances both temporary references. |
+| WR-697 | D3D11 device creation | A successful core-device call required non-null device/context/swapchain outputs but did not prove that the immediate context and swapchain belonged to that device. Both owner identities are now verified before a device attempt can be published. |
+| WR-698 | D3D11 swapchain buffers | Resize, presented-snapshot, and readback `GetBuffer` paths validated pointer/descriptor shape but not device ownership. Every accepted backbuffer now proves it is a child of the live backend device. |
+| WR-699 | D3D11 depth states | Opaque, transparent, disabled, skybox, and shadow depth-state factories trusted successful outputs. They now validate device ownership and every behavior-bearing depth/stencil descriptor field, while tolerating only documented canonicalization of disabled fields. |
+| WR-700 | D3D11 blend states | Opaque, alpha, additive, and premultiplied blend states were not checked against their requested native behavior. Publication now requires owner identity plus alpha-coverage, independence, write-mask, and enabled blend-operation equality for every active render-target slot. |
+| WR-701 | D3D11 rasterizer states | Fixed and depth-biased rasterizer creation did not prove device ownership or returned fill, cull, winding, bias, clipping, scissor, multisample, and line behavior. One descriptor builder and exact validator now gate every state. |
+| WR-702 | D3D11 biased-state cache | A depth-biased rasterizer cache hit trusted only scalar cache keys and could retain a foreign or malformed COM state. Hits now revalidate owner and descriptor, evict bad state, and recreate transactionally. |
+| WR-703 | D3D11 samplers | Fixed samplers checked descriptors but not owning device, and material-cache hits/new objects had the same ownership gap. Both creation paths and every lazy cache hit now require the live device identity. |
+| WR-704 | D3D11 executable pipeline objects | Vertex/pixel shaders and six input-layout variants required only successful non-null outputs. All shader and layout objects now prove they were created by the backend device before initialization continues. |
+| WR-705 | D3D11 queries and buffers | Timing queries and the standalone skybox vertex buffer validated type/descriptor but not native owner. Their factory transactions now reject foreign-device children before publishing telemetry or draw state. |
+| WR-706 | D3D11 fallback resources | White 2D/cube textures and views plus the BRDF LUT validated shapes and resource/view pairing but not device ownership. Every fallback child now also proves it belongs to the current device before the set is published. |
+| WR-707 | installer cleanup-helper sharing | The installer reopened its detached helper with delete access while sharing writes and deletes, so another process could mutate or replace the executable between materialization and launch. The held launch snapshot is now read-only and shares only reads. |
+| WR-708 | installer cleanup-helper snapshot | Closing and reopening the staged helper created a window in which its bytes could change without detection. The reopened, mutation-denying handle now verifies exact size and contents against the trusted embedded helper bytes before launch. |
+| WR-709 | installer cleanup-helper indirection | The reopened helper path did not explicitly reject a directory or reparse-point substitution. It now opens the entry itself with `FILE_FLAG_OPEN_REPARSE_POINT` and validates handle attributes before execution. |
+| WR-710 | installer cleanup-helper activation | A failed `ResumeThread` issued an unchecked termination and immediately entered exception cleanup, potentially deleting state while a suspended process still existed. Termination and a bounded reap are both required before cleanup is allowed. |
+| WR-711 | installer cleanup-helper lifetime | Later launch failures could enter the catch block without proving that the helper process had exited, while an already-exited process could receive a misleading termination attempt. Explicit running/exited state now gates termination and filesystem cleanup. |
+| WR-712 | installer read-only cleanup | A failed deletion permanently removed the target's read-only attribute, mutating a file that cleanup did not own successfully. The original attributes are restored after each failed attempt, with concurrent disappearance treated as success. |
+| WR-713 | installer reboot cleanup | `MoveFileExW(..., MOVEFILE_DELAY_UNTIL_REBOOT)` was unchecked, yet the log always claimed cleanup had been scheduled. Scheduling failure is now reported with its native error and the cache remains available for later repair. |
+| WR-714 | installer cleanup idempotence | A file that disappeared after attribute inspection but before `DeleteFileW` was treated as a cleanup failure unless it had originally been read-only. Both post-inspection not-found results are now idempotent success. |
+| WR-715 | D3D11 native GUID linkage | The new COM identity checks compiled under MSVC but referenced `IID_IUnknown` and `IID_ID3D11Device` as external `dxguid` data, which the zero-dependency native linker intentionally does not import. SDK-identical file-local GUID constants now preserve the checks without expanding the native import surface. |
 
 ## Regression coverage
 
@@ -693,8 +752,9 @@ repairs.
   failure-atomic save and custom-TLS-root source contracts, signed-minimum atomic subtraction,
   exact thread-handle joining, ordinal comparison, fail-closed deletion guards, processor-count
   validity, drive-root temp preservation, long environment-backed home paths, CRT-aware network
-  workers, restricted child handle inheritance, checked capture/wait failures, and the bounded
-  WASAPI thread/format/routing/buffer/control-thread source contracts.
+  workers, restricted child handle inheritance, checked capture/wait failures, explicit Unicode
+  event creation, checked critical-section construction and parallel completion signaling, and the
+  bounded WASAPI thread/format/routing/buffer/control-thread source contracts.
   `native_run_windows_environment` additionally compiles and runs an ephemeral `TcpServer` through
   the CRT-less native PE startup path.
 - `test_rt_file_ext` creates a 3 GiB sparse file and verifies 64-bit seek, stat, visibility, and
@@ -720,8 +780,10 @@ repairs.
   hardware-to-WARP retry cleanup, complete fallback-resource publication, timing-query health
   checks, malformed RTT staging eviction, native dynamic/morph-buffer descriptor validation,
   exact texture/buffer/query/sampler descriptors, RTV/DSV/SRV backing-resource identity and
-  subresource ranges, exact morph SRV/resource pairing, partial-output cleanup,
-  presented-snapshot validation, and initialized diagnostic formatting;
+  subresource ranges, controlling-`IUnknown` device identity for core interfaces and every repaired
+  device child, exact depth/blend/rasterizer state behavior, biased-state cache revalidation, exact
+  morph SRV/resource pairing, partial-output cleanup, presented-snapshot validation, and initialized
+  diagnostic formatting;
   `zia_smoke_d3d11_rtt_readback`,
   `g3d_test_canvas3d_viewmodel_sprite`, `g3d_test_canvas3d_point_shadows_d3d11`, and the Ridgebound
   D3D11 smoke exercise the hardware backend.
@@ -762,7 +824,9 @@ repairs.
   validated PATH mutation, required Shell Link outputs, typed registry/elevation handling, bounded
   destination probes, upgrade filtering, fail-closed destination/shortcut cleanup, paired internal
   worker arguments, cache/elevation proof before handoff waiting, verified installer class reuse,
-  guarded painting, per-monitor DPI transitions, quit preservation, and bounded/coalesced progress.
+  guarded painting, per-monitor DPI transitions, quit preservation, bounded/coalesced progress,
+  exact non-reparse cleanup-helper snapshots, checked helper termination/reaping, truthful reboot
+  scheduling, and read-only attribute restoration after failed cleanup.
   `test_windows_installer_brand_validation` directly exercises page/progress UTF-16 and size
   bounds, action identity, accessible labels, default/close results, verification gates, and work
   presence. Host source contracts additionally pin mutation-denying package snapshots, exact
@@ -789,6 +853,40 @@ The `.cmd` demo shim delegates to that canonical PowerShell implementation under
 remains mandatory for future changes in these adapters.
 
 ## Validation record
+
+Final alpha-hardening revalidation on Windows x64/MSVC on 2026-07-26:
+
+- A frozen-source, no-skip clean `scripts/build_zanna_win.ps1` run rebuilt the warning-as-error
+  Debug tree and exited zero in 2,269.6 seconds with an empty stderr log. It passed 1,862/1,862
+  CTests in 500.01 seconds, strict platform-policy lint, the runtime-surface audit, every
+  cross-platform host smoke, and installation. The audit accounted for 7,613 runtime functions,
+  524 classes, and 8,969 header declarations; its eight focused tests passed.
+- The first clean integration attempt exposed one issue hidden by focused MSVC targets: the new
+  COM-identity checks referenced external `dxguid` data that the zero-dependency native Studio
+  link does not import. WR-715 replaced those references with SDK-identical file-local GUID
+  constants. The standalone native Studio target then linked successfully, and the complete
+  clean gate above passed from the corrected source.
+- Focused warning-as-error builds and runtime, network, thread, installer, and D3D11 regressions
+  passed. Hardware-backed coverage included Ridgebound, render-target readback, viewmodel
+  sprites, point shadows, render scaling, and the shared D3D11 contract test.
+- `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File
+  scripts/build_demos_win.ps1 --clean --run` rebuilt, structurally PE-validated, privately
+  launch-smoked, and atomically published all nine curated native x64 demos in 302.7 seconds:
+  Ashfall, 3D Bowling, Ridgebound, Xenoscape, Crackman, Chess, Baseball, Paint, and ZannaSQL. The
+  demo gate produced no stderr output.
+- `scripts/build_installer.ps1 --build-dir build --config Release --target windows` completed the
+  real Release package path in 3,063.3 seconds. Its manifest marked the 307,005,574-byte unsigned
+  x64 `zanna-0.2.99-win-x64.exe` payload verified with SHA-256
+  `fcbc41db89314dc843ec756ea6716b03ffcd4182372fcc5a0775990fdbdc7795`. The standalone
+  real-artifact validator then passed complete install, integration registration, component
+  modify, byte-exact repair, installed CLI/native-code generation, installed SDK CMake-consumer
+  build, uninstall, and detached-cache cleanup in 102.1 seconds with no stderr output.
+- The user-application and Xenoscape installer CTests passed independently in 6.01 and 30.56
+  seconds, respectively, covering package creation, per-user installation, launch/runtime
+  metadata, and uninstall cleanup. The separate all-users smoke remains correctly inapplicable
+  to this non-administrator test session.
+- `clang-format --dry-run --Werror`, the source-header audit, `scripts/check_docs.sh`, strict
+  changed-tree platform lint, and `git diff --check` passed for the final change set.
 
 Revalidated on Windows x64/MSVC on 2026-07-26:
 

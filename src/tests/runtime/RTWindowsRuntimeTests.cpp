@@ -22,6 +22,8 @@
 //   - Machine queries preserve drive roots and long environment-backed paths.
 //   - WASAPI source contracts use the CRT thread entry point, strict negotiated
 //     format metadata, bounded repeated failures, and paired buffer release.
+//   - Windows runtime mutex and event creation reports native allocation failure,
+//     and parallel workers use the checked final-completion signal helper.
 //   - Windows network workers use CRT-aware threads and download paths stay UTF-16.
 //   - SaveData snapshots UTF-16 environment values instead of borrowed ACP strings.
 //   - Child-process capture restricts inherited handles, uses CRT-aware threads,
@@ -34,7 +36,7 @@
 //        src/runtime/network/rt_socket_platform.h,
 //        src/runtime/network/rt_entropy_platform.h,
 //        src/runtime/io/rt_file_path.h, src/runtime/io/rt_file_stdio.h,
-//        src/runtime/io/rt_dir_internal.h,
+//        src/runtime/io/rt_dir_internal.h, src/runtime/threads/rt_parallel_ops.c,
 //        src/lib/audio/src/vaud_platform_win32.c, src/common/RunProcess.cpp
 //
 //===----------------------------------------------------------------------===//
@@ -426,6 +428,52 @@ static void test_windows_network_worker_source_contracts() {
     }
 }
 
+static void test_windows_synchronization_source_contracts() {
+    constexpr std::array<const char *, 21> criticalSectionFiles = {
+        "src/runtime/threads/rt_threads_win.c",
+        "src/runtime/threads/rt_scheduler.c",
+        "src/runtime/threads/rt_parallel_ops.c",
+        "src/runtime/threads/rt_parallel.c",
+        "src/runtime/threads/rt_future.c",
+        "src/runtime/io/rt_zpak_reader.c",
+        "src/runtime/io/rt_asset.c",
+        "src/runtime/network/rt_ws_server.c",
+        "src/runtime/network/rt_wss_server.c",
+        "src/runtime/network/rt_http_server.c",
+        "src/runtime/network/rt_http_client.c",
+        "src/runtime/network/rt_restclient.c",
+        "src/runtime/network/rt_sse.c",
+        "src/runtime/network/rt_https_server.c",
+        "src/runtime/network/rt_smtp.c",
+        "src/runtime/network/rt_network_http.c",
+        "src/runtime/text/rt_regex.c",
+        "src/runtime/core/rt_gc.c",
+        "src/runtime/core/rt_string_intern.c",
+        "src/runtime/graphics/3d/rt_game3d.c",
+        "src/runtime/graphics/3d/rt_game3d_surfaces.c",
+    };
+    for (const char *relativePath : criticalSectionFiles) {
+        const std::string source = read_source({relativePath});
+        assert(source.find("InitializeCriticalSectionEx(") != std::string::npos);
+        assert(source.find("InitializeCriticalSection(") == std::string::npos);
+    }
+
+    constexpr std::array<const char *, 2> eventFiles = {
+        "src/runtime/threads/rt_parallel_ops.c",
+        "src/runtime/io/rt_watcher.c",
+    };
+    for (const char *relativePath : eventFiles) {
+        const std::string source = read_source({relativePath});
+        assert(source.find("CreateEventW(") != std::string::npos);
+        assert(source.find("CreateEvent(") == std::string::npos);
+    }
+
+    const std::string parallel = read_source({"src", "runtime", "threads", "rt_parallel_ops.c"});
+    assert(parallel.find("SetEvent(task->event)") == std::string::npos);
+    assert(parallel.find("parallel_win_complete_one(task->remaining, task->event)") !=
+           std::string::npos);
+}
+
 static void test_windows_unicode_storage_source_contracts() {
     const std::string http = read_source({"src", "runtime", "network", "rt_network_http_api.c"});
     assert(http.find("_wopen(") != std::string::npos);
@@ -549,6 +597,7 @@ int main() {
     test_machine_windows_snapshots();
     test_wasapi_backend_source_contracts();
     test_windows_network_worker_source_contracts();
+    test_windows_synchronization_source_contracts();
     test_windows_unicode_storage_source_contracts();
     test_win32_window_source_contracts();
     test_windows_machine_source_contracts();

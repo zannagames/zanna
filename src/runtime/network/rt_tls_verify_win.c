@@ -47,8 +47,8 @@ enum {
 
 /// @brief Open one runtime UTF-8 path through the Unicode Windows CRT boundary.
 /// @details The path is decoded with strict UTF-8 validation and opened in
-///          binary-read mode through _wfopen(). Temporary UTF-16 storage is
-///          released before return.
+///          binary-read mode through `_wsopen_s` while denying concurrent
+///          writers. Temporary UTF-16 storage is released before return.
 /// @param[in] path Null-terminated UTF-8 filesystem path.
 /// @return Open stream on success, or NULL for an invalid path, conversion
 ///         failure, allocation failure, or open failure. The caller owns the stream.

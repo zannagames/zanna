@@ -116,11 +116,10 @@ typedef enum {
 
 /// @brief Initialize one SSE-native mutex.
 /// @param mutex Zeroed native mutex storage owned by a partial client.
-/// @return Nonzero on success; zero when POSIX initialization fails.
+/// @return Nonzero on success; zero when native initialization fails.
 static int sse_mutex_init(sse_mutex_t *mutex) {
 #if RT_PLATFORM_WINDOWS
-    InitializeCriticalSection(mutex);
-    return 1;
+    return InitializeCriticalSectionEx(mutex, 0, 0) != FALSE ? 1 : 0;
 #else
     return pthread_mutex_init(mutex, NULL) == 0 ? 1 : 0;
 #endif

@@ -74,13 +74,12 @@ static INIT_ONCE g_pattern_cache_cs_once = INIT_ONCE_STATIC_INIT;
 /// @param o Windows one-time initialization token; unused.
 /// @param p Caller parameter supplied by `InitOnceExecuteOnce`; unused.
 /// @param ctx Optional initialization context output; unused.
-/// @return `TRUE` after initializing the critical section.
+/// @return `TRUE` after initialization, or `FALSE` when native allocation fails.
 static BOOL WINAPI init_pattern_cache_cs(PINIT_ONCE o, PVOID p, PVOID *ctx) {
     (void)o;
     (void)p;
     (void)ctx;
-    InitializeCriticalSection(&g_pattern_cache_cs);
-    return TRUE;
+    return InitializeCriticalSectionEx(&g_pattern_cache_cs, 0, 0);
 }
 
 /// @brief Acquire the pattern-cache mutex (Windows path).
@@ -88,7 +87,8 @@ static BOOL WINAPI init_pattern_cache_cs(PINIT_ONCE o, PVOID p, PVOID *ctx) {
 /// Lazily initializes the critical section on first call. Required
 /// per S-12: concurrent regex calls must not race on the LRU cache.
 static void pattern_cache_lock(void) {
-    InitOnceExecuteOnce(&g_pattern_cache_cs_once, init_pattern_cache_cs, NULL, NULL);
+    if (!InitOnceExecuteOnce(&g_pattern_cache_cs_once, init_pattern_cache_cs, NULL, NULL))
+        rt_abort("Regex: pattern-cache lock initialization failed");
     EnterCriticalSection(&g_pattern_cache_cs);
 }
 
@@ -391,8 +391,7 @@ static int shorthand_member(char shorthand, int ch) {
             return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
                    (ch >= '0' && ch <= '9') || ch == '_';
         case 's':
-            return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\f' ||
-                   ch == '\v';
+            return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\f' || ch == '\v';
         default:
             return 0;
     }
@@ -1042,8 +1041,7 @@ void *rt_pattern_split(rt_string text, rt_string pattern) {
             if (match_start >= text_len)
                 break;
             if (match_start > seg_start) {
-                rt_string part =
-                    rt_string_from_bytes(txt_str + seg_start, match_start - seg_start);
+                rt_string part = rt_string_from_bytes(txt_str + seg_start, match_start - seg_start);
                 rt_seq_push(seq, (void *)part);
                 rt_string_unref(part);
                 seg_start = match_start;

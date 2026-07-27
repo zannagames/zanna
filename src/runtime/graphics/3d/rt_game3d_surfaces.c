@@ -50,18 +50,18 @@ static INIT_ONCE g_surfaces_once = INIT_ONCE_STATIC_INIT;
 /// @param once Windows one-time initialization token.
 /// @param param Optional initialization parameter, unused.
 /// @param ctx Optional initialization context destination, unused.
-/// @return `TRUE` to mark one-time initialization successful.
+/// @return `TRUE` after initialization, or `FALSE` when native allocation fails.
 static BOOL CALLBACK surfaces_init_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
     (void)once;
     (void)param;
     (void)ctx;
-    InitializeCriticalSection(&g_surfaces_lock);
-    return TRUE;
+    return InitializeCriticalSectionEx(&g_surfaces_lock, 0, 0);
 }
 
 /// @brief Ensure the Windows registry mutex exists and acquire it.
 static void surfaces_lock(void) {
-    InitOnceExecuteOnce(&g_surfaces_once, surfaces_init_once, NULL, NULL);
+    if (!InitOnceExecuteOnce(&g_surfaces_once, surfaces_init_once, NULL, NULL))
+        rt_abort("Game3D surfaces: registry lock initialization failed");
     EnterCriticalSection(&g_surfaces_lock);
 }
 

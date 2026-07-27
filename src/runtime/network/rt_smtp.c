@@ -90,11 +90,10 @@ typedef pthread_mutex_t smtp_mutex_t;
 
 /// @brief Initialize one native SMTP mutex.
 /// @param mutex Zeroed storage owned by a partial client.
-/// @return Nonzero on success; zero when POSIX initialization fails.
+/// @return Nonzero on success; zero when native initialization fails.
 static int smtp_mutex_init(smtp_mutex_t *mutex) {
 #if RT_PLATFORM_WINDOWS
-    InitializeCriticalSection(mutex);
-    return 1;
+    return InitializeCriticalSectionEx(mutex, 0, 0) != FALSE ? 1 : 0;
 #else
     return pthread_mutex_init(mutex, NULL) == 0 ? 1 : 0;
 #endif

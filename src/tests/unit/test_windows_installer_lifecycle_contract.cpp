@@ -9,14 +9,15 @@
 // Purpose: Protect fail-closed contracts in the native Windows installer lifecycle.
 //
 // Key invariants:
-//   - Registry, COM, filesystem, and known-folder outputs are validated before use.
+//   - Registry, COM, filesystem, helper-process, and known-folder outputs are validated before use.
 //   - Transaction metadata is bounded, durable, and parsed as an exact schema.
 //   - Windows path ownership decisions use locale-independent ordinal comparison.
 //
 // Ownership/Lifetime:
-//   - The test owns in-memory copies of the lifecycle and PE validator sources.
+//   - The test owns in-memory copies of the installer and PE validator sources.
 //
 // Links: src/tools/windows_installer/WindowsInstallerLifecycle.cpp,
+//        src/tools/windows_installer/WindowsInstallerCleanup.cpp,
 //        src/tools/windows_installer/WindowsInstallerHost.cpp,
 //        src/tools/common/packaging/WindowsPEValidation.cpp
 //
@@ -103,16 +104,19 @@ int main() {
     const std::string source = readLifecycleSource();
     const std::string hostSource = readHostSource();
     const std::string peValidationSource = readPeValidationSource();
+    const std::string cleanupSource = readInstallerSource("WindowsInstallerCleanup.cpp");
     const std::string brandSource = readInstallerSource("WindowsInstallerBrandDialog.cpp");
     const std::string themeSource = readInstallerSource("WindowsInstallerTheme.cpp");
     const std::string wizardSource = readInstallerSource("WindowsInstallerWizard.cpp");
     expect(!source.empty(), "Windows installer lifecycle source is readable");
     expect(!hostSource.empty(), "Windows installer host source is readable");
+    expect(!peValidationSource.empty(), "Windows PE validation source is readable");
+    expect(!cleanupSource.empty(), "Windows installer cleanup source is readable");
     expect(!brandSource.empty(), "Windows installer brand-dialog source is readable");
     expect(!themeSource.empty(), "Windows installer theme source is readable");
     expect(!wizardSource.empty(), "Windows installer wizard source is readable");
-    if (source.empty() || hostSource.empty() || brandSource.empty() || themeSource.empty() ||
-        wizardSource.empty())
+    if (source.empty() || hostSource.empty() || peValidationSource.empty() ||
+        cleanupSource.empty() || brandSource.empty() || themeSource.empty() || wizardSource.empty())
         return 1;
 
     expect(source.find("CompareStringOrdinal") != std::string::npos &&
@@ -150,6 +154,36 @@ int main() {
     expect(hostSource.find("cannot append the installer log") != std::string::npos &&
                hostSource.find("SetLastError(ERROR_WRITE_FAULT)") != std::string::npos,
            "Installer logging surfaces short writes and flush failures");
+    expect(source.find("bool handleBytesMatch") != std::string::npos &&
+               source.find("handleBytesMatch(helper.get(), package.cleanupBytes)") !=
+                   std::string::npos &&
+               source.find("FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN") !=
+                   std::string::npos,
+           "Detached cleanup launches an exact non-reparse snapshot of the packaged helper");
+    expect(appearsInOrder(source,
+                          "helper.reset(CreateFileW(helperPath.c_str()",
+                          "GENERIC_READ | SYNCHRONIZE",
+                          "FILE_SHARE_READ,"),
+           "Detached cleanup holds a read-only handle that denies helper mutation and replacement");
+    expect(appearsInOrder(source,
+                          "if (ResumeThread(threadHandle.get())",
+                          "if (!TerminateProcess(processHandle.get()",
+                          "if (WaitForSingleObject(processHandle.get(), 5000)") &&
+               source.find("processMayBeRunning") != std::string::npos,
+           "Failed detached-helper activation is terminated and reaped before local cleanup");
+    expect(source.find("if (!MoveFileExW(") != std::string::npos &&
+               source.find("cleanup could not be ") != std::string::npos &&
+               source.find("scheduled for reboot: ") != std::string::npos,
+           "Reboot cleanup scheduling failures are reported instead of claimed as successes");
+    expect(cleanupSource.find("const bool clearedReadOnly") != std::string::npos &&
+               cleanupSource.find("SetFileAttributesW(path.c_str(), attributes)") !=
+                   std::string::npos,
+           "Failed cleanup deletion restores a file's original read-only attribute");
+    expect(appearsInOrder(cleanupSource,
+                          "if (DeleteFileW(path.c_str()))",
+                          "const DWORD error = GetLastError()",
+                          "error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND"),
+           "Concurrent cleanup-target disappearance remains an idempotent success");
 
     expect(source.find("kMaximumTextFileBytes") != std::string::npos &&
                source.find("metadata text file grew while being read") != std::string::npos,

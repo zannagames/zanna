@@ -148,13 +148,22 @@ bool deleteFileWithRetry(const std::wstring &path) {
         }
         if ((attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0)
             return false;
-        if ((attributes & FILE_ATTRIBUTE_READONLY) != 0 &&
-            !SetFileAttributesW(path.c_str(), attributes & ~FILE_ATTRIBUTE_READONLY)) {
-            return false;
+        const bool clearedReadOnly = (attributes & FILE_ATTRIBUTE_READONLY) != 0;
+        if (clearedReadOnly) {
+            if (!SetFileAttributesW(path.c_str(), attributes & ~FILE_ATTRIBUTE_READONLY))
+                return false;
         }
         if (DeleteFileW(path.c_str()))
             return true;
         const DWORD error = GetLastError();
+        if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+            return true;
+        if (clearedReadOnly && !SetFileAttributesW(path.c_str(), attributes)) {
+            const DWORD restoreError = GetLastError();
+            if (restoreError == ERROR_FILE_NOT_FOUND || restoreError == ERROR_PATH_NOT_FOUND)
+                return true;
+            return false;
+        }
         if (error != ERROR_ACCESS_DENIED && error != ERROR_SHARING_VIOLATION &&
             error != ERROR_LOCK_VIOLATION) {
             return false;

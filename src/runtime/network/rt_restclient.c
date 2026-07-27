@@ -60,11 +60,9 @@ typedef CRITICAL_SECTION rest_client_mutex_t;
 
 /// @brief Initialize the native RestClient mutex on Windows.
 /// @param mutex Zeroed mutex storage owned by a partially built client.
-/// @return One after initialization. Windows reports rare initialization
-///         failure through its structured-exception mechanism.
+/// @return One after initialization, or zero when native allocation fails.
 static int rest_client_mutex_init(rest_client_mutex_t *mutex) {
-    InitializeCriticalSection(mutex);
-    return 1;
+    return InitializeCriticalSectionEx(mutex, 0, 0) != FALSE ? 1 : 0;
 }
 
 /// @brief Acquire an initialized Windows RestClient mutex.

@@ -89,6 +89,12 @@ static const float k_identity4x4[16] = {
     1.0f,
 };
 
+/* File-local SDK-identical GUIDs keep the native backend free of dxguid data imports. */
+static const GUID VGFX3D_IID_IUnknown = {
+    0x00000000, 0x0000, 0x0000, {0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
+static const GUID VGFX3D_IID_ID3D11Device = {
+    0xdb6f6ddb, 0xac77, 0x4e88, {0x82, 0x53, 0x81, 0x9d, 0xf9, 0xbb, 0xf1, 0x40}};
+
 #include "vgfx3d_backend_d3d11_shaders.inc"
 
 /// @brief One cached 2D texture or native TextureAsset3D upload and its streaming cursor.
@@ -689,6 +695,97 @@ static HRESULT d3d11_required_output_result(HRESULT hr, const void *output) {
     return output ? S_OK : E_POINTER;
 }
 
+/// @brief Compare the controlling-IUnknown identity of two COM interfaces.
+/// @details Interface-pointer equality is not a valid general COM identity test because one object
+///   may expose distinct interface addresses. Both temporary identity references are released.
+/// @param[in] left First candidate interface.
+/// @param[in] right Second candidate interface.
+/// @return One when both interfaces have the same controlling IUnknown, otherwise zero.
+static int d3d11_com_identity_matches(IUnknown *left, IUnknown *right) {
+    IUnknown *left_identity = NULL;
+    IUnknown *right_identity = NULL;
+    HRESULT left_hr;
+    HRESULT right_hr;
+    int matches;
+
+    if (!left || !right)
+        return 0;
+    left_hr = IUnknown_QueryInterface(left, &VGFX3D_IID_IUnknown, (void **)&left_identity);
+    right_hr = IUnknown_QueryInterface(right, &VGFX3D_IID_IUnknown, (void **)&right_identity);
+    matches = SUCCEEDED(left_hr) && SUCCEEDED(right_hr) && left_identity && right_identity &&
+              left_identity == right_identity;
+    SAFE_RELEASE(left_identity);
+    SAFE_RELEASE(right_identity);
+    return matches;
+}
+
+/// @brief Confirm that a D3D11 child object belongs to the expected device.
+/// @param[in] child Candidate resource, view, state, shader, query, or input layout.
+/// @param[in] expected_device Device that issued the creation request.
+/// @return One for matching COM device identity, otherwise zero.
+static int d3d11_device_child_belongs_to_device(ID3D11DeviceChild *child,
+                                                ID3D11Device *expected_device) {
+    ID3D11Device *actual_device = NULL;
+    int matches;
+
+    if (!child || !expected_device)
+        return 0;
+    ID3D11DeviceChild_GetDevice(child, &actual_device);
+    matches = d3d11_com_identity_matches((IUnknown *)actual_device, (IUnknown *)expected_device);
+    SAFE_RELEASE(actual_device);
+    return matches;
+}
+
+/// @brief Normalize a required device-child factory output and verify its owning device.
+/// @param[in] hr Factory HRESULT.
+/// @param[in] output Required child object.
+/// @param[in] expected_device Device that issued the creation request.
+/// @return S_OK for a complete matching output, the factory error, E_POINTER, or E_FAIL.
+static HRESULT d3d11_device_child_result(HRESULT hr,
+                                         ID3D11DeviceChild *output,
+                                         ID3D11Device *expected_device) {
+    hr = d3d11_required_output_result(hr, output);
+    if (FAILED(hr))
+        return hr;
+    return d3d11_device_child_belongs_to_device(output, expected_device) ? S_OK : E_FAIL;
+}
+
+/// @brief Confirm that an immediate context belongs to the expected D3D11 device.
+/// @param[in] context Candidate immediate context.
+/// @param[in] expected_device Expected owner.
+/// @return One for matching COM device identity, otherwise zero.
+static int d3d11_device_context_belongs_to_device(ID3D11DeviceContext *context,
+                                                  ID3D11Device *expected_device) {
+    ID3D11Device *actual_device = NULL;
+    int matches;
+
+    if (!context || !expected_device)
+        return 0;
+    ID3D11DeviceContext_GetDevice(context, &actual_device);
+    matches = d3d11_com_identity_matches((IUnknown *)actual_device, (IUnknown *)expected_device);
+    SAFE_RELEASE(actual_device);
+    return matches;
+}
+
+/// @brief Confirm that a DXGI swap chain belongs to the expected D3D11 device.
+/// @param[in] swap_chain Candidate swap chain.
+/// @param[in] expected_device Expected owner.
+/// @return One for a successful device query with matching COM identity, otherwise zero.
+static int d3d11_swap_chain_belongs_to_device(IDXGISwapChain *swap_chain,
+                                              ID3D11Device *expected_device) {
+    ID3D11Device *actual_device = NULL;
+    HRESULT hr;
+    int matches;
+
+    if (!swap_chain || !expected_device)
+        return 0;
+    hr = IDXGISwapChain_GetDevice(swap_chain, &VGFX3D_IID_ID3D11Device, (void **)&actual_device);
+    matches = SUCCEEDED(hr) && actual_device &&
+              d3d11_com_identity_matches((IUnknown *)actual_device, (IUnknown *)expected_device);
+    SAFE_RELEASE(actual_device);
+    return matches;
+}
+
 /// @brief Confirm that a created texture exactly implements its requested descriptor.
 /// @details A successful factory call is not enough for cache publication: fault-injection
 ///   layers and faulty proxy drivers can return an object whose dimensions or binding contract
@@ -737,7 +834,7 @@ static int d3d11_buffer_desc_matches(ID3D11Buffer *buffer, const D3D11_BUFFER_DE
 /// @details `GetResource` adds a temporary COM reference, which this helper always releases.
 /// @param[in] view Candidate render-target, depth-stencil, or shader-resource view.
 /// @param[in] expected Expected backing resource.
-/// @return One when the view and resource are non-null and have matching interface identity.
+/// @return One when the view and resource are non-null and have matching COM object identity.
 static int d3d11_view_resource_matches(ID3D11View *view, ID3D11Resource *expected) {
     ID3D11Resource *actual = NULL;
     int matches;
@@ -745,7 +842,7 @@ static int d3d11_view_resource_matches(ID3D11View *view, ID3D11Resource *expecte
     if (!view || !expected)
         return 0;
     ID3D11View_GetResource(view, &actual);
-    matches = actual == expected;
+    matches = d3d11_com_identity_matches((IUnknown *)actual, (IUnknown *)expected);
     SAFE_RELEASE(actual);
     return matches;
 }
@@ -919,6 +1016,148 @@ static int d3d11_sampler_desc_matches(ID3D11SamplerState *sampler,
         }
     }
     return matches;
+}
+
+/// @brief Compare all behavior-bearing rasterizer-state fields.
+/// @param[in] state Candidate rasterizer state.
+/// @param[in] expected Descriptor issued to the device.
+/// @return One for an exact native state match, otherwise zero.
+static int d3d11_rasterizer_desc_matches(ID3D11RasterizerState *state,
+                                         const D3D11_RASTERIZER_DESC *expected) {
+    D3D11_RASTERIZER_DESC actual;
+
+    if (!state || !expected)
+        return 0;
+    memset(&actual, 0, sizeof(actual));
+    ID3D11RasterizerState_GetDesc(state, &actual);
+    return actual.FillMode == expected->FillMode && actual.CullMode == expected->CullMode &&
+           actual.FrontCounterClockwise == expected->FrontCounterClockwise &&
+           actual.DepthBias == expected->DepthBias &&
+           actual.DepthBiasClamp == expected->DepthBiasClamp &&
+           actual.SlopeScaledDepthBias == expected->SlopeScaledDepthBias &&
+           actual.DepthClipEnable == expected->DepthClipEnable &&
+           actual.ScissorEnable == expected->ScissorEnable &&
+           actual.MultisampleEnable == expected->MultisampleEnable &&
+           actual.AntialiasedLineEnable == expected->AntialiasedLineEnable;
+}
+
+/// @brief Compare one stencil-face operation descriptor.
+/// @param[in] actual Native face descriptor.
+/// @param[in] expected Requested face descriptor.
+/// @return One for an exact match, otherwise zero.
+static int d3d11_stencil_op_desc_matches(const D3D11_DEPTH_STENCILOP_DESC *actual,
+                                         const D3D11_DEPTH_STENCILOP_DESC *expected) {
+    return actual && expected && actual->StencilFailOp == expected->StencilFailOp &&
+           actual->StencilDepthFailOp == expected->StencilDepthFailOp &&
+           actual->StencilPassOp == expected->StencilPassOp &&
+           actual->StencilFunc == expected->StencilFunc;
+}
+
+/// @brief Compare behavior-bearing depth/stencil state fields.
+/// @details Disabled depth and stencil subfields may be canonicalized by the runtime, so fields are
+///   compared only while their corresponding feature is enabled.
+/// @param[in] state Candidate depth/stencil state.
+/// @param[in] expected Descriptor issued to the device.
+/// @return One for a semantically exact native state, otherwise zero.
+static int d3d11_depth_stencil_desc_matches(ID3D11DepthStencilState *state,
+                                            const D3D11_DEPTH_STENCIL_DESC *expected) {
+    D3D11_DEPTH_STENCIL_DESC actual;
+
+    if (!state || !expected)
+        return 0;
+    memset(&actual, 0, sizeof(actual));
+    ID3D11DepthStencilState_GetDesc(state, &actual);
+    if (actual.DepthEnable != expected->DepthEnable ||
+        (expected->DepthEnable && (actual.DepthWriteMask != expected->DepthWriteMask ||
+                                   actual.DepthFunc != expected->DepthFunc)) ||
+        actual.StencilEnable != expected->StencilEnable) {
+        return 0;
+    }
+    return !expected->StencilEnable ||
+           (actual.StencilReadMask == expected->StencilReadMask &&
+            actual.StencilWriteMask == expected->StencilWriteMask &&
+            d3d11_stencil_op_desc_matches(&actual.FrontFace, &expected->FrontFace) &&
+            d3d11_stencil_op_desc_matches(&actual.BackFace, &expected->BackFace));
+}
+
+/// @brief Compare one behavior-bearing render-target blend descriptor.
+/// @param[in] actual Native render-target descriptor.
+/// @param[in] expected Requested render-target descriptor.
+/// @return One for a semantically exact match, otherwise zero.
+static int d3d11_render_target_blend_desc_matches(const D3D11_RENDER_TARGET_BLEND_DESC *actual,
+                                                  const D3D11_RENDER_TARGET_BLEND_DESC *expected) {
+    if (!actual || !expected || actual->BlendEnable != expected->BlendEnable ||
+        actual->RenderTargetWriteMask != expected->RenderTargetWriteMask) {
+        return 0;
+    }
+    return !expected->BlendEnable ||
+           (actual->SrcBlend == expected->SrcBlend && actual->DestBlend == expected->DestBlend &&
+            actual->BlendOp == expected->BlendOp &&
+            actual->SrcBlendAlpha == expected->SrcBlendAlpha &&
+            actual->DestBlendAlpha == expected->DestBlendAlpha &&
+            actual->BlendOpAlpha == expected->BlendOpAlpha);
+}
+
+/// @brief Compare behavior-bearing blend-state fields.
+/// @details Non-independent states use only render-target slot zero; independent states validate
+/// all
+///   eight slots. Blend factors and operations are ignored when blending is disabled.
+/// @param[in] state Candidate blend state.
+/// @param[in] expected Descriptor issued to the device.
+/// @return One for a semantically exact native state, otherwise zero.
+static int d3d11_blend_desc_matches(ID3D11BlendState *state, const D3D11_BLEND_DESC *expected) {
+    D3D11_BLEND_DESC actual;
+    UINT target_count;
+
+    if (!state || !expected)
+        return 0;
+    memset(&actual, 0, sizeof(actual));
+    ID3D11BlendState_GetDesc(state, &actual);
+    if (actual.AlphaToCoverageEnable != expected->AlphaToCoverageEnable ||
+        actual.IndependentBlendEnable != expected->IndependentBlendEnable) {
+        return 0;
+    }
+    target_count = expected->IndependentBlendEnable ? D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT : 1u;
+    for (UINT i = 0; i < target_count; ++i) {
+        if (!d3d11_render_target_blend_desc_matches(&actual.RenderTarget[i],
+                                                    &expected->RenderTarget[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/// @brief Validate a required depth/stencil state and its owning device.
+static HRESULT d3d11_depth_stencil_state_result(HRESULT hr,
+                                                ID3D11DepthStencilState *state,
+                                                ID3D11Device *expected_device,
+                                                const D3D11_DEPTH_STENCIL_DESC *expected_desc) {
+    hr = d3d11_device_child_result(hr, (ID3D11DeviceChild *)state, expected_device);
+    if (SUCCEEDED(hr) && !d3d11_depth_stencil_desc_matches(state, expected_desc))
+        hr = E_FAIL;
+    return hr;
+}
+
+/// @brief Validate a required blend state and its owning device.
+static HRESULT d3d11_blend_state_result(HRESULT hr,
+                                        ID3D11BlendState *state,
+                                        ID3D11Device *expected_device,
+                                        const D3D11_BLEND_DESC *expected_desc) {
+    hr = d3d11_device_child_result(hr, (ID3D11DeviceChild *)state, expected_device);
+    if (SUCCEEDED(hr) && !d3d11_blend_desc_matches(state, expected_desc))
+        hr = E_FAIL;
+    return hr;
+}
+
+/// @brief Validate a required rasterizer state and its owning device.
+static HRESULT d3d11_rasterizer_state_result(HRESULT hr,
+                                             ID3D11RasterizerState *state,
+                                             ID3D11Device *expected_device,
+                                             const D3D11_RASTERIZER_DESC *expected_desc) {
+    hr = d3d11_device_child_result(hr, (ID3D11DeviceChild *)state, expected_device);
+    if (SUCCEEDED(hr) && !d3d11_rasterizer_desc_matches(state, expected_desc))
+        hr = E_FAIL;
+    return hr;
 }
 
 #define D3D11_INITIAL_DYNAMIC_VB_SIZE (4u * 1024u * 1024u)
@@ -1175,7 +1414,8 @@ static void d3d11_create_frame_timing_queries(d3d11_context_t *ctx) {
     memset(&desc, 0, sizeof(desc));
     desc.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
     hr = ID3D11Device_CreateQuery(ctx->device, &desc, &ctx->frame_time_disjoint_query);
-    hr = d3d11_required_output_result(hr, ctx->frame_time_disjoint_query);
+    hr = d3d11_device_child_result(
+        hr, (ID3D11DeviceChild *)ctx->frame_time_disjoint_query, ctx->device);
     if (SUCCEEDED(hr) &&
         !d3d11_query_desc_matches(ctx->frame_time_disjoint_query, D3D11_QUERY_TIMESTAMP_DISJOINT))
         hr = E_FAIL;
@@ -1187,7 +1427,8 @@ static void d3d11_create_frame_timing_queries(d3d11_context_t *ctx) {
     }
     desc.Query = D3D11_QUERY_TIMESTAMP;
     hr = ID3D11Device_CreateQuery(ctx->device, &desc, &ctx->frame_time_start_query);
-    hr = d3d11_required_output_result(hr, ctx->frame_time_start_query);
+    hr = d3d11_device_child_result(
+        hr, (ID3D11DeviceChild *)ctx->frame_time_start_query, ctx->device);
     if (SUCCEEDED(hr) &&
         !d3d11_query_desc_matches(ctx->frame_time_start_query, D3D11_QUERY_TIMESTAMP))
         hr = E_FAIL;
@@ -1199,7 +1440,7 @@ static void d3d11_create_frame_timing_queries(d3d11_context_t *ctx) {
         return;
     }
     hr = ID3D11Device_CreateQuery(ctx->device, &desc, &ctx->frame_time_end_query);
-    hr = d3d11_required_output_result(hr, ctx->frame_time_end_query);
+    hr = d3d11_device_child_result(hr, (ID3D11DeviceChild *)ctx->frame_time_end_query, ctx->device);
     if (SUCCEEDED(hr) &&
         !d3d11_query_desc_matches(ctx->frame_time_end_query, D3D11_QUERY_TIMESTAMP))
         hr = E_FAIL;
@@ -1420,6 +1661,28 @@ static HRESULT d3d11_compile_shader(const char *source,
     return S_OK;
 }
 
+/// @brief Fill the complete rasterizer descriptor shared by cached and biased states.
+/// @param[out] desc Descriptor destination, cleared first.
+/// @param[in] fill_mode Solid or wireframe fill selection.
+/// @param[in] cull_mode Requested culling mode.
+/// @param[in] depth_bias Native integer constant depth bias.
+/// @param[in] slope_bias Native slope-scaled depth bias.
+static void d3d11_fill_rasterizer_desc(D3D11_RASTERIZER_DESC *desc,
+                                       D3D11_FILL_MODE fill_mode,
+                                       D3D11_CULL_MODE cull_mode,
+                                       INT depth_bias,
+                                       float slope_bias) {
+    if (!desc)
+        return;
+    memset(desc, 0, sizeof(*desc));
+    desc->FillMode = fill_mode;
+    desc->CullMode = cull_mode;
+    desc->FrontCounterClockwise = TRUE;
+    desc->DepthBias = depth_bias;
+    desc->SlopeScaledDepthBias = slope_bias;
+    desc->DepthClipEnable = TRUE;
+}
+
 /// @brief Create a rasterizer state with the given fill + cull modes.
 ///
 /// Used during context init to build the four rasterizer-state combos
@@ -1441,15 +1704,12 @@ static HRESULT d3d11_create_rasterizer_state(d3d11_context_t *ctx,
         *out_state = NULL;
     if (!ctx || !ctx->device || !out_state)
         return E_INVALIDARG;
-    memset(&desc, 0, sizeof(desc));
-    desc.FillMode = fill_mode;
-    desc.CullMode = cull_mode;
-    desc.FrontCounterClockwise = TRUE;
-    desc.DepthClipEnable = TRUE;
+    d3d11_fill_rasterizer_desc(&desc, fill_mode, cull_mode, 0, 0.0f);
     hr = ID3D11Device_CreateRasterizerState(ctx->device, &desc, out_state);
-    if (FAILED(hr) || !*out_state) {
+    hr = d3d11_rasterizer_state_result(hr, *out_state, ctx->device, &desc);
+    if (FAILED(hr)) {
         SAFE_RELEASE(*out_state);
-        return FAILED(hr) ? hr : E_POINTER;
+        return hr;
     }
     return S_OK;
 }
@@ -1528,18 +1788,16 @@ static HRESULT d3d11_create_depth_biased_rasterizer(d3d11_context_t *ctx,
         *out_state = NULL;
     if (!ctx || !ctx->device || !cmd || !out_state)
         return E_INVALIDARG;
-    memset(&desc, 0, sizeof(desc));
-    desc.FillMode = wireframe ? D3D11_FILL_WIREFRAME : D3D11_FILL_SOLID;
-    desc.CullMode = backface_cull ? D3D11_CULL_BACK : D3D11_CULL_NONE;
-    desc.FrontCounterClockwise = TRUE;
-    desc.DepthClipEnable = TRUE;
-    desc.DepthBias = d3d11_depth_bias_to_int(cmd->depth_bias, reversed_z);
-    desc.SlopeScaledDepthBias = d3d11_slope_bias(cmd->slope_scaled_depth_bias, reversed_z);
-    desc.DepthBiasClamp = 0.0f;
+    d3d11_fill_rasterizer_desc(&desc,
+                               wireframe ? D3D11_FILL_WIREFRAME : D3D11_FILL_SOLID,
+                               backface_cull ? D3D11_CULL_BACK : D3D11_CULL_NONE,
+                               d3d11_depth_bias_to_int(cmd->depth_bias, reversed_z),
+                               d3d11_slope_bias(cmd->slope_scaled_depth_bias, reversed_z));
     hr = ID3D11Device_CreateRasterizerState(ctx->device, &desc, out_state);
-    if (FAILED(hr) || !*out_state) {
+    hr = d3d11_rasterizer_state_result(hr, *out_state, ctx->device, &desc);
+    if (FAILED(hr)) {
         SAFE_RELEASE(*out_state);
-        return FAILED(hr) ? hr : E_POINTER;
+        return hr;
     }
     return S_OK;
 }
@@ -1563,6 +1821,7 @@ static HRESULT d3d11_get_depth_biased_rasterizer(d3d11_context_t *ctx,
                                                  ID3D11RasterizerState **out_state) {
     INT depth_bias;
     float slope_bias;
+    D3D11_RASTERIZER_DESC expected_desc;
     ID3D11RasterizerState *state = NULL;
     HRESULT hr;
 
@@ -1572,14 +1831,25 @@ static HRESULT d3d11_get_depth_biased_rasterizer(d3d11_context_t *ctx,
         return E_INVALIDARG;
     depth_bias = d3d11_depth_bias_to_int(cmd->depth_bias, reversed_z);
     slope_bias = d3d11_slope_bias(cmd->slope_scaled_depth_bias, reversed_z);
+    d3d11_fill_rasterizer_desc(&expected_desc,
+                               wireframe ? D3D11_FILL_WIREFRAME : D3D11_FILL_SOLID,
+                               backface_cull ? D3D11_CULL_BACK : D3D11_CULL_NONE,
+                               depth_bias,
+                               slope_bias);
     if (ctx->rs_depth_biased_valid && ctx->rs_depth_biased_cached &&
         ctx->rs_depth_biased_depth_bias == depth_bias &&
         ctx->rs_depth_biased_slope_bias == slope_bias &&
         ctx->rs_depth_biased_wireframe == (wireframe ? 1 : 0) &&
         ctx->rs_depth_biased_backface_cull == (backface_cull ? 1 : 0) &&
         ctx->rs_depth_biased_reversed_z == (reversed_z ? 1 : 0)) {
-        *out_state = ctx->rs_depth_biased_cached;
-        return S_OK;
+        if (d3d11_device_child_belongs_to_device((ID3D11DeviceChild *)ctx->rs_depth_biased_cached,
+                                                 ctx->device) &&
+            d3d11_rasterizer_desc_matches(ctx->rs_depth_biased_cached, &expected_desc)) {
+            *out_state = ctx->rs_depth_biased_cached;
+            return S_OK;
+        }
+        SAFE_RELEASE(ctx->rs_depth_biased_cached);
+        ctx->rs_depth_biased_valid = 0;
     }
 
     hr = d3d11_create_depth_biased_rasterizer(
@@ -2331,7 +2601,7 @@ static int d3d11_float_srv_pair_is_usable(ID3D11Buffer *buffer,
     ID3D11Buffer_GetDesc(buffer, &buffer_desc);
     ID3D11ShaderResourceView_GetDesc(srv, &srv_desc);
     ID3D11ShaderResourceView_GetResource(srv, &view_resource);
-    usable = view_resource == (ID3D11Resource *)buffer &&
+    usable = d3d11_com_identity_matches((IUnknown *)view_resource, (IUnknown *)buffer) &&
              vgfx3d_d3d11_float_srv_buffer_desc_is_usable(buffer_desc.ByteWidth,
                                                           tracked_capacity,
                                                           required_elements,
@@ -2512,7 +2782,7 @@ static HRESULT d3d11_create_white_fallback_resources(d3d11_context_t *ctx) {
     init_data.SysMemPitch = sizeof(kWhitePixel);
     init_data.SysMemSlicePitch = sizeof(kWhitePixel);
     hr = ID3D11Device_CreateTexture2D(ctx->device, &desc, &init_data, &new_fallback_white_tex);
-    hr = d3d11_required_output_result(hr, new_fallback_white_tex);
+    hr = d3d11_device_child_result(hr, (ID3D11DeviceChild *)new_fallback_white_tex, ctx->device);
     if (SUCCEEDED(hr) && !d3d11_texture2d_desc_matches(new_fallback_white_tex, &desc))
         hr = E_FAIL;
     if (FAILED(hr)) {
@@ -2526,7 +2796,7 @@ static HRESULT d3d11_create_white_fallback_resources(d3d11_context_t *ctx) {
     srv_desc.Texture2D.MipLevels = 1;
     hr = ID3D11Device_CreateShaderResourceView(
         ctx->device, (ID3D11Resource *)new_fallback_white_tex, &srv_desc, &new_fallback_white_srv);
-    hr = d3d11_required_output_result(hr, new_fallback_white_srv);
+    hr = d3d11_device_child_result(hr, (ID3D11DeviceChild *)new_fallback_white_srv, ctx->device);
     if (SUCCEEDED(hr) && !d3d11_srv_matches_texture2d(
                              new_fallback_white_srv, new_fallback_white_tex, srv_desc.Format, 1u))
         hr = E_FAIL;
@@ -2541,7 +2811,8 @@ static HRESULT d3d11_create_white_fallback_resources(d3d11_context_t *ctx) {
         cube_init[face] = init_data;
     }
     hr = ID3D11Device_CreateTexture2D(ctx->device, &desc, cube_init, &new_fallback_white_cube_tex);
-    hr = d3d11_required_output_result(hr, new_fallback_white_cube_tex);
+    hr = d3d11_device_child_result(
+        hr, (ID3D11DeviceChild *)new_fallback_white_cube_tex, ctx->device);
     if (SUCCEEDED(hr) && !d3d11_texture2d_desc_matches(new_fallback_white_cube_tex, &desc))
         hr = E_FAIL;
     if (FAILED(hr)) {
@@ -2557,7 +2828,8 @@ static HRESULT d3d11_create_white_fallback_resources(d3d11_context_t *ctx) {
                                                (ID3D11Resource *)new_fallback_white_cube_tex,
                                                &srv_desc,
                                                &new_fallback_white_cube_srv);
-    hr = d3d11_required_output_result(hr, new_fallback_white_cube_srv);
+    hr = d3d11_device_child_result(
+        hr, (ID3D11DeviceChild *)new_fallback_white_cube_srv, ctx->device);
     if (SUCCEEDED(hr) &&
         !d3d11_srv_matches_texturecube(
             new_fallback_white_cube_srv, new_fallback_white_cube_tex, srv_desc.Format, 1u))
@@ -2582,7 +2854,7 @@ static HRESULT d3d11_create_white_fallback_resources(d3d11_context_t *ctx) {
     init_data.SysMemPitch = (UINT)(VGFX3D_BRDF_LUT_SIZE * 2u * sizeof(float));
     init_data.SysMemSlicePitch = 0;
     hr = ID3D11Device_CreateTexture2D(ctx->device, &desc, &init_data, &new_brdf_lut_tex);
-    hr = d3d11_required_output_result(hr, new_brdf_lut_tex);
+    hr = d3d11_device_child_result(hr, (ID3D11DeviceChild *)new_brdf_lut_tex, ctx->device);
     if (SUCCEEDED(hr) && !d3d11_texture2d_desc_matches(new_brdf_lut_tex, &desc))
         hr = E_FAIL;
     if (FAILED(hr)) {
@@ -2595,7 +2867,7 @@ static HRESULT d3d11_create_white_fallback_resources(d3d11_context_t *ctx) {
     srv_desc.Texture2D.MipLevels = 1;
     hr = ID3D11Device_CreateShaderResourceView(
         ctx->device, (ID3D11Resource *)new_brdf_lut_tex, &srv_desc, &new_brdf_lut_srv);
-    hr = d3d11_required_output_result(hr, new_brdf_lut_srv);
+    hr = d3d11_device_child_result(hr, (ID3D11DeviceChild *)new_brdf_lut_srv, ctx->device);
     if (SUCCEEDED(hr) &&
         !d3d11_srv_matches_texture2d(new_brdf_lut_srv, new_brdf_lut_tex, srv_desc.Format, 1u))
         hr = E_FAIL;

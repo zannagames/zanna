@@ -591,8 +591,9 @@ static HRESULT d3d11_recreate_swapchain_main_targets(d3d11_context_t *ctx,
         return E_INVALIDARG;
 
     hr = IDXGISwapChain_GetBuffer(ctx->swap_chain, 0, &IID_ID3D11Texture2D, (void **)&back_buffer);
-    if (FAILED(hr) || !back_buffer) {
-        HRESULT failure = FAILED(hr) ? hr : E_POINTER;
+    hr = d3d11_device_child_result(hr, (ID3D11DeviceChild *)back_buffer, ctx->device);
+    if (FAILED(hr)) {
+        HRESULT failure = hr;
         d3d11_log_hresult(log_context ? log_context : "IDXGISwapChain::GetBuffer", failure);
         d3d11_log_device_removed_reason(ctx, "IDXGISwapChain::GetBuffer", failure);
         SAFE_RELEASE(back_buffer);
@@ -1498,7 +1499,7 @@ static int d3d11_acquire_backbuffer_for_readback(d3d11_context_t *ctx,
         return 0;
     hr = IDXGISwapChain_GetBuffer(
         ctx->swap_chain, 0, &IID_ID3D11Texture2D, (void **)out_back_buffer);
-    hr = d3d11_required_output_result(hr, *out_back_buffer);
+    hr = d3d11_device_child_result(hr, (ID3D11DeviceChild *)*out_back_buffer, ctx->device);
     if (FAILED(hr)) {
         d3d11_log_hresult("IDXGISwapChain::GetBuffer(readback)", hr);
         SAFE_RELEASE(*out_back_buffer);

@@ -61,7 +61,7 @@ typedef pthread_mutex_t ws_mutex_t;
 #endif
 
 #if RT_PLATFORM_WINDOWS
-#define WS_MUTEX_INIT(m) (InitializeCriticalSection(m), 0)
+#define WS_MUTEX_INIT(m) (InitializeCriticalSectionEx((m), 0, 0) ? 0 : -1)
 #define WS_MUTEX_LOCK(m) EnterCriticalSection(m)
 #define WS_MUTEX_UNLOCK(m) LeaveCriticalSection(m)
 #define WS_MUTEX_DESTROY(m) DeleteCriticalSection(m)

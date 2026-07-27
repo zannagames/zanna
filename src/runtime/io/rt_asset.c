@@ -307,13 +307,12 @@ static CONDITION_VARIABLE g_asset_init_condition = CONDITION_VARIABLE_INIT;
 /// @param once Windows one-time initialization token.
 /// @param parameter Unused callback parameter.
 /// @param context Unused callback result slot.
-/// @return `TRUE` after initializing the process-lifetime critical section.
+/// @return `TRUE` after initialization, or `FALSE` when native allocation fails.
 static BOOL CALLBACK asset_init_lock(PINIT_ONCE once, PVOID parameter, PVOID *context) {
     (void)once;
     (void)parameter;
     (void)context;
-    InitializeCriticalSection(&g_asset_lock);
-    return TRUE;
+    return InitializeCriticalSectionEx(&g_asset_lock, 0, 0);
 }
 
 /// @brief Acquire the asset-manager lock (Windows CRITICAL_SECTION, lazy-initialized).

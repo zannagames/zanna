@@ -2319,16 +2319,47 @@ static void test_d3d11_backend_source_contracts(void) {
                                             "SAFE_RELEASE(ctx->shadow_atlas_srv);"),
                 "Shadow-atlas resizing stages a complete replacement before release");
     EXPECT_TRUE(strstr(source, "FAILED(hr) || !*out_tex") != NULL &&
-                    strstr(source, "FAILED(hr) || !back_buffer") != NULL,
-                "D3D11 target helpers reject successful calls with missing COM outputs");
+                    strstr(source,
+                           "d3d11_device_child_result(hr, (ID3D11DeviceChild *)back_buffer, "
+                           "ctx->device)") != NULL,
+                "D3D11 target helpers reject missing or foreign COM outputs");
+    EXPECT_TRUE(strstr(source, "static HRESULT d3d11_required_output_result") != NULL &&
+                    strstr(source, "static HRESULT d3d11_device_child_result") != NULL &&
+                    count_text(source, "d3d11_device_child_result(") >= 35u &&
+                    strstr(source, "ID3D11DeviceChild_GetDevice") != NULL &&
+                    strstr(source, "VGFX3D_IID_IUnknown") != NULL &&
+                    strstr(source, "VGFX3D_IID_ID3D11Device") != NULL &&
+                    strstr(source, "&IID_IUnknown") == NULL &&
+                    strstr(source, "&IID_ID3D11Device") == NULL,
+                "Required resources, states, shaders, and layouts validate output and device "
+                "identity without external GUID data imports");
     EXPECT_TRUE(
-        strstr(source, "static HRESULT d3d11_required_output_result") != NULL &&
-            strstr(source, "hr = d3d11_required_output_result(hr, ctx->depth_state)") != NULL &&
-            strstr(source, "hr = d3d11_required_output_result(hr, ctx->vs_main)") != NULL &&
-            strstr(source, "hr = d3d11_required_output_result(hr, ctx->input_layout)") != NULL,
-        "Required state, shader, and input-layout factories validate COM outputs");
+        strstr(source, "d3d11_com_identity_matches((IUnknown *)actual, (IUnknown *)expected)") !=
+                NULL &&
+            strstr(source,
+                   "d3d11_com_identity_matches((IUnknown *)view_resource, "
+                   "(IUnknown *)buffer)") != NULL &&
+            strstr(source, "view_resource ==") == NULL,
+        "D3D11 view/resource pairing uses controlling COM identity");
+    EXPECT_TRUE(strstr(source, "d3d11_depth_stencil_state_result") != NULL &&
+                    strstr(source, "ID3D11DepthStencilState_GetDesc") != NULL &&
+                    strstr(source, "d3d11_blend_state_result") != NULL &&
+                    strstr(source, "ID3D11BlendState_GetDesc") != NULL &&
+                    strstr(source, "d3d11_rasterizer_state_result") != NULL &&
+                    strstr(source, "ID3D11RasterizerState_GetDesc") != NULL,
+                "D3D11 pipeline states validate behavior-bearing native descriptors");
     EXPECT_TRUE(strstr(source, "(!ctx->swap_chain || !ctx->device || !ctx->ctx)") != NULL,
                 "Device creation rejects a successful HRESULT with any missing core interface");
+    EXPECT_TRUE(
+        strstr(source, "d3d11_device_context_belongs_to_device(ctx->ctx, ctx->device)") != NULL &&
+            strstr(source, "d3d11_swap_chain_belongs_to_device(ctx->swap_chain, ctx->device)") !=
+                NULL,
+        "Device creation validates immediate-context and swapchain ownership");
+    EXPECT_TRUE(text_appears_in_order_after(source,
+                                            "d3d11_get_depth_biased_rasterizer",
+                                            "d3d11_rasterizer_desc_matches",
+                                            "SAFE_RELEASE(ctx->rs_depth_biased_cached)"),
+                "Depth-biased rasterizer cache hits revalidate native state before reuse");
     EXPECT_TRUE(strstr(source, "D3D11_CREATE_DEVICE_BGRA_SUPPORT") != NULL &&
                     strstr(source, "created_feature_level != requested_feature_level") != NULL,
                 "Device creation requests interop support and confirms Direct3D 11.0");

@@ -1,3 +1,9 @@
+---
+status: active
+audience: developers
+last-verified: 2026-07-26
+---
+
 # Zia Frontend C++ Correctness and Optimization Audit (July 2026)
 
 This audit covers the C++ implementation under `src/frontends/zia/`. The first

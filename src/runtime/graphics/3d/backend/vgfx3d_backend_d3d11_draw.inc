@@ -319,14 +319,16 @@ static ID3D11SamplerState *d3d11_get_material_sampler(d3d11_context_t *ctx,
     if (ctx->material_samplers[wrap_s][wrap_t][filter_index][anisotropy_index]) {
         ID3D11SamplerState **cached =
             &ctx->material_samplers[wrap_s][wrap_t][filter_index][anisotropy_index];
-        if (d3d11_sampler_desc_matches(*cached, &desc))
+        if (d3d11_device_child_belongs_to_device((ID3D11DeviceChild *)*cached, ctx->device) &&
+            d3d11_sampler_desc_matches(*cached, &desc))
             return *cached;
         SAFE_RELEASE(*cached);
     }
     if (!ctx->device)
         return ctx->linear_wrap_sampler;
     hr = ID3D11Device_CreateSamplerState(ctx->device, &desc, &created_sampler);
-    if (FAILED(hr) || !created_sampler || !d3d11_sampler_desc_matches(created_sampler, &desc)) {
+    hr = d3d11_device_child_result(hr, (ID3D11DeviceChild *)created_sampler, ctx->device);
+    if (FAILED(hr) || !d3d11_sampler_desc_matches(created_sampler, &desc)) {
         d3d11_log_hresult("CreateSamplerState(material)", FAILED(hr) ? hr : E_FAIL);
         SAFE_RELEASE(created_sampler);
         return ctx->linear_wrap_sampler;

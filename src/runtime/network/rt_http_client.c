@@ -58,7 +58,7 @@
 #define strncasecmp _strnicmp
 typedef CRITICAL_SECTION http_client_mutex_t;
 /** Initialize a Windows HttpClient mutex. */
-#define HTTP_CLIENT_MUTEX_INIT(m) (InitializeCriticalSection(m), 1)
+#define HTTP_CLIENT_MUTEX_INIT(m) (InitializeCriticalSectionEx((m), 0, 0) != FALSE)
 /** Acquire a Windows HttpClient mutex. */
 #define HTTP_CLIENT_MUTEX_LOCK(m) EnterCriticalSection(m)
 /** Release a Windows HttpClient mutex. */

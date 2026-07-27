@@ -70,7 +70,7 @@
 #define strncasecmp _strnicmp
 typedef CRITICAL_SECTION http_server_mutex_t;
 /** Initialize a Windows HttpServer mutex. */
-#define HTTP_SERVER_MUTEX_INIT(m) (InitializeCriticalSection(m), 1)
+#define HTTP_SERVER_MUTEX_INIT(m) (InitializeCriticalSectionEx((m), 0, 0) != FALSE)
 /** Acquire a Windows HttpServer mutex. */
 #define HTTP_SERVER_MUTEX_LOCK(m) EnterCriticalSection(m)
 /** Release a Windows HttpServer mutex. */

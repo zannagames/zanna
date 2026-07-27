@@ -214,18 +214,18 @@ static int gc_atomic_cas_i64(int64_t *ptr, int64_t *expected, int64_t desired) {
 /// @param InitOnce Windows one-time initialization record.
 /// @param Parameter Unused caller parameter.
 /// @param Context Unused context output.
-/// @return `TRUE` after initializing the process-lifetime GC lock.
+/// @return `TRUE` after initialization, or `FALSE` when native allocation fails.
 static BOOL CALLBACK gc_lock_init_callback(PINIT_ONCE InitOnce, PVOID Parameter, PVOID *Context) {
     (void)InitOnce;
     (void)Parameter;
     (void)Context;
-    InitializeCriticalSection(&g_gc_lock_cs);
-    return TRUE;
+    return InitializeCriticalSectionEx(&g_gc_lock_cs, 0, 0);
 }
 
 /// @brief Acquire the GC lock, initialising the CRITICAL_SECTION on first call.
 static void gc_lock(void) {
-    InitOnceExecuteOnce(&g_gc_lock_once, gc_lock_init_callback, NULL, NULL);
+    if (!InitOnceExecuteOnce(&g_gc_lock_once, gc_lock_init_callback, NULL, NULL))
+        rt_abort("gc: lock initialization failed");
     EnterCriticalSection(&g_gc_lock_cs);
 }
 

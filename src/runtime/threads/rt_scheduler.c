@@ -295,7 +295,12 @@ void *rt_scheduler_new(void) {
     data->head = NULL;
     data->count = 0;
 #if defined(_WIN32)
-    InitializeCriticalSection(&data->mutex);
+    if (!InitializeCriticalSectionEx(&data->mutex, 0, 0)) {
+        if (rt_obj_release_check0(data))
+            rt_obj_free(data);
+        rt_trap("Scheduler: mutex initialization failed");
+        return NULL;
+    }
 #else
     if (pthread_mutex_init(&data->mutex, NULL) != 0) {
         if (rt_obj_release_check0(data))

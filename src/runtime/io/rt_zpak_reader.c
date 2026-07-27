@@ -92,7 +92,10 @@ static void *zpak_read_lock_new(void) {
     if (!lock)
         return NULL;
 #if RT_PLATFORM_WINDOWS
-    InitializeCriticalSection(&lock->native);
+    if (!InitializeCriticalSectionEx(&lock->native, 0, 0)) {
+        free(lock);
+        return NULL;
+    }
 #else
     if (pthread_mutex_init(&lock->native, NULL) != 0) {
         free(lock);

@@ -370,9 +370,8 @@ static int d3d11_snapshot_backbuffer_for_readback(d3d11_context_t *ctx) {
         return 0;
     ctx->presented_color_valid = 0;
     hr = IDXGISwapChain_GetBuffer(ctx->swap_chain, 0, &IID_ID3D11Texture2D, (void **)&back_buffer);
-    if (FAILED(hr) || !back_buffer) {
-        if (SUCCEEDED(hr))
-            hr = E_POINTER;
+    hr = d3d11_device_child_result(hr, (ID3D11DeviceChild *)back_buffer, ctx->device);
+    if (FAILED(hr)) {
         d3d11_log_hresult("IDXGISwapChain::GetBuffer(presentedSnapshot)", hr);
         SAFE_RELEASE(back_buffer);
         return 0;

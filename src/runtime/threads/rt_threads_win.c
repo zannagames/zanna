@@ -205,7 +205,11 @@ static void *rt_thread_start_impl_win(rt_thread_entry_fn entry, void *arg, int8_
     if (!t)
         return NULL;
 
-    InitializeCriticalSection(&t->cs);
+    if (!InitializeCriticalSectionEx(&t->cs, 0, 0)) {
+        thread_release_object(t);
+        rt_trap("Thread.Start: synchronization initialization failed");
+        return NULL;
+    }
     InitializeConditionVariable(&t->cv);
 
     t->hThread = NULL;

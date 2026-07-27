@@ -66,7 +66,6 @@
 #define strcasecmp _stricmp
 #define strncasecmp _strnicmp
 typedef CRITICAL_SECTION http_pool_mutex_t;
-#define HTTP_POOL_MUTEX_INIT(m) InitializeCriticalSection(m)
 #define HTTP_POOL_MUTEX_LOCK(m) EnterCriticalSection(m)
 #define HTTP_POOL_MUTEX_UNLOCK(m) LeaveCriticalSection(m)
 #define HTTP_POOL_MUTEX_DESTROY(m) DeleteCriticalSection(m)
@@ -74,7 +73,6 @@ typedef CRITICAL_SECTION http_pool_mutex_t;
 #include <pthread.h>
 #include <strings.h>
 typedef pthread_mutex_t http_pool_mutex_t;
-#define HTTP_POOL_MUTEX_INIT(m) pthread_mutex_init(m, NULL)
 #define HTTP_POOL_MUTEX_LOCK(m) pthread_mutex_lock(m)
 #define HTTP_POOL_MUTEX_UNLOCK(m) pthread_mutex_unlock(m)
 #define HTTP_POOL_MUTEX_DESTROY(m) pthread_mutex_destroy(m)
@@ -83,19 +81,15 @@ typedef pthread_mutex_t http_pool_mutex_t;
 #include "rt_trap.h"
 
 /// @brief Initialize one HTTP pool mutex through the active platform adapter.
-/// @details POSIX mutex initialization can report resource exhaustion and is
-///          checked explicitly. Win32 critical-section initialization has no
-///          status result on supported targets, so successful return means the
-///          mutex is ready. The caller publishes `lock_initialized` only after
-///          this helper succeeds.
+/// @details Both adapters report resource exhaustion explicitly. The caller
+///          publishes `lock_initialized` only after this helper succeeds.
 /// @param mutex Uninitialized native mutex storage.
 /// @return One when initialized; zero on a reported platform failure.
 static int http_pool_mutex_init(http_pool_mutex_t *mutex) {
     if (!mutex)
         return 0;
 #if RT_PLATFORM_WINDOWS
-    InitializeCriticalSection(mutex);
-    return 1;
+    return InitializeCriticalSectionEx(mutex, 0, 0) != FALSE ? 1 : 0;
 #else
     return pthread_mutex_init(mutex, NULL) == 0 ? 1 : 0;
 #endif

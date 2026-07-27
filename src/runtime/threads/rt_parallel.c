@@ -202,18 +202,15 @@ static CRITICAL_SECTION g_pool_lock;
 /// @details Invoked at most once per process by `InitOnceExecuteOnce`. Required because Win32
 ///          `CRITICAL_SECTION` has no static initializer (unlike `pthread_mutex_t`'s
 ///          `PTHREAD_MUTEX_INITIALIZER`), so we can't construct `g_pool_lock` at load time.
-///          Returning TRUE unconditionally — `InitializeCriticalSection` raises a structured
-///          exception on failure rather than returning an error code.
 /// @param InitOnce Win32 once-control passed by `InitOnceExecuteOnce`.
 /// @param Param Optional caller parameter; unused.
 /// @param Ctx Optional context output; unused.
-/// @return `TRUE` after the critical section has been initialized.
+/// @return `TRUE` after initialization, or `FALSE` when native allocation fails.
 static BOOL CALLBACK pool_lock_init_callback(PINIT_ONCE InitOnce, PVOID Param, PVOID *Ctx) {
     (void)InitOnce;
     (void)Param;
     (void)Ctx;
-    InitializeCriticalSection(&g_pool_lock);
-    return TRUE;
+    return InitializeCriticalSectionEx(&g_pool_lock, 0, 0);
 }
 #else
 static pthread_mutex_t g_pool_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -246,7 +243,8 @@ int64_t rt_parallel_default_workers(void) {
 /// @return Retained default Threadpool object, or NULL if pool creation fails.
 void *rt_parallel_default_pool(void) {
 #if RT_PLATFORM_WINDOWS
-    InitOnceExecuteOnce(&g_pool_lock_once, pool_lock_init_callback, NULL, NULL);
+    if (!InitOnceExecuteOnce(&g_pool_lock_once, pool_lock_init_callback, NULL, NULL))
+        rt_abort("Parallel: default-pool lock initialization failed");
     EnterCriticalSection(&g_pool_lock);
 #else
     pthread_mutex_lock(&g_pool_lock);
@@ -304,7 +302,8 @@ void parallel_release_default_pool(void *requested_pool, void *actual_pool) {
 ///          pool; the next `rt_parallel_default_pool()` recreates it via its is_shutdown branch.
 void rt_parallel_shutdown_default_pool(void) {
 #if RT_PLATFORM_WINDOWS
-    InitOnceExecuteOnce(&g_pool_lock_once, pool_lock_init_callback, NULL, NULL);
+    if (!InitOnceExecuteOnce(&g_pool_lock_once, pool_lock_init_callback, NULL, NULL))
+        rt_abort("Parallel: default-pool lock initialization failed");
     EnterCriticalSection(&g_pool_lock);
 #else
     pthread_mutex_lock(&g_pool_lock);

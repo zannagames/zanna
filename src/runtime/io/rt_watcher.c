@@ -1175,8 +1175,7 @@ void rt_watcher_start(void *obj) {
     }
 #if defined(FD_CLOEXEC) && !defined(IN_CLOEXEC)
     int inotify_flags = fcntl(w->inotify_fd, F_GETFD);
-    if (inotify_flags < 0 ||
-        fcntl(w->inotify_fd, F_SETFD, inotify_flags | FD_CLOEXEC) < 0) {
+    if (inotify_flags < 0 || fcntl(w->inotify_fd, F_SETFD, inotify_flags | FD_CLOEXEC) < 0) {
         (void)close(w->inotify_fd);
         w->inotify_fd = -1;
         return;
@@ -1267,7 +1266,7 @@ void rt_watcher_start(void *obj) {
     }
 
     memset(&w->overlapped, 0, sizeof(w->overlapped));
-    w->overlapped.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+    w->overlapped.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
     if (!w->overlapped.hEvent) {
         CloseHandle(w->dir_handle);
         w->dir_handle = INVALID_HANDLE_VALUE;

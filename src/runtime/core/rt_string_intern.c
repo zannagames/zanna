@@ -115,20 +115,20 @@ static CRITICAL_SECTION g_lock_;
 /// @param InitOnce Windows one-time initialization token.
 /// @param Param Unused caller parameter.
 /// @param Ctx Unused context output location.
-/// @return `TRUE` after initializing the process-global critical section.
+/// @return `TRUE` after initialization, or `FALSE` when native allocation fails.
 static BOOL CALLBACK intern_lock_init_callback(PINIT_ONCE InitOnce, PVOID Param, PVOID *Ctx) {
     (void)InitOnce;
     (void)Param;
     (void)Ctx;
-    InitializeCriticalSection(&g_lock_);
-    return TRUE;
+    return InitializeCriticalSectionEx(&g_lock_, 0, 0);
 }
 
 /// @brief Acquire the global intern-table lock (lazily initializing it on the
 ///        Windows path; the POSIX path uses a static-initialized mutex).
 /// @details Returns with exclusive ownership of the table state.
 static void intern_lock(void) {
-    InitOnceExecuteOnce(&g_lock_once_, intern_lock_init_callback, NULL, NULL);
+    if (!InitOnceExecuteOnce(&g_lock_once_, intern_lock_init_callback, NULL, NULL))
+        rt_abort("String intern: lock initialization failed");
     EnterCriticalSection(&g_lock_);
 }
 

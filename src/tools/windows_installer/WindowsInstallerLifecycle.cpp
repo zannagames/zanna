@@ -39,6 +39,7 @@
 #include <charconv>
 #include <chrono>
 #include <climits>
+#include <cstring>
 #include <cwctype>
 #include <fstream>
 #include <iomanip>
@@ -3388,6 +3389,35 @@ void writeHandleBytes(HANDLE handle, const std::vector<uint8_t> &bytes) {
         throw std::runtime_error("cannot flush the detached cleanup helper");
 }
 
+/// @brief Compare an open, write-locked file with the exact expected byte sequence.
+/// @param handle Readable file handle whose share mode denies mutation and replacement.
+/// @param expected Trusted package bytes.
+/// @return @c true only when size, positioning, reads, and every byte match.
+bool handleBytesMatch(HANDLE handle, const std::vector<uint8_t> &expected) {
+    LARGE_INTEGER size{};
+    LARGE_INTEGER beginning{};
+    std::array<uint8_t, 64U * 1024U> buffer{};
+    size_t offset = 0;
+
+    if (!handle || handle == INVALID_HANDLE_VALUE || !GetFileSizeEx(handle, &size) ||
+        size.QuadPart < 0 ||
+        static_cast<ULONGLONG>(size.QuadPart) != static_cast<ULONGLONG>(expected.size()) ||
+        !SetFilePointerEx(handle, beginning, nullptr, FILE_BEGIN)) {
+        return false;
+    }
+    while (offset < expected.size()) {
+        const DWORD requested =
+            static_cast<DWORD>((std::min)(buffer.size(), expected.size() - offset));
+        DWORD read = 0;
+        if (!ReadFile(handle, buffer.data(), requested, &read, nullptr) || read != requested ||
+            std::memcmp(buffer.data(), expected.data() + offset, requested) != 0) {
+            return false;
+        }
+        offset += read;
+    }
+    return true;
+}
+
 /// @brief Materialize and launch the detached helper that removes maintenance-cache artifacts.
 /// @param package Verified package containing cleanup-helper bytes.
 /// @param plan Resolved maintenance cache location.
@@ -3428,18 +3458,28 @@ bool launchDetachedCleanup(const HostPackage &package,
         throw std::runtime_error("cannot create the detached cleanup helper");
     }
 
+    bool processMayBeRunning = false;
     try {
         writeHandleBytes(helper.get(), package.cleanupBytes);
         helper.reset();
         helper.reset(CreateFileW(helperPath.c_str(),
-                                 GENERIC_READ | DELETE | SYNCHRONIZE,
-                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                 GENERIC_READ | SYNCHRONIZE,
+                                 FILE_SHARE_READ,
                                  nullptr,
                                  OPEN_EXISTING,
-                                 FILE_ATTRIBUTE_NORMAL,
+                                 FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN,
                                  nullptr));
         if (!helper)
             throw std::runtime_error("cannot reopen the detached cleanup helper");
+        FILE_ATTRIBUTE_TAG_INFO helperAttributes{};
+        if (!GetFileInformationByHandleEx(
+                helper.get(), FileAttributeTagInfo, &helperAttributes, sizeof(helperAttributes)) ||
+            (helperAttributes.FileAttributes &
+             (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+            throw std::runtime_error("detached cleanup helper became an unsafe filesystem entry");
+        }
+        if (!handleBytesMatch(helper.get(), package.cleanupBytes))
+            throw std::runtime_error("detached cleanup helper changed before launch");
         std::wstring command =
             quoteCommandLineArgument(helperPath.wstring()) + L" /parent " +
             std::to_wstring(GetCurrentProcessId()) + L" /delete " +
@@ -3469,14 +3509,22 @@ bool launchDetachedCleanup(const HostPackage &package,
             throw std::runtime_error("cannot start the detached cleanup helper: " +
                                      wideToUtf8(formatWindowsError(error)));
         }
+        processMayBeRunning = true;
         UniqueHandle processHandle(process.hProcess);
         UniqueHandle threadHandle(process.hThread);
         helper.reset();
         if (ResumeThread(threadHandle.get()) == static_cast<DWORD>(-1)) {
-            TerminateProcess(processHandle.get(), ERROR_INVALID_FUNCTION);
-            throw std::runtime_error("cannot resume the detached cleanup helper");
+            const DWORD resumeError = GetLastError();
+            if (!TerminateProcess(processHandle.get(), ERROR_INVALID_FUNCTION))
+                throw std::runtime_error("cannot resume or terminate the detached cleanup helper");
+            if (WaitForSingleObject(processHandle.get(), 5000) != WAIT_OBJECT_0)
+                throw std::runtime_error("the unresumed detached cleanup helper did not terminate");
+            processMayBeRunning = false;
+            throw std::runtime_error("cannot resume the detached cleanup helper: " +
+                                     wideToUtf8(formatWindowsError(resumeError)));
         }
         bool unlinked = false;
+        bool processExited = false;
         DWORD helperExit = STILL_ACTIVE;
         for (unsigned attempt = 0; attempt < 100; ++attempt) {
             if (GetFileAttributesW(helperPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
@@ -3492,6 +3540,8 @@ bool launchDetachedCleanup(const HostPackage &package,
                 break;
             }
             if (wait == WAIT_OBJECT_0) {
+                processExited = true;
+                processMayBeRunning = false;
                 if (!GetExitCodeProcess(processHandle.get(), &helperExit))
                     helperExit = GetLastError();
                 break;
@@ -3499,10 +3549,13 @@ bool launchDetachedCleanup(const HostPackage &package,
             Sleep(20);
         }
         if (!unlinked) {
-            if (!TerminateProcess(processHandle.get(), ERROR_ACCESS_DENIED))
-                throw std::runtime_error("cannot terminate the detached cleanup helper");
-            if (WaitForSingleObject(processHandle.get(), 5000) != WAIT_OBJECT_0)
-                throw std::runtime_error("the detached cleanup helper did not terminate");
+            if (!processExited) {
+                if (!TerminateProcess(processHandle.get(), ERROR_ACCESS_DENIED))
+                    throw std::runtime_error("cannot terminate the detached cleanup helper");
+                if (WaitForSingleObject(processHandle.get(), 5000) != WAIT_OBJECT_0)
+                    throw std::runtime_error("the detached cleanup helper did not terminate");
+                processMayBeRunning = false;
+            }
             throw std::runtime_error("detached cleanup helper could not self-delete (exit " +
                                      std::to_string(helperExit) + ")");
         }
@@ -3510,8 +3563,10 @@ bool launchDetachedCleanup(const HostPackage &package,
         return true;
     } catch (...) {
         helper.reset();
-        DeleteFileW(helperPath.c_str());
-        RemoveDirectoryW(helperDirectory.c_str());
+        if (!processMayBeRunning) {
+            DeleteFileW(helperPath.c_str());
+            RemoveDirectoryW(helperDirectory.c_str());
+        }
         throw;
     }
 }
@@ -3520,14 +3575,22 @@ bool launchDetachedCleanup(const HostPackage &package,
 /// @param package Verified package containing the detached cleanup helper.
 /// @param plan Resolved maintenance-cache path.
 /// @param logger Installer logger used for success and fallback diagnostics.
-/// @return @c true when detached cleanup started; @c false when reboot cleanup was scheduled.
+/// @return @c true when detached cleanup started; @c false when reboot cleanup was requested or
+///         the cache must remain for a later repair.
 bool cleanupCacheAfterUninstall(const HostPackage &package,
                                 const InstallationPlan &plan,
                                 Logger &logger) {
     try {
         return launchDetachedCleanup(package, plan, logger);
     } catch (const std::exception &error) {
-        MoveFileExW(plan.cacheExecutable.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+        if (!MoveFileExW(plan.cacheExecutable.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT)) {
+            const DWORD scheduleError = GetLastError();
+            logger.error(L"Detached cleanup failed and maintenance cache cleanup could not be "
+                         L"scheduled for reboot: " +
+                         formatWindowsError(scheduleError) + L"; launch error: " +
+                         utf8ToWide(error.what()));
+            return false;
+        }
         logger.warning(L"Detached cleanup failed; maintenance cache cleanup was scheduled "
                        L"for reboot: " +
                        utf8ToWide(error.what()));
