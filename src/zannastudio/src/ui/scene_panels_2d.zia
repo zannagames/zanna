@@ -138,10 +138,29 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
             "Show artwork at its native tile resolution (100% zoom)");
         editor.gridButton = GUI.Button.New(editor.viewToolbar, "Grid: on");
         editor.gridButton.SetTooltip("Toggle the tile grid overlay");
+        editor.hierarchyButton =
+            GUI.Button.New(editor.viewToolbar, "Objects");
+        editor.hierarchyButton.SetStyle(2);
+        editor.hierarchyButton.SetTooltip(
+            "Open the object hierarchy at the full editor width");
+        editor.hierarchyButton.SetVisible(false);
         editor.inspectorButton = GUI.Button.New(editor.viewToolbar, "Hide Inspector");
         editor.inspectorButton.SetStyle(2);
         editor.inspectorButton.SetTooltip(
             "Hide the scene inspector and give the canvas the full width");
+        editor.paletteButton = GUI.Button.New(editor.viewToolbar, "Hide Palette");
+        editor.paletteButton.SetStyle(2);
+        editor.paletteButton.SetTooltip(
+            "Hide the tile palette and give the canvas the full height");
+        editor.focusButton = GUI.Button.New(editor.viewToolbar, "Focus");
+        editor.focusButton.SetStyle(2);
+        editor.focusButton.SetTooltip(
+            "Hide outer Studio docks and maximize the scene canvas");
+        editor.workspaceButton =
+            GUI.Button.New(editor.viewToolbar, "Scene Layout");
+        editor.workspaceButton.SetStyle(2);
+        editor.workspaceButton.SetTooltip(
+            "Hide outer Studio docks but keep scene panes available");
         editor.viewStatusLabel = GUI.Label.New(editor.viewToolbar, "");
         editor.viewStatusLabel.SetMinSize(0.0, 0.0);
         editor.viewStatusLabel.SetPreferredSize(96.0, 0.0);

@@ -1,13 +1,13 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-05-08
+last-verified: 2026-07-26
 ---
 
 # Zanna Memory Management
 
-> **Status**: Active reference. Some aspects (particularly Zia frontend lifetime
-> management) are incomplete — see [Known Unsoundness](#known-unsoundness).
+> **Status**: Active reference. Known gaps are listed under
+> [Known Unsoundness](#known-unsoundness).
 >
 > **Audience**: Runtime developers, language users, future contributors.
 
@@ -35,7 +35,7 @@ prioritises determinism and low latency over throughput.
 │   ┌─────────────────────┐  ┌───────────────────────────────┐  │
 │   │  Pool Allocator     │  │  System Allocator             │  │
 │   │  (strings ≤ 512B)   │  │  (arrays, objects, large str) │  │
-│   │  Lock-free freelists │  │  malloc / calloc / free       │  │
+│   │  Spinlock freelists │  │  malloc / calloc / free       │  │
 │   │  4 size classes      │  │                               │  │
 │   └─────────────────────┘  └───────────────────────────────┘  │
 │                                                               │
@@ -114,9 +114,9 @@ typedef struct rt_heap_hdr {
 | `rt_heap_free_zero_ref(payload)` | Free only if refcount is already zero. No-op otherwise. |
 | `rt_heap_get_info(payload, out)` | Copies scalar metadata while the live-allocation registry is locked. Use this for borrowed or untrusted handle validation; the result does not expose an internal header address. |
 | `rt_heap_realloc(payload, ...)` | Moves and invalidates the original allocation only when its exact refcount is one. Shared or immortal payloads trap and remain unchanged. |
-| `rt_memory_retain(payload)` | Public `Zanna.Runtime.Unsafe.Retain` wrapper; validates live object, array, or string handles before retaining and traps on raw string payloads or unsupported heap kinds. Compatibility name: `Zanna.Memory.Retain`. |
+| `rt_memory_retain(payload)` | Public `Zanna.Runtime.Unsafe.Retain` wrapper; validates live object, array, or string handles before retaining and traps on raw string payloads or unsupported heap kinds. |
 | `rt_memory_release(payload)` | Public `Zanna.Runtime.Unsafe.Release` wrapper; releases through managed object/string/array paths and runs finalizers or element cleanup at zero. |
-| `rt_memory_retain_str(str)` | Public `Zanna.Runtime.Unsafe.RetainStr` wrapper; validates and retains a runtime string. Compatibility name: `Zanna.Memory.RetainStr`. |
+| `rt_memory_retain_str(str)` | Public `Zanna.Runtime.Unsafe.RetainStr` wrapper; validates and retains a runtime string. |
 | `rt_memory_release_str(str)` | Public `Zanna.Runtime.Unsafe.ReleaseStr` wrapper; validates and releases a runtime string. |
 
 Public heap helpers reject non-runtime and already-freed payloads before header
@@ -147,7 +147,7 @@ Strings have wrapper functions that dispatch to the heap API:
 - `rt_str_retain_maybe(s)` / `rt_str_release_maybe(s)` — NULL-safe variants
 
 **Immortal strings**: Literal strings created via `rt_str_from_lit()` or
-`rt_const_cstr()` have `refcnt == SIZE_MAX` and are never freed. The
+`rt_const_cstr()` have `refcnt >= RT_HEAP_IMMORTAL_REFCNT` (`SIZE_MAX - 1`) and are never freed. The
 retain/release fast path checks for this and short-circuits.
 
 **String interning**: `rt_string_intern(s)` inserts into a global hash table
@@ -296,9 +296,8 @@ rt_gc_set_threshold(1000);        // Request collection after 1000 allocations
 rt_gc_safepoint();                // Service coalesced debt at a safe boundary
 ```
 
-Exposed to Zanna programs as `Zanna.Runtime.GC.Collect()`,
-`SetThreshold(n)`, and `GetThreshold()`. The older `Zanna.Memory.GC` namespace
-remains available for source and IL compatibility.
+Exposed to Zanna programs as `Zanna.Runtime.GC.Collect()`, `SetThreshold(n)`,
+and `GetThreshold()`.
 
 ### Thread Safety
 
@@ -367,9 +366,9 @@ runtime strings. Raw foreign pointers are rejected so the weak-reference
 registry never tracks memory it cannot zero safely.
 
 The public runtime surface is `Zanna.Memory.WeakRef`. `New(target)` returns an
-owned weak-reference object. Static-style calls (`Get(ref)`, `Alive(ref)`,
+owned weak-reference object. Static-style calls (`Get(ref)`, `IsAlive(ref)`,
 `Reset(ref, target)`, `Free(ref)`) and instance-style calls (`ref.Get()`,
-`ref.Alive()`, `ref.Reset(target)`, `ref.Free()`) are both supported. `Get`
+`ref.IsAlive()`, `ref.Reset(target)`, `ref.Free()`) are both supported. `Get`
 returns an owned strong reference to the current target or `NULL`; `Free`
 consumes only the weak-reference object and never retains or releases the target.
 Generic `Zanna.Runtime.Unsafe.Release(ref)` is also safe: weak-reference objects detach
@@ -547,20 +546,37 @@ exit.
 
 ### Zia Frontend
 
-The Zia lowerer emits **zero** retain/release calls. Confirmed by searching all
-Zia lowerer source files — no calls to `rt_heap_retain`, `rt_heap_release`,
-`rt_string_ref`, `rt_string_unref`, `rt_obj_retain_maybe`, or
-`rt_obj_release_check0`.
+Zia lowering makes ownership explicit in the emitted IL, following the managed-value
+convention established by
+[ADR 0147](adr/0147-managed-reference-lowering-and-native-retain-elision.md):
 
-Zia relies entirely on runtime ownership conventions:
-- Runtime functions that create values return them with refcount=1.
-- The caller "owns" this reference by convention.
-- **There is no mechanism to release these references when they go out of scope.**
+- **Managed local slots** own exactly one reference to their non-null contents, for
+  both mutable and immutable bindings. Initialization and assignment move a deferred
+  owned temporary when one exists and otherwise retain a borrowed value; assignment
+  releases the displaced value.
+- **Managed parameters** are borrowed at entry. The callee retains each into its
+  owning slot (`rt_obj_retain_maybe`) and releases that slot on every exit.
+- **Managed returns** transfer exactly one reference. The caller moves it into
+  another owner, passes it to a consuming operation, or schedules one
+  statement-boundary release.
+- **Lexical cleanup** releases every managed slot introduced by a scope, including
+  shadowed bindings. `break`, `continue`, and `return` release the iteration and
+  lexical owners they exit.
+- **Conditional edges** release temporaries created on only one edge before leaving
+  it; ternary, value-`if`, coalesce, and optional expressions merge managed results
+  through an owning slot.
+- Runtime calls annotated `consumedArgMask` / `returnsOwned` in
+  `RuntimeOwnershipEffects` override the borrow-by-default convention.
 
-**Result**: Every intermediate string, object, or collection created during Zia
-expression evaluation accumulates in memory until process exit. In a tight loop
-doing string concatenation or object creation, this means unbounded memory
-growth.
+Object cleanup lowers to `rt_obj_release_check0` plus a conditional destroy block;
+string temporaries lower to `rt_str_release_maybe`. You can see both directly:
+
+```sh
+zanna build program.zia -o /dev/stdout | grep -E 'retain|release'
+```
+
+**Result**: ordinary Zia programs balance their own allocations. Reference cycles
+still need the cycle collector (see [Known Unsoundness](#known-unsoundness)).
 
 ### VM (Runner.cpp)
 
@@ -574,23 +590,14 @@ manage their own internal retain/release.
 
 Severity-ordered list of memory management gaps:
 
-### 1. CRITICAL: Zia Programs Leak All Temporaries
-
-No compiler-inserted release means every intermediate string, object, or
-collection created during expression evaluation accumulates until process exit.
-This affects any non-trivial Zia program.
-
-**Example**: `Str.ToUpper(Str.Concat(a, b))` creates an intermediate concat
-result that is never released.
-
-### 2. HIGH: No Automatic GC Triggering
+### 1. HIGH: No Automatic GC Triggering
 
 The cycle collector only runs when explicitly called via
 `Zanna.Runtime.GC.Collect()`. Programs that create cyclic object graphs (e.g.,
 doubly-linked lists, parent-child class references) without calling
 `GC.Collect()` will leak those cycles indefinitely.
 
-### 3. HIGH: Borrowed Seq Elements Require Explicit Lifetime Management
+### 2. HIGH: Borrowed Seq Elements Require Explicit Lifetime Management
 
 Plain `rt_seq_new()` uses borrowed-element mode. This still creates two hazards
 when callers insert refcounted values without retaining them:
@@ -603,13 +610,13 @@ Collection APIs that return snapshots, such as `Map.Values`, `Set.Items`, and
 the `ToSeq` conversion helpers, use retained-element mode so the returned Seq
 keeps its values alive independently of the source collection.
 
-### 4. MEDIUM: LazySeq Requires Manual Destroy
+### 3. MEDIUM: LazySeq Requires Manual Destroy
 
 LazySeq handles are not refcounted and require explicit `destroy()` calls.
 Zanna has no `using`/`Dispose` language-level pattern, making it easy to
 forget cleanup.
 
-### 5. MEDIUM: Pool Memory Never Returned to OS
+### 4. MEDIUM: Pool Memory Never Returned to OS
 
 The slab allocator retains all allocated slabs for the process lifetime.
 For long-running processes that create many short strings early, this memory
@@ -617,10 +624,10 @@ remains allocated even if never used again. `rt_pool_shutdown()` is called
 at process exit via the `atexit` handler (see §Shutdown Cleanup below) but
 not during normal execution.
 
-### 6. ~~MEDIUM: No Shutdown Cleanup Path~~ — RESOLVED
+### 5. Shutdown Cleanup
 
-**Fixed.** An `atexit` handler (`rt_global_shutdown` in `rt_heap.c`) is now
-registered on first heap allocation. It runs the following cleanup in order:
+An `atexit` handler (`rt_global_shutdown` in `rt_heap.c`) is registered on first
+heap allocation. It runs the following cleanup in order:
 
 1. `rt_gc_run_all_finalizers()` — runs finalizers on all GC-tracked objects
    (flushes files, closes sockets, releases audio/GPU handles)
@@ -639,14 +646,14 @@ process teardown, and `rt_env_exit()` uses `ExitProcess` there for the same
 reason. The stack-overflow handler uses `_exit(1)` and intentionally bypasses
 cleanup (stack is blown; running arbitrary code is unsafe).
 
-### 7. LOW: Interned Strings Are Immortal
+### 6. LOW: Interned Strings Are Immortal
 
 The intern table retains strings forever during normal execution. Programs
 that intern many unique strings will see monotonically growing memory.
 `rt_string_intern_drain()` is called at process exit via the `atexit`
 handler.
 
-### 8. LOW: GC Tracking Uses Linear Scan
+### 7. LOW: GC Tracking Uses Linear Scan
 
 `find_entry()` in `rt_gc.c` is O(N) over the tracked-object array. This will
 degrade with thousands of tracked objects.
@@ -697,10 +704,10 @@ degrade with thousands of tracked objects.
 
 | Term | Definition |
 |------|-----------|
-| **Immortal string** | A string with `refcnt == SIZE_MAX`; never freed. Created by `rt_str_from_lit()` or `rt_const_cstr()`. |
+| **Immortal string** | A string with `refcnt >= RT_HEAP_IMMORTAL_REFCNT` (`SIZE_MAX - 1`); never freed. Created by `rt_str_from_lit()` or `rt_const_cstr()`. |
 | **Pool-allocated** | Memory sourced from the slab allocator. Identified by `RT_HEAP_FLAG_POOLED` (bit 1) in the header flags. |
 | **Trial deletion** | The algorithm used by the cycle GC: temporarily decrement refcounts to identify objects only reachable through cycles. |
 | **Object resurrection** | Re-arming an object's refcount from 0→1 inside a finalizer, preventing deallocation. Used for pool recycling. |
 | **Deferred release** | Decrementing the refcount without immediately freeing, allowing cleanup code to run while the allocation remains valid. |
-| **Tagged pointer** | A pointer with metadata (version counter) packed in unused upper bits. Used by the pool freelist for ABA prevention. |
+| **Tagged pointer** | A pointer with metadata (version counter) packed in unused upper bits. The pool retains tagged-pointer helpers for experimentation, but its freelists use a per-size-class spinlock instead. |
 | **Consume semantics** | A function that releases its operand references and returns a new reference. Callers must not use the operands after the call. |

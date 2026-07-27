@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-15
+last-verified: 2026-07-26
 ---
 
 # Animation & Movement
@@ -493,7 +493,7 @@ bind Zanna.Terminal;
 
 func start() {
     var atlas = Pixels.New(64, 32);
-    atlas.Fill(Color.RGB(255, 0, 0));
+    atlas.Fill(Color.Rgb(255, 0, 0));
 
     var sheet = SpriteSheet.FromGrid(atlas, 16, 16);
     SayInt(sheet.RegionCount); // 8

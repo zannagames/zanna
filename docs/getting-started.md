@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-23
+last-verified: 2026-07-26
 ---
 
 # Getting Started with Zanna
@@ -25,9 +25,9 @@ For detailed, platform-specific installation instructions (prerequisites, exact 
 Before you begin, ensure you have:
 
 - **CMake** ≥ 3.20
-- **C++20 Compiler**: GCC, Clang, or MSVC
-- **Ninja** (optional): For faster multi-config builds
-- **Python 3.x** (optional): For helper scripts in `scripts/`
+- **C++20 Compiler**: Clang (canonical), GCC, or MSVC
+- **Ninja** (optional): Faster builds — select it with `ZANNA_CMAKE_GENERATOR=Ninja`
+- **Python 3.x** (optional): Required by some helper scripts in `scripts/`
 
 ---
 
@@ -104,10 +104,11 @@ zanna run my-app
 
 ### Options
 
-| Option          | Description                        | Default |
-|-----------------|------------------------------------|---------|
-| `--lang zia`    | Create a Zia project               | `zia`   |
-| `--lang basic`  | Create a BASIC project             | —       |
+| Option              | Description                                        |
+|---------------------|----------------------------------------------------|
+| `--lang zia\|basic` | Source language for the entry file (default: `zia`) |
+| `--`                | Treat the next token as the project name           |
+| `-h`, `--help`      | Show help for `zanna init`                         |
 
 ### Examples
 

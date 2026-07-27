@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-05-17
+last-verified: 2026-07-26
 ---
 
 # Canvas & Color
@@ -102,7 +102,7 @@ last-verified: 2026-05-17
 
 ### Color Format
 
-Colors are specified as 32-bit integers in `0x00RRGGBB` format or with `Zanna.Graphics.Color.RGB/RGBA`:
+Colors are specified as 32-bit integers in `0x00RRGGBB` format or with `Zanna.Graphics.Color.Rgb/Rgba`:
 
 - Red: `0x00FF0000`
 - Green: `0x0000FF00`
@@ -110,7 +110,7 @@ Colors are specified as 32-bit integers in `0x00RRGGBB` format or with `Zanna.Gr
 - White: `0x00FFFFFF`
 - Black: `0x00000000`
 
-Use `Zanna.Graphics.Color.RGB()` or `Zanna.Graphics.Color.RGBA()` to create colors from components. RGB-only drawing calls use the RGB channels from either form. Alpha-aware calls such as `BoxAlpha`, `DiscAlpha`, `EllipseAlpha`, and `BlitAlpha` use straight-alpha source-over compositing; the explicit alpha parameter controls shape opacity. `FloodFill` compares and writes alpha as part of the filled region when given a tagged RGBA color. `Color.RGBA()` values carry an internal explicit-alpha tag; use `Color.Get*` or `Color.ToHex()` instead of raw integer equality for RGBA colors. `Color.GetAlpha(Color.RGB(...))` returns `0` because plain RGB stores no alpha byte; drawing helpers still treat plain RGB colors as opaque.
+Use `Zanna.Graphics.Color.Rgb()` or `Zanna.Graphics.Color.Rgba()` to create colors from components. RGB-only drawing calls use the RGB channels from either form. Alpha-aware calls such as `BoxAlpha`, `DiscAlpha`, `EllipseAlpha`, and `BlitAlpha` use straight-alpha source-over compositing; the explicit alpha parameter controls shape opacity. `FloodFill` compares and writes alpha as part of the filled region when given a tagged RGBA color. `Color.Rgba()` values carry an internal explicit-alpha tag; use `Color.Get*` or `Color.ToHex()` instead of raw integer equality for RGBA colors. `Color.GetAlpha(Color.Rgb(...))` returns `0` because plain RGB stores no alpha byte; drawing helpers still treat plain RGB colors as opaque.
 
 ### Zia Example
 
@@ -126,15 +126,15 @@ func start() {
     // Main loop
     while !c.get_ShouldClose() {
         c.Poll();
-        c.Clear(Color.RGB(0, 0, 0));
+        c.Clear(Color.Rgb(0, 0, 0));
 
         // Draw shapes
-        c.Box(100, 100, 200, 150, Color.RGB(255, 0, 0));
-        c.Disc(400, 300, 50, Color.RGB(0, 0, 255));
-        c.Line(0, 0, 800, 600, Color.RGB(0, 255, 0));
-        c.Frame(50, 50, 100, 100, Color.RGB(255, 255, 255));
-        c.Ring(600, 200, 40, Color.RGB(255, 255, 0));
-        c.Text(10, 10, "Hello Zia!", Color.RGB(255, 255, 255));
+        c.Box(100, 100, 200, 150, Color.Rgb(255, 0, 0));
+        c.Disc(400, 300, 50, Color.Rgb(0, 0, 255));
+        c.Line(0, 0, 800, 600, Color.Rgb(0, 255, 0));
+        c.Frame(50, 50, 100, 100, Color.Rgb(255, 255, 255));
+        c.Ring(600, 200, 40, Color.Rgb(255, 255, 0));
+        c.Text(10, 10, "Hello Zia!", Color.Rgb(255, 255, 255));
 
         c.Flip();
     }
@@ -236,8 +236,8 @@ canvas.RoundFrame(50, 150, 150, 80, 15, 255) ' Outline only
 ' Flood fill an area (like paint bucket tool)
 canvas.FloodFill(100, 100, 16776960)
 
-' Flood fill can also preserve alpha from Color.RGBA
-canvas.FloodFill(120, 100, Zanna.Graphics.Color.RGBA(255, 255, 0, 128))
+' Flood fill can also preserve alpha from Color.Rgba
+canvas.FloodFill(120, 100, Zanna.Graphics.Color.Rgba(255, 255, 0, 128))
 
 ' Draw triangles
 canvas.Triangle(100, 50, 50, 150, 150, 150, 16711935)      ' Filled triangle
@@ -304,7 +304,7 @@ canvas.GradientV(0, 0, 800, 600, 0, 16777215)  ' Black to white (vertical)
 ```
 
 `CopyRect` and `Screenshot` return `NULL` when the canvas is closed or unavailable. `SaveBmp` and `SavePng` snapshot the canvas into a temporary `Pixels` buffer, write the file, release the temporary buffer, and return `0` on invalid canvas handles or write failure.
-`GradientH` and `GradientV` accept `Color.RGBA()` endpoint colors and preserve explicit alpha in the framebuffer.
+`GradientH` and `GradientV` accept `Color.Rgba()` endpoint colors and preserve explicit alpha in the framebuffer.
 
 ### Canvas Clipping
 
@@ -377,7 +377,7 @@ DIM isFullscreen AS INTEGER = 0
 DO WHILE NOT canvas.ShouldClose
     canvas.Poll()
 
-    IF Zanna.Input.Keyboard.Pressed(300) THEN  ' 300 = F11
+    IF Zanna.Input.Keyboard.WasPressed(Zanna.Input.Key.F11) THEN
         IF isFullscreen = 1 THEN
             canvas.Windowed()
             isFullscreen = 0
@@ -428,8 +428,8 @@ func start() {
         var dt = c.DeltaTimeSec;  // First frame may be 0.0; with SetMaxDeltaTime(50), later positive frames clamp to <= 0.05
 
         // Game logic using dt for frame-independent movement
-        c.Clear(Color.RGB(0, 0, 0));
-        c.Text(10, 10, "Running...", Color.RGB(255, 255, 255));
+        c.Clear(Color.Rgb(0, 0, 0));
+        c.Text(10, 10, "Running...", Color.Rgb(255, 255, 255));
         c.Flip();
     }
 }
@@ -463,7 +463,7 @@ Color utility functions for graphics operations.
 | `Desaturate(color, amount)` | `Integer(Integer, Integer)`               | Decreases saturation of a color (0-100)                                         |
 | `FromHex(hex)`           | `Integer(String)`                             | Parses `#RRGGBB` or `#RRGGBBAA`; invalid input returns `0`                      |
 | `FromHsl(h, s, l)`       | `Integer(Integer, Integer, Integer)`          | Creates a color from hue, saturation (0-100), lightness (0-100); hue wraps modulo 360 |
-| `GetAlpha(color)`            | `Integer(Integer)`                            | Extracts the stored alpha byte (plain `Color.RGB` returns 0)                    |
+| `GetAlpha(color)`            | `Integer(Integer)`                            | Extracts the stored alpha byte (plain `Color.Rgb` returns 0)                    |
 | `GetBlue(color)`            | `Integer(Integer)`                            | Extracts blue component (0-255) from a packed color                             |
 | `GetGreen(color)`            | `Integer(Integer)`                            | Extracts green component (0-255) from a packed color                            |
 | `GetHue(color)`            | `Integer(Integer)`                            | Extracts hue (0-360) from a packed color                                        |
@@ -473,14 +473,14 @@ Color utility functions for graphics operations.
 | `Grayscale(color)`       | `Integer(Integer)`                            | Converts a color to grayscale                                                   |
 | `Invert(color)`          | `Integer(Integer)`                            | Inverts a color (255 minus each channel)                                        |
 | `Lerp(c1, c2, t)`        | `Integer(Integer, Integer, Integer)`          | Linearly interpolates between two colors (t: 0-100, where 0=c1, 100=c2)        |
-| `RGB(r, g, b)`           | `Integer(Integer, Integer, Integer)`          | Creates a color value from red, green, blue components (0-255 each)             |
-| `RGBA(r, g, b, a)`       | `Integer(Integer, Integer, Integer, Integer)` | Creates a color with alpha from red, green, blue, alpha components (0-255 each) |
+| `Rgb(r, g, b)`           | `Integer(Integer, Integer, Integer)`          | Creates a color value from red, green, blue components (0-255 each)             |
+| `Rgba(r, g, b, a)`       | `Integer(Integer, Integer, Integer, Integer)` | Creates a color with alpha from red, green, blue, alpha components (0-255 each) |
 | `Saturate(color, amount)` | `Integer(Integer, Integer)`                  | Increases saturation of a color (0-100)                                         |
 | `ToHex(color)`           | `String(Integer)`                             | Converts a color to hex string and preserves explicit alpha, including `#RRGGBB00` |
 
-`Color.ToHex(Color.RGBA(r, g, b, a))` round-trips through `Color.FromHex()` as `#RRGGBBAA`, including `#RRGGBB00`.
+`Color.ToHex(Color.Rgba(r, g, b, a))` round-trips through `Color.FromHex()` as `#RRGGBBAA`, including `#RRGGBB00`.
 Color transforms such as `Brighten`, `Darken`, `Invert`, `Grayscale`, `Saturate`, `Desaturate`,
-`Complement`, and `Lerp` preserve explicit `Color.RGBA` alpha tags. RGB-only inputs are treated as
+`Complement`, and `Lerp` preserve explicit `Color.Rgba` alpha tags. RGB-only inputs are treated as
 fully opaque when interpolated with an alpha-tagged color.
 
 ### Zia Example
@@ -493,10 +493,10 @@ bind Zanna.Graphics.Color as Color;
 bind Zanna.Text.Fmt as Fmt;
 
 func start() {
-    var red = Color.RGB(255, 0, 0);
-    var green = Color.RGB(0, 255, 0);
-    var blue = Color.RGB(0, 0, 255);
-    var semi = Color.RGBA(255, 0, 0, 128);
+    var red = Color.Rgb(255, 0, 0);
+    var green = Color.Rgb(0, 255, 0);
+    var blue = Color.Rgb(0, 0, 255);
+    var semi = Color.Rgba(255, 0, 0, 128);
 
     Say("Red: " + Fmt.Int(red));
     Say("Green: " + Fmt.Int(green));
@@ -524,19 +524,19 @@ func start() {
 
 ```basic
 DIM red AS INTEGER
-red = Zanna.Graphics.Color.RGB(255, 0, 0)
+red = Zanna.Graphics.Color.Rgb(255, 0, 0)
 
 DIM green AS INTEGER
-green = Zanna.Graphics.Color.RGB(0, 255, 0)
+green = Zanna.Graphics.Color.Rgb(0, 255, 0)
 
 DIM blue AS INTEGER
-blue = Zanna.Graphics.Color.RGB(0, 0, 255)
+blue = Zanna.Graphics.Color.Rgb(0, 0, 255)
 
 DIM purple AS INTEGER
-purple = Zanna.Graphics.Color.RGB(128, 0, 128)
+purple = Zanna.Graphics.Color.Rgb(128, 0, 128)
 
 DIM semiTransparent AS INTEGER
-semiTransparent = Zanna.Graphics.Color.RGBA(255, 0, 0, 128)  ' 50% transparent red
+semiTransparent = Zanna.Graphics.Color.Rgba(255, 0, 0, 128)  ' 50% transparent red
 
 ' Extract individual components
 DIM r AS INTEGER = Zanna.Graphics.Color.GetRed(purple)   ' 128

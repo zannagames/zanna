@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-14
+last-verified: 2026-07-26
 ---
 
 # Pattern Matching
@@ -22,12 +22,9 @@ Byte-oriented regular-expression-subset matching for text search and manipulatio
 | Method                                | Signature                   | Description                                        |
 |---------------------------------------|-----------------------------|----------------------------------------------------|
 | `IsMatch(text, pattern)`              | `Boolean(String, String)`   | Test if pattern matches anywhere in text           |
-| `Find(text, pattern)`                 | `String(String, String)`    | Find first match, or empty string if none          |
 | `Find(text, pattern)`           | `Option[String](String, String)` | Find first match as `Some(match)`, including empty-string matches, or `None` |
-| `FindFrom(text, pattern, start)`      | `String(String, String, Integer)` | Find first match at or after start position  |
-| `FindFromOption(text, pattern, start)` | `Option[String](String, String, Integer)` | Find first match at or after start as `Some(match)`, or `None` |
-| `FindPos(text, pattern)`              | `Integer(String, String)`   | Find position of first match, or -1 if none        |
-| `FindPosOption(text, pattern)`        | `Option[Integer](String, String)` | Find position of first match as `Some(index)`, or `None` |
+| `FindFrom(text, pattern, start)`      | `Option[String](String, String, Integer)` | Find first match at or after start as `Some(match)`, or `None` |
+| `FindPos(text, pattern)`              | `Option[Integer](String, String)` | Find position of first match as `Some(index)`, or `None` |
 | `FindAll(text, pattern)`              | `Seq(String, String)`       | Find all non-overlapping matches                   |
 | `Replace(text, pattern, replacement)` | `String(String, String, String)` | Replace all matches with replacement         |
 | `ReplaceFirst(text, pattern, replacement)` | `String(String, String, String)` | Replace first match only                |
@@ -92,7 +89,7 @@ The following advanced regex features are not implemented:
   members inside a character class; each shorthand contributes its own byte set to the union
   (`[a\D]` matches `a` and every non-digit).
 - The regex cache is safe for concurrent users of cached patterns; in-use compiled entries are not evicted.
-- Prefer `Find()`, `FindFromOption()`, and `FindPosOption()` for new code. The legacy string-returning forms cannot distinguish no match from a valid empty-string match.
+- `Find()`, `FindFrom()`, and `FindPos()` all return Options, so a valid empty-string match (`Some("")`) is distinguishable from no match (`None`).
 
 ### Zia Example
 
@@ -248,19 +245,16 @@ strings to avoid recompilation overhead.
 | Method                             | Signature                    | Description                                        |
 |------------------------------------|------------------------------|----------------------------------------------------|
 | `IsMatch(text)`                    | `Boolean(String)`            | Test if pattern matches anywhere in text           |
-| `Find(text)`                       | `String(String)`             | Find first match, or empty string if none          |
 | `Find(text)`                 | `Option[String](String)`     | Find first match as `Some(match)`, including empty-string matches, or `None` |
-| `FindFrom(text, start)`            | `String(String, Integer)`    | Find first match at or after start position        |
-| `FindFromOption(text, start)`      | `Option[String](String, Integer)` | Find first match at or after start as `Some(match)`, or `None` |
-| `FindPos(text)`                    | `Integer(String)`            | Find position of first match, or -1 if none        |
-| `FindPosOption(text)`              | `Option[Integer](String)`    | Find position of first match as `Some(index)`, or `None` |
+| `FindFrom(text, start)`            | `Option[String](String, Integer)` | Find first match at or after start as `Some(match)`, or `None` |
+| `FindPos(text)`                    | `Option[Integer](String)`    | Find position of first match as `Some(index)`, or `None` |
 | `FindAll(text)`                    | `Seq(String)`                | Find all non-overlapping matches                   |
 | `Captures(text)`                   | `Seq(String)`                | Get capture groups from first match                |
 | `CapturesFrom(text, start)`        | `Seq(String, Integer)`       | Get capture groups starting from position          |
 | `Replace(text, replacement)`       | `String(String, String)`     | Replace all matches with replacement               |
 | `ReplaceFirst(text, replacement)`  | `String(String, String)`     | Replace first match only                           |
 | `Split(text)`                      | `Seq(String)`                | Split text by pattern matches                      |
-| `SplitN(text, limit)`              | `Seq(String, Integer)`       | Split text with maximum number of parts            |
+| `Split(text, limit)`               | `Seq(String, Integer)`       | Split text with a maximum number of parts          |
 
 ### Capture Groups
 
@@ -271,7 +265,7 @@ return a Seq containing:
 
 If there is no match, an empty Seq is returned. Alternation does not retain empty slots for
 unmatched lexical groups, and the capture matcher can fail even when `Find` succeeds; see
-[VDOC-057](../../../misc/reviews/documentation-review-findings.md#vdoc-057--compiledpattern-captures-uses-a-different-matcher-and-group-numbering).
+[VDOC-057](../../../misc/reviews/documentation-review-findings.md#vdoc-057--compiledpatterncaptures-uses-a-different-matcher-and-group-numbering).
 
 Prefer the Option-returning `Find*Option()` methods for branchable search code. The legacy
 `Find()` and `FindFrom()` methods return an empty string for no match, which is ambiguous
@@ -289,7 +283,7 @@ when the pattern itself can match an empty string.
   result when the start is beyond the text.
 - `Replace` and `ReplaceFirst` insert the replacement literally; they do not expand capture-group
   references. Zero-width matches preserve every source byte (see the static `Pattern` notes).
-- `SplitN` returns at most `limit` pieces when `limit > 0`; zero or a negative limit is unlimited.
+- The two-argument `Split(text, limit)` returns at most `limit` pieces when `limit > 0`; zero or a negative limit is unlimited.
 
 ### Zia Example
 
@@ -431,7 +425,7 @@ Stateful string scanner for lexing and parsing text. Maintains a position cursor
 | `SkipWhitespace()`    | `Integer()`                | Skip space, tab, `LF`, and `CR`; return the byte count           |
 | `ReadIdent()`         | `String()`                 | Read an identifier (letter/underscore start, then alnum/underscore) |
 | `ReadIntToken()`           | `String()`                 | Read an integer (optional sign + digits)                       |
-| `ReadNumber()`        | `String()`                 | Read a decimal number token with optional sign/exponent         |
+| `ReadNumberToken()`   | `String()`                 | Read a decimal number token with optional sign/exponent         |
 | `ReadQuoted(quote)`   | `String(Integer)`          | Consume a quoted string and decode its simple escapes           |
 | `ReadLine()`          | `String()`                 | Read a line and consume its `LF`, `CR`, or `CRLF` terminator    |
 

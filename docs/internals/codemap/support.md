@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-05-31
+last-verified: 2026-07-26
 ---
 
 # CODEMAP: Support & Common
@@ -10,13 +10,11 @@ Shared support and infrastructure used across the toolchain.
 
 Directories: `src/support/`, `src/common/`, `src/parse/`, `src/pass/`.
 
-Last updated: 2026-05-31
-
 ## Overview
 
-- **Total source files**: 27 (.hpp/.cpp)
-  - support/: 19 files
-  - common/: 6 files
+- **Total source files**: 33 (.hpp/.cpp)
+  - support/: 21 files
+  - common/: 10 files
   - parse/: 1 file
   - pass/: 1 file
 

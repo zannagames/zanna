@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-16
+last-verified: 2026-07-26
 ---
 
 # Chapter 20: User Input
@@ -946,10 +946,10 @@ func start() {
 
         // --- RENDERING ---
         // Sky
-        canvas.Box(0, 0, 800, 550, Color.RGB(100, 150, 255));
+        canvas.Box(0, 0, 800, 550, Color.Rgb(100, 150, 255));
 
         // Ground
-        canvas.Box(0, 550, 800, 100, Color.RGB(50, 150, 50));
+        canvas.Box(0, 550, 800, 100, Color.Rgb(50, 150, 50));
 
         // Player (centered on position)
         var drawX = Convert.NumToInt(player.x - 25.0);
@@ -1145,15 +1145,16 @@ func startGame() {
 }
 ```
 
-**Fix:**
+**Fix:** consume the edge before switching state, or simply wait a frame before
+processing input in the new state — there is no API to clear the pressed set.
+
 ```zia
 func startGame() {
-    Keyboard.ClearPressed();  // Clear the "just pressed" flags
-    // Now Enter won't trigger anything this frame
+    // Drain this frame's edge-triggered events so the Enter that started the
+    // game is not observed again by the gameplay state.
+    var _ = Keyboard.GetPressed();
 }
 ```
-
-Or simply wait a frame before processing input in the new state.
 
 ---
 

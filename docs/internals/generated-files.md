@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-11
+last-verified: 2026-07-26
 ---
 
 # Generated Files Guide

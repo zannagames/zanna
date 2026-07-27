@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-15
+last-verified: 2026-07-26
 ---
 
 # Time & Timing
@@ -117,7 +117,7 @@ interval has expired.
 |-------------|------------------------|--------------------------------------------------------|
 | `Elapsed`   | `Integer` (read-only)  | Milliseconds elapsed since start                       |
 | `Remaining` | `Integer` (read-only)  | Milliseconds remaining until expiration (0 if expired) |
-| `Expired`   | `Boolean` (read-only)  | True if the countdown has finished                     |
+| `IsExpired` | `Boolean` (read-only)  | True if the countdown has finished                     |
 | `Interval`  | `Integer` (read/write) | The countdown duration in milliseconds                 |
 | `IsRunning` | `Boolean` (read-only)  | True if the countdown is currently running             |
 
@@ -176,7 +176,7 @@ DIM timer AS Zanna.Time.Countdown = Zanna.Time.Countdown.New(5000)
 timer.Start()
 
 ' Game loop with timeout
-WHILE NOT timer.Expired
+WHILE NOT timer.IsExpired
     PRINT "Time remaining: "; timer.Remaining; " ms"
     Zanna.Time.Clock.Sleep(500)
 WEND
@@ -186,11 +186,11 @@ PRINT "Time's up!"
 DIM timeout AS Zanna.Time.Countdown = Zanna.Time.Countdown.New(1000)
 timeout.Start()
 
-WHILE NOT operationComplete AND NOT timeout.Expired
+WHILE NOT operationComplete AND NOT timeout.IsExpired
     ' Poll the surrounding operation here
 WEND
 
-IF timeout.Expired THEN
+IF timeout.IsExpired THEN
     PRINT "Operation timed out"
 END IF
 
@@ -244,7 +244,7 @@ Date and time operations. Timestamps are Unix timestamps (seconds since January 
 | `ParseIso8601(str)`                  | `Integer(String)`           | Parse an ISO 8601 datetime string to Unix timestamp      |
 | `ParseDate(str)`                 | `Integer(String)`           | Parse a "YYYY-MM-DD" string to Unix timestamp            |
 | `ParseTime(str)`                 | `Integer(String)`           | Parse a "HH:MM:SS" string to seconds since midnight      |
-| `TryParseOption(str)`            | `Option[Integer](String)`   | Auto-detect format and parse; returns `None` on failure  |
+| `TryParse(str)`                  | `Option[Integer](String)`   | Auto-detect format and parse; returns `None` on failure  |
 | `TryFromParts(y, m, d, h, min, s)` | `Option[Integer](Integer...)` | Like `FromParts` but returns `Some` on success and `None` on failure, so pre-epoch `-1` is unambiguous |
 
 ### Notes
@@ -292,7 +292,7 @@ Date and time operations. Timestamps are Unix timestamps (seconds since January 
 | `ParseIso8601`   | `"2025-06-15T14:30:00Z"`, `"2025-06-15T14:30:00.123Z"`, or `"2025-06-15T14:30:00+02:00"` | Unix timestamp (seconds) |
 | `ParseDate`  | `"2025-06-15"`                        | Unix timestamp (seconds, midnight)     |
 | `ParseTime`  | `"14:30"`, `"14:30:00"`, or `"14:30:00.123"` | Seconds since midnight (0-86399) |
-| `TryParseOption` | Any of the above formats          | `Some(Integer)` on success, `None` on failure |
+| `TryParse`   | Any of the above formats              | `Some(Integer)` on success, `None` on failure |
 
 - `ParseIso8601` accepts exactly four year digits, `T`, `t`, or a space as the date/time separator,
   optional fractional seconds (discarded because timestamps store whole seconds), and `Z`/`z` or
@@ -302,8 +302,8 @@ Date and time operations. Timestamps are Unix timestamps (seconds since January 
 - `ParseDate` parses exact `YYYY-MM-DD` strings and returns the timestamp at local midnight
 - `ParseTime` returns seconds since midnight (not a Unix timestamp) for exact `HH:MM`, `HH:MM:SS`, or `HH:MM:SS.fraction` strings
 - Invalid calendar values, out-of-range times, and trailing characters are rejected
-- On failure, `ParseIso8601` and `ParseDate` return `0`, while `ParseTime` returns `-1`; use `TryParseOption` when the Unix epoch must be distinguishable from failure
-- `TryParseOption` preserves a valid Unix epoch or midnight parse as `Some(0)`. A time-only input
+- On failure, `ParseIso8601` and `ParseDate` return `0`, while `ParseTime` returns `-1`; use `TryParse` when the Unix epoch must be distinguishable from failure
+- `TryParse` preserves a valid Unix epoch or midnight parse as `Some(0)`. A time-only input
   produces seconds since midnight; a date or datetime input produces a Unix timestamp. The former
   `TryParse` numeric-sentinel target remains implemented in C for binary/internal compatibility
   but is no longer registered in the current public runtime surface.
@@ -612,7 +612,7 @@ Date-only type for working with calendar dates without time components. Represen
 | `EndOfMonth()`      | `DateOnly()`           | Returns the last day of this date's month                |
 | `StartOfYear()`     | `DateOnly()`           | Returns January 1 of this date's year                    |
 | `EndOfYear()`       | `DateOnly()`           | Returns December 31 of this date's year                  |
-| `Cmp(other)`        | `Integer(DateOnly)`    | Compares dates, returns -1, 0, or 1                      |
+| `Compare(other)`    | `Integer(DateOnly)`    | Compares dates, returns -1, 0, or 1                      |
 | `Equals(other)`     | `Boolean(DateOnly)`    | Returns true if the two dates are equal                  |
 | `ToString()`        | `String()`             | Returns date as "YYYY-MM-DD" string                      |
 | `Format(fmt)`       | `String(String)`       | Formats the date using a format string                   |
@@ -751,8 +751,8 @@ Duration type for representing and manipulating time spans. Duration is a static
 | `Mul(dur, factor)` | `Integer(Integer, Integer)` | Multiply duration by integer factor  |
 | `Div(dur, divisor)`| `Integer(Integer, Integer)` | Divide duration by integer divisor   |
 | `Abs(dur)`        | `Integer(Integer)`          | Absolute value of a duration         |
-| `Neg(dur)`        | `Integer(Integer)`          | Negate a duration                    |
-| `Cmp(a, b)`       | `Integer(Integer, Integer)` | Compare two durations (-1, 0, or 1)  |
+| `Negate(dur)`     | `Integer(Integer)`          | Negate a duration                    |
+| `Compare(a, b)`   | `Integer(Integer, Integer)` | Compare two durations (-1, 0, or 1)  |
 
 ### Formatting Methods
 

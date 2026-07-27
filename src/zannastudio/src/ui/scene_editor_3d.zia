@@ -12,8 +12,13 @@
 //   - The live SceneGraph is serialized back to Document.content after every
 //     accepted edit; a failed serialization rolls the graph back.
 //   - One complete gizmo drag creates one local-transform history snapshot.
-//   - Compact windows show viewport or inspector at full width, never two slivers.
+//   - Compact windows cycle hierarchy, viewport, and inspector at full width;
+//     no authoring surface becomes an inaccessible sliver.
 //   - Compact wrapped toolbars reserve every row so actions remain reachable.
+//   - Redundant toolbar section headings yield before named actions at
+//     constrained widths, keeping every scene command inside measured rows.
+//   - Focus presentation temporarily collapses every non-floating scene pane
+//     and restores the exact per-document layout without persisting the detour.
 //   - VSCN parsing and serialization run entirely in memory (ADR 0190):
 //     SaveToText/LoadTextResult carry the canonical bytes, the document path
 //     names the prefab base directory, and no staging files are created.
@@ -39,6 +44,14 @@
 //     selection, aborting atomically on every type conflict.
 //   - Project schema authoring has independent conflict-safe file history and
 //     never changes canonical VSCN content, revision, history, or dirty state.
+//   - Project node previews instantiate only into a bounded transient graph;
+//     rendering and picking map back to canonical metadata marker identities.
+//   - Project gameplay view can be reapplied after navigation without changing
+//     canonical VSCN bytes, dirty state, revision, or undo history.
+//   - Project sky palettes and directional rigs resolve typed root metadata
+//     into bounded cached viewport-only resources, never canonical nodes.
+//   - Project gameplay lens, IBL, and height-fog settings remain validated,
+//     bounded viewport presentation and never enter scene serialization.
 //   - Hierarchy Find keeps all bounded rows visible, wraps deterministically,
 //     reveals nested matches, and never changes VSCN history or camera state.
 //   - World-space groups execute in hierarchy preorder so selected descendants
@@ -85,7 +98,11 @@
 //        docs/adr/0167-spinner-mixed-value-state.md,
 //        docs/adr/0168-windowless-canvas3d-rendering.md,
 //        docs/adr/0169-super-modifier-keys-and-studio-viewport-picking.md,
-//        docs/adr/0172-public-scenenode-light-authoring-and-studio-light-inspector.md
+//        docs/adr/0172-public-scenenode-light-authoring-and-studio-light-inspector.md,
+//        docs/adr/0198-project-owned-3d-scene-preview-profiles.md,
+//        docs/adr/0199-project-owned-3d-node-prefab-previews.md,
+//        docs/adr/0200-project-owned-3d-sky-and-light-preview-rigs.md,
+//        docs/adr/0201-project-owned-3d-lens-and-atmosphere-previews.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -109,6 +126,7 @@ bind "../core/document";
 bind "../core/project_manager";
 bind "../services/file_utils";
 bind "../services/material_library_3d";
+bind "../services/project_locator";
 bind "../services/safe_io";
 bind "scene_asset_browser";
 bind "scene_bake_3d";
@@ -163,6 +181,7 @@ bind Parse = Zanna.Core.Parse;
 
 final DEFAULT_VIEWPORT_WIDTH: Integer = 800;
 final DEFAULT_VIEWPORT_HEIGHT: Integer = 520;
+final PROJECT_SKY_FACE_SIZE: Integer = 32;
 final MIN_VIEWPORT_WIDTH: Integer = 320;
 final MIN_VIEWPORT_HEIGHT: Integer = 240;
 final MAX_VIEWPORT_WIDTH: Integer = 3840;
@@ -174,6 +193,8 @@ final MAX_SCENE_BYTES: Integer = 64000000;
 final MAX_3D_HISTORY_BYTES: Integer = 256000000;
 final MAX_TEXTURE_SOURCE_BYTES: Integer = 16000000;
 final MAX_EDITOR_NODES: Integer = 4096;
+final MAX_PROJECT_PREVIEW_NODES: Integer = 4096;
+final MAX_PROJECT_PREVIEW_ASSETS: Integer = 256;
 final MAX_HIERARCHY_DEPTH: Integer = 256;
 final MAX_3D_SCENE_HISTORY: Integer = 100;
 final DEG_TO_RAD: Number = 0.017453292519943295;
@@ -186,8 +207,12 @@ final GIZMO_RING_STEP_RADIANS: Number = 0.19634954084936207;
 final GIZMO_RING_INVALID_DISTANCE: Number = 1000000000.0;
 final GIZMO_PLANE_INNER_FRACTION: Number = 0.25;
 final GIZMO_PLANE_OUTER_FRACTION: Number = 0.55;
-final COMPACT_SCENE_3D_WIDTH: Number = 700.0;
-final HIERARCHY_PANE_MIN_WIDTH: Number = 820.0;
+// The viewport enters master/detail before three fixed panes reduce it to a
+// thumbnail. Toolbar chrome reaches its narrowest tier only on truly compact
+// hosts, keeping dock-heavy desktop windows concise without oversized rows.
+final COMPACT_SCENE_3D_WIDTH: Number = 980.0;
+final COMPACT_SCENE_3D_CHROME_WIDTH: Number = 700.0;
+final HIERARCHY_PANE_MIN_WIDTH: Number = 1120.0;
 final RESPONSIVE_WIDTH_EPSILON: Number = 0.01;
 final VIEWPORT_CLEAR_RED: Number = 0.08627450980392157;
 final VIEWPORT_CLEAR_GREEN: Number = 0.10196078431372549;
@@ -195,7 +220,6 @@ final VIEWPORT_CLEAR_BLUE: Number = 0.13333333333333333;
 final VIEWPORT_CAMERA_NEAR: Number = 0.1;
 final VIEWPORT_CAMERA_MIN_DISTANCE: Number = 100.0;
 final VIEWPORT_FOV_DEGREES: Number = 60.0;
-final VIEWPORT_FOV_HALF_TAN: Number = 0.5773502691896257;
 final FLY_LOOK_DEGREES_PER_PIXEL: Number = 0.25;
 final FLY_BASE_SPEED_PER_SECOND: Number = 0.6;
 final FLY_FAST_MULTIPLIER: Number = 4.0;
@@ -551,6 +575,11 @@ expose func UsesCompactLayout(width: Number) -> Boolean {
     return width > 0.0 and width <= COMPACT_SCENE_3D_WIDTH;
 }
 
+/// @brief Return whether 3D toolbar labels need their narrowest presentation.
+expose func UsesCompactChrome(width: Number) -> Boolean {
+    return width > 0.0 and width <= COMPACT_SCENE_3D_CHROME_WIDTH;
+}
+
 /// @brief One projected viewport coordinate.
 class ProjectedPoint {
     expose Integer x;
@@ -581,12 +610,120 @@ class ScreenBounds3D {
     }
 }
 
+/// @brief Fully validated viewport atmosphere resolved from scene metadata.
+class ScenePreview3DRenderState {
+    expose Boolean hasCameraFov;
+    expose Number cameraFov;
+    expose Boolean hasIblIntensity;
+    expose Number iblIntensity;
+    expose Boolean hasAmbient;
+    expose Number ambientR;
+    expose Number ambientG;
+    expose Number ambientB;
+    expose Boolean hasClear;
+    expose Number clearR;
+    expose Number clearG;
+    expose Number clearB;
+    expose Boolean hasFog;
+    expose Number fogR;
+    expose Number fogG;
+    expose Number fogB;
+    expose Number fogNear;
+    expose Number fogFar;
+    expose Boolean hasSky;
+    expose Number zenithR;
+    expose Number zenithG;
+    expose Number zenithB;
+    expose Number groundR;
+    expose Number groundG;
+    expose Number groundB;
+    expose Number cloudDensity;
+    expose Boolean stars;
+    expose Boolean hasSun;
+    expose Number sunX;
+    expose Number sunY;
+    expose Number sunZ;
+    expose Number sunR;
+    expose Number sunG;
+    expose Number sunB;
+    expose Number sunIntensity;
+    expose Boolean hasFill;
+    expose Number fillX;
+    expose Number fillY;
+    expose Number fillZ;
+    expose Number fillR;
+    expose Number fillG;
+    expose Number fillB;
+    expose Number fillIntensity;
+    expose Boolean hasHeightFog;
+    expose Boolean heightFogEnabled;
+    expose Number heightFogBase;
+    expose Number heightFogFalloff;
+    expose Number heightFogDensity;
+    expose Number heightFogOpacity;
+
+    expose func init() {
+        hasCameraFov = false;
+        cameraFov = VIEWPORT_FOV_DEGREES;
+        hasIblIntensity = false;
+        iblIntensity = 0.0;
+        hasAmbient = false;
+        ambientR = 0.0;
+        ambientG = 0.0;
+        ambientB = 0.0;
+        hasClear = false;
+        clearR = 0.0;
+        clearG = 0.0;
+        clearB = 0.0;
+        hasFog = false;
+        fogR = 0.0;
+        fogG = 0.0;
+        fogB = 0.0;
+        fogNear = 0.0;
+        fogFar = 1.0;
+        hasSky = false;
+        zenithR = 0.0;
+        zenithG = 0.0;
+        zenithB = 0.0;
+        groundR = 0.0;
+        groundG = 0.0;
+        groundB = 0.0;
+        cloudDensity = 0.0;
+        stars = false;
+        hasSun = false;
+        sunX = 0.0;
+        sunY = -1.0;
+        sunZ = 0.0;
+        sunR = 1.0;
+        sunG = 1.0;
+        sunB = 1.0;
+        sunIntensity = 0.0;
+        hasFill = false;
+        fillX = 0.0;
+        fillY = -1.0;
+        fillZ = 0.0;
+        fillR = 1.0;
+        fillG = 1.0;
+        fillB = 1.0;
+        fillIntensity = 0.0;
+        hasHeightFog = false;
+        heightFogEnabled = false;
+        heightFogBase = 0.0;
+        heightFogFalloff = 0.0;
+        heightFogDensity = 0.0;
+        heightFogOpacity = 0.0;
+    }
+}
+
 /// @brief Persistent visual editor for one active VSCN document.
 class SceneEditor3D {
     expose GUI.App guiApp;
     expose GUI.VBox root;
     expose GUI.Flex toolbar;
     expose GUI.Flex viewToolbar;
+    expose GUI.Label viewSectionLabel;
+    expose GUI.Label transformSectionLabel;
+    expose GUI.Label zoomSectionLabel;
     expose GUI.Button newSceneButton;
     expose GUI.Button importAssetButton;
     expose GUI.Button addEmptyButton;
@@ -599,6 +736,7 @@ class SceneEditor3D {
     expose GUI.Button topViewButton;
     expose GUI.Button frontViewButton;
     expose GUI.Button rightViewButton;
+    expose GUI.Button projectViewButton;
     expose GUI.Button addLightButton;
     expose GUI.Button addCameraButton;
     expose GUI.Button importInstanceButton;
@@ -662,6 +800,10 @@ class SceneEditor3D {
     hide Boolean envBrowseMode;
     hide String envSkyboxCubemapPath;
     hide CubeMap3D envSkyboxCubemap;
+    hide String projectEnvironmentSignature;
+    hide CubeMap3D projectSkyCubemap;
+    hide Light3D projectSunLight;
+    hide Light3D projectFillLight;
     expose GUI.Button duplicateNodeButton;
     expose GUI.Button deleteNodeButton;
     expose GUI.Button orbitLeftButton;
@@ -678,7 +820,10 @@ class SceneEditor3D {
     expose GUI.Button frameButton;
     expose GUI.Button frameSelectedButton;
     expose GUI.Button viewportModeButton;
+    expose GUI.Button hierarchyButton;
     expose GUI.Button inspectorButton;
+    expose GUI.Button workspaceButton;
+    expose GUI.Button focusButton;
     expose GUI.Label toolbarStatus;
     expose GUI.Label viewStatusLabel;
     expose GUI.SplitPane hierarchySplit;
@@ -753,6 +898,14 @@ class SceneEditor3D {
 
     expose project_manager.ProjectManager projectManager;
     expose scene_component_schema.SceneComponentSchema componentSchema;
+    expose SceneGraph projectPreviewScene;
+    expose Integer projectPreviewInstanceCount;
+    expose Integer projectPreviewMissingCount;
+    expose Boolean projectPreviewClipped;
+    hide List[String] projectPreviewAssetPaths;
+    hide List[SceneAsset] projectPreviewAssets;
+    hide List[SceneNode] projectPreviewNodes;
+    hide List[Integer] projectPreviewOwners;
     expose document.Document currentDoc;
     expose SceneGraph scene;
     expose Pixels viewportPixels;
@@ -834,8 +987,10 @@ class SceneEditor3D {
     expose Number viewTargetZ;
     expose Boolean hierarchyClipped;
     expose Boolean compactLayout;
+    hide Boolean compactChrome;
     hide Number lastHostWidth;
     expose Boolean inspectorRequestedVisible;
+    expose Boolean compactHierarchyShown;
     expose Boolean compactInspectorShown;
     expose List[String] undoStack;
     expose List[String] redoStack;
@@ -868,6 +1023,7 @@ class SceneEditor3D {
     hide Integer metadataOwnerIndex;
     hide Boolean restoreInspectorScrollPending;
     hide Number pendingInspectorScrollY;
+    hide Boolean initialProjectPreviewPending;
     hide document.Document hierarchyDocument;
     hide SceneNode hierarchySceneRoot;
     hide SceneNode hierarchyPreferredNode;
@@ -884,6 +1040,10 @@ class SceneEditor3D {
     hide List[String] cameraBookmarks;
     hide List[String] pickLockedPaths;
     hide Boolean runSceneRequested;
+    hide Boolean workspaceModeActive;
+    hide Boolean workspaceModeToggleRequested;
+    hide Boolean focusModeActive;
+    hide Boolean focusModeToggleRequested;
     hide Boolean marqueeCandidate;
     hide Boolean marqueeActive;
     hide Boolean marqueeCancelled;
@@ -899,6 +1059,9 @@ class SceneEditor3D {
         root = null;
         toolbar = null;
         viewToolbar = null;
+        viewSectionLabel = null;
+        transformSectionLabel = null;
+        zoomSectionLabel = null;
         newSceneButton = null;
         importAssetButton = null;
         addEmptyButton = null;
@@ -909,9 +1072,14 @@ class SceneEditor3D {
         addCylinderButton = null;
         runSceneButton = null;
         runSceneRequested = false;
+        workspaceModeActive = false;
+        workspaceModeToggleRequested = false;
+        focusModeActive = false;
+        focusModeToggleRequested = false;
         topViewButton = null;
         frontViewButton = null;
         rightViewButton = null;
+        projectViewButton = null;
         addLightButton = null;
         addCameraButton = null;
         importInstanceButton = null;
@@ -975,6 +1143,10 @@ class SceneEditor3D {
         envBrowseMode = false;
         envSkyboxCubemapPath = "";
         envSkyboxCubemap = null;
+        projectEnvironmentSignature = "";
+        projectSkyCubemap = null;
+        projectSunLight = null;
+        projectFillLight = null;
         duplicateNodeButton = null;
         deleteNodeButton = null;
         orbitLeftButton = null;
@@ -991,7 +1163,10 @@ class SceneEditor3D {
         frameButton = null;
         frameSelectedButton = null;
         viewportModeButton = null;
+        hierarchyButton = null;
         inspectorButton = null;
+        workspaceButton = null;
+        focusButton = null;
         toolbarStatus = null;
         viewStatusLabel = null;
         hierarchySplit = null;
@@ -1074,6 +1249,14 @@ class SceneEditor3D {
         projectManager = null;
         componentSchema =
             new scene_component_schema.SceneComponentSchema();
+        projectPreviewScene = null;
+        projectPreviewInstanceCount = 0;
+        projectPreviewMissingCount = 0;
+        projectPreviewClipped = false;
+        projectPreviewAssetPaths = [];
+        projectPreviewAssets = [];
+        projectPreviewNodes = [];
+        projectPreviewOwners = [];
         currentDoc = null;
         scene = null;
         viewportPixels = null;
@@ -1099,7 +1282,7 @@ class SceneEditor3D {
         selectedNodeMetadata = -1;
         revision = 0;
         viewYawDegrees = 35;
-        viewPitchDegrees = -25;
+        viewPitchDegrees = 25;
         viewScale = 28;
         viewportMode = VIEWPORT_MODE_SHADED;
         renderedViewportWidth = DEFAULT_VIEWPORT_WIDTH;
@@ -1156,7 +1339,9 @@ class SceneEditor3D {
         viewTargetZ = 0.0;
         hierarchyClipped = false;
         compactLayout = false;
+        compactChrome = false;
         inspectorRequestedVisible = true;
+        compactHierarchyShown = false;
         compactInspectorShown = false;
         undoStack = [];
         redoStack = [];
@@ -1189,6 +1374,7 @@ class SceneEditor3D {
         metadataOwnerIndex = -1;
         restoreInspectorScrollPending = false;
         pendingInspectorScrollY = 0.0;
+        initialProjectPreviewPending = false;
         hierarchyDocument = null;
         hierarchySceneRoot = null;
         hierarchyPreferredNode = null;
@@ -1222,6 +1408,7 @@ class SceneEditor3D {
         nextProjectManager: project_manager.ProjectManager) {
         projectManager = nextProjectManager;
         ReloadComponentSchema();
+        if scene != null { RebuildProjectNodePreviews(); }
     }
 
     /// @brief Reload project component templates for the active document root.
@@ -1259,11 +1446,215 @@ class SceneEditor3D {
             var owner =
                 projectManager.WorkspaceRootPathForPath(currentDoc.filePath);
             if owner != "" { return owner; }
+            return project_locator.NearestManifestRoot(
+                currentDoc.filePath);
         }
         if projectManager.RootCount() == 1 {
             return projectManager.RootPathAt(0);
         }
         return "";
+    }
+
+    /// @brief Find the first project rule matching one exact string metadata.
+    hide func ProjectNodePreviewRule(
+        node: SceneNode) -> scene_component_schema.SceneNodePreview3DDefinition {
+        if node == null or componentSchema == null
+           or componentSchema.valid == false {
+            return null;
+        }
+        var index = 0;
+        while index < componentSchema.nodePreviews3D.count() {
+            var rule = componentSchema.nodePreviews3D.get(index);
+            if rule != null
+               and node.MetadataHas(rule.matchProperty)
+               and node.MetadataKind(rule.matchProperty) == "string"
+               and node.MetadataGetString(rule.matchProperty, "")
+                  == rule.matchValue {
+                return rule;
+            }
+            index = index + 1;
+        }
+        return null;
+    }
+
+    /// @brief Resolve one rule's integer variant with its authored fallback.
+    hide func ProjectNodePreviewPrefab(
+        node: SceneNode,
+        rule: scene_component_schema.SceneNodePreview3DDefinition)
+        -> String {
+        if node == null or rule == null { return ""; }
+        if rule.variantProperty != ""
+           and node.MetadataHas(rule.variantProperty)
+           and node.MetadataKind(rule.variantProperty) == "int" {
+            return rule.PrefabForVariant(
+                node.MetadataGetInt(rule.variantProperty, -1));
+        }
+        return rule.prefab;
+    }
+
+    /// @brief Load and cache one validated project preview asset.
+    hide func ProjectNodePreviewAsset(path: String) -> SceneAsset {
+        var index = 0;
+        while index < projectPreviewAssetPaths.count() {
+            if projectPreviewAssetPaths.get(index) == path {
+                return projectPreviewAssets.get(index);
+            }
+            index = index + 1;
+        }
+        if projectPreviewAssetPaths.count()
+           >= MAX_PROJECT_PREVIEW_ASSETS {
+            projectPreviewClipped = true;
+            return null;
+        }
+        var asset: SceneAsset = null;
+        var read = safe_io.ReadAllTextBounded(path, MAX_SCENE_BYTES);
+        if read.ok {
+            var loaded = SceneAsset.LoadTextResult(path, read.text);
+            if loaded != null and loaded.IsOk {
+                asset = loaded.Unwrap() as SceneAsset;
+            }
+        }
+        projectPreviewAssetPaths.add(path);
+        projectPreviewAssets.add(asset);
+        return asset;
+    }
+
+    /// @brief Record transient subtree identities that map to one source node.
+    hide func AppendProjectPreviewOwners(node: SceneNode,
+                                         owner: Integer) {
+        if node == null
+           or projectPreviewNodes.count() >= MAX_PROJECT_PREVIEW_NODES {
+            projectPreviewClipped = true;
+            return;
+        }
+        projectPreviewNodes.add(node);
+        projectPreviewOwners.add(owner);
+        var child = 0;
+        while child < node.ChildCount
+              and projectPreviewNodes.count()
+                  < MAX_PROJECT_PREVIEW_NODES {
+            AppendProjectPreviewOwners(node.GetChild(child), owner);
+            child = child + 1;
+        }
+        if child < node.ChildCount { projectPreviewClipped = true; }
+    }
+
+    /// @brief Compose optional project metadata rotation/scale after source TRS.
+    hide func ProjectPreviewWorldMatrix(
+        node: SceneNode,
+        rule: scene_component_schema.SceneNodePreview3DDefinition) -> Mat4 {
+        var result = node.WorldMatrix;
+        var yaw = 0.0;
+        if rule.yawProperty != ""
+           and node.MetadataHas(rule.yawProperty)
+           and node.MetadataKind(rule.yawProperty) == "float" {
+            yaw = node.MetadataGetFloat(rule.yawProperty, 0.0);
+            if rule.yawUnit == "degrees" { yaw = yaw * DEG_TO_RAD; }
+        }
+        var scale = 1.0;
+        if rule.scaleProperty != ""
+           and node.MetadataHas(rule.scaleProperty)
+           and node.MetadataKind(rule.scaleProperty) == "float" {
+            scale = ClampNumber3D(
+                node.MetadataGetFloat(rule.scaleProperty, 1.0),
+                -1000.0,
+                1000.0);
+        }
+        return Mat4.Mul(
+            result,
+            Mat4.Mul(Mat4.RotateY(yaw), Mat4.ScaleUniform(scale)));
+    }
+
+    /// @brief Rebuild every project preview in a disposable scene graph.
+    /// @details No transient node ever enters the canonical scene or history.
+    hide func RebuildProjectNodePreviews() {
+        projectPreviewScene = null;
+        projectPreviewInstanceCount = 0;
+        projectPreviewMissingCount = 0;
+        projectPreviewClipped = false;
+        projectPreviewAssetPaths = [];
+        projectPreviewAssets = [];
+        projectPreviewNodes = [];
+        projectPreviewOwners = [];
+        if scene == null or componentSchema == null
+           or componentSchema.valid == false
+           or componentSchema.nodePreviews3D.count() == 0 {
+            return;
+        }
+        var projectRoot = ComponentSchemaRoot();
+        if projectRoot == "" { return; }
+        projectPreviewScene = SceneGraph.New();
+        var sourceIndex = 0;
+        while sourceIndex < flatNodes.count()
+              and projectPreviewNodes.count()
+                  < MAX_PROJECT_PREVIEW_NODES {
+            var source = flatNodes.get(sourceIndex);
+            var rule = ProjectNodePreviewRule(source);
+            var reference =
+                ProjectNodePreviewPrefab(source, rule);
+            if reference != "" {
+                var path = Path.Normalize(Path.Absolute(
+                    Path.Join(projectRoot, reference)));
+                var asset = ProjectNodePreviewAsset(path);
+                var instance: SceneGraph = null;
+                if asset != null {
+                    instance = asset.InstantiateScene() as SceneGraph;
+                }
+                if instance == null
+                   or instance.Root == null
+                   or instance.Root.ChildCount == 0 {
+                    projectPreviewMissingCount =
+                        projectPreviewMissingCount + 1;
+                } else if projectPreviewNodes.count()
+                          + instance.NodeCount
+                          > MAX_PROJECT_PREVIEW_NODES {
+                    projectPreviewClipped = true;
+                    break;
+                } else {
+                    var wrapper = SceneNode.New();
+                    wrapper.Name = "Preview " + sourceIndex;
+                    var prefabRoot = instance.Root;
+                    while prefabRoot.ChildCount > 0 {
+                        var child = prefabRoot.GetChild(0);
+                        prefabRoot.RemoveChild(child);
+                        wrapper.AddChild(child);
+                    }
+                    if wrapper.TrySetWorldMatrix(
+                           ProjectPreviewWorldMatrix(
+                               source, rule)) == false {
+                        projectPreviewMissingCount =
+                            projectPreviewMissingCount + 1;
+                    } else {
+                        projectPreviewScene.Add(wrapper);
+                        AppendProjectPreviewOwners(
+                            wrapper, sourceIndex);
+                        projectPreviewInstanceCount =
+                            projectPreviewInstanceCount + 1;
+                    }
+                }
+            }
+            sourceIndex = sourceIndex + 1;
+        }
+        if sourceIndex < flatNodes.count() {
+            projectPreviewClipped = true;
+        }
+        if projectPreviewInstanceCount == 0 {
+            projectPreviewScene = null;
+        }
+        renderDirty = true;
+    }
+
+    /// @brief Map one transient preview hit back to its canonical marker.
+    hide func ProjectPreviewOwner(node: SceneNode) -> Integer {
+        var index = 0;
+        while index < projectPreviewNodes.count()
+              and index < projectPreviewOwners.count() {
+            if projectPreviewNodes.get(index) == node {
+                return projectPreviewOwners.get(index);
+            }
+            index = index + 1;
+        }
+        return -1;
     }
 
     /// @brief Pump the active document and return true when VSCN content changed.
@@ -1276,13 +1667,19 @@ class SceneEditor3D {
             Activate(activeDoc);
         }
         EnsureComponentSchema(false);
+        UpdateProjectViewButton();
         if activeDoc == currentDoc and activeDoc.isModified == false
            and activeDoc.content == currentSerialized {
             cleanSerialized = currentSerialized;
         }
 
         RefreshResponsiveLayout();
+        if hierarchyButton.WasClicked() { ToggleHierarchyPane(); }
         if inspectorButton.WasClicked() { ToggleInspectorPane(); }
+        if workspaceButton.WasClicked() {
+            RequestWorkspaceModeToggle();
+        }
+        if focusButton.WasClicked() { RequestFocusModeToggle(); }
         if objectTabButton.WasClicked() { SetInspectorSceneTab(false); }
         if sceneTabButton.WasClicked() { SetInspectorSceneTab(true); }
 
@@ -1369,6 +1766,10 @@ class SceneEditor3D {
                 projectMapPath) or changed;
         }
         UpdateViewportSize();
+        if initialProjectPreviewPending {
+            ApplyInitialProjectPreview();
+            initialProjectPreviewPending = false;
+        }
         if viewportModeButton.WasClicked() {
             var nextViewportMode = VIEWPORT_MODE_WIREFRAME;
             if viewportMode == VIEWPORT_MODE_WIREFRAME {
@@ -1396,6 +1797,9 @@ class SceneEditor3D {
         }
         if projectionButton.WasClicked() {
             SetViewProjection(!viewPerspective);
+        }
+        if projectViewButton.WasClicked() {
+            ApplyProjectPreviewView();
         }
         if viewOptionsButton.WasClicked() {
             SetViewOptionsVisible(!viewOptionsVisible);
@@ -1854,6 +2258,7 @@ class SceneEditor3D {
     hide func RestoreWorkspaceState(doc: document.Document) {
         var state = doc.scene3DWorkspace;
         if state == null or state.initialized == false {
+            initialProjectPreviewPending = true;
             selectedIndex = -1;
             selectedIndices = [];
             selectedNodeMetadata = -1;
@@ -1863,7 +2268,7 @@ class SceneEditor3D {
                 scene_transform_3d.TRANSFORM_SPACE_LOCAL;
             gizmoSnapEnabled = false;
             viewYawDegrees = 35;
-            viewPitchDegrees = -25;
+            viewPitchDegrees = 25;
             viewScale = 28;
             viewportMode = VIEWPORT_MODE_SHADED;
             viewTargetX = 0.0;
@@ -1889,6 +2294,7 @@ class SceneEditor3D {
             if hierarchySplit != null { hierarchySplit.SetPosition(0.22); }
             pendingInspectorScrollY = 0.0;
             inspectorRequestedVisible = true;
+            compactHierarchyShown = false;
             compactInspectorShown = false;
             restoreInspectorScrollPending = true;
             SyncGizmoModeControls();
@@ -1897,6 +2303,7 @@ class SceneEditor3D {
             return;
         }
 
+        initialProjectPreviewPending = false;
         selectedIndex = ClampInt3D(
             state.selectedIndex, -1, MAX_EDITOR_NODES - 1);
         selectedIndices = state.selectedIndices;
@@ -1947,6 +2354,7 @@ class SceneEditor3D {
         pendingInspectorScrollY = ClampNumber3D(
             state.inspectorScrollY, 0.0, 1000000.0);
         inspectorRequestedVisible = state.inspectorRequestedVisible;
+        compactHierarchyShown = false;
         compactInspectorShown = state.compactInspectorShown;
         restoreInspectorScrollPending = true;
         SyncGizmoModeControls();
@@ -1954,13 +2362,380 @@ class SceneEditor3D {
         SyncViewOptionControls();
     }
 
+    /// @brief Apply project first-open camera and overlay defaults read-only.
+    /// @details The caller invokes this only for a document without persisted
+    ///          workspace state. Missing or wrong-typed start metadata retains
+    ///          the ordinary editor view, while independent overlay defaults
+    ///          remain useful.
+    hide func ApplyInitialProjectPreview() {
+        if scene == null or componentSchema == null
+           or componentSchema.valid == false {
+            return;
+        }
+        var profile = componentSchema.scenePreview3D;
+        if profile == null or profile.present == false { return; }
+        var rootNode = scene.Root;
+        if rootNode == null { return; }
+
+        if profile.HasStart()
+           and RootHasFloat(rootNode, profile.startXProperty)
+           and RootHasFloat(rootNode, profile.startYProperty)
+           and RootHasFloat(rootNode, profile.startZProperty) {
+            var startX = ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.startXProperty, viewTargetX),
+                -1000000.0,
+                1000000.0);
+            var startY = ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.startYProperty, viewTargetY),
+                -1000000.0,
+                1000000.0);
+            var startZ = ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.startZProperty, viewTargetZ),
+                -1000000.0,
+                1000000.0);
+            var hasMappedYaw = profile.startYawProperty != ""
+                and RootHasFloat(rootNode, profile.startYawProperty);
+            if profile.hasStartEyeHeight and hasMappedYaw {
+                var mappedYaw = ClampNumber3D(
+                    rootNode.MetadataGetFloat(
+                        profile.startYawProperty, viewYawDegrees),
+                    -36000.0,
+                    36000.0);
+                viewYawDegrees =
+                    NormalizeYawDegrees(
+                        0 - Convert.NumToInt(mappedYaw));
+                viewPitchDegrees = 0;
+                var eyeDistance = PerspectiveEyeDistance();
+                var yawRadians = viewYawDegrees * DEG_TO_RAD;
+                viewTargetX = ClampNumber3D(
+                    startX - Math.Sin(yawRadians) * eyeDistance,
+                    -1000000.0,
+                    1000000.0);
+                viewTargetY = ClampNumber3D(
+                    startY + profile.startEyeHeight,
+                    -1000000.0,
+                    1000000.0);
+                viewTargetZ = ClampNumber3D(
+                    startZ - Math.Cos(yawRadians) * eyeDistance,
+                    -1000000.0,
+                    1000000.0);
+            } else {
+                viewTargetX = startX;
+                viewTargetY = startY;
+                viewTargetZ = startZ;
+                if hasMappedYaw {
+                    var targetYaw = ClampNumber3D(
+                        rootNode.MetadataGetFloat(
+                            profile.startYawProperty, viewYawDegrees),
+                        -36000.0,
+                        36000.0);
+                    viewYawDegrees =
+                        NormalizeYawDegrees(Convert.NumToInt(targetYaw));
+                }
+            }
+        }
+        if profile.hasShowGrid {
+            showGrid = profile.showGrid;
+        }
+        if profile.hasShowMarkers {
+            showMarkers = profile.showMarkers;
+        }
+        if profile.hasShowLights {
+            showLightOverlays = profile.showLights;
+        }
+        if profile.hasShowCameras {
+            showCameraOverlays = profile.showCameras;
+        }
+        if profile.hasShowColliders {
+            showColliderOverlays = profile.showColliders;
+        }
+        if profile.hasShowRoutes {
+            showRouteOverlays = profile.showRoutes;
+        }
+        SyncViewOptionControls();
+        renderDirty = true;
+    }
+
+    /// @brief Return whether this scene owns a valid project preview profile.
+    expose func CanApplyProjectPreviewView() -> Boolean {
+        return scene != null
+            and scene.Root != null
+            and componentSchema != null
+            and componentSchema.valid
+            and componentSchema.scenePreview3D != null
+            and componentSchema.scenePreview3D.present;
+    }
+
+    /// @brief Reapply project gameplay camera and overlay defaults read-only.
+    /// @details This explicit workspace action recovers from manual navigation
+    ///          and older persisted view state. It exits camera look-through,
+    ///          never serializes VSCN, and never creates an undo entry.
+    expose func ApplyProjectPreviewView() -> Boolean {
+        if CanApplyProjectPreviewView() == false { return false; }
+        flyActive = false;
+        flyLastMs = -1;
+        if lookThroughNode != null {
+            lookThroughNode = null;
+            RefreshCameraFields(SelectedNode());
+        }
+        ApplyInitialProjectPreview();
+        toolbarStatus.SetText("Gameplay view restored");
+        return true;
+    }
+
+    /// @brief Keep the gameplay-view affordance truthful for the active root.
+    hide func UpdateProjectViewButton() {
+        if projectViewButton != null {
+            projectViewButton.SetEnabled(
+                CanApplyProjectPreviewView());
+        }
+    }
+
+    /// @brief Resolve project atmosphere metadata for the shaded viewport.
+    /// @details Complete groups with any wrong-typed member remain absent so
+    ///          callers can use the ordinary Studio fallback deterministically.
+    expose func ProjectPreviewRenderState()
+        -> ScenePreview3DRenderState {
+        var result = new ScenePreview3DRenderState();
+        if scene == null or scene.Root == null
+           or componentSchema == null
+           or componentSchema.valid == false {
+            return result;
+        }
+        var profile = componentSchema.scenePreview3D;
+        if profile == null or profile.present == false { return result; }
+        var rootNode = scene.Root;
+
+        if profile.hasCameraFov {
+            result.hasCameraFov = true;
+            result.cameraFov = profile.cameraFov;
+        }
+        if profile.hasIblIntensity {
+            result.hasIblIntensity = true;
+            result.iblIntensity = profile.iblIntensity;
+        }
+        if profile.HasAmbient()
+           and RootHasFloat(rootNode, profile.ambientRProperty)
+           and RootHasFloat(rootNode, profile.ambientGProperty)
+           and RootHasFloat(rootNode, profile.ambientBProperty) {
+            result.hasAmbient = true;
+            result.ambientR = RootColor(
+                rootNode, profile.ambientRProperty);
+            result.ambientG = RootColor(
+                rootNode, profile.ambientGProperty);
+            result.ambientB = RootColor(
+                rootNode, profile.ambientBProperty);
+        }
+        if profile.HasClear()
+           and RootHasFloat(rootNode, profile.clearRProperty)
+           and RootHasFloat(rootNode, profile.clearGProperty)
+           and RootHasFloat(rootNode, profile.clearBProperty) {
+            result.hasClear = true;
+            result.clearR = RootColor(
+                rootNode, profile.clearRProperty);
+            result.clearG = RootColor(
+                rootNode, profile.clearGProperty);
+            result.clearB = RootColor(
+                rootNode, profile.clearBProperty);
+        }
+        if profile.HasFog()
+           and RootHasFloat(rootNode, profile.fogRProperty)
+           and RootHasFloat(rootNode, profile.fogGProperty)
+           and RootHasFloat(rootNode, profile.fogBProperty)
+           and RootHasFloat(rootNode, profile.fogNearProperty)
+           and RootHasFloat(rootNode, profile.fogFarProperty) {
+            result.hasFog = true;
+            result.fogR = RootColor(rootNode, profile.fogRProperty);
+            result.fogG = RootColor(rootNode, profile.fogGProperty);
+            result.fogB = RootColor(rootNode, profile.fogBProperty);
+            result.fogNear = ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.fogNearProperty, 0.0),
+                0.0,
+                999999999.0);
+            result.fogFar = ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.fogFarProperty, result.fogNear + 1.0),
+                0.0,
+                1000000000.0);
+            if result.fogFar <= result.fogNear {
+                result.fogFar = result.fogNear + 1.0;
+            }
+        }
+        if profile.HasSkyPalette()
+           and RootHasFloat(rootNode, profile.zenithRProperty)
+           and RootHasFloat(rootNode, profile.zenithGProperty)
+           and RootHasFloat(rootNode, profile.zenithBProperty)
+           and RootHasFloat(rootNode, profile.groundRProperty)
+           and RootHasFloat(rootNode, profile.groundGProperty)
+           and RootHasFloat(rootNode, profile.groundBProperty)
+           and result.hasClear {
+            result.hasSky = true;
+            result.zenithR =
+                RootColor(rootNode, profile.zenithRProperty);
+            result.zenithG =
+                RootColor(rootNode, profile.zenithGProperty);
+            result.zenithB =
+                RootColor(rootNode, profile.zenithBProperty);
+            result.groundR =
+                RootColor(rootNode, profile.groundRProperty);
+            result.groundG =
+                RootColor(rootNode, profile.groundGProperty);
+            result.groundB =
+                RootColor(rootNode, profile.groundBProperty);
+            if profile.cloudProperty != ""
+               and RootHasFloat(rootNode, profile.cloudProperty) {
+                result.cloudDensity = ClampNumber3D(
+                    rootNode.MetadataGetFloat(
+                        profile.cloudProperty, 0.0),
+                    0.0,
+                    1.0);
+            }
+            if profile.starsProperty != ""
+               and RootHasBool(rootNode, profile.starsProperty) {
+                result.stars = rootNode.MetadataGetBool(
+                    profile.starsProperty, false);
+            }
+        }
+        if profile.HasSun()
+           and RootHasFloat(rootNode, profile.sunXProperty)
+           and RootHasFloat(rootNode, profile.sunYProperty)
+           and RootHasFloat(rootNode, profile.sunZProperty)
+           and RootHasFloat(rootNode, profile.sunRProperty)
+           and RootHasFloat(rootNode, profile.sunGProperty)
+           and RootHasFloat(rootNode, profile.sunBProperty)
+           and RootHasFloat(rootNode, profile.sunIntensityProperty) {
+            result.hasSun = true;
+            result.sunX = ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.sunXProperty, 0.0),
+                -1000.0,
+                1000.0);
+            result.sunY = ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.sunYProperty, -1.0),
+                -1000.0,
+                1000.0);
+            result.sunZ = ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.sunZProperty, 0.0),
+                -1000.0,
+                1000.0);
+            result.sunR = RootColor(rootNode, profile.sunRProperty);
+            result.sunG = RootColor(rootNode, profile.sunGProperty);
+            result.sunB = RootColor(rootNode, profile.sunBProperty);
+            result.sunIntensity = ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.sunIntensityProperty, 0.0),
+                0.0,
+                100.0);
+        }
+        if profile.HasFill()
+           and RootHasFloat(rootNode, profile.fillXProperty)
+           and RootHasFloat(rootNode, profile.fillYProperty)
+           and RootHasFloat(rootNode, profile.fillZProperty)
+           and RootHasFloat(rootNode, profile.fillRProperty)
+           and RootHasFloat(rootNode, profile.fillGProperty)
+           and RootHasFloat(rootNode, profile.fillBProperty)
+           and RootHasFloat(rootNode, profile.fillIntensityProperty) {
+            result.hasFill = true;
+            result.fillX = ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.fillXProperty, 0.0),
+                -1000.0,
+                1000.0);
+            result.fillY = ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.fillYProperty, -1.0),
+                -1000.0,
+                1000.0);
+            result.fillZ = ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.fillZProperty, 0.0),
+                -1000.0,
+                1000.0);
+            result.fillR = RootColor(rootNode, profile.fillRProperty);
+            result.fillG = RootColor(rootNode, profile.fillGProperty);
+            result.fillB = RootColor(rootNode, profile.fillBProperty);
+            result.fillIntensity = ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.fillIntensityProperty, 0.0),
+                0.0,
+                100.0);
+        }
+        if profile.HasHeightFog()
+           and RootHasBool(rootNode, profile.heightFogProperty) {
+            result.hasHeightFog = true;
+            result.heightFogEnabled = rootNode.MetadataGetBool(
+                profile.heightFogProperty, false);
+            result.heightFogBase = profile.heightFogBase;
+            result.heightFogFalloff = profile.heightFogFalloff;
+            result.heightFogDensity = profile.heightFogDensity;
+            result.heightFogOpacity = profile.heightFogOpacity;
+        }
+        return result;
+    }
+
+    /// @brief Return whether one root key is exact typed float metadata.
+    hide func RootHasFloat(rootNode: SceneNode,
+                           key: String) -> Boolean {
+        return rootNode != null and key != ""
+            and rootNode.MetadataHas(key)
+            and rootNode.MetadataKind(key) == "float";
+    }
+
+    /// @brief Return whether one root key is exact typed boolean metadata.
+    hide func RootHasBool(rootNode: SceneNode,
+                          key: String) -> Boolean {
+        return rootNode != null and key != ""
+            and rootNode.MetadataHas(key)
+            and rootNode.MetadataKind(key) == "bool";
+    }
+
+    /// @brief Read one normalized project color channel from root metadata.
+    hide func RootColor(rootNode: SceneNode,
+                        key: String) -> Number {
+        return ClampNumber3D(
+            rootNode.MetadataGetFloat(key, 0.0), 0.0, 1.0);
+    }
+
     /// @brief Toggle the inspector without making either compact pane unusable.
     expose func ToggleInspectorPane() {
+        if focusModeActive and inspectorDock.floating == false { return; }
+        if compactHierarchyShown {
+            compactHierarchyShown = false;
+            if compactLayout {
+                compactInspectorShown = true;
+            } else {
+                inspectorRequestedVisible = true;
+            }
+            ApplyInspectorLayout();
+            CaptureWorkspaceState();
+            return;
+        }
         if compactLayout {
             compactInspectorShown = !compactInspectorShown;
         } else {
             inspectorRequestedVisible = !inspectorRequestedVisible;
         }
+        ApplyInspectorLayout();
+        CaptureWorkspaceState();
+    }
+
+    /// @brief Toggle a full-width hierarchy in viewport-priority layouts.
+    /// @details Wide hosts keep the ordinary three-pane split. Narrow hosts
+    ///          collapse the hierarchy by default but never make it
+    ///          unreachable; this action swaps it with the viewport/inspector.
+    expose func ToggleHierarchyPane() {
+        if focusModeActive or hierarchyDock.floating
+           or lastHostWidth >= HIERARCHY_PANE_MIN_WIDTH {
+            return;
+        }
+        compactHierarchyShown = compactHierarchyShown == false;
+        if compactHierarchyShown { compactInspectorShown = false; }
         ApplyInspectorLayout();
         CaptureWorkspaceState();
     }
@@ -1984,11 +2759,15 @@ class SceneEditor3D {
         var widthChanged = widthDelta > RESPONSIVE_WIDTH_EPSILON;
         lastHostWidth = width;
         var nextCompact = UsesCompactLayout(width);
-        if nextCompact != compactLayout {
+        var nextCompactChrome = UsesCompactChrome(width);
+        var layoutChanged = nextCompact != compactLayout;
+        var chromeChanged = nextCompactChrome != compactChrome;
+        if layoutChanged {
             compactLayout = nextCompact;
-            ApplyResponsiveChrome();
             renderDirty = true;
-        } else if widthChanged {
+        }
+        compactChrome = nextCompactChrome;
+        if layoutChanged or chromeChanged or widthChanged {
             // Wide-mode toolbar height reservations depend on the lane
             // width bracket, so re-apply chrome on width changes too.
             ApplyResponsiveChrome();
@@ -1996,18 +2775,71 @@ class SceneEditor3D {
         ApplyInspectorLayout();
     }
 
+    /// @brief Publish a one-shot request for outer-only scene layout.
+    expose func RequestWorkspaceModeToggle() {
+        workspaceModeToggleRequested = true;
+    }
+
+    /// @brief Consume one outer-only scene-layout toggle request.
+    expose func TakeWorkspaceModeToggleRequested() -> Boolean {
+        var requested = workspaceModeToggleRequested;
+        workspaceModeToggleRequested = false;
+        return requested;
+    }
+
+    /// @brief Synchronize the shell's outer-only scene layout state.
+    expose func SetWorkspaceModeActive(active: Boolean) {
+        if workspaceModeActive == active { return; }
+        workspaceModeActive = active;
+        UpdateWorkspaceButton();
+    }
+
+    /// @brief Return whether outer-only Scene Layout is active.
+    expose func IsWorkspaceModeActive() -> Boolean {
+        return workspaceModeActive;
+    }
+
+    /// @brief Publish a one-shot request for the outer shell focus presentation.
+    expose func RequestFocusModeToggle() {
+        focusModeToggleRequested = true;
+    }
+
+    /// @brief Consume one focus-mode toggle request.
+    expose func TakeFocusModeToggleRequested() -> Boolean {
+        var requested = focusModeToggleRequested;
+        focusModeToggleRequested = false;
+        return requested;
+    }
+
+    /// @brief Synchronize the outer shell's focus-presentation state.
+    expose func SetFocusModeActive(active: Boolean) {
+        if focusModeActive == active { return; }
+        focusModeActive = active;
+        ApplyInspectorLayout();
+        UpdateFocusButton();
+    }
+
+    /// @brief Return whether the outer shell is presenting this scene in focus.
+    expose func IsFocusModeActive() -> Boolean {
+        return focusModeActive;
+    }
+
     /// @brief Keep all scene creation and navigation actions reachable.
     hide func ApplyResponsiveChrome() {
-        if compactLayout {
-            // Flex measurement cannot infer wrapped cross-axis height before
-            // its parent assigns a width. Reserve the four creation rows and
-            // five denser view rows required at defensive compact widths.
-            toolbar.SetPreferredSize(0.0, 128.0);
-            // Five wrapped view rows once the projection and view-options
-            // toggles join the row set at defensive compact widths.
-            viewToolbar.SetPreferredSize(0.0, 165.0);
+        if compactChrome {
+            // Keep a defensive row floor while allowing Flex's measured wrap
+            // height to grow beyond it. An exact preferred height clipped the
+            // trailing workspace action at widths between responsive tiers.
+            toolbar.SetPreferredSize(0.0, 0.0);
+            toolbar.SetMinSize(0.0, 128.0);
+            viewToolbar.SetPreferredSize(0.0, 0.0);
+            viewToolbar.SetMinSize(0.0, 198.0);
+            viewSectionLabel.SetVisible(false);
+            transformSectionLabel.SetVisible(false);
+            zoomSectionLabel.SetVisible(false);
             newSceneButton.SetText("New");
             importAssetButton.SetText("Import...");
+            importInstanceButton.SetText("Instance...");
             addEmptyButton.SetText("+ Node");
             moveToolButton.SetText("M");
             rotateToolButton.SetText("R");
@@ -2018,25 +2850,51 @@ class SceneEditor3D {
             orbitDownButton.SetText("↓");
             frameButton.SetText("All");
             frameSelectedButton.SetText("Selected");
+            projectViewButton.SetText("Game");
             viewOptionsButton.SetText("View");
+            runSceneButton.SetText("Run");
+            toolbarStatus.SetVisible(false);
+            viewStatusLabel.SetVisible(false);
+        } else if lastHostWidth < 1350.0 {
+            // Concise labels keep the production dock-heavy lane to two
+            // predictable rows at ordinary widths. These are minimums rather
+            // than exact heights, so a third measured row stays reachable.
+            toolbar.SetPreferredSize(0.0, 0.0);
+            toolbar.SetMinSize(0.0, 76.0);
+            viewToolbar.SetPreferredSize(0.0, 0.0);
+            viewToolbar.SetMinSize(0.0, 76.0);
+            viewSectionLabel.SetVisible(false);
+            transformSectionLabel.SetVisible(false);
+            zoomSectionLabel.SetVisible(false);
+            newSceneButton.SetText("New");
+            importAssetButton.SetText("Import");
+            importInstanceButton.SetText("Instance");
+            addEmptyButton.SetText("+ Node");
+            moveToolButton.SetText("M");
+            rotateToolButton.SetText("R");
+            scaleToolButton.SetText("S");
+            orbitLeftButton.SetText("←");
+            orbitRightButton.SetText("→");
+            orbitUpButton.SetText("↑");
+            orbitDownButton.SetText("↓");
+            frameButton.SetText("All");
+            frameSelectedButton.SetText("Selected");
+            projectViewButton.SetText("Game");
+            viewOptionsButton.SetText("View");
+            runSceneButton.SetText("Run");
             toolbarStatus.SetVisible(false);
             viewStatusLabel.SetVisible(false);
         } else {
-            // Flex measurement cannot infer wrapped cross-axis height before
-            // its parent assigns a width, so reserve the observed wrapped-row
-            // heights on lanes where these toolbars wrap even in wide mode.
-            if lastHostWidth > 0.0 and lastHostWidth < 1150.0 {
-                toolbar.SetPreferredSize(0.0, 76.0);
-                viewToolbar.SetPreferredSize(0.0, 110.0);
-            } else if lastHostWidth > 0.0 and lastHostWidth < 1500.0 {
-                toolbar.SetPreferredSize(0.0, 76.0);
-                viewToolbar.SetPreferredSize(0.0, 76.0);
-            } else {
-                toolbar.SetPreferredSize(0.0, 0.0);
-                viewToolbar.SetPreferredSize(0.0, 0.0);
-            }
+            toolbar.SetPreferredSize(0.0, 0.0);
+            toolbar.SetMinSize(0.0, 0.0);
+            viewToolbar.SetPreferredSize(0.0, 0.0);
+            viewToolbar.SetMinSize(0.0, 0.0);
+            viewSectionLabel.SetVisible(true);
+            transformSectionLabel.SetVisible(true);
+            zoomSectionLabel.SetVisible(true);
             newSceneButton.SetText("New");
             importAssetButton.SetText("Import Asset...");
+            importInstanceButton.SetText("Import Instance...");
             addEmptyButton.SetText("+ Empty");
             moveToolButton.SetText("Move");
             rotateToolButton.SetText("Rotate");
@@ -2047,47 +2905,68 @@ class SceneEditor3D {
             orbitDownButton.SetText("Pitch -");
             frameButton.SetText("Frame all");
             frameSelectedButton.SetText("Frame selected");
+            projectViewButton.SetText("Gameplay");
             viewOptionsButton.SetText("View...");
+            runSceneButton.SetText("Run Scene");
             toolbarStatus.SetVisible(true);
             viewStatusLabel.SetVisible(true);
         }
         UpdateProjectionControls();
         UpdateViewOptionsChrome();
         UpdateGizmoModeControls();
+        UpdateProjectViewButton();
+        UpdateHierarchyButton();
         UpdateInspectorButton();
+        UpdateWorkspaceButton();
     }
 
     /// @brief Apply wide three-pane or compact one-pane-at-a-time layout.
-    /// @details The hierarchy pane needs real width to be useful, so it
-    ///          collapses on hosts narrower than HIERARCHY_PANE_MIN_WIDTH
-    ///          (graduated responsiveness, not just the compact threshold);
-    ///          hierarchy access then remains through Find and selection
-    ///          commands. Compact windows keep the established
-    ///          viewport/inspector cycling.
+    /// @details The hierarchy pane needs real width to be useful, so narrow
+    ///          hosts present it as an explicit full-width master alongside
+    ///          the viewport/inspector detail cycle.
     hide func ApplyInspectorLayout() {
         if bodySplit == null { return; }
+        var wantHierarchyPane = false;
+        var showHierarchyMaster = false;
         if hierarchySplit != null {
-            var wantHierarchyPane =
+            wantHierarchyPane =
                 compactLayout == false
+                and focusModeActive == false
                 and hierarchyDock.floating == false
                 and lastHostWidth >= HIERARCHY_PANE_MIN_WIDTH;
-            var hierarchyCollapsed =
-                hierarchySplit.GetCollapsedSide() == 1;
-            if wantHierarchyPane {
-                if hierarchyCollapsed {
-                    hierarchySplit.Restore();
-                    renderDirty = true;
-                }
-            } else if hierarchyCollapsed == false {
+            showHierarchyMaster =
+                compactHierarchyShown
+                and focusModeActive == false
+                and hierarchyDock.floating == false
+                and lastHostWidth < HIERARCHY_PANE_MIN_WIDTH;
+            var desiredHierarchySide = 1;
+            if wantHierarchyPane { desiredHierarchySide = 0; }
+            else if showHierarchyMaster { desiredHierarchySide = 2; }
+            var currentHierarchySide =
+                hierarchySplit.GetCollapsedSide();
+            if desiredHierarchySide == 0 {
+                hierarchySplit.Restore();
+            } else if desiredHierarchySide == 2 {
+                hierarchySplit.CollapseSecond();
+            } else {
                 hierarchySplit.CollapseFirst();
+            }
+            if currentHierarchySide != desiredHierarchySide {
                 renderDirty = true;
             }
         }
+        if hierarchyPaneBox != null {
+            hierarchyPaneBox.SetVisible(
+                wantHierarchyPane or showHierarchyMaster
+                    or hierarchyDock.floating);
+        }
         var desiredSide = 0;
-        if compactLayout {
+        if focusModeActive and inspectorDock.floating == false {
+            desiredSide = 2;
+        } else if compactLayout {
             desiredSide = 2;
             if compactInspectorShown { desiredSide = 1; }
-        } else if !inspectorRequestedVisible {
+        } else if !inspectorRequestedVisible or inspectorDock.floating {
             desiredSide = 2;
         }
 
@@ -2102,12 +2981,73 @@ class SceneEditor3D {
         if currentSide != desiredSide {
             renderDirty = true;
         }
+        if viewportScroll != null {
+            viewportScroll.SetVisible(desiredSide != 1);
+        }
+        if inspectorScroll != null {
+            inspectorScroll.SetVisible(
+                desiredSide != 2 or inspectorDock.floating);
+        }
+        UpdateHierarchyButton();
         UpdateInspectorButton();
+        UpdateWorkspaceButton();
+        UpdateFocusButton();
+    }
+
+    /// @brief Keep the narrow hierarchy master action truthful.
+    hide func UpdateHierarchyButton() {
+        if hierarchyButton == null { return; }
+        var needsMaster =
+            lastHostWidth > 0.0
+            and lastHostWidth < HIERARCHY_PANE_MIN_WIDTH;
+        hierarchyButton.SetVisible(needsMaster);
+        if needsMaster == false { return; }
+        if focusModeActive {
+            hierarchyButton.SetEnabled(false);
+            hierarchyButton.SetText("Hierarchy hidden");
+            hierarchyButton.SetTooltip(
+                "Exit Focus to open the scene hierarchy");
+            hierarchyButton.SetStyle(0);
+        } else if hierarchyDock.floating {
+            hierarchyButton.SetEnabled(false);
+            hierarchyButton.SetText("Hierarchy floating");
+            hierarchyButton.SetTooltip(
+                "The scene hierarchy is already available in its floating pane");
+            hierarchyButton.SetStyle(2);
+        } else if compactHierarchyShown {
+            hierarchyButton.SetEnabled(true);
+            hierarchyButton.SetText("Viewport");
+            hierarchyButton.SetTooltip(
+                "Return to the 3D viewport and inspector");
+            hierarchyButton.SetStyle(1);
+        } else {
+            hierarchyButton.SetEnabled(true);
+            hierarchyButton.SetText("Hierarchy");
+            hierarchyButton.SetTooltip(
+                "Open the scene hierarchy at the full editor width");
+            hierarchyButton.SetStyle(2);
+        }
     }
 
     /// @brief Describe the destination of the inspector toggle.
     hide func UpdateInspectorButton() {
         if inspectorButton == null { return; }
+        if focusModeActive and inspectorDock.floating == false {
+            inspectorButton.SetEnabled(false);
+            inspectorButton.SetText("Inspector hidden");
+            inspectorButton.SetTooltip(
+                "Exit Focus to restore the node inspector");
+            inspectorButton.SetStyle(0);
+            return;
+        }
+        inspectorButton.SetEnabled(true);
+        if compactHierarchyShown {
+            inspectorButton.SetText("Inspector");
+            inspectorButton.SetTooltip(
+                "Switch from the hierarchy to the node inspector");
+            inspectorButton.SetStyle(2);
+            return;
+        }
         if compactLayout {
             if compactInspectorShown {
                 inspectorButton.SetText("Viewport");
@@ -2127,6 +3067,45 @@ class SceneEditor3D {
             inspectorButton.SetText("Show Inspector");
             inspectorButton.SetTooltip("Restore the node inspector");
             inspectorButton.SetStyle(1);
+        }
+    }
+
+    /// @brief Keep the reversible outer-only scene-layout action truthful.
+    hide func UpdateWorkspaceButton() {
+        if workspaceButton == null { return; }
+        if workspaceModeActive {
+            workspaceButton.SetText("Exit Layout");
+            workspaceButton.SetTooltip(
+                "Restore the Studio sidebar and tool docks while keeping "
+                    + "this scene's internal pane layout");
+            workspaceButton.SetStyle(1);
+        } else {
+            if compactChrome or lastHostWidth < 1350.0 {
+                workspaceButton.SetText("Layout");
+            } else {
+                workspaceButton.SetText("Scene Layout");
+            }
+            workspaceButton.SetTooltip(
+                "Hide outer Studio docks but keep the scene hierarchy, "
+                    + "viewport, and inspector available");
+            workspaceButton.SetStyle(2);
+        }
+    }
+
+    /// @brief Keep the reversible outer-workbench action truthful.
+    hide func UpdateFocusButton() {
+        if focusButton == null { return; }
+        if focusModeActive {
+            focusButton.SetText("Exit Focus");
+            focusButton.SetTooltip(
+                "Restore scene panes, sidebar, and tool panels (Shift+Space)");
+            focusButton.SetStyle(1);
+        } else {
+            focusButton.SetText("Focus");
+            focusButton.SetTooltip(
+                "Hide scene panes and outer Studio docks to maximize the viewport "
+                + "(Shift+Space)");
+            focusButton.SetStyle(2);
         }
     }
 
@@ -4660,14 +5639,14 @@ class SceneEditor3D {
     /// @brief Apply the authored environment to one render canvas.
     /// @details Workspace-only presentation: the cubemap cache keys on the
     ///          resolved path and never touches canonical content.
-    hide func ApplyEnvironmentToCanvas(canvas: Canvas3D) {
-        if canvas == null or scene == null { return; }
+    hide func ApplyEnvironmentToCanvas(canvas: Canvas3D) -> Boolean {
+        if canvas == null or scene == null { return false; }
         var state = scene_bake_3d.EnvironmentFromRoot(scene.Root);
         canvas.IblEnabled = state.iblEnabled;
         canvas.IblIntensity = state.iblIntensity;
         if state.skyboxPath == "" {
             canvas.ClearSkybox();
-            return;
+            return false;
         }
         var resolved = state.skyboxPath;
         if currentDoc != null and currentDoc.filePath != ""
@@ -4688,8 +5667,356 @@ class SceneEditor3D {
         }
         if envSkyboxCubemap != null {
             canvas.SetSkybox(envSkyboxCubemap);
+            return true;
         } else {
             canvas.ClearSkybox();
+        }
+        return false;
+    }
+
+    /// @brief Return one stable cache key for the resolved project environment.
+    hide func ProjectEnvironmentSignature(
+        state: ScenePreview3DRenderState) -> String {
+        if state == null { return "none"; }
+        var flags = "";
+        if state.hasSky { flags = flags + "S"; }
+        if state.stars { flags = flags + "*"; }
+        if state.hasSun { flags = flags + "K"; }
+        if state.hasFill { flags = flags + "F"; }
+        return flags
+            + "|" + state.clearR + "|" + state.clearG + "|" + state.clearB
+            + "|" + state.zenithR + "|" + state.zenithG
+            + "|" + state.zenithB
+            + "|" + state.groundR + "|" + state.groundG
+            + "|" + state.groundB + "|" + state.cloudDensity
+            + "|" + state.sunX + "|" + state.sunY + "|" + state.sunZ
+            + "|" + state.sunR + "|" + state.sunG + "|" + state.sunB
+            + "|" + state.sunIntensity
+            + "|" + state.fillX + "|" + state.fillY + "|" + state.fillZ
+            + "|" + state.fillR + "|" + state.fillG + "|" + state.fillB
+            + "|" + state.fillIntensity;
+    }
+
+    /// @brief Cache bounded project sky/light resources until metadata changes.
+    hide func EnsureProjectPreviewEnvironment(
+        state: ScenePreview3DRenderState) {
+        var signature = ProjectEnvironmentSignature(state);
+        if signature == projectEnvironmentSignature { return; }
+        projectEnvironmentSignature = signature;
+        projectSkyCubemap = null;
+        projectSunLight = null;
+        projectFillLight = null;
+        if state == null { return; }
+        if state.hasSky {
+            projectSkyCubemap = BuildProjectSkybox(state);
+        }
+        if state.hasSun and state.sunIntensity > 0.0
+           and DirectionUsable(state.sunX, state.sunY, state.sunZ) {
+            projectSunLight = Light3D.Directional(
+                Vec3.New(state.sunX, state.sunY, state.sunZ),
+                state.sunR * state.sunIntensity,
+                state.sunG * state.sunIntensity,
+                state.sunB * state.sunIntensity);
+        }
+        if state.hasFill and state.fillIntensity > 0.0
+           and DirectionUsable(state.fillX, state.fillY, state.fillZ) {
+            projectFillLight = Light3D.Directional(
+                Vec3.New(state.fillX, state.fillY, state.fillZ),
+                state.fillR * state.fillIntensity,
+                state.fillG * state.fillIntensity,
+                state.fillB * state.fillIntensity);
+        }
+    }
+
+    /// @brief Return whether a directional-light vector is nondegenerate.
+    hide func DirectionUsable(x: Number,
+                              y: Number,
+                              z: Number) -> Boolean {
+        return x * x + y * y + z * z > 0.000001;
+    }
+
+    /// @brief Build one fixed-budget project sky from the resolved palette.
+    hide func BuildProjectSkybox(
+        state: ScenePreview3DRenderState) -> CubeMap3D {
+        var positiveX = BuildProjectSkyFace(state, 0);
+        var negativeX = BuildProjectSkyFace(state, 1);
+        var positiveY = BuildProjectSkyFace(state, 2);
+        var negativeY = BuildProjectSkyFace(state, 3);
+        var positiveZ = BuildProjectSkyFace(state, 4);
+        var negativeZ = BuildProjectSkyFace(state, 5);
+        if positiveX == null or negativeX == null
+           or positiveY == null or negativeY == null
+           or positiveZ == null or negativeZ == null {
+            return null;
+        }
+        return CubeMap3D.New(
+            positiveX, negativeX, positiveY,
+            negativeY, positiveZ, negativeZ);
+    }
+
+    /// @brief Rasterize one 32x32 cubemap face from direction-space colors.
+    hide func BuildProjectSkyFace(
+        state: ScenePreview3DRenderState,
+        face: Integer) -> Pixels {
+        var pixels =
+            Pixels.New(PROJECT_SKY_FACE_SIZE, PROJECT_SKY_FACE_SIZE);
+        if pixels == null { return null; }
+        var y = 0;
+        while y < PROJECT_SKY_FACE_SIZE {
+            var x = 0;
+            while x < PROJECT_SKY_FACE_SIZE {
+                var u = ((x + 0.5)
+                    / (PROJECT_SKY_FACE_SIZE / 1.0)) * 2.0 - 1.0;
+                var v = ((y + 0.5)
+                    / (PROJECT_SKY_FACE_SIZE / 1.0)) * 2.0 - 1.0;
+                var directionX = 0.0;
+                var directionY = 0.0;
+                var directionZ = 0.0;
+                if face == 0 {
+                    directionX = 1.0;
+                    directionY = 0.0 - v;
+                    directionZ = 0.0 - u;
+                } else if face == 1 {
+                    directionX = -1.0;
+                    directionY = 0.0 - v;
+                    directionZ = u;
+                } else if face == 2 {
+                    directionX = u;
+                    directionY = 1.0;
+                    directionZ = v;
+                } else if face == 3 {
+                    directionX = u;
+                    directionY = -1.0;
+                    directionZ = 0.0 - v;
+                } else if face == 4 {
+                    directionX = u;
+                    directionY = 0.0 - v;
+                    directionZ = 1.0;
+                } else {
+                    directionX = 0.0 - u;
+                    directionY = 0.0 - v;
+                    directionZ = -1.0;
+                }
+                var length = Math.Sqrt(
+                    directionX * directionX
+                    + directionY * directionY
+                    + directionZ * directionZ);
+                if length < 0.000001 { length = 1.0; }
+                Pixels.Set(
+                    pixels,
+                    x,
+                    y,
+                    ProjectSkyColor(
+                        state,
+                        directionX / length,
+                        directionY / length,
+                        directionZ / length));
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+        return pixels;
+    }
+
+    /// @brief Sample bounded analytic sky color for one world direction.
+    hide func ProjectSkyColor(
+        state: ScenePreview3DRenderState,
+        directionX: Number,
+        directionY: Number,
+        directionZ: Number) -> Integer {
+        var red = state.clearR;
+        var green = state.clearG;
+        var blue = state.clearB;
+        if directionY < -0.02 {
+            var down = ClampNumber3D(
+                (0.0 - directionY) * 2.2, 0.0, 1.0);
+            red = Lerp3D(state.clearR, state.groundR, down);
+            green = Lerp3D(state.clearG, state.groundG, down);
+            blue = Lerp3D(state.clearB, state.groundB, down);
+            return PackPreviewColor(red, green, blue);
+        }
+        var up = Smoothstep3D(0.0, 0.55, directionY);
+        red = Lerp3D(state.clearR, state.zenithR, up);
+        green = Lerp3D(state.clearG, state.zenithG, up);
+        blue = Lerp3D(state.clearB, state.zenithB, up);
+        var haze = ClampNumber3D(
+            1.0 - AbsNumber3D(directionY) * 2.4, 0.0, 1.0);
+        haze = haze * haze * 0.22;
+        red = red + haze * state.clearR;
+        green = green + haze * state.clearG;
+        blue = blue + haze * state.clearB;
+
+        if state.hasSun and state.sunIntensity > 0.0
+           and DirectionUsable(state.sunX, state.sunY, state.sunZ) {
+            var sunLength = Math.Sqrt(
+                state.sunX * state.sunX
+                + state.sunY * state.sunY
+                + state.sunZ * state.sunZ);
+            var sunDot =
+                (directionX * (0.0 - state.sunX)
+                 + directionY * (0.0 - state.sunY)
+                 + directionZ * (0.0 - state.sunZ))
+                / sunLength;
+            if sunDot > 0.0 {
+                var glow = sunDot * sunDot;
+                glow = glow * glow * glow;
+                red = red + glow * 0.9 * state.sunR;
+                green = green + glow * 0.9 * state.sunG;
+                blue = blue + glow * 0.9 * state.sunB;
+            }
+        }
+        if state.cloudDensity > 0.0 {
+            var band = ClampNumber3D(
+                1.0 - AbsNumber3D(directionY) * 1.4, 0.0, 1.0);
+            var noise =
+                Math.Sin(directionX * 7.0 + directionZ * 5.0) * 0.5
+                + Math.Sin(
+                    directionX * 13.0 - directionZ * 11.0
+                    + directionY * 6.0) * 0.3
+                + Math.Cos(
+                    directionZ * 17.0 + directionX * 3.0) * 0.2;
+            var cloud = Smoothstep3D(
+                0.55 - state.cloudDensity * 0.35,
+                0.9,
+                (noise + 1.0) * 0.5)
+                * band * state.cloudDensity;
+            red = Lerp3D(red, red * 0.4 + 0.55, cloud);
+            green = Lerp3D(green, green * 0.4 + 0.55, cloud);
+            blue = Lerp3D(blue, blue * 0.4 + 0.58, cloud);
+        }
+        if state.stars and directionY > 0.05 {
+            var hashX = Convert.NumToInt(
+                Math.Round((directionX + 1.0) * 271.0));
+            var hashY = Convert.NumToInt(
+                Math.Round((directionY + 1.0) * 197.0));
+            var hashZ = Convert.NumToInt(
+                Math.Round((directionZ + 1.0) * 353.0));
+            var hash =
+                (hashX * 73856093
+                 + hashZ * 19349663
+                 + hashY * 83492791) % 100000;
+            if hash < 0 { hash = 0 - hash; }
+            if hash > 99720 {
+                var magnitude = (hash - 99720) / 280.0;
+                red = red + 0.55 * magnitude;
+                green = green + 0.60 * magnitude;
+                blue = blue + 0.70 * magnitude;
+            }
+        }
+        return PackPreviewColor(red, green, blue);
+    }
+
+    /// @brief Linear interpolation without introducing a math dependency.
+    hide func Lerp3D(a: Number,
+                     b: Number,
+                     amount: Number) -> Number {
+        return a + (b - a) * amount;
+    }
+
+    /// @brief Bounded cubic easing for palette and cloud transitions.
+    hide func Smoothstep3D(minimum: Number,
+                           maximum: Number,
+                           value: Number) -> Number {
+        if maximum <= minimum {
+            if value < minimum { return 0.0; }
+            return 1.0;
+        }
+        var t = ClampNumber3D(
+            (value - minimum) / (maximum - minimum), 0.0, 1.0);
+        return t * t * (3.0 - 2.0 * t);
+    }
+
+    /// @brief Return one scalar's magnitude.
+    hide func AbsNumber3D(value: Number) -> Number {
+        if value < 0.0 { return 0.0 - value; }
+        return value;
+    }
+
+    /// @brief Pack normalized preview color into RGBA8 for CubeMap3D.
+    hide func PackPreviewColor(red: Number,
+                               green: Number,
+                               blue: Number) -> Integer {
+        var r = Convert.NumToInt(Math.Round(
+            ClampNumber3D(red, 0.0, 1.0) * 255.0));
+        var g = Convert.NumToInt(Math.Round(
+            ClampNumber3D(green, 0.0, 1.0) * 255.0));
+        var b = Convert.NumToInt(Math.Round(
+            ClampNumber3D(blue, 0.0, 1.0) * 255.0));
+        return (((r * 256) + g) * 256 + b) * 256 + 255;
+    }
+
+    /// @brief Apply resolved profile atmosphere without canonical mutation.
+    hide func ApplyProjectPreviewEnvironment(
+        canvas: Canvas3D,
+        state: ScenePreview3DRenderState,
+        authoredSkyPresent: Boolean,
+        assist: Boolean) {
+        if canvas == null or state == null { return; }
+        EnsureProjectPreviewEnvironment(state);
+        if authoredSkyPresent == false {
+            if projectSkyCubemap != null {
+                canvas.SetSkybox(projectSkyCubemap);
+            } else {
+                canvas.ClearSkybox();
+            }
+        }
+        if state.hasIblIntensity
+           and (authoredSkyPresent or projectSkyCubemap != null) {
+            canvas.IblEnabled = state.iblIntensity > 0.0;
+            canvas.IblIntensity = state.iblIntensity;
+        }
+        if projectSunLight != null or projectFillLight != null {
+            canvas.ClearLights();
+            var slot = 0;
+            if projectSunLight != null {
+                canvas.SetLight(slot, projectSunLight);
+                slot = slot + 1;
+            }
+            if projectFillLight != null {
+                canvas.SetLight(slot, projectFillLight);
+            }
+        } else {
+            canvas.SetDefaultLighting();
+        }
+        if state.hasAmbient {
+            canvas.SetAmbient(
+                state.ambientR,
+                state.ambientG,
+                state.ambientB);
+        } else if assist {
+            canvas.SetAmbient(0.55, 0.55, 0.58);
+        } else {
+            canvas.SetAmbient(0.05, 0.05, 0.06);
+        }
+        if state.hasFog {
+            canvas.SetFog(
+                state.fogNear,
+                state.fogFar,
+                state.fogR,
+                state.fogG,
+                state.fogB);
+        } else {
+            canvas.ClearFog();
+        }
+        if state.hasHeightFog and state.heightFogEnabled {
+            canvas.SetHeightFog(
+                state.heightFogBase,
+                state.heightFogFalloff,
+                state.heightFogDensity,
+                state.heightFogOpacity);
+        } else {
+            canvas.ClearHeightFog();
+        }
+        if state.hasClear {
+            canvas.Clear(
+                state.clearR,
+                state.clearG,
+                state.clearB);
+        } else {
+            canvas.Clear(
+                VIEWPORT_CLEAR_RED,
+                VIEWPORT_CLEAR_GREEN,
+                VIEWPORT_CLEAR_BLUE);
         }
     }
 
@@ -6991,6 +8318,7 @@ class SceneEditor3D {
            or componentAuthoring.handled {
             componentSchema = componentAuthoring.schema;
             RefreshComponentPalette();
+            RebuildProjectNodePreviews();
             if componentAuthoring.message != "" {
                 detailLabel.SetText(componentAuthoring.message);
             }
@@ -8272,6 +9600,7 @@ class SceneEditor3D {
         hierarchyExpandedPaths = [];
         RefreshSelectedFields();
         SetEditorControlsEnabled(scene != null);
+        RebuildProjectNodePreviews();
         renderDirty = true;
     }
 
@@ -8570,7 +9899,7 @@ class SceneEditor3D {
                 depth = 0.000001;
             }
             var focal = renderedViewportHeight
-                / (2.0 * VIEWPORT_FOV_HALF_TAN);
+                / (2.0 * ActiveViewportFovHalfTan());
             projected.x = Convert.NumToInt(
                 renderedViewportWidth / 2.0
                     + rotatedX * focal / depth);
@@ -9024,6 +10353,36 @@ class SceneEditor3D {
             var direction = viewportRenderCamera.ScreenToRay(
                 mouseX, mouseY,
                 renderedViewportWidth, renderedViewportHeight) as Vec3;
+            var previewCandidate = -1;
+            var previewDistance = 1000000000.0;
+            if projectPreviewScene != null {
+                var previewNode =
+                    projectPreviewScene.RaycastNodesPrecise(
+                        castOrigin,
+                        direction,
+                        viewportRenderCamera.FarPlane) as SceneNode;
+                var previewHit =
+                    projectPreviewScene.RaycastPreciseHit(
+                        castOrigin,
+                        direction,
+                        viewportRenderCamera.FarPlane) as RayHit3D;
+                previewCandidate =
+                    ProjectPreviewOwner(previewNode);
+                if previewHit != null {
+                    previewDistance = previewHit.Distance;
+                }
+                if previewCandidate >= 0
+                   and NodePickLocked(previewCandidate) == false {
+                    var sceneHit = scene.RaycastPreciseHit(
+                        castOrigin,
+                        direction,
+                        viewportRenderCamera.FarPlane) as RayHit3D;
+                    if sceneHit == null
+                       or previewDistance <= sceneHit.Distance {
+                        return previewCandidate;
+                    }
+                }
+            }
             // Walk hits front to back so pick-locked nodes yield to the
             // geometry behind them instead of blocking the click.
             var remaining = viewportRenderCamera.FarPlane;
@@ -9048,6 +10407,10 @@ class SceneEditor3D {
                     castOrigin.Z + direction.Z * step);
                 remaining = remaining - step;
                 attempts = attempts + 1;
+            }
+            if previewCandidate >= 0
+               and NodePickLocked(previewCandidate) == false {
+                return previewCandidate;
             }
         }
         var marker = ViewportMarkerAt(mouseX, mouseY);
@@ -10891,7 +12254,7 @@ class SceneEditor3D {
             VIEWPORT_CAMERA_NEAR,
             VIEWPORT_CAMERA_MIN_DISTANCE * 4.0);
         if camera == null { return false; }
-        camera.Fov = VIEWPORT_FOV_DEGREES;
+        camera.Fov = ActiveViewportFovDegrees();
         canvas.SetDefaultLighting();
 
         viewportRenderTarget = target;
@@ -10909,9 +12272,28 @@ class SceneEditor3D {
     /// @details Pixels-per-unit on the target plane equals viewScale in both
     ///          projections, so zoom, pan, and Frame Selected keep identical
     ///          apparent-size semantics when switching modes (ADR 0183).
+    hide func ActiveViewportFovDegrees() -> Number {
+        if componentSchema != null
+           and componentSchema.valid
+           and componentSchema.scenePreview3D != null
+           and componentSchema.scenePreview3D.present
+           and componentSchema.scenePreview3D.hasCameraFov {
+            return componentSchema.scenePreview3D.cameraFov;
+        }
+        return VIEWPORT_FOV_DEGREES;
+    }
+
+    /// @brief Return the tangent of half the active bounded perspective lens.
+    hide func ActiveViewportFovHalfTan() -> Number {
+        var tangent = Math.Tan(
+            ActiveViewportFovDegrees() * DEG_TO_RAD * 0.5);
+        if tangent < 0.0001 { return 0.0001; }
+        return tangent;
+    }
+
     hide func PerspectiveEyeDistance() -> Number {
         var distance = renderedViewportHeight
-            / (2.0 * viewScale * VIEWPORT_FOV_HALF_TAN);
+            / (2.0 * viewScale * ActiveViewportFovHalfTan());
         if distance < 0.5 { distance = 0.5; }
         if distance > 1000000.0 { distance = 1000000.0; }
         return distance;
@@ -10949,7 +12331,7 @@ class SceneEditor3D {
         if viewPerspective {
             var eyeDistance = PerspectiveEyeDistance();
             viewportRenderCamera.IsOrtho = false;
-            viewportRenderCamera.Fov = VIEWPORT_FOV_DEGREES;
+            viewportRenderCamera.Fov = ActiveViewportFovDegrees();
             var nearPlane = eyeDistance / 500.0;
             if nearPlane < VIEWPORT_CAMERA_NEAR {
                 nearPlane = VIEWPORT_CAMERA_NEAR;
@@ -10987,26 +12369,31 @@ class SceneEditor3D {
         if ConfigureViewportCamera() == false { return false; }
         viewportRenderCanvas.Wireframe =
             viewportMode == VIEWPORT_MODE_WIREFRAME;
-        ApplyEnvironmentToCanvas(viewportRenderCanvas);
-        // Editor light assist: many authored scenes drive their real lighting
-        // from gameplay metadata, leaving Light3D components dim, so shaded
-        // content would render near-black. A boosted viewport ambient keeps
-        // authoring possible; the camera preview inset stays game-faithful.
-        if editorLightAssist {
-            viewportRenderCanvas.SetAmbient(0.55, 0.55, 0.58);
-        } else {
-            viewportRenderCanvas.SetAmbient(0.05, 0.05, 0.06);
-        }
-        viewportRenderCanvas.Clear(
-            VIEWPORT_CLEAR_RED,
-            VIEWPORT_CLEAR_GREEN,
-            VIEWPORT_CLEAR_BLUE);
+        var authoredSkyPresent =
+            ApplyEnvironmentToCanvas(viewportRenderCanvas);
+        var projectPreview = ProjectPreviewRenderState();
+        // Project profiles can supply the runtime-like sky/key/fill rig for
+        // metadata-driven games. Editor assist remains only the fallback
+        // ambient floor when that profile omits ambient.
+        ApplyProjectPreviewEnvironment(
+            viewportRenderCanvas,
+            projectPreview,
+            authoredSkyPresent,
+            editorLightAssist);
         scene.Draw(viewportRenderCanvas, viewportRenderCamera);
+        if projectPreviewScene != null {
+            projectPreviewScene.Draw(
+                viewportRenderCanvas, viewportRenderCamera);
+        }
         if viewportMode == VIEWPORT_MODE_SHADED_WIRE {
             // Combined mode: the wire pass draws over the shaded frame
             // without clearing, giving Unity's Shaded Wireframe look.
             viewportRenderCanvas.Wireframe = true;
             scene.Draw(viewportRenderCanvas, viewportRenderCamera);
+            if projectPreviewScene != null {
+                projectPreviewScene.Draw(
+                    viewportRenderCanvas, viewportRenderCamera);
+            }
             viewportRenderCanvas.Wireframe = false;
         }
         var rendered = viewportRenderTarget.AsPixels() as Pixels;
@@ -11307,6 +12694,18 @@ class SceneEditor3D {
             lookStatus = "  |  look-through "
                 + NodeDisplayName(lookThroughNode);
         }
+        var previewStatus = "";
+        if projectPreviewInstanceCount > 0 {
+            previewStatus = "  |  "
+                + projectPreviewInstanceCount + " project preview(s)";
+        }
+        if projectPreviewMissingCount > 0 {
+            previewStatus = previewStatus + "  |  "
+                + projectPreviewMissingCount + " preview missing";
+        }
+        if projectPreviewClipped {
+            previewStatus = previewStatus + "  |  preview cap";
+        }
         viewStatusLabel.SetText(
             count + " nodes  |  view " + viewYawDegrees
             + "/" + viewPitchDegrees + "  |  " + viewScale + " px/u"
@@ -11315,10 +12714,12 @@ class SceneEditor3D {
             + "  |  " + renderStatus
             + "  |  " + scene_transform_3d.ModeLabel(gizmoMode)
             + snapStatus + statsStatus + flyStatus + lookStatus
+            + previewStatus
             + clipped + interaction);
         viewportImage.SetAccessibleDescription(
             count + " scene nodes and " + lightCount
-            + " authored lights in " + renderStatus
+            + " authored lights plus " + projectPreviewInstanceCount
+            + " project previews in " + renderStatus
             + " mode at " + viewScale + " pixels per world unit. "
             + "Click visible meshes to select; Shift adds and Control or "
             + "Command toggles. Middle or right drag orbits; add Shift to pan.");
@@ -11685,11 +13086,13 @@ class SceneEditor3D {
            and EnsureInsetRenderer() {
             ApplyAuthoredCameraPose(insetRenderCamera, node);
             insetRenderCanvas.Wireframe = false;
-            ApplyEnvironmentToCanvas(insetRenderCanvas);
-            insetRenderCanvas.Clear(
-                VIEWPORT_CLEAR_RED,
-                VIEWPORT_CLEAR_GREEN,
-                VIEWPORT_CLEAR_BLUE);
+            var insetAuthoredSky =
+                ApplyEnvironmentToCanvas(insetRenderCanvas);
+            ApplyProjectPreviewEnvironment(
+                insetRenderCanvas,
+                ProjectPreviewRenderState(),
+                insetAuthoredSky,
+                false);
             scene.Draw(insetRenderCanvas, insetRenderCamera);
             var rendered = insetRenderTarget.AsPixels();
             if rendered != null {

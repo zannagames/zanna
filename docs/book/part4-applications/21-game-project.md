@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-16
+last-verified: 2026-07-26
 ---
 
 # Chapter 21: Building a Game
@@ -596,18 +596,18 @@ func setupLevel(state: GameState) -> GameState {
 
     // Row 1-6: alternating logs (brown) and turtles (green)
     // Logs are long and safe, turtles are short and may submerge (future feature)
-    s.platforms.Push(Platform.create(1, 50 * speedMod, 120, Color.RGB(139, 69, 19)));
-    s.platforms.Push(Platform.create(1, 50 * speedMod, 120, Color.RGB(139, 69, 19)));
-    s.platforms.Push(Platform.create(2, -40 * speedMod, 80, Color.RGB(0, 100, 0)));
-    s.platforms.Push(Platform.create(2, -40 * speedMod, 80, Color.RGB(0, 100, 0)));
-    s.platforms.Push(Platform.create(2, -40 * speedMod, 80, Color.RGB(0, 100, 0)));
-    s.platforms.Push(Platform.create(3, 60 * speedMod, 160, Color.RGB(139, 69, 19)));
-    s.platforms.Push(Platform.create(4, -70 * speedMod, 100, Color.RGB(0, 100, 0)));
-    s.platforms.Push(Platform.create(4, -70 * speedMod, 100, Color.RGB(0, 100, 0)));
-    s.platforms.Push(Platform.create(5, 45 * speedMod, 140, Color.RGB(139, 69, 19)));
-    s.platforms.Push(Platform.create(5, 45 * speedMod, 140, Color.RGB(139, 69, 19)));
-    s.platforms.Push(Platform.create(6, -55 * speedMod, 90, Color.RGB(0, 100, 0)));
-    s.platforms.Push(Platform.create(6, -55 * speedMod, 90, Color.RGB(0, 100, 0)));
+    s.platforms.Push(Platform.create(1, 50 * speedMod, 120, Color.Rgb(139, 69, 19)));
+    s.platforms.Push(Platform.create(1, 50 * speedMod, 120, Color.Rgb(139, 69, 19)));
+    s.platforms.Push(Platform.create(2, -40 * speedMod, 80, Color.Rgb(0, 100, 0)));
+    s.platforms.Push(Platform.create(2, -40 * speedMod, 80, Color.Rgb(0, 100, 0)));
+    s.platforms.Push(Platform.create(2, -40 * speedMod, 80, Color.Rgb(0, 100, 0)));
+    s.platforms.Push(Platform.create(3, 60 * speedMod, 160, Color.Rgb(139, 69, 19)));
+    s.platforms.Push(Platform.create(4, -70 * speedMod, 100, Color.Rgb(0, 100, 0)));
+    s.platforms.Push(Platform.create(4, -70 * speedMod, 100, Color.Rgb(0, 100, 0)));
+    s.platforms.Push(Platform.create(5, 45 * speedMod, 140, Color.Rgb(139, 69, 19)));
+    s.platforms.Push(Platform.create(5, 45 * speedMod, 140, Color.Rgb(139, 69, 19)));
+    s.platforms.Push(Platform.create(6, -55 * speedMod, 90, Color.Rgb(0, 100, 0)));
+    s.platforms.Push(Platform.create(6, -55 * speedMod, 90, Color.Rgb(0, 100, 0)));
 
     // Spread platforms out
     for i in 0..s.platforms.Length {
@@ -844,7 +844,7 @@ expose func render(canvas: Canvas, state: Game.GameState) {
 
     // Draw the frog (only if alive)
     if state.frog.alive {
-        canvas.Box(state.frog.x - 15, state.frog.y, 30, 35, Color.RGB(0, 255, 0));
+        canvas.Box(state.frog.x - 15, state.frog.y, 30, 35, Color.Rgb(0, 255, 0));
     }
 
     // Draw the user interface (score, lives, level)
@@ -857,24 +857,24 @@ Notice the drawing order. Background first, then platforms, then vehicles, then 
 ```zia
 func drawBackground(canvas: Canvas) {
     // Home zone at the top
-    canvas.Box(0, 0, Config.SCREEN_WIDTH, Config.TILE_SIZE, Color.RGB(50, 50, 100));
+    canvas.Box(0, 0, Config.SCREEN_WIDTH, Config.TILE_SIZE, Color.Rgb(50, 50, 100));
 
     // River (dangerous water)
     canvas.Box(0, Config.RIVER_START * Config.TILE_SIZE,
                Config.SCREEN_WIDTH,
                (Config.RIVER_END - Config.RIVER_START + 1) * Config.TILE_SIZE,
-               Color.RGB(0, 0, 150));
+               Color.Rgb(0, 0, 150));
 
     // Safe zone in the middle (rest area)
     canvas.Box(0, Config.SAFE_ZONE * Config.TILE_SIZE,
                Config.SCREEN_WIDTH, Config.TILE_SIZE,
-               Color.RGB(100, 50, 150));
+               Color.Rgb(100, 50, 150));
 
     // Road
     canvas.Box(0, Config.ROAD_START * Config.TILE_SIZE,
                Config.SCREEN_WIDTH,
                (Config.ROAD_END - Config.ROAD_START + 1) * Config.TILE_SIZE,
-               Color.RGB(50, 50, 50));
+               Color.Rgb(50, 50, 50));
 
     // Draw lane divider lines on the road
     for row in Config.ROAD_START..Config.ROAD_END {
@@ -888,7 +888,7 @@ func drawBackground(canvas: Canvas) {
     // Starting area at the bottom
     canvas.Box(0, Config.START_ROW * Config.TILE_SIZE,
                Config.SCREEN_WIDTH, Config.TILE_SIZE,
-               Color.RGB(100, 50, 150));
+               Color.Rgb(100, 50, 150));
 }
 ```
 
@@ -902,9 +902,9 @@ func drawHomes(canvas: Canvas, occupied: List[Boolean]) {
         var x = positions[i] * Config.TILE_SIZE;
 
         // Green if filled, darker green if empty
-        var homeColor = Color.RGB(0, 100, 0);  // Dark green = target
+        var homeColor = Color.Rgb(0, 100, 0);  // Dark green = target
         if occupied[i] {
-            homeColor = Color.RGB(0, 255, 0);  // Bright green = success
+            homeColor = Color.Rgb(0, 255, 0);  // Bright green = success
         }
 
         canvas.Box(x, 2, Config.TILE_SIZE * 2, Config.TILE_SIZE - 4, homeColor);
@@ -1194,7 +1194,7 @@ Draw rectangles showing where collision detection thinks objects are:
 func debugDrawBounds(canvas: Canvas, vehicles: List[Vehicle]) {
     for v in vehicles {
         var bounds = Vehicle.getBounds(v);
-        canvas.Frame(bounds.x, bounds.y, bounds.width, bounds.height, Color.RGB(255, 0, 0));
+        canvas.Frame(bounds.x, bounds.y, bounds.width, bounds.height, Color.Rgb(255, 0, 0));
     }
 }
 ```
@@ -1283,9 +1283,9 @@ Replace colored rectangles with proper artwork. Load sprite images and draw them
 ```zia
 bind Sprite = Zanna.Graphics.Sprite;
 
-var frogSprite = Sprite.Load("frog.png");
-var frogLeft = Sprite.Load("frog_left.png");
-var frogRight = Sprite.Load("frog_right.png");
+var frogSprite = Sprite.FromFile("frog.png");
+var frogLeft = Sprite.FromFile("frog_left.png");
+var frogRight = Sprite.FromFile("frog_right.png");
 
 // Track facing direction
 struct Frog {
@@ -1309,19 +1309,14 @@ bind Convert = Zanna.Core.Convert;
 bind Zanna.Text.Fmt as Fmt;
 
 func loadHighScore() -> Integer {
-    var file = File.open("highscore.txt", "r");
-    if file == null {
+    if !File.Exists("highscore.txt") {
         return 0;
     }
-    var score = Convert.ToInt64(file.ReadLine());
-    file.Close();
-    return score;
+    return Convert.ToInt64(File.ReadAllText("highscore.txt"));
 }
 
 func saveHighScore(score: Integer) {
-    var file = File.open("highscore.txt", "w");
-    file.WriteLine(Fmt.Int(score));
-    file.Close();
+    File.WriteAllText("highscore.txt", Fmt.Int(score));
 }
 
 // At game over:

@@ -19,6 +19,10 @@
 //   - Persistent activity views emit intent through their focused controllers.
 //   - Edit chrome and command routing follow the active source or visual-scene
 //     surface, including hierarchy-owned Find.
+//   - Entering a visual scene defaults to the reversible scene-authoring layout;
+//     an explicit Exit Layout choice is respected until the scene surface ends.
+//   - Explicit startup documents own workspace context while unrelated clean
+//     session tabs stay dormant and unsaved recovery remains protected.
 // Ownership/Lifetime:
 //   - main owns every application controller until the frame loop exits.
 //   - Cleanup drains process, worker, watcher, persistence, and GUI ownership.
@@ -84,6 +88,7 @@ bind "editor/semantic_tokens";
 bind "editor/inlay_hints";
 bind "services/file_utils";
 bind "services/locations";
+bind "services/project_locator";
 bind "services/safe_io";
 bind "build/build_system";
 bind "build/breakpoints";
@@ -675,6 +680,10 @@ func main() {
     var recoveryStore = new recovery_store.RecoveryStore();
     recoveryStore.Setup(appSettings.settingsDir);
     file_commands.SetRecoveryStore(recoveryStore);
+    // Resolve the explicit target before ordinary session restore. It owns
+    // startup focus and project context, but dirty persisted buffers must still
+    // be recovered conservatively.
+    var startupFile = startup_arguments.CommandLineFile();
     var restoredCount = 0;
     var restoreSplitRequested = false;
     if appSettings.restoreSession {
@@ -682,7 +691,12 @@ func main() {
         // text files are already size-bounded; this outer budget prevents a
         // large 256-tab session from making the native window look hung while
         // all of them are validated, read, hashed, and added to the tab bar.
-        var restoreJob = sessionMgr.BeginRestore(docMgr, projMgr, tabs);
+        var restoreJob: session.SessionRestoreJob = null;
+        if startupFile != "" {
+            restoreJob = sessionMgr.BeginRecoveryRestore(docMgr, tabs);
+        } else {
+            restoreJob = sessionMgr.BeginRestore(docMgr, projMgr, tabs);
+        }
         while restoreJob.active {
             sessionMgr.PumpRestore(restoreJob, SESSION_RESTORE_ENTRIES_PER_PAINT);
             var restoreProgress = sessionMgr.RestoreProgressText(restoreJob);
@@ -757,8 +771,13 @@ func main() {
 
     // Shell/Open With launches provide one positional source path. Open it
     // after session recovery so the explicitly requested document wins focus.
-    var startupFile = startup_arguments.CommandLineFile();
     if startupFile != "" {
+        var startupProjectRoot =
+            project_locator.NearestManifestRoot(startupFile);
+        if startupProjectRoot != ""
+           and projMgr.OpenFolder(startupProjectRoot) {
+            sessionMgr.RecordRecentProject(startupProjectRoot);
+        }
         if explorer_action_runner.OpenFileAndRecord(
                shell, docMgr, engine, tabs, sessionMgr, startupFile) {
             restoredCount = restoredCount + 1;
@@ -884,6 +903,10 @@ func main() {
 
     // Welcome-surface visibility tracking (refresh recents on transition to shown).
     var prevDocCount = -1;
+    // False forces the first active scene frame through the same transition as
+    // a later text-to-scene tab switch. It is a transition latch, not a stored
+    // preference, so Exit Layout remains stable while that scene surface stays.
+    var previousSceneSurfaceActive = false;
 
     // Cursor tracking for dot-trigger and status bar caching
     var prevCursorLine = 1;
@@ -1039,6 +1062,52 @@ func main() {
                 shell.SetStatusRight(file_commands.DocStatusLabel(activeVisualDoc));
             }
         }
+        var sceneFocusToggle2D =
+            scene2DEditor.TakeFocusModeToggleRequested();
+        var sceneFocusToggle3D =
+            scene3DEditor.TakeFocusModeToggleRequested();
+        var sceneWorkspaceToggle2D =
+            scene2DEditor.TakeWorkspaceModeToggleRequested();
+        var sceneWorkspaceToggle3D =
+            scene3DEditor.TakeWorkspaceModeToggleRequested();
+        if sceneWorkspaceToggle2D or sceneWorkspaceToggle3D {
+            shell.ToggleSceneWorkspaceMode();
+        }
+        if sceneFocusToggle2D or sceneFocusToggle3D {
+            shell.ToggleSceneFocusMode();
+        }
+        var activeSceneSurface =
+            activeVisualDoc != null
+            and (activeVisualDoc!.kind == file_utils.DOC_KIND_SCENE_2D
+                 or activeVisualDoc!.kind == file_utils.DOC_KIND_SCENE_3D);
+        if activeSceneSurface and previousSceneSurfaceActive == false
+           and shell.IsSceneWorkspaceModeActive() == false
+           and shell.IsSceneFocusModeActive() == false {
+            // Scene documents already provide their own hierarchy, inspector,
+            // palette, and viewport. Reclaim the duplicate outer IDE docks on
+            // entry so even compact windows start with a useful authoring area.
+            shell.SetSceneWorkspaceMode(true);
+        }
+        if activeSceneSurface == false
+           and shell.IsSceneFocusModeActive() {
+            // The scene-local Exit Focus control is no longer reachable once
+            // a text/welcome surface takes over, so restore the workbench.
+            shell.SetSceneFocusMode(false);
+        }
+        if activeSceneSurface == false
+           and shell.IsSceneWorkspaceModeActive() {
+            // Scene Layout is also ephemeral; a text/welcome surface restores
+            // the exact IDE docks that the scene presentation captured.
+            shell.SetSceneWorkspaceMode(false);
+        }
+        previousSceneSurfaceActive = activeSceneSurface;
+        var sceneWorkspaceActive =
+            shell.IsSceneWorkspaceModeActive();
+        scene2DEditor.SetWorkspaceModeActive(sceneWorkspaceActive);
+        scene3DEditor.SetWorkspaceModeActive(sceneWorkspaceActive);
+        var sceneFocusActive = shell.IsSceneFocusModeActive();
+        scene2DEditor.SetFocusModeActive(sceneFocusActive);
+        scene3DEditor.SetFocusModeActive(sceneFocusActive);
         if shell.WasCloseRequested() {
             if file_commands.handleExit(shell, docMgr, engine) {
                 FlushWorkspaceLayout(

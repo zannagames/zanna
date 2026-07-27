@@ -458,7 +458,7 @@ content = Zanna.IO.File.ReadAllText("main.bas")
 editor.SetText(content)
 
 ' Save on Ctrl+S
-IF Zanna.Input.Keyboard.Ctrl() AND Zanna.Input.Keyboard.WasPressed(Zanna.Input.Key.S) THEN
+IF (Zanna.Input.Keyboard.IsDown(Zanna.Input.Key.LeftControl) OR Zanna.Input.Keyboard.IsDown(Zanna.Input.Key.RightControl)) AND Zanna.Input.Keyboard.WasPressed(Zanna.Input.Key.S) THEN
     IF editor.IsModified() THEN
         Zanna.IO.File.WriteAllText("main.bas", editor.Text)
         editor.ClearModified()

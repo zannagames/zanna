@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-05-31
+last-verified: 2026-07-26
 ---
 
 # CODEMAP: Virtual Machine
@@ -12,7 +12,7 @@ For the separate bytecode interpreter in `src/bytecode/`, see
 
 ## Overview
 
-- **Total source files**: 59 (.hpp/.cpp)
+- **Total source files**: 61 (.hpp/.cpp)
 - **Subdirectories**: debug/, ops/, ops/common/, ops/generated/, ops/schema/
 
 ## Core Infrastructure

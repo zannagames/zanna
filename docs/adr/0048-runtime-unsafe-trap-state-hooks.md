@@ -4,7 +4,7 @@ audience: contributors
 last-verified: 2026-07-02
 ---
 
-# ADR-0048: Runtime Unsafe Trap-State Hooks
+# ADR 0048: Runtime Unsafe Trap-State Hooks
 
 ## Status
 

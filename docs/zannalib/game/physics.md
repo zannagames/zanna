@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-05-15
+last-verified: 2026-07-26
 ---
 
 # Physics & Collision
@@ -346,8 +346,8 @@ and impulse-based collision resolution.
 | `PrevY`       | `Double` (read-only)   | Y position at the start of the previous successful `Step` |
 | `Width`       | `Double` (read-only)   | Body width                               |
 | `Height`      | `Double` (read-only)   | Body height                              |
-| `VX`          | `Double` (read-only)   | X velocity                               |
-| `VY`          | `Double` (read-only)   | Y velocity                               |
+| `VelocityX`   | `Double` (read-only)   | X velocity                               |
+| `VelocityY`   | `Double` (read-only)   | Y velocity                               |
 | `Mass`        | `Double` (read-only)   | Body mass (0 = static)                   |
 | `IsStatic`    | `Boolean` (read-only)  | True if mass is 0 (immovable)            |
 | `Restitution`    | `Double` (read/write)  | Bounciness (0-1)                         |
@@ -515,31 +515,24 @@ Spatial partitioning data structure for efficient collision detection and spatia
 | Property      | Type                  | Description                          |
 |---------------|-----------------------|--------------------------------------|
 | `ItemCount`   | `Integer` (read-only) | Number of items in tree              |
-| `ResultCount` | `Integer` (read-only) | Compatibility: number of results from last mutable query |
 
 ### Methods
 
 | Method                     | Signature          | Description                                      |
 |----------------------------|--------------------|--------------------------------------------------|
 | `Clear()`                  | `Void()`           | Remove all items                                 |
-| `QueryRectResult(x, y, w, h)` | `QueryResult(4×Int)` | Find items in rectangle as a stable result object |
-| `QueryPointResult(x, y, radius)` | `QueryResult(3×Int)` | Find nearby items as a stable result object |
-| `QueryPairs()`             | `QuadtreePairResult()` | Get potential collision pairs as a stable result object |
-| `GetPairs()`               | `Integer()`        | Compatibility: collect mutable collision pairs; returns count |
-| `GetResult(index)`         | `Integer(Integer)` | Compatibility: get item ID from mutable query results |
-| `Insert(id, x, y, w, h)`  | `Boolean(5×Int)`   | Add item with bounds                             |
-| `PairFirst(index)`         | `Integer(Integer)` | Compatibility: get first ID from mutable collision pairs |
-| `PairSecond(index)`        | `Integer(Integer)` | Compatibility: get second ID from mutable collision pairs |
-| `QueryPoint(x, y, radius)` | `Integer(3×Int)`   | Compatibility: find nearby items and store mutable last results |
-| `QueryRect(x, y, w, h)`   | `Integer(4×Int)`   | Compatibility: find items in rectangle and store mutable last results |
-| `QueryWasTruncated()`      | `Boolean()`        | Compatibility diagnostic for the most recent mutable query |
+| `Insert(id, x, y, w, h)`   | `Boolean(5×Int)`   | Add item with bounds                             |
+| `Update(id, x, y, w, h)`   | `Boolean(5×Int)`   | Update item position/size                        |
 | `Remove(id)`               | `Boolean(Integer)` | Remove item by ID                                |
-| `Update(id, x, y, w, h)`  | `Boolean(5×Int)`   | Update item position/size                        |
+| `QueryRect(x, y, w, h)`    | `QueryResult(4×Int)` | Find items in a rectangle as a stable result object |
+| `QueryPoint(x, y, radius)` | `QueryResult(3×Int)` | Find nearby items as a stable result object    |
+| `QueryPairs()`             | `QuadtreePairResult()` | Get potential collision pairs as a stable result object |
+| `Destroy()`                | `Void()`           | Free the quadtree                                |
 
 ### Notes
 
-- Prefer `QueryRectResult`, `QueryPointResult`, and `QueryPairs`; they return immutable snapshots with `Count`, indexed getters, and `Truncated`.
-- Compatibility query results and pair output grow on demand from their default reservations. Check `QueryWasTruncated()` or `PairsWasTruncated()` only when using the mutable compatibility APIs.
+- `QueryRect`, `QueryPoint`, and `QueryPairs` return immutable snapshots with `Count`, indexed getters, and `Truncated`. A snapshot stays valid after the tree is queried or mutated again.
+- Result and pair storage grows on demand from its default reservation. `Truncated` is true only when that growth failed and the snapshot is incomplete.
 - `QueryPoint()` uses circle-vs-AABB testing, so large objects can match even when their centers are outside the radius.
 
 ### Result Objects

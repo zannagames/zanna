@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-06-20
+last-verified: 2026-07-26
 ---
 
 # CODEMAP: Runtime Library (C)
@@ -9,11 +9,9 @@ last-verified: 2026-06-20
 Portable C runtime library (`src/runtime/`) providing core types, collections, I/O, text, math,
 graphics, audio, input, networking, system, diagnostics, crypto, time, and threading support.
 
-Last updated: 2026-07-17
-
 ## Overview
 
-- **Total source files**: 581 (.c/.h/.cpp/.hpp/.m)
+- **Total source files**: 897 (.c/.h/.cpp/.hpp/.m)
 
 ## Memory Management
 

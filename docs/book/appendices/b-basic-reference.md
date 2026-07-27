@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-16
+last-verified: 2026-07-26
 ---
 
 # Appendix B: Zanna BASIC Reference

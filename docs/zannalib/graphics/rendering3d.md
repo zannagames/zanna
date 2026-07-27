@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-20
+last-verified: 2026-07-26
 ---
 
 # 3D Rendering, Animation, and Environment
@@ -760,7 +760,6 @@ transforms.
 | `Add(node)` / `Remove(node)` | `Void(Object)` | Attach or detach root-level nodes |
 | `TryAdd(node)` | `Boolean(Object)` | Add a node and report validation/allocation failure |
 | `Find(name)` | `SceneNode(String)` | Search the scene by node name |
-| `FindOption(name)` | `Option[SceneNode](String)` | Search the scene by node name as `Some(node)`, or `None` |
 | `QueryAABB(min, max)` | `Seq(SceneNode)(Vec3, Vec3)` | Return visible mesh nodes whose world AABB intersects the box |
 | `QuerySphere(center, radius)` | `Seq(SceneNode)(Vec3, Double)` | Return visible mesh nodes whose world AABB intersects the sphere |
 | `RaycastNodes(origin, direction, maxDistance)` | `SceneNode(Vec3, Vec3, Double)` | Return the closest visible mesh node hit by the ray |
@@ -769,8 +768,7 @@ transforms.
 | `SyncBindings(dt)` | `Void(Double)` | Push physics, animation, and binding transforms |
 | `RebaseOrigin(dx, dy, dz)` | `Void(Double, Double, Double)` | Shift every root-level subtree by `-delta` while leaving the root unchanged |
 
-Prefer `FindOption()` for new code. `Find()` remains available for compatibility
-with existing `null` checks. `SceneNode.FindOption(name)` provides the same
+`Find()` returns `null` when no node matches the name. `SceneNode.Find(name)` provides the same
 absence-aware search for a subtree.
 
 The query methods are backed by the SceneGraph BVH spatial index, with the
@@ -845,20 +843,20 @@ place.
 
 ### Zanna.Graphics3D.SceneNode
 
-`SceneNode` supports authored mesh LODs through `AddLOD(distance, mesh)`.
+`SceneNode` supports authored mesh LODs through `AddLod(distance, mesh)`.
 Entries remain sorted by distance, duplicate distances replace the previous
-mesh, and `ClearLOD()` restores the base mesh at every distance. LOD selection
+mesh, and `ClearLod()` restores the base mesh at every distance. LOD selection
 skips nonresident meshes and falls back to the next resident choice.
 
 | Method / Property | Signature | Description |
 |-------------------|-----------|-------------|
-| `AddLOD(distance, mesh)` | `Void(Double, Object)` | Use `mesh` once camera distance reaches `distance` |
-| `GenerateLODs(levels, ratio)` | `Void(Integer, Double)` | Synthesize up to 4 simplified LOD meshes from the base mesh via `Mesh3D.Simplify` (level *k* targets `ratio^k` of the base triangle count), register them with distance thresholds derived from the mesh radius, and enable auto LOD |
-| `SetAutoLOD(enabled, screenErrorPx)` | `Void(Boolean, Double)` | Select authored LODs by projected screen size instead of distance thresholds |
+| `AddLod(distance, mesh)` | `Void(Double, Object)` | Use `mesh` once camera distance reaches `distance` |
+| `GenerateLods(levels, ratio)` | `Void(Integer, Double)` | Synthesize up to 4 simplified LOD meshes from the base mesh via `Mesh3D.Simplify` (level *k* targets `ratio^k` of the base triangle count), register them with distance thresholds derived from the mesh radius, and enable auto LOD |
+| `SetAutoLod(enabled, screenErrorPx)` | `Void(Boolean, Double)` | Select authored LODs by projected screen size instead of distance thresholds |
 | `SetImpostor(distance, pixels)` | `Void(Double, Object)` | Generate an unlit textured quad proxy used at or beyond `distance`; pass `null` pixels to clear |
 | `SetImpostorFrames(distance, pixels, frames)` | `Void(Double, Object, Integer)` | Multi-frame impostor: `pixels` is a horizontal strip of `frames` views captured at yaw `i*2pi/frames`; the draw path picks the frame nearest the camera bearing |
 | `GetImpostorFrameIndex()` | `Integer()` | Last impostor frame index the draw path selected (0 for single-frame impostors) |
-| `ClearLOD()` | `Void()` | Remove authored LOD entries |
+| `ClearLod()` | `Void()` | Remove authored LOD entries |
 | `LodCount` | `Integer` | Number of registered LOD entries |
 | `GetLodMesh(index)` | `Object(Integer)` | Borrow the mesh for an LOD entry |
 | `GetLodDistance(index)` | `Double(Integer)` | Get the sorted distance threshold |
@@ -868,7 +866,7 @@ skips nonresident meshes and falls back to the next resident choice.
 | `Light` | `Object` | Attached `Light3D`, or `null`; read/write and retained by the node |
 | `Camera` | `Object` | Attached `Camera3D`, or `null`; read/write and cloned with the node hierarchy |
 
-`SetAutoLOD` selects among meshes registered with `AddLOD`; `GenerateLODs`
+`SetAutoLod` selects among meshes registered with `AddLod`; `GenerateLods`
 synthesizes that chain automatically from the base mesh using quadric-error
 simplification, so downloaded models get a real LOD chain in one call. A lower `screenErrorPx` keeps the base mesh longer,
 while a higher value switches to lower-detail meshes sooner. `SetImpostor`
@@ -1150,7 +1148,7 @@ Post-processing effect chain applied to a rendered scene.
 
 | Property      | Type    | Access     | Description |
 |---------------|---------|------------|-------------|
-| `Enabled`     | Boolean | Read/Write | Enable or disable the entire chain |
+| `IsEnabled`   | Boolean | Read/Write | Enable or disable the entire chain |
 | `EffectCount` | Integer | Read       | Number of effects currently in the chain |
 | `LastError`   | String  | Read       | Last recoverable configuration error (`""` when none). Depth-aware effects now run on every backend, so bind-time refusals no longer occur for them |
 
@@ -1271,7 +1269,6 @@ file as proof of a lossless conversion.
 | `LoadAnimationAssetResult(path, index)` | `Result[Animation3D](String, Integer)` | Load a skeletal animation clip through `Zanna.IO.Assets` |
 | `LoadNodeAnimationResult(path, index)` | `Result[NodeAnimation3D](String, Integer)` | Load an imported node animation clip as `Ok(NodeAnimation3D)` or `Err(message)` |
 | `LoadNodeAnimationAssetResult(path, index)` | `Result[NodeAnimation3D](String, Integer)` | Load a node animation clip through `Zanna.IO.Assets` |
-| `Load(path)` / `LoadAsset(path)` | `SceneAsset(String)` | Compatibility loaders that return `null` for routine content failures |
 | `Save(path)` | `Integer(String)` | Atomically save the complete asset as VSCN v5; returns `1` on success or `0` on validation/allocation/I/O failure |
 
 `LoadAsset` and every `*AssetResult` root load accept ordinary logical asset
@@ -1332,7 +1329,7 @@ instantiable material-specific mesh nodes.
 | `InstantiateSceneAt(index)` | `SceneGraph(Integer)` | Clone an immutable scene by index |
 | `GetVariantName(index)` | `String(Integer)` | Variant display name, or `""` when out of range |
 | `ApplyVariant(target, index)` | `Integer(Object, Integer)` | Apply a material variant to every mapped node under `target` (a `SceneNode` from `Instantiate()` or a `SceneGraph`); returns the node count updated. Variants a primitive does not map restore its default material, so switching is reversible |
-| `GenerateLODs(levels, ratio)` | `Integer(Integer, Float)` | Generate 1..4 LOD levels (~`ratio^k` triangles, QEM decimation) for every template/scene mesh node and enable auto screen-error selection; each unique mesh is decimated once, nodes that already carry chains are skipped, and later `Instantiate()` clones inherit the chains. Returns the node count chained |
+| `GenerateLods(levels, ratio)` | `Integer(Integer, Float)` | Generate 1..4 LOD levels (~`ratio^k` triangles, QEM decimation) for every template/scene mesh node and enable auto screen-error selection; each unique mesh is decimated once, nodes that already carry chains are skipped, and later `Instantiate()` clones inherit the chains. Returns the node count chained |
 
 Mutating an instantiated node does not mutate the immutable template node
 returned by `FindNode()`.
@@ -1382,17 +1379,13 @@ Bone hierarchy for skeletal mesh deformation. Typically loaded alongside a model
 |--------|-----------|-------------|
 | `AddBone(name, parentIndex, localTransform)` | `Integer(String, Integer, Object)` | Add a named bone with a local transform and parent index |
 | `ComputeInverseBind()` | `Void()` | Pre-compute inverse bind pose matrices after all bones are added |
-| `FindBone(name)` | `Integer(String)` | Return the bone index, or `-1` if not found |
 | `FindBoneOption(name)` | `Option[Integer](String)` | Return `Some(index)` for a matching bone, or `None` |
 | `GetBoneName(index)` | `String(Integer)` | Return the name of bone at `index` |
 | `SetBoneAlias(externalName, localName)` | `Void(String, String)` | Map an external rig's bone name (e.g. `"mixamorig:Hips"`) onto a local bone; an empty `localName` removes the alias |
 
-Prefer `FindBoneOption()` for new code. `FindBone()` remains available for
-compatibility with existing `-1` checks.
-
 Aliases registered with `SetBoneAlias` are consulted by `Animation3D.Retarget`
 (in both directions: a destination alias matching the source bone name, or a
-source alias resolving to a destination bone name); `FindBone`/`FindBoneOption`
+source alias resolving to a destination bone name); `FindBoneOption`
 stay exact-name so typos still surface as `-1`/`None`. Re-registering an existing
 external name replaces its mapping. Use this to retarget clips from downloaded
 rigs whose naming convention does not match your skeleton without renaming bones.
@@ -1573,7 +1566,7 @@ Inverse-kinematics solvers for final pose adjustment before skinning.
 | `Solve()` | `Void()` | Solve against the skeleton bind pose for standalone inspection |
 
 Attach a solver through `AnimController3D.SetIKSolver(solver)` or the Game3D
-wrapper `Animator3D.setIKSolver(solver)`. Controller-bound IK runs after the
+wrapper `Animator3D.SetIKSolver(solver)`. Controller-bound IK runs after the
 base state/blend tree and overlays are composed, then before skinning palettes
 are generated. `TwoBone` and `FABRIK` use a positional chain solve and preserve
 the chain root; `SetPole` controls two-bone bend direction, `SetGroundNormal`
@@ -1612,8 +1605,8 @@ Stateful animation controller with named states, triggered transitions, animatio
 | `IsStatePlaying(state)` | `Boolean(String)` | True when the named state is currently playing (active or being transitioned into) |
 | `SetStateSpeed(state, speed)` | `Void(String, Double)` | Override playback speed for a state |
 | `SetStateLooping(state, loop)` | `Void(String, Boolean)` | Override loop setting for a state |
-| `SetAnimationLOD(distance, rateHz)` | `Void(Double, Double)` | Batch animation updates at a lower deterministic rate; non-positive inputs disable throttling |
-| `SetBoneLOD(maxBones)` | `Void(Integer)` | Freeze bones at or after `maxBones` for deterministic bone-count LOD; non-positive values restore full-pose output |
+| `SetAnimationLod(distance, rateHz)` | `Void(Double, Double)` | Batch animation updates at a lower deterministic rate; non-positive inputs disable throttling |
+| `SetBoneLod(maxBones)` | `Void(Integer)` | Freeze bones at or after `maxBones` for deterministic bone-count LOD; non-positive values restore full-pose output |
 | `SetBlendTree(tree)` | `Boolean(Object)` | Use a compatible `BlendTree3D` as the base pose source; pass `Nothing` to clear |
 | `SetIKSolver(solver)` | `Boolean(Object)` | Apply a compatible `IKSolver3D` after overlays and before skinning; pass `Nothing` to clear |
 | `AddEvent(state, time, name)` | `Void(String, Double, String)` | Register a named event to fire at a playback time |
@@ -1634,9 +1627,9 @@ translation/rotation when disabled or switched to another bone. `Stop()` returns
 pose while keeping state metadata intact. `PlayLayer` keeps the compatibility replace-overlay
 behavior; `PlayLayerAdditive` applies `(overlayPose - bindPose) * weight` over the current base pose.
 `CrossfadeLayerAdditive` uses the same additive composition while blending overlay states.
-`SetAnimationLOD(distance, rateHz)` accumulates elapsed time and samples only when the configured
+`SetAnimationLod(distance, rateHz)` accumulates elapsed time and samples only when the configured
 interval elapses, then applies the full accumulated delta so playback remains deterministic.
-`SetBoneLOD(maxBones)` limits palette updates to the retained bone-count prefix while keeping
+`SetBoneLod(maxBones)` limits palette updates to the retained bone-count prefix while keeping
 ancestors valid for deterministic distant-character LOD; pass `0` to restore full output.
 `SetBlendTree(tree)` updates the tree with the controller tick and uses its blended local pose as
 the base layer before overlay layers are applied. Root-motion extraction still comes from the
@@ -1719,7 +1712,7 @@ backend and can accompany the hardware billboard batch.
 | Property   | Type    | Access | Description |
 |------------|---------|--------|-------------|
 | `Count`    | Integer | Read   | Currently live particle count; terminal snapshots are excluded |
-| `Emitting` | Boolean | Read   | True while the emitter is running |
+| `IsEmitting` | Boolean | Read | True while the emitter is running |
 | `Seed`     | Integer | Read/Write | Deterministic RNG seed for this emitter's spawn stream. Emitters no longer share a process-global sequence, so setting an explicit seed makes an effect bit-identical across runs regardless of construction order |
 | `RenderFinalFrame` | Boolean | Read/Write | Keep an expired particle's exact endpoint drawable until the next valid update. Defaults to true without keeping the particle live. |
 | `DroppedTime` | Double | Read | Cumulative complete-step time discarded by the one-second-per-call catch-up budget |
@@ -1781,7 +1774,7 @@ Time-limited projected decal placed in a 3D scene (bullet holes, blood splats, s
 
 | Property  | Type    | Access | Description |
 |-----------|---------|--------|-------------|
-| `Expired` | Boolean | Read   | True when the decal lifetime has elapsed |
+| `IsExpired` | Boolean | Read | True when the decal lifetime has elapsed |
 
 #### Methods
 
@@ -1832,7 +1825,7 @@ the audio-owned spatial listener state.
 ### Zanna.Graphics3D.SoundSource3D
 
 3D audio source positioned in world space, with range and Doppler support.
-Sources are full-volume through `RefDistance`, attenuate linearly until
+Sources are full-volume through `ReferenceDistance`, attenuate linearly until
 `MaxDistance`, and compute a Doppler factor from listener/source velocity. The
 mixer applies volume, pan, and playback rate: the Doppler factor multiplies the
 source's user `Pitch` and is applied as the voice's resampling rate, so
@@ -1852,7 +1845,7 @@ from its own line-of-sight raycasts).
 | `DopplerFactor` | Double | Read       | Latest computed Doppler pitch multiplier |
 | `Pitch`       | Double  | Read/Write | User playback-rate multiplier; composes with Doppler (combined rate clamps to 0.25–4.0) |
 | `Occlusion`   | Double  | Read/Write | 0 (open) … 1 (fully occluded): smoothed lowpass sweep + up to −6 dB |
-| `RefDistance` | Double  | Read/Write | Full-volume radius before linear falloff begins |
+| `ReferenceDistance` | Double | Read/Write | Full-volume radius before linear falloff begins |
 | `MaxDistance` | Double  | Read/Write | Attenuation roll-off distance |
 | `Volume`      | Integer | Read/Write | Base volume `0–100` |
 | `Looping`     | Boolean | Read/Write | True to loop the audio |
@@ -1916,7 +1909,6 @@ ambiguous.
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `FindPath(start, end)` | `Object(Object, Object)` | Return a `Seq[Vec3]` of waypoints from `start` to `end`, or `Nothing` |
 | `FindPathOption(start, end)` | `Option[Path3D](Object, Object)` | Return `Some(path)` when a route exists, or `None` |
 | `SamplePosition(pos)` | `Object(Object)` | Snap `pos` to the nearest walkable position |
 | `IsWalkable(pos)` | `Boolean(Object)` | True when `pos` is on the walkable surface |
@@ -1938,9 +1930,6 @@ ambiguous.
 | `SetHeuristicMode(mode)` | `Void(Integer)` | Pathfinding heuristic policy: `0` strict/optimal (default; any off-mesh link switches the search to Dijkstra), `1` always-Euclidean (much faster on large link-bearing meshes, paths may be slightly suboptimal around link shortcuts) |
 | `HeuristicMode` | `Integer` (property) | Current heuristic policy (0 or 1) |
 | `DebugDraw(canvas3D)` | `Void(Object)` | Draw the navmesh wireframe for debugging |
-
-Prefer `FindPathOption()` for new path queries. `FindPath()` remains available
-for compatibility with existing `null` checks.
 
 `Bake` flattens every `Mesh3D` attached under a `SceneGraph` through each node's
 world transform and runs the voxel baker. Every `Bake` is tiled: it derives a
@@ -2080,7 +2069,7 @@ Heightmap terrain with multi-layer splat texturing, LOD, and normal generation.
 | `SetLayerScale(layer, scale)` | `Void(Integer, Double)` | Set UV tiling scale for a splat layer |
 | `GetHeightAt(worldX, worldZ)` | `Double(Double, Double)` | Sample interpolated terrain height |
 | `GetNormalAt(worldX, worldZ)` | `Object(Double, Double)` | Sample terrain surface normal as `Vec3` |
-| `SetLODDistances(near, far)` | `Void(Double, Double)` | Set LOD transition distances |
+| `SetLodDistances(near, far)` | `Void(Double, Double)` | Set LOD transition distances |
 | `SetSkirtDepth(depth)` | `Void(Double)` | Set the tile skirt depth to hide LOD seams |
 
 Terrain supports up to **8 splat layers**: `SetLayerTexture`/`SetLayerScale`
@@ -2163,7 +2152,7 @@ GPU-instanced foliage (grass, bushes) with density map, wind animation, and LOD.
 |--------|-----------|-------------|
 | `SetDensityMap(pixels)` | `Void(Object)` | Control placement density from a grayscale map |
 | `SetWindParams(speed, strength, turbulence)` | `Void(Double, Double, Double)` | Set foliage wind sway |
-| `SetLODDistances(near, far)` | `Void(Double, Double)` | Set LOD fade distances |
+| `SetLodDistances(near, far)` | `Void(Double, Double)` | Set LOD fade distances |
 | `SetBladeSize(width, height, variance)` | `Void(Double, Double, Double)` | Set blade/frond dimensions |
 | `SetSeed(seed)` | `Void(Integer)` | Set deterministic scatter seed for later `Populate` calls |
 | `Populate(terrain, count)` | `Void(Object, Integer)` | Scatter `count` instances over a `Terrain3D` using the density map |

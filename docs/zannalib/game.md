@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-05-15
+last-verified: 2026-07-26
 ---
 
 # Game
@@ -106,42 +106,42 @@ A 2D rigid-body physics engine. Bodies can be static (immovable) or dynamic. Col
 detection uses an axis-aligned broad phase followed by AABB/circle narrow-phase and swept
 collision checks for fast bodies.
 
-**Type:** Instance (obj — world handle)
+**Type:** Instance (obj)
 **Constructor:** `Physics2D.World.New(gravityX, gravityY)`
 
-### World Methods
+Bodies are objects, not integer handles. Create a `Physics2D.Body`, add it to a world,
+then read and write its properties directly. The full API — world, body, joint, and
+projectile surfaces — is documented in
+[Physics & Collision](game/physics.md#zannagamephysics2d-class-family).
 
-| Method | Signature | Description |
-|---|---|---|
-| `Step(dt)` | `none(Integer)` | Advance physics by `dt` milliseconds |
-| `AddBody(x, y, w, h, mass)` | `Integer(Integer,Integer,Integer,Integer,Integer)` | Add a body; returns body handle |
-| `RemoveBody(handle)` | `none(Integer)` | Remove a body from the world |
-| `SetPosition(handle, x, y)` | `none(Integer, Integer, Integer)` | Teleport a body |
-| `SetVelocity(handle, vx, vy)` | `none(Integer, Integer, Integer)` | Override velocity |
-| `ApplyForce(handle, fx, fy)` | `none(Integer, Integer, Integer)` | Apply impulse force |
-| `GetPosition(handle, x, y)` | `none(Integer, Integer*, Integer*)` | Read current position |
-| `GetVelocity(handle, vx, vy)` | `none(Integer, Integer*, Integer*)` | Read current velocity |
-| `SetCollisionLayer(handle, layer)` | `none(Integer, Integer)` | Set body's layer bit (0-63) |
-| `SetCollisionMask(handle, mask)` | `none(Integer, Integer)` | Set layers this body collides with |
+### World Surface (Summary)
+
+| Member | Description |
+|---|---|
+| `BodyCount`, `JointCount`, `ContactCount` | Read-only counts |
+| `Step(dt)` | Advance the simulation by `dt` seconds |
+| `Add(body)` / `Remove(body)` | Attach or detach a `Physics2D.Body` |
+| `AddJoint(joint)` / `RemoveJoint(joint)` | Attach or detach a joint |
+| `SetGravity(gx, gy)` | Change the gravity vector |
+| `ContactBodyA/B(i)`, `ContactNX/NY(i)`, `ContactDepth(i)` | Inspect contacts recorded by the last `Step` |
 
 ### Collision Layers and Masks
 
-Physics2D uses a 64-bit layer/mask bitfield system:
+Physics2D uses a 64-bit layer/mask bitfield system, exposed as body properties:
 
-- **`collision_layer`**: which bit (0-63) this body occupies. New object-style bodies
-  default to bit `1`.
-- **`collision_mask`**: bitmask of layers this body will collide with. New object-style
-  bodies default to `-1` (all 64 bits set).
+- **`CollisionLayer`**: which bit (0-63) this body occupies. New bodies default to bit `1`.
+- **`CollisionMask`**: bitmask of layers this body will collide with. New bodies default
+  to `-1` (all 64 bits set).
 
 To create non-colliding groups:
 
 ```zia
 // Player on layer 0, enemies on layer 1, terrain on layer 2
-world.SetCollisionLayer(playerHandle, 0);
-world.SetCollisionMask(playerHandle, 0b110);  // collides with enemies + terrain, not self
+player.CollisionLayer = 0;
+player.CollisionMask = 0b110;  // collides with enemies + terrain, not self
 
-world.SetCollisionLayer(enemyHandle, 1);
-world.SetCollisionMask(enemyHandle, 0b101);   // collides with player + terrain, not other enemies
+enemy.CollisionLayer = 1;
+enemy.CollisionMask = 0b101;   // collides with player + terrain, not other enemies
 ```
 
 > **Layer 63 note:** The default mask is `-1` (all 64 bits set). A body placed on layer 63
@@ -172,30 +172,43 @@ query a rectangle to find all overlapping IDs.
 | Property | Type | Description |
 |---|---|---|
 | `ItemCount` | `Integer` | Total items in the tree |
-| `ResultCount` | `Integer` | Number of IDs from the last compatibility query |
 
 ### Methods
 
 | Method | Signature | Description |
 |---|---|---|
-| `Insert(id, x, y, w, h)` | `Integer(Integer,Integer,Integer,Integer,Integer)` | Insert AABB; returns 1 on success, 0 if duplicate |
-| `Remove(id)` | `Integer(Integer)` | Remove by ID; returns 1 on success |
-| `QueryRectResult(x, y, w, h)` | `QueryResult(Integer,Integer,Integer,Integer)` | Query overlapping items as a stable result snapshot |
-| `QueryPointResult(x, y, radius)` | `QueryResult(Integer,Integer,Integer)` | Query circular area as a stable result snapshot |
+| `Insert(id, x, y, w, h)` | `Boolean(Integer,Integer,Integer,Integer,Integer)` | Insert an AABB; returns false if the ID is a duplicate or the AABB is out of bounds |
+| `Update(id, x, y, w, h)` | `Boolean(Integer,Integer,Integer,Integer,Integer)` | Move an existing item's AABB; returns false if the ID is unknown |
+| `Remove(id)` | `Boolean(Integer)` | Remove by ID; returns false if the ID is unknown |
+| `QueryRect(x, y, w, h)` | `QueryResult(Integer,Integer,Integer,Integer)` | Query overlapping items as a stable result snapshot |
+| `QueryPoint(x, y, radius)` | `QueryResult(Integer,Integer,Integer)` | Query a circular area as a stable result snapshot |
 | `QueryPairs()` | `QuadtreePairResult()` | Collect broad-phase collision pairs as a stable snapshot |
-| `QueryRect(x, y, w, h)` | `Integer(Integer,Integer,Integer,Integer)` | Compatibility API; query overlapping items and store mutable last results |
-| `GetResult(i)` | `Integer(Integer)` | Compatibility API; get the i-th ID from the last mutable query |
-| `QueryWasTruncated()` | `Integer()` | Compatibility diagnostic for the last mutable query |
-| `GetPairs()` | `Integer()` | Compatibility API; collect pairs and store mutable last pair output |
-| `PairFirst(i)` / `PairSecond(i)` | `Integer(Integer)` | Compatibility API; IDs of the i-th mutable collision pair |
-| `PairsWasTruncated()` | `Integer()` | Compatibility diagnostic for the last mutable pair collection |
-| `Destroy()` | `none()` | Free the quadtree |
+| `Clear()` | `Void()` | Remove every item, keeping the world bounds |
+| `Destroy()` | `Void()` | Free the quadtree |
 
 ### Query and Pair Results
 
-Prefer `QueryRectResult`, `QueryPointResult`, and `QueryPairs` for production code. They return
-immutable result objects that can be stored safely even after the quadtree is queried or mutated
-again:
+Queries return immutable result objects that stay valid even after the quadtree is
+queried or mutated again.
+
+`Zanna.Game.QueryResult` — returned by `QueryRect` and `QueryPoint`:
+
+| Member | Type | Description |
+|---|---|---|
+| `Count` | `Integer` | Number of matching IDs |
+| `Truncated` | `Boolean` | True when result storage could not grow and the snapshot is incomplete |
+| `GetId(i)` | `Integer(Integer)` | The i-th matching ID |
+| `Contains(id)` | `Boolean(Integer)` | Whether an ID is in the snapshot |
+| `Ids()` | `Seq()` | All matching IDs as a sequence |
+
+`Zanna.Game.QuadtreePairResult` — returned by `QueryPairs`:
+
+| Member | Type | Description |
+|---|---|---|
+| `Count` | `Integer` | Number of overlapping pairs |
+| `Truncated` | `Boolean` | True when pair storage could not grow |
+| `First(i)` | `Integer(Integer)` | First ID of the i-th pair |
+| `Second(i)` | `Integer(Integer)` | Second ID of the i-th pair |
 
 ```zia
 var result = tree.QueryRect(x, y, w, h);
@@ -209,10 +222,6 @@ while i < result.Count {
 }
 ```
 
-The compatibility `QueryRect`/`QueryPoint` and `GetPairs` APIs still grow their mutable buffers on
-demand. `QueryWasTruncated()` and `PairsWasTruncated()` remain available for old code and report
-partial output only if storage growth fails.
-
 ### Duplicate ID Guard
 
 Inserting the same ID twice returns 0 and leaves the tree unchanged. Use distinct IDs
@@ -222,9 +231,9 @@ Inserting the same ID twice returns 0 and leaves the tree unchanged. Use distinc
 
 | Limit | Value | Notes |
 |---|---|---|
-| Query results | Dynamic | `RT_QUADTREE_MAX_RESULTS` is the initial reservation; `QueryWasTruncated()` reports allocation failure |
-| Total items | Dynamic | Item storage grows on insert; duplicate/out-of-bounds inserts still return 0 |
-| Overlap pairs | Dynamic | Pair storage grows from the historical 1024-slot reservation; `PairsWasTruncated()` reports allocation failure |
+| Query results | Dynamic | `RT_QUADTREE_MAX_RESULTS` is the initial reservation; `QueryResult.Truncated` reports allocation failure |
+| Total items | Dynamic | Item storage grows on insert; duplicate and out-of-bounds inserts return false |
+| Overlap pairs | Dynamic | Pair storage grows from the historical 1024-slot reservation; `QuadtreePairResult.Truncated` reports allocation failure |
 
 ---
 
@@ -566,12 +575,19 @@ Static helpers for geometric overlap tests.
 
 | Method | Signature | Description |
 |---|---|---|
-| `AABBvsAABB(ax,ay,aw,ah, bx,by,bw,bh)` | `Integer(...)` | 1 if two AABBs overlap |
-| `CircleVsCircle(ax,ay,ar, bx,by,br)` | `Integer(...)` | 1 if two circles overlap |
-| `PointInAABB(px,py, ax,ay,aw,ah)` | `Integer(...)` | 1 if point inside AABB |
+| `RectsOverlap(ax,ay,aw,ah, bx,by,bw,bh)` | `Boolean(Number × 8)` | Whether two rectangles overlap |
+| `PointInRect(px,py, rx,ry,rw,rh)` | `Boolean(Number × 6)` | Whether a point is inside a rectangle |
+| `CirclesOverlap(ax,ay,ar, bx,by,br)` | `Boolean(Number × 6)` | Whether two circles overlap |
+| `PointInCircle(px,py, cx,cy,cr)` | `Boolean(Number × 5)` | Whether a point is inside a circle |
+| `CircleRect(cx,cy,cr, rx,ry,rw,rh)` | `Boolean(Number × 7)` | Whether a circle overlaps a rectangle |
+| `LineRect(x1,y1,x2,y2, rx,ry,rw,rh)` | `Boolean(Number × 8)` | Whether a line segment crosses a rectangle |
+| `LineCircle(x1,y1,x2,y2, cx,cy,cr)` | `Boolean(Number × 7)` | Whether a line segment crosses a circle |
+| `Distance(x1,y1, x2,y2)` | `Number(Number × 4)` | Euclidean distance between two points |
+| `DistanceSquared(x1,y1, x2,y2)` | `Number(Number × 4)` | Squared distance, avoiding the square root |
 
-Circle helpers reject non-positive or non-finite radii. Point-in-circle and circle-rectangle
-checks include boundary contact as a hit.
+All arguments and results are floating point. Circle helpers reject non-positive or
+non-finite radii. Point-in-circle and circle-rectangle checks include boundary contact
+as a hit.
 
 ---
 

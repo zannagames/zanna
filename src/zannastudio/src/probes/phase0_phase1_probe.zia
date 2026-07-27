@@ -305,14 +305,17 @@ func TestCommandsAndModels() {
                   and registry.Find("movetoolright").category == "View"
                   and registry.Find("movetoolfloating").category == "View"
                   and registry.Find("floatpanelgroup").category == "View"
-                  and registry.Find("resetworkspacelayout").category == "View",
+                  and registry.Find("resetworkspacelayout").category == "View"
+                  and registry.Find("scenefocus").category == "View",
                   "command palette categories assigned") == false { return; }
     if assertTrue(registry.Find("saveas").shortcut
                       == command_catalog.PlatformShortcut("Ctrl+Shift+S")
                   and registry.Find("saveall").shortcut
                       == command_catalog.PlatformShortcut("Ctrl+Alt+Shift+S")
                   and registry.Find("openfolder").shortcut
-                      == command_catalog.PlatformShortcut("Ctrl+Alt+O"),
+                      == command_catalog.PlatformShortcut("Ctrl+Alt+O")
+                  and registry.Find("scenefocus").shortcut
+                      == command_catalog.PlatformShortcut("Shift+Space"),
                   "file command shortcuts are discoverable and conflict-free") == false { return; }
 
     var langMgr = new language_service.LanguageServiceManager();
@@ -1157,6 +1160,52 @@ func TestSessionRestoreHardening() {
                       == "Restoring your workspace: 5/5"
                   and stagedActive != null and stagedActive!.filePath == stagedActivePath,
                   "session restore completes bounded pages and restores active tab") == false {
+        return;
+    }
+
+    // An explicit file launch owns its project window. Scan the old session for
+    // dirty recovery only so unrelated clean tabs, split ownership, and roots
+    // cannot leak into the new scene workspace.
+    var explicitPriorRoot = Path.Join(root, "explicit-prior-workspace");
+    Dir.MakeAll(explicitPriorRoot);
+    var explicitCleanPath = Path.Join(explicitPriorRoot, "clean.zia");
+    var explicitDirtyPath = Path.Join(explicitPriorRoot, "dirty.zia");
+    File.WriteAllText(explicitCleanPath, "module ExplicitClean;\n");
+    File.WriteAllText(explicitDirtyPath, "module ExplicitDirty;\n");
+    var explicitRestorePath = Path.Join(root, "explicit-recovery-only.ini");
+    File.WriteAllText(explicitRestorePath,
+        "[settings]\nrestoreSession=1\nrestoreLastProject=1\n"
+        + "[session]\nworkspaceRootCount=1\nworkspaceRoot.0=" + explicitPriorRoot
+        + "\ncount=2\nactivePath=" + explicitCleanPath + "\nactiveIndex=0\n"
+        + "splitActive=1\nsplitFirstIndex=0\nsplitSecondIndex=1\n"
+        + "[session.file.0]\npath=" + explicitCleanPath
+        + "\nrecoveryModified=0\n"
+        + "[session.file.1]\npath=" + explicitDirtyPath
+        + "\nrecovery="
+        + Codec.Base64Encode("module ExplicitDirty;\n// recovered edit\n")
+        + "\nrecoveryEncoding=base64\nrecoveryModified=1\n");
+    var explicitSession = new session.SessionManager();
+    explicitSession.Setup(explicitRestorePath);
+    var explicitDocs = new document_manager.DocumentManager();
+    var explicitJob = explicitSession.BeginRecoveryRestore(explicitDocs, null);
+    var explicitProgress = explicitSession.RestoreProgressText(explicitJob);
+    var explicitFirstPump = explicitSession.PumpRestore(explicitJob, 1);
+    var explicitSkippedClean = explicitFirstPump == 1 and explicitJob.active
+        and explicitDocs.GetCount() == 0;
+    while explicitJob.active {
+        explicitSession.PumpRestore(explicitJob, 1);
+    }
+    var explicitRecovered = explicitDocs.GetActive();
+    if assertTrue(explicitProgress == "Recovering unsaved tabs: 0/2"
+                  and explicitSkippedClean
+                  and explicitJob.restoredCount == 1
+                  and explicitDocs.GetCount() == 1
+                  and explicitRecovered != null
+                  and explicitRecovered!.filePath == explicitDirtyPath
+                  and explicitRecovered!.isModified
+                  and Str.IndexOf(explicitRecovered!.content, "recovered edit") != 0
+                  and explicitSession.splitActive == false,
+                  "explicit launch restore keeps only dirty recovery context") == false {
         return;
     }
 

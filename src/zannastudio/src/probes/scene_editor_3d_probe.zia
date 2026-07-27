@@ -34,6 +34,13 @@
 //     rejects invalid/no-op edits, and participates in canonical history.
 //   - Project scene components add missing typed metadata across node groups,
 //     preserve authored values, and abort atomically on type conflicts.
+//   - Project 3D profiles apply typed first-open view, overlay, and atmosphere
+//     defaults and can be reapplied after navigation without changing VSCN
+//     content, revision, dirty state, history, or restored workspace choices.
+//   - Version-6 sky palettes and sun/fill rigs plus version-7 lens, IBL, and
+//     height fog resolve into bounded viewport-only presentation.
+//   - Project node prefab previews render and pick through transient graphs
+//     while variant/yaw/scale metadata leaves source VSCN bytes untouched.
 //   - Transform tool/snap state follows its scene tab and session workspace.
 //   - Compact windows wrap actions and show viewport or inspector at full width.
 //   - Per-document hierarchy selection, camera, inspector split, and undo state
@@ -52,7 +59,11 @@
 //        docs/adr/0161-stable-scenenode-sibling-reordering.md,
 //        docs/adr/0162-exact-preserve-world-scenenode-reparenting.md,
 //        docs/adr/0163-stable-multiselect-and-row-aware-treeview-editing.md,
-//        docs/adr/0166-exact-scenenode-world-matrix-assignment.md
+//        docs/adr/0166-exact-scenenode-world-matrix-assignment.md,
+//        docs/adr/0198-project-owned-3d-scene-preview-profiles.md,
+//        docs/adr/0199-project-owned-3d-node-prefab-previews.md,
+//        docs/adr/0200-project-owned-3d-sky-and-light-preview-rigs.md,
+//        docs/adr/0201-project-owned-3d-lens-and-atmosphere-previews.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -164,10 +175,67 @@ func main() {
         return;
     }
 
-    if scene_editor_3d.UsesCompactLayout(700.0) == false
-       or scene_editor_3d.UsesCompactLayout(700.01)
-       or scene_editor_3d.UsesCompactLayout(0.0) {
-        fail(shell, tempPath, "3D compact-layout threshold was unstable");
+    if scene_editor_3d.UsesCompactLayout(980.0) == false
+       or scene_editor_3d.UsesCompactLayout(980.01)
+       or scene_editor_3d.UsesCompactLayout(0.0)
+       or scene_editor_3d.UsesCompactChrome(700.0) == false
+       or scene_editor_3d.UsesCompactChrome(700.01) {
+        fail(shell, tempPath,
+             "3D viewport-priority thresholds were unstable");
+        return;
+    }
+    editor.RequestWorkspaceModeToggle();
+    if editor.TakeWorkspaceModeToggleRequested() == false
+       or editor.TakeWorkspaceModeToggleRequested() {
+        fail(shell, tempPath,
+             "3D Scene Layout request was not a one-shot edge");
+        return;
+    }
+    var layoutHierarchySide3D =
+        editor.hierarchySplit.GetCollapsedSide();
+    var layoutBodySide3D = editor.bodySplit.GetCollapsedSide();
+    editor.SetWorkspaceModeActive(true);
+    if editor.IsWorkspaceModeActive() == false
+       or editor.hierarchySplit.GetCollapsedSide()
+          != layoutHierarchySide3D
+       or editor.bodySplit.GetCollapsedSide() != layoutBodySide3D {
+        fail(shell, tempPath,
+             "3D Scene Layout state changed internal scene panes");
+        return;
+    }
+    editor.SetWorkspaceModeActive(false);
+    editor.RequestFocusModeToggle();
+    if editor.TakeFocusModeToggleRequested() == false
+       or editor.TakeFocusModeToggleRequested() {
+        fail(shell, tempPath,
+             "3D scene focus request was not a one-shot edge");
+        return;
+    }
+    var focusHierarchySide3D =
+        editor.hierarchySplit.GetCollapsedSide();
+    var focusBodySide3D = editor.bodySplit.GetCollapsedSide();
+    var focusInspectorRequested3D =
+        editor.inspectorRequestedVisible;
+    editor.SetFocusModeActive(true);
+    if editor.IsFocusModeActive() == false
+       or editor.hierarchySplit.GetCollapsedSide() != 1
+       or editor.bodySplit.GetCollapsedSide() != 2
+       or editor.inspectorRequestedVisible
+            != focusInspectorRequested3D
+       or editor.inspectorButton.IsEnabled() {
+        fail(shell, tempPath,
+             "3D scene focus did not reclaim internal viewport space safely");
+        return;
+    }
+    editor.SetFocusModeActive(false);
+    if editor.hierarchySplit.GetCollapsedSide()
+            != focusHierarchySide3D
+       or editor.bodySplit.GetCollapsedSide() != focusBodySide3D
+       or editor.inspectorRequestedVisible
+            != focusInspectorRequested3D
+       or editor.inspectorButton.IsEnabled() == false {
+        fail(shell, tempPath,
+             "3D scene focus did not restore the exact internal layout");
         return;
     }
     if near(scene_transform_3d.AxisDragAmount(
@@ -331,6 +399,14 @@ func main() {
         return;
     }
     editor.SetGizmoSnapEnabled(false);
+    // A production-width shell can intentionally be in viewport-priority
+    // master/detail. Reveal the inspector before testing native field focus.
+    if editor.compactLayout and editor.compactInspectorShown == false {
+        editor.ToggleInspectorPane();
+        shell.Render();
+        editor.Pump(sceneDoc);
+        shell.Render();
+    }
     editor.nameInput.Focus();
     focusHarness.SendKey("R", 0);
     focusHarness.DispatchPending();
@@ -394,6 +470,12 @@ func main() {
         fail(shell, tempPath, "undoing the picker-check material failed");
         return;
     }
+    if editor.compactLayout and editor.compactInspectorShown {
+        editor.ToggleInspectorPane();
+        shell.Render();
+        editor.Pump(sceneDoc);
+        shell.Render();
+    }
     editor.moveToolButton.Focus();
     focusHarness.SendKey("R", 0);
     focusHarness.DispatchPending();
@@ -422,7 +504,33 @@ func main() {
         return;
     }
 
+    // Exact toolbar heights used to clip the trailing Exit Layout action at
+    // this common medium window size even though the Flex row was arranged.
     shell.app.SetMinimumSize(1, 1);
+    shell.app.SetWindowSize(1000, 700);
+    editor.SetWorkspaceModeActive(true);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    var mediumWorkspaceRight = editor.workspaceButton.GetScreenX()
+        + editor.workspaceButton.GetScreenWidth();
+    var mediumWorkspaceBottom = editor.workspaceButton.GetScreenY()
+        + editor.workspaceButton.GetScreenHeight();
+    if mediumWorkspaceRight
+          > editor.viewToolbar.GetScreenX()
+              + editor.viewToolbar.GetScreenWidth() + 1.0
+       or mediumWorkspaceBottom
+          > editor.viewToolbar.GetScreenY()
+              + editor.viewToolbar.GetScreenHeight() + 1.0 {
+        fail(shell, tempPath,
+             "medium 3D Exit Layout action was clipped by wrapped toolbar");
+        return;
+    }
+    editor.SetWorkspaceModeActive(false);
+
     shell.app.SetWindowSize(560, 420);
     shell.Poll();
     shell.Render();
@@ -433,6 +541,10 @@ func main() {
     var compactBodyWidth = editor.bodySplit.GetScreenWidth();
     if editor.compactLayout == false
        or editor.bodySplit.GetCollapsedSide() != 2
+       or editor.hierarchyPaneBox.IsVisible()
+       or editor.hierarchyButton.IsVisible() == false
+       or editor.inspectorScroll.IsVisible()
+       or editor.viewportScroll.IsVisible() == false
        or editor.toolbarStatus.IsVisible()
        or editor.viewStatusLabel.IsVisible()
        or editor.viewportScroll.GetScreenWidth() < compactBodyWidth - 8.0 {
@@ -444,6 +556,31 @@ func main() {
              + " compactInspector=" + editor.compactInspectorShown
              + " app=" + shell.app.GetWidth()
              + " scale=" + shell.app.GetEffectiveScale());
+        return;
+    }
+    editor.ToggleHierarchyPane();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.hierarchySplit.GetCollapsedSide() != 2
+       or editor.compactHierarchyShown == false
+       or editor.hierarchyPaneBox.IsVisible() == false
+       or editor.hierarchyPaneBox.GetScreenWidth()
+            < editor.hierarchySplit.GetScreenWidth() - 8.0 {
+        fail(shell, tempPath,
+             "compact 3D hierarchy did not replace the detail surface");
+        return;
+    }
+    editor.ToggleHierarchyPane();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.hierarchySplit.GetCollapsedSide() != 1
+       or editor.compactHierarchyShown
+       or editor.hierarchyPaneBox.IsVisible()
+       or editor.viewportScroll.IsVisible() == false {
+        fail(shell, tempPath,
+             "compact 3D viewport did not restore after hierarchy use");
         return;
     }
     var toolbarRight =
@@ -482,7 +619,19 @@ func main() {
         + editor.frameSelectedButton.GetScreenWidth();
     var frameBottom = editor.frameSelectedButton.GetScreenY()
         + editor.frameSelectedButton.GetScreenHeight();
-    if frameRight > viewToolbarRight or frameBottom > viewToolbarBottom {
+    var hierarchyButtonRight = editor.hierarchyButton.GetScreenX()
+        + editor.hierarchyButton.GetScreenWidth();
+    var hierarchyButtonBottom = editor.hierarchyButton.GetScreenY()
+        + editor.hierarchyButton.GetScreenHeight();
+    var workspaceButtonRight = editor.workspaceButton.GetScreenX()
+        + editor.workspaceButton.GetScreenWidth();
+    var workspaceButtonBottom = editor.workspaceButton.GetScreenY()
+        + editor.workspaceButton.GetScreenHeight();
+    if frameRight > viewToolbarRight or frameBottom > viewToolbarBottom
+       or hierarchyButtonRight > viewToolbarRight
+       or hierarchyButtonBottom > viewToolbarBottom
+       or workspaceButtonRight > viewToolbarRight
+       or workspaceButtonBottom > viewToolbarBottom {
         fail(shell, tempPath, "compact 3D view actions were clipped: action="
              + frameRight + "," + frameBottom + " toolbar="
              + viewToolbarRight + "," + viewToolbarBottom);
@@ -495,6 +644,8 @@ func main() {
     shell.Render();
     if editor.bodySplit.GetCollapsedSide() != 1
        or editor.compactInspectorShown == false
+       or editor.viewportScroll.IsVisible()
+       or editor.inspectorScroll.IsVisible() == false
        or editor.inspectorScroll.GetScreenWidth() < compactBodyWidth - 8.0 {
         fail(shell, tempPath,
              "compact 3D inspector did not replace the viewport at full width"
@@ -505,7 +656,7 @@ func main() {
         return;
     }
 
-    shell.app.SetWindowSize(1180, 780);
+    shell.app.SetWindowSize(1600, 900);
     shell.Poll();
     shell.Render();
     editor.Pump(sceneDoc);
@@ -514,12 +665,12 @@ func main() {
     shell.Render();
     if editor.compactLayout
        or editor.bodySplit.GetCollapsedSide() != 0
-       or editor.toolbarStatus.IsVisible() == false
-       or editor.viewStatusLabel.IsVisible() == false
+       or editor.toolbarStatus.IsVisible()
+       or editor.viewStatusLabel.IsVisible()
        or editor.viewportScroll.GetScreenWidth() < 240.0
        or editor.inspectorScroll.GetScreenWidth() < 240.0 {
         fail(shell, tempPath,
-             "wide 3D viewport/inspector split did not restore after resize"
+             "viewport-safe 3D split did not restore after resize"
              + ": compact=" + editor.compactLayout
              + " side=" + editor.bodySplit.GetCollapsedSide()
              + " root=" + editor.root.GetScreenWidth()
@@ -551,7 +702,7 @@ func main() {
              "compact 3D pane selection overwrote the wide preference");
         return;
     }
-    shell.app.SetWindowSize(1180, 780);
+    shell.app.SetWindowSize(1600, 900);
     shell.Poll();
     shell.Render();
     editor.Pump(sceneDoc);
@@ -603,7 +754,7 @@ func main() {
     shell.Render();
     if editor.selectedIndex != -1
        or editor.viewYawDegrees != 35
-       or editor.viewPitchDegrees != -25
+       or editor.viewPitchDegrees != 25
        or editor.viewScale != 28
        or near(editor.viewTargetX, 0.0) == false
        or editor.gizmoMode != scene_editor_3d.GIZMO_MODE_MOVE
@@ -891,7 +1042,7 @@ func main() {
     var componentScenePath = Path.Join(componentDir, "level.vscn");
     var componentSchemaText =
         "{"
-        + "\"version\":1,"
+        + "\"version\":7,"
         + "\"components\":["
         + "{"
         + "\"name\":\"enemy-spawn\","
@@ -923,11 +1074,93 @@ func main() {
         + "{\"key\":\"two.d.value\",\"type\":\"string\",\"default\":\"kept\"}"
         + "]"
         + "}"
-        + "]"
+        + "],"
+        + "\"scenePreview3D\":{"
+        + "\"startXProperty\":\"world.startX\","
+        + "\"startYProperty\":\"world.startY\","
+        + "\"startZProperty\":\"world.startZ\","
+        + "\"startYawProperty\":\"world.startYaw\","
+        + "\"startEyeHeight\":1.5,"
+        + "\"cameraFov\":90,"
+        + "\"ambientRProperty\":\"world.ambientR\","
+        + "\"ambientGProperty\":\"world.ambientG\","
+        + "\"ambientBProperty\":\"world.ambientB\","
+        + "\"clearRProperty\":\"world.clearR\","
+        + "\"clearGProperty\":\"world.clearG\","
+        + "\"clearBProperty\":\"world.clearB\","
+        + "\"fogRProperty\":\"world.fogR\","
+        + "\"fogGProperty\":\"world.fogG\","
+        + "\"fogBProperty\":\"world.fogB\","
+        + "\"fogNearProperty\":\"world.fogNear\","
+        + "\"fogFarProperty\":\"world.fogFar\","
+        + "\"zenithRProperty\":\"world.zenithR\","
+        + "\"zenithGProperty\":\"world.zenithG\","
+        + "\"zenithBProperty\":\"world.zenithB\","
+        + "\"groundRProperty\":\"world.groundR\","
+        + "\"groundGProperty\":\"world.groundG\","
+        + "\"groundBProperty\":\"world.groundB\","
+        + "\"cloudProperty\":\"world.cloud\","
+        + "\"starsProperty\":\"world.stars\","
+        + "\"sunXProperty\":\"world.sunX\","
+        + "\"sunYProperty\":\"world.sunY\","
+        + "\"sunZProperty\":\"world.sunZ\","
+        + "\"sunRProperty\":\"world.sunR\","
+        + "\"sunGProperty\":\"world.sunG\","
+        + "\"sunBProperty\":\"world.sunB\","
+        + "\"sunIntensityProperty\":\"world.sunIntensity\","
+        + "\"fillXProperty\":\"world.fillX\","
+        + "\"fillYProperty\":\"world.fillY\","
+        + "\"fillZProperty\":\"world.fillZ\","
+        + "\"fillRProperty\":\"world.fillR\","
+        + "\"fillGProperty\":\"world.fillG\","
+        + "\"fillBProperty\":\"world.fillB\","
+        + "\"fillIntensityProperty\":\"world.fillIntensity\","
+        + "\"iblIntensity\":0.28,"
+        + "\"heightFogProperty\":\"world.heightFog\","
+        + "\"heightFogBase\":1.6,"
+        + "\"heightFogFalloff\":0.35,"
+        + "\"heightFogDensity\":0.06,"
+        + "\"heightFogOpacity\":0.65,"
+        + "\"showGrid\":false,"
+        + "\"showMarkers\":false,"
+        + "\"showLights\":false,"
+        + "\"showCameras\":false,"
+        + "\"showColliders\":false,"
+        + "\"showRoutes\":true"
+        + "},"
+        + "\"nodePreviews3D\":[{"
+        + "\"matchProperty\":\"preview.kind\","
+        + "\"matchValue\":\"prop\","
+        + "\"prefab\":\"preview-red.scene3d\","
+        + "\"variantProperty\":\"preview.variant\","
+        + "\"variantPrefabs\":["
+        + "\"preview-red.scene3d\",\"preview-blue.scene3d\"],"
+        + "\"yawProperty\":\"preview.yaw\","
+        + "\"yawUnit\":\"radians\","
+        + "\"scaleProperty\":\"preview.scale\""
+        + "}]"
         + "}";
     var componentProject = new project_manager.ProjectManager();
     componentProject.Setup(null);
+    var redPrefab = SceneGraph.New();
+    var redPrefabNode = SceneNode.New();
+    redPrefabNode.Name = "Red preview";
+    redPrefabNode.Mesh = Mesh3D.Box(2.0, 2.0, 2.0);
+    redPrefabNode.Material = Material3D.PBR(0.8, 0.1, 0.1);
+    redPrefab.Add(redPrefabNode);
+    var bluePrefab = SceneGraph.New();
+    var bluePrefabNode = SceneNode.New();
+    bluePrefabNode.Name = "Blue preview";
+    bluePrefabNode.Mesh = Mesh3D.Box(2.0, 2.0, 2.0);
+    bluePrefabNode.Material = Material3D.PBR(0.1, 0.2, 0.9);
+    bluePrefab.Add(bluePrefabNode);
     File.WriteAllText(componentPath, componentSchemaText);
+    File.WriteAllText(
+        Path.Join(componentDir, "preview-red.scene3d"),
+        redPrefab.SaveToText());
+    File.WriteAllText(
+        Path.Join(componentDir, "preview-blue.scene3d"),
+        bluePrefab.SaveToText());
     var previousComponentScenePath = sceneDoc.filePath;
     sceneDoc.filePath = componentScenePath;
     if componentDir == "" or File.Exists(componentPath) == false
@@ -938,6 +1171,302 @@ func main() {
         return;
     }
     editor.SetWorkspaceContext(componentProject);
+
+    // ADR 0198: a fresh project scene opens at the gameplay anchor and uses
+    // complete typed atmosphere groups. Direct workspace defaults never edit
+    // or dirty the canonical scene.
+    var previewGraph = SceneGraph.New();
+    previewGraph.Root.MetadataSetFloat("world.startX", 12.5);
+    previewGraph.Root.MetadataSetFloat("world.startY", 1.25);
+    previewGraph.Root.MetadataSetFloat("world.startZ", -7.75);
+    previewGraph.Root.MetadataSetFloat("world.startYaw", 360.0);
+    previewGraph.Root.MetadataSetFloat("world.ambientR", -0.25);
+    previewGraph.Root.MetadataSetFloat("world.ambientG", 0.4);
+    previewGraph.Root.MetadataSetFloat("world.ambientB", 1.4);
+    previewGraph.Root.MetadataSetFloat("world.clearR", 0.1);
+    previewGraph.Root.MetadataSetFloat("world.clearG", 0.2);
+    previewGraph.Root.MetadataSetFloat("world.clearB", 0.3);
+    previewGraph.Root.MetadataSetFloat("world.fogR", 0.4);
+    previewGraph.Root.MetadataSetFloat("world.fogG", 0.5);
+    previewGraph.Root.MetadataSetFloat("world.fogB", 0.6);
+    previewGraph.Root.MetadataSetFloat("world.fogNear", -4.0);
+    previewGraph.Root.MetadataSetFloat("world.fogFar", -2.0);
+    previewGraph.Root.MetadataSetFloat("world.zenithR", -0.2);
+    previewGraph.Root.MetadataSetFloat("world.zenithG", 0.1);
+    previewGraph.Root.MetadataSetFloat("world.zenithB", 1.2);
+    previewGraph.Root.MetadataSetFloat("world.groundR", 0.04);
+    previewGraph.Root.MetadataSetFloat("world.groundG", 0.05);
+    previewGraph.Root.MetadataSetFloat("world.groundB", 0.06);
+    previewGraph.Root.MetadataSetFloat("world.cloud", 1.4);
+    previewGraph.Root.MetadataSetBool("world.stars", true);
+    previewGraph.Root.MetadataSetFloat("world.sunX", 0.0);
+    previewGraph.Root.MetadataSetFloat("world.sunY", -1.0);
+    previewGraph.Root.MetadataSetFloat("world.sunZ", 0.0);
+    previewGraph.Root.MetadataSetFloat("world.sunR", 1.4);
+    previewGraph.Root.MetadataSetFloat("world.sunG", -0.2);
+    previewGraph.Root.MetadataSetFloat("world.sunB", 0.5);
+    previewGraph.Root.MetadataSetFloat("world.sunIntensity", 140.0);
+    previewGraph.Root.MetadataSetFloat("world.fillX", 1.0);
+    previewGraph.Root.MetadataSetFloat("world.fillY", -1.0);
+    previewGraph.Root.MetadataSetFloat("world.fillZ", 0.0);
+    previewGraph.Root.MetadataSetFloat("world.fillR", 0.2);
+    previewGraph.Root.MetadataSetFloat("world.fillG", 0.3);
+    previewGraph.Root.MetadataSetFloat("world.fillB", 0.4);
+    previewGraph.Root.MetadataSetFloat("world.fillIntensity", 0.5);
+    previewGraph.Root.MetadataSetBool("world.heightFog", true);
+    var previewMarker = SceneNode.New();
+    previewMarker.Name = "Transient preview marker";
+    previewMarker.SetPosition(12.5, 2.75, -15.0);
+    previewMarker.MetadataSetString("preview.kind", "prop");
+    previewMarker.MetadataSetInt("preview.variant", 1);
+    previewMarker.MetadataSetFloat("preview.yaw", 0.5);
+    previewMarker.MetadataSetFloat("preview.scale", 2.0);
+    previewGraph.Add(previewMarker);
+    var previewDoc = new document.Document();
+    previewDoc.fileName = "preview.vscn";
+    previewDoc.filePath = Path.Join(componentDir, "preview.vscn");
+    previewDoc.language = "scene3d";
+    previewDoc.kind = file_utils.DOC_KIND_SCENE_3D;
+    previewDoc.content = previewGraph.SaveToText();
+    var previewBaseline = previewDoc.content;
+    var previewRevision = editor.GetRevision();
+    editor.Activate(previewDoc);
+    editor.Pump(previewDoc);
+    shell.Render();
+    var previewState = editor.ProjectPreviewRenderState();
+    if near(editor.viewTargetX, 12.5) == false
+       or near(editor.viewTargetY, 2.75) == false
+       or editor.viewTargetZ >= -7.75
+       or editor.viewTargetZ < -100.0
+       or editor.viewYawDegrees != 0
+       or editor.viewPitchDegrees != 0
+       or editor.showGrid
+       or editor.showMarkers
+       or editor.showLightOverlays
+       or editor.showCameraOverlays
+       or editor.showColliderOverlays
+       or editor.showRouteOverlays == false
+       or editor.gridCheck.IsChecked()
+       or editor.markersCheck.IsChecked()
+       or editor.lightsCheck.IsChecked()
+       or editor.camerasCheck.IsChecked()
+       or editor.collidersCheck.IsChecked()
+       or editor.routesCheck.IsChecked() == false
+       or previewState.hasCameraFov == false
+       or near(previewState.cameraFov, 90.0) == false
+       or previewState.hasIblIntensity == false
+       or near(previewState.iblIntensity, 0.28) == false
+       or previewState.hasAmbient == false
+       or near(previewState.ambientR, 0.0) == false
+       or near(previewState.ambientG, 0.4) == false
+       or near(previewState.ambientB, 1.0) == false
+       or previewState.hasClear == false
+       or near(previewState.clearR, 0.1) == false
+       or near(previewState.clearG, 0.2) == false
+       or near(previewState.clearB, 0.3) == false
+       or previewState.hasFog == false
+       or near(previewState.fogR, 0.4) == false
+       or near(previewState.fogG, 0.5) == false
+       or near(previewState.fogB, 0.6) == false
+       or near(previewState.fogNear, 0.0) == false
+       or near(previewState.fogFar, 1.0) == false
+       or previewState.hasSky == false
+       or near(previewState.zenithR, 0.0) == false
+       or near(previewState.zenithG, 0.1) == false
+       or near(previewState.zenithB, 1.0) == false
+       or near(previewState.groundR, 0.04) == false
+       or near(previewState.groundG, 0.05) == false
+       or near(previewState.groundB, 0.06) == false
+       or near(previewState.cloudDensity, 1.0) == false
+       or previewState.stars == false
+       or previewState.hasSun == false
+       or near(previewState.sunX, 0.0) == false
+       or near(previewState.sunY, -1.0) == false
+       or near(previewState.sunZ, 0.0) == false
+       or near(previewState.sunR, 1.0) == false
+       or near(previewState.sunG, 0.0) == false
+       or near(previewState.sunB, 0.5) == false
+       or near(previewState.sunIntensity, 100.0) == false
+       or previewState.hasFill == false
+       or near(previewState.fillX, 1.0) == false
+       or near(previewState.fillY, -1.0) == false
+       or near(previewState.fillZ, 0.0) == false
+       or near(previewState.fillR, 0.2) == false
+       or near(previewState.fillG, 0.3) == false
+       or near(previewState.fillB, 0.4) == false
+       or near(previewState.fillIntensity, 0.5) == false
+       or previewState.hasHeightFog == false
+       or previewState.heightFogEnabled == false
+       or near(previewState.heightFogBase, 1.6) == false
+       or near(previewState.heightFogFalloff, 0.35) == false
+       or near(previewState.heightFogDensity, 0.06) == false
+       or near(previewState.heightFogOpacity, 0.65) == false
+       or previewDoc.content != previewBaseline
+       or previewDoc.isModified
+       or editor.GetRevision() != previewRevision {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        removeTempDir(componentDir);
+        fail(shell, tempPath,
+             "3D profile did not apply a bounded read-only first view");
+        return;
+    }
+    if editor.viewportPixels == null
+       or editor.viewportRenderCamera == null
+       or near(editor.viewportRenderCamera.Fov, 90.0) == false
+       or editor.viewportRenderCanvas == null
+       or editor.viewportRenderCanvas.IblEnabled == false
+       or near(editor.viewportRenderCanvas.IblIntensity, 0.28) == false
+       or editor.viewportRenderCanvas.HeightFogEnabled == false
+       or Pixels.Get(editor.viewportPixels, 4, 4)
+          == Pixels.Get(
+              editor.viewportPixels,
+              4,
+              editor.renderedViewportHeight - 5) {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        removeTempDir(componentDir);
+        fail(shell, tempPath,
+             "version-6 project sky did not produce a visible gradient");
+        return;
+    }
+    if editor.projectPreviewScene == null
+       or editor.projectPreviewInstanceCount != 1
+       or editor.projectPreviewMissingCount != 0
+       or editor.projectPreviewClipped {
+        var previewReason = "3D node prefab did not build its transient graph";
+        if editor.projectPreviewScene == null {
+            previewReason = previewReason + " (no graph)";
+        } else if editor.projectPreviewInstanceCount != 1 {
+            previewReason = previewReason + " (instance count "
+                + editor.projectPreviewInstanceCount + ")";
+        } else if editor.projectPreviewMissingCount != 0 {
+            previewReason = previewReason + " (missing count "
+                + editor.projectPreviewMissingCount + ")";
+        } else {
+            previewReason = previewReason + " (node cap)";
+        }
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        removeTempDir(componentDir);
+        fail(shell, tempPath, previewReason);
+        return;
+    }
+
+    // Manual navigation and older persisted workspaces can always return to
+    // the project-authored presentation without touching the scene document.
+    editor.viewTargetX = -900.0;
+    editor.viewTargetY = 800.0;
+    editor.viewTargetZ = 700.0;
+    editor.viewYawDegrees = 75;
+    editor.viewPitchDegrees = -45;
+    editor.showGrid = true;
+    editor.showMarkers = true;
+    editor.showLightOverlays = true;
+    editor.showCameraOverlays = true;
+    editor.showColliderOverlays = true;
+    editor.showRouteOverlays = false;
+    if editor.CanApplyProjectPreviewView() == false
+       or editor.ApplyProjectPreviewView() == false
+       or near(editor.viewTargetX, 12.5) == false
+       or near(editor.viewTargetY, 2.75) == false
+       or editor.viewTargetZ >= -7.75
+       or editor.viewTargetZ < -100.0
+       or editor.viewYawDegrees != 0
+       or editor.viewPitchDegrees != 0
+       or editor.showGrid
+       or editor.showMarkers
+       or editor.showLightOverlays
+       or editor.showCameraOverlays
+       or editor.showColliderOverlays
+       or editor.showRouteOverlays == false
+       or previewDoc.content != previewBaseline
+       or previewDoc.isModified
+       or editor.GetRevision() != previewRevision {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        removeTempDir(componentDir);
+        fail(shell, tempPath,
+             "Gameplay View did not restore the read-only project profile");
+        return;
+    }
+    var previewWrapper =
+        editor.projectPreviewScene.Root.GetChild(0);
+    var previewVisual = previewWrapper.GetChild(0);
+    if previewVisual == null or previewVisual.Material == null
+       or previewVisual.Material.Color.Z < 0.8
+       or near(previewWrapper.WorldScale.X, 2.0) == false
+       or near(previewWrapper.WorldScale.Y, 2.0) == false
+       or near(previewWrapper.WorldScale.Z, 2.0) == false
+       or editor.ViewportNodeAt(
+              editor.renderedViewportWidth / 2,
+              editor.renderedViewportHeight / 2) != 0
+       or previewDoc.content != previewBaseline
+       or previewDoc.isModified {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        removeTempDir(componentDir);
+        fail(shell, tempPath,
+             "3D node prefab variant did not render/pick as its source marker");
+        return;
+    }
+
+    // One wrong scalar kind rejects only its complete atmosphere group.
+    previewGraph = null;
+    editor.scene.Root.MetadataRemove("world.ambientB");
+    editor.scene.Root.MetadataSetInt("world.ambientB", 1);
+    var wrongTypePreview = editor.ProjectPreviewRenderState();
+    if wrongTypePreview.hasAmbient
+       or wrongTypePreview.hasClear == false
+       or wrongTypePreview.hasFog == false
+       or previewDoc.content != previewBaseline
+       or previewDoc.isModified {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        removeTempDir(componentDir);
+        fail(shell, tempPath,
+             "wrong-typed 3D atmosphere metadata did not fall back cleanly");
+        return;
+    }
+    editor.scene.Root.MetadataRemove("world.ambientB");
+    editor.scene.Root.MetadataSetFloat("world.ambientB", 1.4);
+
+    // Once captured, user camera and overlay choices win over project defaults.
+    editor.viewTargetX = 77.0;
+    editor.viewTargetY = 8.0;
+    editor.viewTargetZ = -9.0;
+    editor.viewYawDegrees = -31;
+    editor.showMarkers = true;
+    editor.showColliderOverlays = true;
+    editor.showRouteOverlays = false;
+    editor.Pump(sceneDoc);
+    editor.Pump(previewDoc);
+    shell.Render();
+    if near(editor.viewTargetX, 77.0) == false
+       or near(editor.viewTargetY, 8.0) == false
+       or near(editor.viewTargetZ, -9.0) == false
+       or editor.viewYawDegrees != -31
+       or editor.showMarkers == false
+       or editor.showColliderOverlays == false
+       or editor.showRouteOverlays
+       or previewDoc.content != previewBaseline
+       or previewDoc.isModified {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        removeTempDir(componentDir);
+        fail(shell, tempPath,
+             "restored 3D workspace was overwritten by project defaults");
+        return;
+    }
+    editor.Pump(sceneDoc);
+
     editor.componentPalette.SetSchemaEditorVisible(true);
     editor.componentPalette.SelectAuthoredComponent("conflicting-spawn");
     if editor.componentPalette.componentLaterButton.IsEnabled() == false {

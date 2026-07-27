@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-14
+last-verified: 2026-07-26
 ---
 
 # Cross-Platform Developer Checklist
@@ -209,7 +209,7 @@ Linux audio availability is now controlled by `ZANNA_AUDIO_MODE=AUTO|REQUIRE|OFF
 |------|--------|
 | `CMakeLists.txt` | Compiler flags — MSVC: `/FS`, `/utf-8`, `/W4`, `/permissive-`. GCC/Clang: `-Wall -Wextra -Wpedantic`, sanitizers, LTO. Symbol visibility (`-fvisibility=hidden`) on non-Windows. LLD linker gated on `IL_USE_LLD`. Apple-specific: suppress ld64 warnings, ARM64 cross-compilation flags. |
 | `src/runtime/CMakeLists.txt` | Feature definitions — `_POSIX_C_SOURCE=200809L` on non-Windows, `_DEFAULT_SOURCE` on Linux (not macOS), `_GNU_SOURCE` on Linux. MSVC link optimization `/OPT:REF /OPT:ICF`. macOS frameworks: IOKit, CoreFoundation, Security. Runtime component archives are exported for generated manifest consumers. |
-| `src/tests/CMakeLists.txt` | Test gating — ARM64 tests enabled only on `arm64|aarch64|ARM64` processors. Windows tests add `WinDialogSuppress.c` to suppress crash dialogs. |
+| `src/tests/CMakeLists.txt` | Test gating — ARM64 tests enabled only on `arm64\|aarch64\|ARM64` processors. Windows tests add `WinDialogSuppress.c` to suppress crash dialogs. |
 | `scripts/lint_platform_policy.sh` | Advisory/strict lint for raw host macro usage outside approved adapter files plus required touchpoint notes for high-risk chokepoints. |
 | `scripts/run_cross_platform_smoke.sh` | Host-capability smoke slice: core smoke tests, disabled-surface coverage, planner smoke, and display-bound probes when a display is available. |
 | `scripts/audit_runtime_surface.sh` | Runtime surface audit plus disabled graphics/audio link-surface checks. |

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-05-31
+last-verified: 2026-07-26
 ---
 
 # CODEMAP: Zia Frontend
@@ -10,11 +10,9 @@ The Zia frontend (`src/frontends/zia/`) compiles Zia source to IL.
 
 Zia is Zanna's native language with classes, structs, generics, lambdas, and imports.
 
-Last updated: 2026-04-25
-
 ## Overview
 
-- **Total source files**: 81 (.hpp/.cpp)
+- **Total source files**: 89 (.hpp/.cpp)
 
 ## Core Infrastructure
 

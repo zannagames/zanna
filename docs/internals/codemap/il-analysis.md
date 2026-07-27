@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-05-31
+last-verified: 2026-07-26
 ---
 
 # CODEMAP: IL Analysis
@@ -10,7 +10,7 @@ Static analysis utilities (`src/il/analysis/`) for IL programs.
 
 ## Overview
 
-- **Total source files**: 9 (.hpp/.cpp) — `Dominators.hpp/.cpp` includes both forward and post-dominator trees; `MemorySSA.hpp/.cpp` provides memory def-use chains for precise DSE
+- **Total source files**: 12 (.hpp/.cpp) — `Dominators.hpp/.cpp` includes both forward and post-dominator trees; `MemorySSA.hpp/.cpp` provides memory def-use chains for precise DSE
 
 ## Control Flow
 

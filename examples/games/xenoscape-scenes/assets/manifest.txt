@@ -5,6 +5,7 @@ runtime sprites/player-release-sheet.png
 runtime README.md
 qa-reference tiles/biome-tile-atlas.png
 qa-reference icons/hud-icon-atlas.png
+qa-reference sprites/scene-object-preview-atlas.png
 qa-reference ui/title-menu-panel.png
 fallback title procedural-menu-parallax
 fallback portrait procedural-aria-hologram

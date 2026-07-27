@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-08
+last-verified: 2026-07-26
 ---
 
 # Zia Grammar (EBNF)

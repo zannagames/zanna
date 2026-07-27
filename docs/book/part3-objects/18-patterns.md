@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-16
+last-verified: 2026-07-26
 ---
 
 # Chapter 18: Design Patterns
@@ -421,13 +421,13 @@ class EnemyFactory {
             return Goblin(x, y);
         } else if level < 7 {
             // Mix of goblins and orcs
-            if Math.random() > 0.5 {
+            if Math.Random.NextDouble() > 0.5 {
                 return Orc(x, y);
             }
             return Goblin(x, y);
         } else {
             // All enemy types possible
-            var roll = Math.random();
+            var roll = Math.Random.NextDouble();
             if roll < 0.3 {
                 return Dragon(x, y);
             } else if roll < 0.6 {
@@ -441,8 +441,8 @@ class EnemyFactory {
     static func createWave(count: Integer, level: Integer) -> List[Enemy] {
         var enemies: List[Enemy] = [];
         for i in 0..count {
-            var x = Math.random() * 800.0;
-            var y = Math.random() * 600.0;
+            var x = Math.Random.NextDouble() * 800.0;
+            var y = Math.Random.NextDouble() * 600.0;
             enemies.Push(EnemyFactory.createForLevel(level, x, y));
         }
         return enemies;

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-04-17
+last-verified: 2026-07-26
 ---
 
 # Fonts
@@ -13,7 +13,6 @@ last-verified: 2026-04-17
 ## Contents
 
 - [Zanna.Graphics.BitmapFont](#zannagraphicsbitmapfont)
-- [Zanna.Graphics.BitmapFont](#zannagraphicsspritefont)
 - [Canvas Text Methods](#canvas-text-methods-with-custom-font)
 - [Supported Formats](#supported-formats)
 - [Usage Example](#usage-example)
@@ -28,14 +27,14 @@ Input strings are decoded as UTF-8 for measurement and drawing. The runtime stor
 BMP codepoints `0-65535`; missing glyphs fall back to `?` (or space if `?` is unavailable).
 Measurement and Canvas text helpers validate that the supplied handle is a `BitmapFont`; null or unrelated handles return safe defaults or no-op.
 
-**Type:** Static (no instance constructor — use `LoadBDF` or `LoadPSF`)
+**Type:** Static (no instance constructor — use `LoadBdf` or `LoadPsf`)
 
 ### Static Methods
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `LoadBDF(path)` | `BitmapFont(String)` | Load a BDF font file. Returns `null` on missing, truncated, or malformed input |
-| `LoadPSF(path)` | `BitmapFont(String)` | Load a PSF v1/v2 font file, including Unicode mapping tables when present. Returns `null` on missing, truncated, or malformed input |
+| `LoadBdf(path)` | `BitmapFont(String)` | Load a BDF font file. Returns `null` on missing, truncated, or malformed input |
+| `LoadPsf(path)` | `BitmapFont(String)` | Load a PSF v1/v2 font file, including Unicode mapping tables when present. Returns `null` on missing, truncated, or malformed input |
 
 ### Properties
 
@@ -52,12 +51,6 @@ Measurement and Canvas text helpers validate that the supplied handle is a `Bitm
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `TextWidth(text)` | `Integer(String)` | Measure rendered pixel width of a UTF-8 string, including glyph overhangs |
-
----
-
-## Zanna.Graphics.BitmapFont
-
-`BitmapFont` is the game-facing alias for `BitmapFont`. It exposes the same loaders, properties, and `TextWidth(text)` method. `SpriteFont.LoadBDF(path)` and `SpriteFont.LoadPSF(path)` return runtime handles tagged as `BitmapFont`, and all `BitmapFont` measurement and Canvas text methods accept either `BitmapFont` or `BitmapFont` handles.
 
 ---
 
@@ -103,10 +96,10 @@ A simple binary format used by the Linux console. Supports v1 (2-byte header) an
 bind Zanna.Graphics;
 
 // Load a 16px font for the title
-var titleFont = BitmapFont.LoadBDF("assets/terminus-bold-32.bdf");
+var titleFont = BitmapFont.LoadBdf("assets/terminus-bold-32.bdf");
 
 // Load a smaller font for body text
-var bodyFont = BitmapFont.LoadBDF("assets/cozette-13.bdf");
+var bodyFont = BitmapFont.LoadBdf("assets/cozette-13.bdf");
 
 // In the draw loop:
 canvas.TextFontCentered(50, "MY GAME", titleFont, Color.White);

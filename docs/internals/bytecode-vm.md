@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-06-27
+last-verified: 2026-07-26
 ---
 
 # Zanna Bytecode VM Reference
@@ -193,7 +193,7 @@ compile and successful module load.
 | `3` | `DomainError` |
 | `4` | `Bounds` |
 | `5` | `FileNotFound` |
-| `6` | `EndOfFile` |
+| `6` | `EndOfFile` (the `Trap.hpp` enumerator is spelled `EOF`) |
 | `7` | `IOError` |
 | `8` | `InvalidOperation` |
 | `9` | `RuntimeError` |

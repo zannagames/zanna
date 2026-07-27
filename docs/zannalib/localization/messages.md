@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-14
+last-verified: 2026-07-26
 ---
 
 # Messages & Plural Rules
@@ -25,8 +25,7 @@ Translation catalog keyed by message ID. Supports placeholder interpolation, fal
 | `LoadFromAsset(loc, name)` | `MessageBundle(Locale, String)` | Load from ZPAK asset. |
 | `FromMap(loc, map)` | `MessageBundle(Locale, runtime Map of String)` | Use an existing raw-string map. |
 | `Get(key)` | `String(String)` | Traps when no bundle in the chain has `key`. |
-| `TryGet(key)` | `String(String)` | Returns `""` when missing. |
-| `TryGetOption(key)` | `Option[String](String)` | Returns `Some(value)` when present, including empty translations; `None` when missing. |
+| `TryGet(key)` | `Option[String](String)` | Returns `Some(value)` when present, including empty translations; `None` when missing. |
 | `GetOr(key, default)` | `String(String, String)` | Returns the resolved value or the provided fallback string. |
 | `Has(key)` | `Bool(String)` | |
 | `Format(key, vars)` | `String(String, runtime Map of String)` | `{name}`-style placeholders. |
@@ -35,7 +34,7 @@ Translation catalog keyed by message ID. Supports placeholder interpolation, fal
 | `Fallback(other)` | `MessageBundle(MessageBundle)` | Attach a fallback and return this bundle; traps when the proposed chain reaches this bundle. |
 | `Keys()` | `Object()` (runtime `List` of `String`) | Snapshot of keys defined by this bundle (excludes fallback); order is unspecified. |
 
-Prefer `TryGetOption` or `GetOr` for new code. `TryGet` remains available for compatibility, but its empty-string sentinel cannot distinguish a missing key from an intentional empty translation.
+`TryGet` returns an Option, so an intentional empty translation (`Some("")`) is distinguishable from a missing key (`None`). Use `GetOr` when a plain fallback string is enough.
 
 ### Properties
 

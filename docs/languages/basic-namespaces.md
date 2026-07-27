@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-04-09
+last-verified: 2026-07-26
 ---
 
 # Zanna BASIC Namespaces — Reference
@@ -858,7 +858,8 @@ first‑class and tested:
 
 - `Zanna.Time` — Time and timing utilities (static utility)
     - Methods (static):
-        - `Clock.Ticks() -> I64` — Milliseconds since program start
+        - `Clock.NowMs() -> I64` — Monotonic milliseconds (not the Unix epoch)
+        - `Clock.NowMicros() -> I64` — Monotonic microseconds
         - `Clock.Sleep(I64 ms) -> VOID` — Pause execution for milliseconds
 
 #### Zanna.Terminal
@@ -995,10 +996,10 @@ Timing with Zanna.Time:
 ```basic
 USING Zanna
 DIM start AS LONG
-start = Time.Clock.Ticks()
+start = Time.Clock.NowMs()
 ' ... do work ...
 Time.Clock.Sleep(100)            ' Pause 100ms
-PRINT "Elapsed: "; Time.Clock.Ticks() - start; "ms"
+PRINT "Elapsed: "; Time.Clock.NowMs() - start; "ms"
 ```
 
 Terminal control with Zanna.Terminal:
@@ -1011,7 +1012,7 @@ Terminal.SetPosition(10, 20)        ' Move cursor
 PRINT "Hello!"
 Terminal.SetCursorVisible(FALSE)        ' Hide cursor
 DIM key AS STRING
-key = Terminal.GetKeyTimeout(5000)  ' Wait 5 seconds for key
+key = Terminal.ReadKeyFor(5000)     ' Wait up to 5 seconds for a key
 IF key <> "" THEN PRINT "You pressed: "; key
 Terminal.SetCursorVisible(TRUE)        ' Show cursor
 ```
@@ -1049,13 +1050,13 @@ The Graphics namespace provides 2D rendering, image manipulation, and game devel
 
 **Zanna.Graphics.Color** — Color utilities (static class):
 - Methods (static):
-    - `RGB(I64 r, I64 g, I64 b) -> I64` — Create color from RGB (0-255)
-    - `RGBA(I64 r, I64 g, I64 b, I64 a) -> I64` — Create color with alpha
-    - `FromHSL(I64 h, I64 s, I64 l) -> I64` — Create from HSL (h:0-360, s:0-100, l:0-100)
-    - `GetR(I64 color) -> I64` — Extract red component
-    - `GetG(I64 color) -> I64` — Extract green component
-    - `GetB(I64 color) -> I64` — Extract blue component
-    - `GetA(I64 color) -> I64` — Extract stored alpha byte. `Color.RGB()` has no stored alpha, so this returns `0`; drawing APIs treat RGB colors as opaque.
+    - `Rgb(I64 r, I64 g, I64 b) -> I64` — Create color from RGB (0-255)
+    - `Rgba(I64 r, I64 g, I64 b, I64 a) -> I64` — Create color with alpha
+    - `FromHsl(I64 h, I64 s, I64 l) -> I64` — Create from HSL (h:0-360, s:0-100, l:0-100)
+    - `GetRed(I64 color) -> I64` — Extract red component
+    - `GetGreen(I64 color) -> I64` — Extract green component
+    - `GetBlue(I64 color) -> I64` — Extract blue component
+    - `GetAlpha(I64 color) -> I64` — Extract stored alpha byte. `Color.Rgb()` has no stored alpha, so this returns `0`; drawing APIs treat RGB colors as opaque.
     - `Lerp(I64 c1, I64 c2, I64 t) -> I64` — Linear interpolation (t:0-100)
     - `Brighten(I64 color, I64 amount) -> I64` — Increase brightness
     - `Darken(I64 color, I64 amount) -> I64` — Decrease brightness
@@ -1067,14 +1068,14 @@ The Graphics namespace provides 2D rendering, image manipulation, and game devel
     - `Height -> I64` (read-only) — Image height in pixels
 - Methods:
     - `Get(I64 x, I64 y) -> I64` — Get raw `0xRRGGBBAA` pixel storage
-    - `GetRGBA(I64 x, I64 y) -> I64` — Get raw `0xRRGGBBAA` pixel storage
+    - `GetRgba(I64 x, I64 y) -> I64` — Get raw `0xRRGGBBAA` pixel storage
     - `GetColor(I64 x, I64 y) -> I64` — Get pixel as a `Color`-compatible value
     - `Set(I64 x, I64 y, I64 color) -> VOID` — Set raw `0xRRGGBBAA` pixel storage
-    - `SetRGBA(I64 x, I64 y, I64 color) -> VOID` — Set raw `0xRRGGBBAA` pixel storage
-    - `SetColor(I64 x, I64 y, I64 color) -> VOID` — Set pixel from `Color.RGB/RGBA` or Canvas RGB
+    - `SetRgba(I64 x, I64 y, I64 color) -> VOID` — Set raw `0xRRGGBBAA` pixel storage
+    - `SetColor(I64 x, I64 y, I64 color) -> VOID` — Set pixel from `Color.Rgb/Rgba` or Canvas RGB
     - `Fill(I64 color) -> VOID` — Fill image with raw `0xRRGGBBAA`
-    - `FillRGBA(I64 color) -> VOID` — Fill image with raw `0xRRGGBBAA`
-    - `FillColor(I64 color) -> VOID` — Fill image from `Color.RGB/RGBA` or Canvas RGB
+    - `FillRgba(I64 color) -> VOID` — Fill image with raw `0xRRGGBBAA`
+    - `FillColor(I64 color) -> VOID` — Fill image from `Color.Rgb/Rgba` or Canvas RGB
     - `Clear() -> VOID` — Clear to transparent black
     - `Copy(I64 dx, I64 dy, PIXELS src, I64 sx, I64 sy, I64 sw, I64 sh) -> VOID` — Copy region
     - `Clone() -> PIXELS` — Create copy of image
@@ -1082,8 +1083,8 @@ The Graphics namespace provides 2D rendering, image manipulation, and game devel
     - `Resize(I64 w, I64 h) -> PIXELS` — Bilinear interpolation scale
     - `FlipH() -> PIXELS` — Flip horizontally
     - `FlipV() -> PIXELS` — Flip vertically
-    - `RotateCW() -> PIXELS` — Rotate 90° clockwise
-    - `RotateCCW() -> PIXELS` — Rotate 90° counter-clockwise
+    - `RotateClockwise() -> PIXELS` — Rotate 90° clockwise
+    - `RotateCounterClockwise() -> PIXELS` — Rotate 90° counter-clockwise
     - `Rotate180() -> PIXELS` — Rotate 180°
     - `Invert() -> PIXELS` — Invert RGB colors
     - `Grayscale() -> PIXELS` — Convert to grayscale
@@ -1179,8 +1180,8 @@ canvas = NEW Zanna.Graphics.Canvas("My Game", 800, 600)
 
 ' Create colors
 DIM red AS INTEGER, blue AS INTEGER
-red = Zanna.Graphics.Color.RGB(255, 0, 0)
-blue = Zanna.Graphics.Color.RGB(0, 0, 255)
+red = Zanna.Graphics.Color.Rgb(255, 0, 0)
+blue = Zanna.Graphics.Color.Rgb(0, 0, 255)
 
 ' Create and configure a sprite
 DIM spriteImg AS Zanna.Graphics.Pixels

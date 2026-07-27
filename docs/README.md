@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-16
+last-verified: 2026-07-26
 ---
 
 # Zanna Documentation
@@ -90,6 +90,4 @@ Current development line: **v0.2.99** ([draft notes](release_notes/Zanna_Release
 
 ## For Contributors
 
-The **[Internals index](internals/README.md)** covers system architecture, the VM and native backends, code maps for every subsystem, formal specifications, architecture decision records, testing, and how-to guides for extending the runtime and building new frontends.
-
-- [Windows Runtime Reliability Audit](windows-runtime-reliability-audit.md) — Win32 and D3D11 adapter hardening, regression coverage, and validation.
+The **[Internals index](internals/README.md)** covers system architecture, the VM and native backends, code maps for every subsystem, formal specifications, architecture decision records, testing, platform implementation notes, and how-to guides for extending the runtime and building new frontends.

@@ -127,6 +127,7 @@ expose func DefaultCommandSpecs() -> List[CommandSpec] {
     AddSpec(specs, "movetoolbottom", "Move Active Tool to Bottom", "Split the selected tool into the bottom dock group", "", "", true);
     AddSpec(specs, "movetoolright", "Move Active Tool Right", "Split the selected tool into the right dock group", "", "", true);
     AddSpec(specs, "movetoolfloating", "Move Active Tool to Floating Window", "Split the selected tool into the movable floating group", "", "", true);
+    AddSpec(specs, "scenefocus", "Toggle Scene Focus", "Maximize the active 2D or 3D scene while preserving the exact scene and workbench layout", "Shift+Space", "", true);
     AddSpec(specs, "resetworkspacelayout", "Reset Workspace Layout", "Restore default sidebar, panel docking, tab order, and editor split", "", "", true);
     AddSpec(specs, "spliteditorright", "Split Editor Right", "Open a second editor pane to the right", "Ctrl+\\", "", true);
     AddSpec(specs, "focusotherpane", "Focus Other Editor Pane", "Move focus to the other split pane", "", "", true);
@@ -291,6 +292,7 @@ expose func CategoryForCommand(id: String) -> String {
        or id == "floatpanelgroup"
        or id == "movetoolleft" or id == "movetoolbottom"
        or id == "movetoolright" or id == "movetoolfloating"
+       or id == "scenefocus"
        or id == "statusbar" or id == "zoomin"
        or id == "zoomout" or id == "zoomreset" or id == "uizoomin"
        or id == "uizoomout" or id == "uizoomreset"

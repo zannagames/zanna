@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-16
+last-verified: 2026-07-26
 ---
 
 # Zanna VM — Architecture & Implementation Guide

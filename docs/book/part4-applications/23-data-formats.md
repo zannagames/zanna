@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-16
+last-verified: 2026-07-26
 ---
 
 # Chapter 23: Data Formats
@@ -1360,15 +1360,15 @@ func saveBinary(save: GameSave, filename: String) {
     var writer = Buffer.New();
 
     // Header
-    writer.WriteU32LE(MAGIC);
-    writer.WriteU32LE(VERSION);
+    writer.WriteU32LittleEndian(MAGIC);
+    writer.WriteU32LittleEndian(VERSION);
 
     // Player data
     writer.WriteStr(save.playerName);
-    writer.WriteI32LE(save.level);
-    writer.WriteI32LE(save.health);
-    writer.WriteI32LE(save.x);
-    writer.WriteI32LE(save.y);
+    writer.WriteI32LittleEndian(save.level);
+    writer.WriteI32LittleEndian(save.health);
+    writer.WriteI32LittleEndian(save.x);
+    writer.WriteI32LittleEndian(save.y);
 
     File.WriteAllBytes(filename, writer.ToBytes());
 }
@@ -1377,14 +1377,14 @@ func loadBinary(filename: String) -> GameSave? {
     var reader = Buffer.FromBytes(File.ReadAllBytes(filename));
 
     // Verify magic number
-    var magic = reader.ReadU32LE();
+    var magic = reader.ReadU32LittleEndian();
     if magic != MAGIC {
         Terminal.Say("Error: Not a valid save file");
         return null;
     }
 
     // Check version
-    var version = reader.ReadU32LE();
+    var version = reader.ReadU32LittleEndian();
     if version > VERSION {
         Terminal.Say("Error: Save file is from a newer version");
         return null;
@@ -1393,10 +1393,10 @@ func loadBinary(filename: String) -> GameSave? {
     // Load data
     var save = new GameSave(
         reader.ReadStr(),
-        reader.ReadI32LE(),
-        reader.ReadI32LE(),
-        reader.ReadI32LE(),
-        reader.ReadI32LE()
+        reader.ReadI32LittleEndian(),
+        reader.ReadI32LittleEndian(),
+        reader.ReadI32LittleEndian(),
+        reader.ReadI32LittleEndian()
     );
     save.version = version;
     return save;

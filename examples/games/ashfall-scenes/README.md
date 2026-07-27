@@ -26,9 +26,38 @@ examples/bin/ashfall-scenes -- --scene assets/scenes/mission-03.scene3d
 ```
 
 `scene-components.json` ships the gameplay component palette (spawns, pickups,
-covers, routes, gates, colliders...) for Studio's Add Missing workflow, and
+covers, routes, gates, colliders...) for Studio's Add Missing workflow. Its 3D
+preview profile maps the authored start pose and 90-degree gameplay lens,
+zenith/horizon/ground sky palette, sky IBL, key/fill lights, distance and
+height fog, and overlay defaults into Studio. Large missions therefore open at
+player-eye scale with their runtime atmosphere and diagnostic mesh/collider
+clutter hidden. It also maps every authored prop, enemy spawn, and pickup
+marker to one of 43 real prefab previews under
+`assets/editor-previews/`. Those self-contained previews are baked from the
+same procedural mesh builders and palette choices as Ashfall's runtime
+fallback art, so Studio shows recognizable gameplay silhouettes instead of
+generic marker glyphs. They are read-only authoring visuals: preview loading
+does not add nodes to the saved mission or change runtime instancing.
 `materials.scene3d` seeds the project material library with the campaign's
-surface-class palette.
+surface-class palette. The generic contracts are documented by
+[ADR 0198](../../../docs/adr/0198-project-owned-3d-scene-preview-profiles.md),
+[ADR 0199](../../../docs/adr/0199-project-owned-3d-node-prefab-previews.md),
+[ADR 0200](../../../docs/adr/0200-project-owned-3d-sky-and-light-preview-rigs.md),
+and [ADR 0201](../../../docs/adr/0201-project-owned-3d-lens-and-atmosphere-previews.md).
+
+Regenerate the preview prefabs deterministically after changing production
+prop, enemy, or pickup art:
+
+```sh
+(
+  cd examples/games/ashfall-scenes
+  ../../../build/src/tools/zanna/zanna run tools/build_studio_previews.zia
+)
+```
+
+`probes/assets_probe.zia` loads all 43 files as part of the portable asset
+check, in addition to exercising optional art and the complete runtime fallback
+path.
 
 ---
 

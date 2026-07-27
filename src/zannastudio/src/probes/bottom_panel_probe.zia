@@ -13,6 +13,9 @@
 //   - Real pointer drags reveal stationary targets and commit only valid drops.
 //   - Individual tools form simultaneous left/bottom/right/floating groups
 //     without reconstructing live widgets or publishing restore edges.
+//   - Scene layout/focus modes compose while reclaiming outer docks and
+//     restoring exact sidebar/group selections without durable changes, even
+//     when queued/background panel reveals arrive while docks are suppressed.
 //   - The floating group moves, resizes, docks back, and persists bounds.
 //   - The primary sidebar moves left/right without losing width, focus, or state.
 //   - Showing or switching tool panels preserves the configured split.
@@ -277,8 +280,8 @@ func main() {
     shell.workbench.ToggleSidebar();
     shell.Render();
     if shell.workbench.splitPane.GetCollapsedSide() != 1
-       or shell.workbench.leftViewStack.GetWidth() > 1 {
-        fail(shell, "hidden sidebar still consumes width");
+       or shell.workbench.leftViewStack.IsVisible() {
+        fail(shell, "hidden sidebar still consumes geometry or paints content");
         return;
     }
     shell.workbench.ToggleSidebar();
@@ -288,7 +291,8 @@ func main() {
     if sidebarDelta < 0.0 { sidebarDelta = 0.0 - sidebarDelta; }
     if shell.workbench.splitPane.GetCollapsedSide() != 0
        or sidebarDelta > 0.01
-       or shell.workbench.leftViewStack.GetWidth() <= 1 {
+       or shell.workbench.leftViewStack.GetWidth() <= 1
+       or shell.workbench.leftViewStack.IsVisible() == false {
         fail(shell, "sidebar restore lost its previous width");
         return;
     }
@@ -764,6 +768,96 @@ func main() {
        or shell.toolPanels.TakeChangedToolPanelGroupLayout() != groupedLayout
        or shell.toolPanels.TakeChangedToolPanelGroupLayout() != "" {
         fail(shell, "individual tool movement did not publish one grouped layout");
+        return;
+    }
+
+    // Scene focus is a reversible workspace presentation, not a destructive
+    // layout reset. Capture simultaneous groups and the primary sidebar.
+    shell.SetSidebarVisible(true);
+    shell.Render();
+    var focusActivePanelId = shell.toolPanels.GetActiveToolPanelId();
+    var focusLeftVisible = shell.toolPanels.leftToolGroupRoot.IsVisible();
+    var focusBottomVisible = shell.toolPanels.bottomToolGroupRoot.IsVisible();
+    var focusRightVisible = shell.toolPanels.rightToolGroupRoot.IsVisible();
+    shell.SetSceneFocusMode(true);
+    shell.Render();
+    if shell.IsSceneFocusModeActive() == false
+       or shell.workbench.IsSidebarVisible()
+       or shell.toolPanels.leftToolGroupRoot.IsVisible()
+       or shell.toolPanels.bottomToolGroupRoot.IsVisible()
+       or shell.toolPanels.rightToolGroupRoot.IsVisible()
+       or shell.toolPanels.GetActiveToolPanelId() != focusActivePanelId
+       or shell.toolPanels.GetToolPanelGroupLayout() != groupedLayout {
+        fail(shell, "scene focus mode did not reclaim outer dock space safely");
+        return;
+    }
+    shell.SetSceneFocusMode(false);
+    shell.Render();
+    if shell.IsSceneFocusModeActive()
+       or shell.workbench.IsSidebarVisible() == false
+       or shell.toolPanels.leftToolGroupRoot.IsVisible() != focusLeftVisible
+       or shell.toolPanels.bottomToolGroupRoot.IsVisible() != focusBottomVisible
+       or shell.toolPanels.rightToolGroupRoot.IsVisible() != focusRightVisible
+       or shell.toolPanels.GetActiveToolPanelId() != focusActivePanelId
+       or shell.toolPanels.GetToolPanelGroupLayout() != groupedLayout
+       or shell.toolPanels.TakeChangedToolPanelGroupLayout() != "" {
+        fail(shell, "scene focus mode did not restore the exact dock layout");
+        return;
+    }
+
+    // Scene Layout keeps outer docks reclaimed across a temporary full-focus
+    // round trip, then restores the same captured layout when it exits.
+    shell.SetSceneWorkspaceMode(true);
+    shell.Render();
+    if shell.IsSceneWorkspaceModeActive() == false
+       or shell.workbench.IsSidebarVisible()
+       or shell.workbench.leftViewStack.IsVisible()
+       or shell.toolPanels.leftToolGroupRoot.IsVisible()
+       or shell.toolPanels.bottomToolGroupRoot.IsVisible()
+       or shell.toolPanels.rightToolGroupRoot.IsVisible() {
+        fail(shell, "scene layout mode did not reclaim outer IDE docks");
+        return;
+    }
+    // Startup tab selection and background diagnostics/build output can arrive
+    // one frame after scene entry. They may update retained content but must
+    // not break the presentation invariant by reopening a physical dock.
+    shell.toolPanels.ShowOutputPanel();
+    shell.toolPanels.ShowProblemsPanel();
+    shell.toolPanels.ShowTerminalPanel();
+    shell.toolPanels.PumpToolTabs();
+    shell.Render();
+    if shell.toolPanels.leftToolGroupRoot.IsVisible()
+       or shell.toolPanels.bottomToolGroupRoot.IsVisible()
+       or shell.toolPanels.rightToolGroupRoot.IsVisible()
+       or shell.toolPanels.GetActiveToolPanelId() != focusActivePanelId {
+        fail(shell, "scene layout was broken by a late tool-panel reveal");
+        return;
+    }
+    shell.SetSceneFocusMode(true);
+    shell.SetSceneFocusMode(false);
+    shell.Render();
+    if shell.IsSceneWorkspaceModeActive() == false
+       or shell.IsSceneFocusModeActive()
+       or shell.workbench.IsSidebarVisible()
+       or shell.workbench.leftViewStack.IsVisible()
+       or shell.toolPanels.leftToolGroupRoot.IsVisible()
+       or shell.toolPanels.bottomToolGroupRoot.IsVisible()
+       or shell.toolPanels.rightToolGroupRoot.IsVisible() {
+        fail(shell, "scene focus exit discarded the active scene layout");
+        return;
+    }
+    shell.SetSceneWorkspaceMode(false);
+    shell.Render();
+    if shell.IsSceneWorkspaceModeActive()
+       or shell.workbench.IsSidebarVisible() == false
+       or shell.workbench.leftViewStack.IsVisible() == false
+       or shell.toolPanels.leftToolGroupRoot.IsVisible() != focusLeftVisible
+       or shell.toolPanels.bottomToolGroupRoot.IsVisible() != focusBottomVisible
+       or shell.toolPanels.rightToolGroupRoot.IsVisible() != focusRightVisible
+       or shell.toolPanels.GetActiveToolPanelId() != focusActivePanelId
+       or shell.toolPanels.GetToolPanelGroupLayout() != groupedLayout
+       or shell.toolPanels.TakeChangedToolPanelGroupLayout() != "" {
+        fail(shell, "scene layout mode did not restore the exact dock layout");
         return;
     }
 

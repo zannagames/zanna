@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-05-19
+last-verified: 2026-07-26
 ---
 
 # Native Assembler — Binary Encoding & Object File Generation

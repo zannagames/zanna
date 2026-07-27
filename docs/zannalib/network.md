@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-17
+last-verified: 2026-07-26
 ---
 
 # Network
@@ -715,7 +715,7 @@ Static utility class for DNS resolution and IP address validation.
 
 | Method              | Returns | Description                                  |
 |---------------------|---------|----------------------------------------------|
-| `IsIP(address)`     | Boolean | Check if valid IPv4 or IPv6 address          |
+| `IsIp(address)`     | Boolean | Check if valid IPv4 or IPv6 address          |
 | `IsIpv4(address)`   | Boolean | Check canonical dotted-decimal IPv4 syntax   |
 | `IsIpv6(address)`   | Boolean | Check IPv6 syntax, including optional `%zone` |
 
@@ -737,7 +737,7 @@ bind Zanna.Text.Fmt as Fmt;
 
 func start() {
     // IP validation (no network required)
-    Say("IsIP 1.2.3.4: " + Fmt.Bool(Dns.IsIP("1.2.3.4")));
+    Say("IsIP 1.2.3.4: " + Fmt.Bool(Dns.IsIp("1.2.3.4")));
     Say("IsIPv4 1.2.3.4: " + Fmt.Bool(Dns.IsIpv4("1.2.3.4")));
     Say("IsIPv6 ::1: " + Fmt.Bool(Dns.IsIpv6("::1")));
     Say("LocalHost: " + Dns.LocalHost());
@@ -823,7 +823,7 @@ There is no way to distinguish between a non-existent domain (NXDOMAIN), a DNS s
 > the operating-system resolver and can take several seconds or longer on an unresponsive setup;
 > these methods do not expose a programmatic timeout.
 
-Validation methods (`IsIpv4`, `IsIpv6`, `IsIP`) never trap and return `False` for invalid input.
+Validation methods (`IsIpv4`, `IsIpv6`, `IsIp`) never trap and return `False` for invalid input.
 
 `IsIpv4()` accepts canonical dotted decimal only. Each octet must be `0` through `255`, and a
 multi-digit octet cannot start with zero (`01.2.3.4` is rejected). `IsIpv6()` accepts an optional
@@ -1273,13 +1273,11 @@ IPv6 literal hosts are bracketed automatically when `Authority`, `HostPort`, or 
 
 | Method                | Returns | Description                              |
 |-----------------------|---------|------------------------------------------|
-| `Decode(text)`        | String  | Decode percent-encoded text              |
 | `DecodeQuery(query)`  | Map     | Parse query string to Map                |
-| `Encode(text)`        | String  | Percent-encode text for URL              |
 | `EncodeQuery(map)`    | String  | Encode Map as query string               |
 | `IsValid(urlString)`  | Boolean | Check if URL string is valid             |
 
-`Encode`, `Decode`, `EncodeQuery`, and `DecodeQuery` operate on runtime string byte lengths, so embedded NUL bytes round-trip as `%00` instead of truncating. Parsed URL strings and stored URL components reject embedded NUL bytes because URL objects keep components as NUL-terminated runtime fields. `EncodeQuery` accepts String values (raw or boxed) verbatim and formats boxed Integer, Double, and Boolean values with the runtime's canonical scalar formatting (`true`/`false` for booleans); any other object value traps with `URL.EncodeQuery: unsupported value type`. Map traversal order is unspecified, so callers must not depend on the order of encoded pairs. `DecodeQuery` and `QueryMap` collapse repeated keys to the last value; `GetQueryParam` returns an empty string for both a missing key and a present empty value, so use `HasQueryParam` when that distinction matters.
+`EncodeQuery` and `DecodeQuery` operate on runtime string byte lengths, so embedded NUL bytes round-trip as `%00` instead of truncating. Parsed URL strings and stored URL components reject embedded NUL bytes because URL objects keep components as NUL-terminated runtime fields. `EncodeQuery` accepts String values (raw or boxed) verbatim and formats boxed Integer, Double, and Boolean values with the runtime's canonical scalar formatting (`true`/`false` for booleans); any other object value traps with `URL.EncodeQuery: unsupported value type`. Map traversal order is unspecified, so callers must not depend on the order of encoded pairs. `DecodeQuery` and `QueryMap` collapse repeated keys to the last value; `GetQueryParam` returns an empty string for both a missing key and a present empty value, so use `HasQueryParam` when that distinction matters.
 
 ### Default Ports
 
@@ -2921,22 +2919,14 @@ Simple SMTP client for sending emails with optional AUTH LOGIN and negotiated ST
 | `SetTls(enable)` | void | Enable/disable TLS |
 | `SendResult(from, to, subject, body)` | Result | Send plain text email as `OkI64(1)` or `ErrStr(message)` |
 | `SendHtmlResult(from, to, subject, html)` | Result | Send HTML email as `OkI64(1)` or `ErrStr(message)` |
-| `Send(from, to, subject, body)` | Boolean | Compatibility API: send plain text email, then inspect `LastError` on failure |
-| `SendHtml(from, to, subject, html)` | Boolean | Compatibility API: send HTML email, then inspect `LastError` on failure |
 | `Close()` | void | Force-close any active transport without sending QUIT |
 
-### Properties
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `LastError` | String | Compatibility diagnostic for the most recent failed Boolean send |
-
-Prefer `SendResult(...)` and `SendHtmlResult(...)` in new code. They attach a stable snapshot of
-the SMTP failure to the operation rather than requiring a later read of mutable `LastError`.
+`SendResult(...)` and `SendHtmlResult(...)` attach a stable snapshot of the SMTP failure to the
+operation itself, so a failure is never lost between the call and a later status read.
 Receiver, String, TCP, and TLS traps are caught only after the operation has closed its transport
 and released its mutex, then returned as `ErrStr(message)`. Result allocation itself can still
 trap if the runtime cannot allocate the error String or Result object; partial values are released
-first. Boolean sends preserve the compatibility contract and clear `LastError` after success.
+first.
 
 ### Runtime Notes
 
@@ -2969,8 +2959,8 @@ first. Boolean sends preserve the compatibility contract and clear `LastError` a
   malformed bracketed IPv6 literals. A bracketed IPv6 host is normalized before DNS/TLS use.
 
 Sends, `SetAuth`, and `SetTls` serialize per client. Two concurrent send callers complete separate
-fresh SMTP sessions without sharing a transport or response buffer. `LastError` is synchronized
-and returns an independent caller-owned String snapshot. `Close` may run concurrently: it marks
+fresh SMTP sessions without sharing a transport or response buffer. Each result carries an
+independent caller-owned String snapshot. `Close` may run concurrently: it marks
 cancellation and shuts down the descriptor to wake blocked I/O, while the active send remains the
 only owner allowed to detach and free TCP/TLS state. A later send clears cancellation and
 reconnects. Successful DATA acceptance remains success even if the advisory QUIT exchange fails;
@@ -3056,8 +3046,8 @@ from one thread at a time or provide external coordination. Higher-level types s
 `ConnectionPool` and `HttpClient` document their own synchronization guarantees. `HttpRouter`,
 `Multipart`, and `RateLimiter` document narrower mutation rules. `SseClient` serializes receive
 callers and permits Close/metadata snapshots concurrently. `SmtpClient` serializes sends and
-configuration changes, permits synchronized LastError snapshots, and allows Close to cancel the
-active operation without racing transport destruction.
+configuration changes, and allows Close to cancel the active operation without racing transport
+destruction.
 `TcpServer` supports concurrent accept waiters and concurrent close with the lifecycle guarantee
 documented above. Other server types protect selected bookkeeping, but the WebSocket-server
 caveats above still apply.

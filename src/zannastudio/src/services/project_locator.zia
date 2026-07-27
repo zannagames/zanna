@@ -1,0 +1,51 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/services/project_locator.zia
+// Purpose: Discover project-owned authoring context for explicit documents.
+// Key invariants:
+//   - Discovery is read-only, ancestor-bounded, and returns normalized paths.
+//   - The nearest zanna.project wins; an absent manifest returns no project.
+// Ownership/Lifetime: Stateless service; returned strings own no resources.
+// Links: zannastudio/src/ui/scene_editor_2d.zia,
+//        zannastudio/src/editor/workbench_state.zia,
+//        docs/adr/0197-project-owned-2d-object-preview-profiles.md
+//
+//===----------------------------------------------------------------------===//
+
+module project_locator;
+
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+
+final MAX_PROJECT_ANCESTORS: Integer = 64;
+
+/// @brief Return the nearest ancestor containing a zanna.project manifest.
+/// @details The document itself may not exist yet (for a staged/save-as path);
+///          its directory is still a valid discovery start. Filesystem and
+///          path failures return an empty result without escaping the caller.
+expose func NearestManifestRoot(documentPath: String) -> String {
+    if Str.Trim(documentPath) == "" { return ""; }
+    try {
+        var current = Path.Normalize(
+            Path.Absolute(Path.Directory(documentPath)));
+        var visited = 0;
+        while current != "" and visited < MAX_PROJECT_ANCESTORS {
+            if File.Exists(Path.Join(current, "zanna.project")) {
+                return current;
+            }
+            var parent = Path.Normalize(Path.Absolute(Path.Directory(current)));
+            if parent == current or parent == "" { return ""; }
+            current = parent;
+            visited = visited + 1;
+        }
+    } catch {
+        return "";
+    }
+    return "";
+}

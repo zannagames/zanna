@@ -13,7 +13,10 @@
 //   - Every accepted mutation immediately refreshes Document.content as
 //     canonical JSON, so normal save/session/recovery paths remain authoritative.
 //   - One paint or object-drag gesture creates one gap-free history snapshot.
-//   - Compact windows show canvas or inspector at full width, never two slivers.
+//   - Compact windows cycle objects, canvas/palette, and inspector at full
+//     width; no authoring surface becomes an inaccessible sliver.
+//   - Focus presentation temporarily collapses every non-floating scene pane
+//     and restores the exact per-document layout without persisting the detour.
 //   - Raster work is viewport-windowed: only visible cells rasterize, 100%
 //     zoom is the authored tile resolution, wheel zoom anchors at the
 //     pointer, and every cell of every scene stays scroll-reachable.
@@ -71,6 +74,7 @@ module scene_editor_2d;
 bind "../core/document";
 bind "../core/project_manager";
 bind "../services/file_utils";
+bind "../services/project_locator";
 bind "scene_asset_browser";
 bind "scene_clipboard";
 bind "scene_component_authoring_controller";
@@ -132,6 +136,11 @@ final DEFAULT_SCENE_HEIGHT: Integer = 18;
 final DEFAULT_TILE_SIZE: Integer = 32;
 final MIN_ZOOM_PERCENT: Integer = 10;
 final MAX_ZOOM_PERCENT: Integer = 1600;
+// A whole-world fit below this scale stops communicating authored artwork.
+// First-open framing keeps native pixels and moves to the gameplay start.
+final INITIAL_GAMEPLAY_MIN_FIT_PERCENT: Integer = 50;
+final INITIAL_COMPACT_SCENE_MAX_CELLS: Integer = 64;
+final MAX_FRAME_SELECTION_ZOOM_PERCENT: Integer = 200;
 // Guard for one rendered window, not a scene-reachability cap: the canvas
 // rasterizes only the visible viewport window, so every cell of every scene
 // stays reachable at every zoom (window size is bounded by the display).
@@ -144,8 +153,13 @@ final MAX_INSPECTOR_PROPERTIES: Integer = 512;
 final MAX_OBJECT_TREE_ROWS: Integer = 4096;
 final MAX_OBJECT_HIERARCHY_DEPTH: Integer = 256;
 final OBJECT_PARENT_TARGET_MIXED: Integer = -2;
-final COMPACT_SCENE_2D_WIDTH: Number = 640.0;
-final HIERARCHY_PANE_MIN_WIDTH_2D: Number = 820.0;
+// Master/detail starts before the canvas is reduced to a thumbnail. Chrome
+// condenses later, so an ordinary dock-heavy window keeps one-row tools while
+// still giving the canvas the full editor lane.
+final COMPACT_SCENE_2D_WIDTH: Number = 920.0;
+final COMPACT_SCENE_2D_CHROME_WIDTH: Number = 640.0;
+final COMPACT_SCENE_2D_PALETTE_HEIGHT: Number = 520.0;
+final HIERARCHY_PANE_MIN_WIDTH_2D: Number = 1050.0;
 final CANVAS_MARQUEE_COLOR: Integer = 0x70BEFF;
 final TILE_RECTANGLE_COLOR: Integer = 0xFFC86B;
 
@@ -211,9 +225,38 @@ expose func FitZoomPercent(sceneWidth: Integer,
                     MAX_ZOOM_PERCENT);
 }
 
+/// @brief Choose first-open scale without turning a world into a thumbnail.
+/// @details Compact scenes retain the convenient whole-scene fit. Worlds whose
+///          fit would hide authored art open at native scale and are centered
+///          by the controller around their player start.
+expose func InitialSceneZoomPercent(sceneWidth: Integer,
+                                    sceneHeight: Integer,
+                                    tileSize: Integer,
+                                    viewportWidth: Integer,
+                                    viewportHeight: Integer) -> Integer {
+    var fit = FitZoomPercent(
+        sceneWidth, sceneHeight, tileSize, viewportWidth, viewportHeight);
+    if sceneWidth <= INITIAL_COMPACT_SCENE_MAX_CELLS
+       and sceneHeight <= INITIAL_COMPACT_SCENE_MAX_CELLS {
+        return fit;
+    }
+    if fit < INITIAL_GAMEPLAY_MIN_FIT_PERCENT { return 100; }
+    return fit;
+}
+
 /// @brief Return whether a 2D scene width needs master/detail presentation.
 expose func UsesCompactLayout(width: Number) -> Boolean {
     return width > 0.0 and width <= COMPACT_SCENE_2D_WIDTH;
+}
+
+/// @brief Return whether 2D toolbar labels need their narrowest presentation.
+expose func UsesCompactChrome(width: Number) -> Boolean {
+    return width > 0.0 and width <= COMPACT_SCENE_2D_CHROME_WIDTH;
+}
+
+/// @brief Return whether canvas and palette need vertical master/detail.
+expose func UsesCompactPaletteLayout(height: Number) -> Boolean {
+    return height > 0.0 and height <= COMPACT_SCENE_2D_PALETTE_HEIGHT;
 }
 
 /// @brief One object's transformed canvas footprint (ADR 0192).
@@ -280,7 +323,11 @@ class SceneEditor2D {
     expose GUI.Button fitButton;
     expose GUI.Button actualSizeButton;
     expose GUI.Button gridButton;
+    expose GUI.Button hierarchyButton;
     expose GUI.Button inspectorButton;
+    expose GUI.Button paletteButton;
+    expose GUI.Button workspaceButton;
+    expose GUI.Button focusButton;
     expose GUI.Label toolbarStatus;
     expose GUI.Label viewStatusLabel;
     expose GUI.SplitPane hierarchySplit;
@@ -415,9 +462,19 @@ class SceneEditor2D {
     expose Boolean showGrid;
     expose Integer revision;
     expose Boolean compactLayout;
+    hide Boolean compactChrome;
     hide Number lastHostWidth;
+    hide Number lastHostHeight;
     expose Boolean inspectorRequestedVisible;
+    expose Boolean compactHierarchyShown;
     expose Boolean compactInspectorShown;
+    expose Boolean compactPaletteLayout;
+    expose Boolean paletteRequestedVisible;
+    expose Boolean compactPaletteShown;
+    hide Boolean workspaceModeActive;
+    hide Boolean workspaceModeToggleRequested;
+    hide Boolean focusModeActive;
+    hide Boolean focusModeToggleRequested;
     expose List[String] undoStack;
     expose List[String] redoStack;
     expose List[String] objectPropertyKeys;
@@ -434,6 +491,7 @@ class SceneEditor2D {
     hide Integer layerVisibleRevision;
     hide Boolean renderDirty;
     hide Boolean fitPending;
+    hide Boolean initialFramePending;
     hide Boolean paintStrokeActive;
     hide Boolean paintStrokeChanged;
     hide String paintStrokeSnapshot;
@@ -512,7 +570,11 @@ class SceneEditor2D {
         fitButton = null;
         actualSizeButton = null;
         gridButton = null;
+        hierarchyButton = null;
         inspectorButton = null;
+        paletteButton = null;
+        workspaceButton = null;
+        focusButton = null;
         toolbarStatus = null;
         viewStatusLabel = null;
         hierarchySplit = null;
@@ -662,8 +724,17 @@ class SceneEditor2D {
         showGrid = true;
         revision = 0;
         compactLayout = false;
+        compactChrome = false;
         inspectorRequestedVisible = true;
+        compactHierarchyShown = false;
         compactInspectorShown = false;
+        compactPaletteLayout = false;
+        paletteRequestedVisible = true;
+        compactPaletteShown = false;
+        workspaceModeActive = false;
+        workspaceModeToggleRequested = false;
+        focusModeActive = false;
+        focusModeToggleRequested = false;
         undoStack = [];
         redoStack = [];
         objectPropertyKeys = [];
@@ -688,6 +759,7 @@ class SceneEditor2D {
         layerVisibleRevision = 0;
         renderDirty = true;
         fitPending = false;
+        initialFramePending = false;
         paintStrokeActive = false;
         paintStrokeChanged = false;
         paintStrokeSnapshot = "";
@@ -707,6 +779,7 @@ class SceneEditor2D {
         lastCanvasViewportWidth = 0;
         lastCanvasViewportHeight = 0;
         lastHostWidth = 0.0;
+        lastHostHeight = 0.0;
         centerPadX = 0;
         centerPadY = 0;
         restoreScrollPending = false;
@@ -762,6 +835,10 @@ class SceneEditor2D {
             var owner =
                 projectManager.WorkspaceRootPathForPath(currentDoc.filePath);
             if owner != "" { return owner; }
+            // An explicitly opened external scene keeps its own project
+            // authoring conventions; never borrow an unrelated sole workspace.
+            return project_locator.NearestManifestRoot(
+                currentDoc.filePath);
         }
         if projectManager.RootCount() == 1 {
             return projectManager.RootPathAt(0);
@@ -784,7 +861,13 @@ class SceneEditor2D {
         }
 
         RefreshResponsiveLayout();
+        if hierarchyButton.WasClicked() { ToggleHierarchyPane(); }
         if inspectorButton.WasClicked() { ToggleInspectorPane(); }
+        if paletteButton.WasClicked() { TogglePalettePane(); }
+        if workspaceButton.WasClicked() {
+            RequestWorkspaceModeToggle();
+        }
+        if focusButton.WasClicked() { RequestFocusModeToggle(); }
         if objectTabButton.WasClicked() { SetInspectorSceneTab(false); }
         if sceneTabButton.WasClicked() { SetInspectorSceneTab(true); }
 
@@ -879,8 +962,14 @@ class SceneEditor2D {
             renderDirty = true;
         }
         if fitButton.WasClicked() {
+            initialFramePending = false;
             fitPending = false;
             if FitScene() { renderDirty = true; }
+        }
+        if initialFramePending and FrameInitialScene() {
+            initialFramePending = false;
+            restoreScrollPending = false;
+            renderDirty = true;
         }
         if fitPending and FitScene() {
             fitPending = false;
@@ -1061,6 +1150,8 @@ class SceneEditor2D {
         }
         state.inspectorRequestedVisible = inspectorRequestedVisible;
         state.compactInspectorShown = compactInspectorShown;
+        state.paletteRequestedVisible = paletteRequestedVisible;
+        state.compactPaletteShown = compactPaletteShown;
         state.previewActive = previewActive;
         state.showGrid = showGrid;
         state.undoStack = undoStack;
@@ -1090,11 +1181,15 @@ class SceneEditor2D {
             pendingCanvasScrollY = 0.0;
             pendingInspectorScrollY = 0.0;
             inspectorRequestedVisible = true;
+            compactHierarchyShown = false;
             compactInspectorShown = false;
+            paletteRequestedVisible = true;
+            compactPaletteShown = false;
             showGrid = true;
             RefreshGridButton();
             restoreScrollPending = true;
-            fitPending = true;
+            fitPending = false;
+            initialFramePending = true;
             UpdateModeButtons();
             return;
         }
@@ -1135,18 +1230,35 @@ class SceneEditor2D {
         pendingInspectorScrollY = ClampNumber2D(
             state.inspectorScrollY, 0.0, 1000000.0);
         inspectorRequestedVisible = state.inspectorRequestedVisible;
+        compactHierarchyShown = false;
         compactInspectorShown = state.compactInspectorShown;
+        paletteRequestedVisible = state.paletteRequestedVisible;
+        compactPaletteShown = state.compactPaletteShown;
         previewActive = state.previewActive;
         showGrid = state.showGrid;
         RefreshPreviewButton();
         RefreshGridButton();
         restoreScrollPending = true;
         fitPending = false;
+        initialFramePending = false;
         UpdateModeButtons();
     }
 
     /// @brief Toggle the inspector without making either compact pane unusable.
     expose func ToggleInspectorPane() {
+        if focusModeActive and inspectorDock.floating == false { return; }
+        if compactHierarchyShown {
+            compactHierarchyShown = false;
+            if compactLayout {
+                compactInspectorShown = true;
+            } else {
+                inspectorRequestedVisible = true;
+            }
+            ApplyInspectorLayout();
+            ApplyPaletteLayout();
+            CaptureWorkspaceState();
+            return;
+        }
         if compactLayout {
             compactInspectorShown = !compactInspectorShown;
         } else {
@@ -1156,74 +1268,240 @@ class SceneEditor2D {
         CaptureWorkspaceState();
     }
 
+    /// @brief Toggle a full-width object hierarchy on viewport-priority hosts.
+    expose func ToggleHierarchyPane() {
+        if focusModeActive or hierarchyDock.floating
+           or lastHostWidth >= HIERARCHY_PANE_MIN_WIDTH_2D {
+            return;
+        }
+        compactHierarchyShown = compactHierarchyShown == false;
+        if compactHierarchyShown {
+            compactInspectorShown = false;
+            compactPaletteShown = false;
+        }
+        ApplyInspectorLayout();
+        ApplyPaletteLayout();
+        CaptureWorkspaceState();
+    }
+
+    /// @brief Toggle the palette without sacrificing canvas usability.
+    expose func TogglePalettePane() {
+        if paletteDock.floating
+           or (focusModeActive and paletteDock.floating == false) {
+            return;
+        }
+        if compactHierarchyShown {
+            compactHierarchyShown = false;
+            if compactPaletteLayout {
+                compactPaletteShown = true;
+            } else {
+                paletteRequestedVisible = true;
+            }
+            ApplyInspectorLayout();
+            ApplyPaletteLayout();
+            CaptureWorkspaceState();
+            return;
+        }
+        if compactPaletteLayout {
+            compactPaletteShown = !compactPaletteShown;
+        } else {
+            paletteRequestedVisible = !paletteRequestedVisible;
+        }
+        ApplyPaletteLayout();
+        CaptureWorkspaceState();
+    }
+
+    /// @brief Publish a one-shot request for outer-only scene layout.
+    expose func RequestWorkspaceModeToggle() {
+        workspaceModeToggleRequested = true;
+    }
+
+    /// @brief Consume one outer-only scene-layout toggle request.
+    expose func TakeWorkspaceModeToggleRequested() -> Boolean {
+        var requested = workspaceModeToggleRequested;
+        workspaceModeToggleRequested = false;
+        return requested;
+    }
+
+    /// @brief Synchronize the shell's outer-only scene layout state.
+    expose func SetWorkspaceModeActive(active: Boolean) {
+        if workspaceModeActive == active { return; }
+        workspaceModeActive = active;
+        UpdateWorkspaceButton();
+    }
+
+    /// @brief Return whether outer-only Scene Layout is active.
+    expose func IsWorkspaceModeActive() -> Boolean {
+        return workspaceModeActive;
+    }
+
+    /// @brief Publish a one-shot request for the outer shell focus presentation.
+    expose func RequestFocusModeToggle() {
+        focusModeToggleRequested = true;
+    }
+
+    /// @brief Consume one focus-mode toggle request.
+    expose func TakeFocusModeToggleRequested() -> Boolean {
+        var requested = focusModeToggleRequested;
+        focusModeToggleRequested = false;
+        return requested;
+    }
+
+    /// @brief Synchronize the outer shell's focus-presentation state.
+    expose func SetFocusModeActive(active: Boolean) {
+        if focusModeActive == active { return; }
+        focusModeActive = active;
+        ApplyInspectorLayout();
+        ApplyPaletteLayout();
+        UpdateFocusButton();
+    }
+
+    /// @brief Return whether the outer shell is presenting this scene in focus.
+    expose func IsFocusModeActive() -> Boolean {
+        return focusModeActive;
+    }
+
     /// @brief Reconcile wrapping chrome and master/detail layout after resize.
     expose func RefreshResponsiveLayout() {
         if root == null or bodySplit == null { return; }
         var width = root.GetLogicalWidth();
-        if width <= 0.0 { return; }
+        var height = root.GetLogicalHeight();
+        if width <= 0.0 or height <= 0.0 { return; }
+        var widthDelta = width - lastHostWidth;
+        if widthDelta < 0.0 { widthDelta = 0.0 - widthDelta; }
+        var widthChanged = widthDelta > 0.01;
         lastHostWidth = width;
+        lastHostHeight = height;
         var nextCompact = UsesCompactLayout(width);
-        if nextCompact != compactLayout {
+        var nextCompactChrome = UsesCompactChrome(width);
+        var layoutChanged = nextCompact != compactLayout;
+        var chromeChanged = nextCompactChrome != compactChrome;
+        if layoutChanged {
             compactLayout = nextCompact;
+            renderDirty = true;
+        }
+        compactChrome = nextCompactChrome;
+        if layoutChanged or chromeChanged or widthChanged {
             ApplyResponsiveChrome();
+        }
+        var nextCompactPalette = UsesCompactPaletteLayout(height);
+        if nextCompactPalette != compactPaletteLayout {
+            compactPaletteLayout = nextCompactPalette;
             renderDirty = true;
         }
         ApplyInspectorLayout();
+        ApplyPaletteLayout();
     }
 
     /// @brief Keep essential scene actions reachable when toolbar rows wrap.
     hide func ApplyResponsiveChrome() {
-        if compactLayout {
-            // Flex measurement cannot infer wrapped cross-axis height before
-            // its parent assigns a width. Reserve all three compact action
-            // rows (the tool row wraps twice with Preview and Run Scene) so
-            // every action remains inside its toolbar.
-            toolbar.SetPreferredSize(0.0, 100.0);
-            viewToolbar.SetPreferredSize(0.0, 64.0);
+        if compactChrome {
+            // Flex computes the actual wrapped height. Keep a defensive floor
+            // without pinning an exact height that can clip a trailing action.
+            toolbar.SetPreferredSize(0.0, 0.0);
+            toolbar.SetMinSize(0.0, 100.0);
+            viewToolbar.SetPreferredSize(0.0, 0.0);
+            viewToolbar.SetMinSize(0.0, 96.0);
             newSceneButton.SetText("New");
             importButton.SetText("Import...");
             runSceneButton.SetText("Run");
+            rectangleButton.SetText("Rect");
+            ellipseButton.SetText("Oval");
+            previewButton.SetText("Play");
+            toolbar.SetGap(2.0);
+            toolbar.SetPadding(2.0);
+            viewToolbar.SetGap(2.0);
+            viewToolbar.SetPadding(2.0);
+            toolbarStatus.SetVisible(false);
+            viewStatusLabel.SetVisible(false);
+        } else if lastHostWidth < 1180.0 {
+            toolbar.SetPreferredSize(0.0, 0.0);
+            toolbar.SetMinSize(0.0, 68.0);
+            // The hierarchy master action may wrap the view controls to a
+            // second or third row in the medium-width scene lane.
+            viewToolbar.SetPreferredSize(0.0, 0.0);
+            viewToolbar.SetMinSize(0.0, 68.0);
+            newSceneButton.SetText("New");
+            importButton.SetText("Import");
+            rectangleButton.SetText("Rect");
+            ellipseButton.SetText("Oval");
+            previewButton.SetText("Play");
+            runSceneButton.SetText("Run");
+            toolbar.SetGap(2.0);
+            toolbar.SetPadding(2.0);
+            viewToolbar.SetGap(2.0);
+            viewToolbar.SetPadding(2.0);
             toolbarStatus.SetVisible(false);
             viewStatusLabel.SetVisible(false);
         } else {
             toolbar.SetPreferredSize(0.0, 0.0);
+            toolbar.SetMinSize(0.0, 0.0);
             viewToolbar.SetPreferredSize(0.0, 0.0);
+            viewToolbar.SetMinSize(0.0, 0.0);
             newSceneButton.SetText("New Scene");
             importButton.SetText("Import Tiled...");
+            rectangleButton.SetText("Rectangle");
+            ellipseButton.SetText("Ellipse");
+            previewButton.SetText("Preview");
             runSceneButton.SetText("Run Scene");
+            toolbar.SetGap(4.0);
+            toolbar.SetPadding(4.0);
+            viewToolbar.SetGap(4.0);
+            viewToolbar.SetPadding(4.0);
             toolbarStatus.SetVisible(true);
             viewStatusLabel.SetVisible(true);
         }
         UpdateInspectorButton();
+        UpdatePaletteButton();
+        UpdateHierarchyButton();
+        UpdateWorkspaceButton();
+        UpdateFocusButton();
     }
 
     /// @brief Apply wide split or compact one-pane-at-a-time presentation.
     hide func ApplyInspectorLayout() {
         if bodySplit == null { return; }
+        var wantHierarchyPane = false;
+        var showHierarchyMaster = false;
         if hierarchySplit != null {
-            // The object pane needs real width to be useful, so it collapses
-            // on hosts narrower than HIERARCHY_PANE_MIN_WIDTH_2D; Find and
-            // the canvas selection vocabulary remain available.
-            var wantHierarchyPane =
+            wantHierarchyPane =
                 compactLayout == false
+                and focusModeActive == false
+                and hierarchyDock.floating == false
                 and lastHostWidth >= HIERARCHY_PANE_MIN_WIDTH_2D;
-            var hierarchyCollapsed =
-                hierarchySplit.GetCollapsedSide() == 1;
-            if wantHierarchyPane {
-                if hierarchyCollapsed {
-                    hierarchySplit.Restore();
-                    renderDirty = true;
-                }
-            } else if hierarchyCollapsed == false {
+            showHierarchyMaster =
+                compactHierarchyShown
+                and focusModeActive == false
+                and hierarchyDock.floating == false
+                and lastHostWidth < HIERARCHY_PANE_MIN_WIDTH_2D;
+            var desiredHierarchySide = 1;
+            if wantHierarchyPane { desiredHierarchySide = 0; }
+            else if showHierarchyMaster { desiredHierarchySide = 2; }
+            var currentHierarchySide =
+                hierarchySplit.GetCollapsedSide();
+            if desiredHierarchySide == 0 {
+                hierarchySplit.Restore();
+            } else if desiredHierarchySide == 2 {
+                hierarchySplit.CollapseSecond();
+            } else {
                 hierarchySplit.CollapseFirst();
+            }
+            if currentHierarchySide != desiredHierarchySide {
                 renderDirty = true;
             }
         }
+        if objectPaneBox != null {
+            objectPaneBox.SetVisible(
+                wantHierarchyPane or showHierarchyMaster
+                    or hierarchyDock.floating);
+        }
         var desiredSide = 0;
-        if compactLayout {
+        if focusModeActive and inspectorDock.floating == false {
+            desiredSide = 2;
+        } else if compactLayout {
             desiredSide = 2;
             if compactInspectorShown { desiredSide = 1; }
-        } else if !inspectorRequestedVisible {
+        } else if !inspectorRequestedVisible or inspectorDock.floating {
             desiredSide = 2;
         }
 
@@ -1233,12 +1511,104 @@ class SceneEditor2D {
             else { bodySplit.Restore(); }
             renderDirty = true;
         }
+        if canvasSplit != null {
+            canvasSplit.SetVisible(desiredSide != 1);
+        }
+        if inspectorScroll != null {
+            inspectorScroll.SetVisible(
+                desiredSide != 2 or inspectorDock.floating);
+        }
+        UpdateHierarchyButton();
         UpdateInspectorButton();
+    }
+
+    /// @brief Apply wide canvas/palette split or short-height master/detail.
+    hide func ApplyPaletteLayout() {
+        if canvasSplit == null { return; }
+        if paletteDock.floating {
+            if canvasScroll != null { canvasScroll.SetVisible(true); }
+            if paletteStripBox != null { paletteStripBox.SetVisible(true); }
+            UpdatePaletteButton();
+            return;
+        }
+        var desiredSide = 0;
+        if focusModeActive {
+            desiredSide = 2;
+        } else if compactPaletteLayout {
+            desiredSide = 2;
+            if compactPaletteShown { desiredSide = 1; }
+        } else if paletteRequestedVisible == false {
+            desiredSide = 2;
+        }
+        if canvasSplit.GetCollapsedSide() != desiredSide {
+            if desiredSide == 1 { canvasSplit.CollapseFirst(); }
+            else if desiredSide == 2 { canvasSplit.CollapseSecond(); }
+            else { canvasSplit.Restore(); }
+            renderDirty = true;
+        }
+        if canvasScroll != null {
+            canvasScroll.SetVisible(desiredSide != 1);
+        }
+        if paletteStripBox != null {
+            paletteStripBox.SetVisible(desiredSide != 2);
+        }
+        UpdatePaletteButton();
+    }
+
+    /// @brief Keep the narrow hierarchy master action truthful.
+    hide func UpdateHierarchyButton() {
+        if hierarchyButton == null { return; }
+        var needsMaster =
+            lastHostWidth > 0.0
+            and lastHostWidth < HIERARCHY_PANE_MIN_WIDTH_2D;
+        hierarchyButton.SetVisible(needsMaster);
+        if needsMaster == false { return; }
+        if focusModeActive {
+            hierarchyButton.SetEnabled(false);
+            hierarchyButton.SetText("Objects hidden");
+            hierarchyButton.SetTooltip(
+                "Exit Focus to open the object hierarchy");
+            hierarchyButton.SetStyle(0);
+        } else if hierarchyDock.floating {
+            hierarchyButton.SetEnabled(false);
+            hierarchyButton.SetText("Objects floating");
+            hierarchyButton.SetTooltip(
+                "The object hierarchy is already available in its floating pane");
+            hierarchyButton.SetStyle(2);
+        } else if compactHierarchyShown {
+            hierarchyButton.SetEnabled(true);
+            hierarchyButton.SetText("Canvas");
+            hierarchyButton.SetTooltip(
+                "Return to the scene canvas");
+            hierarchyButton.SetStyle(1);
+        } else {
+            hierarchyButton.SetEnabled(true);
+            hierarchyButton.SetText("Objects");
+            hierarchyButton.SetTooltip(
+                "Open the object hierarchy at the full editor width");
+            hierarchyButton.SetStyle(2);
+        }
     }
 
     /// @brief Describe the destination of the inspector toggle.
     hide func UpdateInspectorButton() {
         if inspectorButton == null { return; }
+        if focusModeActive and inspectorDock.floating == false {
+            inspectorButton.SetEnabled(false);
+            inspectorButton.SetText("Inspector hidden");
+            inspectorButton.SetTooltip(
+                "Exit Focus to restore the scene inspector");
+            inspectorButton.SetStyle(0);
+            return;
+        }
+        inspectorButton.SetEnabled(true);
+        if compactHierarchyShown {
+            inspectorButton.SetText("Inspector");
+            inspectorButton.SetTooltip(
+                "Switch from objects to the scene inspector");
+            inspectorButton.SetStyle(2);
+            return;
+        }
         if compactLayout {
             if compactInspectorShown {
                 inspectorButton.SetText("Canvas");
@@ -1258,6 +1628,94 @@ class SceneEditor2D {
             inspectorButton.SetText("Show Inspector");
             inspectorButton.SetTooltip("Restore the scene inspector");
             inspectorButton.SetStyle(1);
+        }
+    }
+
+    /// @brief Describe the destination of the palette toggle.
+    hide func UpdatePaletteButton() {
+        if paletteButton == null { return; }
+        if focusModeActive and paletteDock.floating == false {
+            paletteButton.SetEnabled(false);
+            paletteButton.SetText("Palette hidden");
+            paletteButton.SetTooltip(
+                "Exit Focus to restore the tile palette");
+            paletteButton.SetStyle(0);
+            return;
+        }
+        if paletteDock.floating {
+            paletteButton.SetText("Palette floating");
+            paletteButton.SetEnabled(false);
+            paletteButton.SetStyle(2);
+            return;
+        }
+        paletteButton.SetEnabled(true);
+        if compactHierarchyShown {
+            paletteButton.SetText("Palette");
+            paletteButton.SetTooltip(
+                "Switch from objects to the tile palette");
+            paletteButton.SetStyle(2);
+            return;
+        }
+        if compactPaletteLayout {
+            if compactPaletteShown {
+                paletteButton.SetText("Canvas");
+                paletteButton.SetTooltip(
+                    "Return to the full-height scene canvas");
+                paletteButton.SetStyle(1);
+            } else {
+                paletteButton.SetText("Palette");
+                paletteButton.SetTooltip(
+                    "Show the tile palette at full height");
+                paletteButton.SetStyle(2);
+            }
+        } else if paletteRequestedVisible {
+            paletteButton.SetText("Hide Palette");
+            paletteButton.SetTooltip(
+                "Hide the tile palette and give the canvas the full height");
+            paletteButton.SetStyle(2);
+        } else {
+            paletteButton.SetText("Show Palette");
+            paletteButton.SetTooltip("Restore the tile palette");
+            paletteButton.SetStyle(1);
+        }
+    }
+
+    /// @brief Keep the reversible outer-only scene-layout action truthful.
+    hide func UpdateWorkspaceButton() {
+        if workspaceButton == null { return; }
+        if workspaceModeActive {
+            workspaceButton.SetText("Exit Layout");
+            workspaceButton.SetTooltip(
+                "Restore the Studio sidebar and tool docks while keeping "
+                    + "this scene's internal pane layout");
+            workspaceButton.SetStyle(1);
+        } else {
+            if compactChrome or lastHostWidth < 1350.0 {
+                workspaceButton.SetText("Layout");
+            } else {
+                workspaceButton.SetText("Scene Layout");
+            }
+            workspaceButton.SetTooltip(
+                "Hide outer Studio docks but keep objects, canvas, palette, "
+                    + "and inspector available");
+            workspaceButton.SetStyle(2);
+        }
+    }
+
+    /// @brief Keep the reversible outer-workbench action truthful.
+    hide func UpdateFocusButton() {
+        if focusButton == null { return; }
+        if focusModeActive {
+            focusButton.SetText("Exit Focus");
+            focusButton.SetTooltip(
+                "Restore scene panes, sidebar, and tool panels (Shift+Space)");
+            focusButton.SetStyle(1);
+        } else {
+            focusButton.SetText("Focus");
+            focusButton.SetTooltip(
+                "Hide scene panes and outer Studio docks to maximize the canvas "
+                + "(Shift+Space)");
+            focusButton.SetStyle(2);
         }
     }
 
@@ -3409,7 +3867,7 @@ class SceneEditor2D {
                                       y: Integer) -> Boolean {
         var path = ObjectSpritePath(objectIndex);
         if path == "" { return false; }
-        var frame = scene.ObjectGetInt(objectIndex, "editor.frame", 0);
+        var frame = ObjectSpriteFrame(objectIndex);
         // Sprite-true rendering (ADR 0192): native frame size at the
         // current zoom with the object's full transform; the legacy
         // one-cell draw remains the bounded fallback.
@@ -3435,7 +3893,49 @@ class SceneEditor2D {
         var path = Str.Trim(
             scene.ObjectGetStr(objectIndex, "editor.sprite", ""));
         if path != "" { return path; }
-        return Str.Trim(scene.ObjectGetStr(objectIndex, "sprite", ""));
+        path = Str.Trim(scene.ObjectGetStr(objectIndex, "sprite", ""));
+        if path != "" { return path; }
+        var preview = ProjectObjectPreview(objectIndex);
+        if preview == null { return ""; }
+        return preview.sprite;
+    }
+
+    /// @brief Resolve authored per-object frame before project profile fallback.
+    hide func ObjectSpriteFrame(objectIndex: Integer) -> Integer {
+        var explicitPath = Str.Trim(
+            scene.ObjectGetStr(objectIndex, "editor.sprite", ""));
+        if explicitPath == "" {
+            explicitPath = Str.Trim(
+                scene.ObjectGetStr(objectIndex, "sprite", ""));
+        }
+        if explicitPath != "" {
+            return scene.ObjectGetInt(objectIndex, "editor.frame", 0);
+        }
+        var preview = ProjectObjectPreview(objectIndex);
+        if preview == null or preview.frameProperty == "" {
+            if preview != null { return preview.frame; }
+            return 0;
+        }
+        if scene.ObjectPropertyKind(
+               objectIndex, preview.frameProperty) != "int" {
+            return preview.frame;
+        }
+        return preview.FrameForValue(
+            scene.ObjectGetInt(
+                objectIndex, preview.frameProperty, -1));
+    }
+
+    /// @brief Return the deterministic project rule for one object type.
+    hide func ProjectObjectPreview(
+        objectIndex: Integer)
+        -> scene_component_schema.SceneObjectPreviewDefinition {
+        if componentSchema == null or componentSchema.valid == false
+           or scene == null or objectIndex < 0
+           or objectIndex >= scene.ObjectCount() {
+            return null;
+        }
+        return componentSchema.PreviewForObjectType(
+            scene.ObjectType(objectIndex));
     }
 
     /// @brief Draw workspace-only polylines for route objects (ADR 0179).
@@ -4320,6 +4820,7 @@ class SceneEditor2D {
         selectedCellX = -1;
         selectedCellY = -1;
         SetEditorControlsEnabled(true);
+        initialFramePending = false;
         fitPending = true;
         var changed = CommitScene(
             "Created " + nextWidth + "x" + nextHeight + " scene");
@@ -4469,6 +4970,7 @@ class SceneEditor2D {
         selectedCellX = -1;
         selectedCellY = -1;
         SetEditorControlsEnabled(true);
+        initialFramePending = false;
         fitPending = true;
         var changed = CommitScene("Imported " + Path.Name(path));
         ReloadTilesets();
@@ -6094,6 +6596,10 @@ class SceneEditor2D {
             RefreshObjectFields();
             renderDirty = true;
         }
+        if objectTree.WasActivated()
+           and selectedObjects.count() > 0 {
+            FrameSelected();
+        }
         if objectTree.WasDropReceived() {
             var sourceIndex = Parse.IntOr(
                 objectTree.GetDropSourceData(), -1);
@@ -6901,6 +7407,16 @@ class SceneEditor2D {
             (canvasImage != null and canvasImage.IsFocused())
             or (selectButton != null and selectButton.IsFocused());
         if surfaceFocused == false { return false; }
+        if Input.Keyboard.WasPressed(Input.Key.F) {
+            if selectedObjects.count() > 0 {
+                FrameSelected();
+            } else {
+                initialFramePending = false;
+                fitPending = false;
+                if FitScene() { renderDirty = true; }
+            }
+            return false;
+        }
         if Input.Keyboard.WasPressed(Input.Key.Escape)
            and gestureEscapeConsumed == false
            and selectedObjects.count() > 0 {
@@ -7939,6 +8455,172 @@ class SceneEditor2D {
         return true;
     }
 
+    /// @brief Apply first-open framing after scene and viewport both exist.
+    /// @details A useful whole-scene view wins for compact scenes. Large
+    ///          gameplay worlds preserve native artwork and open around their
+    ///          authored player start instead of as an unreadable thumbnail.
+    hide func FrameInitialScene() -> Boolean {
+        if scene == null or canvasScroll == null { return false; }
+        var width = Convert.NumToInt(
+            canvasScroll.GetLogicalWidth() - 24.0);
+        var height = Convert.NumToInt(
+            canvasScroll.GetLogicalHeight() - 24.0);
+        if width <= 0 or height <= 0 { return false; }
+        var fit = FitZoomPercent(
+            scene.Width, scene.Height, SceneTilePixelSize(),
+            width, height);
+        zoomPercent = InitialSceneZoomPercent(
+            scene.Width, scene.Height, SceneTilePixelSize(),
+            width, height);
+        fitPending = false;
+        if zoomPercent == fit {
+            return FitScene();
+        }
+        return CenterCanvasAtWorldPoint(
+            InitialSceneFocusWorldX(), InitialSceneFocusWorldY());
+    }
+
+    /// @brief Center the viewport on the selected objects at a useful scale.
+    /// @details Matches the 3D editor's F shortcut: one selection gets detail,
+    ///          while a spread-out selection is fitted as a bounded group.
+    expose func FrameSelected() -> Boolean {
+        if scene == null or canvasScroll == null { return false; }
+        selectedObjects = scene_selection.Normalize(
+            selectedObjects, scene.ObjectCount(), selectedObject);
+        if selectedObjects.count() == 0 { return false; }
+        var first = selectedObjects.get(0);
+        var minimumX = scene.ObjectX(first);
+        var minimumY = scene.ObjectY(first);
+        var maximumX = minimumX;
+        var maximumY = minimumY;
+        var index = 1;
+        while index < selectedObjects.count() {
+            var objectIndex = selectedObjects.get(index);
+            var x = scene.ObjectX(objectIndex);
+            var y = scene.ObjectY(objectIndex);
+            if x < minimumX { minimumX = x; }
+            if y < minimumY { minimumY = y; }
+            if x > maximumX { maximumX = x; }
+            if y > maximumY { maximumY = y; }
+            index = index + 1;
+        }
+
+        var width = Convert.NumToInt(
+            canvasScroll.GetLogicalWidth() - 24.0);
+        var height = Convert.NumToInt(
+            canvasScroll.GetLogicalHeight() - 24.0);
+        if width <= 0 or height <= 0 { return false; }
+        var selectionColumns =
+            (maximumX - minimumX) / scene.TileWidth + 3;
+        var selectionRows =
+            (maximumY - minimumY) / scene.TileHeight + 3;
+        zoomPercent = FitZoomPercent(
+            selectionColumns, selectionRows, SceneTilePixelSize(),
+            width, height);
+        if zoomPercent > MAX_FRAME_SELECTION_ZOOM_PERCENT {
+            zoomPercent = MAX_FRAME_SELECTION_ZOOM_PERCENT;
+        }
+        initialFramePending = false;
+        fitPending = false;
+        restoreScrollPending = false;
+        var framed = CenterCanvasAtWorldPoint(
+            (minimumX + maximumX + scene.TileWidth) / 2,
+            (minimumY + maximumY + scene.TileHeight) / 2);
+        if framed {
+            toolbarStatus.SetText(
+                "Framed " + selectedObjects.count() + " object(s)");
+            CaptureWorkspaceState();
+        }
+        return framed;
+    }
+
+    /// @brief Return the best gameplay focus in authored scene pixels.
+    hide func InitialSceneFocusWorldX() -> Integer {
+        if scene.PropertyKind("playerStartX") == "int"
+           and scene.PropertyKind("playerStartY") == "int" {
+            return scene.GetInt("playerStartX", 0)
+                + scene.TileWidth / 2;
+        }
+        var index = InitialPlayerStartObject();
+        if index >= 0 {
+            return scene.ObjectX(index) + scene.TileWidth / 2;
+        }
+        return scene.Width * scene.TileWidth / 2;
+    }
+
+    /// @brief Return the best gameplay focus in authored scene pixels.
+    hide func InitialSceneFocusWorldY() -> Integer {
+        if scene.PropertyKind("playerStartX") == "int"
+           and scene.PropertyKind("playerStartY") == "int" {
+            return scene.GetInt("playerStartY", 0)
+                + scene.TileHeight / 2;
+        }
+        var index = InitialPlayerStartObject();
+        if index >= 0 {
+            return scene.ObjectY(index) + scene.TileHeight / 2;
+        }
+        return scene.Height * scene.TileHeight / 2;
+    }
+
+    /// @brief Find the conventional player-start object without editing data.
+    hide func InitialPlayerStartObject() -> Integer {
+        var index = 0;
+        while index < scene.ObjectCount() {
+            if Str.ToLower(scene.ObjectType(index)) == "player-start"
+               or Str.ToLower(scene.ObjectId(index)) == "player-start" {
+                return index;
+            }
+            index = index + 1;
+        }
+        return -1;
+    }
+
+    /// @brief Publish the current zoom extent before changing scroll.
+    hide func PublishCanvasExtentForZoom() {
+        if scene == null or canvasStage == null or canvasScroll == null {
+            return;
+        }
+        var cell = DisplayCellForZoom();
+        var stageWidth = scene.Width * cell + 1;
+        var stageHeight = scene.Height * cell + 1;
+        var viewportWidth = lastCanvasViewportWidth;
+        var viewportHeight = lastCanvasViewportHeight;
+        if viewportWidth <= 0 {
+            viewportWidth =
+                Convert.NumToInt(canvasScroll.GetLogicalWidth());
+        }
+        if viewportHeight <= 0 {
+            viewportHeight =
+                Convert.NumToInt(canvasScroll.GetLogicalHeight());
+        }
+        if viewportWidth > stageWidth { stageWidth = viewportWidth; }
+        if viewportHeight > stageHeight { stageHeight = viewportHeight; }
+        canvasStage.SetSize(stageWidth, stageHeight);
+        SetLogicalContentSize(canvasScroll, stageWidth, stageHeight);
+    }
+
+    /// @brief Center one authored scene point without changing scene content.
+    hide func CenterCanvasAtWorldPoint(worldX: Integer,
+                                       worldY: Integer) -> Boolean {
+        if scene == null or canvasScroll == null { return false; }
+        PublishCanvasExtentForZoom();
+        var viewportWidth = canvasScroll.GetLogicalWidth();
+        var viewportHeight = canvasScroll.GetLogicalHeight();
+        if viewportWidth <= 0.0 or viewportHeight <= 0.0 {
+            return false;
+        }
+        var cell = DisplayCellForZoom();
+        var focusX = worldX * cell / scene.TileWidth;
+        var focusY = worldY * cell / scene.TileHeight;
+        var scrollX = focusX - viewportWidth * 0.5;
+        var scrollY = focusY - viewportHeight * 0.5;
+        if scrollX < 0.0 { scrollX = 0.0; }
+        if scrollY < 0.0 { scrollY = 0.0; }
+        SetLogicalScroll(canvasScroll, scrollX, scrollY);
+        renderDirty = true;
+        return true;
+    }
+
     /// @brief The authored tile edge in pixels that 100% zoom reproduces.
     hide func SceneTilePixelSize() -> Integer {
         if scene != null and scene.TileWidth > 0 { return scene.TileWidth; }
@@ -7972,6 +8654,7 @@ class SceneEditor2D {
         var anchorCellX = anchorContentX / previousCell;
         var anchorCellY = anchorContentY / previousCell;
         zoomPercent = clamped;
+        initialFramePending = false;
         fitPending = false;
         renderDirty = true;
         var nextCell = DisplayCellForZoom();

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-05-31
+last-verified: 2026-07-26
 ---
 
 # Code Map
@@ -19,7 +19,7 @@ Source layout for the Zanna compiler toolchain (current tree, kept in sync).
 | `src/codegen/`         | Native code generation backends (`x86_64/`, `aarch64/`, `common/`)       |
 | `src/common/`          | Cross-cutting utils (mangling, integer helpers, process runner)          |
 | `src/frontends/`       | Language frontends: `basic/`, `zia/`, `common/`                          |
-| `src/il/`              | IL core types, builder, I/O, verifier, analysis, transforms, linker, API |
+| `src/il/`              | IL core types, builder, I/O, verifier, analysis, transforms, linker, API, shared scalar semantics |
 | `src/lib/`             | Optional C libraries: ZannaGFX 2D graphics (`graphics/`), ZannaAUD audio (`audio/`), ZannaGUI (`gui/`) |
 | `src/parse/`           | Cursor utilities used by frontends (`include/zanna/parse/Cursor.h`)      |
 | `src/pass/`            | Generic pass manager façade (`include/zanna/pass/PassManager.hpp`)       |
@@ -27,7 +27,7 @@ Source layout for the Zanna compiler toolchain (current tree, kept in sync).
 | `src/runtime/`         | C runtime library (strings, collections, I/O, math, graphics, audio, input, networking, threading, text, time, crypto, GC, serialization, physics, async) |
 | `src/support/`         | Shared support: diagnostics, arena, source manager, symbols, result      |
 | `src/tests/`           | Unit, golden, e2e, and perf tests by area                                |
-| `src/tools/`           | CLI tools (`zanna`, `vbasic`, `zia`, `zia-server`, `ilrun`, `il-verify`, `il-dis`, etc.) |
+| `src/tools/`           | CLI tools (`zanna`, `vbasic`, `zia`, `zia-server`, `ilrun`, `il-verify`, `il-dis`, the native Windows installer, etc.) |
 | `src/tui/`             | Terminal UI library + demo app (`src/tui/apps/tui_demo.cpp`)             |
 | `src/zannastudio/`        | Zanna Studio application (written in Zia) — editor, language services, build/debug workbench |
 | `src/vm/`              | Virtual Machine interpreter, opcode handlers, debug, runtime bridge      |
@@ -38,13 +38,13 @@ Source layout for the Zanna compiler toolchain (current tree, kept in sync).
 - Bytecode: `src/bytecode` (compiler, module, VM implementation)
 - Codegen: `src/codegen/{aarch64,common,x86_64}`
 - Frontends: `src/frontends/{basic,common,zia}`
-- IL: `src/il/{analysis,api,build,core,internal,io,link,runtime,transform,utils,verify}`
+- IL: `src/il/{analysis,api,build,core,internal,io,link,runtime,semantics,transform,utils,verify}`
 - Libraries: `src/lib/{graphics,audio,gui}`, `src/tui`
 - Runtime: `src/runtime` (C sources and headers)
 - Support & Infra: `src/{common,parse,pass,support}`
 - REPL: `src/repl` (line editor, input classifier, session, meta-commands)
 - Tests: `src/tests/{e2e,golden,perf,smoke,unit,...}`
-- Tools: `src/tools/{basic,basic-ast-dump,basic-lex-dump,common,il-dis,il-verify,ilrun,lsp-common,macos,rtgen,vbasic,vbasic-server,zanna,zia,zia-server}`
+- Tools: `src/tools/{basic,basic-ast-dump,basic-lex-dump,common,il-dis,il-verify,ilrun,lsp-common,macos,rtgen,vbasic,vbasic-server,windows_installer,zanna,zia,zia-server}`
 - VM: `src/vm` (+ `ops/{common,generated}` and `debug/`)
 
 For architecture and layering, see [architecture.md](architecture.md).

@@ -4,7 +4,7 @@ audience: contributors
 last-verified: 2026-07-02
 ---
 
-# ADR-0044: Crypto Module Process Policy API
+# ADR 0044: Crypto Module Process Policy API
 
 ## Status
 

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-15
+last-verified: 2026-07-26
 ---
 
 # Core Types
@@ -111,8 +111,6 @@ Boxing helpers for storing primitive values in generic collections. Boxed values
 | `EqI64(box,val)`    | `Boolean(Object,Integer)` | Compare boxed value to integer                         |
 | `EqF64(box,val)`    | `Boolean(Object,Double)`  | Compare boxed value to double                          |
 | `EqStr(box,val)`    | `Boolean(Object,String)`  | Compare boxed value to string                          |
-| `ValueType(size)`   | `Object(Integer)`         | Compatibility alias for `Zanna.Runtime.Unsafe.ValueType` |
-| `ValueTypeAddField(obj, offset, kind, retainNow)` | `Void(Object, Integer, Integer, Boolean)` | Compatibility alias for `Zanna.Runtime.Unsafe.ValueTypeAddField` |
 
 ### Notes
 
@@ -441,8 +439,7 @@ start beyond the end. Trimming recognizes space, tab, CR, LF, vertical tab, and 
 |----------------------|-------------------|----------------------------------------------|
 | `StartsWith(prefix)` | `Boolean(String)` | Returns true if string starts with prefix    |
 | `EndsWith(suffix)`   | `Boolean(String)` | Returns true if string ends with suffix      |
-| `Has(needle)`        | `Boolean(String)` | Returns true if string contains needle       |
-| `Contains(needle)`   | `Boolean(String)` | Zia/BASIC instance alias for `Has`           |
+| `Contains(needle)`   | `Boolean(String)` | Returns true if string contains needle       |
 | `Count(needle)`      | `Integer(String)` | Counts non-overlapping occurrences of needle |
 
 **Transformation:**
@@ -499,7 +496,7 @@ start beyond the end. Trimming recognizes space, tab, CR, LF, vertical tab, and 
 
 | Method             | Signature         | Description                                      |
 |--------------------|-------------------|--------------------------------------------------|
-| `Cmp(other)`       | `Integer(String)` | Bytewise comparison, returning -1, 0, or 1                 |
+| `Compare(other)`   | `Integer(String)` | Bytewise comparison, returning -1, 0, or 1                 |
 | `CompareIgnoreCase(other)` | `Integer(String)` | C-locale byte-folded comparison, returning -1, 0, or 1     |
 
 Empty needles follow one shared rule across the index family: an empty needle matches at every
@@ -528,7 +525,6 @@ contract and malformed-UTF-8 limitations.
 | `Zanna.String.Equals(a, b)`                    | `Boolean(String, String)`  | Compare two strings for equality                                 |
 | `Zanna.String.FromI16(value)`                  | `String(i16)`              | Format a signed 16-bit integer                                  |
 | `Zanna.String.FromI32(value)`                  | `String(i32)`              | Format a signed 32-bit integer                                  |
-| `Zanna.String.FromStr(text)`                   | `String(String)`           | Return the same immutable string handle with an owned reference |
 | `Zanna.String.Join(separator, items)`          | `String(String, Seq<String>)` | Join string elements; null elements are empty and other types trap |
 | `Zanna.String.SplitFields(text)`               | `Seq<String>(String)`      | Parse trimmed comma-separated fields, double quotes, and doubled quotes |
 | `Zanna.String.SplitFieldsResult(text)`         | `Result(String)`           | Strict-quoting split: `Ok(Seq<String>)` or `ErrStr` on malformed quotes |

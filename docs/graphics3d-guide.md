@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-23
+last-verified: 2026-07-26
 ---
 
 # Zanna.Graphics3D — User Guide
@@ -407,7 +407,7 @@ frames:
 Canvas3D.SetInputSource(canvas, 1)
 Canvas3D.SetClockSource(canvas, 1)
 Canvas3D.SetSyntheticDeltaTimeSec(canvas, 1.0 / 60.0)
-Canvas3D.PushSyntheticKey(canvas, Keyboard.get_KeyW(), true)
+Canvas3D.PushSyntheticKey(canvas, Key.W, true)
 Canvas3D.PushSyntheticMouse(canvas, 8.0, -2.0, 1, 0.0)
 Canvas3D.AdvanceSyntheticFrame(canvas)
 ```
@@ -633,10 +633,10 @@ func start() {
     var cyl = Mesh3D.Cylinder(0.5, 2.0, 12);
 
     // File loading
-    var model = Mesh3D.FromOBJ("assets/model.obj");
+    var model = Mesh3D.FromObj("assets/model.obj");
 
     // Compute tangents for normal mapping
-    Mesh3D.CalcTangents(model);
+    Mesh3D.CalculateTangents(model);
 }
 ```
 
@@ -2150,18 +2150,18 @@ func start() {
     var fx = PostFX3D.New();
     PostFX3D.AddBloom(fx, 0.8, 0.5, 5);
     PostFX3D.AddTonemap(fx, 1, 1.2);
-    PostFX3D.AddFXAA(fx);
+    PostFX3D.AddFxaa(fx);
     PostFX3D.AddColorGrade(fx, 0.015, 1.1, 1.2);
     PostFX3D.AddVignette(fx, 0.6, 0.4);
-    PostFX3D.AddSSAO(fx, 0.5, 1.0, 16);
-    PostFX3D.AddDOF(fx, 10.0, 5.0, 1.0);
+    PostFX3D.AddSsao(fx, 0.5, 1.0, 16);
+    PostFX3D.AddDof(fx, 10.0, 5.0, 1.0);
     Canvas3D.SetPostFX(canvas, fx);
 
     // Temporarily disable
-    PostFX3D.set_Enabled(fx, false);
+    PostFX3D.set_IsEnabled(fx, false);
 
     // Re-enable
-    PostFX3D.set_Enabled(fx, true);
+    PostFX3D.set_IsEnabled(fx, true);
 
     // Reset chain
     PostFX3D.Clear(fx);
@@ -2283,7 +2283,7 @@ func start() {
     var canvas = Canvas3D.New("FPS", 800, 600);
     var cam = Camera3D.New(70.0, 800.0 / 600.0, 0.1, 200.0);
     Camera3D.LookAt(cam, Vec3.New(0.0, 1.7, 0.0), Vec3.New(0.0, 1.7, -1.0), Vec3.New(0.0, 1.0, 0.0));
-    Camera3D.FPSInit(cam);
+    Camera3D.FirstPersonInit(cam);
     Mouse.Capture();
 
     while (Canvas3D.get_ShouldClose(canvas) == 0) {
@@ -2291,7 +2291,7 @@ func start() {
         var dt = Canvas3D.get_DeltaTime(canvas) / 1000.0;
         var mdx = Mouse.DeltaX() * 0.1;
         var mdy = Mouse.DeltaY() * 0.1;
-        Camera3D.FPSUpdate(cam, mdx, -mdy, 0.0, 0.0, 0.0, 5.0, dt);
+        Camera3D.FirstPersonUpdate(cam, mdx, -mdy, 0.0, 0.0, 0.0, 5.0, dt);
 
         Canvas3D.Clear(canvas, 0.1, 0.1, 0.2);
         Canvas3D.Begin(canvas, cam);
@@ -2950,7 +2950,7 @@ func start() {
 
     // In render loop:
     Decal3D.Update(decal, dt);
-    if (Decal3D.get_Expired(decal) == false) {
+    if (Decal3D.get_IsExpired(decal) == false) {
         Canvas3D.DrawDecal(canvas, decal);
     }
 }
@@ -3061,7 +3061,7 @@ Heightmap-based terrain with chunked rendering, LOD, and texture splatting.
 | `SetLayerScale(layer, scale)` | `void(i64, f64)` | Set UV tiling scale per layer |
 | `GetHeightAt(x, z)` | `f64(f64, f64)` | Query height at world XZ position |
 | `GetNormalAt(x, z)` | `obj(f64, f64)` | Query surface normal at world XZ (Vec3) |
-| `SetLODDistances(near, far)` | `void(f64, f64)` | Set LOD transition distances (default 100/250) |
+| `SetLodDistances(near, far)` | `void(f64, f64)` | Set LOD transition distances (default 100/250) |
 | `SetSkirtDepth(depth)` | `void(f64)` | Set skirt depth to hide LOD cracks |
 
 ### Zia Example
@@ -3095,7 +3095,7 @@ func start() {
     Terrain3D.SetSplatMap(terrain, splatPixels);
 
     // LOD settings
-    Terrain3D.SetLODDistances(terrain, 80.0, 200.0);
+    Terrain3D.SetLodDistances(terrain, 80.0, 200.0);
     Terrain3D.SetSkirtDepth(terrain, 2.0);
 
     while (Canvas3D.get_ShouldClose(canvas) == 0) {
@@ -3120,7 +3120,7 @@ func start() {
 - LOD 1 (half): 8x8 quads per chunk (mid-range)
 - LOD 2 (quarter): 4x4 quads per chunk (distant)
 
-Configure with `SetLODDistances(nearDist, farDist)` — chunks closer than `nearDist` use LOD 0, between `nearDist` and `farDist` use LOD 1, beyond `farDist` use LOD 2. Default: 100/250. Invalid distances are sanitized so `farDist` stays greater than `nearDist`. Chunks outside the camera frustum are culled entirely (not drawn). Skirt geometry (`SetSkirtDepth(depth)`) hides cracks at LOD transitions by extending chunk edges downward and is included in chunk bounds, so visible skirts are not clipped by frustum culling. Invalid or negative skirt depths disable skirts. Edge chunks always include their far row/column endpoints at coarser LODs, so partial edge chunks still produce triangles.
+Configure with `SetLodDistances(nearDist, farDist)` — chunks closer than `nearDist` use LOD 0, between `nearDist` and `farDist` use LOD 1, beyond `farDist` use LOD 2. Default: 100/250. Invalid distances are sanitized so `farDist` stays greater than `nearDist`. Chunks outside the camera frustum are culled entirely (not drawn). Skirt geometry (`SetSkirtDepth(depth)`) hides cracks at LOD transitions by extending chunk edges downward and is included in chunk bounds, so visible skirts are not clipped by frustum culling. Invalid or negative skirt depths disable skirts. Edge chunks always include their far row/column endpoints at coarser LODs, so partial edge chunks still produce triangles.
 
 Draw via `Canvas3D.DrawTerrain(terrain)` during a normal 3D `Begin`/`End` pass, or `Canvas3D.DrawTerrainAt(terrain, x, y, z)` to place the terrain's grid origin at a world-space offset (e.g. `-half, 0, -half` to center an origin-symmetric playfield). Terrain is not valid inside `Begin2D()`.
 
@@ -3261,7 +3261,7 @@ bind Zanna.Graphics3D.Mesh3D;
 bind Zanna.Math.Vec3;
 
 func start() {
-    var level_mesh = Mesh3D.FromOBJ("level.obj");
+    var level_mesh = Mesh3D.FromObj("level.obj");
     var nav = NavMesh3D.Build(level_mesh, 0.4, 1.8);
     NavMesh3D.SetMaxSlope(nav, 45.0);
     NavMesh3D.AddObstacle(nav, Vec3.New(1.0, -0.1, 1.0), Vec3.New(2.0, 2.0, 2.0));
@@ -3586,7 +3586,7 @@ runtime target while still using authored animation as the base pose.
 | `Solve()` | `void()` | Solve against the skeleton bind pose for standalone inspection |
 
 Attach a solver to an animation controller with `AnimController3D.SetIKSolver(solver)` or the
-Game3D wrapper `Animator3D.setIKSolver(solver)`. Controller-bound IK is applied after the base
+Game3D wrapper `Animator3D.SetIKSolver(solver)`. Controller-bound IK is applied after the base
 state/blend tree and overlay layers are composed, then before skinning palettes are generated.
 `TwoBone` and `FABRIK` use a positional FABRIK-style chain solve and preserve the chain root;
 `SetPole` swings a two-bone middle joint toward the requested bend plane, `SetGroundNormal` orients
@@ -3783,7 +3783,7 @@ Procedural grass/foliage rendering with wind animation and LOD.
 |--------|-----------|-------------|
 | `SetDensityMap(pixels)` | `void(obj)` | Set density map (Pixels grayscale, white = full density) |
 | `SetWindParams(speed, strength, turbulence)` | `void(f64, f64, f64)` | Set wind animation parameters |
-| `SetLODDistances(near, far)` | `void(f64, f64)` | Set LOD transition distances |
+| `SetLodDistances(near, far)` | `void(f64, f64)` | Set LOD transition distances |
 | `SetBladeSize(width, height, variance)` | `void(f64, f64, f64)` | Set grass blade dimensions |
 | `SetSeed(seed)` | `void(i64)` | Set deterministic scatter seed for later `Populate` calls |
 | `Populate(camera, maxBlades)` | `void(obj, i64)` | Generate blade instances around camera |
@@ -3813,7 +3813,7 @@ func start() {
     Vegetation3D.SetDensityMap(veg, Pixels.Load("grass_density.png"));
     Vegetation3D.SetBladeSize(veg, 0.1, 0.4, 0.15);
     Vegetation3D.SetWindParams(veg, 1.2, 0.5, 0.3);
-    Vegetation3D.SetLODDistances(veg, 30.0, 60.0);
+    Vegetation3D.SetLodDistances(veg, 30.0, 60.0);
     Vegetation3D.SetSeed(veg, 12345);
     Vegetation3D.Populate(veg, cam, 50000);
 

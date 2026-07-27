@@ -71,6 +71,8 @@ class Scene2DWorkspaceState {
     expose Number inspectorScrollY;
     expose Boolean inspectorRequestedVisible;
     expose Boolean compactInspectorShown;
+    expose Boolean paletteRequestedVisible;
+    expose Boolean compactPaletteShown;
     expose Boolean previewActive;
     expose Boolean showGrid;
     expose List[String] undoStack;
@@ -98,6 +100,8 @@ class Scene2DWorkspaceState {
         inspectorScrollY = 0.0;
         inspectorRequestedVisible = true;
         compactInspectorShown = false;
+        paletteRequestedVisible = true;
+        compactPaletteShown = false;
         previewActive = false;
         showGrid = true;
         undoStack = [];
@@ -169,7 +173,7 @@ class Scene3DWorkspaceState {
         snapRotateIncrement = 15.0;
         snapScaleIncrement = 0.1;
         viewYawDegrees = 35;
-        viewPitchDegrees = -25;
+        viewPitchDegrees = 25;
         viewScale = 28;
         viewportMode = 0;
         viewTargetX = 0.0;

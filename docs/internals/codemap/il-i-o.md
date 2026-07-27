@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-05-31
+last-verified: 2026-07-26
 ---
 
 # CODEMAP: IL I/O
@@ -10,7 +10,7 @@ Text parsing and serialization (`src/il/io/`) for IL modules.
 
 ## Overview
 
-- **Total source files**: 29 (.hpp/.cpp) across `src/il/io/` (21 files) and `src/il/internal/io/` (8 internal headers)
+- **Total source files**: 30 (.hpp/.cpp) across `src/il/io/` (22 files) and `src/il/internal/io/` (8 internal headers)
 
 ## Parser Core
 

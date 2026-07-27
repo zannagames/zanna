@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-05-31
+last-verified: 2026-07-26
 ---
 
 # Zanna BASIC — Tutorial

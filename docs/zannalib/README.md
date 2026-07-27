@@ -135,14 +135,20 @@ the conceptual guide does not provide a class-specific section.
 | [`Legacy.Aes`](crypto.md#zannacryptolegacyaes) | Static  | AES-CBC compatibility helpers            |
 | [`Legacy.Hash`](crypto.md#zannacryptolegacyhash) | Static | CRC32, MD5, SHA1, and legacy HMAC compatibility helpers |
 | [`Password`](crypto.md#zannacryptopassword)   | Static   | Password hashing and verification        |
-| [`Rand`](crypto.md#zannacryptorand)           | Static   | Cryptographically secure random bytes    |
+| [`SecureRandom`](crypto.md#zannacryptosecurerandom) | Static | Cryptographically secure random bytes  |
 | [`Tls`](crypto.md#zannacryptotls)             | Instance | TLS 1.3 secure socket connections        |
 
 ### Zanna.Data
 
 | Class                                               | Type   | Description                                           |
 |-----------------------------------------------------|--------|-------------------------------------------------------|
+| [`Csv`](../generated/runtime/data.md#zanna-data-csv)                       | Static | CSV parsing and formatting                            |
+| [`Ini`](../generated/runtime/data.md#zanna-data-ini)                       | Static | INI file parsing and formatting                       |
+| [`Json`](../generated/runtime/data.md#zanna-data-json)                     | Static | JSON parsing and formatting                           |
+| [`JsonPath`](../generated/runtime/data.md#zanna-data-jsonpath)             | Static | JSONPath query evaluation                             |
+| [`JsonStream`](../generated/runtime/data.md#zanna-data-jsonstream)         | Instance | Streaming JSON reader                               |
 | [`Serialize`](../generated/runtime/data.md#zanna-data-serialize)           | Static | Unified multi-format serializer (JSON/XML/YAML/TOML/CSV) |
+| [`Toml`](../generated/runtime/data.md#zanna-data-toml)                     | Static | TOML parsing and formatting                           |
 | [`Xml`](../generated/runtime/data.md#zanna-data-xml)                       | Static | XML document model — parse, navigate, mutate          |
 | [`Yaml`](../generated/runtime/data.md#zanna-data-yaml)                     | Static | YAML parse and format                                 |
 
@@ -244,10 +250,10 @@ the conceptual guide does not provide a class-specific section.
 | [`SceneAsset`](../graphics3d-guide.md#sceneasset) | Instance | Unified imported asset with shared resources and scene instantiation |
 | [`SceneGraph`](../graphics3d-guide.md#scenegraph) | Instance | 3D scene graph with culling, spatial queries, `.vscn` save/load, and binding sync |
 | [`SceneNode`](../graphics3d-guide.md#scenenode) | Instance | Hierarchical 3D scene node with transform, mesh, material, LOD, and bindings |
-| [`Physics3DBody`](graphics/physics3d.md#zannagraphics3dphysics3dbody) | Instance | 3D rigid body with linear/angular motion, sleep, and CCD |
+| [`PhysicsBody3D`](graphics/physics3d.md#zannagraphics3dphysicsbody3d) | Instance | 3D rigid body with linear/angular motion, sleep, and CCD |
 | [`PhysicsHit3D`](graphics/physics3d.md#zannagraphics3dphysicshit3d) | Instance | World-query hit result with body, collider, point, normal, and fraction |
 | [`PhysicsHitList3D`](graphics/physics3d.md#zannagraphics3dphysicshitlist3d) | Instance | List of `PhysicsHit3D` results returned by overlap and multi-hit queries |
-| [`Physics3DWorld`](graphics/physics3d.md#zannagraphics3dphysics3dworld) | Instance | 3D simulation world with contact and joint access |
+| [`PhysicsWorld3D`](graphics/physics3d.md#zannagraphics3dphysicsworld3d) | Instance | 3D simulation world with contact and joint access |
 | [`SpringJoint3D`](graphics/physics3d.md#zannagraphics3dspringjoint3d) | Instance | Spring constraint with stiffness and damping |
 
 ### Zanna.GUI
@@ -337,25 +343,21 @@ the conceptual guide does not provide a class-specific section.
 
 | Class                                                     | Type     | Description                        |
 |-----------------------------------------------------------|----------|------------------------------------|
+| [`Char`](../generated/runtime/text.md#zanna-text-char)                           | Static   | Unicode character classification   |
 | [`Codec`](../generated/runtime/text.md#zanna-text-codec)                         | Static   | Base64, Hex, URL encoding          |
 | [`CompiledPattern`](../generated/runtime/text.md#zanna-text-compiledpattern)     | Instance | Pre-compiled regex pattern         |
-| [`Csv`](../generated/runtime/text.md#zanna-text-csv)                             | Static   | CSV parsing and formatting         |
 | [`Diff`](../generated/runtime/text.md#zanna-text-diff)                           | Static   | Text diff and patch                |
+| [`Fmt`](../generated/runtime/text.md#zanna-text-fmt)                             | Static   | Number, byte-size, and value formatting |
+| [`FuzzyMatch`](../generated/runtime/text.md#zanna-text-fuzzymatch)               | Static   | Approximate string matching        |
 | [`Html`](../generated/runtime/text.md#zanna-text-html)                           | Static   | HTML stripping and entity decode   |
-| [`Ini`](../generated/runtime/text.md#zanna-text-ini)                             | Static   | INI file parsing and formatting    |
-| [`Json`](../generated/runtime/text.md#zanna-text-json)                           | Static   | JSON parsing and formatting        |
-| [`JsonPath`](../generated/runtime/text.md#zanna-text-jsonpath)                   | Static   | JSONPath query evaluation          |
-| [`JsonStream`](../generated/runtime/text.md#zanna-text-jsonstream)               | Instance | Streaming JSON reader/writer       |
 | [`Markdown`](../generated/runtime/text.md#zanna-text-markdown)                   | Static   | Markdown to HTML/text conversion   |
 | [`InvariantNumberFormat`](text/formatting.md#zannatextinvariantnumberformat) | Static   | C-locale number formatting       |
 | [`Pattern`](../generated/runtime/text.md#zanna-text-pattern)                     | Static   | Regex pattern matching             |
 | [`Pluralize`](../generated/runtime/text.md#zanna-text-pluralize)                 | Static   | English pluralization utilities    |
 | [`Scanner`](../generated/runtime/text.md#zanna-text-scanner)                     | Instance | Token-based string scanner         |
-| [`Serialize`](../generated/runtime/data.md#zanna-data-serialize)                 | Static   | Unified multi-format serializer    |
 | [`StringBuilder`](../generated/runtime/text.md#zanna-text-stringbuilder)         | Instance | Mutable string builder             |
 | [`Template`](../generated/runtime/text.md#zanna-text-template)                   | Static   | Template rendering                 |
 | [`TextWrapper`](../generated/runtime/text.md#zanna-text-textwrapper)             | Static   | Word-wrap and text formatting      |
-| [`Toml`](../generated/runtime/text.md#zanna-text-toml)                           | Static   | TOML parsing and formatting        |
 | [`Uuid`](../generated/runtime/text.md#zanna-text-uuid)                           | Static   | UUID v4 generation                 |
 | [`Version`](../generated/runtime/text.md#zanna-text-version)                     | Static   | Semantic version parsing/comparison|
 
@@ -392,8 +394,6 @@ the conceptual guide does not provide a class-specific section.
 
 | Class                                           | Type   | Description                                     |
 |-------------------------------------------------|--------|-------------------------------------------------|
-| [`Memory`](system.md#zannamemory)              | Static | Compatibility namespace for `Runtime.Unsafe`     |
-| [`GC`](../generated/runtime/memory.md#zanna-memory-gc)               | Static | Compatibility namespace for `Runtime.GC`         |
 | [`WeakRef`](system.md#zannamemoryweakref)      | Instance | Zeroing reference that does not retain its target |
 
 ### Zanna.Time

@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "components": [
     {
       "name": "enemy-spawn",
@@ -54,6 +54,51 @@
           "default": "landmark"
         }
       ]
+    }
+  ],
+  "objectPreviews": [
+    {
+      "objectType": "enemy",
+      "sprite": "../sprites/scene-object-preview-atlas.png",
+      "frame": 0,
+      "frameProperty": "enemy.type",
+      "frameOffset": 0
+    },
+    {
+      "objectType": "boss",
+      "sprite": "../sprites/scene-object-preview-atlas.png",
+      "frame": 3,
+      "frameProperty": "boss.type",
+      "frameOffset": 0
+    },
+    {
+      "objectType": "pickup",
+      "sprite": "../sprites/scene-object-preview-atlas.png",
+      "frame": 40,
+      "frameProperty": "pickup.type",
+      "frameOffset": 40
+    },
+    {
+      "objectType": "interaction",
+      "sprite": "../sprites/scene-object-preview-atlas.png",
+      "frame": 52,
+      "frameProperty": "interaction.type",
+      "frameOffset": 48
+    },
+    {
+      "objectType": "marker",
+      "sprite": "../sprites/scene-object-preview-atlas.png",
+      "frame": 57
+    },
+    {
+      "objectType": "checkpoint",
+      "sprite": "../sprites/scene-object-preview-atlas.png",
+      "frame": 58
+    },
+    {
+      "objectType": "player-start",
+      "sprite": "../sprites/scene-object-preview-atlas.png",
+      "frame": 59
     }
   ]
 }

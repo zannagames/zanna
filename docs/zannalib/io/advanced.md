@@ -639,7 +639,7 @@ admits at most 255 simultaneously open object/array containers.
 The live API exposes `HasNext`, `Next`, `NextResult`, `Skip`, `Error`, typed
 token-value accessors, and the read-only `Depth` and `TokenType` properties. It
 does not generate JSON. See the
-[generated API reference](../../generated/runtime/text.md#zanna-text-jsonstream) for the
+[generated API reference](../../generated/runtime/data.md#zanna-data-jsonstream) for the
 complete interface.
 
 ---

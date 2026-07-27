@@ -1,6 +1,22 @@
-// =============================================================================
-// assets/enemy_models.zia — enemy visuals: GLB rigs + composite fallbacks
-// =============================================================================
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/ashfall-scenes/assets/enemy_models.zia
+// Purpose: Own animated enemy visuals and deterministic composite fallbacks.
+// Key invariants:
+//   - Every archetype has a procedural fallback independent of optional GLB art.
+//   - Studio previews and runtime fallback bodies share the exact mesh bakers.
+// Ownership/Lifetime:
+//   - EnemyModels owns mesh caches, pooled runtime entities, and dying visuals.
+//   - Returned preview meshes borrow the session-lifetime archetype cache.
+// Links: ../tools/build_studio_previews.zia, ../ai/enemy_defs.zia,
+//        docs/adr/0199-project-owned-3d-node-prefab-previews.md
+//
+//===----------------------------------------------------------------------===//
 //
 // Owns everything the player SEES of an enemy; ai_core keeps simulation and
 // colliders (kill timing, EV_KILL, salvage, probe expectations unchanged).
@@ -97,6 +113,21 @@ class EnemyModels {
         nextDying = 0;
         animTime = 0.0;
         cap = 0;
+    }
+
+    /// @brief Return one production composite chassis for Studio previews.
+    /// @details Invalid ids resolve to the Husk fallback without world setup.
+    expose func studioPreviewChassis(archetype: Integer) -> G3D.Mesh3D {
+        var resolved = previewArchetype(archetype);
+        ensureMeshes(resolved);
+        return meshChassis[meshIndex(resolved)];
+    }
+
+    /// @brief Return one production composite accent for Studio previews.
+    expose func studioPreviewAccent(archetype: Integer) -> G3D.Mesh3D {
+        var resolved = previewArchetype(archetype);
+        ensureMeshes(resolved);
+        return meshAccent[meshIndex(resolved)];
     }
 
     expose func setup(w: Game3D.World3D, t: textures.TextureLib, r: registry.AssetRegistry,
@@ -478,6 +509,13 @@ class EnemyModels {
     // --- Composite mesh bakers -------------------------------------------------
     // Forward = local -Z (matches ai_core's yaw convention). Ground origin at
     // y=0 for walkers; flyers bake centered so ai_core's altitude places them.
+    hide func previewArchetype(archetype: Integer) -> Integer {
+        if archetype < 0 or archetype >= config.EN_TYPE_COUNT {
+            return config.EN_HUSK;
+        }
+        return archetype;
+    }
+
     hide func meshIndex(a: Integer) -> Integer {
         var i = 0;
         while i < meshArch.Count {

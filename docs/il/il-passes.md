@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-05-04
+last-verified: 2026-07-26
 ---
 
 # IL Optimization Passes
@@ -47,7 +47,7 @@ last-verified: 2026-05-04
 - Distinguishes address spaces: stack vs global are `NoAlias`; different globals are `NoAlias`; null aliases only
   null. `noalias` parameters are disambiguated from other pointer parameters, but not from arbitrary globals or stack
   slots.
-- `typeSizeBytes` exposes conservative byte widths (i1/i16/i32/i64/f64/ptr/str/resumetok/error) for passes to thread
+- `typeSizeBytes` exposes conservative byte widths (i1/i16/i32/i64/f64/ptr/str/resume_tok/error) for passes to thread
   sizes into `alias(...)`.
 - ModRef uses a priority cascade for call effect classification:
   1. Module-level attributes on locally defined functions are authoritative after verifier validation
@@ -91,7 +91,7 @@ places `SimplifyCFG` around **Mem2Reg** so SSA-promotion edge arguments can be v
 
 Promotes alloca/store/load patterns to pure SSA values:
 
-- **Non-entry alloca promotion** (since 2026-02-17): No longer restricted to entry-block allocas. Any alloca whose
+- **Non-entry alloca promotion**: Promotion is not restricted to entry-block allocas. Any alloca whose
   defining block dominates all of its load/store uses is eligible for promotion. This eliminates the common pattern
   of loop variables allocated in non-entry blocks staying as load/store overhead.
 - **Address-taken conservatism**: Allocas forwarded directly as branch arguments are treated as address-taken so
@@ -172,13 +172,16 @@ The O2 pipeline includes four targeted passes that reduce runtime-helper overhea
 These passes run after O2 inlining/check simplification and before the final peephole/GVN/DSE cleanup window so their
 rewrites expose direct calls, fewer runtime branches, and less reference-counting traffic to later optimizers.
 
-### Threshold Changes
+### Thresholds
 
-| Parameter | Current Default | History |
-|-----------|-----------------|---------|
-| `instrThreshold` | 80 | raised from 32 on 2026-02-17 to capture medium-sized helpers |
-| `blockBudget` | 1 | raised to 8 on 2026-02-17, reverted to 1 after zannastudio/chess regressions at O1 |
-| `maxInlineDepth` | 3 | raised from 2 on 2026-02-17 to enable deeper utility-function chains |
+Defaults live in `InlineCostConfig` (`src/il/transform/Inline.hpp`); `inline-o2` overrides three of them.
+
+| Parameter | `inline` (O1) | `inline-o2` (O2) | Rationale |
+|-----------|---------------|------------------|-----------|
+| `instrThreshold` | 80 | 120 | Captures medium-sized helpers without unbounded growth |
+| `blockBudget` | 1 | 4 | O1 stays single-block; a larger O1 budget regressed zannastudio and chess |
+| `maxInlineDepth` | 3 | 3 | Deep enough for multi-level utility-function chains |
+| `maxCodeGrowth` | 2000 | 4000 | Bounds total module expansion |
 
 ## LateCleanup
 
@@ -239,10 +242,10 @@ The pass also simplifies CBr terminators when the branch condition is a comparis
 - Float constant comparisons fold the branch to an unconditional jump
 - Integer constant comparisons (signed and unsigned) fold the branch to an unconditional jump
 
-The pass is table-driven, making it easy to add new rules without modifying core logic. Operand-forwarding rewrites are
-kept within the defining block after the definition so the replacement value is available at every rewritten use.
-conditions. Floating constant identity matches compare signed zero exactly, so `fsub x, +0.0 -> x` is allowed while
-`fsub x, -0.0` is left intact. Full `peephole` is part of the canonical O1/O2 pipelines.
+The pass is table-driven (`kRules` in `src/il/transform/Peephole.hpp`), so new rules do not require changes to the core
+logic. Operand-forwarding rewrites are kept within the defining block after the definition, so the replacement value is
+available at every rewritten use. Floating constant identity matches compare signed zero exactly, so `fsub x, +0.0 -> x`
+is allowed while `fsub x, -0.0` is left intact. Full `peephole` is part of the canonical O1/O2 pipelines.
 
 ## ConstFold
 
@@ -416,12 +419,12 @@ Direct-call graph with strongly connected component analysis:
 
 - **Edge building**: Scans all functions for `Call` instructions with non-empty `callee` field; records
   caller→callee edges and per-callee call counts. Indirect calls and unresolved targets are ignored.
-- **SCC computation** (since 2026-02-17): Tarjan's iterative SCC algorithm runs after edge collection to
+- **SCC computation**: Tarjan's iterative SCC algorithm runs after edge collection to
   identify mutually recursive function groups. SCCs are stored in reverse topological order (callees before
   callers) in `CallGraph::sccs`. Each function name maps to its SCC index via `CallGraph::sccIndex`.
 - **`isRecursive(fn)`**: Returns true when `fn` is in a multi-member SCC or has a self-edge.
-- **Use cases**: Bottom-up interprocedural analysis (process leaf SCCs first); inliner can skip recursive
-  SCCs more accurately than the previous per-edge self-loop check.
+- **Use cases**: Bottom-up interprocedural analysis (process leaf SCCs first); the inliner uses it to skip
+  recursive SCCs accurately rather than relying on a per-edge self-loop check.
 - **Tests**: `test_il_callgraph_scc` — linear chain ordering, mutual recursion, self-recursion, `isRecursive`.
 
 ## GVN (Global Value Numbering)
@@ -477,32 +480,38 @@ Direct-call graph with strongly connected component analysis:
   when the loop-shaped proof is visible.
 - Implementation: `src/il/transform/SiblingRecursion.cpp`
 
-## Canonical Optimization Pipelines (Zia and BASIC frontends)
+## Canonical Optimization Pipelines
 
-Before 2026-02-17, the Zia compiler (`src/frontends/zia/Compiler.cpp`) applied its own reduced pipeline
-instead of the registered canonical O1/O2 pipelines:
+Every frontend and native codegen entry point calls `pm.runPipeline(module, "O1")` or
+`pm.runPipeline(module, "O2")`, so the Zia frontend, the BASIC frontend, the VM, and both native backends
+run identical pass sequences. The AArch64 and x86-64 pipelines keep no backend-local pass lists; after
+native EH lowering they reject any residual structured EH opcodes, then run the same IL pipelines.
 
-| Level | Old (custom) | New (canonical) |
-|-------|-------------|-----------------|
-| O1 | 4 passes (simplify-cfg, mem2reg, peephole, dce) | Registered O1: SimplifyCFG, Mem2Reg, SCCP, ConstFold, Peephole, DCE, Inline |
-| O2 | 9 passes (missing SCCP, loop passes, inline, check-opt) | Registered O2: Mem2Reg, loop shaping, full LICM, SCCP, CheckOpt, EHOpt, DCE, SiblingRecursion, devirtualization, fixpoint Inline, post-inline runtime/array/ownership fast paths, Peephole, GVN, Reassociate, EarlyCSE, DSE, LateCleanup |
+Pipelines are registered in `src/il/transform/PassManager.cpp`:
 
-`mem2reg` is canonical in O1/O2 after dominance, edge-repair, non-entry alloca, and loop-reentered allocation guards made
-SSA promotion verifier-clean. Full memory-hoisting `LICM` is canonical in O2 after load-safety and BasicAA mod/ref guards
-made hoisting alias-conservative. Full IL `peephole` is canonical after verifier-clean local-use, use-count,
-trap-preservation, and signed-zero coverage.
+| Pipeline | Passes, in order |
+|----------|------------------|
+| `O0` | `simplify-cfg`, `dce` |
+| `O1` | `simplify-cfg`, `mem2reg`, `simplify-cfg`, `sccp`, `constfold`, `peephole`, `dce`, `simplify-cfg`, `sccp`, `inline`, `peephole`, `dce`, `simplify-cfg` |
+| `O2` | `simplify-cfg`, `mem2reg`, `simplify-cfg`, `loop-simplify`, `licm`, `loop-rotate`, `indvars`, `loop-unroll`, `simplify-cfg`, `reassociate`, `earlycse`, `sccp`, `check-opt`, `loop-simplify`, `licm`, `eh-opt`, `dce`, `simplify-cfg`, `sibling-recursion`, `devirt`, `inline-o2`, `simplify-cfg`, `sccp`, `constfold`, `loop-simplify`, `licm`, `loop-rotate`, `indvars`, `loop-unroll`, `reassociate`, `gvn`, `earlycse`, `check-opt`, `loop-simplify`, `licm`, `runtime-fastpath`, `array-fastpath`, `ownership-opt`, `peephole`, `check-opt`, `dce`, `simplify-cfg`, `sccp`, `constfold`, `peephole`, `gvn`, `earlycse`, `if-conv`, `dce`, `simplify-cfg`, `dse`, `dce`, `late-cleanup` |
+
+Ordering notes for O2:
+
+- `reassociate` runs before `earlycse`/`gvn` so canonicalized expression trees feed CSE.
+- `check-opt` is followed by `loop-simplify` + `licm`: deleted or hoisted checks unlock loop-invariant
+  hoisting that trapping operations previously blocked.
+- `sccp` runs both before and after `inline-o2`, first to simplify callees and then to propagate
+  constants through inlined code from call sites.
+- A bounded second scalar group catches second-order opportunities exposed by inlining and loop work.
+
+`mem2reg` is canonical in O1/O2 because dominance, edge-repair, non-entry alloca, and loop-reentered
+allocation guards make SSA promotion verifier-clean. Full memory-hoisting `licm` is canonical in O2
+because load-safety and BasicAA mod/ref guards keep hoisting alias-conservative. Full IL `peephole` is
+canonical given its verifier-clean local-use, use-count, trap-preservation, and signed-zero coverage.
 
 The pass manager verifies IR after each pass by default, including release
 builds. Callers may disable this for specialised measurement, but rehab and CI
 pipelines should keep per-pass verification enabled.
-
-The BASIC frontend (`src/tools/zanna/cmd_run.cpp`) only ran `SimplifyCFG` on verification failure; it now
-applies the canonical O0/O1/O2 pipeline unconditionally.
-
-**Fix**: Frontends and native codegen entry points call `pm.runPipeline(module, "O1")` / `pm.runPipeline(module, "O2")`
-to use the canonically registered pipelines. The AArch64 and x86-64 native pipelines no longer maintain backend-local
-O1/O2 pass lists; after native EH lowering they reject any residual structured EH opcodes before optimization, then run
-the same IL pipelines as the VM/frontends.
 
 **Test**: `test_il_canonical_pipeline` — verifies O1/O2 contain expected passes, full peephole is canonical, and SCCP
 runs. `test_il_realworld_perf_passes` covers devirtualization, array fast-path rewriting, known-object RC helpers,
@@ -539,21 +548,21 @@ Regression tests covering fixes from the comprehensive IL optimization review
 | `test_opt_review_sccp.cpp` | 4 | FDiv by zero preservation, normal FDiv folding |
 | `test_opt_review_valuekey.cpp` | 8 | Commutative normalization, safe opcode classification |
 
-### Optimizer Improvement Tests (2026-02-17)
+### Optimizer Improvement Tests
 
 | Test File | Tests | Coverage |
 |-----------|-------|---------|
 | `test_il_canonical_pipeline.cpp` | 9 | O1/O2 pass registration, mem2reg and full LICM promotion, full peephole promotion, removed legacy safe alias, SCCP execution via canonical pipeline |
 | `test_realworld_perf_passes.cpp` | 6 | Runtime ownership metadata, object RC fast paths, numeric array fast helpers after bounds proof, fast-path invalidation across memory effects, direct-call devirtualization, retain/release pair cleanup |
 | `test_il_mem2reg_nonentry.cpp` | 6 | Non-entry-block alloca promotion, domination-filtered promotion, edge repair, loop-reentered alloca guard, EH skip |
-| `test_il_inline_threshold.cpp` | 3 | New default thresholds (80/8/3), 50-instr inline, oversized rejection |
+| `test_il_inline_threshold.cpp` | 3 | Default thresholds (`instrThreshold` 80 / `blockBudget` 1 / `maxInlineDepth` 3), 50-instruction inline, oversized rejection |
 | `test_il_earlycse_domtree.cpp` | 3 | Cross-block CSE via domtree, sibling-branch non-elimination, textually-unsafe rejection |
 | `test_il_callgraph_scc.cpp` | 4 | Linear chain SCC ordering, mutual recursion, self-recursion, isRecursive |
 
-### SCCP ↔ CheckOpt Integration (2026-02-17)
+### SCCP ↔ CheckOpt Integration
 
-Added constant-operand check elimination in CheckOpt so that checks whose operands are already inlined as
-`ConstInt` literals (by SCCP's `rewriteConstants()`) are statically evaluated:
+CheckOpt statically evaluates checks whose operands SCCP's `rewriteConstants()` has already inlined as
+`ConstInt` literals:
 
 - `IdxChk(5, 0, 10)` with I64 result → eliminated (index 5 is trivially in [0, 10))
 - `SDivChk0(12, 3)` with I64 result → eliminated (divisor 3 ≠ 0)
@@ -564,26 +573,22 @@ Added constant-operand check elimination in CheckOpt so that checks whose operan
 |-----------|-------|---------|
 | `checkopt_redundancy.cpp` | 3 new | Const in-bounds IdxChk elimination, non-zero SDivChk0, OOB preservation |
 
-### Post-Dominator Tree (2026-02-17)
+### Post-Dominator Tree
 
-`computePostDominatorTree()` added to `src/il/analysis/Dominators.hpp/.cpp`, registered as `"post-dominators"`
-analysis in `PassManager`. Enables future aggressive DCE (control-dependent elimination) and precise
-speculative hoisting.
+`computePostDominatorTree()` lives in `src/il/analysis/Dominators.hpp/.cpp` and is registered as the
+`"post-dominators"` analysis in `PassManager`. It enables control-dependent DCE and precise speculative
+hoisting.
 
 | Test File | Tests | Coverage |
 |-----------|-------|---------|
 | `PostDominatorsTests.cpp` | 3 | Linear chain, diamond join (merge pdoms entry), multiple exits |
 
-### SimplifyCFG Self-Loop Fix (2026-02-17)
+### SimplifyCFG Self-Loop Handling
 
-**Bug**: `mergeSinglePred` in `BlockMerging.cpp` excluded self-loop edges from predecessor counting
-(`if (&candidate == &block) continue`). A loop body with a self-loop appeared to have only 1 external
-predecessor, causing it to be incorrectly merged into the entry block. The label rewrite then turned the
-self-loop into a back-edge to entry, creating an infinite alloca-stack loop.
+`mergeSinglePred` in `BlockMerging.cpp` counts self-loop edges in a block's predecessor total but records
+only non-self blocks as the merge candidate. The `predecessorEdges == 1` guard therefore rejects a merge
+when a block has both an external predecessor and a self-loop — merging there would rewrite the self-loop
+into a back-edge to the entry block and produce an unbounded alloca-stack loop.
 
-**Fix**: Count self-loop edges in the predecessor total but only record non-self blocks as the merge candidate.
-The guard `predecessorEdges == 1` now correctly rejects merge when the block has both an external predecessor
-and a self-loop.
-
-**Affected tests**: `test_basic_do_exit` (DO WHILE loop back-edge corruption), `test_il_opt_equivalence`
-(random differential test for optimizer pipelines).
+Covered by `test_basic_do_exit` (DO WHILE loop back-edges) and `test_il_opt_equivalence` (randomized
+differential testing of the optimizer pipelines).

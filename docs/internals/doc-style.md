@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-16
+last-verified: 2026-07-26
 ---
 
 # Documentation Style Guide
@@ -52,9 +52,12 @@ canonical home per topic.
 - **Headings**: no decorative emoji in headings. Functional symbols in body
   text are fine where they carry meaning — `→` in mappings and dataflow
   diagrams, `✅`/`❌` in support matrices.
-- **Code fences are always tagged.** Use `rust` for Zia (closest highlighting),
-  `basic` for BASIC, `llvm` or `il` for IL, `sh`/`bash` for shell, `cpp`, `cmake`,
-  `json`, and `text` for program output, diagrams, grammars, and anything else.
+- **Code fences are always tagged.** Use `zia` for Zia, `basic` for BASIC, `il`
+  or `llvm` for IL, `sh`/`bash` for shell, `powershell` for PowerShell, plus
+  `cpp`, `c`, `cmake`, `json`, `ebnf`, and `text` for program output, diagrams,
+  grammars, and anything else. The `zia`, `basic`, and `il` tags are what the
+  project's own site highlighter recognizes (`zannaweb/`); GitHub renders them
+  as plain code blocks.
 - **Tables**: escape literal pipes in table cells as `\|` — GitHub splits
   cells on `|` even inside backticks.
 - **Diagrams**: ASCII diagrams are fine; Mermaid is also fine (GitHub renders

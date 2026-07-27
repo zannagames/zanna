@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-05-31
+last-verified: 2026-07-26
 ---
 
 # CODEMAP: IL Core
@@ -10,7 +10,7 @@ Core IL data structures (`src/il/core/`) representing modules, functions, blocks
 
 ## Overview
 
-- **Total source files**: 26 (.hpp/.cpp/.def)
+- **Total source files**: 27 (.hpp/.cpp/.def)
 
 ## Module Structure
 
@@ -134,7 +134,7 @@ Enum class controlling whether a function or global is visible across module bou
 | File        | Purpose                                                      |
 |-------------|--------------------------------------------------------------|
 | `Type.cpp`  | Type wrapper implementation                                  |
-| `Type.hpp`  | Type wrapper and Kind enumeration (void, i1, i16, i32, i64, f64, ptr, str, error, resumetok) |
+| `Type.hpp`  | Type wrapper and Kind enumeration (void, i1, i16, i32, i64, f64, ptr, str, error, resume_tok) |
 | `Value.cpp` | SSA value implementation                                     |
 | `Value.hpp` | SSA value tagged union: temps, constants, globals, null      |
 | `Param.hpp` | Function/block parameter: type, name, id, and optional attributes |

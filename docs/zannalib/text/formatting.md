@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-14
+last-verified: 2026-07-26
 ---
 
 # Formatting & Generation
@@ -293,8 +293,8 @@ Text wrapping, alignment, indentation, and truncation utilities for formatting t
 | `Truncate(text, width)`           | `String(String, Integer)`        | Truncate to width with "..." suffix if needed            |
 | `TruncateWith(text, width, suffix)` | `String(String, Integer, String)` | Truncate with custom suffix                           |
 | `Shorten(text, width)`            | `String(String, Integer)`        | Shorten by replacing middle portion with "..."           |
-| `Left(text, width)`               | `String(String, Integer)`        | Left-align text, padding with spaces to width            |
-| `Right(text, width)`              | `String(String, Integer)`        | Right-align text, padding with spaces to width           |
+| `AlignLeft(text, width)`          | `String(String, Integer)`        | Left-align text, padding with spaces to width            |
+| `AlignRight(text, width)`         | `String(String, Integer)`        | Right-align text, padding with spaces to width           |
 | `Center(text, width)`             | `String(String, Integer)`        | Center text, padding with spaces to width                |
 | `LineCount(text)`                 | `Integer(String)`                | Count the number of lines in text                        |
 | `MaxLineLength(text)`                | `Integer(String)`                | Get the byte length of the longest line                  |
@@ -371,8 +371,8 @@ DIM lines AS Zanna.Collections.Seq = Zanna.Text.TextWrapper.WrapLines(text, 20)
 PRINT lines.Count  ' Output: 4
 
 ' Text alignment
-PRINT "["; Zanna.Text.TextWrapper.Left("hello", 20); "]"    ' Output: [hello               ]
-PRINT "["; Zanna.Text.TextWrapper.Right("hello", 20); "]"   ' Output: [               hello]
+PRINT "["; Zanna.Text.TextWrapper.AlignLeft("hello", 20); "]"   ' Output: [hello               ]
+PRINT "["; Zanna.Text.TextWrapper.AlignRight("hello", 20); "]"  ' Output: [               hello]
 PRINT "["; Zanna.Text.TextWrapper.Center("hello", 20); "]"  ' Output: [       hello        ]
 
 ' Truncation

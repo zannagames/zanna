@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-17
+last-verified: 2026-07-26
 ---
 
 # Sequential Collections
@@ -185,7 +185,6 @@ It uses a circular buffer for amortized O(1) pushes and O(1) pops.
 | `Push(value)` | `Void(Object)` | Add element to back of queue                           |
 | `Pop()`       | `Object()`     | Remove and return front element (traps if empty)       |
 | `TryPop()`    | `Object()`     | Remove and return front element, or null if empty      |
-| `TryPopOption()` | `Option[Object]()` | Remove and return front element, or `None` if empty |
 | `Peek()`      | `Object()`     | Return front element without removing (traps if empty) |
 | `Has(value)`  | `Boolean(Object)` | Check if an element is in the queue (by reference)  |
 | `Clear()`     | `Void()`       | Remove all elements                                    |
@@ -202,7 +201,7 @@ It uses a circular buffer for amortized O(1) pushes and O(1) pops.
 - `Pop()` and `TryPop()` return owned object references. In owning mode, the queue's retained reference is transferred to the caller.
 - `Peek()` returns a borrowed reference whose lifetime is bounded by the stored element's owner
   (and, for an owning queue produced by a conversion, by the queue entry).
-- Prefer `TryPopOption()` for new code. It distinguishes an empty queue from a stored null object; `TryPop()` remains as a compatibility helper.
+- `TryPop()` returns null for an empty queue. If the queue can legitimately store nulls, check `Count` or `IsEmpty` before popping.
 
 ### Zia Example
 
@@ -284,7 +283,6 @@ A LIFO (last-in-first-out) collection. Elements are added and removed from the t
 | `Push(value)` | `Void(Object)` | Add element to top of stack                          |
 | `Pop()`       | `Object()`     | Remove and return top element (traps if empty)       |
 | `TryPop()`    | `Object()`     | Remove and return top element, or null if empty      |
-| `TryPopOption()` | `Option[Object]()` | Remove and return top element, or `None` if empty |
 | `Peek()`      | `Object()`     | Return top element without removing (traps if empty) |
 | `Has(value)`  | `Boolean(Object)` | Check if an element is on the stack (by reference) |
 | `Clear()`     | `Void()`       | Remove all elements                                  |
@@ -302,7 +300,7 @@ A LIFO (last-in-first-out) collection. Elements are added and removed from the t
 - `Pop()` and `TryPop()` return owned object references. In owning mode, the stack's retained reference is transferred to the caller.
 - `Peek()` returns a borrowed reference whose lifetime is bounded by the stored element's owner
   (and, for an owning stack produced by a conversion, by the stack entry).
-- Prefer `TryPopOption()` for new code. It distinguishes an empty stack from a stored null object; `TryPop()` remains as a compatibility helper.
+- `TryPop()` returns null for an empty stack. If the stack can legitimately store nulls, check `Count` or `IsEmpty` before popping.
 - Constructor allocation failures trap cleanly instead of returning a partial stack.
 
 ### Zia Example
@@ -392,8 +390,6 @@ one slot.
 | `PopBack()`          | `Object()`              | Remove and return back element (traps if empty)       |
 | `TryPopFront()`      | `Object()`              | Remove and return front element, or null if empty     |
 | `TryPopBack()`       | `Object()`              | Remove and return back element, or null if empty      |
-| `TryPopFrontOption()`| `Option[Object]()`      | Remove and return front element, or `None` if empty   |
-| `TryPopBackOption()` | `Option[Object]()`      | Remove and return back element, or `None` if empty    |
 | `PeekFront()`        | `Object()`              | Return front element without removing (traps if empty)|
 | `PeekBack()`         | `Object()`              | Return back element without removing (traps if empty) |
 | `Get(index)`         | `Object(Integer)`       | Get element at index (0 = front)                      |
@@ -409,7 +405,7 @@ one slot.
 
 - Deque retains stored objects and releases them when removed, overwritten, cleared, or finalized.
 - `Get()`, `PeekFront()`, `PeekBack()`, `PopFront()`, `PopBack()`, `TryPopFront()`, and `TryPopBack()` return owned object references.
-- Prefer `TryPopFrontOption()` and `TryPopBackOption()` for new code. They distinguish an empty deque from a stored null object.
+- `TryPopFront()` and `TryPopBack()` return null for an empty deque. If the deque can legitimately store nulls, check `Count` or `IsEmpty` first.
 - `Clone()`, `ToSeq()`, and `ToList()` return independent collections that retain their elements.
 
 ### Zia Example
@@ -644,8 +640,6 @@ A priority queue implemented as a binary heap. Elements are stored with an integ
 | `Peek()`             | `Object()`             | Return highest priority element without removing (traps if empty) |
 | `TryPop()`           | `Object()`             | Remove and return highest priority element, or null if empty |
 | `TryPeek()`          | `Object()`             | Return highest priority element, or null if empty          |
-| `TryPopOption()`     | `Option[Object]()`     | Remove and return highest priority element, or `None` if empty |
-| `TryPeekOption()`    | `Option[Object]()`     | Return highest priority element, or `None` if empty        |
 | `Clear()`            | `Void()`               | Remove all elements                                        |
 | `ToSeq()`            | `Seq()`                | Return elements in priority order as a Seq                 |
 
@@ -653,7 +647,7 @@ A priority queue implemented as a binary heap. Elements are stored with an integ
 
 - Heap retains pushed object values and releases them when removed, cleared, or finalized.
 - `Pop()` and `TryPop()` transfer the heap's retained object reference to the caller. `Peek()` and `TryPeek()` return an additional owned reference without removing the item.
-- Prefer `TryPopOption()` and `TryPeekOption()` for new code. They distinguish an empty heap from a stored null object; the nullable forms remain for compatibility.
+- `TryPop()` and `TryPeek()` return null for an empty heap. If the heap can legitimately store nulls, check `Count` or `IsEmpty` first.
 - `ToSeq()` returns an independent owning snapshot in priority order.
 - Equal-priority entries have no stable FIFO/LIFO guarantee.
 - `ToSeq()` is registered as a typed sequence return, so chains such as `heap.ToSeq().Count`

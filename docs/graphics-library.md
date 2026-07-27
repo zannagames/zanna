@@ -1,14 +1,13 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-16
+last-verified: 2026-07-26
 ---
 
 # ZannaGFX Graphics Library
 
-**Version:** 1.0.0
-**Location:** `/src/lib/graphics`
-**Status:** ✅ Integrated into Zanna build system
+**Version:** 1.0.0 (`VGFX_VERSION_*` in `vgfx.h`)
+**Location:** `src/lib/graphics/`
 
 ---
 
@@ -20,7 +19,7 @@ management, pixel operations, drawing primitives, and input handling through a s
 ### Key Features
 
 - **Pure software rendering** — No GPU dependencies
-- **Cross-platform** — macOS (Cocoa), Linux (X11), Windows (Win32)
+- **Cross-platform** — macOS (Cocoa), Linux (native Wayland with X11 fallback), Windows (Win32)
 - **Simple API** — Immediate-mode drawing with direct framebuffer access
 - **Event handling** — Keyboard, mouse, UTF-8 text input, and window events
 - **Clipboard support** — System text clipboard helpers on desktop backends
@@ -38,12 +37,16 @@ management, pixel operations, drawing primitives, and input handling through a s
 
 ## Platform Support
 
-| Platform    | Backend      | Status                  |
-|-------------|--------------|-------------------------|
-| **macOS**   | Cocoa/AppKit | ✅ **Fully Implemented** |
-| **Linux**   | X11          | ✅ **Fully Implemented** |
-| **Windows** | Win32 GDI    | ✅ **Fully Implemented** |
-| **Testing** | Mock backend | ✅ Fully Implemented     |
+| Platform    | Backend                              | Notes                                                        |
+|-------------|--------------------------------------|--------------------------------------------------------------|
+| **macOS**   | Cocoa/AppKit                         | —                                                            |
+| **Linux**   | Native Wayland, X11, or headless     | `AUTO` prefers Wayland and falls back to X11; see [Linux Platform](linux-platform.md) |
+| **Windows** | Win32 GDI                            | —                                                            |
+| **Testing** | Mock backend                         | Deterministic in-memory backend used by the unit tests       |
+
+The Linux selector is controlled by `ZANNA_GRAPHICS_BACKEND` (`AUTO`, `WAYLAND`,
+`X11`, `NATIVE`, `HEADLESS`) at configure time and by `WAYLAND_DISPLAY`/`DISPLAY`
+at run time.
 
 ---
 
@@ -252,12 +255,13 @@ ctest --test-dir build -R "test_window|test_pixels|test_drawing|test_input"
 
 ### Test Coverage
 
-- **test_window** — Window lifecycle (T1-T3)
-- **test_pixels** — Pixel operations and framebuffer (T4-T6, T14)
-- **test_drawing** — Drawing primitives (T7-T13)
-- **test_input** — Input and event queue (T16-T21)
-
-All 20 tests pass (100% success rate).
+- **test_window** — Window lifecycle
+- **test_pixels** — Pixel operations and framebuffer
+- **test_drawing** — Drawing primitives
+- **test_input** — Input and event queue
+- **test_wayland_backend**, **test_wayland_loader** — Native Wayland adapter and its
+  runtime symbol loader
+- **test_linux_auto_backend** — `AUTO` backend selection and Wayland-to-X11 fallback
 
 ---
 
@@ -267,8 +271,9 @@ All 20 tests pass (100% success rate).
 
 Located in `/src/lib/graphics/examples/`:
 
-- **basic_draw.c** — Simple drawing demo
-- **quick_test.c** — Minimal functionality test
+- **api_test.c** — API validation across backends
+- **basic_draw.c** — Interactive drawing and input demo
+- **quick_test.c** — Automated visual test (30 frames)
 
 ### Build Examples
 
@@ -301,8 +306,8 @@ Both BASIC and Zia access graphics through the `Zanna.Graphics.*` runtime namesp
 USING Zanna.Graphics
 DIM c AS Canvas
 LET c = Canvas.New("My Window", 800, 600)
-Canvas.Clear(c, Color.RGB(0, 0, 0))
-Canvas.Box(c, 100, 100, 200, 150, Color.RGB(255, 0, 0))
+Canvas.Clear(c, Color.Rgb(0, 0, 0))
+Canvas.Box(c, 100, 100, 200, 150, Color.Rgb(255, 0, 0))
 Canvas.Flip(c)
 ```
 
@@ -415,13 +420,13 @@ The following features have been implemented in the Zanna runtime layer (`Zanna.
 - ✅ **Color utilities** — HSL conversion, lerp, brighten/darken
 - ✅ **Gradients** — Horizontal and vertical gradient drawing
 
+- ✅ **Image loading** — BMP, PNG, JPEG, and GIF decoders; BMP and PNG encoders
+- ✅ **Bitmap fonts** — `Zanna.Graphics.BitmapFont` (BDF and PSF)
+
 ### Planned Features (Future)
 
-- **Image loading** — PNG support (BMP already implemented)
 - **Palette modes** — 8-bit indexed color
 - **Multiple windows** — Multi-window support
-
-> **Note:** Bitmap font rendering is already available via `Zanna.Graphics.BitmapFont` in the runtime layer.
 
 ---
 
@@ -457,9 +462,8 @@ See [LICENSE](../LICENSE) for details.
 
 ZannaGFX provides a simple, deterministic, cross-platform 2D graphics solution for the Zanna project:
 
-✅ **Integrated** — Builds as part of Zanna
-✅ **Tested** — 20/20 tests passing (100%)
-✅ **Documented** — Complete API reference and examples
-✅ **Cross-Platform** — Fully implemented on macOS (Cocoa), Linux (X11), and Windows (Win32)
+- Builds as part of Zanna, with a standalone CMake path for library-only work
+- Covered by unit tests running against the deterministic mock backend
+- Backends: Cocoa on macOS, native Wayland with X11 fallback on Linux, Win32 GDI on Windows
 
 For questions or contributions, see the [main Zanna documentation](README.md).

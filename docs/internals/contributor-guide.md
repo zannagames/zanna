@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-04-09
+last-verified: 2026-07-26
 ---
 
 # Contributor Guide
@@ -187,7 +187,7 @@ stored in files containing lines such as:
 EXPECT≈ 3.14 0.05
 ```
 
-The `src/tests/e2e/support/FloatOut` helper reads program output and these expectation files and fails
+The `FloatOut` helper (`src/tests/e2e/support/FloatOut.cpp`) reads program output and these expectation files and fails
 if any absolute difference exceeds the specified tolerance. The CMake test driver runs this helper
 after executing the sample.
 

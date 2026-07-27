@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-15
+last-verified: 2026-07-26
 ---
 
 # Audio
@@ -64,7 +64,7 @@ Sound effect class for short audio clips. Sounds are loaded entirely into memory
 | `Play(volume, pan)`    | `Integer(Integer, Integer)`        | Play through the SFX mix group with volume (0–100) and pan (−100 to +100) |
 | `Play(volume, pan, pitch)` | `Integer(Integer, Integer, Float)` | `Play` plus a playback-rate multiplier (0.25–4.0; 1.0 = native) |
 | `PlayLoop(volume, pan)`  | `Integer(Integer, Integer)`        | Play looped through the SFX mix group with volume and pan |
-| `Free()`                 | `Void()`                            | Release this Sound reference and its decoded buffer when no references remain |
+| `Destroy()`              | `Void()`                            | Release this Sound reference and its decoded buffer when no references remain |
 
 > **Voice limit:** Up to 32 sounds may play simultaneously. A 33rd `Play()` call stops
 > the **oldest-started** playing non-looping sound to make room. This is voice stealing,
@@ -79,7 +79,7 @@ audio context, including synthesized and `MusicGen.Build()` results.
 
 `LoadAsset` searches embedded assets, mounted packs, then the filesystem. Every failure —
 missing or zero-byte asset, decode error, or backend failure — returns `null`, matching
-`Sound.Load`'s uniform nullable contract. `Free()` consumes one retained reference: do not use that reference
+`Sound.Load`'s uniform nullable contract. `Destroy()` consumes one retained reference: do not use that reference
 again unless another owner (for example, a `SoundBank`) retained the Sound.
 
 ### Voice Control
@@ -197,7 +197,7 @@ remain paused and retain their load slots.
 | Method         | Signature           | Description                              |
 |----------------|---------------------|------------------------------------------|
 | `CrossfadeTo(next, duration)` | `Void(Music, Integer)` | Fade to `next` over `duration` milliseconds |
-| `Free()`       | `Void()`            | Release this stream reference and its load slot when no references remain |
+| `Destroy()`    | `Void()`            | Release this stream reference and its load slot when no references remain |
 | `IsPlaying()`  | `Boolean()`         | Returns `true` only while actively playing (not while paused) |
 | `Pause()`      | `Void()`            | Pause playback; also freezes an active crossfade involving this track |
 | `Play(loop)`   | `Void(Integer)`     | Play the track; stopped tracks restart at zero, and any nonzero `loop` enables looping |
@@ -209,7 +209,7 @@ remain paused and retain their load slots.
 > **Seek behavior:** `Music.Seek(ms)` only repositions that stream. It does not cancel
 > unrelated music or active playlist playback.
 
-After `Free()`, the released reference must not be used again. `Audio.Shutdown()` instead leaves
+After `Destroy()`, the released reference must not be used again. `Audio.Shutdown()` instead leaves
 the wrapper safe to release but permanently detaches its backend stream; that wrapper remains
 inert, so load a new Music object after reinitializing audio.
 
@@ -515,7 +515,7 @@ crossfade it temporarily retains both streams.
 | `Pause()` | `Void()` | Pause the current track and any crossfade that owns it |
 | `Stop()` | `Void()` | Stop and rewind the current track without changing `Current` |
 | `Next()` | `Void()` | Move forward; repeat-all wraps, while repeat-none stops at the last entry |
-| `Prev()` | `Void()` | Move backward; repeat-all wraps, while other modes clamp at the first entry |
+| `Previous()` | `Void()` | Move backward; repeat-all wraps, while other modes clamp at the first entry |
 | `Jump(index)` | `Void(Integer)` | Select an actual queue index; invalid indices are ignored |
 | `Update()` | `Void()` | Service streaming/crossfades and auto-advance a successfully playing track |
 

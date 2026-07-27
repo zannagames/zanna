@@ -13,6 +13,8 @@
 //   - The production workbench publishes a zoom-aware native minimum window size.
 //   - Responsive editor chrome is reconciled whenever layout dimensions change.
 //   - At most one focus-taking transient surface owns the workbench at a time.
+//   - Scene layout/focus presentations are reversible and never overwrite the
+//     user's primary-sidebar or independent tool-group layout.
 //   - Surface Edit availability is forwarded unchanged to menu and toolbar
 //     chrome; the shell does not infer text-editor-only behavior.
 // Ownership/Lifetime:
@@ -120,6 +122,10 @@ class AppShell {
     expose Integer tabContextIndex;
     hide Integer activeTransientOwner;
     hide GUI.Widget activeTransientSurface;
+    hide Boolean sceneOuterPresentationActive;
+    hide Boolean sceneWorkspaceModeActive;
+    hide Boolean sceneFocusModeActive;
+    hide Boolean sceneFocusRestoreSidebarVisible;
 
     /// @brief Initialize detached UI controllers.
     expose func init() {
@@ -132,6 +138,10 @@ class AppShell {
         tabContextIndex = -1;
         activeTransientOwner = TRANSIENT_SURFACE_NONE;
         activeTransientSurface = null;
+        sceneOuterPresentationActive = false;
+        sceneWorkspaceModeActive = false;
+        sceneFocusModeActive = false;
+        sceneFocusRestoreSidebarVisible = true;
     }
 
     /// @brief Construct the IDE window and persistent UI bands.
@@ -490,6 +500,71 @@ class AppShell {
     /// @brief Explicitly show or fully collapse the sidebar content pane.
     expose func SetSidebarVisible(visible: Boolean) {
         workbench.SetSidebarVisible(visible);
+    }
+
+    /// @brief Reclaim outer IDE docks once for either scene presentation.
+    hide func EnterSceneOuterPresentation() {
+        if sceneOuterPresentationActive { return; }
+        sceneFocusRestoreSidebarVisible =
+            workbench.IsSidebarVisible();
+        sceneOuterPresentationActive = true;
+        workbench.SetSidebarVisible(false);
+        toolPanels.EnterFocusPresentation();
+    }
+
+    /// @brief Restore outer IDE docks once neither scene presentation needs them.
+    hide func ExitSceneOuterPresentation() {
+        if sceneOuterPresentationActive == false { return; }
+        toolPanels.ExitFocusPresentation();
+        workbench.SetSidebarVisible(
+            sceneFocusRestoreSidebarVisible);
+        sceneOuterPresentationActive = false;
+    }
+
+    /// @brief Reclaim outer workbench docks while keeping scene panes visible.
+    /// @details This scene-layout presentation sits between the ordinary IDE
+    ///          and full scene focus. It is ephemeral and composes with focus.
+    expose func SetSceneWorkspaceMode(active: Boolean) {
+        if active == sceneWorkspaceModeActive { return; }
+        sceneWorkspaceModeActive = active;
+        if active {
+            EnterSceneOuterPresentation();
+        } else if sceneFocusModeActive == false {
+            ExitSceneOuterPresentation();
+        }
+    }
+
+    /// @brief Toggle the reversible outer-only scene workspace presentation.
+    expose func ToggleSceneWorkspaceMode() {
+        SetSceneWorkspaceMode(sceneWorkspaceModeActive == false);
+    }
+
+    /// @brief Return whether outer-only scene workspace presentation is active.
+    expose func IsSceneWorkspaceModeActive() -> Boolean {
+        return sceneWorkspaceModeActive;
+    }
+
+    /// @brief Reclaim or restore outer workbench docks for full scene focus.
+    /// @details Full focus composes with Scene Layout: leaving focus restores
+    ///          outer docks only when the outer-only layout is also inactive.
+    expose func SetSceneFocusMode(active: Boolean) {
+        if active == sceneFocusModeActive { return; }
+        sceneFocusModeActive = active;
+        if active {
+            EnterSceneOuterPresentation();
+        } else if sceneWorkspaceModeActive == false {
+            ExitSceneOuterPresentation();
+        }
+    }
+
+    /// @brief Toggle the reversible scene-authoring focus presentation.
+    expose func ToggleSceneFocusMode() {
+        SetSceneFocusMode(sceneFocusModeActive == false);
+    }
+
+    /// @brief Return whether scene focus presentation currently owns the shell.
+    expose func IsSceneFocusModeActive() -> Boolean {
+        return sceneFocusModeActive;
     }
 
     /// @brief Select the active document surface.

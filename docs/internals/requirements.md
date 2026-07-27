@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-04-09
+last-verified: 2026-07-26
 ---
 
 # Zanna C++ Compiler Requirements Specification
@@ -272,10 +272,10 @@ These compiler extensions are **mandatory** for compiling Zanna OS. Without them
 | Category | Operators |
 |----------|-----------|
 | Arithmetic | `+`, `-`, `*`, `/`, `%` |
-| Bitwise | `&`, `|`, `^`, `~`, `<<`, `>>` |
+| Bitwise | `&`, `\|`, `^`, `~`, `<<`, `>>` |
 | Comparison | `==`, `!=`, `<`, `>`, `<=`, `>=` |
-| Logical | `&&`, `||`, `!` |
-| Assignment | `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=` |
+| Logical | `&&`, `\|\|`, `!` |
+| Assignment | `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `\|=`, `^=`, `<<=`, `>>=` |
 | Increment/Decrement | `++`, `--` (prefix and postfix) |
 | Pointer | `*` (dereference), `&` (address-of), `->`, `.` |
 | Ternary | `?:` |

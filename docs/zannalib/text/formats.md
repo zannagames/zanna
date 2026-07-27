@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-14
+last-verified: 2026-07-26
 ---
 
 # Data Formats
@@ -286,11 +286,12 @@ Pull-based JSON tokenizer for processing a complete JSON string without building
 | `NumberValue()` | `Double()`       | Get numeric value of current token                |
 | `BoolValue()`   | `Boolean()`      | Get boolean value of current token                |
 | `Skip()`        | `Void()`         | Skip current value (object, array, or primitive)  |
-| `Error()`       | `String()`       | Compatibility diagnostic after `Next()` returns `TOK_ERROR` |
 
 ### Token Types
 
-| Constant       | Value | Description      |
+Token types are plain integers; pass and compare the values directly.
+
+| Token          | Value | Description      |
 |----------------|-------|------------------|
 | `TOK_NONE`         | 0  | No token yet              |
 | `TOK_OBJECT_START` | 1  | `{` — object begins      |
@@ -307,8 +308,9 @@ Pull-based JSON tokenizer for processing a complete JSON string without building
 
 ### Notes
 
-- Pull-based: call `NextResult()` to advance when parsing untrusted JSON; use `Next()` only when
-  you want the legacy integer-token path.
+- Pull-based: call `NextResult()` to advance when parsing untrusted JSON — it reports a parse
+  failure as `Err(message)`. `Next()` returns the raw token type and signals failure as
+  `TOK_ERROR` (10).
 - `Skip()` scans through the current container without allocating its value tree. Primitive tokens
   are already consumed, so `Skip()` is a no-op on them.
 - `Depth` is the number of currently open objects/arrays after the current token is consumed.
@@ -316,8 +318,8 @@ Pull-based JSON tokenizer for processing a complete JSON string without building
   less additional memory than `Json.Parse()` because it does not allocate a value tree, but it is
   not an incremental/feed parser.
 - Tokens are consumed in order; there is no random access.
-- `NextResult()` returns `Err(message)` on malformed JSON, avoiding a separate `Error()`
-  side-channel read. Normal tokens, including `TOK_END`, are returned as `Ok(token)`.
+- `NextResult()` returns `Err(message)` on malformed JSON. Normal tokens, including `TOK_END`,
+  are returned as `Ok(token)`.
 - The parser enforces JSON separators and container state: missing commas/colons, mismatched closers, trailing commas, and multiple top-level values produce `TOK_ERROR`
 - Number parsing rejects leading zeroes, incomplete fractions/exponents, NaN, Infinity, and overflow
 - Strings reject raw control characters and invalid UTF-16 surrogate pairs
@@ -754,7 +756,9 @@ formats with different data models.
 
 ### Format Constants
 
-| Constant       | Value | Description      |
+Format selectors are plain integers; pass the values directly to the methods below.
+
+| Format         | Value | Description      |
 |----------------|-------|------------------|
 | `FORMAT_JSON`  | 0     | JSON (RFC 8259)  |
 | `FORMAT_XML`   | 1     | XML (subset)     |
@@ -778,7 +782,6 @@ formats with different data models.
 | `FormatName(format)`                | `String(Integer)`                | Get format name ("json", "xml", etc.)           |
 | `MimeType(format)`                  | `String(Integer)`                | Get MIME type ("application/json", etc.)        |
 | `FormatFromName(name)`              | `Integer(String)`                | Look up format by name (case-insensitive)       |
-| `Error()`                           | `String()`                       | Compatibility diagnostic after legacy parse calls |
 
 ### Notes
 
@@ -788,10 +791,9 @@ formats with different data models.
   first-line comma → CSV. Unknown plain text returns `-1`. Detection is a best-effort guess, not
   content-type proof.
 - Prefer `ParseResult()` and `AutoParseResult()` for user-provided input; failures are returned as `Err(message)`
-- `ParseResult()` returns `Ok(NULL)` for a valid JSON/YAML null value; `Parse()` cannot distinguish
-  that success from an error without consulting `Error()`.
-- `Parse()` and `AutoParse()` remain available for compatibility and return NULL on error; check
-  `Error()` immediately after the call for details. Error state is thread-local.
+- `ParseResult()` returns `Ok(NULL)` for a valid JSON/YAML null value. `Parse()` and `AutoParse()`
+  return NULL for both that success and a parse failure, so use the Result forms whenever the two
+  must be told apart.
 - `Convert()` is `Format(Parse(text, from), to)` plus generic projections. It preserves neither
   source spelling nor all source semantics: TOML scalar types currently parse as strings, XML
   declarations/DTDs are discarded, and CSV has no nested object model.
@@ -879,7 +881,6 @@ child manipulation, and simple slash-path queries. All node values are opaque ob
 |--------------------|--------------------------|--------------------------------------------------|
 | `Parse(xml)`       | `Object(String)`         | Parse an XML string; returns document node or NULL |
 | `ParseResult(xml)` | `Result(String)`         | Parse as `Ok(document)` or `Err(message)`       |
-| `Error()`          | `String()`               | Compatibility diagnostic after legacy parse calls |
 | `IsValid(xml)`     | `Boolean(String)`        | True if the runtime's XML subset accepts the string |
 
 ### Node Creation
@@ -927,7 +928,6 @@ child manipulation, and simple slash-path queries. All node values are opaque ob
 | Method            | Signature                | Description                                             |
 |-------------------|--------------------------|---------------------------------------------------------|
 | `Find(n, path)`   | `Object(Object, String)` | Find first node matching a simple path (e.g. "a/b/c")  |
-| `FindOption(n, path)` | `Option[Object](Object, String)` | Find first matching node as `Some(node)`, or `None` |
 | `FindAll(n, path)`| `Object(Object, String)` | Return a `Seq` of all nodes matching the path            |
 
 ### Mutation
@@ -951,10 +951,10 @@ child manipulation, and simple slash-path queries. All node values are opaque ob
 
 ### Notes
 
-- Prefer `ParseResult` for user-provided XML; it returns `Ok(document)` or `Err(message)` without a side-channel read.
-- `Parse` remains available for compatibility and returns a document node on success or NULL on error. Use `Root(doc)` to get the document element.
-- Check `Error()` after a legacy `Parse` NULL return for a diagnostic message.
-- Prefer `FindOption()` for new search code. `Find()` remains available for compatibility with existing NULL checks.
+- Prefer `ParseResult` for user-provided XML; it returns `Ok(document)` or `Err(message)`.
+- `Parse` returns a document node on success or NULL on error, with no accompanying message. Use
+  `Root(doc)` to get the document element.
+- `Find` returns NULL when no node matches the path.
 - Parsing supports elements, attributes, text, comments, CDATA, processing instructions, and
   DOCTYPE declarations. Processing instructions and DOCTYPE contents are validated only for a
   terminator and are discarded rather than represented in the node tree.
@@ -1075,7 +1075,6 @@ Zanna strings, integers, doubles, booleans, NULL, Maps, and Seqs.
 |---------------------------|----------------------------------|-------------------------------------------------------|
 | `Parse(yaml)`             | `Object(String)`                 | Parse YAML string; returns value or NULL on error     |
 | `ParseResult(yaml)`       | `Result(String)`                 | Parse as `Ok(value)` or `Err(message)`                |
-| `Error()`                 | `String()`                       | Compatibility diagnostic after legacy parse calls     |
 | `IsValid(yaml)`           | `Boolean(String)`                | True if the runtime's YAML subset accepts the string  |
 | `Format(obj)`             | `String(Object)`                 | Format a value as block YAML with two-space indentation |
 | `FormatIndent(obj, spaces)` | `String(Object, Integer)`      | Format with given indentation level                   |
@@ -1097,7 +1096,7 @@ Zanna strings, integers, doubles, booleans, NULL, Maps, and Seqs.
 ### Notes
 
 - Prefer `ParseResult` for user-provided YAML; it distinguishes valid YAML null (`Ok(NULL)`) from parse failure (`Err(message)`).
-- `Parse` remains available for compatibility and returns NULL both for valid YAML null and for parse failure; check `Error()` after legacy calls when NULL is ambiguous.
+- `Parse` returns NULL both for valid YAML null and for parse failure, so use `ParseResult` when NULL is ambiguous.
 - The returned object uses the same representation as `Zanna.Data.Json.Parse` — use `Map`, `Seq`, and scalar
   accessors to traverse the parsed value.
 - Explicit multi-document YAML streams separated by `---` parse as a sequence of documents.
@@ -1112,7 +1111,7 @@ Zanna strings, integers, doubles, booleans, NULL, Maps, and Seqs.
   the requested width from 1 through 8, changes values below 1 to 2, and clamps values above 8.
 - The formatter is not lossless for every runtime scalar: `%g` formatting can round doubles, and
   string/key formatting stops at an embedded `NUL`. See
-  [VDOC-027](../../../misc/reviews/documentation-review-findings.md#vdoc-027--yaml-format-can-lose-double-precision-and-string-bytes).
+  [VDOC-027](../../../misc/reviews/documentation-review-findings.md#vdoc-027--yamlformat-can-lose-double-precision-and-string-bytes).
 - A plain scalar with an embedded `NUL` can be classified from only its numeric prefix while the
   remaining bytes are ignored—for example, `1\0garbage` is accepted as integer `1`. See
   [VDOC-039](../../../misc/reviews/documentation-review-findings.md#vdoc-039--yaml-numeric-scalar-parsing-ignores-bytes-after-an-embedded-nul).

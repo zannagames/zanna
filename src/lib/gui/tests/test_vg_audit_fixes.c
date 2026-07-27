@@ -240,6 +240,31 @@ TEST(tooltip_manager_drops_pointer_when_widget_destroyed) {
     ASSERT_NULL(mgr->hovered_widget);
 }
 
+/// @brief Fix #2 — replacing or clearing tooltip text on the hovered widget immediately refreshes
+/// the manager's shared popup without requiring another pointer movement.
+TEST(tooltip_manager_refreshes_hovered_widget_text) {
+    vg_tooltip_manager_t *mgr = vg_tooltip_manager_get();
+    ASSERT_NOT_NULL(mgr);
+    vg_tooltip_manager_on_leave(mgr);
+
+    vg_widget_t *widget = vg_widget_create(VG_WIDGET_BUTTON);
+    ASSERT_NOT_NULL(widget);
+    vg_widget_set_tooltip_text(widget, "Open hierarchy");
+    vg_tooltip_manager_on_hover(mgr, widget, 10, 20);
+    ASSERT_NOT_NULL(mgr->active_tooltip);
+    ASSERT(strcmp(mgr->active_tooltip->text, "Open hierarchy") == 0);
+
+    vg_widget_set_tooltip_text(widget, "Return to viewport");
+    ASSERT(strcmp(mgr->active_tooltip->text, "Return to viewport") == 0);
+
+    vg_widget_set_tooltip_text(widget, NULL);
+    ASSERT_FALSE(mgr->pending_show);
+    ASSERT_FALSE(mgr->active_tooltip->is_visible);
+
+    vg_widget_destroy(widget);
+    ASSERT_NULL(mgr->hovered_widget);
+}
+
 //=============================================================================
 // Fix #3: notification created_at is stamped on first manager update
 //=============================================================================
@@ -1057,6 +1082,60 @@ TEST(tooltip_wrap_terminates_on_whitespace_only_text) {
 
     ASSERT_TRUE(true); // reached here => no infinite loop
     vg_widget_destroy(&tip->base);
+}
+
+/// @brief A5 — tooltip wrapping uses the last complete word that fits instead of cutting the next
+/// word into the preceding line.
+TEST(tooltip_wrap_prefers_complete_words) {
+    vg_tooltip_t *tip = vg_tooltip_create();
+    ASSERT_NOT_NULL(tip);
+    vg_font_t *font = vg_font_load_file(ZANNA_TEST_FONT_PATH);
+    ASSERT_NOT_NULL(font);
+    tip->font = font;
+
+    vg_text_metrics_t partial_line = {0};
+    vg_font_measure_text(tip->font, tip->font_size, "MMMMM MMMM", &partial_line);
+    ASSERT_TRUE(partial_line.width > 0.0f);
+
+    tip->padding = 1;
+    tip->max_width = (uint32_t)partial_line.width + tip->padding * 2;
+    vg_tooltip_set_text(tip, "MMMMM MMMMM MMMMM");
+    tip->base.vtable->measure(&tip->base, 0.0f, 0.0f);
+
+    vg_font_metrics_t font_metrics = {0};
+    vg_font_get_metrics(tip->font, tip->font_size, &font_metrics);
+    float line_height =
+        font_metrics.line_height > 0 ? (float)font_metrics.line_height : tip->font_size;
+    float expected_height = line_height * 3.0f + (float)tip->padding * 2.0f;
+    ASSERT_NEAR(tip->base.measured_height, expected_height, 0.5f);
+
+    vg_widget_destroy(&tip->base);
+    vg_font_destroy(font);
+}
+
+/// @brief A5 — one explicit newline starts the next line without inserting an unintended blank
+/// row between the two paragraphs.
+TEST(tooltip_wrap_honors_single_newline_once) {
+    vg_tooltip_t *tip = vg_tooltip_create();
+    ASSERT_NOT_NULL(tip);
+    vg_font_t *font = vg_font_load_file(ZANNA_TEST_FONT_PATH);
+    ASSERT_NOT_NULL(font);
+    tip->font = font;
+
+    tip->padding = 1;
+    tip->max_width = 1000;
+    vg_tooltip_set_text(tip, "first line\nsecond line");
+    tip->base.vtable->measure(&tip->base, 0.0f, 0.0f);
+
+    vg_font_metrics_t font_metrics = {0};
+    vg_font_get_metrics(tip->font, tip->font_size, &font_metrics);
+    float line_height =
+        font_metrics.line_height > 0 ? (float)font_metrics.line_height : tip->font_size;
+    float expected_height = line_height * 2.0f + (float)tip->padding * 2.0f;
+    ASSERT_NEAR(tip->base.measured_height, expected_height, 0.5f);
+
+    vg_widget_destroy(&tip->base);
+    vg_font_destroy(font);
 }
 
 // A6: TreeView scroll_y is re-clamped when a node collapses.
@@ -5244,6 +5323,7 @@ int main(void) {
 
     printf("\nFix #2: Tooltip dangling pointer\n");
     RUN(tooltip_manager_drops_pointer_when_widget_destroyed);
+    RUN(tooltip_manager_refreshes_hovered_widget_text);
 
     printf("\nFix #3: Notification created_at lazy stamp\n");
     RUN(notification_auto_dismiss_uses_lazy_created_at);
@@ -5293,6 +5373,8 @@ int main(void) {
     RUN(dropdown_flip_above_without_window_is_noop);
     RUN(scrollview_narrow_still_hit_tests_children);
     RUN(tooltip_wrap_terminates_on_whitespace_only_text);
+    RUN(tooltip_wrap_prefers_complete_words);
+    RUN(tooltip_wrap_honors_single_newline_once);
     RUN(tooltip_manager_honors_duration_and_hide_delay);
     RUN(treeview_collapse_reclamps_scroll);
     RUN(notification_manual_dismiss_respects_exit_animation);

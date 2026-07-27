@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-05-26
+last-verified: 2026-07-26
 ---
 
 # 3D Physics
@@ -359,13 +359,13 @@ sleeping, and optional CCD.
 | `AngularDamping` | Double | Read/Write | Per-step damping applied to spin |
 | `CollisionLayer` | Integer | Read/Write | Layer bitmask for this body |
 | `CollisionMask` | Integer | Read/Write | Which layers this body collides with |
-| `Static` | Boolean | Read/Write | Treat body as static |
-| `Kinematic` | Boolean | Read/Write | Treat body as kinematic |
-| `Trigger` | Boolean | Read/Write | Trigger-only overlap body; no impulse response |
+| `IsStatic` | Boolean | Read/Write | Treat body as static |
+| `IsKinematic` | Boolean | Read/Write | Treat body as kinematic |
+| `IsTrigger` | Boolean | Read/Write | Trigger-only overlap body; no impulse response |
 | `CanSleep` | Boolean | Read/Write | Allow the body to auto-sleep when idle |
-| `Sleeping` | Boolean | Read | Body is currently asleep |
+| `IsSleeping` | Boolean | Read | Body is currently asleep |
 | `UseCcd` | Boolean | Read/Write | Enable substep-based CCD for fast motion |
-| `Grounded` | Boolean | Read | Body touched a ground-like contact in the last step |
+| `IsGrounded` | Boolean | Read | Body touched a ground-like contact in the last step |
 | `GroundNormal` | Object (`Vec3`) | Read | Normal of the last ground contact |
 | `Mass` | Double | Read | Body mass |
 
@@ -507,7 +507,7 @@ Controller-based character movement with slide-and-step collision against a `Phy
 |----------|------|--------|-------------|
 | `StepHeight` | Double | Read/Write | Maximum step-up height |
 | `World` | Object | Read/Write | Attached `PhysicsWorld3D` |
-| `Grounded` | Boolean | Read | Character is grounded |
+| `IsGrounded` | Boolean | Read | Character is grounded |
 | `JustLanded` | Boolean | Read | Character landed during the latest move |
 | `Position` | Object (`Vec3`) | Read | Current world position |
 | `Height` | Double | Read/Write | Capsule height including caps; the setter is `TrySetHeight` with the result ignored |
@@ -552,7 +552,7 @@ Auto-built ragdoll rigs: capsule bodies and limited 6-DoF joints fitted to a
 | `RadiusScale` | Double | Read/Write | Capsule radius as a fraction of bone length (default 0.22) |
 | `MinBoneLength` | Double | Read/Write | Bones shorter than this collapse into their parent body (default 0.12) |
 | `BodyCount` | Integer | Read | Number of rig bodies (builds the rig on first read) |
-| `Active` | Boolean | Read | True between `Activate` and `Deactivate` |
+| `IsActive` | Boolean | Read | True between `Activate` and `Deactivate` |
 
 ### Methods
 

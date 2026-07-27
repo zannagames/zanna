@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-08
+last-verified: 2026-07-26
 ---
 
 # Zia — Reference
@@ -422,15 +422,17 @@ func start() {
 | Operator | Description |
 |----------|-------------|
 | `&&` / `and` | Logical AND |
-| `||` / `or` | Logical OR |
+| `\|\|` / `or` | Logical OR |
 
-#### Bitwise
+#### Bitwise and Shifts
 
 | Operator | Description |
 |----------|-------------|
 | `&` | Bitwise AND |
-| `|` | Bitwise OR |
+| `\|` | Bitwise OR |
 | `^` | Bitwise XOR |
+| `<<` | Shift left |
+| `>>` | Shift right |
 
 #### Assignment
 
@@ -445,7 +447,7 @@ func start() {
 | `<<=` | Shift left and assign |
 | `>>=` | Shift right and assign |
 | `&=` | Bitwise AND and assign |
-| `|=` | Bitwise OR and assign |
+| `\|=` | Bitwise OR and assign |
 | `^=` | Bitwise XOR and assign |
 
 Compound assignment operators desugar to `a = a op b` at parse time. The left-hand side must be a mutable variable, field, or indexed expression.
@@ -467,7 +469,8 @@ custom value semantics.
   `-7 / 2` is `-3`. `%` takes the sign of the dividend: `-7 % 3` is `-1` and
   `7 % -3` is `1`.
 - **Division or modulo by zero traps** at runtime. A literal zero divisor is
-  also reported at compile time (warning `W010`).
+  also reported at compile time as `W010`, which strict diagnostics — the default —
+  promote to an error. Pass `--no-strict-diagnostics` to keep it a warning.
 - **`Number` arithmetic follows IEEE 754** — no traps; division by zero yields
   infinity or NaN.
 - **Mixed `Integer`/`Number` operands widen to `Number`.** There is no implicit
@@ -2103,7 +2106,8 @@ Flush();             // Flush output buffer
 
 ```zia
 Zanna.Time.Clock.Sleep(ms);         // Sleep for milliseconds
-Zanna.Time.Clock.Ticks();      // Monotonic milliseconds (CLOCK_MONOTONIC, not Unix epoch)
+Zanna.Time.Clock.NowMs();           // Monotonic milliseconds (not Unix epoch)
+Zanna.Time.Clock.NowMicros();       // Monotonic microseconds
 ```
 
 #### Math
@@ -2193,13 +2197,13 @@ From highest to lowest:
 | 6 | `==` `!=` | Left |
 | 7 | `&` | Left |
 | 8 | `^` | Left |
-| 9 | `|` | Left |
+| 9 | `\|` | Left |
 | 10 | `&&` / `and` | Left |
-| 11 | `||` / `or` | Left |
+| 11 | `\|\|` / `or` | Left |
 | 12 | `??` | Right |
 | 13 | `..` `..=` | Left |
 | 14 | `? :` | Right |
-| 15 | `=` `+=` `-=` `*=` `/=` `%=` `<<=` `>>=` `&=` `|=` `^=` | Right |
+| 15 | `=` `+=` `-=` `*=` `/=` `%=` `<<=` `>>=` `&=` `\|=` `^=` | Right |
 
 ---
 
@@ -2291,6 +2295,11 @@ flag likely bugs without stopping compilation. Each warning has a stable code
 The "on" warnings fire by default; the `-Wall` ones require opting in. `W017`
 (`^` read as exponentiation) and `W018` (`&` read as concatenation) fire on every
 `^`/`&`, which is noise for ordinary bit manipulation, so they are `-Wall` only.
+
+**Strict diagnostics.** Five of these — `W008`, `W010`, `W015`, `W016`, and `W019` —
+are safety warnings that the frontend promotes to hard errors by default. Pass
+`--no-strict-diagnostics` to keep them as warnings. `zanna explain <code>` prints
+the current classification for any code.
 
 **Suppression.** Add a `// @suppress(...)` comment on the same line as, or the
 line immediately before, the flagged construct. Accept either the code or the

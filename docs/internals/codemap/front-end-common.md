@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-05-31
+last-verified: 2026-07-26
 ---
 
 # CODEMAP: Frontend Common
@@ -10,7 +10,7 @@ Shared utilities (`src/frontends/common/`) used across all language frontends.
 
 ## Overview
 
-- **Total source files**: 21 (.cpp/.hpp)
+- **Total source files**: 23 (.cpp/.hpp)
 
 ## Lexer Utilities
 

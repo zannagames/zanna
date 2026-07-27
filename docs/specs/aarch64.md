@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-05-16
+last-verified: 2026-07-26
 ---
 
 # AArch64 (arm64) Backend — Status
@@ -543,10 +543,10 @@ New MIR opcodes added to support these patterns: `Cbnz`, `MAddRRRR`, `Csel`, `Ld
 
 - **AArch64 PassManager**: `CodegenPipeline` now uses `PassManager`-based composition with Scheduler and BlockLayout passes at O1+; per-pass verification hooks remain limited
 - **Darwin symbol fixup**: Uses string search-and-replace on full assembly output (fragile); needs redesign
-- **Debug information**: DWARF v5 emitted by native linker; source-level debugging available
 - **Instruction scheduling**: Post-RA scheduler implemented; further scheduling opportunities remain
 - **MIR verification**: No inter-pass MIR invariant checker
-- **Stack size configuration**: No `--stack-size` flag equivalent to x86-64 backend
+- **MIR-level constant folding**: Folding is done in the IL optimizer; the MIR layer has no
+  independent constant folder
 
 ## References
 

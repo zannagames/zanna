@@ -1,22 +1,78 @@
-// =============================================================================
-// probes/assets_probe.zia — downloaded-asset path + fallback-purity probe
-// =============================================================================
+//===----------------------------------------------------------------------===//
 //
-// (a) Forces the asset registry ON, spawns every archetype, cycles every
-//     weapon, and renders frames — exercising GLB template instantiation,
-//     animator crossfades, and the weapon view-model GLB path. Prints
-//     assets=loaded when assets_src/ is present, assets=fallback otherwise;
-//     PASSES either way (the asset-optional contract).
-// (b) Boots a second game with the registry left OFF and repeats the spawn +
-//     render sweep — proving the composite fallback path is complete on its
-//     own (an asset-less checkout stays green).
-// =============================================================================
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/ashfall-scenes/probes/assets_probe.zia
+// Purpose: Validate runtime asset fallbacks and Studio authoring previews.
+// Key invariants:
+//   - Optional downloaded art can never make the fallback render path impure.
+//   - Every metadata variant referenced by Studio has a loadable, nonempty
+//     self-contained preview prefab.
+// Ownership/Lifetime:
+//   - Each probe game and loaded preview graph is process-local and temporary.
+//   - The probe never writes or mutates source assets.
+// Links: ../tools/build_studio_previews.zia, ../scene-components.json,
+//        docs/adr/0199-project-owned-3d-node-prefab-previews.md
+//
+//===----------------------------------------------------------------------===//
+
 module assets_probe;
 
+bind Zanna.Graphics3D as G3D;
+bind Zanna.IO.File as File;
 bind Zanna.Terminal as Terminal;
 bind "../config" as config;
 bind "../game" as game;
 
+/// @brief Return a stable two-digit metadata-variant suffix.
+func variantSuffix(index: Integer) -> String {
+    if index < 10 { return "0" + index; }
+    return "" + index;
+}
+
+/// @brief Resolve previews from either the project or repository working dir.
+func previewRoot() -> String {
+    var local = "assets/editor-previews";
+    if File.Exists(local + "/prop-00.scene3d") { return local; }
+    return "examples/games/ashfall-scenes/assets/editor-previews";
+}
+
+/// @brief Validate a contiguous prefab family without mutating any graph.
+func validatePreviewFamily(
+    root: String, prefix: String, count: Integer) -> Boolean {
+    var index = 0;
+    while index < count {
+        var path =
+            root + "/" + prefix + "-" + variantSuffix(index) + ".scene3d";
+        if File.Exists(path) == false {
+            Terminal.Say("FAIL: missing Studio preview " + path);
+            return false;
+        }
+        var preview = G3D.SceneGraph.Load(path);
+        if preview == null or preview.Root == null
+           or preview.Root.ChildCount == 0 {
+            Terminal.Say("FAIL: invalid Studio preview " + path);
+            return false;
+        }
+        index = index + 1;
+    }
+    return true;
+}
+
+/// @brief Validate every prefab referenced by scene-components.json.
+func validateStudioPreviews() -> Boolean {
+    var root = previewRoot();
+    if validatePreviewFamily(root, "prop", 24) == false { return false; }
+    if validatePreviewFamily(root, "enemy", 14) == false { return false; }
+    if validatePreviewFamily(root, "pickup", 5) == false { return false; }
+    Terminal.Say("studioPreviews=ok count=43");
+    return true;
+}
+
+/// @brief Exercise all runtime enemy and weapon presentation paths.
 func sweep(g: game.Game) {
     var a = 0;
     while a < config.EN_TYPE_COUNT {
@@ -41,7 +97,10 @@ func sweep(g: game.Game) {
     }
 }
 
+/// @brief Run authored-preview, optional-art, and fallback-purity checks.
 func start() {
+    if validateStudioPreviews() == false { return; }
+
     // (a) Registry forced on.
     var g = new game.Game();
     g.setHeadless(true);

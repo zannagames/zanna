@@ -729,7 +729,8 @@ if t.WasActionClicked() { /* undo action */ }
 
 Tooltip display system (static methods).
 
-Widget tooltips now wrap long text, draw a rounded opaque panel/background, and automatically disappear when the hovered or anchored widget is hidden, disabled, or destroyed.
+Widget tooltips wrap long text at complete-word boundaries, preserve explicit blank lines without adding spurious rows, keep UTF-8 code points intact when an over-wide word must split, draw a rounded opaque panel/background, and automatically disappear when the hovered or anchored widget is hidden, disabled, or destroyed.
+When a stateful control changes its tooltip while still hovered, the visible popup refreshes and remeasures immediately instead of retaining stale guidance until the pointer moves.
 Leave events honor the configured hide delay, timed tooltips auto-hide after their display duration, and hovering the same widget again after auto-hide re-shows the tooltip without requiring the pointer to visit another widget first.
 
 | Method                                          | Signature                | Description                    |

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-16
+last-verified: 2026-07-26
 ---
 
 # Chapter 13: The Standard Library
@@ -246,7 +246,7 @@ Games need dice rolls. Simulations need random data. Testing needs random inputs
 bind Zanna.Math.Random as Random;
 
 Random.Range(1, 100);  // Random integer from 1 to 100 (inclusive)
-Random.Next();         // Random float from 0.0 to 1.0
+Random.NextDouble();   // Random float from 0.0 to 1.0
 Random.Dice(2);        // 1 or 2 — simulates a coin flip
 ```
 
@@ -888,8 +888,8 @@ bind Zanna.IO.Dir as Dir;
 Dir.Make("output");
 Dir.MakeAll("output/reports/2024");  // Creates intermediate directories
 
-var files = Dir.FilesSeq("data");
-var dirs = Dir.DirsSeq("data");
+var files = Dir.Files("data");
+var dirs = Dir.Dirs("data");
 
 if Dir.Exists("backup") {
     // Directory exists
@@ -912,8 +912,8 @@ var path = Path.Join(Path.Join("users/alice", "documents"), "file.txt");
 
 // Extract components
 Path.Name("/path/to/file.txt");     // "file.txt"
-Path.Ext("/path/to/file.txt");      // ".txt"
-Path.Dir("/path/to/file.txt");      // "/path/to"
+Path.Extension("/path/to/file.txt");      // ".txt"
+Path.Directory("/path/to/file.txt");      // "/path/to"
 Path.Stem("/path/to/file.txt");     // "file"
 ```
 
@@ -970,10 +970,10 @@ Base64 encoding converts binary data to text. This lives in `Zanna.Text.Codec`:
 ```zia
 bind Codec = Zanna.Text.Codec;
 
-var encoded = Codec.Base64Enc("Hello, World!");
+var encoded = Codec.Base64Encode("Hello, World!");
 // "SGVsbG8sIFdvcmxkIQ=="
 
-var decoded = Codec.Base64Dec(encoded);
+var decoded = Codec.Base64Decode(encoded);
 // "Hello, World!"
 ```
 
@@ -1388,7 +1388,7 @@ The Zanna standard library provides:
 | I/O | Terminal, IO.File, IO.Dir, IO.Path | Say, ReadLine, File.ReadAllText, Path.Join |
 | Numbers | Math, Math.Random, Convert | Math.Sqrt, Math.Sin, Random.Range, Convert.ToInt64 |
 | Text | String, Fmt | String.Trim, String.Split, Fmt.Int, Fmt.NumFixed |
-| Time | Time | Time.DateTime.Now, Time.Clock.Ticks, Time.Clock.Sleep |
+| Time | Time | Time.DateTime.Now, Time.Clock.NowMs, Time.Clock.Sleep |
 | Data | Generic collections, Zanna.Collections | `list.add`, `map.set`, `set.add`, `Queue.New` |
 | System | Environment, Machine | Env.GetArgument, Env.GetVariable, Machine.Os |
 | Security | Crypto.Hash, Codec, Uuid | Hash.SHA256, Hash.HmacSHA256, Uuid.Generate |

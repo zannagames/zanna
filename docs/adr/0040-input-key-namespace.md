@@ -4,7 +4,7 @@ audience: contributors
 last-verified: 2026-07-02
 ---
 
-# ADR-0040: Input Key Namespace
+# ADR 0040: Input Key Namespace
 
 ## Status
 

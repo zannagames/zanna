@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-04-09
+last-verified: 2026-07-26
 ---
 
 # Engine Architecture
@@ -96,7 +96,7 @@ The mixer runs on a separate thread, blending up to 32 simultaneous voices. When
 
 ### Input Layer
 
-Input flows through Canvas event polling. `KeyHeld()` provides raw key state. The **Action** system adds a mapping layer — define named actions (`"jump"`, `"shoot"`) and bind them to keys, mouse buttons, or gamepad buttons. Actions support `Pressed()` (edge-triggered) and `Held()` (level-triggered) queries.
+Input flows through Canvas event polling. `Keyboard.IsDown()` provides raw key state. The **Action** system adds a mapping layer — define named actions (`"jump"`, `"shoot"`) and bind them to keys, mouse buttons, or gamepad buttons. Actions support `Pressed()` (edge-triggered) and `Held()` (level-triggered) queries.
 
 ### Game Utilities Layer
 
@@ -125,7 +125,7 @@ Most example games use GameBase + IScene. Simpler programs (demos, tests) use th
    └─ ZannaGFX polls OS events → keyboard/mouse/gamepad state updated
 
 2. Input phase
-   └─ Game reads KeyHeld() / Action.Pressed() / Pad.Axis()
+   └─ Game reads Keyboard.IsDown() / Action.Pressed() / Action.Axis()
 
 3. Update phase
    └─ Entity.UpdatePhysics()     — apply gravity, move, collide with tilemap

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-05-17
+last-verified: 2026-07-26
 ---
 
 # 2D Rendering and Effects
@@ -34,7 +34,7 @@ These classes sit directly on top of `Pixels` and `Canvas`. They cover rendering
 ## Color And Blend Conventions
 
 - `Pixels` storage is raw `0xRRGGBBAA`.
-- `Palette2D` and `Gradient2D` store raw `0xRRGGBBAA` colors, and also accept tagged `Color.RGBA(...)` values by converting them into raw pixel storage. Public `GetColor` and `Sample` return `Color`-compatible values; use `GetRgba` and `SampleRgba` for raw storage integers.
+- `Palette2D` and `Gradient2D` store raw `0xRRGGBBAA` colors, and also accept tagged `Color.Rgba(...)` values by converting them into raw pixel storage. Public `GetColor` and `Sample` return `Color`-compatible values; use `GetRgba` and `SampleRgba` for raw storage integers.
 - Renderer/material/blend-state tint uses `-1` for no tint. A tint value of `0` is black.
 - Blend modes use `0 = alpha`, `1 = opaque`, `2 = additive`. Alpha mode uses straight-alpha source-over, matching `Pixels.BlendPixel` and `Canvas.BlitAlpha`; additive mode scales source RGB by source alpha, adds it to the destination, and clamps each channel.
 - `Texture2D.Filter` uses `0 = nearest`, `1 = linear`. Linear sampling interpolates RGB in premultiplied-alpha space so transparent edge texels do not bleed black into partially transparent results. Texture-region draws clamp or wrap within the requested region before sampling the backing image, so atlas neighbors do not bleed into bilinear samples.
@@ -70,11 +70,11 @@ canvas.BlitAlpha(0, 0, target.Pixels)
 ```zia
 var palette = Palette2D.New()
 palette.SetColor(3, 0xFF0000FF)
-palette.SetColor(4, Color.RGBA(0, 0, 255, 128))
+palette.SetColor(4, Color.Rgba(0, 0, 255, 128))
 var recolored = palette.Apply(sourcePixels)
 var legacyRecolored = palette.ApplyLegacy(oldAlphaByteIndexedPixels)
 
-var gradient = Gradient2D.New(0x000000FF, Color.RGBA(255, 255, 255, 192), 16)
+var gradient = Gradient2D.New(0x000000FF, Color.Rgba(255, 255, 255, 192), 16)
 gradient.FillHorizontal(pixels)
 ```
 

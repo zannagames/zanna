@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-16
+last-verified: 2026-07-26
 ---
 
 # Chapter 28: Software Architecture
@@ -155,8 +155,10 @@ class UserManager {
 
         // Hash password
         var hash = "";
-        for char in password {
-            hash = hash + String.fromCharCode(char.charCode() * 17 % 128);
+        var i = 0;
+        while i < password.Length {
+            hash = hash + Str.Chr(Str.Asc(Str.MidLen(password, i, 1)) * 17 % 128);
+            i = i + 1;
         }
 
         // Save to database
@@ -1393,7 +1395,7 @@ func main() {
             );
             db.execute(
                 "INSERT INTO loans (isbn, borrower, date) VALUES (?, ?, ?)",
-                [isbn, borrower, Time.DateTime.ToISO(Time.DateTime.Now())]
+                [isbn, borrower, Time.DateTime.ToIso8601(Time.DateTime.Now())]
             );
             print("Book borrowed!");
 
@@ -1534,7 +1536,7 @@ class LoanRepository {
             id: row.getInt("id"),
             isbn: row.getString("isbn"),
             borrowerName: row.getString("borrower"),
-            borrowDate: DateTime.Parse(row.getString("date"))
+            borrowDate: DateTime.ParseIso8601(row.getString("date"))
         );
     }
 
@@ -1569,18 +1571,18 @@ class LibraryService {
     func addBook(title: String, author: String, isbn: String) -> Result[Book] {
         // Validation
         if title.Trim().Length == 0 {
-            return Result.error("Title is required");
+            return Result.ErrStr("Title is required");
         }
         if author.Trim().Length == 0 {
-            return Result.error("Author is required");
+            return Result.ErrStr("Author is required");
         }
         if isbn.Trim().Length == 0 {
-            return Result.error("ISBN is required");
+            return Result.ErrStr("ISBN is required");
         }
 
         // Check for duplicates
         if self.bookRepo.findByIsbn(isbn) != null {
-            return Result.error("Book with ISBN already exists");
+            return Result.ErrStr("Book with ISBN already exists");
         }
 
         var book = Book(
@@ -1591,22 +1593,22 @@ class LibraryService {
         );
         self.bookRepo.save(book);
 
-        return Result.success(book);
+        return Result.Ok(book);
     }
 
     func borrowBook(isbn: String, borrowerName: String) -> Result[Loan] {
         // Validation
         if borrowerName.Trim().Length == 0 {
-            return Result.error("Borrower name is required");
+            return Result.ErrStr("Borrower name is required");
         }
 
         // Find book
         var book = self.bookRepo.findByIsbn(isbn);
         if book == null {
-            return Result.error("Book not found");
+            return Result.ErrStr("Book not found");
         }
         if !book.available {
-            return Result.error("Book is not available");
+            return Result.ErrStr("Book is not available");
         }
 
         // Create loan
@@ -1627,20 +1629,20 @@ class LibraryService {
         );
         self.bookRepo.save(updatedBook);
 
-        return Result.success(loan);
+        return Result.Ok(loan);
     }
 
     func returnBook(isbn: String) -> Result[Boolean] {
         // Find active loan
         var loan = self.loanRepo.findActiveByIsbn(isbn);
         if loan == null {
-            return Result.error("No active loan for this book");
+            return Result.ErrStr("No active loan for this book");
         }
 
         // Find book
         var book = self.bookRepo.findByIsbn(isbn);
         if book == null {
-            return Result.error("Book not found");
+            return Result.ErrStr("Book not found");
         }
 
         // Delete loan and update book
@@ -1653,7 +1655,7 @@ class LibraryService {
         );
         self.bookRepo.save(updatedBook);
 
-        return Result.success(true);
+        return Result.Ok(true);
     }
 
     func listBooks() -> List[Book] {
@@ -2226,9 +2228,8 @@ func processPayment(userId: String, amount: Number) {
     db.execute("UPDATE users SET balance = balance - ? WHERE id = ?", [amount, userId]);
 
     // Log
-    var logFile = File.open("transactions.log", "a");
-    logFile.Write(Time.DateTime.Now() + ": " + userId + " paid " + amount);
-    logFile.Close();
+    File.AppendLine("transactions.log",
+                    Time.DateTime.ToIso8601(Time.DateTime.Now()) + ": " + userId + " paid " + amount);
 
     // Notify
     var smtp = SMTP.connect("mail.server.com");

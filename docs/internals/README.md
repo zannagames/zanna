@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-16
+last-verified: 2026-07-26
 ---
 
 # Zanna Internals Documentation
@@ -60,6 +60,19 @@ User-facing documentation lives in the **[main documentation index](../README.md
 - [Documentation Style Guide](doc-style.md) — Layout, naming, and formatting rules for `docs/`
 - [Testing Guide](testing.md) — Unit, golden, e2e, and performance tests
 - [Source Health Guardrails](source-health.md) — Local audit baselines for high-ownership subsystems
-- [Runtime Hardening Audit (July 2026)](runtime-hardening-audit-2026-07.md) — Resolution ledger for 64 runtime findings
+
+## Platform Implementation Notes
+
 - [Cross-Platform Differences](../cross-platform/platform-differences.md) — macOS vs Linux vs Windows behavior
 - [Cross-Platform Checklist](../cross-platform/platform-checklist.md) — Compliance tracking
+- [Linux Platform Implementation](../linux-platform.md) — Wayland/X11, ALSA, inotify, PTY, and cgroup-aware adapters
+- [Wayland Hardening Audit](../wayland-hardening-audit.md) — Native Wayland capability status and remaining work
+- [Windows Runtime Reliability Audit](../windows-runtime-reliability-audit.md) — Win32 and D3D11 adapter hardening and validation
+
+## Subsystem Audits
+
+Living ledgers that track findings and their resolution for high-risk subsystems.
+
+- [Runtime Hardening Audit (July 2026)](runtime-hardening-audit-2026-07.md) — Resolution ledger for 64 runtime findings
+- [Graphics3D Runtime Hardening Program (July 2026)](graphics3d-runtime-hardening-2026-07.md) — 48-item audit of `src/runtime/graphics/3d`
+- [Graphics3D Backend Correctness Audit (July 2026)](graphics3d-backend-audit-2026-07.md) — OpenGL, D3D11, Metal, and software renderer boundary review

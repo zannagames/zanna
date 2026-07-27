@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-16
+last-verified: 2026-07-26
 ---
 
 # Chapter 26: Performance
@@ -167,9 +167,9 @@ bind Zanna.Time;
 bind Zanna.Terminal;
 
 func timed[T](name: String, work: func() -> T) -> T {
-    var start = Time.Clock.TicksUs();
+    var start = Time.Clock.NowMicros();
     var result = work();
-    var elapsed = (Time.Clock.TicksUs() - start) / 1000.0;
+    var elapsed = (Time.Clock.NowMicros() - start) / 1000.0;
     Terminal.Say(name + ": " + elapsed + " ms");
     return result;
 }
@@ -824,7 +824,7 @@ class Document {
 
     expose func getContent() -> String {
         if !self.contentLoaded {
-            self.content = File.readAll(self.path);  // Load only when needed
+            self.content = File.ReadAllText(self.path);  // Load only when needed
             self.contentLoaded = true;
         }
         return self.content;
@@ -837,7 +837,7 @@ class Document {
 ```zia
 // Memory-heavy: Load everything
 func processFile_memory(path: String) {
-    var lines = File.readAllLines(path);  // Entire file in memory!
+    var lines = File.ReadAllLines(path);  // Entire file in memory!
     for line in lines {
         process(line);
     }
@@ -845,9 +845,9 @@ func processFile_memory(path: String) {
 
 // Memory-light: Stream
 func processFile_streaming(path: String) {
-    var reader = BufferedReader(File.open(path, "r"));
-    while !reader.eof() {
-        var line = reader.ReadLine();  // One line at a time
+    var stream = Stream.OpenFile(path);
+    while !stream.Eof {
+        var line = stream.ReadLine();  // One line at a time
         process(line);
     }
     reader.Close();
@@ -868,10 +868,10 @@ System calls have overhead. Minimize them:
 
 **Slow:**
 ```zia
-var file = File.open("data.txt", "r");
-while !file.eof() {
-    var char = file.readChar();  // System call per character!
-    process(char);
+var stream = Stream.OpenFile("data.txt");
+while !stream.Eof {
+    var byte = stream.ReadByte();  // One read call per byte!
+    process(byte);
 }
 ```
 
@@ -879,14 +879,14 @@ Reading one character at a time makes thousands of system calls for a typical fi
 
 **Fast:**
 ```zia
-var file = BufferedReader(File.open("data.txt", "r"));
-while !file.eof() {
-    var line = file.ReadLine();  // Reads chunks internally
-    process(line);
+for line in File.ReadAllLines("data.txt") {
+    process(line);              // One read for the whole file
 }
 ```
 
-BufferedReader reads large chunks into memory, then returns pieces. Far fewer system calls.
+`File.ReadAllLines` reads the file in one pass and hands back a sequence, so the
+per-byte call overhead disappears. Use `Zanna.IO.Stream` when the file is too
+large to hold in memory and you need chunked reads instead.
 
 ### Batch Database Operations
 
@@ -1213,11 +1213,11 @@ func benchmark(name: String, iterations: Integer, work: func()) {
     }
 
     // Measure
-    var start = Time.Clock.TicksUs();
+    var start = Time.Clock.NowMicros();
     for i in 0..iterations {
         work();
     }
-    var end = Time.Clock.TicksUs();
+    var end = Time.Clock.NowMicros();
 
     var totalMs = (end - start) / 1000.0;
     var perIter = totalMs / iterations;
@@ -1536,12 +1536,12 @@ Your solution should return instantly for repeated calls with the same arguments
 
 ```zia
 func countWordFrequencies(filePath: String) -> Map[String, Integer] {
-    var file = File.open(filePath, "r");
+    var stream = Stream.OpenFile(filePath);
     var text = "";
-    while !file.eof() {
-        text += file.readChar();
+    while !stream.Eof {
+        text += Str.Chr(stream.ReadByte());
     }
-    file.Close();
+    stream.Close();
 
     var counts: Map[String, Integer] = new Map();
     var words = text.Split(" ");

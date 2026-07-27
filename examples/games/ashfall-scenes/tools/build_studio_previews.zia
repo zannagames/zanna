@@ -1,0 +1,212 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/ashfall-scenes/tools/build_studio_previews.zia
+// Purpose: Bake self-contained Studio prefab previews from production game art.
+// Key invariants:
+//   - Prop and enemy geometry comes from the exact runtime fallback mesh bakers.
+//   - Stable numeric ordering matches scene metadata variant ids one-for-one.
+//   - Outputs contain no external resources and are deterministic across hosts.
+// Ownership/Lifetime:
+//   - The process owns all temporary graphs, nodes, meshes, and materials.
+//   - Saved scene assets are project-owned authoring data, never runtime nodes.
+// Links: ../world/props.zia, ../assets/enemy_models.zia,
+//        docs/adr/0199-project-owned-3d-node-prefab-previews.md
+//
+//===----------------------------------------------------------------------===//
+
+module build_studio_previews;
+
+bind "../ai/enemy_defs" as enemy_defs;
+bind "../assets/enemy_models" as enemy_models;
+bind "../config" as config;
+bind "../world/props" as props;
+bind Zanna.Graphics3D as G3D;
+bind Zanna.IO.Dir as Dir;
+bind Zanna.Terminal as Terminal;
+
+var OUTPUT_ROOT: String = "assets/editor-previews";
+
+/// @brief Return a stable two-digit variant suffix.
+func variantSuffix(index: Integer) -> String {
+    if index < 10 { return "0" + index; }
+    return "" + index;
+}
+
+/// @brief Save one self-contained two-part preview prefab.
+/// @details The optional accent shares the chassis transform so animated
+///          production parts retain their authored pivot at rest.
+func savePreview(prefix: String, index: Integer, displayName: String,
+                 chassisMesh: G3D.Mesh3D,
+                 chassisMaterial: G3D.Material3D,
+                 accentMesh: G3D.Mesh3D,
+                 accentMaterial: G3D.Material3D,
+                 y: Float) -> Boolean {
+    var scene = G3D.SceneGraph.New();
+    var chassis = G3D.SceneNode.New();
+    chassis.Name = displayName + " chassis";
+    chassis.Mesh = chassisMesh;
+    chassis.Material = chassisMaterial;
+    chassis.SetPosition(0.0, y, 0.0);
+    scene.Add(chassis);
+    if accentMesh != null and accentMaterial != null {
+        var accent = G3D.SceneNode.New();
+        accent.Name = displayName + " accent";
+        accent.Mesh = accentMesh;
+        accent.Material = accentMaterial;
+        accent.SetPosition(0.0, y, 0.0);
+        scene.Add(accent);
+    }
+    return scene.Save(
+        OUTPUT_ROOT + "/" + prefix + "-" + variantSuffix(index)
+        + ".scene3d") != 0;
+}
+
+/// @brief Build the runtime-like semi-metallic enemy chassis material.
+func enemyChassisMaterial(
+    definitions: enemy_defs.EnemyDefs,
+    archetype: Integer) -> G3D.Material3D {
+    var material = G3D.Material3D.PBR(
+        definitions.colRof(archetype),
+        definitions.colGof(archetype),
+        definitions.colBof(archetype));
+    material.Roughness = 0.55;
+    material.Metallic = 0.55;
+    G3D.Material3D.SetEmissiveColor(
+        material, 0.02, 0.024, 0.026);
+    material.EmissiveIntensity = 1.0;
+    return material;
+}
+
+/// @brief Build the runtime's readable idle-state enemy accent.
+func enemyAccentMaterial() -> G3D.Material3D {
+    var material = G3D.Material3D.PBR(0.24, 0.65, 0.96);
+    material.Roughness = 0.35;
+    material.Metallic = 0.20;
+    G3D.Material3D.SetEmissiveColor(
+        material, 0.28, 0.70, 1.0);
+    material.EmissiveIntensity = 1.7;
+    return material;
+}
+
+/// @brief Return the exact runtime pickup mesh for one kind.
+func pickupMesh(kind: Integer) -> G3D.Mesh3D {
+    if kind == config.PK_HEALTH {
+        return G3D.Mesh3D.Sphere(0.25, 10);
+    }
+    if kind == config.PK_ARMOR {
+        return G3D.Mesh3D.Box(0.34, 0.16, 0.34);
+    }
+    if kind == config.PK_AMMO {
+        return G3D.Mesh3D.Cylinder(0.15, 0.42, 8);
+    }
+    if kind == config.PK_DATACORE {
+        return G3D.Mesh3D.Cylinder(0.22, 0.38, 10);
+    }
+    return G3D.Mesh3D.Box(0.22, 0.30, 0.18);
+}
+
+/// @brief Return the exact runtime pickup palette as an emissive PBR material.
+func pickupMaterial(kind: Integer) -> G3D.Material3D {
+    var red = 0.7;
+    var green = 0.7;
+    var blue = 0.75;
+    if kind == config.PK_HEALTH {
+        red = 0.2; green = 0.9; blue = 0.3;
+    } else if kind == config.PK_ARMOR {
+        red = 0.3; green = 0.6; blue = 1.0;
+    } else if kind == config.PK_AMMO {
+        red = 0.9; green = 0.8; blue = 0.2;
+    } else if kind == config.PK_DATACORE {
+        red = 0.5; green = 0.9; blue = 1.0;
+    }
+    var material = G3D.Material3D.PBR(red, green, blue);
+    material.Roughness = 0.4;
+    material.Metallic = 0.2;
+    G3D.Material3D.SetEmissiveColor(material, red, green, blue);
+    material.EmissiveIntensity = 1.7;
+    return material;
+}
+
+/// @brief Bake every metadata variant consumed by Ashfall scene loading.
+func main() {
+    Dir.MakeAll(OUTPUT_ROOT);
+
+    var propNames: List[String] = [
+        "Crate", "Barrel", "Console", "Pylon", "Column", "I-beam",
+        "Catwalk", "Pipe run", "Door frame", "Wreck hull",
+        "Stalagmite", "Stalactite", "Radar", "Rack", "Barricade",
+        "Crane", "Helix column", "Eye screen", "Spire", "Workbench",
+        "Crucible", "Lamp post", "Planter", "Debris"
+    ];
+    var propSet = new props.PropSet();
+    propSet.init();
+    var index = 0;
+    while index < props.PROP_COUNT {
+        var accentMesh: G3D.Mesh3D = null;
+        var accentMaterial: G3D.Material3D = null;
+        if propSet.studioPreviewHasAccent(index) {
+            accentMesh = propSet.studioPreviewAccent(index);
+            accentMaterial =
+                propSet.studioPreviewAccentMaterial(index);
+        }
+        if savePreview(
+               "prop", index, propNames[index],
+               propSet.studioPreviewChassis(index),
+               propSet.studioPreviewChassisMaterial(index),
+               accentMesh, accentMaterial, 0.0) == false {
+            Terminal.Say("RESULT: fail prop preview " + index);
+            return;
+        }
+        index = index + 1;
+    }
+
+    var enemyNames: List[String] = [
+        "Husk", "Sapper", "Drone", "Ranger", "Marauder",
+        "Vanguard", "Stalker", "Wraith", "Turret", "Mite",
+        "Shrike", "WARDEN Goliath", "SHRIKE Prime", "HELIX Avatar"
+    ];
+    var definitions = new enemy_defs.EnemyDefs();
+    definitions.init();
+    definitions.setup();
+    var models = new enemy_models.EnemyModels();
+    models.init();
+    index = 0;
+    while index < config.EN_TYPE_COUNT {
+        var elevation = definitions.hoverHeightOf(index);
+        if savePreview(
+               "enemy", index, enemyNames[index],
+               models.studioPreviewChassis(index),
+               enemyChassisMaterial(definitions, index),
+               models.studioPreviewAccent(index),
+               enemyAccentMaterial(), elevation) == false {
+            Terminal.Say("RESULT: fail enemy preview " + index);
+            return;
+        }
+        index = index + 1;
+    }
+
+    var pickupNames: List[String] = [
+        "Health", "Armor", "Ammo", "Salvage", "Data core"
+    ];
+    index = config.PK_HEALTH;
+    while index <= config.PK_DATACORE {
+        if savePreview(
+               "pickup", index, pickupNames[index],
+               pickupMesh(index), pickupMaterial(index),
+               null, null, 0.4) == false {
+            Terminal.Say("RESULT: fail pickup preview " + index);
+            return;
+        }
+        index = index + 1;
+    }
+
+    Terminal.Say(
+        "Built " + (props.PROP_COUNT + config.EN_TYPE_COUNT + 5)
+        + " Studio preview prefabs in " + OUTPUT_ROOT);
+    Terminal.Say("RESULT: ok");
+}

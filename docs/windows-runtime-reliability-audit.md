@@ -37,7 +37,7 @@ Direct3D object-identity/state, TLS contract, installer-cleanup, and native-link
 | WR-08 | WinSock readiness | Invalid readiness arguments returned `-1` without a deterministic last-error value. They now set `WSAEINVAL` or `WSAENOTSOCK`. |
 | WR-09 | OS entropy | A chunked `BCryptGenRandom` failure could leave a fresh prefix followed by stale caller bytes. The complete destination is now securely erased on failure. |
 | WR-10 | OS entropy | The 64-bit entropy helper could preserve an old scalar after failure. It now clears the output before requesting entropy. |
-| WR-11 | `Zanna.Text.Rand` | Its independent BCrypt path had the same partial-output exposure. It now securely erases the entire destination on failure. |
+| WR-11 | `rt_rand.c` | The text CSPRNG module's independent BCrypt path had the same partial-output exposure. It now securely erases the entire destination on failure. |
 | WR-12 | hash seeding | The BCrypt byte count narrowed `size_t` to `ULONG` in one call. Requests are now chunked to the native 32-bit limit. |
 | WR-13 | hash seeding | A later hash-seed entropy chunk could fail after earlier chunks had populated the buffer. Failure now securely clears the whole buffer. |
 | WR-14 | locale detection | POSIX-style fallback precedence was `LC_ALL`, `LANG`, `LC_MESSAGES`; category-specific `LC_MESSAGES` must precede `LANG`. All adapters now share the corrected order. |
@@ -545,7 +545,7 @@ Direct3D object-identity/state, TLS contract, installer-cleanup, and native-link
 | WR-516 | malformed asset paths | The new GUI and audio boundaries could have preserved Unicode support while still accepting lossy conversion. Both helpers use `MB_ERR_INVALID_CHARS` and fail without opening a replacement-character path. |
 | WR-517 | light-probe save atomicity | Probe-grid saves wrote directly into the destination, so disk-full or short-write failure destroyed the prior valid bake. They now write an exclusive same-directory temporary file and atomically replace only after a successful close. |
 | WR-518 | game-state temp collisions | World saves reused one predictable `<slot>.tmp` name, allowing concurrent saves or stale files to truncate each other's work. A bounded exclusive-create sequence now gives each attempt collision-safe staging. |
-| WR-519 | game-state replacement gap | Windows `rename` was preceded by unconditional destination deletion, so replacement failure lost the last good save. `MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)` now publishes without a delete gap and failed stages are removed. |
+| WR-519 | game-state replacement gap | Windows `rename` was preceded by unconditional destination deletion, so replacement failure lost the last good save. `MoveFileExW(REPLACE_EXISTING\|WRITE_THROUGH)` now publishes without a delete gap and failed stages are removed. |
 | WR-520 | Ogg CRC initialization | Concurrent first Ogg readers raced on a plain initialized flag and could calculate page CRCs through a partially populated table. A release/acquire three-state latch publishes the table only after all 256 entries exist. |
 | WR-521 | MSVC 32-bit atomics | `fetch_sub(ptr, INT_MIN)` evaluated `-INT_MIN`, which is signed overflow before reaching the interlocked intrinsic. The subtraction delta is now formed with defined unsigned modulo arithmetic. |
 | WR-522 | MSVC 64-bit atomics | The 64-bit interlocked subtraction repeated the same undefined negation for `INT64_MIN`. It now forms and passes the exact two's-complement bit delta without signed arithmetic. |
@@ -630,7 +630,7 @@ Direct3D object-identity/state, TLS contract, installer-cleanup, and native-link
 | WR-601 | durable saves | Atomic writers used `fflush` plus `fclose`, which did not request a durable OS flush and sometimes lost the first failure. A shared helper performs flush, `_commit`/`fsync`, and close while preserving the earliest error. |
 | WR-602 | file-mode parsing | `rt_file_mode_to_flags` cleared caller output on invalid mode even though its header promised output preservation. Failure now leaves the caller's prior flags untouched. |
 | WR-603 | persistence writers | Pixels binary/PNG, tile maps, game persistence, light-baker caches, and VSCN scenes each had a nondurable close path. All six now use the durable close helper before atomic replacement. |
-| WR-604 | VSCN save cleanup | Its `fflush(...) != 0 || fclose(...) != 0` expression short-circuited, leaking the stream whenever flush failed. The shared close transaction always attempts every required cleanup step. |
+| WR-604 | VSCN save cleanup | Its `fflush(...) != 0 \|\| fclose(...) != 0` expression short-circuited, leaking the stream whenever flush failed. The shared close transaction always attempts every required cleanup step. |
 | WR-605 | TLS custom roots | The Windows custom-CA loader could read a file while another process rewrote it between length and payload checks. It now opens the Unicode path through `_wsopen_s` with write sharing denied. |
 | WR-606 | library file reads | GUI and audio decoders used wide CRT opens without a stable snapshot policy. Their Windows adapters now use non-inheritable descriptors and deny concurrent writers. |
 | WR-607 | WASAPI channel masks | Extensible format negotiation did not require the channel-mask bit count to equal `nChannels`. Cardinality is now validated before accepting the mix format. |

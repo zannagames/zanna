@@ -1,6 +1,22 @@
-// =============================================================================
-// world/props.zia — composite prop factory + per-level prop set
-// =============================================================================
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/ashfall-scenes/world/props.zia
+// Purpose: Bake, cache, place, animate, and preview Ashfall world props.
+// Key invariants:
+//   - Runtime and Studio previews share the same deterministic mesh bakers.
+//   - Preview accessors allocate no world entities and never require a level.
+// Ownership/Lifetime:
+//   - PropSet owns session-lifetime mesh caches and per-level runtime entities.
+//   - Returned preview meshes borrow the PropSet cache; materials are new values.
+// Links: ../tools/build_studio_previews.zia,
+//        docs/adr/0199-project-owned-3d-node-prefab-previews.md
+//
+//===----------------------------------------------------------------------===//
 //
 // Every prop is a composite of hand-emitted box/cylinder primitives baked into
 // 1-2 Mesh3D per kind (chassis + emissive/screen accent), built once per session
@@ -81,6 +97,41 @@ class PropSet {
         animTime = 0.0;
         mk = new meshkit.MeshKit();
         accentUsed = false;
+    }
+
+    /// @brief Return the production chassis mesh for a Studio prefab preview.
+    /// @details Invalid kinds resolve to the crate fallback and no world state
+    ///          is required.
+    expose func studioPreviewChassis(kind: Integer) -> G3D.Mesh3D {
+        var resolved = previewKind(kind);
+        ensureMeshes(resolved);
+        return meshChassis[meshIndex(resolved)];
+    }
+
+    /// @brief Return the production accent mesh for a Studio prefab preview.
+    expose func studioPreviewAccent(kind: Integer) -> G3D.Mesh3D {
+        var resolved = previewKind(kind);
+        ensureMeshes(resolved);
+        return meshAccent[meshIndex(resolved)];
+    }
+
+    /// @brief Return whether the production prop kind owns visible accent art.
+    expose func studioPreviewHasAccent(kind: Integer) -> Boolean {
+        var resolved = previewKind(kind);
+        ensureMeshes(resolved);
+        return meshHasAccent[meshIndex(resolved)] == 1;
+    }
+
+    /// @brief Build a texture-independent material matching the runtime surface.
+    expose func studioPreviewChassisMaterial(kind: Integer) -> G3D.Material3D {
+        var resolved = previewKind(kind);
+        return studioPreviewMaterial(chassisSurf(resolved), resolved);
+    }
+
+    /// @brief Build a texture-independent material matching the runtime accent.
+    expose func studioPreviewAccentMaterial(kind: Integer) -> G3D.Material3D {
+        var resolved = previewKind(kind);
+        return studioPreviewMaterial(accentSurf(resolved), resolved);
     }
 
     expose func setup(w: Game3D.World3D, t: textures.TextureLib, c: G3D.Canvas3D) {
@@ -231,6 +282,49 @@ class PropSet {
         if kind == PROP_BARRICADE { return 0.30; }
         if kind == PROP_CRUCIBLE { return 0.24; }
         return 0.56;
+    }
+
+    /// @brief Clamp external preview requests to the production kind table.
+    hide func previewKind(kind: Integer) -> Integer {
+        if kind < 0 or kind >= PROP_COUNT { return PROP_CRATE; }
+        return kind;
+    }
+
+    /// @brief Recreate TextureLib surface parameters without external textures.
+    /// @details Preview assets stay self-contained while retaining production
+    ///          tint, roughness, metallic, and emissive character.
+    hide func studioPreviewMaterial(
+        surf: Integer, kind: Integer) -> G3D.Material3D {
+        var material =
+            G3D.Material3D.PBR(tintR(kind), tintG(kind), tintB(kind));
+        var roughness = 0.85;
+        var metallic = 0.05;
+        if surf == textures.SURF_METAL {
+            roughness = 0.55; metallic = 0.55;
+        } else if surf == textures.SURF_HULL {
+            roughness = 0.60; metallic = 0.50;
+        } else if surf == textures.SURF_ROCK {
+            roughness = 0.95; metallic = 0.0;
+        } else if surf == textures.SURF_CONCRETE {
+            roughness = 0.90; metallic = 0.0;
+        } else if surf == textures.SURF_GRATE {
+            roughness = 0.50; metallic = 0.60;
+        } else if surf == textures.SURF_HAZARD {
+            roughness = 0.70; metallic = 0.20;
+        }
+        material.Roughness = roughness;
+        material.Metallic = metallic;
+        if surf == textures.SURF_ACCENT or surf == textures.SURF_SCREEN {
+            G3D.Material3D.SetEmissiveColor(
+                material, 0.24, 0.72, 0.92);
+            material.EmissiveIntensity =
+                surf == textures.SURF_ACCENT ? 2.2 : 1.6;
+        } else {
+            G3D.Material3D.SetEmissiveColor(
+                material, 0.02, 0.024, 0.026);
+            material.EmissiveIntensity = 1.0;
+        }
+        return material;
     }
 
     // --- Mesh cache --------------------------------------------------------------

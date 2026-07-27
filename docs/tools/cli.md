@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-23
+last-verified: 2026-07-26
 ---
 
 # CLI Tools Reference
@@ -61,7 +61,7 @@ See [Language Server Reference](zia-server.md) for configuration and tool docume
 
 ### ilrun
 
-Execute IL programs.
+Execute IL programs. The IL file must come first; options follow it.
 
 ```bash
 # Run an IL program
@@ -116,7 +116,7 @@ The CLI is organized around primary entry points:
 - `zanna il-opt <in.il> -o <out.il>` — Run optimization passes
 - `zanna codegen x64 <in.il> -o <out>` — Compile to x86-64 native code
 - `zanna codegen arm64 <in.il> -S <out.s>` — Generate ARM64 assembly
-- `zanna package <dir>` — Package a project for distribution (.app, .dmg, .deb, .rpm, .AppImage, .exe, .tar.gz)
+- `zanna package <dir>` — Package a project for distribution (.app, .dmg, .deb, .rpm, .run, .exe, .tar.gz)
 - `zanna install-package` — Package the staged Zanna toolchain itself (.exe, .pkg, .deb, .rpm, .tar.gz)
 - `zanna repl` — Launch the interactive REPL
 
@@ -128,10 +128,11 @@ Scaffold a new Zanna project.
 zanna init <project-name> [--lang zia|basic]
 ```
 
-| Option          | Description                        | Default |
-|-----------------|------------------------------------|---------|
-| `--lang zia`    | Create a Zia project               | `zia`   |
-| `--lang basic`  | Create a BASIC project             | —       |
+| Option              | Description                                         |
+|---------------------|-----------------------------------------------------|
+| `--lang zia\|basic` | Source language for the entry file (default: `zia`) |
+| `--`                | Treat the next token as the project name            |
+| `-h`, `--help`      | Show help for `zanna init`                          |
 
 Creates a project directory containing:
 - `zanna.project` — Project manifest (name, version, language, entry point, `profile balanced`, `optimize O1`)
@@ -159,7 +160,7 @@ zanna build program.zia -o program
 | `--strict-diagnostics` | For Zia, promote safety-critical warnings to errors before execution (default) |
 | `--no-strict-diagnostics` | Keep safety-critical Zia diagnostics as warnings |
 | `--quiet-warnings`, `--no-warnings` | Do not print warnings when compilation succeeds |
-| `--diagnostic-format text|json` | Select text or machine-readable JSON diagnostics |
+| `--diagnostic-format text\|json` | Select text or machine-readable JSON diagnostics |
 | `--no-runtime-namespaces` | Disable automatic runtime namespace imports |
 | `--bounds-checks` | Enable generated bounds checks where supported (default for source lowering) |
 | `--no-bounds-checks` | Disable generated bounds checks for source lowering |
@@ -168,8 +169,20 @@ zanna build program.zia -o program
 | `--time-compile` | Print project resolution, source read, frontend phase, final verifier, asset, backend pass, and native-codegen/link timings |
 | `--pass-stats` | Print detailed IL optimizer pass statistics; kept separate from `--time-compile` because it scans the module around each pass |
 | `--fast-link` | Skip non-essential native-link size reductions and coalesce generated arm64 function sections; enabled automatically for debug/O0 native builds |
-| `--build-profile debug|balanced|release` | Override the manifest build profile (`debug`=`O0`, `balanced`=`O1`, `release`=`O2`) |
+| `--build-profile debug\|balanced\|release` | Override the manifest build profile (`debug`=`O0`, `balanced`=`O1`, `release`=`O2`) |
 | `-O0`, `-O1`, `-O2` | Override the final optimization level; this takes precedence over the build profile |
+| `--profile` | Print execution profile data after the program exits (`zanna run` only) |
+| `--debug-vm` | Run on the standard VM rather than the default execution path (`zanna run` only) |
+| `--debug-adapter` | Serve the JSON debug adapter protocol on stdio (`zanna run` only) |
+| `--dump-trap` | Print detailed trap diagnostics (`zanna run` only) |
+| `--stack-size <bytes>` | Set the native executable stack size, decimal or `0x` hex (`zanna build` only) |
+| `--windows-debug-runtime`, `--windows-release-runtime` | Select the Windows CRT to link (`zanna build` only) |
+| `--arch arm64\|x64` | Override the native target architecture (`zanna build` only) |
+
+Pipeline dump flags (`--dump-tokens`, `--dump-ast`, `--dump-sema-ast`, `--dump-il`,
+`--dump-il-opt`, `--dump-il-passes`) and execution tracing (`--trace[=il\|src]`,
+`--max-steps`, `--stdin-from`) are accepted by both commands and documented in the
+[Debugging Guide](debugging.md).
 
 Both Zia and BASIC source paths print successful warnings by default. Zia O0/debug builds verify after lowering; optimized Zia builds normally verify the final optimized IL and skip the intermediate lower-stage verifier to keep large builds fast. `--paranoid-verify` restores every frontend verifier checkpoint, and `--verify-each` verifies after every optimizer pass when debugging an optimizer regression. If any verifier run fails, the command stops with diagnostics instead of running or building the result.
 
@@ -354,7 +367,7 @@ zanna -run <file.il> [flags]
 | `--count`                    | Print executed instruction count at exit     |
 | `--time`                     | Print wall-clock execution time              |
 | `--bytecode`                 | Run through the bytecode VM with checked bytecode compilation |
-| `--diagnostic-format text|json` | Select text or JSON diagnostics for load/compile failures |
+| `--diagnostic-format text\|json` | Select text or JSON diagnostics for load/compile failures |
 
 Debugger command files accept `continue`, `step`, `step N`, `step-over`, and `step-out`. Step-over and step-out are
 frame-depth based and are intended for VM debugging workflows where source-level line stepping is not required.
@@ -453,15 +466,15 @@ zanna package .
 zanna package . --target linux
 zanna package . --target windows --executable build/myapp.exe
 zanna package . --target tarball -o myapp.tar.gz
-zanna package . --target appimage -o myapp.AppImage
+zanna package . --target linux-bundle -o myapp.run
 zanna package . --target rpm --linux-sign-key "Maintainer Key"
 zanna package . --dry-run --verbose
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--target macos|linux|windows|appimage|rpm|dmg|tarball` | Select output format; default is the host platform |
-| `--arch x64|arm64` | Select payload architecture |
+| `--target macos\|linux\|windows\|linux-bundle\|rpm\|dmg\|tarball` | Select output format; default is the host platform. `appimage` is a deprecated alias for `linux-bundle` and warns |
+| `--arch x64\|arm64` | Select payload architecture |
 | `--executable <path>` | Package a prebuilt native executable; required for non-host installer targets |
 | `-o <path>` | Output artifact path |
 | `--macos-sign-mode none\|preserve\|adhoc\|developer-id` | Override macOS signing mode |
@@ -510,7 +523,7 @@ macOS app packages are staged as a real `.app` bundle before ZIP emission. On ma
 
 `asset <source> <target>` targets are relative to the platform's app resource root: `Contents/Resources/<target>` on macOS, `/usr/share/<package>/<target>` for Linux `.deb`, `<target>` inside the Windows install-root payload, and `<top-dir>/<target>` in portable tarballs. For example, `asset assets assets` packages `assets/fonts/font.bdf` as `Contents/Resources/assets/fonts/font.bdf` in a macOS app. Asset directory symlinks are followed when their resolved targets remain inside the project root, packaged paths preserve the symlink path rather than leaking the canonical target path, and packagers read from the validated resolved path. Linux `.deb` and portable tarball outputs preserve executable bits on asset files. App tarballs include `install.sh`, `uninstall.sh`, `README.install`, and `LICENSE`; `package-readme` adds a project README and `package-license-file` supplies full license text. Portable tarball top directories use a filesystem-safe version component, so Debian epochs such as `2:1.0` become `2_1.0` in the directory name while the package version remains unchanged.
 
-Standalone application AppImage artifacts use Zanna's FUSE-less self-extracting runtime. They support `--appimage-help`, `--appimage-extract` (extracts safely to `./zanna-bundle-root`), and `ZANNA_APPIMAGE_CLEAN_CACHE=1` to force cache refresh. These application-only controls are separate from `install-package`'s `.run` toolchain format.
+Standalone application bundles (`--target linux-bundle`) use Zanna's FUSE-less self-extracting `.run` runtime — not the AppImage specification. The generated artifact accepts `--appimage-help` and `--appimage-extract` (extracts safely to `./zanna-bundle-root`) as compatibility aliases, plus `ZANNA_APPIMAGE_CLEAN_CACHE=1` to force a cache refresh. These application-only controls are separate from `install-package`'s `.run` toolchain format.
 
 Built artifacts are structurally and payload-verified by default: macOS ZIPs must contain the `.app` Info.plist and executable, `.deb` packages must contain the expected `usr/bin` payload, Windows installers verify the PE structure plus required ZIP overlay entries including `meta/manifest.sha256`, and tarballs verify gzip framing, USTAR headers, duplicate-free paths, and the expected executable. ZIP verification normalizes paths before duplicate checks and rejects central-directory/local-header disagreements. Failed verification removes the generated artifact. On macOS, signing failures are fatal before ZIP output, and the staged app bundle is checked with `codesign --verify --deep --strict`.
 
@@ -606,13 +619,13 @@ Typical workflow:
 
 | Option | Description |
 |--------|-------------|
-| `--target windows|macos|linux-deb|linux-rpm|linux-bundle|tarball|all|all-available|macos-dmg` | Select artifact format(s); `linux-bundle` emits `.run` and `macos-dmg` aliases `--target macos --macos-dmg` |
+| `--target windows\|macos\|linux-deb\|linux-rpm\|linux-bundle\|tarball\|all\|all-available\|macos-dmg` | Select artifact format(s); `linux-bundle` emits `.run` and `macos-dmg` aliases `--target macos --macos-dmg` |
 | `--build-dir <dir>` | Stage from an existing build tree via `cmake --install` |
 | `--stage-dir <dir>` | Package an already-staged install tree |
 | `--stage-only` | Validate and print staged metadata without producing artifacts |
 | `--verify-only <path>` | Structurally verify an existing installer artifact |
 | `--require-checksum` | Require and validate `<artifact>.sha256` with `--verify-only` |
-| `--arch x64|arm64` | Require this architecture; packaging rejects a staged native executable that does not match |
+| `--arch x64\|arm64` | Require this architecture; packaging rejects a staged native executable that does not match |
 | `--macos-pkg-version <version>` | Dotted numeric package version override when the Zanna version contains Debian/SemVer suffixes |
 | `--macos-min-version <version>` | Override the architecture-based minimum supported macOS version |
 | `--macos-sign-identity <identity>` | Developer ID Installer identity for signing generated macOS `.pkg` artifacts |
@@ -636,7 +649,7 @@ Typical workflow:
 | `--windows-signtool <path>` | `signtool.exe` path override |
 | `--windows-sign-no-verify` | Skip `signtool verify` after signing |
 | `--linux-sign-key <id>` | GPG-sign generated `.deb`/`.rpm` toolchain packages with `dpkg-sig`/`rpmsign` |
-| `--windows-install-scope user|machine` | Select the toolchain installer scope (default `user`) |
+| `--windows-install-scope user\|machine` | Select the toolchain installer scope (default `user`) |
 | `--windows-install-dir <name>` | Override the Windows toolchain install-root directory name |
 | `--windows-identifier <id>` | Override the Apps & Features identity and integration ownership namespace |
 | `--windows-channel <id>` | Set the update/coexistence channel; local output defaults to `development`, while `stable` requires `--release` |
@@ -646,8 +659,8 @@ Typical workflow:
 | `--windows-update-rsa-modulus <hex>` | Pin the update manifest's RSA public modulus |
 | `--windows-update-rsa-exponent <hex>` | Pin the update manifest's RSA public exponent |
 | `--windows-no-path` | Do not add the installed `bin/` directory to `PATH` |
-| `--windows-file-associations on|off` | Add safe `.zia`/`.bas`/`.il` Open With entries without replacing defaults (default `on`) |
-| `--windows-shortcuts on|off` | Create Start Menu developer shortcuts (default `on`) |
+| `--windows-file-associations on\|off` | Add safe `.zia`/`.bas`/`.il` Open With entries without replacing defaults (default `on`) |
+| `--windows-shortcuts on\|off` | Create Start Menu developer shortcuts (default `on`) |
 | `--allow-debug-toolchain` | Permit Windows packages that reference MSVC debug CRTs |
 | `--skip-build` | With `--build-dir`, run `cmake --install` without rebuilding first |
 | `-o <path>` | Compatibility output path: a file for one target unless it names an existing directory; a directory for multiple targets |

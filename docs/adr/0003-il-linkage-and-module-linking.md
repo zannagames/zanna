@@ -4,7 +4,7 @@ audience: contributors
 last-verified: 2026-06-27
 ---
 
-# ADR-0003: IL Linkage and Module Linking
+# ADR 0003: IL Linkage and Module Linking
 
 ## Status
 

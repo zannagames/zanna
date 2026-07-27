@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-17
+last-verified: 2026-07-26
 ---
 
 # Streams & Buffers
@@ -30,9 +30,9 @@ Unified stream abstraction providing a common interface over file and memory str
 | Property | Type    | Description                                               |
 |----------|---------|-----------------------------------------------------------|
 | `Type`   | Integer | Stream backing type: 0 = file, 1 = memory (read-only)    |
-| `Pos`    | Integer | Current stream position (read/write)                      |
+| `Position` | Integer | Current stream position (read/write)                    |
 | `Length`    | Integer | Current data length in bytes (read-only)                  |
-| `Eof`    | Boolean | `Pos >= Size` on both file and memory backings (position-based) |
+| `Eof`    | Boolean | `Position >= Length` on both file and memory backings (position-based) |
 
 ### Methods
 
@@ -67,7 +67,7 @@ Unified stream abstraction providing a common interface over file and memory str
 
 `OpenFile`, `OpenMemory`, and `OpenBytes` create streams that own their backing `BinFile` or `MemStream`; `Close()` releases that backing object. File streams created by `OpenFile` also close the underlying `BinFile`, surfacing delayed flush/close errors instead of leaving the file handle open. `FromBinFile` and `FromMemStream` retain the existing object for the wrapper's lifetime, so the wrapper remains valid even if another owner releases its reference. Closing a `From*` wrapper releases only the wrapper's retained reference; the original owner retains responsibility for the `BinFile` close or `MemStream` lifetime.
 
-All operations except `Close()` trap on a null or already-closed stream. `FromBinFile` and `FromMemStream` require an object of the matching runtime class. `Write(bytes)` traps when `bytes` is null, `WriteByte(value)` traps outside `0..255`, and `Read(count)` traps when `count` is negative. Setting `Pos` traps if the underlying file seek fails. This avoids silent reads from or writes to invalid backing objects.
+All operations except `Close()` trap on a null or already-closed stream. `FromBinFile` and `FromMemStream` require an object of the matching runtime class. `Write(bytes)` traps when `bytes` is null, `WriteByte(value)` traps outside `0..255`, and `Read(count)` traps when `count` is negative. Setting `Position` traps if the underlying file seek fails. This avoids silent reads from or writes to invalid backing objects.
 
 `Read(count)` is a short-read API for both file-backed and memory-backed streams: if fewer than
 `count` bytes remain, it returns a `Bytes` object containing only the available bytes instead of
@@ -102,7 +102,7 @@ DIM data AS Zanna.Collections.Bytes = Zanna.Collections.Bytes.FromStr("Hello, St
 fs.Write(data)
 
 ' Seek back and read (set Pos property to seek)
-fs.Pos = 0
+fs.Position = 0
 DIM readData AS Zanna.Collections.Bytes = fs.Read(14)
 PRINT readData.ToStr()  ' Output: Hello, Stream!
 
@@ -146,7 +146,7 @@ fileStream.Close()
 ' Use with memory (e.g., from network)
 DIM memStream AS OBJECT = Zanna.IO.Stream.OpenMemory()
 memStream.Write(networkData)
-memStream.Pos = 0
+memStream.Position = 0
 ProcessStream(memStream)
 memStream.Close()
 ```
@@ -221,7 +221,7 @@ In-memory binary stream for reading and writing raw bytes with auto-expanding bu
 
 | Property   | Type    | Access     | Description                      |
 |------------|---------|------------|----------------------------------|
-| `Pos`      | Integer | Read/Write | Current stream position          |
+| `Position` | Integer | Read/Write | Current stream position          |
 | `Length`      | Integer | Read-only  | Current data length in bytes     |
 | `Capacity` | Integer | Read-only  | Current buffer capacity in bytes |
 
@@ -272,7 +272,7 @@ All multi-byte integers and floats use **little-endian** byte order, independent
   new zero length. Those bytes are unobservable; a later sparse write zero-fills the newly exposed
   gap before it becomes part of `Length`.
 - **Gap filling:** Writing past the current length fills the gap with zeros
-- **Sparse cursor:** `Pos`, `Seek`, and positive `Skip` may move beyond `Length`; the next write zero-fills the gap. Reads there trap.
+- **Sparse cursor:** `Position`, `Seek`, and positive `Skip` may move beyond `Length`; the next write zero-fills the gap. Reads there trap.
 - **Read traps:** Reading past the end of data traps with an error
 - **Overflow traps:** `Seek`, `Skip`, and writes that would overflow the signed 64-bit position or addressable capacity trap instead of wrapping.
 - **Input validation:** `NewCapacity()` traps on negative capacities, `FromBytes()` and `WriteBytes()` require a `Bytes` object, fixed-width integer writes trap outside their representable range, and `WriteStr()` requires a valid runtime string. Use an empty string to encode zero bytes.
@@ -314,7 +314,7 @@ func start() {
 }
 ```
 
-> **Note:** MemStream properties (`Pos`, `Length`, `Capacity`) use the get_/set_ pattern; access them as `ms.get_Length()`, `ms.get_Position()`, `ms.set_Position(n)` in Zia.
+> **Note:** MemStream properties (`Position`, `Length`, `Capacity`) use the get_/set_ pattern; access them as `ms.get_Length()`, `ms.get_Position()`, `ms.set_Position(n)` in Zia.
 
 ### BASIC Example
 
@@ -355,7 +355,7 @@ packet.WriteU16(1)       ' Version
 packet.WriteU32(0)       ' Payload length (placeholder)
 
 ' Remember header end position
-DIM headerEnd AS INTEGER = packet.Pos
+DIM headerEnd AS INTEGER = packet.Position
 
 ' Write payload
 packet.WriteStr("Hello, World!")
@@ -693,7 +693,7 @@ Positioned binary read/write buffer for constructing and parsing binary data in 
 
 | Property | Type    | Access     | Description                   |
 |----------|---------|------------|-------------------------------|
-| `Pos`    | Integer | Read/Write | Current buffer position       |
+| `Position` | Integer | Read/Write | Current buffer position     |
 | `Length`    | Integer | Read-only  | Current data length in bytes  |
 
 ### Write Methods
@@ -701,16 +701,16 @@ Positioned binary read/write buffer for constructing and parsing binary data in 
 | Method              | Returns | Description                                      |
 |---------------------|---------|--------------------------------------------------|
 | `WriteByte(v)`      | void    | Write a single byte (0-255) at current position  |
-| `WriteI16LE(v)`     | void    | Write signed 16-bit integer (little-endian)      |
-| `WriteI16BE(v)`     | void    | Write signed 16-bit integer (big-endian)         |
-| `WriteU16LE(v)`     | void    | Write unsigned 16-bit integer (little-endian)    |
-| `WriteU16BE(v)`     | void    | Write unsigned 16-bit integer (big-endian)       |
-| `WriteI32LE(v)`     | void    | Write signed 32-bit integer (little-endian)      |
-| `WriteI32BE(v)`     | void    | Write signed 32-bit integer (big-endian)         |
-| `WriteU32LE(v)`     | void    | Write unsigned 32-bit integer (little-endian)    |
-| `WriteU32BE(v)`     | void    | Write unsigned 32-bit integer (big-endian)       |
-| `WriteI64LE(v)`     | void    | Write 64-bit integer (little-endian)             |
-| `WriteI64BE(v)`     | void    | Write 64-bit integer (big-endian)                |
+| `WriteI16LittleEndian(v)`     | void    | Write signed 16-bit integer (little-endian)      |
+| `WriteI16BigEndian(v)`     | void    | Write signed 16-bit integer (big-endian)         |
+| `WriteU16LittleEndian(v)`     | void    | Write unsigned 16-bit integer (little-endian)    |
+| `WriteU16BigEndian(v)`     | void    | Write unsigned 16-bit integer (big-endian)       |
+| `WriteI32LittleEndian(v)`     | void    | Write signed 32-bit integer (little-endian)      |
+| `WriteI32BigEndian(v)`     | void    | Write signed 32-bit integer (big-endian)         |
+| `WriteU32LittleEndian(v)`     | void    | Write unsigned 32-bit integer (little-endian)    |
+| `WriteU32BigEndian(v)`     | void    | Write unsigned 32-bit integer (big-endian)       |
+| `WriteI64LittleEndian(v)`     | void    | Write 64-bit integer (little-endian)             |
+| `WriteI64BigEndian(v)`     | void    | Write 64-bit integer (big-endian)                |
 | `WriteStr(s)`       | void    | Write a little-endian signed 32-bit length prefix plus full string bytes |
 | `WriteBytes(b)`     | void    | Write a little-endian signed 32-bit length prefix plus all Bytes data   |
 
@@ -719,16 +719,16 @@ Positioned binary read/write buffer for constructing and parsing binary data in 
 | Method              | Returns | Description                                      |
 |---------------------|---------|--------------------------------------------------|
 | `ReadByte()`        | Integer | Read a single byte (0-255) at current position   |
-| `ReadI16LE()`       | Integer | Read signed 16-bit integer (little-endian)       |
-| `ReadI16BE()`       | Integer | Read signed 16-bit integer (big-endian)          |
-| `ReadU16LE()`       | Integer | Read unsigned 16-bit integer (little-endian)     |
-| `ReadU16BE()`       | Integer | Read unsigned 16-bit integer (big-endian)        |
-| `ReadI32LE()`       | Integer | Read signed 32-bit integer (little-endian)       |
-| `ReadI32BE()`       | Integer | Read signed 32-bit integer (big-endian)          |
-| `ReadU32LE()`       | Integer | Read unsigned 32-bit integer (little-endian)     |
-| `ReadU32BE()`       | Integer | Read unsigned 32-bit integer (big-endian)        |
-| `ReadI64LE()`       | Integer | Read 64-bit integer (little-endian)              |
-| `ReadI64BE()`       | Integer | Read 64-bit integer (big-endian)                 |
+| `ReadI16LittleEndian()`       | Integer | Read signed 16-bit integer (little-endian)       |
+| `ReadI16BigEndian()`       | Integer | Read signed 16-bit integer (big-endian)          |
+| `ReadU16LittleEndian()`       | Integer | Read unsigned 16-bit integer (little-endian)     |
+| `ReadU16BigEndian()`       | Integer | Read unsigned 16-bit integer (big-endian)        |
+| `ReadI32LittleEndian()`       | Integer | Read signed 32-bit integer (little-endian)       |
+| `ReadI32BigEndian()`       | Integer | Read signed 32-bit integer (big-endian)          |
+| `ReadU32LittleEndian()`       | Integer | Read unsigned 32-bit integer (little-endian)     |
+| `ReadU32BigEndian()`       | Integer | Read unsigned 32-bit integer (big-endian)        |
+| `ReadI64LittleEndian()`       | Integer | Read 64-bit integer (little-endian)              |
+| `ReadI64BigEndian()`       | Integer | Read 64-bit integer (big-endian)                 |
 | `ReadStr()`         | String  | Read the little-endian length prefix and string payload |
 | `ReadBytes(count)`  | Bytes   | Read count raw bytes into a new Bytes object (no prefix handling) |
 
@@ -745,13 +745,13 @@ Positioned binary read/write buffer for constructing and parsing binary data in 
 - `FromBytes()` and `WriteBytes()` require a `Bytes` object. `WriteStr()` requires a valid runtime string; use an empty string to encode zero bytes. `WriteByte()` traps outside `0..255`, and fixed-width integer writes trap outside their declared signed or unsigned range.
 - `WriteStr()` and `WriteBytes()` trap if the payload length cannot fit in their signed 32-bit length prefix.
 - `ReadStr()` is the direct counterpart to `WriteStr()`. `ReadBytes(count)` does not consume the prefix emitted by `WriteBytes()`; read that 32-bit little-endian length explicitly, then pass it as `count`.
-- Setting `Pos` traps for negative positions or positions beyond `Length`; it does not clamp.
+- Setting `Position` traps for negative positions or positions beyond `Length`; it does not clamp.
 - Signed integer readers sign-extend their declared width: `ReadI16*()` returns -32768..32767, `ReadI32*()` returns signed 32-bit values, and `ReadI64*()` preserves the full signed 64-bit bit pattern.
 - Unsigned readers zero-extend their declared width: `ReadU16*()` returns 0..65535 and `ReadU32*()` returns 0..4294967295.
 - Constructors and growth trap if the requested capacity exceeds the host platform's addressable allocation size.
 - `Reset()` clears position and logical length but retains allocated capacity for reuse.
 - A fixed-width write whose value is out of range traps *before* touching the buffer — no
-  truncated value is ever appended — and every property getter (`Pos`, `Length`, `ToBytes`,
+  truncated value is ever appended — and every property getter (`Position`, `Length`, `ToBytes`,
   `Reset`) is safe on an invalid receiver, so a recoverable trap that resumes never leaves the
   buffer corrupted or dereferences a null receiver.
 - `NewCap` remains available as a compatibility alias for `NewCapacity`.
@@ -789,7 +789,7 @@ func start() {
 }
 ```
 
-> **Note:** BinaryBuffer properties (`Pos`, `Length`) use the get_/set_ pattern in Zia; access them as `buf.get_Length()`, `buf.get_Position()`, `buf.set_Position(n)`.
+> **Note:** BinaryBuffer properties (`Position`, `Length`) use the get_/set_ pattern in Zia; access them as `buf.get_Length()`, `buf.get_Position()`, `buf.set_Position(n)`.
 
 ### BASIC Example
 
@@ -808,7 +808,7 @@ buf.WriteBytes(Zanna.Collections.Bytes.FromHex("deadbeef"))
 PRINT "Length:"; buf.Length
 
 ' Seek back and read
-buf.Pos = 0
+buf.Position = 0
 PRINT "Byte:"; buf.ReadByte()       ' Output: 202
 PRINT "I16LE:"; buf.ReadI16LittleEndian()     ' Output: 1000
 PRINT "I32BE:"; buf.ReadI32BigEndian()     ' Output: 123456

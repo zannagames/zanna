@@ -3,7 +3,10 @@ module workbench_state;
 bind "../core/document";
 bind "../core/document_manager";
 bind "../core/project_manager";
+bind "../services/project_locator";
 bind "language_service";
+
+bind Path = Zanna.IO.Path;
 
 // ============================================================================
 // MODULE: workbench_state
@@ -81,8 +84,35 @@ class ActiveWorkbenchState {
             }
         }
 
-        if projMgr != null and projMgr.project != null and projMgr.project.isOpen {
-            activeProjectName = projMgr.project.name;
+        if projMgr != null {
+            var ownerRoot = "";
+            if activePath != "" {
+                ownerRoot =
+                    projMgr.WorkspaceRootPathForPath(activePath);
+            }
+            if ownerRoot != "" {
+                var rootIndex = 0;
+                while rootIndex < projMgr.RootCount() {
+                    if projMgr.RootPathAt(rootIndex) == ownerRoot {
+                        activeProjectName =
+                            projMgr.RootNameAt(rootIndex);
+                        break;
+                    }
+                    rootIndex = rootIndex + 1;
+                }
+            } else if activePath != "" {
+                var externalRoot =
+                    project_locator.NearestManifestRoot(activePath);
+                if externalRoot != "" {
+                    activeProjectName =
+                        Path.Name(externalRoot) + " (external)";
+                }
+            }
+            if activeProjectName == ""
+               and projMgr.project != null
+               and projMgr.project.isOpen {
+                activeProjectName = projMgr.project.name;
+            }
         }
 
         var serviceName = "";

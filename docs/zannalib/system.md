@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-15
+last-verified: 2026-07-26
 ---
 
 # System
@@ -21,8 +21,6 @@ last-verified: 2026-07-15
 - [Zanna.System.Machine](#zannasystemmachine)
 - [Zanna.Runtime.Unsafe](#zannaruntimeunsafe)
 - [Zanna.Runtime.GC](#zannaruntimegc)
-- [Zanna.Memory](#zannamemory)
-- [Zanna.Runtime.GC](#zannamemorygc)
 - [Zanna.Memory.WeakRef](#zannamemoryweakref)
 - [Zanna.Terminal](#zannaterminal)
 
@@ -43,7 +41,6 @@ Command-line arguments and environment access.
 | `GetCommandLine()`         | `String()`             | Returns the program arguments joined as a single string                  |
 | `GetVariable(name)`        | `String(String)`       | Returns the value of an environment variable, or `""` when missing      |
 | `HasVariable(name)`        | `Boolean(String)`      | Returns `TRUE` when the environment variable exists                     |
-| `Cwd()`                    | `String()`             | Return the process-wide current working directory                       |
 | `IsNative()`               | `Boolean()`            | Returns `TRUE` when running native code, `FALSE` when running in the VM |
 | `SetVariable(name, value)` | `Void(String, String)` | Sets or overwrites an environment variable (empty value allowed)        |
 | `Exit(code)`         | `Void(Integer)`        | Terminates the program with the provided exit code                      |
@@ -197,11 +194,11 @@ Poll-based graceful shutdown requests for long-running servers, games, and tools
 |--------|-----------|-------------|
 | `Request(reason)` | `Void(Integer)` | Publish one or more shutdown reason bits |
 | `Poll()` | `Integer()` | Return and clear pending reason bits |
-| `Pending()` | `Boolean()` | Return `TRUE` when any reason is pending without clearing it |
+| `IsPending()` | `Boolean()` | Return `TRUE` when any reason is pending without clearing it |
 | `Clear()` | `Void()` | Clear pending reasons and the VM interrupt epoch |
 | `InstallSignalHandlers()` | `Void()` | Install OS signal/console handlers that publish shutdown requests (opt-in for native programs) |
 
-`Poll()` and `Pending()` arm graceful handling for the next VM interrupt. If Ctrl-C
+`Poll()` and `IsPending()` arm graceful handling for the next VM interrupt. If Ctrl-C
 arrives after a loop has polled, the VM records `INTERRUPT` and lets the program reach
 its next `Shutdown.Poll()` call. If a program never polls, Ctrl-C still raises the
 normal `Interrupt` trap. This is deliberately poll-based; signal and console handlers
@@ -269,8 +266,6 @@ External command execution for running system commands and capturing output.
 | `Shell(command)`             | `Integer(String)`      | Run command through system shell, return exit code     |
 | `ShellCapture(command)`      | `String(String)`       | Run command through shell, capture stdout              |
 | `ShellResult(command)`       | `CommandResult(String)`| Run command through shell and return captured stdout plus exit code |
-| `ShellFull(command)`         | `String(String)`       | Legacy stdout capture paired with `LastExitCode()`     |
-| `LastExitCode()`             | `Integer()`            | Thread-local status from the most recent capture-style shell call |
 
 ### Zanna.System.CommandResult
 
@@ -280,12 +275,10 @@ Returned by `Exec.ShellResult(command)`.
 |----------|------|-------------|
 | `Output` | String | Captured stdout from the shell command |
 | `ExitCode` | Integer | Normalized shell command exit code, or `-1` for launch/signalled failure |
-| `Succeeded` | Boolean | True when `ExitCode == 0` |
+| `IsSuccess` | Boolean | True when `ExitCode == 0` |
 
-Prefer `ShellResult()` for new shell capture code. `ShellFull()` and `LastExitCode()` remain
-available for compatibility. `ShellCapture()` and `ShellFull()` update the thread-local slot;
-`ShellResult()` does so internally through `ShellFull()`. `Shell()` and the direct-exec methods do
-not update it, so a later `Shell()` leaves an earlier value in place.
+`ShellResult()` is the shell-capture entry point that reports both stdout and the exit code.
+`ShellCapture()` returns stdout only; `Shell()` returns the exit code only.
 
 ### Security Warning
 
@@ -504,7 +497,6 @@ terminal-like IDE surfaces.
 | `Open(program, args, cwd, env, cols, rows)` | `PtySession(String, Object, String, Object, Integer, Integer)` | Open a PTY-backed child |
 | `OpenResult(program, args, cwd, env, cols, rows)` | `Result(String, Object, String, Object, Integer, Integer)` | Open a PTY-backed child as `Ok(PtySession)` or `Err(message)` |
 | `IsSupported()` | `Boolean()` | Returns `TRUE` when the current platform can create PTYs |
-| `LastError()` | `String()` | Compatibility diagnostic for legacy `Open()` / support checks |
 
 ### Zanna.System.Pty.PtySession
 
@@ -579,15 +571,15 @@ System information queries providing read-only access to machine properties.
 | Property   | Type      | Description                                                              |
 |------------|-----------|--------------------------------------------------------------------------|
 | `Os`       | `String`  | `"linux"`, `"macos"`, `"windows"`, or `"unknown"`                        |
-| `OsVer`    | `String`  | Operating system version string (e.g., `"14.2.1"` on macOS)              |
+| `OsVersion` | `String` | Operating system version string (e.g., `"14.2.1"` on macOS)              |
 | `Arch`     | `String`  | CPU architecture identifier                                              |
 | `Host`     | `String`  | Machine hostname                                                         |
 | `User`     | `String`  | Current username                                                         |
 | `Home`     | `String`  | Path to user's home directory                                            |
-| `Temp`     | `String`  | Path to system temporary directory                                       |
+| `TempDir`  | `String`  | Path to system temporary directory                                       |
 | `Cores`    | `Integer` | Number of logical CPU cores                                              |
-| `MemTotal` | `Integer` | Total RAM in bytes                                                       |
-| `MemFree`  | `Integer` | Available physical RAM in bytes (memory usable for new work without swapping) |
+| `MemoryTotal` | `Integer` | Total RAM in bytes                                                    |
+| `MemoryFree` | `Integer` | Available physical RAM in bytes (memory usable for new work without swapping) |
 | `PageSize` | `Integer` | Host memory page size in bytes                                           |
 | `PointerSize` | `Integer` | Native pointer width in bits                                           |
 | `Endian`   | `String`  | Byte order: `"little"` or `"big"`                                        |
@@ -625,7 +617,7 @@ PRINT "Host: "; Zanna.System.Machine.Host
 
 ' Directory paths
 PRINT "Home: "; Zanna.System.Machine.Home
-PRINT "Temp: "; Zanna.System.Machine.Temp
+PRINT "Temp: "; Zanna.System.Machine.TempDir
 
 ' Hardware information
 PRINT "CPU Cores: "; Zanna.System.Machine.Cores
@@ -677,13 +669,13 @@ END IF
 - **Arch**: Returns `x86_64`, `arm64`, `x86`, `arm`, `wasm32`, or `unknown` from compile-time
   architecture macros. **PageSize** falls back to 4096 if the platform query fails;
   **PointerSize** is `sizeof(void*) * 8`.
-- **MemTotal/MemFree**: `MemFree` reports one portable "available memory" estimate — the memory
+- **MemoryTotal/MemoryFree**: `MemoryFree` reports one portable "available memory" estimate — the memory
   usable for new work without swapping, including reclaimable page cache — on every platform:
   Windows uses `GlobalMemoryStatusEx.ullAvailPhys`, macOS uses `(free + inactive)` reclaimable
   pages from `host_statistics64`, and Linux uses `MemAvailable` from `/proc/meminfo` (falling back
   to `free + buffers` on kernels without it). The same threshold is now comparable across hosts.
 - **Endian**: Runtime detection via union trick. Most modern systems are little-endian.
-- Windows Host/User/Home/Temp queries use the wide Win32 APIs (`GetComputerNameW`,
+- Windows Host/User/Home/TempDir queries use the wide Win32 APIs (`GetComputerNameW`,
   `GetUserNameW`, `GetTempPathW`, `_wgetenv`) and the same validated UTF-8 conversion as
   `Zanna.System.Environment`, so non-ASCII host names, user names, and paths round-trip as valid
   UTF-8.
@@ -808,30 +800,6 @@ PRINT "GC passes: "; Zanna.Runtime.GC.PassCount()
 
 ---
 
-## Zanna.Memory
-
-Compatibility namespace for `Zanna.Runtime.Unsafe`.
-
-**Type:** Static utility class
-
-`Retain`, `Release`, `RetainStr`, and `ReleaseStr` remain available here for
-existing source and IL. New code should prefer `Zanna.Runtime.Unsafe` because
-manual reference-count manipulation is intentionally sharp.
-
----
-
-## Zanna.Runtime.GC
-
-Compatibility namespace for `Zanna.Runtime.GC`.
-
-**Type:** Static utility class
-
-`Collect`, `TrackedCount`, `TotalCollected`, `PassCount`, `SetThreshold`, and
-`GetThreshold` remain available here for existing source and IL. New code should
-prefer `Zanna.Runtime.GC`.
-
----
-
 ## Zanna.Memory.WeakRef
 
 Zeroing weak references to managed objects, arrays, and strings. A weak reference observes its
@@ -845,11 +813,11 @@ target without keeping that target alive.
 |--------|-----------|-------------|
 | `New(target)` | `WeakRef(Object)` | Create a weak reference without retaining `target`; `Nothing` is allowed |
 | `Get()` | `Object()` | Return and retain the live target, or `Nothing` after it has been freed or cleared |
-| `Alive()` | `Boolean()` | Return `TRUE` while the target is non-null and still live |
+| `IsAlive()` | `Boolean()` | Return `TRUE` while the target is non-null and still live |
 | `Reset(target)` | `Void(Object)` | Point at a different live managed target, or clear the reference with `Nothing` |
 | `Free()` | `Void()` | Detach from the target and release one owned weak-reference handle |
 
-The registry also exposes compatibility forms `Get(ref)`, `Alive(ref)`, `Reset(ref, target)`, and
+The registry also exposes static forms `Get(ref)`, `IsAlive(ref)`, `Reset(ref, target)`, and
 `Free(ref)`. Ordinary source should use the instance forms.
 
 `New` and `Reset` accept managed runtime objects, arrays, string handles, or `Nothing`; a raw,
@@ -919,8 +887,7 @@ Terminal input and output operations.
 | `ReadLineResult()`   | `Result<String, String>()` | Reads a line from stdin; returns `Err` with an EOF message on EOF |
 | `TryAsk(prompt)`     | `Option<String>(String)` | Prints prompt, reads a line from stdin; returns `None` on EOF |
 | `AskResult(prompt)`  | `Result<String, String>(String)` | Prints prompt, reads a line from stdin; returns `Err` with an EOF message on EOF |
-| `ReadLine()`         | `String()`         | Compatibility API; prefer `TryReadLine` or `ReadLineResult` for EOF |
-| `Ask(prompt)`        | `String(String)`   | Compatibility API; prefer `TryAsk` or `AskResult` for EOF     |
+| `ReadLine()`         | `String()`         | Reads a line from stdin; returns `""` on EOF, so prefer `TryReadLine` or `ReadLineResult` when EOF must be distinguished |
 | `ReadKey()`           | `String()`         | Blocks for a single key press and returns a 1-character string |
 | `ReadKeyFor(ms)`  | `String(Integer)`  | Waits up to `ms` for a key; returns `""` on timeout (negative = block) |
 | `PollKey()`            | `String()`         | Non-blocking key poll; returns `""` if no key is available   |
@@ -951,7 +918,6 @@ Terminal input and output operations.
 | `PrintStr(text)`   | `Void(String)`  | Batch-aware low-level string output without a newline |
 | `PrintI64(value)`  | `Void(Integer)` | Batch-aware low-level integer output without a newline |
 | `PrintF64(value)`  | `Void(Float)`   | Batch-aware low-level floating-point output without a newline |
-| `InputLine()`      | `String()`      | Legacy alias for `ReadLine()` |
 
 ### Zia Example
 
@@ -980,8 +946,7 @@ Zanna.Terminal.Say("Hello, " + name + "!")
 For most BASIC programs, the `PRINT` and `INPUT` statements are more convenient. Use `Zanna.Terminal` when you need
 explicit control or are working at the IL level.
 
-- `ReadLine`, `Ask`, and `InputLine` return a null/Nothing string at EOF despite their non-null
-  `String` registry signatures. Use the Option or Result forms when EOF must be represented safely.
+- `ReadLine` returns a null/Nothing string at EOF despite its non-null `String` registry signature. Use the Option or Result forms when EOF must be represented safely.
 - Key input is byte-oriented. On Windows, extended keys arrive as `_getch` prefix/scan-code calls;
   on UTF-8 terminals, one Unicode character can require multiple calls. A failed/non-TTY blocking
   read can return the character with code zero rather than `""`.

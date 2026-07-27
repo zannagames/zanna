@@ -99,14 +99,26 @@ expose func Build(editor: scene_editor_3d.SceneEditor3D,
         editor.viewToolbar.SetGap(4.0);
         editor.viewToolbar.SetPadding(4.0);
         editor.root.AddChild(editor.viewToolbar);
-        GUI.Label.New(editor.viewToolbar, "View");
+        editor.viewSectionLabel =
+            GUI.Label.New(editor.viewToolbar, "View");
         editor.viewportModeButton = GUI.Button.New(editor.viewToolbar, "Shaded");
         editor.UpdateViewportModeControls();
+        editor.hierarchyButton =
+            GUI.Button.New(editor.viewToolbar, "Hierarchy");
+        editor.hierarchyButton.SetStyle(2);
+        editor.hierarchyButton.SetTooltip(
+            "Open the scene hierarchy at the full editor width");
+        editor.hierarchyButton.SetVisible(false);
         editor.inspectorButton = GUI.Button.New(editor.viewToolbar, "Hide Inspector");
         editor.inspectorButton.SetStyle(2);
         editor.inspectorButton.SetTooltip(
             "Hide the node inspector and give the viewport the full width");
-        GUI.Label.New(editor.viewToolbar, "Transform");
+        editor.focusButton = GUI.Button.New(editor.viewToolbar, "Focus");
+        editor.focusButton.SetStyle(2);
+        editor.focusButton.SetTooltip(
+            "Hide outer Studio docks and maximize the scene viewport");
+        editor.transformSectionLabel =
+            GUI.Label.New(editor.viewToolbar, "Transform");
         editor.moveToolButton = GUI.Button.New(editor.viewToolbar, "Move");
         editor.moveToolButton.SetTooltip(
             "Move the selected node along one axis (W in viewport)");
@@ -142,7 +154,14 @@ expose func Build(editor: scene_editor_3d.SceneEditor3D,
         editor.frontViewButton.SetTooltip("Look at the view target from the front");
         editor.rightViewButton = GUI.Button.New(editor.viewToolbar, "Right");
         editor.rightViewButton.SetTooltip("Look at the view target from the right");
-        GUI.Label.New(editor.viewToolbar, "Zoom");
+        editor.projectViewButton =
+            GUI.Button.New(editor.viewToolbar, "Gameplay");
+        editor.projectViewButton.SetTooltip(
+            "Restore the project-authored gameplay camera and overlay defaults; "
+            + "the saved scene and undo history remain unchanged");
+        editor.projectViewButton.SetEnabled(false);
+        editor.zoomSectionLabel =
+            GUI.Label.New(editor.viewToolbar, "Zoom");
         editor.zoomOutButton = GUI.Button.New(editor.viewToolbar, "-");
         editor.zoomOutButton.SetTooltip("Zoom out");
         editor.zoomInButton = GUI.Button.New(editor.viewToolbar, "+");
@@ -158,6 +177,11 @@ expose func Build(editor: scene_editor_3d.SceneEditor3D,
         editor.frameSelectedButton = GUI.Button.New(editor.viewToolbar, "Frame selected");
         editor.frameSelectedButton.SetTooltip(
             "Center and frame the selected node in the viewport");
+        editor.workspaceButton =
+            GUI.Button.New(editor.viewToolbar, "Scene Layout");
+        editor.workspaceButton.SetStyle(2);
+        editor.workspaceButton.SetTooltip(
+            "Hide outer Studio docks but keep scene hierarchy and inspector");
         editor.viewStatusLabel = GUI.Label.New(editor.viewToolbar, "");
         editor.viewStatusLabel.SetFlex(1.0);
         editor.viewStatusLabel.SetPreferredSize(220.0, 0.0);

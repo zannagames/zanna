@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-18
+last-verified: 2026-07-26
 ---
 
 # Runtime Hardening Audit — July 2026

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-14
+last-verified: 2026-07-26
 ---
 
 # Encoding & Identity
@@ -106,7 +106,7 @@ the UUIDv4 representation used here.
 
 | Method             | Signature         | Description                            |
 |--------------------|-------------------|----------------------------------------|
-| `New()`            | `String()`        | Generate a new random UUID v4          |
+| `Generate()`       | `String()`        | Generate a new random UUID v4          |
 | `IsValid(guid)`    | `Boolean(String)` | Check the canonical 36-character UUID syntax |
 | `ToBytes(guid)`    | `Bytes(String)`   | Convert UUID string to 16-byte array   |
 | `FromBytes(bytes)` | `String(Bytes)`   | Convert 16-byte array to UUID string   |

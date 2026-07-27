@@ -10,6 +10,10 @@
 // Key invariants:
 //   - One panel root is reparented among stable bottom/left/right dock hosts.
 //   - Individual panel widgets can split into simultaneous stable dock groups.
+//   - Focus presentation hides every group without mutating membership or
+//     losing each dock's selected panel, then restores the exact snapshot.
+//   - Queued tab changes and background panel reveals cannot reopen a dock
+//     while focus presentation owns the outer workbench.
 //   - Reparenting preserves keyboard ownership for active terminal/search input.
 //   - Header drags reveal stationary, responsive targets above the workbench.
 //   - ListBox-backed panels remain bounded and keep stable row metadata.
@@ -295,6 +299,12 @@ class ToolPanelShell {
     hide Integer activeBottomToolPanelKind;
     hide Integer activeRightToolPanelKind;
     hide Integer activeFloatingToolPanelKind;
+    hide Boolean focusPresentationActive;
+    hide Integer focusRestoreLeftToolPanelKind;
+    hide Integer focusRestoreBottomToolPanelKind;
+    hide Integer focusRestoreRightToolPanelKind;
+    hide Integer focusRestoreFloatingToolPanelKind;
+    hide Integer focusRestoreActiveToolPanelKind;
     expose Integer floatingPanelX;
     expose Integer floatingPanelY;
     expose Integer floatingPanelWidth;
@@ -526,6 +536,12 @@ class ToolPanelShell {
         activeBottomToolPanelKind = tool_panel_model.PANEL_NONE;
         activeRightToolPanelKind = tool_panel_model.PANEL_NONE;
         activeFloatingToolPanelKind = tool_panel_model.PANEL_NONE;
+        focusPresentationActive = false;
+        focusRestoreLeftToolPanelKind = tool_panel_model.PANEL_NONE;
+        focusRestoreBottomToolPanelKind = tool_panel_model.PANEL_NONE;
+        focusRestoreRightToolPanelKind = tool_panel_model.PANEL_NONE;
+        focusRestoreFloatingToolPanelKind = tool_panel_model.PANEL_NONE;
+        focusRestoreActiveToolPanelKind = tool_panel_model.PANEL_NONE;
         floatingPanelX = FLOATING_PANEL_DEFAULT_X;
         floatingPanelY = FLOATING_PANEL_DEFAULT_Y;
         floatingPanelWidth = FLOATING_PANEL_DEFAULT_WIDTH;
@@ -5593,9 +5609,58 @@ class ToolPanelShell {
         CollapseAllDockSplits();
     }
 
+    /// @brief Temporarily reclaim every outer tool dock for a focused surface.
+    /// @details Group membership, order, split restore positions, and each
+    ///          independent group's selected panel remain unchanged.
+    expose func EnterFocusPresentation() {
+        if focusPresentationActive { return; }
+        focusRestoreLeftToolPanelKind = activeLeftToolPanelKind;
+        focusRestoreBottomToolPanelKind = activeBottomToolPanelKind;
+        focusRestoreRightToolPanelKind = activeRightToolPanelKind;
+        focusRestoreFloatingToolPanelKind = activeFloatingToolPanelKind;
+        focusRestoreActiveToolPanelKind = activeToolPanelKind;
+        focusPresentationActive = true;
+        HidePanelArea();
+    }
+
+    /// @brief Restore every tool group captured by EnterFocusPresentation.
+    expose func ExitFocusPresentation() {
+        if focusPresentationActive == false { return; }
+        focusPresentationActive = false;
+        if focusRestoreLeftToolPanelKind != tool_panel_model.PANEL_NONE {
+            ShowToolPanelKind(focusRestoreLeftToolPanelKind);
+        }
+        if focusRestoreBottomToolPanelKind != tool_panel_model.PANEL_NONE {
+            ShowToolPanelKind(focusRestoreBottomToolPanelKind);
+        }
+        if focusRestoreRightToolPanelKind != tool_panel_model.PANEL_NONE {
+            ShowToolPanelKind(focusRestoreRightToolPanelKind);
+        }
+        if focusRestoreFloatingToolPanelKind != tool_panel_model.PANEL_NONE {
+            ShowToolPanelKind(focusRestoreFloatingToolPanelKind);
+        }
+        if focusRestoreActiveToolPanelKind != tool_panel_model.PANEL_NONE {
+            SetActiveToolPanelKind(focusRestoreActiveToolPanelKind);
+        }
+        focusRestoreLeftToolPanelKind = tool_panel_model.PANEL_NONE;
+        focusRestoreBottomToolPanelKind = tool_panel_model.PANEL_NONE;
+        focusRestoreRightToolPanelKind = tool_panel_model.PANEL_NONE;
+        focusRestoreFloatingToolPanelKind = tool_panel_model.PANEL_NONE;
+        focusRestoreActiveToolPanelKind = tool_panel_model.PANEL_NONE;
+    }
+
+    /// @brief Return whether tool docks are hidden by focus presentation.
+    expose func IsFocusPresentationActive() -> Boolean {
+        return focusPresentationActive;
+    }
+
     /// @brief Return the durable stable ID of the visible tool panel.
     /// @return A built-in tab ID, or "none" while the dock is hidden.
     expose func GetActiveToolPanelId() -> String {
+        if focusPresentationActive {
+            return tool_panel_model.TabIdForPanelKind(
+                focusRestoreActiveToolPanelKind);
+        }
         return tool_panel_model.TabIdForPanelKind(activeToolPanelKind);
     }
 
@@ -5627,6 +5692,7 @@ class ToolPanelShell {
 
     /// @brief Show the Problems panel and select its tab.
     expose func ShowProblemsPanel() {
+        if focusPresentationActive { return; }
         var filterHadFocus =
             problemsFilterInput != null and problemsFilterInput.IsFocused();
         ApplyResponsiveProblemsToolbar();
@@ -5651,6 +5717,7 @@ class ToolPanelShell {
 
     /// @brief Show the Output panel and select its tab.
     expose func ShowOutputPanel() {
+        if focusPresentationActive { return; }
         var filterHadFocus =
             outputFilterInput != null and outputFilterInput.IsFocused();
         ApplyResponsiveOutputToolbar();
@@ -5683,6 +5750,7 @@ class ToolPanelShell {
     ///          explicit command focused an input. Preserve that ownership
     ///          across the temporary HideAllToolPanels visibility transition.
     expose func ShowSearchPanel() {
+        if focusPresentationActive { return; }
         var queryHadFocus =
             searchQueryInput != null and searchQueryInput.IsFocused();
         var replaceHadFocus =
@@ -5719,6 +5787,7 @@ class ToolPanelShell {
 
     /// @brief Show the References panel and select its tab.
     expose func ShowReferencesPanel() {
+        if focusPresentationActive { return; }
         var filterHadFocus =
             referencesFilterInput != null and referencesFilterInput.IsFocused();
         ApplyResponsiveReferencesToolbar();
@@ -5746,6 +5815,7 @@ class ToolPanelShell {
 
     /// @brief Show the Variables panel and select its tab.
     expose func ShowVariablesPanel() {
+        if focusPresentationActive { return; }
         var watchHadFocus =
             watchExpressionInput != null and watchExpressionInput.IsFocused();
         ApplyResponsiveWatchToolbar();
@@ -5757,6 +5827,7 @@ class ToolPanelShell {
 
     /// @brief Show the Call Stack panel and select its tab.
     expose func ShowCallStackPanel() {
+        if focusPresentationActive { return; }
         var filterHadFocus =
             callStackFilterInput != null and callStackFilterInput.IsFocused();
         ApplyResponsiveCallStackToolbar();
@@ -5784,6 +5855,7 @@ class ToolPanelShell {
 
     /// @brief Show the Debug Console panel and select its tab.
     expose func ShowDebugPanel() {
+        if focusPresentationActive { return; }
         var filterHadFocus =
             debugFilterInput != null and debugFilterInput.IsFocused();
         ApplyResponsiveDebugToolbar();
@@ -5796,6 +5868,7 @@ class ToolPanelShell {
 
     /// @brief Show the Terminal panel and focus its pane.
     expose func ShowTerminalPanel() {
+        if focusPresentationActive { return; }
         ApplyResponsiveTerminalActions();
         PrepareToolPanel(tool_panel_model.PANEL_TERMINAL, 0.0);
         terminalPanel.SetVisible(true);

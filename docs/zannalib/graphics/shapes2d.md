@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-05-03
+last-verified: 2026-07-26
 ---
 
 # 2D Shapes, Text, And UI
@@ -26,7 +26,7 @@ These classes draw into `Pixels` or onto `Canvas` and are grouped by what they r
 
 ## Drawing Conventions
 
-- Shape, path, and debug draw colors accept Canvas-style `0x00RRGGBB`, raw pixel `0xRRGGBBAA`, and `Color.RGBA(...)` values; alpha is ignored by these RGB-only CPU drawing primitives.
+- Shape, path, and debug draw colors accept Canvas-style `0x00RRGGBB`, raw pixel `0xRRGGBBAA`, and `Color.Rgba(...)` values; alpha is ignored by these RGB-only CPU drawing primitives.
 - `NineSlice2D` alpha-composites over the destination `Pixels`, making it suitable for UI panels generated from sprite assets.
 - `NineSlice2D.New` requires a `Pixels` source image and retains it. Border widths are clamped to the source dimensions.
 

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-16
+last-verified: 2026-07-26
 ---
 
 # Chapter 9: Files and Persistence
@@ -174,8 +174,8 @@ bind Zanna.IO.Path as Path;
 var path = "/home/alice/documents/report.txt";
 
 Path.Name(path);     // "report.txt"
-Path.Ext(path);      // ".txt"
-Path.Dir(path);      // "/home/alice/documents"
+Path.Extension(path);      // ".txt"
+Path.Directory(path);      // "/home/alice/documents"
 Path.Stem(path);     // "report" (name without extension)
 
 // Building paths safely
@@ -584,7 +584,7 @@ File.WriteAllBytes("header.bin", data);
 
 // Reading binary data
 var bytes = File.ReadAllBytes("header.bin");
-Say("File size: " + File.Size("header.bin") + " bytes");
+Say("File size: " + File.SizeBytes("header.bin") + " bytes");
 
 // Check for PNG signature
 if bytes.Get(0) == 0x89 && bytes.Get(1) == 0x50 && bytes.Get(2) == 0x4E && bytes.Get(3) == 0x47 {
@@ -676,13 +676,13 @@ bind Zanna.IO.Dir as Dir;
 bind Zanna.Terminal;
 
 // List all files in a directory
-var files = Dir.FilesSeq("data");
+var files = Dir.Files("data");
 for file in files {
     Say(file);
 }
 
 // List subdirectories
-var dirs = Dir.DirsSeq("projects");
+var dirs = Dir.Dirs("projects");
 for dir in dirs {
     Say("Directory: " + dir);
 }
@@ -1127,7 +1127,7 @@ func listSaves() -> List[Integer] {
         return saves;
     }
 
-    for file in Dir.FilesSeq(SAVE_DIR) {
+    for file in Dir.Files(SAVE_DIR) {
         if file.StartsWith("save_") && file.EndsWith(".dat") {
             var numStr = file.Substring(5, file.Length - 9);
             saves.Push(Convert.ToInt64(numStr));

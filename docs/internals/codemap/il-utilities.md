@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-05-31
+last-verified: 2026-07-26
 ---
 
 # CODEMAP: IL Utilities
@@ -10,7 +10,7 @@ Shared IL helper functions (`src/il/utils/`).
 
 ## Overview
 
-- **Total source files**: 4 (.hpp/.cpp)
+- **Total source files**: 5 (.hpp/.cpp)
 
 ## Utilities
 

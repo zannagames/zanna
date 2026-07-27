@@ -1,7 +1,7 @@
 ---
 status: active
 audience: developers
-last-verified: 2026-04-09
+last-verified: 2026-07-26
 ---
 
 # How to Write a Zanna Frontend
@@ -308,7 +308,7 @@ public:
 //    terminators at the end of blocks.
 //
 // 5. **SSA (Static Single Assignment)**: Every value is defined exactly once.
-//    Instead of mutable variables, we create new temporaries (%0, %1, %2, ...).
+//    Instead of mutable variables, we create new temporaries (%t0, %t1, %t2, ...).
 //    The IRBuilder automatically allocates these for you.
 //
 // 6. **Insert Point**: The IRBuilder needs to know WHERE to emit instructions.
@@ -658,14 +658,15 @@ which is the simplest low-level path for compiler bring-up and test integration.
 If you want first-class `zanna run` / `zanna build` support for your new source
 type, extend target detection after the frontend command works.
 
-**File:** `src/tools/zanna/CMakeLists.txt` (add to existing file)
+**File:** `src/CMakeLists.txt` (the `zanna` executable is defined there from the
+`ZANNA_CLI_SOURCES` list; there is no per-tool `CMakeLists.txt` for it)
 
 ```cmake
 # Add your command handler source
 # This source file implements cmdFrontYourFrontend(), the entry point
 # for your frontend when invoked via zanna.
 target_sources(zanna PRIVATE
-    cmd_front_yourfrontend.cpp
+    tools/zanna/cmd_front_yourfrontend.cpp
 )
 
 # Link your frontend library into zanna
@@ -2345,8 +2346,8 @@ Type ptrTy(Type::Kind::Ptr);
 **File:** `il/core/Value.hpp`
 
 ```cpp
-// SSA temporaries: %0, %1, %2, ...
-Value::temp(unsigned id)           // %{id}
+// SSA temporaries: %t0, %t1, %t2, ...
+Value::temp(unsigned id)           // %t{id}
 
 // Constants
 Value::constInt(int64_t v)         // Integer literal
@@ -2665,7 +2666,7 @@ void Lowerer::lowerFunctionDecl(FunctionDecl &decl) {
         Value slot = emitAlloca(8);  // Allocate 8 bytes
 
         // Store parameter value to stack slot
-        Value paramVal = Value::temp(i);  // Parameters are %0, %1, ...
+        Value paramVal = Value::temp(i);  // Parameters are %t0, %t1, ...
         emitStore(ilParams[i].type, slot, paramVal);
 
         locals_[decl.params[i].name] = slotId;
@@ -3325,9 +3326,9 @@ emitError("function 'foo' expects 2 arguments, got 3", call.loc);
 ### SSA Value Naming
 
 ```cpp
-// Temporaries: %0, %1, %2, ...
-Value::temp(0)  → "%0"
-Value::temp(1)  → "%1"
+// Temporaries: %t0, %t1, %t2, ...
+Value::temp(0)  → "%t0"
+Value::temp(1)  → "%t1"
 
 // Globals: @name
 Value::global("main")       → "@main"
@@ -3346,15 +3347,15 @@ Variables are stored on the stack using `alloca`:
 
 ```cpp
 // DIM x AS INT in BASIC becomes:
-// %0 = alloca 8           ; Allocate stack slot
-// store i64, %0, 0        ; Initialize to 0
+// %t0 = alloca 8          ; Allocate stack slot
+// store i64, %t0, 0       ; Initialize to 0
 
 // x = 42 becomes:
-// store i64, %0, 42       ; Store to slot
+// store i64, %t0, 42      ; Store to slot
 
 // y = x becomes:
-// %1 = load i64, %0       ; Load from x's slot
-// store i64, %y_slot, %1  ; Store to y's slot
+// %t1 = load i64, %t0     ; Load from x's slot
+// store i64, %y_slot, %t1 ; Store to y's slot
 ```
 
 **Implementation:**
@@ -3599,8 +3600,8 @@ extern @Zanna.Terminal.PrintStr(str) -> void
 
 func @main() -> i64 {
 entry:
-  %0 = const_str @str.0
-  call @Zanna.Terminal.PrintStr(%0)
+  %t0 = const_str @str.0
+  call @Zanna.Terminal.PrintStr(%t0)
   ret 0
 }
 
@@ -3702,16 +3703,16 @@ if (!currentBlock_->terminated) {
 **Cause:**
 
 ```cpp
-// WRONG: using %2 before it's defined
-%1 = add %0, %2
-%2 = const 42
+// WRONG: using %t2 before it's defined
+%t1 = add %t0, %t2
+%t2 = const 42
 ```
 
 **Fix:** Define values before use:
 
 ```cpp
-%2 = const 42
-%1 = add %0, %2
+%t2 = const 42
+%t1 = add %t0, %t2
 ```
 
 ### 3. Type Mismatches

@@ -9,7 +9,10 @@
 // Purpose: Apply validated structured edits to project scene-component schemas.
 // Key invariants:
 //   - Every candidate is reparsed by scene_component_schema before publication.
-//   - Known-member edits preserve unknown version-1 JSON members.
+//   - Known-member edits preserve unknown supported-version JSON members.
+//   - Version inference recognizes object, scene, node, sky/light, and
+//     lens/atmosphere preview extensions before replacing otherwise unrelated
+//     component fields.
 //   - Existing files are replaced through expected-metadata workspace edits;
 //     new files use a no-overwrite same-directory atomic create.
 //   - Bounded file snapshots make each accepted edit exactly undoable/redoable.
@@ -18,7 +21,9 @@
 // Links: zannastudio/src/ui/scene_component_schema.zia,
 //        zannastudio/src/ui/scene_component_palette.zia,
 //        zannastudio/src/services/safe_io.zia,
-//        docs/adr/0160-project-scene-component-schemas.md
+//        docs/adr/0160-project-scene-component-schemas.md,
+//        docs/adr/0200-project-owned-3d-sky-and-light-preview-rigs.md,
+//        docs/adr/0201-project-owned-3d-lens-and-atmosphere-previews.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -718,6 +723,35 @@ func FinishEdit(root: Any,
 /// @brief Write the lowest schema version the authored content requires.
 func SyncSchemaVersion(root: Any) {
     var required = scene_component_schema.SCHEMA_VERSION;
+    if Map.Has(root, "nodePreviews3D") {
+        required =
+            scene_component_schema.NODE_PREVIEW_3D_SCHEMA_VERSION;
+    }
+    if Map.Has(root, "scenePreview3D") {
+        var scenePreviewVersion =
+            scene_component_schema.SCENE_PREVIEW_3D_SCHEMA_VERSION;
+        var scenePreview = Map.Get(root, "scenePreview3D");
+        if scenePreview != null
+           and Json.TypeOf(scenePreview) == "object" {
+            if ScenePreviewHasLensAtmosphereMembers(scenePreview) {
+                scenePreviewVersion =
+                    scene_component_schema
+                        .LENS_ATMOSPHERE_PREVIEW_3D_SCHEMA_VERSION;
+            } else if ScenePreviewHasSkyLightMembers(scenePreview) {
+                scenePreviewVersion =
+                    scene_component_schema
+                        .SKY_LIGHT_PREVIEW_3D_SCHEMA_VERSION;
+            }
+        }
+        if scenePreviewVersion > required {
+            required = scenePreviewVersion;
+        }
+    }
+    if Map.Has(root, "objectPreviews") {
+        var previewVersion =
+            scene_component_schema.OBJECT_PREVIEW_SCHEMA_VERSION;
+        if previewVersion > required { required = previewVersion; }
+    }
     var components = Map.Get(root, "components");
     if components == null or Json.TypeOf(components) != "array" {
         Map.SetInt(root, "version", required);
@@ -743,6 +777,42 @@ func SyncSchemaVersion(root: Any) {
         }
     }
     Map.SetInt(root, "version", required);
+}
+
+/// @brief Return whether one raw scene profile requires schema version 6.
+func ScenePreviewHasSkyLightMembers(raw: Any) -> Boolean {
+    var names: List[String] = [
+        "zenithRProperty", "zenithGProperty", "zenithBProperty",
+        "groundRProperty", "groundGProperty", "groundBProperty",
+        "cloudProperty", "starsProperty",
+        "sunXProperty", "sunYProperty", "sunZProperty",
+        "sunRProperty", "sunGProperty", "sunBProperty",
+        "sunIntensityProperty",
+        "fillXProperty", "fillYProperty", "fillZProperty",
+        "fillRProperty", "fillGProperty", "fillBProperty",
+        "fillIntensityProperty"
+    ];
+    var index = 0;
+    while index < names.count() {
+        if Map.Has(raw, names.get(index)) { return true; }
+        index = index + 1;
+    }
+    return false;
+}
+
+/// @brief Return whether one raw scene profile requires schema version 7.
+func ScenePreviewHasLensAtmosphereMembers(raw: Any) -> Boolean {
+    var names: List[String] = [
+        "cameraFov", "iblIntensity", "heightFogProperty",
+        "heightFogBase", "heightFogFalloff",
+        "heightFogDensity", "heightFogOpacity"
+    ];
+    var index = 0;
+    while index < names.count() {
+        if Map.Has(raw, names.get(index)) { return true; }
+        index = index + 1;
+    }
+    return false;
 }
 
 /// @brief Split one comma-separated draft into trimmed non-empty entries.

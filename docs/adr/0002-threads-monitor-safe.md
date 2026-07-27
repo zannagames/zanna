@@ -10,7 +10,7 @@ Date: 2025-12-18
 
 Status: Implemented; verified against source and runtime API on 2026-06-27.
 
-Context
+## Context
 
 Before this ADR, Zanna supported host/embedder-level concurrency by running multiple VM instances in parallel, but it did
 not expose language-level shared-memory threading to Zanna programs. The runtime also needed thread-safe ownership and
@@ -20,7 +20,7 @@ Zanna now provides a `Zanna.Threads` runtime namespace for shared-memory concurr
 `src/runtime/threads/`, exposed through the runtime API registry, and bridged in both the tree-walking VM and BytecodeVM
 for VM function pointers.
 
-Decision
+## Decision
 
 Provide `Zanna.Threads` with:
 
@@ -154,7 +154,7 @@ Verified on 2026-06-27:
   starts.
 - Focused tests passed: `test_rt_threads_monitor`, `test_rt_threads_thread`, and `test_rt_threads_primitives`.
 
-Consequences
+## Consequences
 
 Pros:
 
@@ -168,7 +168,7 @@ Cons:
 - Deadlocks remain possible in user programs that misuse locks.
 - VM and BytecodeVM bridges must keep runtime function-pointer handling aligned with native semantics.
 
-Alternatives
+## Alternatives
 
 - Cooperative green threads in the VM: rejected because they would not match native OS-thread behavior.
 - Native-only threads with VM trapping: rejected because VM execution must support the runtime surface.

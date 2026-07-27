@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-16
+last-verified: 2026-07-26
 ---
 
 # Chapter 22: Networking
@@ -844,7 +844,7 @@ For a production chat client, use a background receive loop so incoming messages
 ```text
 Single Thread
     |
-    |   Terminal.Ask()
+    |   Terminal.TryAsk()
     |   socket.SendStr()
     |   while socket.Available > 0:
     |       socket.RecvLine()

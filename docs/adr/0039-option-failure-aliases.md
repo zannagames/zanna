@@ -4,7 +4,7 @@ audience: contributors
 last-verified: 2026-07-02
 ---
 
-# ADR-0039: Option Failure Aliases
+# ADR 0039: Option Failure Aliases
 
 ## Status
 

@@ -12,6 +12,8 @@
 //   - Only editable documents and bounded dirty drafts survive a session.
 //   - Invalid persisted paths are removed before they can pollute startup UI.
 //   - Startup can restore workspace roots and tabs in caller-budgeted batches.
+//   - Explicit-file launches recover dirty buffers without reviving unrelated
+//     clean tabs, split panes, or workspace roots.
 //   - Writers retain at most the restore limits and cap aggregate embedded
 //     recovery text, prioritizing the active document when truncation is needed.
 //   - Scene view state is fixed-point, versioned, and bounded before it reaches
@@ -108,6 +110,7 @@ class SessionRestoreJob {
     expose document.Document splitSecondDocument;
     expose Integer restoredCount;
     expose Boolean prunedSession;
+    expose Boolean recoveryOnly;
     expose Integer totalWork;
     expose Integer completedWork;
     expose Integer lastPumpCount;
@@ -135,6 +138,7 @@ class SessionRestoreJob {
         splitSecondDocument = null;
         restoredCount = 0;
         prunedSession = false;
+        recoveryOnly = false;
         totalWork = 0;
         completedWork = 0;
         lastPumpCount = 0;
@@ -554,6 +558,28 @@ class SessionManager {
     expose func BeginRestore(docMgr: document_manager.DocumentManager,
                              projMgr: project_manager.ProjectManager,
                              tabs: editor_tabs.EditorTabs) -> SessionRestoreJob {
+        return BeginRestoreInternal(docMgr, projMgr, tabs, false);
+    }
+
+    /// @brief Parse only dirty-buffer recovery for an explicit-file launch.
+    /// @details A command-line/Open With target owns the new workspace. Clean
+    ///          tabs, split ownership, and prior workspace roots are skipped,
+    ///          while bounded unsaved buffers remain protected from data loss.
+    /// @param docMgr Destination document model.
+    /// @param tabs Optional visual tab controller.
+    /// @return Resumable recovery scan with the same caller-budgeted contract.
+    expose func BeginRecoveryRestore(
+        docMgr: document_manager.DocumentManager,
+        tabs: editor_tabs.EditorTabs) -> SessionRestoreJob {
+        return BeginRestoreInternal(docMgr, null, tabs, true);
+    }
+
+    /// @brief Shared parser for complete and dirty-buffer-only restore passes.
+    hide func BeginRestoreInternal(
+        docMgr: document_manager.DocumentManager,
+        projMgr: project_manager.ProjectManager,
+        tabs: editor_tabs.EditorTabs,
+        recoveryOnly: Boolean) -> SessionRestoreJob {
         var job = new SessionRestoreJob();
         restoredSplitFirstDocument = null;
         restoredSplitSecondDocument = null;
@@ -571,18 +597,20 @@ class SessionManager {
         job.docMgr = docMgr;
         job.projMgr = projMgr;
         job.tabs = tabs;
+        job.recoveryOnly = recoveryOnly;
         job.activePath = Ini.Get(ini, "session", "activePath");
 
         var restoreProject = Ini.Get(ini, "settings", "restoreLastProject") != "0";
         var workspaceRootCountText = Ini.Get(ini, "session", "workspaceRootCount");
-        if restoreProject and projMgr != null and workspaceRootCountText != "" {
+        if recoveryOnly == false
+           and restoreProject and projMgr != null and workspaceRootCountText != "" {
             job.indexedWorkspaceRoots = true;
             job.workspaceRootCount = Parse.IntOr(workspaceRootCountText, 0);
             if job.workspaceRootCount < 0 { job.workspaceRootCount = 0; }
             if job.workspaceRootCount > MAX_SESSION_WORKSPACE_ROOTS {
                 job.workspaceRootCount = MAX_SESSION_WORKSPACE_ROOTS;
             }
-        } else if restoreProject and projMgr != null {
+        } else if recoveryOnly == false and restoreProject and projMgr != null {
             job.legacyProjectRoot = Ini.Get(ini, "session", "projectRoot");
             job.legacyRootProcessed = job.legacyProjectRoot == "";
         }
@@ -593,7 +621,7 @@ class SessionManager {
 
         var splitFirstIndexText = Ini.Get(ini, "session", "splitFirstIndex");
         var splitSecondIndexText = Ini.Get(ini, "session", "splitSecondIndex");
-        job.structuredSplitRequested = splitActive
+        job.structuredSplitRequested = recoveryOnly == false and splitActive
             and (splitFirstIndexText != "" or splitSecondIndexText != "");
         if job.structuredSplitRequested {
             job.splitFirstIndex = Parse.IntOr(splitFirstIndexText, -1);
@@ -610,6 +638,10 @@ class SessionManager {
         job.active = job.totalWork > 0;
         if job.active == false {
             FinalizeRestore(job);
+        }
+        if recoveryOnly {
+            splitActive = false;
+            splitSecondFocused = false;
         }
         return job;
     }
@@ -682,6 +714,10 @@ class SessionManager {
     /// @brief Compact progress text for the painted startup surface.
     expose func RestoreProgressText(job: SessionRestoreJob) -> String {
         if job == null or job.totalWork <= 0 { return "Restoring your workspace..."; }
+        if job.recoveryOnly {
+            return "Recovering unsaved tabs: "
+                + job.completedWork + "/" + job.totalWork;
+        }
         return "Restoring your workspace: " + job.completedWork + "/" + job.totalWork;
     }
 
@@ -690,9 +726,10 @@ class SessionManager {
                                     index: Integer) {
         var section = "session.file." + index;
         var path = Ini.Get(job.ini, section, "path");
+        var recoveryModified = Ini.Get(job.ini, section, "recoveryModified") == "1";
+        if job.recoveryOnly and recoveryModified == false { return; }
         var recovery = DecodeRecoveryText(Ini.Get(job.ini, section, "recovery"),
                                           Ini.Get(job.ini, section, "recoveryEncoding"));
-        var recoveryModified = Ini.Get(job.ini, section, "recoveryModified") == "1";
         if path != "" and document_manager.IsEditableTextFile(path) {
             var documentCountBefore = job.docMgr.GetCount();
             var doc = job.docMgr.OpenFile(path);
@@ -941,6 +978,10 @@ class SessionManager {
                     SessionBool(state2D.inspectorRequestedVisible));
             Ini.Set(ini, section, "scene2dCompactInspector",
                     SessionBool(state2D.compactInspectorShown));
+            Ini.Set(ini, section, "scene2dPaletteVisible",
+                    SessionBool(state2D.paletteRequestedVisible));
+            Ini.Set(ini, section, "scene2dCompactPalette",
+                    SessionBool(state2D.compactPaletteShown));
             return;
         }
 
@@ -1036,6 +1077,10 @@ class SessionManager {
                 ini, section, "scene2dInspectorVisible", 1, 0, 1) != 0;
             state2D.compactInspectorShown = ReadSessionInt(
                 ini, section, "scene2dCompactInspector", 0, 0, 1) != 0;
+            state2D.paletteRequestedVisible = ReadSessionInt(
+                ini, section, "scene2dPaletteVisible", 1, 0, 1) != 0;
+            state2D.compactPaletteShown = ReadSessionInt(
+                ini, section, "scene2dCompactPalette", 0, 0, 1) != 0;
             state2D.undoStack = [];
             state2D.redoStack = [];
             state2D.cleanSerialized = "";

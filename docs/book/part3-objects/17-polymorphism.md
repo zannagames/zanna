@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-16
+last-verified: 2026-07-26
 ---
 
 # Chapter 17: Polymorphism
@@ -621,11 +621,11 @@ class FileManager {
 
     expose func save(filename: String, data: String) {
         var compressed = self.compression.compress(data);
-        File.WriteText(filename, compressed);
+        File.WriteAllText(filename, compressed);
     }
 
     expose func load(filename: String) -> String {
-        var compressed = File.ReadText(filename);
+        var compressed = File.ReadAllText(filename);
         return self.compression.decompress(compressed);
     }
 }

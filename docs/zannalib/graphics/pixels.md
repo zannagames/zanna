@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-05-17
+last-verified: 2026-07-26
 ---
 
 # Images & Sprites
@@ -40,7 +40,7 @@ Creates a new pixel buffer initialized to transparent black (0x00000000). Negati
 | `Copy(dx, dy, src, sx, sy, w, h)` | `Void(Integer, Integer, Pixels, Integer, Integer, Integer, Integer)` | Copy a rectangle from source to this buffer                                       |
 | `Fill(color)`                     | `Void(Integer)`                                                      | Fill with raw `0xRRGGBBAA` storage                                                |
 | `FillRgba(color)`                 | `Void(Integer)`                                                      | Explicit raw `0xRRGGBBAA` fill alias                                              |
-| `FillColor(color)`                | `Void(Integer)`                                                      | Fill from `Color.RGB()`, Canvas `0x00RRGGBB`, or `Color.RGBA()`                   |
+| `FillColor(color)`                | `Void(Integer)`                                                      | Fill from `Color.Rgb()`, Canvas `0x00RRGGBB`, or `Color.Rgba()`                   |
 | `FlipH()`                         | `Pixels()`                                                           | Return a horizontally mirrored copy (left-right)                                  |
 | `FlipV()`                         | `Pixels()`                                                           | Return a vertically mirrored copy (top-bottom)                                    |
 | `Get(x, y)`                       | `Integer(Integer, Integer)`                                          | Get raw `0xRRGGBBAA` storage at (x, y). Returns 0 if out of bounds                |
@@ -58,8 +58,8 @@ Creates a new pixel buffer initialized to transparent black (0x00000000). Negati
 | `Scale(width, height)`            | `Pixels(Integer, Integer)`                                           | Return an endpoint-preserving scaled copy using nearest-neighbor interpolation; target dimensions must be positive |
 | `Set(x, y, color)`                | `Void(Integer, Integer, Integer)`                                    | Set raw `0xRRGGBBAA` storage. Silently ignores out of bounds                      |
 | `SetRgba(x, y, color)`            | `Void(Integer, Integer, Integer)`                                    | Explicit raw `0xRRGGBBAA` set alias                                               |
-| `SetColor(x, y, color)`           | `Void(Integer, Integer, Integer)`                                    | Set from `Color.RGB()`, Canvas `0x00RRGGBB`, or `Color.RGBA()`                    |
-| `Tint(color)`                     | `Pixels(Integer)`                                                    | Return a copy with a color tint applied; `Color.RGBA` input also scales alpha     |
+| `SetColor(x, y, color)`           | `Void(Integer, Integer, Integer)`                                    | Set from `Color.Rgb()`, Canvas `0x00RRGGBB`, or `Color.Rgba()`                    |
+| `Tint(color)`                     | `Pixels(Integer)`                                                    | Return a copy with a color tint applied; `Color.Rgba` input also scales alpha     |
 | `ToBytes()`                       | `Bytes()`                                                            | Convert to raw bytes (RGBA, row-major)                                            |
 
 ### Static Methods
@@ -79,7 +79,7 @@ JPEG loading validates component, quantization, Huffman, scan, and chroma sampli
 
 ### Drawing Primitives
 
-Drawing primitives accept `0x00RRGGBB`, `Color.RGB()`, and tagged `Color.RGBA()` values. RGB-only inputs draw with alpha 255; `Color.RGBA()` preserves its alpha in pixel storage. Coordinates outside the pixel buffer are silently clipped, including extreme coordinates that would otherwise overflow rectangle or line endpoint math.
+Drawing primitives accept `0x00RRGGBB`, `Color.Rgb()`, and tagged `Color.Rgba()` values. RGB-only inputs draw with alpha 255; `Color.Rgba()` preserves its alpha in pixel storage. Coordinates outside the pixel buffer are silently clipped, including extreme coordinates that would otherwise overflow rectangle or line endpoint math.
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
@@ -114,7 +114,7 @@ Drawing primitives accept `0x00RRGGBB`, `Color.RGB()`, and tagged `Color.RGBA()`
 
 Text rendering uses the same embedded monospace 8x8 bitmap font as `Canvas.Text`. Non-ASCII UTF-8
 codepoints measure as one cell and render with the fallback glyph. All text methods clip silently at
-the buffer edge and accept `0x00RRGGBB`, `Color.RGB()`, or tagged `Color.RGBA()` colors.
+the buffer edge and accept `0x00RRGGBB`, `Color.Rgb()`, or tagged `Color.Rgba()` colors.
 
 #### Zia Example — Drawing into an off-screen buffer
 
@@ -128,14 +128,14 @@ func start() {
     // Create an off-screen pixel buffer and draw into it
     var buf = Pixels.New(320, 240);
 
-    // All drawing uses 0x00RRGGBB — same as Canvas and Color.RGB()
-    buf.DrawBox(0, 0, 320, 240, Color.RGB(30, 30, 30));       // dark background
-    buf.DrawDisc(160, 120, 80, Color.RGB(0, 120, 220));        // blue filled circle
-    buf.DrawRing(160, 120, 80, Color.RGB(255, 255, 255));      // white outline
-    buf.DrawLine(0, 0, 319, 239, Color.RGB(255, 80, 0));       // orange diagonal
-    buf.DrawEllipse(160, 60, 60, 25, Color.RGB(200, 0, 200)); // purple ellipse
-    buf.FloodFill(5, 5, Color.RGB(10, 10, 50));                // flood fill corner
-    buf.DrawText(16, 16, "Pixels", Color.RGB(255, 255, 255));  // direct text rasterization
+    // All drawing uses 0x00RRGGBB — same as Canvas and Color.Rgb()
+    buf.DrawBox(0, 0, 320, 240, Color.Rgb(30, 30, 30));       // dark background
+    buf.DrawDisc(160, 120, 80, Color.Rgb(0, 120, 220));        // blue filled circle
+    buf.DrawRing(160, 120, 80, Color.Rgb(255, 255, 255));      // white outline
+    buf.DrawLine(0, 0, 319, 239, Color.Rgb(255, 80, 0));       // orange diagonal
+    buf.DrawEllipse(160, 60, 60, 25, Color.Rgb(200, 0, 200)); // purple ellipse
+    buf.FloodFill(5, 5, Color.Rgb(10, 10, 50));                // flood fill corner
+    buf.DrawText(16, 16, "Pixels", Color.Rgb(255, 255, 255));  // direct text rasterization
 
     // Blit the finished buffer to a canvas for display
     var c = Canvas.New("Pixels Draw Demo", 320, 240);
@@ -161,14 +161,14 @@ Raw pixel storage uses packed 32-bit RGBA in the format `0xRRGGBBAA`:
 the color-compatible forms for `Zanna.Graphics.Color` values and Canvas-style `0x00RRGGBB` colors.
 
 **Drawing primitives** (`DrawLine`, `DrawBox`, etc.) use the same color inputs as Canvas methods and
-`Color.RGB()`. This makes it straightforward to share color constants between on-screen canvas drawing
-and off-screen pixel buffer operations. `Color.RGBA()` values preserve alpha in the destination pixels.
+`Color.Rgb()`. This makes it straightforward to share color constants between on-screen canvas drawing
+and off-screen pixel buffer operations. `Color.Rgba()` values preserve alpha in the destination pixels.
 
 Use packed literals like `0xRRGGBBAA` with `Set`/`Get`/`Fill` or the explicit `*RGBA` aliases, and
-`Zanna.Graphics.Color.RGB()` or `Color.RGBA()` with `SetColor`/`GetColor`/`FillColor` and drawing
+`Zanna.Graphics.Color.Rgb()` or `Color.Rgba()` with `SetColor`/`GetColor`/`FillColor` and drawing
 primitives.
 
-> `Zanna.Graphics.Color.RGBA()` returns a tagged `0xAARRGGBB` color value so alpha can be preserved
+> `Zanna.Graphics.Color.Rgba()` returns a tagged `0xAARRGGBB` color value so alpha can be preserved
 > even when `a = 0`. It does **not** match raw `0xRRGGBBAA` storage. Use `SetColor`/`FillColor` for
 > tagged colors, or use `Set`/`Fill`/`SetRgba`/`FillRgba` for explicit raw storage.
 
@@ -186,9 +186,9 @@ func start() {
     var p = Pixels.New(64, 64);
     Say("Size: " + Fmt.Int(p.get_Width()) + "x" + Fmt.Int(p.get_Height()));
 
-    // Color-compatible Set/Get work with Color.RGB/RGBA and Canvas RGB values
-    p.SetColor(0, 0, Color.RGB(255, 0, 0));
-    p.SetColor(1, 0, Color.RGBA(0, 0, 255, 128));
+    // Color-compatible Set/Get work with Color.Rgb/Rgba and Canvas RGB values
+    p.SetColor(0, 0, Color.Rgb(255, 0, 0));
+    p.SetColor(1, 0, Color.Rgba(0, 0, 255, 128));
     var c = p.GetColor(0, 0);
     Say("Pixel(0,0) red: " + Fmt.Int(Color.GetRed(c)));
 
@@ -197,7 +197,7 @@ func start() {
     Say("Raw Pixel(2,0): " + Fmt.Int(p.Get(2, 0)));
 
     // Fill and clear
-    p.FillColor(Color.RGBA(0, 255, 0, 192));
+    p.FillColor(Color.Rgba(0, 255, 0, 192));
     p.Clear();
 
     // Clone
@@ -227,7 +227,7 @@ FOR y = 0 TO 255
         ' Red increases left-to-right, green increases top-to-bottom
         DIM r AS INTEGER = x
         DIM g AS INTEGER = y
-        DIM color AS INTEGER = Zanna.Graphics.Color.RGB(r, g, 0)
+        DIM color AS INTEGER = Zanna.Graphics.Color.Rgb(r, g, 0)
         pixels.SetRgb(x, y, color)
     NEXT x
 NEXT y
@@ -436,12 +436,12 @@ IF player <> NULL THEN
         player.Update()
 
         ' Move with arrow keys
-        IF Zanna.Input.Keyboard.Held(262) THEN player.Move(5, 0)   ' Right
-        IF Zanna.Input.Keyboard.Held(263) THEN player.Move(-5, 0)  ' Left
+        IF Zanna.Input.Keyboard.IsDown(Zanna.Input.Key.Right) THEN player.Move(5, 0)
+        IF Zanna.Input.Keyboard.IsDown(Zanna.Input.Key.Left) THEN player.Move(-5, 0)
 
         ' Rotate with Q/E
-        IF Zanna.Input.Keyboard.Held(81) THEN player.Rotation = player.Rotation - 2
-        IF Zanna.Input.Keyboard.Held(69) THEN player.Rotation = player.Rotation + 2
+        IF Zanna.Input.Keyboard.IsDown(Zanna.Input.Key.Q) THEN player.Rotation = player.Rotation - 2
+        IF Zanna.Input.Keyboard.IsDown(Zanna.Input.Key.E) THEN player.Rotation = player.Rotation + 2
 
         ' Draw sprite
         player.Draw(canvas)
@@ -776,10 +776,10 @@ DO WHILE NOT canvas.ShouldClose
     canvas.Clear(0)
 
     ' Scroll with arrow keys
-    IF Zanna.Input.Keyboard.Held(262) THEN scrollX = scrollX + 4
-    IF Zanna.Input.Keyboard.Held(263) THEN scrollX = scrollX - 4
-    IF Zanna.Input.Keyboard.Held(265) THEN scrollY = scrollY - 4
-    IF Zanna.Input.Keyboard.Held(264) THEN scrollY = scrollY + 4
+    IF Zanna.Input.Keyboard.IsDown(Zanna.Input.Key.Right) THEN scrollX = scrollX + 4
+    IF Zanna.Input.Keyboard.IsDown(Zanna.Input.Key.Left) THEN scrollX = scrollX - 4
+    IF Zanna.Input.Keyboard.IsDown(Zanna.Input.Key.Up) THEN scrollY = scrollY - 4
+    IF Zanna.Input.Keyboard.IsDown(Zanna.Input.Key.Down) THEN scrollY = scrollY + 4
 
     ' Draw tilemap
     map.Draw(canvas, -scrollX, -scrollY)

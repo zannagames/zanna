@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-02
+last-verified: 2026-07-26
 ---
 
 # Zanna IL — Complete Guide
@@ -81,7 +81,7 @@ il 0.3.0
 extern @Zanna.Terminal.PrintI64(i64) -> void
 func @main() -> i64 {
 entry:
-  call @Zanna.Terminal.PrintI64(4)    # runtime prints `4\n`
+  call @Zanna.Terminal.PrintI64(4)    # runtime prints `4` with no newline
   ret 0                    # zero exit code
 }
 ```
@@ -92,11 +92,13 @@ Run it with `zanna`:
 zanna -run first.il
 ```
 
-Expected output:
+Expected output — the single byte `4`, with no trailing newline:
 
 ```text
 4
 ```
+
+Use `@Zanna.Terminal.SayInt` instead of `PrintI64` when you want a trailing newline.
 
 **Line by line**
 
@@ -125,7 +127,7 @@ with a terminator such as `ret` giving the program's exit code.
 ### Values and types
 
 IL is statically typed and uses SSA-style virtual registers (`%v0`, `%t1`, ...). Primitive types include `i1` (bool),
-`i16`, `i32`, `i64`, `f64`, `ptr`, and `str`, plus specialized types `error` and `resumetok` for exception handling.
+`i16`, `i32`, `i64`, `f64`, `ptr`, and `str`, plus specialized types `error` and `resume_tok` for exception handling.
 
 ```llvm
 il 0.3.0
@@ -375,7 +377,7 @@ Happy hacking!
 
 The current IL v0.3.0 specification builds on the design principles established in earlier versions: IL acts as the "thin waist"
 between front ends and execution engines, enforces explicit control flow with one terminator per block, and keeps the
-type system intentionally small (`void`, `i1`, `i16`, `i32`, `i64`, `f64`, `ptr`, `str`, plus `error` and `resumetok`
+type system intentionally small (`void`, `i1`, `i16`, `i32`, `i64`, `f64`, `ptr`, `str`, plus `error` and `resume_tok`
 for structured exception handling). The material below supersedes earlier
 drafts (including v0.1.x) while remaining source-compatible with modules written for those versions. Numeric promotion
 semantics are specified in [specs/numerics.md](../specs/numerics.md) and the unified trap/handler model is
@@ -394,7 +396,7 @@ Its goals are:
 * **Determinism** – VM and native back ends must produce identical observable behaviour.
 * **Explicit control flow** – each basic block ends with exactly one terminator; no fallthrough.
 * **Static types** – a minimal set of primitive types (`void`, `i1`, `i16`, `i32`, `i64`, `f64`, `ptr`, `str`) plus
-  `error` and `resumetok` for structured exception handling.
+  `error` and `resume_tok` for structured exception handling.
 
 Execution is organized as functions consisting of labelled basic blocks. Modules may execute either under the IL virtual
 machine (VM) or after lowering to native code through a C runtime. Front ends such as BASIC first lower into IL
@@ -537,8 +539,13 @@ entry:
 | `f64`       | 64-bit IEEE float    | 8         | NaN/Inf propagate                    |
 | `ptr`       | untyped pointer      | 8         | byte-addressed                       |
 | `str`       | opaque string handle | 8         | managed by runtime                   |
-| `error`     | error value          | 8         | exception handling only              |
-| `resumetok` | resume token         | 8         | exception handling only              |
+| `error`      | error value          | 8         | exception handling only              |
+| `resume_tok` | resume token         | 8         | exception handling only              |
+
+The two exception-handling types also accept the PascalCase spellings `Error` and
+`ResumeTok`, which is the form conventionally used in handler block-parameter
+annotations (`handler ^h(%err:Error, %tok:ResumeTok):`). The printer always emits
+the lower-case canonical names.
 
 `ptr` and `str` have the same storage width but are distinct verifier types; raw extern calls and indirect-call
 signatures must use the exact type declared by the callee. Known runtime helpers whose catalog signature spells a
@@ -550,7 +557,7 @@ accept a managed `str` handle.
 Integers use decimal notation (`-?[0-9]+`). Floats use decimal with optional fraction (`-?[0-9]+(\.[0-9]+)?`) and permit
 `NaN`, `Inf`, and `-Inf`. Booleans `true`/`false` sugar to `i1` values `1`/`0`. Strings appear in quotes with escapes
 `\"`, `\\`, `\n`, `\t`, `\xNN`. `const_null` yields a null value for pointer-like result annotations (`ptr`, `str`,
-`error`, or `resumetok`).
+`error`, or `resume_tok`).
 
 #### Basic Blocks
 
@@ -628,9 +635,18 @@ operands.
 
 ##### Integer Arithmetic
 
-All signed integer arithmetic opcodes in Zanna IL trap on overflow or divide-by-zero; the non-checking variants
-(`add`, `sub`, `mul`, `sdiv`, `udiv`, `srem`, `urem`) are reserved in the opcode table but **rejected by the verifier**.
-Front ends must emit the checked forms.
+Front ends must emit the checked opcodes below: they trap on overflow or divide-by-zero. The
+non-checking variants (`add`, `sub`, `mul`, `sdiv`, `udiv`, `srem`, `urem`) exist in the opcode
+table but the verifier rejects them **unless it can prove the operation cannot trap** — no signed
+overflow, no divide by zero, and no `INT64_MIN / -1`. The optimizer demotes checked forms to plain
+ones where such a proof exists, and the verifier independently re-derives the proof so optimized IL
+still verifies. See [ADR 0026](../adr/0026-range-analysis-demotion-proofs.md).
+
+Rejection reads, for example:
+
+```text
+error[V-IL-VERIFY]: f:entry: %2 = add %t0 %t1: signed integer add must use iadd.ovf (traps on overflow)
+```
 
 | Instr       | Form             | Result | Notes                                                         |
 |-------------|------------------|--------|---------------------------------------------------------------|
@@ -747,7 +763,7 @@ denotes round-to-even (IEEE 754 default). The `.chk` suffix indicates trap-on-ov
 | `addr_of`    | `addr_of @global`        | `ptr` (address of immutable string storage)     |
 | `alloca`     | `alloca size`            | `ptr` (size < 0 traps; memory zero-initialized) |
 | `const.f64`  | `const.f64 3.14`         | `f64` (load floating-point constant)            |
-| `const_null` | `const_null`             | `ptr`, `str`, `error`, or `resumetok`           |
+| `const_null` | `const_null`             | `ptr`, `str`, `error`, or `resume_tok`           |
 | `const_str`  | `const_str @label`       | `str` (requires a declared string global)       |
 | `gaddr`      | `gaddr @global`          | `ptr` (address of scalar module-level storage)  |
 | `gep`        | `gep ptr, offs`          | `ptr` (constant alloca-derived offsets checked) |
@@ -808,7 +824,7 @@ IL provides a structured error handling system with error values, handler stacks
 **Error Types:**
 
 - `error` — Opaque error value containing kind, code, IP, and line number
-- `resumetok` — Token identifying a resumption point in the error handler stack
+- `resume_tok` — Token identifying a resumption point in the error handler stack
 
 **Handler Stack Operations:**
 | Instr | Form | Notes |
@@ -858,12 +874,12 @@ handler(%err:Error, %tok:ResumeTok):
 
 Error-handler blocks must declare `(%err:Error, %tok:ResumeTok)` parameters; the runtime passes the captured error
 value and a resume token into the handler so it can inspect or resume the faulting operation.
-Per [ADR 0005](../adr/0005-resume-token-provenance.md), `resumetok` values are
+Per [ADR 0005](../adr/0005-resume-token-provenance.md), `resume_tok` values are
 handler-provenance capabilities. A token is produced only when EH dispatch enters
 the selected handler. Handler continuations may forward that exact active token
 through block parameters, but `resume.*` must consume a token that reached the
 resume site by EH dispatch or verified forwarding. Ordinary value uses such as
-calls, stores, returns, or arithmetic on `resumetok` are invalid, and
+calls, stores, returns, or arithmetic on `resume_tok` are invalid, and
 `resume.label` may not target a handler block because it consumes the token
 before transferring control.
 
@@ -965,7 +981,7 @@ wired directly to runtime contracts. Passes can also observe the
 * Function and block parameters have unique names/ids, non-void types, and each predecessor passes matching arguments.
 * Branch arguments must match each destination block's parameters and must reference defined, non-void values. Trailing empty successor bundles may be omitted.
 * Handler blocks may be entered by EH dispatch, or by verified handler-continuation
-  control flow that forwards the currently active `resumetok` unchanged. A
+  control flow that forwards the currently active `resume_tok` unchanged. A
   `resume.*` instruction requires the active token for that path, and
   `resume.label` targets must not be handler blocks.
 * Returning an `alloca`-derived pointer, including through `gep` or block parameters, is invalid. Direct calls may borrow
@@ -1060,17 +1076,25 @@ args        ::= value ("," value)*
 value_list  ::= value ("," value)*
 value       ::= TEMP | SYMBOL | literal
 literal     ::= INT | FLOAT | STRING | "true" | "false" | "null"
-type        ::= "void" | "i1" | "i16" | "i32" | "i64" | "f64" | "ptr" | "str" | "error" | "resumetok"
+type        ::= "void" | "i1" | "i16" | "i32" | "i64" | "f64" | "ptr" | "str"
+              | "error" | "Error" | "resume_tok" | "ResumeTok"
 ```
 
-#### Calling Convention (SysV x64)
+#### Calling Conventions
 
-Native back ends target the System V x86-64 ABI:
+IL itself is ABI-neutral; each native back end lowers calls to the host platform's convention.
+The pipeline selects it automatically — Win64 on Windows, System V on Linux, AAPCS64 on AArch64.
+
+System V x86-64:
 
 * Integer and pointer arguments: `rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9`.
 * Floating-point arguments: `xmm0`–`xmm7`.
 * Return values: integers/pointers in `rax`, floats in `xmm0`.
 * Call sites maintain 16-byte stack alignment; `i1` arguments are zero-extended to 32 bits.
+
+Windows x64 and AArch64 differ in register assignment, callee-saved sets, shadow space, and the red
+zone. See [x86-64 Backend](../specs/x86_64.md), [AArch64 Backend](../specs/aarch64.md), and the
+[platform differences](../cross-platform/platform-differences.md#21-x86-64-sysv-vs-win64-abi) summary.
 
 #### Versioning & Conformance
 

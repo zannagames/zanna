@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-22
+last-verified: 2026-07-26
 ---
 
 # Files & Directories
@@ -29,14 +29,11 @@ File system operations.
 | `Copy(src, dst)`              | `Void(String, String)` | Copies a file from src to dst; traps if `dst` already exists or both paths name the same file |
 | `Move(src, dst)`              | `Void(String, String)` | Moves or renames a file; traps if `dst` already exists                                    |
 | `MoveOver(src, dst)`          | `Void(String, String)` | Moves or renames a file, replacing `dst` when supported by the platform                   |
-| `Size(path)`                  | `Integer(String)`      | Returns regular-file size in bytes, or -1 if not found or not a regular file              |
-| `ReadBytes(path)`             | `Bytes(String)`        | Reads the entire file as binary data; traps on I/O errors                                |
-| `WriteBytes(path, data)`      | `Void(String, Bytes)`  | Atomically replaces a file with binary data                                               |
+| `SizeBytes(path)`             | `Integer(String)`      | Returns regular-file size in bytes, or -1 if not found or not a regular file              |
 | `ReadAllBytes(path)`          | `Bytes(String)`        | Reads the entire file as binary data (traps on I/O errors)                                |
 | `WriteAllBytes(path, bytes)`  | `Void(String, Bytes)`  | Atomically replaces a file with binary data (traps on I/O errors)                         |
-| `ReadLines(path)`             | `Seq(String)`          | Reads the file as a runtime sequence of lines; traps on I/O errors                        |
-| `WriteLines(path, lines)`     | `Void(String, Seq(String))` | Atomically writes a sequence of strings as lines; traps on I/O errors                |
-| `WriteAllLines(path, lines)`  | `Void(String, Seq(String))` | Alias of `WriteLines`                                                               |
+| `ReadAllLines(path)`          | `Seq(String)`          | Reads the file as a runtime sequence of lines; traps on I/O errors                        |
+| `WriteAllLines(path, lines)`  | `Void(String, Seq(String))` | Atomically writes a sequence of strings as lines; traps on I/O errors            |
 | `Append(path, text)`          | `Void(String, String)` | Appends text to a file; traps on I/O errors                                               |
 | `AppendLine(path, text)`      | `Void(String, String)` | Appends text followed by `\n` to a file in one atomic write (creates if missing)          |
 | `ReadAllLines(path)`          | `Seq(String)`          | Reads file as a sequence of lines; strips `\n`, `\r`, or `\r\n` terminators (traps on I/O errors) |
@@ -216,7 +213,7 @@ Binary file stream for reading and writing raw bytes with random access capabili
 `Close()` and `Flush()` trap if the platform reports a delayed write or close failure.
 `BinFile` also normalizes the required C stdio transition between reads and writes on `"rw"`/`"r+"` streams, so switching direction does not rely on undefined buffered-stdio state.
 
-`BinFile.Eof` deliberately follows C stdio sticky-flag semantics rather than comparing `Pos` with
+`BinFile.Eof` deliberately follows C stdio sticky-flag semantics rather than comparing `Position` with
 `Size`: reading exactly the last byte leaves it false, and one more `Read`/`ReadByte` sets it. Use
 `Pos >= Size` when the question is whether the cursor is at the logical end. Note this is the
 low-level BinFile contract; the polymorphic `Stream.Eof` is position-based (`Pos >= Size`) on both
@@ -226,8 +223,8 @@ file and memory backings, so prefer `Stream` when you want uniform end-of-stream
 
 | Property | Type    | Description                                   |
 |----------|---------|-----------------------------------------------|
-| `Pos`    | Integer | Current file position (read-only)             |
-| `Size`   | Integer | Total file size in bytes (read-only)          |
+| `Position` | Integer | Current file position (read-only)           |
+| `SizeBytes` | Integer | Total file size in bytes (read-only)       |
 | `Eof`    | Boolean | Sticky EOF flag, set after a read attempts to pass the end (read-only) |
 
 ### Methods
@@ -287,7 +284,7 @@ func start() {
 }
 ```
 
-> **Note:** BinFile properties (`Pos`, `Size`, `Eof`) use the get_/set_ pattern; access them as `bf.get_SizeBytes()`, `bf.get_Pos()`, `bf.get_Eof()` in Zia.
+> **Note:** BinFile properties (`Position`, `SizeBytes`, `Eof`) use the get_/set_ pattern; access them as `bf.get_SizeBytes()`, `bf.get_Position()`, `bf.get_Eof()` in Zia.
 
 ### BASIC Example
 
@@ -466,11 +463,8 @@ Cross-platform directory operations for creating, removing, listing, and navigat
 | `Entries(path)`    | `Seq(String)`          | Returns directory entries (files + subdirectories); traps if the directory does not exist |
 | `List(path)`       | `Seq(String)`          | Returns all entries in a directory (excluding `.` and `..`)                               |
 | `Page(path, offset, limit)` | `Map(String, Integer, Integer)` | Returns one bounded page of immediate entries with kind metadata              |
-| `ListSeq(path)`    | `Seq(String)`          | Seq-returning alias of `List(path)` (same semantics)                                      |
 | `Files(path)`      | `Seq(String)`          | Returns only files in a directory (no subdirectories)                                     |
-| `FilesSeq(path)`   | `Seq(String)`          | Seq-returning alias of `Files(path)` (same semantics)                                     |
 | `Dirs(path)`       | `Seq(String)`          | Returns only subdirectories in a directory                                                |
-| `DirsSeq(path)`    | `Seq(String)`          | Seq-returning alias of `Dirs(path)` (same semantics)                                      |
 | `Current()`        | `String()`             | Returns the current working directory                                                     |
 | `SetCurrent(path)` | `Void(String)`         | Changes the current working directory                                                     |
 | `Move(src, dst)`   | `Void(String, String)` | Moves/renames a directory                                                                 |
@@ -596,12 +590,11 @@ The three listing functions return `Seq` objects containing entry names (not ful
 | `Files(path)` | Files only       | Regular files, no directories |
 | `Dirs(path)`  | Directories only | Subdirectories, no files      |
 
-The `ListSeq()`/`FilesSeq()`/`DirsSeq()` variants are equivalent Seq-returning aliases.
 Use the `*Seq` forms when a frontend or toolchain stage wants the explicit suffix.
 
 ```basic
 DIM names AS Zanna.Collections.Seq
-names = Zanna.IO.Dir.ListSeq("/home/user")
+names = Zanna.IO.Dir.List("/home/user")
 PRINT names.Count
 ```
 
@@ -629,18 +622,18 @@ Cross-platform path manipulation utilities. On Windows, both `/` and `\` are tre
 | Method               | Signature                | Description                                                 |
 |----------------------|--------------------------|-------------------------------------------------------------|
 | `Join(a, b)`         | `String(String, String)` | Joins two path components with the platform separator       |
-| `Dir(path)`          | `String(String)`         | Returns the directory portion of a path                     |
+| `Directory(path)`    | `String(String)`         | Returns the directory portion of a path                     |
 | `Name(path)`         | `String(String)`         | Returns the filename portion of a path                      |
 | `Stem(path)`         | `String(String)`         | Returns the filename without extension                      |
-| `Ext(path)`          | `String(String)`         | Returns the file extension (including the dot)              |
-| `WithExt(path, ext)` | `String(String, String)` | Replaces the extension of a path                            |
-| `IsAbs(path)`        | `Boolean(String)`        | Returns true if the path is absolute                        |
+| `Extension(path)`    | `String(String)`         | Returns the file extension (including the dot)              |
+| `WithExtension(path, ext)` | `String(String, String)` | Replaces the extension of a path                      |
+| `IsAbsolute(path)`   | `Boolean(String)`        | Returns true if the path is absolute                        |
 | `IsLink(path)`       | `Boolean(String)`        | Returns true if the final component is a symlink/reparse point |
-| `Abs(path)`          | `String(String)`         | Converts a relative path to absolute                        |
+| `Absolute(path)`     | `String(String)`         | Converts a relative path to absolute                        |
 | `ExeDir()`           | `String()`               | Returns the directory containing the running executable     |
 | `DataDir(app)`       | `String(String)`         | Per-user writable data directory for `app` (created on demand) |
-| `Norm(path)`         | `String(String)`         | Normalizes a path (removes `.`, `..`, duplicate separators) |
-| `Sep()`              | `String()`               | Returns the platform-specific path separator                |
+| `Normalize(path)`    | `String(String)`         | Normalizes a path (removes `.`, `..`, duplicate separators) |
+| `Separator()`        | `String()`               | Returns the platform-specific path separator                |
 
 `DataDir(app)` resolves the OS-conventional per-user location and creates the
 directory (including parents) if needed, so settings and save files can be

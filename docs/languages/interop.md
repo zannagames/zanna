@@ -1,7 +1,7 @@
 ---
 status: active
 audience: developers, users
-last-verified: 2026-05-31
+last-verified: 2026-07-26
 ---
 
 # Cross-Language Interop Guide

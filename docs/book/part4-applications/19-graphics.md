@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-16
+last-verified: 2026-07-26
 ---
 
 # Chapter 19: Graphics and Games
@@ -152,25 +152,25 @@ This gives us 256 * 256 * 256 = 16,777,216 possible colors. That's over 16 milli
 
 ```zia
 // Primary colors: one channel at maximum, others off
-var red = Color.RGB(255, 0, 0);      // Full red, no green, no blue
-var green = Color.RGB(0, 255, 0);    // No red, full green, no blue
-var blue = Color.RGB(0, 0, 255);     // No red, no green, full blue
+var red = Color.Rgb(255, 0, 0);      // Full red, no green, no blue
+var green = Color.Rgb(0, 255, 0);    // No red, full green, no blue
+var blue = Color.Rgb(0, 0, 255);     // No red, no green, full blue
 
 // Secondary colors: mixing two primaries
-var yellow = Color.RGB(255, 255, 0);   // Red + Green = Yellow
-var cyan = Color.RGB(0, 255, 255);     // Green + Blue = Cyan
-var magenta = Color.RGB(255, 0, 255);  // Red + Blue = Magenta
+var yellow = Color.Rgb(255, 255, 0);   // Red + Green = Yellow
+var cyan = Color.Rgb(0, 255, 255);     // Green + Blue = Cyan
+var magenta = Color.Rgb(255, 0, 255);  // Red + Blue = Magenta
 
 // Neutrals: all channels equal
-var white = Color.RGB(255, 255, 255);  // All at maximum
-var black = Color.RGB(0, 0, 0);        // All off
-var gray = Color.RGB(128, 128, 128);   // All at half
+var white = Color.Rgb(255, 255, 255);  // All at maximum
+var black = Color.Rgb(0, 0, 0);        // All off
+var gray = Color.Rgb(128, 128, 128);   // All at half
 
 // Custom colors
-var orange = Color.RGB(255, 165, 0);   // Lots of red, some green
-var purple = Color.RGB(128, 0, 255);   // Some red, full blue
-var pink = Color.RGB(255, 192, 203);   // High red, medium green and blue
-var brown = Color.RGB(139, 69, 19);    // More red than green, less blue
+var orange = Color.Rgb(255, 165, 0);   // Lots of red, some green
+var purple = Color.Rgb(128, 0, 255);   // Some red, full blue
+var pink = Color.Rgb(255, 192, 203);   // High red, medium green and blue
+var brown = Color.Rgb(139, 69, 19);    // More red than green, less blue
 ```
 
 ### The Color Mixing Intuition
@@ -429,28 +429,28 @@ func start() {
     var canvas = Canvas.New("Drawing Demo", 640, 480);
 
     // Step 1: Sky background
-    canvas.Box(0, 0, 640, 480, Color.RGB(135, 206, 235));  // Sky blue
+    canvas.Box(0, 0, 640, 480, Color.Rgb(135, 206, 235));  // Sky blue
 
     // Step 2: Ground
-    canvas.Box(0, 350, 640, 130, Color.RGB(34, 139, 34));  // Forest green
+    canvas.Box(0, 350, 640, 130, Color.Rgb(34, 139, 34));  // Forest green
 
     // Step 3: Sun
     canvas.Disc(550, 80, 50, Color.Yellow);
 
     // Step 4: House body
-    canvas.Box(200, 250, 200, 150, Color.RGB(139, 69, 19));  // Brown
+    canvas.Box(200, 250, 200, 150, Color.Rgb(139, 69, 19));  // Brown
 
     // Step 5: Roof (draw as lines forming a triangle)
-    var roofColor = Color.RGB(128, 0, 0);  // Dark red
+    var roofColor = Color.Rgb(128, 0, 0);  // Dark red
     canvas.Line(180, 250, 300, 150, roofColor);
     canvas.Line(300, 150, 420, 250, roofColor);
     canvas.Line(420, 250, 180, 250, roofColor);
 
     // Step 6: Door
-    canvas.Box(270, 320, 60, 80, Color.RGB(101, 67, 33));  // Dark brown
+    canvas.Box(270, 320, 60, 80, Color.Rgb(101, 67, 33));  // Dark brown
 
     // Step 7: Window
-    canvas.Box(320, 280, 50, 50, Color.RGB(173, 216, 230));  // Light blue
+    canvas.Box(320, 280, 50, 50, Color.Rgb(173, 216, 230));  // Light blue
 
     // Step 8: Window frame
     canvas.Frame(320, 280, 50, 50, Color.White);
@@ -818,9 +818,9 @@ Most modern graphics systems handle double buffering automatically. The `canvas.
 While drawing shapes works for simple graphics, most games use pre-made images called *sprites*. A sprite is just an image file (PNG, JPG, etc.) loaded into memory.
 
 ```zia
-var playerSprite = Image.load("player.png");
-var enemySprite = Image.load("enemy.png");
-var backgroundSprite = Image.load("background.png");
+var playerSprite = Pixels.LoadPng("player.png");
+var enemySprite = Pixels.LoadPng("enemy.png");
+var backgroundSprite = Pixels.LoadPng("background.png");
 
 // In the render loop:
 canvas.drawImage(backgroundSprite, 0, 0);
@@ -1195,7 +1195,7 @@ Does a simple rectangle appear? Yes? The basic setup works. Add complexity back 
 Draw a grid to understand your coordinate space:
 
 ```zia
-var gridColor = Color.RGB(50, 50, 50);  // Dark gray
+var gridColor = Color.Rgb(50, 50, 50);  // Dark gray
 for i in 0..=8 {
     var x = i * 100;
     canvas.Line(x, 0, x, 600, gridColor);  // Vertical lines

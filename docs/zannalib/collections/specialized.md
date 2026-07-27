@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-17
+last-verified: 2026-07-26
 ---
 
 # Specialized Structures
@@ -826,18 +826,18 @@ An efficient byte array for binary data. More memory-efficient than Seq for byte
 | `Fill(value)`                            | `Void(Integer)`           | Set all bytes to the low 8 bits of value                              |
 | `Find(value)`                            | `Option[Integer](Integer)` | First index of the low-8-bit value as `Some(index)`, or `None` if not found |
 | `Clone()`                                | `Bytes()`                 | Create independent copy                                               |
-| `ReadI16LE(offset)`                      | `Integer(Integer)`        | Read 16-bit signed integer at offset (little-endian)                  |
-| `ReadI16BE(offset)`                      | `Integer(Integer)`        | Read 16-bit signed integer at offset (big-endian)                     |
-| `ReadI32LE(offset)`                      | `Integer(Integer)`        | Read 32-bit signed integer at offset (little-endian)                  |
-| `ReadI32BE(offset)`                      | `Integer(Integer)`        | Read 32-bit signed integer at offset (big-endian)                     |
-| `ReadI64LE(offset)`                      | `Integer(Integer)`        | Read 64-bit signed integer at offset (little-endian)                  |
-| `ReadI64BE(offset)`                      | `Integer(Integer)`        | Read 64-bit signed integer at offset (big-endian)                     |
-| `WriteI16LE(offset, value)`              | `Void(Integer, Integer)`  | Write 16-bit integer at offset (little-endian)                        |
-| `WriteI16BE(offset, value)`              | `Void(Integer, Integer)`  | Write 16-bit integer at offset (big-endian)                           |
-| `WriteI32LE(offset, value)`              | `Void(Integer, Integer)`  | Write 32-bit integer at offset (little-endian)                        |
-| `WriteI32BE(offset, value)`              | `Void(Integer, Integer)`  | Write 32-bit integer at offset (big-endian)                           |
-| `WriteI64LE(offset, value)`              | `Void(Integer, Integer)`  | Write 64-bit integer at offset (little-endian)                        |
-| `WriteI64BE(offset, value)`              | `Void(Integer, Integer)`  | Write 64-bit integer at offset (big-endian)                           |
+| `ReadI16LittleEndian(offset)`                      | `Integer(Integer)`        | Read 16-bit signed integer at offset (little-endian)                  |
+| `ReadI16BigEndian(offset)`                      | `Integer(Integer)`        | Read 16-bit signed integer at offset (big-endian)                     |
+| `ReadI32LittleEndian(offset)`                      | `Integer(Integer)`        | Read 32-bit signed integer at offset (little-endian)                  |
+| `ReadI32BigEndian(offset)`                      | `Integer(Integer)`        | Read 32-bit signed integer at offset (big-endian)                     |
+| `ReadI64LittleEndian(offset)`                      | `Integer(Integer)`        | Read 64-bit signed integer at offset (little-endian)                  |
+| `ReadI64BigEndian(offset)`                      | `Integer(Integer)`        | Read 64-bit signed integer at offset (big-endian)                     |
+| `WriteI16LittleEndian(offset, value)`              | `Void(Integer, Integer)`  | Write 16-bit integer at offset (little-endian)                        |
+| `WriteI16BigEndian(offset, value)`              | `Void(Integer, Integer)`  | Write 16-bit integer at offset (big-endian)                           |
+| `WriteI32LittleEndian(offset, value)`              | `Void(Integer, Integer)`  | Write 32-bit integer at offset (little-endian)                        |
+| `WriteI32BigEndian(offset, value)`              | `Void(Integer, Integer)`  | Write 32-bit integer at offset (big-endian)                           |
+| `WriteI64LittleEndian(offset, value)`              | `Void(Integer, Integer)`  | Write 64-bit integer at offset (little-endian)                        |
+| `WriteI64BigEndian(offset, value)`              | `Void(Integer, Integer)`  | Write 64-bit integer at offset (big-endian)                           |
 
 ### Notes
 

@@ -4,7 +4,7 @@ audience: contributors
 last-verified: 2026-07-02
 ---
 
-# ADR-0047: Network HTTP Result APIs
+# ADR 0047: Network HTTP Result APIs
 
 ## Status
 

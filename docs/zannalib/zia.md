@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-15
+last-verified: 2026-07-26
 ---
 
 # Zia Tooling
@@ -345,8 +345,7 @@ method signature.
 |--------|-----------|-------------|
 | `IsDone(job)` | `Boolean(Object)` | True when a valid background job has completed. See the null-handle caveat below. |
 | `IsError(job)` | `Boolean(Object)` | True when a completed job has an error payload. |
-| `ErrorOption(job)` | `Option[String](Object)` | Preferred error accessor: `SomeStr(message)` when an error exists, otherwise `None`. |
-| `Error(job)` | `String(Object)` | Compatibility accessor that returns `""` when no error is present. |
+| `Error(job)` | `String(Object)` | Error message for a failed job; `""` when no error is present. |
 | `Kind(job)` | `Integer(Object)` | Numeric semantic job kind. |
 | `Cancel(job)` | `Void(Object)` | Request cancellation; running work may finish later. |
 | `CompletionItems(job)` | `Seq(Object)` | Materialize completion results for completion jobs. |
@@ -356,8 +355,8 @@ method signature.
 | `Tokens(job)` | `String(Object)` | Materialize serialized semantic-token rows for token jobs. |
 | `Diagnostics(job)` | `Seq(Object)` | Materialize diagnostic maps for diagnostic jobs. |
 
-Prefer `ErrorOption(job)` in new editor code. It avoids treating an empty string
-as a status sentinel and matches the runtime's Option-based absence model.
+`Error(job)` returns `""` for a job with no error, so pair it with `IsError(job)`
+rather than testing the message for emptiness.
 
 `Kind(job)` returns `0` unknown, `1` completion items, `2` signature info, `3`
 hover info, `4` symbols, `5` diagnostics, or `6` semantic tokens. Result

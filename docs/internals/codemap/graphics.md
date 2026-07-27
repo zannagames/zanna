@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-14
+last-verified: 2026-07-26
 ---
 
 # CODEMAP: Graphics Library
@@ -80,6 +80,8 @@ The underlying ZannaGFX library provides platform-specific window management and
 
 ## Documentation
 
+Paths in this table are relative to `src/lib/graphics/`.
+
 | File                        | Purpose                            |
 |-----------------------------|------------------------------------|
 | `docs/ZANNA_INTEGRATION.md` | BASIC runtime integration guide    |
@@ -88,5 +90,7 @@ The underlying ZannaGFX library provides platform-specific window management and
 | `INTEGRATION.md`            | CMake integration guide            |
 | `MACOS_BACKEND.md`          | macOS backend implementation notes |
 | `README.md`                 | Main documentation and quick start |
+| `STATUS.md`                 | Backend and feature status         |
+| `TEST_INFRASTRUCTURE.md`    | Test harness overview              |
 | `STATUS.md`                 | Implementation status tracker      |
 | `TEST_INFRASTRUCTURE.md`    | Testing approach                   |

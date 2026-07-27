@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-18
+last-verified: 2026-07-26
 ---
 
 # Threads
@@ -251,18 +251,18 @@ FIFO-fair, re-entrant monitor for explicit object locking.
 |----------------------------|------------------------------|-----------------------------------------------------|
 | `Enter(obj)`               | `Void(Object)`               | Acquire monitor (blocks, FIFO)                      |
 | `Exit(obj)`                | `Void(Object)`               | Release monitor (balances `Enter`)                  |
-| `Pause(obj)`               | `Void(Object)`               | Wake one waiter (FIFO)                              |
-| `PauseAll(obj)`            | `Void(Object)`               | Wake all waiters (FIFO order, then FIFO re-acquire) |
+| `Notify(obj)`              | `Void(Object)`               | Wake one waiter (FIFO)                              |
+| `NotifyAll(obj)`           | `Void(Object)`               | Wake all waiters (FIFO order, then FIFO re-acquire) |
 | `TryEnter(obj)`            | `Boolean(Object)`            | Try to acquire immediately                          |
 | `TryEnterFor(obj, ms)`     | `Boolean(Object, Integer)`   | Try to acquire with timeout (ms)                    |
-| `Wait(obj)`                | `Void(Object)`               | Release monitor and wait for `Pause`/`PauseAll`     |
+| `Wait(obj)`                | `Void(Object)`               | Release monitor and wait for `Notify`/`NotifyAll`   |
 | `WaitFor(obj, ms)`         | `Boolean(Object, Integer)`   | Wait with timeout (returns false on timeout)        |
 
 ### Notes
 
 - **Re-entrant:** The owning thread may `Enter` multiple times; recursion is tracked and must be matched by `Exit`.
-- **FIFO:** Contended acquisition is FIFO; waiters awakened by `Pause`/`PauseAll` are moved to acquire in FIFO order.
-- **Ownership required:** `Exit`, `Wait`, `WaitFor`, `Pause`, and `PauseAll` trap if the calling thread is not the owner.
+- **FIFO:** Contended acquisition is FIFO; waiters awakened by `Notify`/`NotifyAll` are moved to acquire in FIFO order.
+- **Ownership required:** `Exit`, `Wait`, `WaitFor`, `Notify`, and `NotifyAll` trap if the calling thread is not the owner.
 - **Timeout units:** milliseconds. `TryEnterFor`/`WaitFor` treat negative values as `0` (immediate).
 - **WaitFor always re-acquires:** even on timeout, `WaitFor` re-acquires the monitor before returning.
 - **Independent lookup stripes:** lazily attached object monitors are indexed
@@ -850,7 +850,6 @@ Promise which is used to set the value.
 |-----------------|---------------------|------------------------------------------------------|
 | `Get()`         | `Object()`          | Block until resolved, return value (traps on error)  |
 | `TryGet()`      | `Object()`          | Non-blocking value; NULL if pending, errored, or successfully resolved with NULL |
-| `TryGetOption()`| `Option[Object]()`  | Non-blocking get: returns `Some(value)` if resolved, `None` if pending or errored |
 | `GetFor(ms)`    | `Object(Integer)`   | Timed value; NULL on timeout, error, or a successful NULL result |
 | `Wait()`        | `Void()`            | Block until resolved (value or error)                |
 | `WaitFor(ms)`   | `Boolean(Integer)`  | Wait with timeout, returns true if resolved          |
@@ -974,9 +973,9 @@ END IF
   `Wait()` and `WaitFor()` merely wait for settlement and do not rethrow it.
 - `GetFor(ms <= 0)` and `WaitFor(ms <= 0)` perform immediate checks.
 - `WaitFor()` returns true for either a value or an error and false on timeout.
-- `TryGetOption()` distinguishes a successful null result (`Some(null)`) from
-  pending/error (`None`), but deliberately does not distinguish pending from
-  error. Inspect `IsError`/`Error` when that distinction matters.
+- `TryGet()` returns null for a pending or errored Future and for a successful
+  null result alike. Inspect `IsDone` and `IsError`/`Error` when those cases must
+  be distinguished.
 - Multiple threads can wait on the same Future. Every retrieval of an owned
   runtime value receives a fresh retain and must be balanced at the C ABI layer.
 - Completion listeners run outside the Promise lock. Listener traps are isolated after cleanup so remaining listeners still run and promise completion is not converted into a listener trap.
@@ -1173,7 +1172,7 @@ Cooperative cancellation token for signaling cancellation to long-running or asy
 | `Cancel()`                | `Void()`               | Request cancellation on this token                        |
 | `Reset()`                 | `Void()`               | Reset the token for reuse                                |
 | `Linked(parent)`          | `CancelToken(CancelToken)` | Class-level factory for a child linked to `parent` |
-| `Check()`                 | `Boolean()`            | Check if this or parent token is cancelled               |
+| `IsCancelled`             | `Boolean`              | True when this or a parent token has been cancelled      |
 | `ThrowIfCancelled()`      | `Void()`               | Trap if the token has been cancelled                     |
 
 ### Notes
@@ -1217,7 +1216,6 @@ DIM childToken AS OBJECT = Zanna.Threads.CancelToken.Linked(parentToken)
 
 parentToken.Cancel()
 PRINT childToken.IsCancelled  ' Output: 1 (true - parent was cancelled)
-PRINT childToken.Check()      ' Output: 1
 
 ' ThrowIfCancelled traps if cancelled
 token.ThrowIfCancelled()  ' Traps: OperationCancelledException: cancellation was requested
@@ -1316,12 +1314,12 @@ Time-based throttler that limits operations to at most once per interval. Unlike
 
 | Method         | Signature    | Description                                              |
 |----------------|--------------|----------------------------------------------------------|
-| `Try()`        | `Boolean()`  | Try to execute (returns true if allowed, marks as used)  |
+| `TryAcquire()` | `Boolean()`  | Try to execute (returns true if allowed, marks as used)  |
 | `Reset()`      | `Void()`     | Reset throttler to allow immediate operation             |
 
 ### How It Works
 
-1. Call `Try()` before performing the rate-limited operation
+1. Call `TryAcquire()` before performing the rate-limited operation
 2. Returns `true` if enough time has passed since the last allowed operation
 3. Returns `false` if the interval hasn't elapsed yet
 4. The first call always succeeds
@@ -1364,8 +1362,8 @@ PRINT "Time until next allowed: "; throttle.RemainingMs; "ms"
 - **UI updates:** Throttle expensive re-renders
 - **Logging:** Limit log output rate
 - **Polling:** Control polling frequency
-- **Thread-safe:** Throttler state is synchronized internally; multiple threads can call `Try`, `Reset`, and properties safely.
-- Non-positive constructor intervals are clamped to zero, so every `Try()`
+- **Thread-safe:** Throttler state is synchronized internally; multiple threads can call `TryAcquire`, `Reset`, and properties safely.
+- Non-positive constructor intervals are clamped to zero, so every `TryAcquire()`
   succeeds. `Count` counts successful attempts only and saturates at the largest
   Integer; `Reset()` clears both timing state and the count.
 
@@ -1664,11 +1662,10 @@ Thread-safe FIFO queue for concurrent access from multiple threads.
 
 | Method               | Signature             | Description                                                      |
 |----------------------|-----------------------|------------------------------------------------------------------|
-| `Enqueue(item)`      | `Void(Object)`        | Add item to back of queue (thread-safe)                          |
-| `Dequeue()`          | `Object()`            | Remove item from front (blocks until available)                  |
-| `TryDequeue()`       | `Object()`            | Remove item from front (non-blocking); returns NULL if empty     |
-| `TryDequeueOption()` | `Option[Object]()`    | Remove item from front (non-blocking); returns `None` if empty   |
-| `DequeueTimeout(ms)` | `Object(Integer)`     | Remove item with timeout; returns NULL if timeout expires        |
+| `Push(item)`         | `Void(Object)`        | Add item to back of queue (thread-safe)                          |
+| `Pop()`              | `Object()`            | Remove item from front (blocks until available)                  |
+| `TryPop()`           | `Object()`            | Remove item from front (non-blocking); returns NULL if empty     |
+| `PopFor(ms)`         | `Object(Integer)`     | Remove item with timeout; returns NULL if timeout expires        |
 | `Peek()`             | `Object()`            | Peek at front item without removing; returns NULL if empty       |
 | `Clear()`            | `Void()`              | Remove all items (thread-safe)                                   |
 | `Close()`            | `Void()`              | Close the queue, wake blocked dequeuers, and reject future enqueues |
@@ -1676,18 +1673,17 @@ Thread-safe FIFO queue for concurrent access from multiple threads.
 ### Notes
 
 - FIFO order is guaranteed.
-- `Dequeue` blocks until an item is available or the queue is closed and drained.
-- `TryDequeue` returns NULL immediately if the queue is empty.
-- Prefer `TryDequeueOption` for new code. It distinguishes an empty queue from a queued null object.
-- Null items are valid. `Dequeue`, `DequeueTimeout`, and `Peek` return null both
-  for a null item and for their empty/closed/timeout cases; only
-  `TryDequeueOption` distinguishes a queued null non-blockingly.
+- `Pop` blocks until an item is available or the queue is closed and drained.
+- `TryPop` returns an Option: `Some(item)` when an item was removed and `None` when
+  the queue is empty, so a queued null is never confused with an empty queue.
+- Null items are valid. `Pop`, `PopFor`, and `Peek` return null both for a null item
+  and for their empty/closed/timeout cases; only `TryPop` distinguishes the two.
 - `Peek` returns a stable retained reference to the current front item, or NULL if empty.
-- `Dequeue`, `TryDequeue`, and `DequeueTimeout` transfer the queue's retained item reference to the caller. At the C ABI layer, callers release returned runtime-managed values.
-- `Close()` wakes blocked `Dequeue`/`DequeueTimeout` calls; once the queue is empty they return NULL.
-- `Close()` is idempotent. `Enqueue()` after close traps with
+- `Pop`, `TryPop`, and `PopFor` transfer the queue's retained item reference to the caller. At the C ABI layer, callers release returned runtime-managed values.
+- `Close()` wakes blocked `Pop`/`PopFor` calls; once the queue is empty they return NULL.
+- `Close()` is idempotent. `Push()` after close traps with
   `ConcurrentQueue.Enqueue: queue is closed`.
-- `DequeueTimeout(ms <= 0)` is a non-blocking dequeue.
+- `PopFor(ms <= 0)` is a non-blocking pop.
 - `Count` and `IsEmpty` are exact while their internal lock is held, but another
   thread may change the queue immediately after the property returns.
 - Values are retained while in the queue.
@@ -1706,7 +1702,7 @@ func start() {
     var q = CQ.New();
     Say("Empty: " + Fmt.Bool(q.get_IsEmpty()));
 
-    // Enqueue items
+    // Push items
     q.Push(Box.I64(10));
     q.Push(Box.I64(20));
     q.Push(Box.I64(30));
@@ -1715,17 +1711,17 @@ func start() {
     // Peek (non-destructive)
     Say("Peek: " + Fmt.Int(Box.ToI64(q.Peek())));
 
-    // TryDequeueOption (non-blocking)
+    // TryPop (non-blocking, Option-returning)
     var next = q.TryPop();
     if next.IsSome {
-        Say("TryDequeueOption: " + Fmt.Int(Box.ToI64(next.Unwrap())));
+        Say("TryPop: " + Fmt.Int(Box.ToI64(next.Unwrap())));
     }
 
-    // Dequeue (blocking, but items available)
-    Say("Dequeue: " + Fmt.Int(Box.ToI64(q.Pop())));
+    // Pop (blocking, but items available)
+    Say("Pop: " + Fmt.Int(Box.ToI64(q.Pop())));
 
-    // DequeueTimeout
-    Say("DequeueTimeout: " + Fmt.Int(Box.ToI64(q.PopFor(100))));
+    // PopFor (timed)
+    Say("PopFor: " + Fmt.Int(Box.ToI64(q.PopFor(100))));
     Say("Empty after all: " + Fmt.Bool(q.get_IsEmpty()));
 
     // Clear
@@ -1741,7 +1737,7 @@ func start() {
 DIM q AS OBJECT = Zanna.Threads.ConcurrentQueue.New()
 PRINT "Empty: "; q.IsEmpty
 
-' Enqueue items (values are objects, use Box)
+' Push items (values are objects, use Box)
 q.Push(Zanna.Core.Box.I64(10))
 q.Push(Zanna.Core.Box.I64(20))
 q.Push(Zanna.Core.Box.I64(30))
@@ -1750,17 +1746,17 @@ PRINT "Count: "; q.Count
 ' Peek (non-destructive)
 PRINT "Peek: "; Zanna.Core.Box.ToI64(q.Peek())
 
-' TryDequeueOption (non-blocking)
+' TryPop (non-blocking, Option-returning)
 DIM next AS OBJECT = q.TryPop()
 IF next.IsSome THEN
-    PRINT "TryDequeueOption: "; Zanna.Core.Box.ToI64(next.Unwrap())
+    PRINT "TryPop: "; Zanna.Core.Box.ToI64(next.Unwrap())
 END IF
 
-' Dequeue (blocking, but items available)
-PRINT "Dequeue: "; Zanna.Core.Box.ToI64(q.Pop())
+' Pop (blocking, but items available)
+PRINT "Pop: "; Zanna.Core.Box.ToI64(q.Pop())
 
-' DequeueTimeout
-PRINT "DequeueTimeout: "; Zanna.Core.Box.ToI64(q.PopFor(100))
+' PopFor (timed)
+PRINT "PopFor: "; Zanna.Core.Box.ToI64(q.PopFor(100))
 PRINT "Empty after all: "; q.IsEmpty
 
 ' Clear

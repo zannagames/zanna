@@ -1038,6 +1038,27 @@ hide func DispatchViewSearchCommands(ctx: command_context.CommandContext,
         }
     }
     if dispatch_helpers.Triggered(
+           "scenefocus",
+           ctx.shell.menuChrome.miSceneFocus,
+           null,
+           cpSelected) {
+        var focusDoc = ctx.docMgr.GetActive();
+        if focusDoc != null
+           and (focusDoc!.kind == file_utils.DOC_KIND_SCENE_2D
+                or focusDoc!.kind == file_utils.DOC_KIND_SCENE_3D) {
+            ctx.shell.ToggleSceneFocusMode();
+            if ctx.shell.IsSceneFocusModeActive() {
+                ctx.shell.SetStatusLeft(
+                    "Scene focus on - Shift+Space restores panels");
+            } else {
+                ctx.shell.SetStatusLeft("Scene focus off");
+            }
+        } else {
+            ctx.shell.SetStatusLeft(
+                "Scene focus is available for 2D and 3D scene tabs");
+        }
+    }
+    if dispatch_helpers.Triggered(
            "resetworkspacelayout",
            ctx.shell.menuChrome.miResetWorkspaceLayout,
            null,

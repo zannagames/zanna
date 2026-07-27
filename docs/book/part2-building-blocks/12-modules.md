@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-16
+last-verified: 2026-07-26
 ---
 
 # Chapter 12: Modules
@@ -135,9 +135,9 @@ bind Math;
 bind List;
 bind Database;
 
-Math.Add(5, 3);           // Adds numbers
-List.Add(myList, 10);     // Adds to list
-Database.addUser(alice);  // Adds to database
+Math.Add(5, 3);            // Adds numbers (a module you wrote)
+myList.Push(10);           // Adds to a Zia list
+Database.addUser(alice);   // Adds to database
 ```
 
 Each module creates its own namespace. Functions inside `Math` don't conflict with functions inside `List`. This simple idea — that names are scoped to modules — prevents countless headaches.

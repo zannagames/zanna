@@ -28,6 +28,9 @@ no external source material and are reproducible without a network connection:
 - `tiles/biome-tile-atlas.png` — stable tile ids 0-56 in an 8x8 grid.
 - `icons/hud-icon-atlas.png` — pickup, map, objective, radio, and Simulator UI
   pictograms in eight 64px cells.
+- `sprites/scene-object-preview-atlas.png` — game-authentic enemy, pickup,
+  interaction, marker, checkpoint, and player-start previews used by Zanna
+  Studio's project-owned object visualization rules.
 - `ui/title-menu-panel.png` — translucent circuit-frame texture behind the live
   title menu.
 

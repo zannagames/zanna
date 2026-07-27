@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-05-31
+last-verified: 2026-07-26
 ---
 
 # CODEMAP: IL Transform
@@ -10,7 +10,7 @@ Optimization passes (`src/il/transform/`) for IL programs.
 
 ## Overview
 
-- **Total source files**: 81 (.hpp/.cpp)
+- **Total source files**: 83 (.hpp/.cpp)
 - **Subdirectories**: SimplifyCFG/, analysis/
 
 ## Pass Infrastructure

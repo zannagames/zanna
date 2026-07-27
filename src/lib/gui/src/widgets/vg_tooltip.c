@@ -25,6 +25,10 @@
 // Key invariants:
 //   - g_tooltip_manager is a process-global singleton; vg_tooltip_manager_get
 //     always returns a pointer to it.
+//   - Plain-text wrapping prefers the last complete word that fits, preserves
+//     explicit blank lines, and never splits a valid UTF-8 code point.
+//   - Changing the currently hovered widget's tooltip refreshes the shared
+//     popup immediately; stateful controls never display stale guidance.
 //   - pending_show == true means we are counting down show_delay_ms before
 //     calling vg_tooltip_show_at; the manager drives this in its update tick.
 //   - active_tooltip is lazy-allocated on first hover and reused thereafter
@@ -98,9 +102,77 @@ static char *tooltip_dup_range(const char *text, size_t len) {
     return copy;
 }
 
+/// @brief Advance to the end of one UTF-8 code point without decoding it.
+/// @details Malformed leading or continuation bytes still advance by at least
+///          one byte. Valid multi-byte sequences therefore remain intact when
+///          an over-wide word must be split.
+/// @param text UTF-8 byte buffer.
+/// @param text_len Buffer length excluding the terminator.
+/// @param start Byte offset of the next code point.
+/// @return First byte offset after that code point.
+static size_t tooltip_next_codepoint_end(const char *text, size_t text_len, size_t start) {
+    size_t end = start < text_len ? start + 1 : text_len;
+    while (end < text_len && ((unsigned char)text[end] & 0xC0u) == 0x80u)
+        end++;
+    return end;
+}
+
+/// @brief Measure one exact byte range with the tooltip font.
+/// @param tooltip Tooltip supplying font and size.
+/// @param text Start of the byte range.
+/// @param len Number of bytes in the range.
+/// @return Measured width, or zero when allocation or font input is absent.
+static float tooltip_measure_range(vg_tooltip_t *tooltip, const char *text, size_t len) {
+    if (!tooltip || !tooltip->font || !text || len == 0)
+        return 0.0f;
+
+    char *candidate = tooltip_dup_range(text, len);
+    if (!candidate)
+        return 0.0f;
+
+    vg_text_metrics_t metrics = {0};
+    vg_font_measure_text(tooltip->font, tooltip->font_size, candidate, &metrics);
+    free(candidate);
+    return metrics.width;
+}
+
+/// @brief Append one wrapped line to optional caller-owned storage.
+/// @param lines Optional address of the allocated line array.
+/// @param capacity Current array capacity; updated after growth.
+/// @param count Current logical line count; incremented on success.
+/// @param text Start of the line bytes.
+/// @param len Number of bytes to copy.
+/// @return `true` on success, including measurement-only calls.
+static bool tooltip_append_line(
+    char ***lines, int *capacity, int *count, const char *text, size_t len) {
+    if (!capacity || !count)
+        return false;
+
+    if (lines) {
+        if (!*lines)
+            return false;
+        if (*count >= *capacity) {
+            int new_capacity = *capacity * 2;
+            char **new_lines = (char **)realloc(*lines, (size_t)new_capacity * sizeof(char *));
+            if (!new_lines)
+                return false;
+            memset(new_lines + *capacity, 0, (size_t)(new_capacity - *capacity) * sizeof(char *));
+            *lines = new_lines;
+            *capacity = new_capacity;
+        }
+        (*lines)[*count] = tooltip_dup_range(text ? text : "", len);
+        if (!(*lines)[*count])
+            return false;
+    }
+
+    (*count)++;
+    return true;
+}
+
 /// @brief Wrap tooltip text into measured display lines.
-/// @details Explicit newlines are honored, spaces and tabs are preferred break
-///          points, and an over-wide segment advances by at least one byte.
+/// @details Explicit newlines are honored without inserting an extra blank
+///          line, spaces and tabs are preferred break points, and an over-wide
+///          word advances by at least one complete UTF-8 code point.
 ///          When line storage is requested, both the pointer array and each
 ///          string are heap allocated for the caller. A measurement-only call
 ///          avoids retaining line allocations.
@@ -122,131 +194,133 @@ static int tooltip_wrap_text(vg_tooltip_t *tooltip, char ***out_lines, float *ou
         max_text_width = (float)tooltip->max_width - (float)tooltip->padding * 2.0f;
     }
 
-    int cap = 4;
+    int capacity = 4;
     int count = 0;
-    char **lines = out_lines ? (char **)calloc((size_t)cap, sizeof(char *)) : NULL;
+    char **lines = out_lines ? (char **)calloc((size_t)capacity, sizeof(char *)) : NULL;
+    if (out_lines && !lines)
+        return 0;
+
     const char *text = tooltip->text;
     size_t text_len = strlen(text);
     size_t start = 0;
 
-    while (start <= text_len) {
-        if (text[start] == '\0') {
-            if (count == 0 && out_lines && lines) {
-                lines[count++] = vg_strdup("");
-            }
-            break;
-        }
+    if (text_len == 0) {
+        if (!tooltip_append_line(out_lines ? &lines : NULL, &capacity, &count, "", 0))
+            goto allocation_failure;
+    }
 
-        size_t line_end = start;
-        size_t best_end = start;
-        size_t best_next = start;
-        float best_width = 0.0f;
-        bool found_break = false;
-
-        while (line_end < text_len && text[line_end] != '\n') {
-            size_t candidate_end = line_end + 1;
-            char *candidate = tooltip_dup_range(text + start, candidate_end - start);
-            if (!candidate)
-                break;
-
-            vg_text_metrics_t metrics = {0};
-            vg_font_measure_text(tooltip->font, tooltip->font_size, candidate, &metrics);
-            free(candidate);
-
-            if (max_text_width > 0.0f && metrics.width > max_text_width) {
-                break;
-            }
-
-            best_end = candidate_end;
-            best_next = candidate_end;
-            best_width = metrics.width;
-            found_break = true;
-            if (text[line_end] == ' ' || text[line_end] == '\t') {
-                best_end = line_end;
-                best_next = candidate_end;
-            }
-            line_end = candidate_end;
-        }
-
-        if (!found_break) {
-            best_end = start + 1;
-            best_next = best_end;
-            char *candidate = tooltip_dup_range(text + start, best_end - start);
-            if (candidate) {
-                vg_text_metrics_t metrics = {0};
-                vg_font_measure_text(tooltip->font, tooltip->font_size, candidate, &metrics);
-                best_width = metrics.width;
-                free(candidate);
-            }
-        }
-
-        while (best_end > start && (text[best_end - 1] == ' ' || text[best_end - 1] == '\t')) {
-            best_end--;
-        }
-
-        if (out_lines && lines) {
-            if (count >= cap) {
-                int new_cap = cap * 2;
-                char **new_lines = (char **)realloc(lines, (size_t)new_cap * sizeof(char *));
-                if (!new_lines)
-                    break;
-                memset(new_lines + cap, 0, (size_t)(new_cap - cap) * sizeof(char *));
-                lines = new_lines;
-                cap = new_cap;
-            }
-            lines[count] = tooltip_dup_range(text + start, best_end - start);
-            if (!lines[count])
-                break;
-            count++;
-        } else {
-            count++;
-        }
-
-        if (best_width > 0.0f && out_max_width && best_width > *out_max_width)
-            *out_max_width = best_width;
-
-        size_t prev_start = start;
-        start = best_next;
-        while (text[start] == ' ' || text[start] == '\t')
-            start++;
-        // Progress guard: if no advance happened, force one. Without this the
-        // loop can spin forever on input where best_next == prev_start (e.g. a
-        // whitespace-only suffix that wraps into a zero-length segment).
-        if (start <= prev_start) {
-            if (text[start] == '\0')
-                break;
-            start = prev_start + 1;
-        }
+    while (start < text_len) {
+        // A newline at the beginning of a logical paragraph represents one
+        // explicit blank line. The newline that terminates a non-empty
+        // paragraph is consumed below without manufacturing an extra line.
         if (text[start] == '\n') {
+            if (!tooltip_append_line(out_lines ? &lines : NULL, &capacity, &count, "", 0))
+                goto allocation_failure;
             start++;
-            if (out_lines && lines) {
-                if (count >= cap) {
-                    int new_cap = cap * 2;
-                    char **new_lines = (char **)realloc(lines, (size_t)new_cap * sizeof(char *));
-                    if (!new_lines)
-                        break;
-                    memset(new_lines + cap, 0, (size_t)(new_cap - cap) * sizeof(char *));
-                    lines = new_lines;
-                    cap = new_cap;
-                }
-                lines[count] = vg_strdup("");
-                if (!lines[count])
+            continue;
+        }
+
+        size_t paragraph_end = start;
+        while (paragraph_end < text_len && text[paragraph_end] != '\n')
+            paragraph_end++;
+
+        bool emitted_line = false;
+        while (start < paragraph_end) {
+            while (start < paragraph_end && (text[start] == ' ' || text[start] == '\t'))
+                start++;
+            if (start >= paragraph_end)
+                break;
+
+            size_t cursor = start;
+            size_t fitted_end = start;
+            size_t last_break_end = start;
+            size_t last_break_next = start;
+            bool has_fitted = false;
+            bool has_break = false;
+
+            while (cursor < paragraph_end) {
+                size_t candidate_end = tooltip_next_codepoint_end(text, paragraph_end, cursor);
+                float candidate_width =
+                    tooltip_measure_range(tooltip, text + start, candidate_end - start);
+
+                if (max_text_width > 0.0f && candidate_width > max_text_width) {
+                    if ((text[cursor] == ' ' || text[cursor] == '\t') && has_fitted) {
+                        last_break_end = cursor;
+                        last_break_next = candidate_end;
+                        has_break = true;
+                    }
                     break;
-                count++;
-            } else {
-                count++;
+                }
+
+                fitted_end = candidate_end;
+                has_fitted = true;
+                if (text[cursor] == ' ' || text[cursor] == '\t') {
+                    last_break_end = cursor;
+                    last_break_next = candidate_end;
+                    has_break = true;
+                }
+                cursor = candidate_end;
+            }
+
+            size_t line_end = fitted_end;
+            size_t next_start = fitted_end;
+            if (cursor < paragraph_end && has_break && last_break_end > start) {
+                line_end = last_break_end;
+                next_start = last_break_next;
+            } else if (!has_fitted) {
+                line_end = tooltip_next_codepoint_end(text, paragraph_end, start);
+                next_start = line_end;
+            }
+
+            while (line_end > start && (text[line_end - 1] == ' ' || text[line_end - 1] == '\t')) {
+                line_end--;
+            }
+
+            float line_width = tooltip_measure_range(tooltip, text + start, line_end - start);
+            if (out_max_width && line_width > *out_max_width)
+                *out_max_width = line_width;
+            if (!tooltip_append_line(
+                    out_lines ? &lines : NULL, &capacity, &count, text + start, line_end - start)) {
+                goto allocation_failure;
+            }
+            emitted_line = true;
+
+            // The fitted and forced-code-point paths always advance. The guard
+            // also contains malformed input or future wrap-policy regressions.
+            if (next_start <= start)
+                next_start = tooltip_next_codepoint_end(text, paragraph_end, start);
+            start = next_start;
+        }
+
+        if (!emitted_line) {
+            if (!tooltip_append_line(out_lines ? &lines : NULL, &capacity, &count, "", 0))
+                goto allocation_failure;
+        }
+
+        start = paragraph_end;
+        if (start < text_len && text[start] == '\n') {
+            start++;
+            if (start == text_len) {
+                if (!tooltip_append_line(out_lines ? &lines : NULL, &capacity, &count, "", 0))
+                    goto allocation_failure;
             }
         }
     }
 
     if (out_lines) {
         *out_lines = lines;
-    } else if (lines) {
+    }
+    return count > 0 ? count : 1;
+
+allocation_failure:
+    if (lines) {
         for (int i = 0; i < count; i++)
             free(lines[i]);
         free(lines);
     }
-    return count > 0 ? count : 1;
+    if (out_lines)
+        *out_lines = NULL;
+    return 0;
 }
 
 /// @brief Resolve a packed color's alpha against an opaque backdrop.
@@ -879,8 +953,9 @@ void vg_tooltip_manager_widget_hidden(vg_widget_t *widget) {
 /// @brief Set the tooltip_text field on a widget; the global manager reads this on hover.
 ///
 /// @details Nonempty input is duplicated before existing storage is released,
-///          preserving the old tooltip on allocation failure. This setter does
-///          not itself notify or reschedule the global manager.
+///          preserving the old tooltip on allocation failure. If the widget is
+///          currently hovered, the shared popup is refreshed and remeasured in
+///          place; clearing the text hides it and cancels a pending show.
 /// @param widget Widget to configure; may be NULL (no-op).
 /// @param text   Tooltip string, duplicated internally; NULL or empty string clears the tooltip.
 void vg_widget_set_tooltip_text(vg_widget_t *widget, const char *text) {
@@ -894,4 +969,39 @@ void vg_widget_set_tooltip_text(vg_widget_t *widget, const char *text) {
     }
     free(widget->tooltip_text);
     widget->tooltip_text = copy;
+
+    vg_tooltip_manager_t *mgr = &g_tooltip_manager;
+    if (mgr->hovered_widget != widget)
+        return;
+
+    if (!copy) {
+        if (mgr->active_tooltip)
+            vg_tooltip_hide(mgr->active_tooltip);
+        mgr->pending_show = false;
+        return;
+    }
+
+    if (!mgr->active_tooltip)
+        mgr->active_tooltip = vg_tooltip_create();
+    if (!mgr->active_tooltip) {
+        mgr->pending_show = false;
+        return;
+    }
+
+    vg_tooltip_set_text(mgr->active_tooltip, copy);
+    mgr->active_tooltip->position_mode = VG_TOOLTIP_FOLLOW_CURSOR;
+    mgr->active_tooltip->anchor_widget = NULL;
+    mgr->active_tooltip->hide_timer = 0;
+    if (mgr->active_tooltip->is_visible) {
+        vg_tooltip_show_at(mgr->active_tooltip, mgr->cursor_x, mgr->cursor_y);
+        mgr->pending_show = false;
+    } else {
+        mgr->hover_start_time = tooltip_now_ms();
+        if (mgr->active_tooltip->show_delay_ms == 0) {
+            vg_tooltip_show_at(mgr->active_tooltip, mgr->cursor_x, mgr->cursor_y);
+            mgr->pending_show = false;
+        } else {
+            mgr->pending_show = true;
+        }
+    }
 }

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-15
+last-verified: 2026-07-26
 ---
 
 # Mathematics
@@ -167,8 +167,8 @@ Mathematical functions and constants.
 | `Sqrt(x)`        | `Double(Double)`         | Square root                               |
 | `Pow(base, exp)` | `Double(Double, Double)` | Raises base to the power of exp           |
 | `Exp(x)`         | `Double(Double)`         | e raised to the power x                   |
-| `Sgn(x)`         | `Double(Double)`         | Sign of x: -1, 0, or 1                    |
-| `SgnInt(x)`      | `Integer(Integer)`       | Sign of integer x: -1, 0, or 1            |
+| `Sign(x)`        | `Double(Double)`         | Sign of x: -1, 0, or 1                    |
+| `SignInt(x)`     | `Integer(Integer)`       | Sign of integer x: -1, 0, or 1            |
 
 ### Trigonometric Functions
 
@@ -205,7 +205,7 @@ Mathematical functions and constants.
 | `Floor(x)` | `Double(Double)` | Largest integer less than or equal to x     |
 | `Ceil(x)`  | `Double(Double)` | Smallest integer greater than or equal to x |
 | `Round(x)` | `Double(Double)` | Round to nearest integer                    |
-| `Trunc(x)` | `Double(Double)` | Truncate toward zero                        |
+| `Truncate(x)` | `Double(Double)` | Truncate toward zero                     |
 
 ### Min/Max Functions
 
@@ -242,7 +242,7 @@ Mathematical functions and constants.
   to the corresponding library operation.
 - `AbsInt(INT64_MIN)` traps because its positive magnitude is not representable. `Round` rounds
   halfway cases away from zero.
-- `Sgn(NaN)` returns NaN. Both positive and negative zero produce positive zero. `Min` and `Max`
+- `Sign(NaN)` returns NaN. Both positive and negative zero produce positive zero. `Min` and `Max`
   propagate a NaN operand and preserve the expected signed zero (`Min(-0,+0) = -0`,
   `Max(-0,+0) = +0`).
 - `Clamp` and `ClampInt` swap inverted bounds. `Lerp` does not clamp `t`, so values outside
@@ -336,7 +336,6 @@ Random number generation with uniform and distribution-based functions.
 | `Exponential(lambda)`      | `Double(Double)`       | Returns an exponentially distributed random value     |
 | `Dice(sides)`              | `Integer(Integer)`     | Simulates a dice roll, returns [1, sides]             |
 | `Chance(probability)`      | `Boolean(Double)`      | Returns true with probability p, otherwise false      |
-| `ChanceInt(probability)`   | `Integer(Double)`      | Compatibility 0/1 form of `Chance`                   |
 | `Shuffle(seq)`             | `Void(Seq)`            | Randomly shuffles a sequence in place                 |
 
 ### Zia Example
@@ -455,9 +454,8 @@ Zanna.Math.Random.Shuffle(seq)  ' Now shuffled: e.g., [3, 1, 5, 2, 4]
 | `Add(other)`     | `Object(Object)`      | Add two vectors: self + other                              |
 | `Sub(other)`     | `Object(Object)`      | Subtract vectors: self - other                             |
 | `Mul(scalar)`    | `Object(Double)`      | Multiply by scalar: self * s                               |
-| `Scale(scalar)`  | `Object(Double)`      | Alias for `Mul(scalar)`                                    |
 | `Div(scalar)`    | `Object(Double)`      | Divide by scalar: self / s                                 |
-| `Neg()`          | `Object()`         | Negate vector: -self                                       |
+| `Negate()`       | `Object()`         | Negate vector: -self                                       |
 | `Dot(other)`     | `Double(Object)`      | Dot product of two vectors                                 |
 | `Cross(other)`   | `Double(Object)`      | 2D cross product (scalar z-component)                      |
 | `Length()`       | `Double()`         | Length (magnitude)                                          |
@@ -467,7 +465,7 @@ Zanna.Math.Random.Shuffle(seq)  ' Now shuffled: e.g., [3, 1, 5, 2, 4]
 | `Dist(other)`    | `Double(Object)`      | Distance to another point                                  |
 | `Distance(other)`| `Double(Object)`      | Alias for `Dist(other)`                                    |
 | `Lerp(other, t)` | `Object(Object, Double)` | Linear interpolation (t=0 returns self, t=1 returns other) |
-| `Angle()`        | `Double()`         | Angle in radians (atan2(y, x))                             |
+| `Heading()`      | `Double()`         | Direction angle in radians (atan2(y, x))                   |
 | `Rotate(angle)`  | `Object(Double)`      | Rotate by angle in radians                                 |
 
 ### Notes
@@ -573,9 +571,8 @@ END IF
 | `Add(other)`     | `Object(Object)`      | Add two vectors: self + other                              |
 | `Sub(other)`     | `Object(Object)`      | Subtract vectors: self - other                             |
 | `Mul(scalar)`    | `Object(Double)`      | Multiply by scalar: self * s                               |
-| `Scale(scalar)`  | `Object(Double)`      | Alias for `Mul(scalar)`                                    |
 | `Div(scalar)`    | `Object(Double)`      | Divide by scalar: self / s                                 |
-| `Neg()`          | `Object()`         | Negate vector: -self                                       |
+| `Negate()`       | `Object()`         | Negate vector: -self                                       |
 | `Dot(other)`     | `Double(Object)`      | Dot product of two vectors                                 |
 | `Cross(other)`   | `Object(Object)`      | Cross product (returns Vec3)                               |
 | `Length()`       | `Double()`         | Length (magnitude)                                          |
@@ -589,7 +586,7 @@ END IF
 | `Project(onto)`  | `Object(Object)`      | Project onto the line spanned by another vector            |
 | `ClampLength(max)`  | `Object(Double)`      | Limit magnitude to at most `max`                           |
 | `MoveTowards(target, delta)` | `Object(Object, Double)` | Move by at most `delta`, snapping when in reach |
-| `Angle(other)`   | `Double(Object)`      | Unsigned angle to another vector in `[0, pi]`              |
+| `AngleBetween(other)` | `Double(Object)` | Unsigned angle to another vector in `[0, pi]`              |
 | `Min(other)`     | `Object(Object)`      | Component-wise minimum                                     |
 | `Max(other)`     | `Object(Object)`      | Component-wise maximum                                     |
 | `Set(x, y, z)`   | `Void(Double, Double, Double)` | Replace all components in place                      |
@@ -708,7 +705,7 @@ smooth interpolation via SLERP.
 | `LengthSquared()`         | `Double()`         | Squared magnitude (avoids sqrt)                                |
 | `Lerp(other, t)`  | `Object(Object, Double)` | Normalized linear interpolation (nlerp); `t` is not clamped    |
 | `Mul(other)`      | `Object(Object)`      | Multiply (compose) two quaternion rotations                    |
-| `Norm()`          | `Object()`         | Normalize to unit length                                       |
+| `Normalize()`     | `Object()`         | Normalize to unit length                                       |
 | `RotateVec3(v)`   | `Object(Object)`      | Rotate a Vec3 by this quaternion, returns Vec3                 |
 | `Slerp(other, t)` | `Object(Object, Double)` | Spherical linear interpolation (t=0 returns self)              |
 | `ToMat4()`        | `Object()`         | Convert to a 4x4 rotation matrix                               |
@@ -1167,7 +1164,7 @@ constructors. Pass the bigint object explicitly as the first argument to instanc
 | `Mul(a, b)`      | `Object(Object, Object)`     | a × b                    |
 | `Div(a, b)`      | `Object(Object, Object)`     | Truncated division a ÷ b |
 | `Mod(a, b)`      | `Object(Object, Object)`     | Remainder of a ÷ b       |
-| `Neg(n)`         | `Object(Object)`             | Negate: −n               |
+| `Negate(n)`      | `Object(Object)`             | Negate: −n               |
 | `Abs(n)`         | `Object(Object)`             | Absolute value           |
 | `Sqrt(n)`        | `Object(Object)`             | Integer square root (floor) |
 | `Pow(n, exp)`    | `Object(Object, Integer)`    | n raised to exp          |
@@ -1342,7 +1339,7 @@ values are opaque objects. Pass the matrix as the first argument to instance-sty
 | `Sub(a, b)`         | `Object(Object, Object)`     | Component-wise subtraction            |
 | `Mul(a, b)`         | `Object(Object, Object)`     | Matrix multiplication                 |
 | `MulScalar(m, s)`   | `Object(Object, f64)`        | Multiply every element by scalar      |
-| `Neg(m)`            | `Object(Object)`             | Negate every element                  |
+| `Negate(m)`         | `Object(Object)`             | Negate every element                  |
 | `Transpose(m)`      | `Object(Object)`             | Transpose rows and columns            |
 | `Inverse(m)`        | `Object(Object)`             | Matrix inverse (traps if singular)    |
 | `Determinant(m)`    | `Double(Object)`                | Determinant                           |
@@ -1482,7 +1479,7 @@ matrix values are opaque objects. Pass the matrix as the first argument to insta
 | `Sub(a, b)`         | `Object(Object, Object)`           | Component-wise subtraction            |
 | `Mul(a, b)`         | `Object(Object, Object)`           | Matrix multiplication                 |
 | `MulScalar(m, s)`   | `Object(Object, f64)`              | Multiply every element by scalar      |
-| `Neg(m)`            | `Object(Object)`                   | Negate every element                  |
+| `Negate(m)`         | `Object(Object)`                   | Negate every element                  |
 | `Transpose(m)`      | `Object(Object)`                   | Transpose rows and columns            |
 | `Inverse(m)`        | `Object(Object)`                   | Matrix inverse (traps if singular)             |
 | `Determinant(m)`    | `Double(Object)`                      | Determinant                           |

@@ -20,6 +20,17 @@
       "tileWidth": 64,
       "tileHeight": 64,
       "notes": "Release inspection atlas (cell N holds tile id N); use scene-tile-atlas.png for scene layers."
+    },
+    {
+      "path": "assets/sprites/scene-object-preview-atlas.png",
+      "tags": [
+        "sprite",
+        "scene-preview",
+        "canonical"
+      ],
+      "tileWidth": 64,
+      "tileHeight": 64,
+      "notes": "Deterministic Studio preview atlas baked from the same enemy, pickup, interaction, and player art used by the game."
     }
   ]
 }

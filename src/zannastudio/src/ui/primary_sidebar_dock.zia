@@ -13,6 +13,8 @@
 //   - Logical sidebar width is independent of its mirrored splitter position.
 //   - Typed stationary targets accept only primary-sidebar drag payloads.
 //   - Controller-authored restores never publish user persistence edges.
+//   - Collapsed content is explicitly hidden as well as split-collapsed, so
+//     retained TreeView glyphs cannot paint through the reclaimed editor lane.
 // Ownership/Lifetime:
 //   - WorkbenchShell owns one controller for the lifetime of the IDE window.
 //   - The controller owns header/target widgets, but not activity view content.
@@ -312,6 +314,11 @@ class PrimarySidebarDock {
     /// @brief Reveal exactly one sidebar splitter, or collapse both when hidden.
     hide func ApplyVisibleTopology() {
         if leftSplit == null or rightSplit == null { return; }
+        // Split collapse controls geometry, but retained descendants can still
+        // carry paint damage beyond a zero-width pane on some backends. Parent
+        // visibility is the authoritative clipping boundary for the complete
+        // header/view/tree subtree.
+        if viewStack != null { viewStack.SetVisible(sidebarVisible); }
         if sidebarVisible and location == workspace_dock.DOCK_LEFT {
             rightSplit.CollapseSecond();
             leftSplit.Restore();

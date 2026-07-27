@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-14
+last-verified: 2026-07-26
 ---
 
 # Utilities
@@ -108,7 +108,7 @@ String formatting utilities for converting values to formatted strings.
 | `Percent(value, decimals)`    | `String(Double, Integer)`        | Format number as percentage              |
 | `Bool(value)`               | `String(Boolean)`                  | Format as "true" or "false"              |
 | `YesNo(value)`              | `String(Boolean)`                  | Format as "yes" or "no"                  |
-| `Size(bytes)`               | `String(Integer)`                  | Format byte count as human-readable size |
+| `SizeBytes(bytes)`          | `String(Integer)`                  | Format byte count as human-readable size |
 | `Hex(value)`                | `String(Integer)`                  | Format as lowercase hex                  |
 | `HexPad(value, width)`      | `String(Integer, Integer)`         | Format as hex with zero-padding          |
 | `Bin(value)`                | `String(Integer)`                  | Format as binary                         |

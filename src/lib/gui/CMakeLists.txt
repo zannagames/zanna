@@ -216,6 +216,8 @@ if (ZANNA_BUILD_TESTING)
     target_include_directories(test_vg_audit_fixes PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/include
     )
+    target_compile_definitions(test_vg_audit_fixes PRIVATE
+            ZANNA_TEST_FONT_PATH="${CMAKE_SOURCE_DIR}/src/runtime/graphics/text/fonts/JetBrainsMono-Regular.ttf")
     add_test(NAME test_vg_audit_fixes COMMAND test_vg_audit_fixes)
     set_tests_properties(test_vg_audit_fixes PROPERTIES
             LABELS "gui"

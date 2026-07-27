@@ -82,6 +82,7 @@ class MenuChrome {
     expose GUI.MenuItem miPreferences;
     expose GUI.MenuItem miToggleSidebar;
     expose GUI.MenuItem miToggleStatusBar;
+    expose GUI.MenuItem miSceneFocus;
     expose GUI.MenuItem miResetWorkspaceLayout;
     expose GUI.MenuItem miZoomIn;
     expose GUI.MenuItem miZoomOut;
@@ -310,6 +311,8 @@ class MenuChrome {
         miToggleSidebar = viewMenu.AddItem("Toggle Sidebar");
         miToggleSidebar.SetShortcut("Ctrl+B");
         miToggleStatusBar = viewMenu.AddItem("Toggle Status Bar");
+        miSceneFocus = viewMenu.AddItem("Toggle Scene Focus");
+        miSceneFocus.SetShortcut("Shift+Space");
         miResetWorkspaceLayout = viewMenu.AddItem("Reset Workspace Layout");
         viewMenu.AddSeparator();
         miZoomIn = viewMenu.AddItem("Zoom In");
@@ -516,6 +519,7 @@ class MenuChrome {
         ApplyShortcut(miSignatureHelp, "signature_trigger", registry);
         ApplyShortcut(miToggleSidebar, "togglesidebar", registry);
         ApplyShortcut(miToggleStatusBar, "statusbar", registry);
+        ApplyShortcut(miSceneFocus, "scenefocus", registry);
         ApplyShortcut(miResetWorkspaceLayout, "resetworkspacelayout", registry);
         ApplyShortcut(miZoomIn, "zoomin", registry);
         ApplyShortcut(miZoomOut, "zoomout", registry);

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-14
+last-verified: 2026-07-26
 ---
 
 # Functional Types
@@ -175,17 +175,16 @@ factories.
 
 | Method         | Signature          | Description                                                   |
 |----------------|--------------------|---------------------------------------------------------------|
-| `Value()`      | `Object()`         | Non-trapping generic-object accessor; null for None            |
 | `Expect(msg)`  | `Object(String)`   | Generic-object value, or an invalid-operation trap containing `msg` |
 | `OkOr(err)`    | `Result(Object)`   | Some becomes Ok; None becomes Err with an object error         |
 | `OkOrStr(err)` | `Result(String)`   | Some becomes Ok; None becomes Err with a string error          |
 
-`Value` is not an alias for `Unwrap`: it returns null on None and only accesses generic object
-payloads — for a typed `SomeStr`/`SomeI64`/`SomeI1`/`SomeF64` payload it returns null rather than
-reinterpret the stored bits as a pointer. `Expect` and the generic `Unwrap` likewise accept only
-object payloads and trap with an explanatory message for typed payloads; use the matching
-`UnwrapStr`/`UnwrapI64`/`UnwrapI1`/`UnwrapF64` accessor instead. `OkOr` and `OkOrStr` preserve a
-Some payload's object, string, integer, boolean-storage, or double variant when producing Ok.
+`Expect` and the generic `Unwrap` accept only object payloads: on None they trap with
+`DomainError`, and for a typed `SomeStr`/`SomeI64`/`SomeI1`/`SomeF64` payload they trap
+with an explanatory message — use the matching `UnwrapStr`/`UnwrapI64`/`UnwrapI1`/`UnwrapF64`
+accessor instead. For a non-trapping read, use `UnwrapOr` and its typed variants. `OkOr`
+and `OkOrStr` preserve a Some payload's object, string, integer, boolean-storage, or double
+variant when producing Ok.
 
 ### Combinators and Utilities
 

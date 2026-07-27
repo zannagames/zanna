@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-05-15
+last-verified: 2026-07-26
 ---
 
 # Game UI Widgets
@@ -13,18 +13,18 @@ last-verified: 2026-05-15
 ## Contents
 
 - [Zanna.Game.UI.HudLabel](#zannagameuihudlabel)
-- [Zanna.Game.UI.HudBar](#zannagameuibar)
-- [Zanna.Game.UI.HudPanel](#zannagameuipanel)
-- [Zanna.Game.UI.HudNineSlice](#zannagameuinineslice)
-- [Zanna.Game.UI.HudMenuList](#zannagameuimenulist)
+- [Zanna.Game.UI.HudBar](#zannagameuihudbar)
+- [Zanna.Game.UI.HudPanel](#zannagameuihudpanel)
+- [Zanna.Game.UI.HudNineSlice](#zannagameuihudnineslice)
+- [Zanna.Game.UI.HudMenuList](#zannagameuihudmenulist)
 - [Zanna.Game.UI.HudTextInput](#zannagameuihudtextinput)
-- [Zanna.Game.UI.HudTable](#zannagameuitable)
-- [Zanna.Game.UI.HudTableClickResult](#zannagameuitableclickresult)
-- [Zanna.Game.UI.HudModal](#zannagameuimodal)
+- [Zanna.Game.UI.HudTable](#zannagameuihudtable)
+- [Zanna.Game.UI.HudTableClickResult](#zannagameuihudtableclickresult)
+- [Zanna.Game.UI.HudModal](#zannagameuihudmodal)
 - [Zanna.Game.UI.HudSlider](#zannagameuihudslider)
 - [Zanna.Game.UI.HudDropdown](#zannagameuihuddropdown)
 - [Zanna.Game.UI.HudTooltip](#zannagameuihudtooltip)
-- [Zanna.Game.UI.HudButton](#zannagameuigamebutton)
+- [Zanna.Game.UI.HudButton](#zannagameuihudbutton)
 - [Zanna.Game.Dialogue](#zannagamedialogue)
 - [Usage Example](#usage-example)
 
@@ -197,7 +197,7 @@ Editable single-line text field with UTF-8-safe cursoring, selection, placeholde
 |----------|------|--------|-------------|
 | `Text` | String | Read/Write | Current text; storage grows as needed, `SetMaxCodepoints` can enforce a codepoint limit, and embedded NUL bytes terminate the stored visible text |
 | `Visible` | Boolean | Read/Write | Visibility toggle |
-| `Enabled` | Boolean | Read/Write | Input enable toggle |
+| `IsEnabled` | Boolean | Read/Write | Input enable toggle |
 | `Focused` | Boolean | Read/Write | Keyboard focus |
 | `TextColor` | Integer | Read/Write | Text color |
 | `BackgroundColor` | Integer | Read/Write | Fill color |
@@ -256,15 +256,13 @@ Sortable table widget for compact scoreboards, inventories, debug panels, and se
 | `AddRow()` / `RemoveRow(row)` / `ClearRows()` | `Integer()` / `Void(...)` | Manage rows |
 | `SetCell(row, col, text)` / `GetCell(row, col)` | `Void(...)` / `String(...)` | Manage cell text |
 | `SortBy(col, descending)` | `Void(Integer, Boolean)` | Stable sort by a sortable column |
-| `HandleClickResult(x, y)` | `TableClickResult(Integer, Integer)` | Select a row or toggle a sortable header and return a structured click outcome |
-| `HandleClick(x, y)` | `Integer(Integer, Integer)` | Compatibility API: row index, `-2` for header clicks, `-1` for no hit |
-| `LastHeaderClick()` | `Integer()` | Compatibility API: last clicked header column, or `-1` |
+| `HandleClick(x, y)` | `Integer(Integer, Integer)` | Row index on a row hit, `-2` for a header click, `-1` for no hit |
 | `HandleScroll(delta)` / `HandleKey(key)` | `Void(Integer)` | Update scroll/selection |
 | `Draw(canvas)` | `Void(Canvas)` | Render the table |
 
-Prefer `HandleClickResult(x, y)` in new code. It performs the same state updates as
-`HandleClick(x, y)`, including row selection and sortable-header toggles, but returns
-the row/header outcome without sentinel values or a `LastHeaderClick()` side channel.
+`HandleClick(x, y)` performs row selection and sortable-header toggles, then reports the
+outcome through its return value: the selected row index, `-2` when a sortable header was
+toggled, or `-1` when the point missed the table.
 
 Tables start with room for 16 columns and 512 rows, then grow their column, row, and cell
 storage on demand. Cell text is copied into fixed-size per-cell storage and clipped on

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-04-09
+last-verified: 2026-07-26
 ---
 
 # Zanna BASIC — Reference
@@ -287,7 +287,6 @@ LET s = "hello"
 PRINT s.Length              ' prints 5
 PRINT s.Substring(1, 3)     ' zero-based BYTE start, length → "ell"
 PRINT s.Mid(2)              ' 1-based CODEPOINT start → "ello" (suffix from char 2)
-LET s2 = NEW Zanna.String("abc")  ' optional: requires ctor helper
 ```
 
 Lowering equivalence (receiver as first argument):
@@ -295,7 +294,8 @@ Lowering equivalence (receiver as first argument):
 - `s.Length` → `Zanna.String.get_Length(s)`
 - `s.Substring(i, n)` → `Zanna.String.Substring(s, i, n)` — `i` is a 0-based byte offset.
 - `s.Mid(i)` → `Zanna.String.Mid(s, i)` — `i` is a **1-based codepoint** position (matches BASIC `MID$`).
-- `NEW Zanna.String(x)` → `Zanna.String.FromStr(x)` (when available)
+- `NEW Zanna.String(x)` is rejected: `Zanna.String` has no constructor
+  (`error[E_RUNTIME_CLASS_NO_CTOR]`). Assign a string literal or expression directly.
 
 Null and bounds:
 
@@ -326,10 +326,6 @@ Methods:
 - `Mid(i64 start) -> string` → `Zanna.String.Mid(string, i64)` — `start` is a **1-based codepoint**
   index; suffix from `start` to end of string.
 - `Concat(string other) -> string` → `Zanna.String.Concat(string, string)`
-
-Constructor helper (optional):
-
-- `FromStr(string s) -> string` → `Zanna.String.FromStr(string)`
 
 ### `Zanna.Collections.List` (non-generic)
 

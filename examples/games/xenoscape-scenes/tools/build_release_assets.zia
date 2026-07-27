@@ -158,9 +158,238 @@ func buildTitlePanelTexture() -> Pixels {
     return panel;
 }
 
+/// @brief Return the runtime's representative frame for one stable enemy id.
+func enemyPreview(sprites: SpriteFactory, enemyType: Integer) -> Pixels {
+    if enemyType == ENEMY_SLIME { return sprites.getSlimeFrame(0); }
+    if enemyType == ENEMY_BAT { return sprites.getBatFrame(0); }
+    if enemyType == ENEMY_TURRET { return sprites.getTurretBase(); }
+    if enemyType == ENEMY_BOSS
+       or enemyType == ENEMY_BEACON_WARDEN
+       or enemyType == ENEMY_RELAY_CUSTODIAN
+       or enemyType == ENEMY_TIDE_LEVIATHAN
+       or enemyType == ENEMY_VERDANT_COLOSSUS
+       or enemyType == ENEMY_CRYO_CUSTODIAN
+       or enemyType == ENEMY_NULL_HARVESTER {
+        return sprites.getBossFrame(0);
+    }
+    if enemyType == ENEMY_DRONE {
+        return sprites.getDroneFrame(0);
+    }
+    if enemyType == ENEMY_SPOREWALKER {
+        return sprites.getSporewalkerFrame(0);
+    }
+    if enemyType == ENEMY_GLOWMOTH {
+        return sprites.getGlowmothFrame(0);
+    }
+    if enemyType == ENEMY_FUNGAL_TURRET {
+        return sprites.getFungalTurretFrame(0);
+    }
+    if enemyType == ENEMY_MYCELIUM {
+        return sprites.getMyceliumFrame(0);
+    }
+    if enemyType == ENEMY_SPORE_MOTHER {
+        return sprites.getSporeMothFrame(0);
+    }
+    if enemyType == ENEMY_CRYSTAL_GOLEM {
+        return sprites.getCrystalGolemFrame(0);
+    }
+    if enemyType == ENEMY_SHARD_BAT {
+        return sprites.getShardBatFrame(0);
+    }
+    if enemyType == ENEMY_RESONANCE_ORB {
+        return sprites.getResonanceOrbFrame(0);
+    }
+    if enemyType == ENEMY_MIRROR_SLIME {
+        return sprites.getMirrorSlimeFrame(0);
+    }
+    if enemyType == ENEMY_CRYSTAL_WYRM {
+        return sprites.getCrystalWyrmFrame(0);
+    }
+    if enemyType == ENEMY_MAGMA_SLUG {
+        return sprites.getMagmaSlugFrame(0);
+    }
+    if enemyType == ENEMY_EMBER_WASP {
+        return sprites.getEmberWaspFrame(0);
+    }
+    if enemyType == ENEMY_FORGE_SENTINEL {
+        return sprites.getForgeSentinelFrame(0);
+    }
+    if enemyType == ENEMY_MAGMA_CORE {
+        return sprites.getMagmaCoreFrame(0);
+    }
+    if enemyType == ENEMY_ICE_WRAITH {
+        return sprites.getIceWraithFrame(0);
+    }
+    if enemyType == ENEMY_FROST_BEETLE {
+        return sprites.getFrostBeetleFrame(0);
+    }
+    if enemyType == ENEMY_STALACTITE_BAT {
+        return sprites.getStalactiteBatFrame(0);
+    }
+    if enemyType == ENEMY_VINE_WHIP {
+        return sprites.getVineWhipSprite();
+    }
+    if enemyType == ENEMY_MOSS_GOLEM {
+        return sprites.getMossGolemFrame(0);
+    }
+    if enemyType == ENEMY_RUIN_GUARDIAN {
+        return sprites.getRuinGuardianFrame(0);
+    }
+    if enemyType == ENEMY_SHADOW_CLONE {
+        return sprites.getShadowCloneFrame(0);
+    }
+    if enemyType == ENEMY_CORRUPTION {
+        return sprites.getCorruptionSprite();
+    }
+    if enemyType == ENEMY_ARCHITECT {
+        return sprites.getArchitectFrame(0);
+    }
+    if enemyType == ENEMY_PATROL_DRONE {
+        return sprites.getDroneFrame(0);
+    }
+    if enemyType == ENEMY_BOMB_CARRIER {
+        return sprites.getBombCarrierFrame(0);
+    }
+    var fallback = Pixels.New(48, 48);
+    fallback.DrawBox(4, 4, 40, 40, Color.RGB(110, 44, 130));
+    fallback.DrawFrame(4, 4, 40, 40, Color.RGB(255, 80, 220));
+    fallback.DrawLine(12, 12, 36, 36, Color.RGB(255, 180, 240));
+    fallback.DrawLine(36, 12, 12, 36, Color.RGB(255, 180, 240));
+    return fallback;
+}
+
+/// @brief Build one representative pickup cell, including procedural types.
+func pickupPreview(sprites: SpriteFactory, pickupType: Integer) -> Pixels {
+    if pickupType == PICKUP_COIN { return sprites.getCoinFrame(0); }
+    if pickupType == PICKUP_HEALTH { return sprites.getHealthOrb(); }
+    if pickupType == PICKUP_SPEED { return sprites.getSpeedPickup(); }
+    if pickupType == PICKUP_SHIELD { return sprites.getShieldPickup(); }
+    if pickupType == PICKUP_RAPIDFIRE { return sprites.getRapidPickup(); }
+    var icon = Pixels.New(48, 48);
+    if pickupType == PICKUP_GEM {
+        icon.DrawTriangle(24, 6, 11, 23, 37, 23,
+                          Color.RGB(115, 205, 255));
+        icon.DrawTriangle(24, 42, 11, 23, 37, 23,
+                          Color.RGB(55, 125, 225));
+        icon.DrawLine(19, 17, 29, 17, Color.RGB(220, 245, 255));
+        return icon;
+    }
+    if pickupType == PICKUP_HP_UP {
+        icon.DrawDisc(18, 18, 10, Color.RGB(245, 86, 110));
+        icon.DrawDisc(30, 18, 10, Color.RGB(245, 86, 110));
+        icon.DrawTriangle(8, 20, 40, 20, 24, 43,
+                          Color.RGB(205, 45, 76));
+        icon.DrawBox(21, 16, 6, 19, Color.RGB(255, 235, 170));
+        icon.DrawBox(15, 22, 18, 6, Color.RGB(255, 235, 170));
+        return icon;
+    }
+    if pickupType == PICKUP_KEY {
+        icon.DrawRing(16, 19, 9, Color.RGB(245, 205, 80));
+        icon.DrawThickLine(23, 25, 40, 40, 5,
+                           Color.RGB(220, 170, 48));
+        icon.DrawBox(33, 34, 5, 10, Color.RGB(220, 170, 48));
+        icon.DrawBox(39, 37, 5, 7, Color.RGB(220, 170, 48));
+        return icon;
+    }
+    icon.DrawDisc(24, 24, 16, Color.RGB(255, 80, 220));
+    return icon;
+}
+
+/// @brief Return the production tile that visually represents an interaction.
+func interactionPreview(sprites: SpriteFactory,
+                        interactionType: Integer) -> Pixels {
+    if interactionType == INTERACTION_SWITCH
+       or interactionType == INTERACTION_SWITCH_TARGET {
+        return sprites.getTile(TILE_SWITCH);
+    }
+    if interactionType == INTERACTION_LOCKED_DOOR {
+        return sprites.getTile(TILE_LOCKED_DOOR);
+    }
+    if interactionType == INTERACTION_SAVE_STATION {
+        return sprites.getTile(TILE_SAVE_STATION);
+    }
+    if interactionType == INTERACTION_ABILITY_SHRINE {
+        return sprites.getTile(TILE_ABILITY_SHRINE);
+    }
+    if interactionType == INTERACTION_TELEPORTER {
+        return sprites.getTile(TILE_TELEPORTER);
+    }
+    if interactionType == INTERACTION_LORE_TERMINAL {
+        return sprites.getTile(TILE_LORE_TERMINAL);
+    }
+    if interactionType == INTERACTION_REGION_GATE {
+        return sprites.getTile(TILE_AIRLOCK);
+    }
+    return sprites.getTile(TILE_SWITCH);
+}
+
+/// @brief Center one runtime sprite in a 64px project-preview atlas cell.
+func placePreview(atlas: Pixels, frame: Integer, source: Pixels) {
+    if atlas == null or source == null or frame < 0 { return; }
+    var sprite = source;
+    var width = sprite.get_Width();
+    var height = sprite.get_Height();
+    var targetWidth = width;
+    var targetHeight = height;
+    if targetWidth > 56 {
+        targetHeight = targetHeight * 56 / targetWidth;
+        targetWidth = 56;
+    }
+    if targetHeight > 56 {
+        targetWidth = targetWidth * 56 / targetHeight;
+        targetHeight = 56;
+    }
+    if targetWidth < 1 { targetWidth = 1; }
+    if targetHeight < 1 { targetHeight = 1; }
+    if targetWidth != width or targetHeight != height {
+        sprite = source.Scale(targetWidth, targetHeight);
+    }
+    var cellX = (frame % 8) * 64;
+    var cellY = (frame / 8) * 64;
+    atlas.Copy(cellX + (64 - targetWidth) / 2,
+               cellY + (64 - targetHeight) / 2,
+               sprite, 0, 0, targetWidth, targetHeight);
+}
+
+/// @brief Bake runtime-equivalent enemy, pickup, and interaction previews.
+/// @details Frames 0-36 are enemy ids, 40-47 pickup ids, 49-56 interaction
+///          ids 1-8, and 57-59 are marker/checkpoint/player-start records.
+func buildSceneObjectPreviewAtlas(sprites: SpriteFactory) -> Pixels {
+    var atlas = Pixels.New(512, 512);
+    var enemyType = 0;
+    while enemyType <= 36 {
+        placePreview(atlas, enemyType, enemyPreview(sprites, enemyType));
+        enemyType = enemyType + 1;
+    }
+    var pickupType = 0;
+    while pickupType <= PICKUP_KEY {
+        placePreview(
+            atlas, 40 + pickupType,
+            pickupPreview(sprites, pickupType));
+        pickupType = pickupType + 1;
+    }
+    var interactionType = 1;
+    while interactionType <= INTERACTION_REGION_GATE {
+        placePreview(
+            atlas, 48 + interactionType,
+            interactionPreview(sprites, interactionType));
+        interactionType = interactionType + 1;
+    }
+
+    var marker = Pixels.New(48, 48);
+    marker.DrawDisc(24, 24, 14, Color.RGB(65, 200, 225));
+    marker.DrawRing(24, 24, 20, Color.RGB(245, 205, 95));
+    marker.DrawLine(24, 4, 24, 44, Color.RGB(190, 235, 245));
+    marker.DrawLine(4, 24, 44, 24, Color.RGB(190, 235, 245));
+    placePreview(atlas, 57, marker);
+    placePreview(atlas, 58, sprites.getTile(TILE_SAVE_STATION));
+    placePreview(atlas, 59, sprites.getPlayerFrame(1, 0));
+    return atlas;
+}
+
 /// @brief Generate the complete deterministic release-art inventory.
 ///
-/// @return Nothing. Prints `RESULT: ok` only when all four PNGs are written.
+/// @return Nothing. Prints `RESULT: ok` only when all five PNGs are written.
 func main() {
     var palette = new Palette();
     var sprites = new SpriteFactory(palette);
@@ -174,6 +403,11 @@ func main() {
     }
     if saveReleasePng(buildIconAtlas(sprites),
                       "assets/icons/hud-icon-atlas.png") == false {
+        return;
+    }
+    if saveReleasePng(
+           buildSceneObjectPreviewAtlas(sprites),
+           "assets/sprites/scene-object-preview-atlas.png") == false {
         return;
     }
     if saveReleasePng(buildTitlePanelTexture(),

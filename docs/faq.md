@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-23
+last-verified: 2026-07-26
 ---
 
 # Zanna FAQ
@@ -44,7 +44,11 @@ well suited to learning language and compiler internals, experimentation, and bu
 ./scripts/build_zanna_mac.sh     # macOS
 ```
 
-Requirements: CMake 3.20+, Clang or GCC with C++20 support. See the top-level README for platform-specific details.
+On Windows, run `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_zanna_win.ps1`.
+
+Requirements: CMake 3.20+ and a C++20 compiler (Clang is canonical; GCC and MSVC also
+work). See the platform guides for [macOS](getting-started/macos.md),
+[Linux](getting-started/linux.md), and [Windows](getting-started/windows.md).
 
 ### 5. How do I run a program?
 
@@ -70,15 +74,35 @@ ilrun program.il
 
 ### 6. Where can I find example programs?
 
-- `/examples/games/frogger/` - Full Frogger game in Zia demonstrating modules and game architecture
-- `/examples/games/centipede/` - Centipede game in Zia
-- `/examples/games/crackman/` - Crackman maze-chase game in Zia
-- `/examples/games/xenoscape/` - Side-scroller game in Zia using ten game-engine helpers
-- `/examples/games/vtris/` - Full Tetris game demonstrating OOP, graphics, and game loop patterns (BASIC)
-- `/examples/games/frogger-basic/`, `/examples/games/centipede-basic/`, `/examples/games/pacman-basic/` - BASIC ports of the same games
-- `/examples/apps/` - Zia application examples such as `zannasql/` and `paint/`
-- `/src/zannastudio/` - Zanna Studio source, built separately from the examples
+**2D games (Zia):**
+
+- `/examples/games/frogger/` - Full Frogger game demonstrating modules and game architecture
+- `/examples/games/centipede/` - Centipede game
+- `/examples/games/crackman/` - Crackman maze-chase game
+- `/examples/games/chess/` - Full chess engine with an AI opponent
+- `/examples/games/xenoscape/` - Ten-region action Metroidvania
+
+**3D games (Zia):**
+
+- `/examples/games/3dscene/` - Minimal Graphics3D scene walkthrough
+- `/examples/games/3dbaseball/`, `/examples/games/3dbowling/` - Complete 3D games over `Zanna.Game3D`
+- `/examples/games/ashfall/` - Nine-mission sci-fi FPS campaign
+- `/examples/games/ridgebound/` - Compact open-world Game3D demo
+
+**Scene-driven recreations:**
+
+- `/examples/games/xenoscape-scenes/`, `/examples/games/ashfall-scenes/` - The same games with regions authored as `.scene2d` / `.scene3d` documents instead of code
+
+**BASIC games:**
+
+- `/examples/games/vtris/` - Full Tetris game demonstrating OOP, graphics, and game-loop patterns
+- `/examples/games/frogger-basic/`, `/examples/games/centipede-basic/`, `/examples/games/pacman-basic/` - BASIC ports of the Zia games
+
+**Applications and other sources:**
+
+- `/examples/apps/` - Zia application examples such as `zannasql/`, `paint/`, `webserver/`, and `telnet/`
 - `/examples/apiaudit/` - Focused runtime API examples in both Zia and BASIC
+- `/src/zannastudio/` - Zanna Studio source, built separately from the examples
 - `/src/tests/zia/` - Frontend tests covering specific Zia language features
 - `/src/tests/basic/` - Frontend tests covering specific BASIC language features
 
@@ -196,8 +220,8 @@ Key limitations to be aware of:
 
 - **Case-insensitive** identifiers (parameter names can collide with field names)
 - **Object assignment creates references**, not copies (use `New` for independent objects)
-- **No SET/CALL keywords** (direct assignment only)
-- **Type suffixes required** for string functions (use `Str$`, `Chr$`, not `Str`, `Chr`)
+- **No `CALL` statement**, and no VB-style `SET obj = ...` assignment — assign objects directly. (`SET` does exist, but only as the setter half of a `Property ... Get ... Set ... End Set` block.)
+- **Type suffixes required** for string-returning builtins (use `Str$`, `Chr$`, not `Str`, `Chr`)
 
 ### 15. How do I use the AddFile keyword for modular programs?
 
@@ -365,5 +389,3 @@ ctest --test-dir build --output-on-failure
 ```bash
 clang-format -i <files>
 ```
-
----

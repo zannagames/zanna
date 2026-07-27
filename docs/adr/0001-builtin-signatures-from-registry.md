@@ -8,7 +8,7 @@ last-verified: 2026-06-27
 
 Date: 2025-11-15
 
-Context
+## Context
 
 The BASIC frontend maintains builtin metadata in multiple places:
 
@@ -19,7 +19,7 @@ This duplication led to drift: new builtins (ARGC/ARG$/COMMAND$) had correct des
 causing bogus arity diagnostics and crashes. We already fixed arity by deriving it from the registry and added a
 fixed-result mapping to reduce drift for result types.
 
-Decision
+## Decision
 
 Unify builtin semantic signatures behind the registry. The registry is the preferred source for:
 
@@ -35,7 +35,7 @@ falls back to its legacy static table for builtins not yet covered by that view.
 - Registry-backed semantic signatures and safety overrides for ARGC/ARG$/COMMAND$ primary signatures,
 - Unit tests to guard semantics and lowering.
 
-Consequences
+## Consequences
 
 Pros:
 
@@ -48,7 +48,7 @@ Cons:
 - The legacy `kBuiltinSignatures` table in `src/frontends/basic/SemanticAnalyzer_Builtins.cpp` still exists as a
   fallback for builtins without a registry-backed semantic view.
 
-Alternatives
+## Alternatives
 
 - Keep the legacy static table and patch individual bugs as they appear (high risk of regressions and ongoing
   maintenance burden).

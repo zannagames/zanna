@@ -31,7 +31,7 @@ New language with C-style syntax:
 
 Example:
 
-```zanna
+```zia
 module Hello;
 
 class User {

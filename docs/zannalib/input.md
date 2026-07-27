@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-23
+last-verified: 2026-07-26
 ---
 
 # Input
@@ -29,10 +29,8 @@ Canonical keyboard key-code constants for input APIs.
 **Type:** Static constants class
 
 Use `Zanna.Input.Key` anywhere an API expects an integer key code, including
-`Keyboard.IsDown`, `Keyboard.WasPressed`, `Action.BindKey`, and Game3D input
-helpers. `Keyboard.Key*` and `Game3D.Keys` remain available as compatibility
-mirrors, but new code should import `Key` for constants and keep `Keyboard` for
-state/query behavior.
+`Keyboard.IsDown`, `Keyboard.WasPressed`, and `Action.BindKey`. `Zanna.Input.Key`
+holds the constants; `Zanna.Input.Keyboard` holds the state and query methods.
 
 | Group | Properties |
 |---|---|
@@ -46,6 +44,102 @@ state/query behavior.
 | Modifiers | `LeftShift`, `RightShift`, `LeftControl`, `RightControl`, `LeftAlt`, `RightAlt`, `LeftSuper`, `RightSuper` |
 | Punctuation | `Minus`, `Equals`, `LeftBracket`, `RightBracket`, `Backslash`, `Semicolon`, `Quote`, `Grave`, `Comma`, `Period`, `Slash` |
 | Numpad | `Numpad0`-`Numpad9`, `NumpadAdd`, `NumpadSubtract`, `NumpadMultiply`, `NumpadDivide`, `NumpadEnter`, `NumpadDecimal` |
+
+### Values
+
+Codes follow the GLFW numbering used by the window backends. Prefer the named
+constants — the numbers are listed only for debugging and for reading existing
+code that hard-codes them.
+
+#### Letters
+
+| Property | Value | Property | Value | Property | Value |
+|----------|-------|----------|-------|----------|-------|
+| `A` | 65 | `J` | 74 | `S` | 83 |
+| `B` | 66 | `K` | 75 | `T` | 84 |
+| `C` | 67 | `L` | 76 | `U` | 85 |
+| `D` | 68 | `M` | 77 | `V` | 86 |
+| `E` | 69 | `N` | 78 | `W` | 87 |
+| `F` | 70 | `O` | 79 | `X` | 88 |
+| `G` | 71 | `P` | 80 | `Y` | 89 |
+| `H` | 72 | `Q` | 81 | `Z` | 90 |
+| `I` | 73 | `R` | 82 |  |  |
+
+#### Digits
+
+| Property | Value | Property | Value |
+|----------|-------|----------|-------|
+| `Digit0` | 48 | `Digit5` | 53 |
+| `Digit1` | 49 | `Digit6` | 54 |
+| `Digit2` | 50 | `Digit7` | 55 |
+| `Digit3` | 51 | `Digit8` | 56 |
+| `Digit4` | 52 | `Digit9` | 57 |
+
+#### Function Keys
+
+| Property | Value | Property | Value |
+|----------|-------|----------|-------|
+| `F1` | 290 | `F7` | 296 |
+| `F2` | 291 | `F8` | 297 |
+| `F3` | 292 | `F9` | 298 |
+| `F4` | 293 | `F10` | 299 |
+| `F5` | 294 | `F11` | 300 |
+| `F6` | 295 | `F12` | 301 |
+
+#### Navigation
+
+| Property | Value | Property | Value |
+|----------|-------|----------|-------|
+| `Up` | 265 | `Home` | 268 |
+| `Down` | 264 | `End` | 269 |
+| `Left` | 263 | `PageUp` | 266 |
+| `Right` | 262 | `PageDown` | 267 |
+| `Insert` | 260 | `Delete` | 261 |
+
+#### Editing and Sentinel
+
+| Property | Value | Property | Value |
+|----------|-------|----------|-------|
+| `Unknown` | 0 | `Space` | 32 |
+| `Tab` | 258 | `Enter` | 257 |
+| `Backspace` | 259 | `Escape` | 256 |
+
+#### Modifiers
+
+| Property | Value | Property | Value |
+|----------|-------|----------|-------|
+| `LeftShift` | 340 | `RightShift` | 344 |
+| `LeftControl` | 341 | `RightControl` | 345 |
+| `LeftAlt` | 342 | `RightAlt` | 346 |
+| `LeftSuper` | 343 | `RightSuper` | 347 |
+
+`LeftSuper` and `RightSuper` identify Command on macOS and the Windows/Super key
+on Windows and Linux. For a platform-neutral primary shortcut modifier, test
+either Control key or either Super key.
+
+#### Punctuation
+
+| Property | Value | Property | Value |
+|----------|-------|----------|-------|
+| `Minus` | 45 | `Semicolon` | 59 |
+| `Equals` | 61 | `Quote` | 39 |
+| `LeftBracket` | 91 | `Comma` | 44 |
+| `RightBracket` | 93 | `Period` | 46 |
+| `Backslash` | 92 | `Slash` | 47 |
+| `Grave` | 96 |  |  |
+
+#### Numpad
+
+| Property | Value | Property | Value |
+|----------|-------|----------|-------|
+| `Numpad0` | 320 | `Numpad6` | 326 |
+| `Numpad1` | 321 | `Numpad7` | 327 |
+| `Numpad2` | 322 | `Numpad8` | 328 |
+| `Numpad3` | 323 | `Numpad9` | 329 |
+| `Numpad4` | 324 | `NumpadAdd` | 334 |
+| `Numpad5` | 325 | `NumpadSubtract` | 333 |
+| `NumpadDecimal` | 330 | `NumpadMultiply` | 332 |
+| `NumpadEnter` | 335 | `NumpadDivide` | 331 |
 
 ---
 
@@ -89,14 +183,19 @@ Keyboard state is updated by the active window event poll (`Canvas.Poll()`,
 | `EnableTextInput()`  | `Void()`   | Enable text input mode (for text fields)        |
 | `GetText()`          | `String()` | Returns UTF-8 text received during the last poll|
 
-### Modifier State Methods
+### Modifier State
 
-| Method       | Signature   | Description                              |
-|--------------|-------------|------------------------------------------|
-| `Alt()`      | `Boolean()` | Returns true if Alt is held              |
-| `CapsLock()` | `Boolean()` | Returns true if Caps Lock is on          |
-| `Ctrl()`     | `Boolean()` | Returns true if Ctrl is held             |
-| `Shift()`    | `Boolean()` | Returns true if Shift is held            |
+There are no dedicated modifier predicates. Test the left and right key codes
+with `IsDown` and combine them:
+
+```zia
+var shift = KB.IsDown(Key.LeftShift) || KB.IsDown(Key.RightShift);
+var ctrl  = KB.IsDown(Key.LeftControl) || KB.IsDown(Key.RightControl);
+var alt   = KB.IsDown(Key.LeftAlt) || KB.IsDown(Key.RightAlt);
+```
+
+Caps Lock state is not exposed; `GetText()` already reflects the active layout
+and shift/caps state for text entry.
 
 ### Helper Methods
 
@@ -106,98 +205,8 @@ Keyboard state is updated by the active window event poll (`Canvas.Poll()`,
 
 ### Key Code Constants
 
-Prefer `Zanna.Input.Key` for key constants in new code. The `Keyboard.Key*`
-properties below remain as compatibility aliases for existing programs.
-
-#### Letters
-
-| Property | Value | Property | Value | Property | Value |
-|----------|-------|----------|-------|----------|-------|
-| `KeyA`  | 65    | `KeyJ`  | 74    | `KeyS`  | 83    |
-| `KeyB`  | 66    | `KeyK`  | 75    | `KeyT`  | 84    |
-| `KeyC`  | 67    | `KeyL`  | 76    | `KeyU`  | 85    |
-| `KeyD`  | 68    | `KeyM`  | 77    | `KeyV`  | 86    |
-| `KeyE`  | 69    | `KeyN`  | 78    | `KeyW`  | 87    |
-| `KeyF`  | 70    | `KeyO`  | 79    | `KeyX`  | 88    |
-| `KeyG`  | 71    | `KeyP`  | 80    | `KeyY`  | 89    |
-| `KeyH`  | 72    | `KeyQ`  | 81    | `KeyZ`  | 90    |
-| `KeyI`  | 73    | `KeyR`  | 82    |          |       |
-
-#### Numbers
-
-| Property  | Value | Property  | Value |
-|-----------|-------|-----------|-------|
-| `Key0`   | 48    | `Key5`   | 53    |
-| `Key1`   | 49    | `Key6`   | 54    |
-| `Key2`   | 50    | `Key7`   | 55    |
-| `Key3`   | 51    | `Key8`   | 56    |
-| `Key4`   | 52    | `Key9`   | 57    |
-
-#### Function Keys
-
-| Property   | Value | Property   | Value |
-|------------|-------|------------|-------|
-| `KeyF1`   | 290   | `KeyF7`   | 296   |
-| `KeyF2`   | 291   | `KeyF8`   | 297   |
-| `KeyF3`   | 292   | `KeyF9`   | 298   |
-| `KeyF4`   | 293   | `KeyF10`  | 299   |
-| `KeyF5`   | 294   | `KeyF11`  | 300   |
-| `KeyF6`   | 295   | `KeyF12`  | 301   |
-
-#### Navigation
-
-| Property       | Value | Property       | Value |
-|----------------|-------|----------------|-------|
-| `KeyUp`       | 265   | `KeyHome`     | 268   |
-| `KeyDown`     | 264   | `KeyEnd`      | 269   |
-| `KeyLeft`     | 263   | `KeyPageUp`   | 266   |
-| `KeyRight`    | 262   | `KeyPageDown` | 267   |
-| `KeyInsert`   | 260   | `KeyDelete`   | 261   |
-
-#### Special Keys
-
-| Property        | Value | Property       | Value |
-|-----------------|-------|----------------|-------|
-| `KeyUnknown`   | 0     | `KeySpace`    | 32    |
-| `KeyTab`       | 258   | `KeyEnter`    | 257   |
-| `KeyBackspace` | 259   | `KeyEscape`   | 256   |
-
-#### Modifier Keys
-
-| Property      | Value | Property      | Value |
-|---------------|-------|---------------|-------|
-| `KeyLeftShift`   | 340   | `KeyRightShift`  | 344   |
-| `KeyLeftControl`    | 341   | `KeyRightControl`   | 345   |
-| `KeyLeftAlt`     | 342   | `KeyRightAlt`    | 346   |
-
-The canonical `Key.LeftSuper` and `Key.RightSuper` values are 343 and 347.
-They identify Command on macOS and the Windows/Super key on Windows and Linux.
-For a platform-neutral primary-selection shortcut, test either Control key or
-either Super key with `Keyboard.IsDown`.
-
-#### Punctuation
-
-| Property         | Value | Property         | Value |
-|------------------|-------|------------------|-------|
-| `KeyMinus`      | 45    | `KeySemicolon`  | 59    |
-| `KeyEquals`     | 61    | `KeyQuote`      | 39    |
-| `KeyLeftBracket`   | 91    | `KeyComma`      | 44    |
-| `KeyRightBracket`   | 93    | `KeyPeriod`     | 46    |
-| `KeyBackslash`  | 92    | `KeySlash`      | 47    |
-| `KeyGrave`      | 96    |                  |       |
-
-#### Numpad
-
-| Property       | Value | Property       | Value |
-|----------------|-------|----------------|-------|
-| `KeyNum0`     | 320   | `KeyNum6`     | 326   |
-| `KeyNum1`     | 321   | `KeyNum7`     | 327   |
-| `KeyNum2`     | 322   | `KeyNum8`     | 328   |
-| `KeyNum3`     | 323   | `KeyNum9`     | 329   |
-| `KeyNum4`     | 324   | `KeyNumAdd`   | 334   |
-| `KeyNum5`     | 325   | `KeyNumSub`   | 333   |
-| `KeyNumDot`   | 330   | `KeyNumMul`   | 332   |
-| `KeyNumEnter` | 335   | `KeyNumDiv`   | 331   |
+Key codes live on [`Zanna.Input.Key`](#zannainputkey). See its
+[Values](#values) tables for every constant and its numeric code.
 
 ### Zia Example: Basic Game Input
 
@@ -230,8 +239,8 @@ func start() {
         // Escape to quit
         if KB.WasPressed(Key.Escape) { return; }
 
-        c.Clear(Color.RGB(0, 0, 0));
-        c.Box(px - 10, py - 10, 20, 20, Color.RGB(255, 0, 0));
+        c.Clear(Color.Rgb(0, 0, 0));
+        c.Box(px - 10, py - 10, 20, 20, Color.Rgb(255, 0, 0));
         c.Flip();
     }
 }
@@ -539,9 +548,9 @@ coordinate system: the origin is at the top left and positive Y points down.
 |-------------------|--------------------|----------------------------------------------------|
 | `IsDown(button)`  | `Boolean(Integer)` | Returns true if the button is currently held down  |
 | `IsUp(button)`    | `Boolean(Integer)` | Returns true if the button is currently released   |
-| `Left()`          | `Boolean()`        | Returns true if the left button is held            |
-| `Middle()`        | `Boolean()`        | Returns true if the middle button is held          |
-| `Right()`         | `Boolean()`        | Returns true if the right button is held           |
+
+There are no per-button predicates. Pass a
+[button constant](#button-constants) instead — `Mouse.IsDown(Mouse.ButtonLeft)`.
 
 ### Button Event Methods (Since Last Poll)
 
@@ -638,19 +647,19 @@ bind Zanna.Input.Mouse as Mouse;
 
 func start() {
     var c = Canvas.New("Draw", 800, 600);
-    c.Clear(Color.RGB(0, 0, 0));
+    c.Clear(Color.Rgb(0, 0, 0));
 
     while !c.get_ShouldClose() {
         c.Poll();
 
         // Draw while left button held
         if Mouse.IsDown(Mouse.ButtonLeft) {
-            c.Disc(Mouse.X(), Mouse.Y(), 5, Color.RGB(255, 0, 0));
+            c.Disc(Mouse.X(), Mouse.Y(), 5, Color.Rgb(255, 0, 0));
         }
 
         // Clear on right click
         if Mouse.WasClicked(Mouse.get_ButtonRight()) {
-            c.Clear(Color.RGB(0, 0, 0));
+            c.Clear(Color.Rgb(0, 0, 0));
         }
 
         c.Flip();
@@ -978,7 +987,7 @@ func start() {
             if Pad.RightTrigger(0) > 0.5 { Say("Shooting!"); }
         }
 
-        c.Clear(Color.RGB(0, 0, 0));
+        c.Clear(Color.Rgb(0, 0, 0));
         c.Flip();
     }
 }
@@ -1390,7 +1399,7 @@ func start() {
         if Action.Pressed("jump") { Say("Jump!"); }
         if Action.Held("fire") { Say("Firing"); }
 
-        c.Clear(Color.RGB(0, 0, 0));
+        c.Clear(Color.Rgb(0, 0, 0));
         c.Flip();
     }
 
@@ -1676,7 +1685,7 @@ func start() {
         }
         if input.get_Cancel() { return; }
 
-        c.Clear(Color.RGB(0, 0, 0));
+        c.Clear(Color.Rgb(0, 0, 0));
         c.Flip();
     }
 }

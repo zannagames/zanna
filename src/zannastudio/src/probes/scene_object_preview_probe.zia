@@ -10,6 +10,7 @@
 //          and light halos in the 2D scene canvas.
 // Key invariants:
 //   - `editor.sprite`/`editor.frame` draw the exact authored atlas frame.
+//   - Project-owned type/property rules select atlas frames without scene edits.
 //   - Missing sprites fall back to the existing marker deterministically.
 //   - Route and halo overlays render without changing canonical content.
 // Ownership/Lifetime:
@@ -39,6 +40,7 @@ bind "../services/file_utils";
 bind "../ui/app_shell";
 bind "../ui/scene_editor_2d";
 bind "../ui/scene_panels_2d";
+bind "../ui/scene_component_schema";
 
 bind Color = Zanna.Graphics.Color;
 bind File = Zanna.IO.File;
@@ -92,13 +94,31 @@ func main() {
     // Unselected fallback marker object, then the sprite object.
     var markerIndex = editor.AddSceneObject("enemy", "marker-1", 96, 96);
     var spriteIndex = editor.AddSceneObject("enemy", "sprite-1", 32, 32);
+    var projectPreviewIndex =
+        editor.AddSceneObject("pickup", "pickup-1", 64, 32);
     if markerIndex < 0 or spriteIndex < 0
+       or projectPreviewIndex < 0
        or editor.SetSceneObjectProperty(
               spriteIndex, "", "editor.sprite", "string",
               SPRITE_FIXTURE) == false
        or editor.SetSceneObjectProperty(
               spriteIndex, "", "editor.frame", "int", "1") == false {
         Fail(shell, "object fixtures");
+        return;
+    }
+    if editor.SetSceneObjectProperty(
+           projectPreviewIndex, "", "pickup.type", "int", "1") == false {
+        Fail(shell, "project preview property fixture");
+        return;
+    }
+    editor.componentSchema = scene_component_schema.ParseText(
+        "{\"version\":3,\"components\":[],\"objectPreviews\":["
+        + "{\"objectType\":\"pickup\",\"sprite\":\""
+        + SPRITE_FIXTURE + "\",\"frame\":0,"
+        + "\"frameProperty\":\"pickup.type\",\"frameMap\":[0,1]}]}",
+        "memory");
+    if editor.componentSchema.valid == false {
+        Fail(shell, "project preview schema fixture");
         return;
     }
 
@@ -135,6 +155,19 @@ func main() {
         CellCenter(editor, 2), CellCenter(editor, 2)));
     if spritePixel != Rgb(Color.RGB(30, 200, 30)) {
         Fail(shell, "sprite frame pixel " + spritePixel);
+        return;
+    }
+
+    // Project rule selects frame 1 from pickup.type without adding any
+    // editor.* metadata to the canonical object.
+    var projectPreviewPixel = Rgb(editor.framePixels.GetColor(
+        CellCenter(editor, 4), CellCenter(editor, 2)));
+    if projectPreviewPixel != Rgb(Color.RGB(30, 200, 30))
+       or editor.scene.ObjectHas(
+              projectPreviewIndex, "editor.sprite")
+       or editor.scene.ObjectHas(
+              projectPreviewIndex, "editor.frame") {
+        Fail(shell, "project preview frame pixel " + projectPreviewPixel);
         return;
     }
 

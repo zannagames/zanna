@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-05-31
+last-verified: 2026-07-26
 ---
 
 # CODEMAP: IL Runtime
@@ -10,8 +10,9 @@ Runtime signature metadata (`src/il/runtime/`) for C ABI helpers.
 
 ## Overview
 
-- **Total source files**: 23 (.hpp/.cpp/.def/.inc)
-- **Subdirectories**: classes/, signatures/
+- **Total source files**: 48 (.hpp/.cpp/.def/.inc)
+- **Subdirectories**: classes/, defs/, signatures/ — the modular `@summary`/`@details`
+  definition fragments introduced by [ADR 0101](../../adr/0101-modular-runtime-definitions-and-documentation.md) live in `defs/`
 
 ## Definition Files
 

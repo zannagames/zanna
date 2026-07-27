@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-14
+last-verified: 2026-07-26
 ---
 
 # Locale, LocaleInfo, LocaleManager
@@ -23,15 +23,14 @@ of RFC 5646 rather than a complete language-tag validator.
 | Method | Signature | Description |
 |---|---|---|
 | `Parse(tag)` | `Locale(String)` | Canonicalize + validate; **traps** on invalid input. |
-| `TryParse(tag)` | `Locale(String)` | Returns `null` on failure instead of trapping. |
-| `TryParseOption(tag)` | `Option[Locale](String)` | Returns `Some(Locale)` on success or `None` on failure. |
+| `TryParse(tag)` | `Option[Locale](String)` | Returns `Some(Locale)` on success or `None` on failure, instead of trapping. |
 | `FromParts(lang, script, region)` | `Locale(String, String, String)` | Concatenate the supplied parts and parse the result. Empty script/region strings mean "absent". |
 | `Invariant()` | `Locale()` | Returns the `root` locale (universal fallback). |
 | `Equals(other)` | `Bool(Locale)` | Canonical-tag equality for non-null handles. |
 | `Fallbacks()` | `Object()` (runtime `List` of `Locale`) | Returns the walk-order fallback chain. |
 | `ToString()` | `String()` | Canonical tag string. |
 
-Prefer `TryParseOption` for new code. `TryParse` remains as a compatibility helper for code that already checks null.
+`TryParse` returns an Option, so a rejected tag is reported as `None` rather than a null handle.
 
 ### Properties
 

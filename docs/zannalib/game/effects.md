@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-15
+last-verified: 2026-07-26
 ---
 
 # Visual Effects
@@ -20,7 +20,7 @@ invisible or incorrectly colored effects.
 | `ScreenFX` transitions | Canvas RGB, `0x00RRGGBB` | `0xFF0000` |
 | `Lighting2D` | Canvas RGB, `0x00RRGGBB`; higher bits are discarded | `0xFF0000` |
 
-`Zanna.Graphics.Color.RGBA()` produces a tagged ARGB value for the Canvas/Pixels pipeline. It is
+`Zanna.Graphics.Color.Rgba()` produces a tagged ARGB value for the Canvas/Pixels pipeline. It is
 safe for `ParticleEmitter`, but it is **not** the raw-RGBA representation expected by ScreenFX
 flash and fade methods. Use an explicit raw-RGBA literal or pack the bytes yourself for those
 methods.
@@ -123,7 +123,7 @@ particle can therefore be quadratic in the configured capacity. Prefer `Draw`, `
 ### Color and drawing details
 
 Particle colors use `0xAARRGGBB`. For compatibility, an untagged `0x00RRGGBB` value is drawn as
-fully opaque. A tagged `Color.RGBA(r, g, b, 0)` remains explicitly transparent. `DrawToPixels`
+fully opaque. A tagged `Color.Rgba(r, g, b, 0)` remains explicitly transparent. `DrawToPixels`
 converts to the Pixels `0xRRGGBBAA` storage convention and performs straight-alpha source-over
 compositing, preserving destination alpha.
 
@@ -148,7 +148,7 @@ func start() {
     emitter.SetVelocity(2.0, 8.0, 0.0, 360.0);
     emitter.SetGravity(0.0, 0.1);
     emitter.SetSize(3.0, 6.0);
-    emitter.Color = Color.RGBA(255, 160, 0, 255);
+    emitter.Color = Color.Rgba(255, 160, 0, 255);
     emitter.FadeOut = true;
     emitter.Shrink = true;
 
@@ -483,15 +483,15 @@ func start() {
     var canvas = Canvas.New("Lighting", 800, 600);
     var lighting = Lighting2D.New(32);
     lighting.Darkness = 160;
-    lighting.TintColor = Color.RGB(0, 0, 10);
-    lighting.SetPlayerLight(120, Color.RGB(255, 230, 160));
+    lighting.TintColor = Color.Rgb(0, 0, 10);
+    lighting.SetPlayerLight(120, Color.Rgb(255, 230, 160));
 
     // Recommended frame order.
     lighting.Update();
-    lighting.AddLight(500, 300, 90, Color.RGB(255, 120, 40), 8); // world space
-    lighting.AddTileLight(200, 150, 50, Color.RGB(80, 180, 255)); // screen space
+    lighting.AddLight(500, 300, 90, Color.Rgb(255, 120, 40), 8); // world space
+    lighting.AddTileLight(200, 150, 50, Color.Rgb(80, 180, 255)); // screen space
 
-    canvas.Clear(Color.RGB(30, 30, 40));
+    canvas.Clear(Color.Rgb(30, 30, 40));
     // Draw world and entities here.
     lighting.Draw(canvas, 100, 0, 400, 300);
     canvas.Flip();

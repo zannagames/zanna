@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-05-31
+last-verified: 2026-07-26
 ---
 
 # CODEMAP: BASIC Frontend
@@ -10,7 +10,7 @@ The BASIC frontend (`src/frontends/basic/`) compiles Zanna BASIC source to IL.
 
 ## Overview
 
-- **Total source files**: 279 (.hpp/.cpp/.def/.inc)
+- **Total source files**: 280 (.hpp/.cpp/.def/.inc)
 - **Subdirectories**: ast/, builtins/, constfold/, detail/, diag/, lower/, lower/builtins/, lower/common/, lower/detail/, lower/oop/, lowerer/, passes/, print/, sem/, types/
 
 ## Core Infrastructure

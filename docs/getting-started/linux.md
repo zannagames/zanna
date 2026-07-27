@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-23
+last-verified: 2026-07-26
 ---
 
 # Getting Started on Linux
@@ -52,21 +52,29 @@ cmake --version     # must be 3.20 or higher
 
 ### Optional: Graphics and Audio Libraries
 
-Zanna's graphics and audio subsystems require platform libraries. These are optional — the core compiler, VM, and language frontends build and run without them.
+The core compiler, VM, and language frontends build and run with no extra packages.
+
+**Graphics** needs nothing at build time in the default configuration. The native
+Wayland adapter is always compiled and resolves the Wayland, xkbcommon, cursor,
+and EGL ABIs at runtime. The X11 fallback adapter is added only when X11
+development headers are present; without them you get a valid Wayland-only build.
+
+**Audio** does need ALSA development headers at configure time. Without them CMake
+prints `ZannaAUD: disabled` and the audio library is omitted.
 
 **Debian / Ubuntu:**
 
 ```bash
-sudo apt install libx11-dev libasound2-dev
+sudo apt install libasound2-dev     # audio
+sudo apt install libx11-dev         # optional X11 fallback for graphics
 ```
 
 **Fedora / RHEL:**
 
 ```bash
-sudo dnf install libX11-devel alsa-lib-devel
+sudo dnf install alsa-lib-devel     # audio
+sudo dnf install libX11-devel       # optional X11 fallback for graphics
 ```
-
-If these packages are not installed, the build will print a warning and skip the graphics/audio libraries. Everything else builds normally.
 
 ---
 
@@ -228,18 +236,20 @@ sudo dnf install gcc-c++
 
 After installing, re-run the build script. Verify with `clang++ --version` or `g++ --version`.
 
-### 2. "X11 not found" or "ALSA not found" warnings
+### 2. "X11 development files unavailable" or "ALSA not found" messages
 
 **Symptom:** During the CMake configure step you see status lines like:
 
 ```text
--- ZannaGFX: disabled (X11 not found; install libx11-dev/libX11-devel or set ZANNA_GRAPHICS_MODE=OFF)
+-- ZannaGFX: X11 development files unavailable; AUTO will use Wayland only
 -- ZannaAUD: disabled (ALSA not found; install libasound2-dev/alsa-lib-devel or set ZANNA_AUDIO_MODE=OFF)
 ```
 
-**Cause:** The development headers for X11 or ALSA are not installed. The build continues, but the graphics and/or audio libraries are skipped.
+**Cause:** X11 or ALSA development headers are not installed. The first message is
+informational — the default `AUTO` graphics build still has full native Wayland
+support and only loses the X11 fallback. The second means audio is omitted entirely.
 
-**Fix (if you need graphics or audio):**
+**Fix (if you need the X11 fallback or audio):**
 
 ```bash
 # Debian / Ubuntu
@@ -248,6 +258,9 @@ sudo apt install libx11-dev libasound2-dev
 # Fedora / RHEL
 sudo dnf install libX11-devel alsa-lib-devel
 ```
+
+Configure with `-DZANNA_AUDIO_MODE=REQUIRE` to turn a missing ALSA into a hard
+configure error rather than a silent omission.
 
 Then clean and rebuild:
 

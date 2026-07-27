@@ -10,6 +10,7 @@
 // Key invariants:
 //   - Runtime package paths resolve from the project/package working directory.
 //   - Development feature toggles default on while fallbacks remain usable.
+//   - Studio's project preview atlas ships with the same deterministic art.
 // Ownership/Lifetime:
 //   - Probe owns temporary decoded Pixels and procedural SpriteFactory objects.
 // Links: zanna.project, xenoscape.runtime.json, assets/manifest.txt,
@@ -43,6 +44,7 @@ func main() {
        File.Exists("assets/art/title-key-art.png") == false or
        File.Exists("assets/art/aria-portrait.png") == false or
        File.Exists("assets/sprites/player-release-sheet.png") == false or
+       File.Exists("assets/sprites/scene-object-preview-atlas.png") == false or
        File.Exists("assets/tiles/biome-tile-atlas.png") == false or
        File.Exists("assets/icons/hud-icon-atlas.png") == false or
        File.Exists("assets/ui/title-menu-panel.png") == false or
@@ -60,11 +62,16 @@ func main() {
         fail("ARIA portrait decode or dimensions"); return;
     }
     var playerAtlas = Pixels.Load("assets/sprites/player-release-sheet.png");
+    var scenePreviewAtlas =
+        Pixels.Load("assets/sprites/scene-object-preview-atlas.png");
     var tileAtlas = Pixels.Load("assets/tiles/biome-tile-atlas.png");
     var iconAtlas = Pixels.Load("assets/icons/hud-icon-atlas.png");
     var uiPanel = Pixels.Load("assets/ui/title-menu-panel.png");
     if playerAtlas == null or playerAtlas.get_Width() != PLAYER_SPRITE_W * 8 or
        playerAtlas.get_Height() != PLAYER_SPRITE_H * 6 or
+       scenePreviewAtlas == null
+       or scenePreviewAtlas.get_Width() != TILE_SIZE * 8
+       or scenePreviewAtlas.get_Height() != TILE_SIZE * 8 or
        tileAtlas == null or tileAtlas.get_Width() != TILE_SIZE * 8 or
        tileAtlas.get_Height() != TILE_SIZE * 8 or
        iconAtlas == null or iconAtlas.get_Width() != 512 or

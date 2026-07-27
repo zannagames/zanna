@@ -21,14 +21,20 @@ zanna \- Zanna project driver, IL tool, and native build frontend
 \fBeval\fR [\fB--lang\fR zia|basic] [\fB--json\fR] [\fB--type\fR] [\fB--il\fR] [\fIcode\fR]
 .br
 .B zanna
+\fBbuild-many\fR \fB--output-dir\fR \fIDIR\fR [\fIoptions\fR] \fIname\fR=\fIproject\fR [...]
+.br
+.B zanna
+\fBasset\fR bake|validate \fImodel\fR [\fIoutput.scene3d\fR] [\fIoptions\fR]
+.br
+.B zanna
 \fBexplain\fR \fIdiagnostic-code\fR [\fB--json\fR] | \fBexplain --list\fR [\fB--json\fR]
 .br
 .B zanna
-\fBpackage\fR [\fItarget\fR] [\fB--target\fR macos|linux|windows|tarball]
+\fBpackage\fR [\fItarget\fR] [\fB--target\fR macos|linux|windows|linux-bundle|rpm|dmg|tarball]
 [\fB--arch\fR arm64|x64] [\fB-o\fR \fIoutput\fR]
 .br
 .B zanna
-\fBinstall-package\fR [\fB--target\fR windows|macos|linux-deb|linux-rpm|linux-bundle|tarball|all|all-available]
+\fBinstall-package\fR [\fB--target\fR windows|macos|linux-deb|linux-rpm|linux-bundle|tarball|all|all-available|macos-dmg]
 [\fB--build-dir\fR \fIDIR\fR|\fB--stage-dir\fR \fIDIR\fR|\fB--verify-only\fR \fIFILE\fR]
 [\fB--arch\fR arm64|x64] [\fB--stage-only\fR] [\fB--keep-stage-dir\fR]
 [\fB--macos-pkg-version\fR \fIVERSION\fR] [\fB--macos-sign-identity\fR \fIIDENTITY\fR]
@@ -59,7 +65,10 @@ zanna \- Zanna project driver, IL tool, and native build frontend
 \fBcodegen\fR arm64 \fIin.il\fR [\fB-S\fR \fIout.s\fR] [\fB-o\fR \fIexe|obj\fR] [\fB--run-native\fR] [\fB--debug-lines\fR]
 .br
 .B zanna
-\fBil-opt\fR \fIin.il\fR \fB-o\fR \fIout.il\fR [\fB--pipeline\fR O0|O1|O2]
+\fBbench\fR \fIfile.il\fR [\fIfile2.il\fR ...] [\fIoptions\fR]
+.br
+.B zanna
+\fBil-opt\fR \fIin.il\fR \fB-o\fR \fIout.il\fR [\fB--pipeline\fR O0|O1|O2|rehab-*]
 [\fB--passes\fR p1,p2] [\fB-print-before\fR] [\fB-print-after\fR] [\fB-verify-each\fR]
 [\fB--pass-stats\fR]
 .br

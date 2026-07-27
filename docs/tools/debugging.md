@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-05-02
+last-verified: 2026-07-26
 ---
 
 # Zanna Debugging Guide
@@ -324,6 +324,7 @@ stable `line N` token used by existing tooling.
 | InvalidOperation | 8 | Invalid operation for current state |
 | RuntimeError | 9 | General runtime error |
 | Interrupt | 10 | External interrupt |
+| NetworkError | 11 | Network I/O failure (connection, DNS, TLS) |
 
 Use `--dump-trap` to ensure trap messages are printed to stderr even when the program handles them internally.
 
@@ -373,16 +374,18 @@ takes a trailing `msg: str` argument that describes the failure:
 | `Trap(msg)` | `void(str)` | Raise a runtime trap with message |
 
 These are exposed as static methods on `Zanna.Core.Diagnostics` and registered in
-`runtime.def:1148-1160`.
+`src/il/runtime/defs/api/core_crypto.def`.
 
 ### Debug Print
 
 There is no `Zanna.Debug` namespace. For quick debugging, route messages through `Zanna.Diagnostics.Log` (see
 above) or directly to the terminal:
 
-```zanna
-Zanna.Diagnostics.Log.Debug("value=" + IntToStr(value))    // Goes through the leveled logger
-Zanna.Terminal.Print("debug: " + msg)          // Prints to stdout
+```zia
+// Goes through the leveled logger
+Zanna.Diagnostics.Log.Debug("value=" + Zanna.Core.Convert.ToStringInt(value));
+// Prints to stdout
+Zanna.Terminal.Print("debug: " + msg);
 ```
 
 `Zanna.Diagnostics.Log.*` writes to stderr (or the configured log sink) and is suppressed when the active level
@@ -456,7 +459,7 @@ zanna run --dump-il program.zia
 
 Prints the IL module immediately after lowering from the AST, before any optimization:
 
-```il
+```text
 === IL after lowering ===
 il 0.3.0
 extern @Zanna.Terminal.SayInt(i64) -> void

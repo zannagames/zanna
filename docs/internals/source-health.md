@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-06-21
+last-verified: 2026-07-26
 ---
 
 # Source Health Guardrails

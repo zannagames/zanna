@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-06-11
+last-verified: 2026-07-26
 ---
 
 # Zanna Arithmetic Semantics Reference
@@ -50,16 +50,19 @@ falls below `INT32_MIN`.
 Native x86-64 and AArch64 lowering preserve those annotations by sign-extending
 operands to the annotated width before checking the computed result.
 
-> **Plain `add`/`sub`/`mul` are verifier-rejected.** The opcodes still exist
-> in `Opcode.def` for legacy lowering, but the IL verifier (see
+> **Plain `add`/`sub`/`mul` are verifier-rejected in frontend IL.** The opcodes
+> exist in `Opcode.def`, but the IL verifier (see
 > `src/il/verify/generated/SpecTables.cpp`) rejects them with messages like
-> *"signed integer add must use iadd.ovf (traps on overflow)"*. Frontends
-> must emit the `.ovf` forms; there is no public "wrapping arithmetic" path
-> at the IL level for signed integers.
+> *"signed integer add must use iadd.ovf (traps on overflow)"* unless it can
+> independently prove the operation cannot overflow. The optimizer demotes
+> checked forms to plain ones behind exactly that proof
+> ([ADR 0026](../adr/0026-range-analysis-demotion-proofs.md)), which is why
+> optimized IL still verifies. Frontends must emit the `.ovf` forms; there is no
+> public "wrapping arithmetic" path at the IL level for signed integers.
 
-Zia uses these checked variants by default (`overflowChecks` is `true`). The
-`--no-overflow-checks` flag is reserved for future use; currently the verifier
-still requires `.ovf` opcodes regardless of the flag.
+Zia uses these checked variants by default. `overflow-checks` is a
+`zanna.project` manifest directive (default `true`), not a command-line flag; the
+verifier requires `.ovf` opcodes in frontend IL regardless of its value.
 
 ### Division
 

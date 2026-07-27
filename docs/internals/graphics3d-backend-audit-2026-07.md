@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-21
+last-verified: 2026-07-26
 ---
 
 # Graphics3D Backend Correctness Audit (July 2026)

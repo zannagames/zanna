@@ -1,7 +1,7 @@
 ---
 status: active
 audience: developers
-last-verified: 2026-05-13
+last-verified: 2026-07-26
 ---
 
 # Adding a New Runtime Class: Complete Guide

@@ -4,7 +4,7 @@ audience: contributors
 last-verified: 2026-07-02
 ---
 
-# ADR-0043: Random Chance Boolean API
+# ADR 0043: Random Chance Boolean API
 
 ## Status
 

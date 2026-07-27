@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-16
+last-verified: 2026-07-26
 ---
 
 # Chapter 24: Concurrency
@@ -211,8 +211,8 @@ func start() {
 | `Monitor.Exit(obj)` | Release the monitor |
 | `Monitor.Wait(obj)` | Release and wait for notification |
 | `Monitor.WaitFor(obj, ms)` | Wait with timeout |
-| `Monitor.Pause(obj)` | Notify one waiting thread |
-| `Monitor.PauseAll(obj)` | Notify all waiting threads |
+| `Monitor.Notify(obj)` | Notify one waiting thread |
+| `Monitor.NotifyAll(obj)` | Notify all waiting threads |
 
 ### Producer-Consumer with Monitor
 
@@ -230,14 +230,14 @@ func producer() {
     for i in 1..=10 {
         Monitor.Enter(lock);
         buffer.Push(i);
-        Monitor.Pause(lock);    // Wake a waiting consumer
+        Monitor.Notify(lock);    // Wake a waiting consumer
         Monitor.Exit(lock);
         Thread.Sleep(50);
     }
 
     Monitor.Enter(lock);
     done = true;
-    Monitor.PauseAll(lock);     // Wake all consumers
+    Monitor.NotifyAll(lock);     // Wake all consumers
     Monitor.Exit(lock);
 }
 

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-14
+last-verified: 2026-07-26
 ---
 
 # Functional & Lazy
@@ -40,9 +40,8 @@ push/pop, insert/remove, and slicing operations.
 | `First()`              | `Object()`              | Returns the first element; traps when empty                                           |
 | `Last()`               | `Object()`              | Returns the last element; traps when empty                                            |
 | `Insert(index, value)` | `Void(Integer, Object)` | Inserts an element at the specified position                                          |
-| `Remove(index)`        | `Object(Integer)`       | Removes and returns the element at the specified position                             |
+| `RemoveAt(index)`      | `Object(Integer)`       | Removes and returns the element at the specified position                             |
 | `Clear()`              | `Void()`                | Removes all elements                                                                  |
-| `Find(value)`          | `Integer(Object)`       | Returns the index of a value, or -1 if not found                                      |
 | `FindOption(value)`    | `Option[Integer](Object)` | Returns `Some(index)` for a matching value, or `None` if not found                 |
 | `Has(value)`           | `Boolean(Object)`       | Returns true if the sequence contains the value                                       |
 | `Reverse()`            | `Void()`                | Reverses the elements in place                                                        |
@@ -51,14 +50,13 @@ push/pop, insert/remove, and slicing operations.
 | `Clone()`              | `Seq()`                 | Returns a shallow copy of the sequence                                                |
 | `Sort()`               | `Void()`                | Stable ascending default sort; see the comparison notes below                         |
 | `SortDesc()`           | `Void()`                | Stable descending default sort; see the comparison notes below                        |
-| `Keep(pred)`           | `Seq(Function)`         | Returns new Seq with elements where predicate returns true                            |
+| `Filter(pred)`         | `Seq(Function)`         | Returns new Seq with elements where predicate returns true                            |
 | `Reject(pred)`         | `Seq(Function)`         | Returns new Seq excluding elements where predicate returns true                       |
-| `Apply(fn)`            | `Seq(Function)`         | Returns new Seq with each element transformed by function                             |
+| `Map(fn)`              | `Seq(Function)`         | Returns new Seq with each element transformed by function                             |
 | `All(pred)`            | `Boolean(Function)`     | Returns true if all elements satisfy predicate (true for empty)                       |
 | `Any(pred)`            | `Boolean(Function)`     | Returns true if any element satisfies predicate (false for empty)                     |
 | `None(pred)`           | `Boolean(Function)`     | Returns true if no elements satisfy predicate (true for empty)                        |
 | `CountWhere(pred)`     | `Integer(Function)`     | Returns count of elements satisfying predicate                                        |
-| `FindWhere(pred)`      | `Object(Function)`      | Returns first element satisfying predicate, or NULL                                   |
 | `FindWhereOption(pred)`| `Option[Object](Function)` | Returns `Some(value)` for the first matching element, including stored nulls, or `None` |
 | `Take(n)`              | `Seq(Integer)`          | Returns new Seq with first n elements                                                 |
 | `Drop(n)`              | `Seq(Integer)`          | Returns new Seq skipping first n elements                                             |
@@ -71,7 +69,7 @@ push/pop, insert/remove, and slicing operations.
 | `ToStack()`            | `Stack()`                 | Returns elements as a new Stack                                                       |
 | `ToQueue()`            | `Queue()`                 | Returns elements as a new Queue                                                       |
 | `ToDeque()`            | `Deque()`                 | Returns elements as a new Deque                                                       |
-| `ToBag()`              | `StringSet()`                   | Returns raw or boxed string elements as a new StringSet                                      |
+| `ToStringSet()`        | `StringSet()`           | Returns raw or boxed string elements as a new StringSet                               |
 
 ### Notes
 
@@ -79,21 +77,21 @@ push/pop, insert/remove, and slicing operations.
 - `Seq.New(size)` creates a sequence with `Count == size` and null-initialized slots. Use `Seq.WithCapacity(cap)` to reserve capacity without changing the count.
 - Negative sizes trap; capacity values below 1 are clamped to one slot.
 - The lower-level C helpers `rt_seq_new` and `rt_seq_with_capacity` still create borrowed-element sequences for internal runtime views; ownership mode must be selected while the sequence is empty.
-- `Pop()` and `Remove(index)` return an owned object reference. When the sequence owns elements, the removed element's retained reference is transferred to the caller.
-- `Get()`, `Peek()`, `First()`, `Last()`, and `FindWhere()` return borrowed references. Keep the
+- `Pop()` and `RemoveAt(index)` return an owned object reference. When the sequence owns elements, the removed element's retained reference is transferred to the caller.
+- `Get()`, `Peek()`, `First()`, `Last()`, and `FindWhereOption()` return borrowed references. Keep the
   sequence (and the selected entry) alive while using them. `GetStr()` instead returns an owned
   string handle.
-- `Has()` and `Find()` use the same boxed-value equality as List: boxed integers, booleans, floats,
+- `Has()` and `FindOption()` use the same boxed-value equality as List: boxed integers, booleans, floats,
   and strings compare by value; other objects compare by identity. Queue, Stack, Deque, and Ring
   membership uses this same relation.
-- `Slice()`, `Keep()`, `Reject()`, `Take()`, and `TakeWhile()` preserve owned-element mode in the returned sequence when the source sequence owns its elements; `Apply()` always returns an owning output sequence.
-- `ToBag()` accepts raw runtime strings and boxed strings; any other element type traps.
+- `Slice()`, `Filter()`, `Reject()`, `Take()`, and `TakeWhile()` preserve owned-element mode in the returned sequence when the source sequence owns its elements; `Map()` always returns an owning output sequence.
+- `ToStringSet()` accepts raw runtime strings and boxed strings; any other element type traps.
 - `Push`, `PushAll`, and capacity growth trap on length or allocation overflow instead of wrapping.
 - The default Seq comparator matches List: raw and boxed strings order lexicographically and
   boxed integers/booleans/floats numerically, so ordinary Zia/BASIC sequences sort
   alphabetically. Elements rank by type class first (null < numeric < string < other), which
   keeps the order total even for mixed-type sequences.
-- Prefer `FindOption()` and `FindWhereOption()` for new code. `Find()` and `FindWhere()` remain available for compatibility with existing sentinel/null checks.
+- `FindOption()` and `FindWhereOption()` are the only lookup accessors; both report a miss as `None` rather than a sentinel value.
 
 ### Zia Example
 
@@ -265,12 +263,12 @@ DIM evens AS Zanna.Collections.Seq
 evens = Zanna.Collections.Seq.Filter(numbers, ADDRESSOF IsEven)
 
 DIM doubled AS Zanna.Collections.Seq
-doubled = Zanna.Collections.Seq.Apply(numbers, ADDRESSOF DoubleValue)
+doubled = Zanna.Collections.Seq.Map(numbers, ADDRESSOF DoubleValue)
 
 DIM evenCount AS INTEGER = Zanna.Collections.Seq.CountWhere(numbers, ADDRESSOF IsEven)
 
-DIM firstEvenBox AS OBJECT = Zanna.Collections.Seq.FindWhere(numbers, ADDRESSOF IsEven)
-DIM firstEven AS INTEGER = Zanna.Core.Box.ToI64(firstEvenBox)
+DIM firstEvenOpt AS OBJECT = Zanna.Collections.Seq.FindWhereOption(numbers, ADDRESSOF IsEven)
+DIM firstEven AS INTEGER = Zanna.Core.Box.ToI64(Zanna.Option.Unwrap(firstEvenOpt))
 
 DIM sumBox AS OBJECT
 sumBox = Zanna.Collections.Seq.Fold(numbers, Zanna.Core.Box.I64(0), ADDRESSOF AddValues)
@@ -283,8 +281,8 @@ DIM sum AS INTEGER = Zanna.Core.Box.ToI64(sumBox)            ' 55
 - **FIFO queues:** Use the dedicated `Zanna.Collections.Queue`; `Seq.Pop()` always removes the last element
 - **Dynamic Array:** Use `Get()`/`Set()` for random access
 - **Slicing:** Use `Slice()` to extract sub-sequences
-- **Filtering:** Use `Keep()` and `Reject()` to filter by condition
-- **Transformation:** Use `Apply()` to transform all elements
+- **Filtering:** Use `Filter()` and `Reject()` to filter by condition
+- **Transformation:** Use `Map()` to transform all elements
 - **Queries:** Use `All()`, `Any()`, `None()` for predicate checks
 - **Aggregation:** Use `Fold()` to reduce to a single value
 
@@ -338,10 +336,8 @@ sources.
 | Method         | Signature                    | Description                                            |
 |----------------|------------------------------|--------------------------------------------------------|
 | `ToSeq()`      | `Seq()`                      | Collect all elements into a Seq (may not terminate!)   |
-| `ToSeqN(n)`    | `Seq(Integer)`               | Collect at most n elements into a Seq                  |
 | `Count()`      | `Integer()`                  | Count all elements (may not terminate!)                |
 | `Find(pred)`   | `Object(Function)`           | Find first matching element; null if not found         |
-| `FindOption(pred)` | `Option[Object](Function)` | Find first matching element as `Some(value)`, or `None` |
 | `Any(pred)`    | `Boolean(Function)`          | True if any element matches                            |
 | `All(pred)`    | `Boolean(Function)`          | True if all elements match (may not terminate!)        |
 
@@ -420,8 +416,8 @@ PRINT firstTwo.Count                                       ' 2
 - **Shared cursors:** A transformation retains its source LazySeq object, but it does not clone its
   cursor. Consuming a derived pipeline also advances the original source and any sibling pipeline.
   Concatenating a source with itself therefore does not replay it a second time.
-- **Ownership:** `Repeat` retains its value for the node's lifetime, and `ToSeq()` /
-  `ToSeqN()` return owning Seqs, so collected values are independently long-lived. `Next()` /
+- **Ownership:** `Repeat` retains its value for the node's lifetime, and `ToSeq()`
+  returns an owning Seq, so collected values are independently long-lived. `Next()` /
   `Peek()` still return borrowed references bounded by the source's lifetime.
 - **Null ambiguity:** `Repeat(null, count)` is accepted, and `Next()` / `Peek()` also use null
   to report exhaustion. Use `NextOption()` / `PeekOption()` when null is a legitimate element:
@@ -439,7 +435,7 @@ PRINT firstTwo.Count                                       ' 2
   elements the filter may inspect. An infinite source whose predicate never matches still does not
   yield or terminate.
 - **Language callbacks:** The same VM callback limitation described for `Seq` applies to
-  `Map()`, `Filter()`, `TakeWhile()`, `DropWhile()`, `Find()`, `FindOption()`, `Any()`, and `All()`.
+  `Map()`, `Filter()`, `TakeWhile()`, `DropWhile()`, `Find()`, `Any()`, and `All()`.
 - **Explicit receiver safety:** Qualified calls such as
   `Zanna.Functional.LazySeq.Reset(value)` validate the receiver's class and trap with
   `LazySeq: invalid LazySeq object` when passed anything that is not a LazySeq.

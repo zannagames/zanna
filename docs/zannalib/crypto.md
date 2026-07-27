@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-15
+last-verified: 2026-07-26
 ---
 
 # Cryptography
@@ -15,13 +15,13 @@ last-verified: 2026-07-15
 - [Zanna.Crypto.Aes](#zannacryptoaes)
 - [Zanna.Crypto.Cipher](#zannacryptocipher)
 - [Zanna.Crypto.Hash](#zannacryptohash)
-- [Zanna.Crypto.Legacy.Aes](#zannacryptolegacyaes)
 - [Zanna.Crypto.Legacy.Hash](#zannacryptolegacyhash)
+- [Zanna.Crypto.Legacy.Aes](#zannacryptolegacyaes)
 - [Zanna.Crypto.KeyDerive](#zannacryptokeyderive)
-- [Zanna.Crypto.Compliance](#zannacryptomodule)
-- [Zanna.Crypto.Password](#zannacryptopassword)
-- [Zanna.Crypto.SecureRandom](#zannacryptorand)
+- [Zanna.Crypto.Compliance](#zannacryptocompliance)
+- [Zanna.Crypto.SecureRandom](#zannacryptosecurerandom)
 - [Zanna.Crypto.Tls](#zannacryptotls)
+- [Zanna.Crypto.Password](#zannacryptopassword)
 
 ---
 
@@ -47,7 +47,7 @@ AES utilities: authenticated AES-128-GCM/AES-256-GCM for `Bytes` and password-en
 ### Notes
 
 - `EncryptAuth`/`DecryptAuth` accept a 16-byte AES-128 key or a 32-byte AES-256 key and bind the `[magic(4)][nonce(12)]` header plus caller-provided AAD into the GCM tag. New robust code should prefer `DecryptAuthResult` or `TryDecryptAuth` so wrong keys, wrong AAD, malformed frames, and modified ciphertext are explicit values.
-- `Encrypt`/`Decrypt` remain as AES-CBC compatibility helpers and are also available as `Zanna.Crypto.Legacy.Aes.EncryptCBC` and `DecryptCBC`. CBC ciphertext is not authenticated; prefer `EncryptAuth`, `EncryptStr`, or `Zanna.Crypto.Cipher`.
+- `Encrypt`/`Decrypt` remain as AES-CBC compatibility helpers and are also available as `Zanna.Crypto.Legacy.Aes.EncryptCBC` and `DecryptCbc`. CBC ciphertext is not authenticated; prefer `EncryptAuth`, `EncryptStr`, or `Zanna.Crypto.Cipher`.
 - `EncryptStr` rejects empty passwords, derives an AES-128 key from the password using PBKDF2-HMAC-SHA256 with a random salt and a 300,000-iteration default, and authenticates its header as AAD
 - `EncryptStr` output format is `[magic(4)][iterations(4)][salt(16)][nonce(12)][ciphertext][tag(16)]`
 - `DecryptStr` can read older `[IV(16)][AES-CBC ciphertext]` payloads, dispatching on the first
@@ -132,18 +132,18 @@ High-level symmetric encryption with automatic key derivation. Compatibility mod
 | `Decrypt(data, password)`        | `Bytes(Bytes, String)`      | Decrypt password-encrypted data                       |
 | `DecryptResult(data, password)`  | `Result(Bytes)`             | Decrypt password-encrypted data with diagnostic failure |
 | `TryDecrypt(data, password)`     | `Option(Bytes)`             | Decrypt password-encrypted data without diagnostics   |
-| `EncryptAAD(data, password, aad)`| `Bytes(Bytes,String,Bytes)` | Encrypt and bind caller-provided authenticated data   |
-| `DecryptAAD(data, password, aad)`| `Bytes(Bytes,String,Bytes)` | Decrypt and verify caller-provided authenticated data |
-| `DecryptAADResult(data, password, aad)` | `Result(Bytes)`       | Decrypt AAD-bound data with diagnostic failure        |
-| `TryDecryptAAD(data, password, aad)` | `Option(Bytes)`          | Decrypt AAD-bound data without diagnostics            |
+| `EncryptAad(data, password, aad)`| `Bytes(Bytes,String,Bytes)` | Encrypt and bind caller-provided authenticated data   |
+| `DecryptAad(data, password, aad)`| `Bytes(Bytes,String,Bytes)` | Decrypt and verify caller-provided authenticated data |
+| `DecryptAadResult(data, password, aad)` | `Result(Bytes)`       | Decrypt AAD-bound data with diagnostic failure        |
+| `TryDecryptAad(data, password, aad)` | `Option(Bytes)`          | Decrypt AAD-bound data without diagnostics            |
 | `EncryptWithKey(data, key)`      | `Bytes(Bytes, Bytes)`       | Encrypt data with a 32-byte key                       |
 | `DecryptWithKey(data, key)`      | `Bytes(Bytes, Bytes)`       | Decrypt key-encrypted data                            |
 | `DecryptWithKeyResult(data, key)`| `Result(Bytes)`             | Decrypt key-encrypted data with diagnostic failure    |
 | `TryDecryptWithKey(data, key)`   | `Option(Bytes)`             | Decrypt key-encrypted data without diagnostics        |
-| `EncryptWithKeyAAD(data,key,aad)`| `Bytes(Bytes,Bytes,Bytes)`  | Encrypt with a key and authenticated data             |
-| `DecryptWithKeyAAD(data,key,aad)`| `Bytes(Bytes,Bytes,Bytes)`  | Decrypt with a key and authenticated data             |
-| `DecryptWithKeyAADResult(data,key,aad)` | `Result(Bytes)`      | Decrypt key/AAD data with diagnostic failure          |
-| `TryDecryptWithKeyAAD(data,key,aad)` | `Option(Bytes)`         | Decrypt key/AAD data without diagnostics              |
+| `EncryptWithKeyAad(data,key,aad)`| `Bytes(Bytes,Bytes,Bytes)`  | Encrypt with a key and authenticated data             |
+| `DecryptWithKeyAad(data,key,aad)`| `Bytes(Bytes,Bytes,Bytes)`  | Decrypt with a key and authenticated data             |
+| `DecryptWithKeyAadResult(data,key,aad)` | `Result(Bytes)`      | Decrypt key/AAD data with diagnostic failure          |
+| `TryDecryptWithKeyAad(data,key,aad)` | `Option(Bytes)`         | Decrypt key/AAD data without diagnostics              |
 
 ### Key Management Methods
 
@@ -187,7 +187,7 @@ Approved-mode key encryption produces:
 - **Authentication Tag:** 128 bits (16 bytes)
 - **Key Derivation:** PBKDF2-HMAC-SHA256 with random 16-byte salt and a 300,000-iteration default
 - Header bytes and caller-provided AAD are authenticated by the AEAD tag
-- Decryption verifies that the AEAD backend returned exactly the expected plaintext length. New robust code should prefer `DecryptResult`/`DecryptAADResult`/`DecryptWithKeyResult`/`DecryptWithKeyAADResult`, or the `TryDecrypt*` forms when diagnostics are intentionally discarded.
+- Decryption verifies that the AEAD backend returned exactly the expected plaintext length. New robust code should prefer `DecryptResult`/`DecryptAadResult`/`DecryptWithKeyResult`/`DecryptWithKeyAadResult`, or the `TryDecrypt*` forms when diagnostics are intentionally discarded.
 - `Decrypt()`/`DecryptWithKey()` read older unversioned payloads; new payloads use `VCP2`/`VCK2`.
   A legacy frame's random salt/nonce can coincidentally equal a current magic prefix, but in
   compatibility mode the decryptor falls back to the legacy interpretation whenever the
@@ -358,11 +358,11 @@ Modern hash and HMAC helpers for strings and binary data. Security-sensitive cod
 
 | Method               | Signature         | Description                              |
 |----------------------|-------------------|------------------------------------------|
-| `SHA256(str)`        | `String(String)`  | Compute SHA256 hash of a string          |
-| `SHA256Bytes(bytes)` | `String(Bytes)`   | Compute SHA256 hash of a Bytes object    |
+| `Sha256(str)`        | `String(String)`  | Compute SHA256 hash of a string          |
+| `Sha256Bytes(bytes)` | `String(Bytes)`   | Compute SHA256 hash of a Bytes object    |
 | `NonCryptoFast(str)`          | `Integer(String)` | Compute keyed SipHash-2-4 of a string    |
-| `FastBytes(data)`    | `Integer(Bytes)`  | Compute keyed SipHash-2-4 of Bytes       |
-| `FastInt(value)`     | `Integer(Integer)`| Compute keyed SipHash-2-4 of an integer  |
+| `NonCryptoFastBytes(data)` | `Integer(Bytes)`  | Compute keyed SipHash-2-4 of Bytes  |
+| `NonCryptoFastInt(value)`  | `Integer(Integer)`| Compute keyed SipHash-2-4 of an integer |
 | `ConstantTimeEquals(a, b)` | `Boolean(String,String)` | Timing-safe equality for digests/MACs |
 | `ConstantTimeEqualsBytes(a, b)` | `Boolean(Bytes,Bytes)` | Timing-safe equality for binary tags |
 
@@ -370,8 +370,8 @@ Modern hash and HMAC helpers for strings and binary data. Security-sensitive cod
 
 | Method                     | Signature               | Description                         |
 |----------------------------|-------------------------|-------------------------------------|
-| `HmacSHA256(key, data)`    | `String(String,String)` | HMAC-SHA256 with string key and data|
-| `HmacSHA256Bytes(key, data)`| `String(Bytes,Bytes)`  | HMAC-SHA256 with Bytes key and data |
+| `HmacSha256(key, data)`    | `String(String,String)` | HMAC-SHA256 with string key and data|
+| `HmacSha256Bytes(key, data)`| `String(Bytes,Bytes)`  | HMAC-SHA256 with Bytes key and data |
 
 ### Hash Output Formats
 
@@ -389,7 +389,7 @@ empty byte sequence.
 
 ### Fast Hash Methods
 
-The `Fast`, `FastBytes`, and `FastInt` methods use SipHash-2-4 with a per-process CSPRNG seed. These
+The `NonCryptoFast`, `NonCryptoFastBytes`, and `NonCryptoFastInt` methods use SipHash-2-4 with a per-process CSPRNG seed. These
 are **non-cryptographic** hashes for hash-table and partitioning use. They are not stable across
 process launches and are not suitable for signatures, passwords, MACs, or persistent content IDs.
 Approved mode disables them. The seed is initialized exactly once with full CSPRNG entropy; if the
@@ -504,11 +504,11 @@ Compatibility hashes, checksums, and legacy HMACs. These names are intentionally
 
 | Method | Signature | Use |
 |--------|-----------|-----|
-| `CRC32(str)` / `CRC32Bytes(bytes)` | `Integer(...)` | File/archive checksum and accidental-corruption detection only |
-| `MD5(str)` / `MD5Bytes(bytes)` | `String(...)` | Legacy digest formats only |
-| `SHA1(str)` / `SHA1Bytes(bytes)` | `String(...)` | Legacy digest formats only |
-| `HmacMD5(...)` / `HmacMD5Bytes(...)` | `String(...)` | Legacy protocol compatibility only |
-| `HmacSHA1(...)` / `HmacSHA1Bytes(...)` | `String(...)` | Legacy protocol compatibility only |
+| `Crc32(str)` / `CRC32Bytes(bytes)` | `Integer(...)` | File/archive checksum and accidental-corruption detection only |
+| `Md5(str)` / `MD5Bytes(bytes)` | `String(...)` | Legacy digest formats only |
+| `Sha1(str)` / `SHA1Bytes(bytes)` | `String(...)` | Legacy digest formats only |
+| `HmacMd5(...)` / `HmacMD5Bytes(...)` | `String(...)` | Legacy protocol compatibility only |
+| `HmacSha1(...)` / `HmacSHA1Bytes(...)` | `String(...)` | Legacy protocol compatibility only |
 
 `Zanna.Crypto.Hash` still accepts the old names for compatibility, but new docs and examples use `Legacy.Hash` when an old algorithm is deliberate.
 
@@ -520,10 +520,10 @@ AES-CBC compatibility helpers. CBC mode is not authenticated and must not be use
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `EncryptCBC(data, key, iv)` | `Bytes(Bytes,Bytes,Bytes)` | Encrypt with AES-CBC and PKCS7 padding |
-| `DecryptCBC(data, key, iv)` | `Bytes(Bytes,Bytes,Bytes)` | Compatibility raw decrypt; may return `NULL` or trap |
-| `DecryptCBCResult(data, key, iv)` | `Result(Bytes)` | AES-CBC decrypt with diagnostic failure |
-| `TryDecryptCBC(data, key, iv)` | `Option(Bytes)` | AES-CBC decrypt without diagnostics |
+| `EncryptCbc(data, key, iv)` | `Bytes(Bytes,Bytes,Bytes)` | Encrypt with AES-CBC and PKCS7 padding |
+| `DecryptCbc(data, key, iv)` | `Bytes(Bytes,Bytes,Bytes)` | Compatibility raw decrypt; may return `NULL` or trap |
+| `DecryptCbcResult(data, key, iv)` | `Result(Bytes)` | AES-CBC decrypt with diagnostic failure |
+| `TryDecryptCbc(data, key, iv)` | `Option(Bytes)` | AES-CBC decrypt without diagnostics |
 
 The old `Zanna.Crypto.Aes.Encrypt`, `Decrypt`, `DecryptResult`, and `TryDecrypt` names remain as compatibility aliases.
 
@@ -544,10 +544,10 @@ Key derivation functions for deriving cryptographic keys from passwords.
 
 | Method                                      | Signature                            | Description                        |
 |---------------------------------------------|--------------------------------------|------------------------------------|
-| `Pbkdf2SHA256(password, salt, iterations, keyLen)` | `Bytes(String,Bytes,Integer,Integer)` | Derive key using PBKDF2-HMAC-SHA256 |
-| `Pbkdf2SHA256Str(password, salt, iterations, keyLen)` | `String(String,Bytes,Integer,Integer)` | Same but returns hex string |
-| `ScryptSHA256(password, salt, n, r, p, keyLen)` | `Bytes(String,Bytes,Integer,Integer,Integer,Integer)` | Derive key using memory-hard scrypt |
-| `ScryptSHA256Str(password, salt, n, r, p, keyLen)` | `String(String,Bytes,Integer,Integer,Integer,Integer)` | Same but returns hex string |
+| `Pbkdf2Sha256(password, salt, iterations, keyLen)` | `Bytes(String,Bytes,Integer,Integer)` | Derive key using PBKDF2-HMAC-SHA256 |
+| `Pbkdf2Sha256Encoded(password, salt, iterations, keyLen)` | `String(String,Bytes,Integer,Integer)` | Same but returns hex string |
+| `Scrypt(password, salt, n, r, p, keyLen)` | `Bytes(String,Bytes,Integer,Integer,Integer,Integer)` | Derive key using memory-hard scrypt |
+| `ScryptEncoded(password, salt, n, r, p, keyLen)` | `String(String,Bytes,Integer,Integer,Integer,Integer)` | Same but returns hex string |
 
 ### Parameters
 
@@ -850,7 +850,6 @@ TLS (Transport Layer Security) client for encrypted TCP connections. Uses TLS 1.
 | Method    | Returns | Description                                       |
 |-----------|---------|---------------------------------------------------|
 | `Close()` | void    | Send `close_notify`, briefly drain the peer response, and close the socket |
-| `Error()` | String  | Compatibility diagnostic for an existing TLS handle |
 
 ### TLS Implementation
 

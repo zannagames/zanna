@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-23
+last-verified: 2026-07-26
 ---
 
 # Platform Behavioral Differences
@@ -23,23 +23,21 @@ For a contributor-oriented checklist of which source files to modify when adding
 | Networking (TCP/UDP/HTTP) | ✅ Full | ✅ Full | ✅ Full |
 | TLS/SSL | ✅ Full (Schannel + in-tree handshake) | ✅ Full (in-tree TLS/X.509 runtime) | ✅ Full (in-tree TLS/X.509 runtime) |
 | Threading | ✅ Full | ✅ Full | ✅ Full |
-| Graphics | ✅ Full (GDI) | ✅ Full (Cocoa) | ⚠️ Partial [2] |
+| Graphics | ✅ Full (Win32 GDI) | ✅ Full (Cocoa) | ✅ Full (Wayland + X11) [2] |
 | Audio | ✅ Full (WASAPI) | ✅ Full (AudioQueue) | ⚠️ Partial [3] |
-| Game Controllers | ✅ Full (XInput) | ✅ Full (IOKit HID) | ⚠️ Partial [4] |
-| Native Codegen (x86-64) | ✅ Full | ❌ Not supported [8] | ✅ Full |
+| Game Controllers | ✅ Full (XInput) | ⚠️ Partial [4] (IOKit HID) | ✅ Full (evdev) |
+| Native Codegen (x86-64) | ✅ Full | ❌ Not supported [5] | ✅ Full |
 | Native Codegen (AArch64) | ⚠️ Partial [6] | ✅ Full | ✅ Full |
 | Process Execution | ✅ Full | ✅ Full | ✅ Full |
 
 **Footnotes:**
 
-1. Windows directory operations limited to `MAX_PATH` (260 characters). No Unicode long-path support.
-2. Requires `libx11-dev` at build time. If missing, graphics library is silently omitted.
-3. Requires `libasound2-dev` at build time. If missing, audio library is silently omitted.
-4. Linux evdev backend lacks vibration/rumble support.
-5. ~~x86-64 native codegen emits SysV ABI only.~~ **Fixed:** Both System V AMD64 and Windows x64 ABIs are implemented.
-6. AArch64 Windows PE/COFF target is defined but not tested in CI.
-7. ~~Resolved.~~ Windows test infrastructure uses `CreateProcess` self-relaunch + Job Object instead of `fork()`.
-8. macOS is supported on Apple Silicon (ARM64) only. Intel (x86-64) macOS is not a supported target: the native linker does not implement Mach-O x86-64 dynamic imports, and the x86-64 native-link backend is not built on macOS hosts.
+1. Windows directory operations are limited to `MAX_PATH` (260 characters). No Unicode long-path support.
+2. The default Linux build (`ZANNA_GRAPHICS_BACKEND=AUTO`) always includes the native Wayland adapter, which resolves the Wayland, xkbcommon, cursor, and EGL ABIs at runtime and needs no development packages. The X11 fallback adapter is added only when `find_package(X11)` succeeds at configure time; without it, `AUTO` is a valid Wayland-only build.
+3. Linux audio requires ALSA development headers (`libasound2-dev` / `alsa-lib-devel`) at configure time. Without them CMake reports `ZannaAUD: disabled` and the audio library is omitted; `-DZANNA_AUDIO_MODE=REQUIRE` turns that into a configure error instead.
+4. macOS gamepad vibration is a no-op. The generic IOKit HID interface exposes no force-feedback output reports, so rumble would require vendor-specific extensions. Buttons, axes, and hot-plug detection are fully supported.
+5. macOS is supported on Apple Silicon (ARM64) only. Intel (x86-64) macOS is not a supported target: the native linker does not implement Mach-O x86-64 dynamic imports, and the x86-64 native-link backend is not built on macOS hosts.
+6. The AArch64 Windows PE/COFF target is defined but not exercised in CI.
 
 ---
 
@@ -155,17 +153,22 @@ All three backends validate server certificates against a trusted root source. W
 |--------|---------|-------|-------|
 | Backend | XInput API | IOKit HID Manager | evdev (`/dev/input/event*`) |
 | Button mapping | `XINPUT_GAMEPAD_*` constants | HID element parsing via `IOHIDDeviceGetValue` | Raw `BTN_*` / `ABS_*` event codes |
-| Vibration/Rumble | ✅ `XInputSetState()` | ✅ `IOHIDDeviceSetReport()` | ❌ Not supported |
+| Vibration/Rumble | ✅ `XInputSetState()` | ❌ Not supported | ✅ `FF_RUMBLE` effect via `EVIOCSFF` |
 | Hot-plug detection | Automatic via XInput polling | `IOHIDManagerRegisterDeviceMatchingCallback` | Manual `/dev/input/` scanning |
 
-**User-visible difference:** Vibration is not available on Linux. Calling rumble functions on Linux is a no-op.
+**User-visible difference:** Vibration is unavailable on macOS — the generic IOKit
+HID interface exposes no force-feedback output reports, so `Zanna.Input.Pad`
+rumble calls are accepted and ignored. Windows drives both motors through
+`XInputSetState`; Linux uploads an `FF_RUMBLE` effect whose strong and weak
+magnitudes map to the left and right motors, and devices that do not advertise
+`FF_RUMBLE` are also a no-op.
 
 ### 1.8 Graphics
 
 | Aspect | Windows | macOS | Linux |
 |--------|---------|-------|-------|
 | Backend | Win32 GDI (DIB sections + `BitBlt`) | Cocoa (`NSWindow` + `NSView` + `CGImage`) | Native Wayland with runtime X11 fallback when available |
-| Pixel format | BGRA via DIB section | BGRA via `CGBitmapContextCreate` | BGRA buffer → XImage |
+| Pixel format | BGRA via DIB section | BGRA via `CGBitmapContextCreate` | BGRA buffer → `wl_shm` XRGB (Wayland) or XImage (X11) |
 | Keyboard input | `VK_*` virtual key codes | `NSEvent` key codes | `XLookupKeysym()` |
 | Timer source | `QueryPerformanceCounter` | `mach_absolute_time` | `clock_gettime(CLOCK_MONOTONIC)` |
 | Build dependency | Built-in (`user32`, `gdi32`) | Built-in (`-framework Cocoa`) | Wayland loaded dynamically; optional X11 fallback uses development headers |
@@ -182,9 +185,13 @@ error rather than selecting a backend implicitly.
 | Backend | WASAPI via COM (`IAudioClient`) | AudioQueue (`AudioQueueRef`) | ALSA (`snd_pcm_t`) |
 | Threading model | Dedicated `HANDLE` thread + `WaitForMultipleObjects` | AudioQueue callback (OS-managed thread) | Dedicated `pthread_t` + mutex/cond |
 | Synchronization | `CRITICAL_SECTION` | AudioQueue internal | `pthread_mutex_t` + `pthread_cond_t` |
-| Build dependency | Built-in (`ole32`) | Built-in (`-framework AudioToolbox`) | Requires `libasound2-dev` at build time |
+| Build dependency | Built-in (`ole32`) | Built-in (`-framework AudioToolbox`) | Requires ALSA development headers at configure time |
 
-**User-visible difference:** Same as graphics — on Linux, if ALSA development headers are not installed, the audio library is omitted and audio functions are unavailable.
+**User-visible difference:** Unlike graphics — where the Wayland adapter is always
+built — Linux audio is a genuine configure-time dependency. If ALSA development
+headers are absent, CMake prints `ZannaAUD: disabled`, the audio library is
+omitted, and audio functions are unavailable at runtime. Configure with
+`-DZANNA_AUDIO_MODE=REQUIRE` to turn a missing ALSA into a hard configure error.
 
 ### 1.10 Numeric Parsing (Locale)
 
@@ -252,7 +259,7 @@ The native codegen pipeline uses the built-in native linker to produce the final
 | Aspect | Windows | macOS / Linux |
 |--------|---------|---------------|
 | Library naming | `zanna_rt_core.lib` | `libzanna_rt_core.a` |
-| Graphics library | `zannagfx.lib` + `user32` + `gdi32` | `libzannagfx.a` + `-framework Cocoa` (macOS) or `-lX11` (Linux); GUI image loading also imports `ImageIO.framework` on macOS |
+| Graphics library | `zannagfx.lib` + `user32` + `gdi32` | `libzannagfx.a` + `-framework Cocoa` (macOS); on Linux `libX11.so.6` is added to the import plan only when the program actually references X11 symbols, and the Wayland adapter is resolved at runtime with no import entry. GUI image loading also imports `ImageIO.framework` on macOS |
 | Audio library | `zannaaud.lib` + `ole32` | `libzannaaud.a` + `-framework AudioToolbox` (macOS) or `-lasound` (Linux) |
 | Network library | `ws2_32.lib` | (system sockets, no extra lib) |
 | Final link driver | Native PE writer + import metadata | Native Mach-O / ELF writers + import metadata |
@@ -406,7 +413,10 @@ These are known platform-specific limitations, tracked across the project.
 | ID | Category | Description | Severity |
 |----|----------|-------------|----------|
 | GAP-2 | Filesystem | Windows `MAX_PATH` (260 char) limit on directory operations | Medium |
-| ~~GAP-3~~ | ~~Process~~ | ~~Resolved: Windows tests use CreateProcess self-relaunch + Job Object~~ | ~~Resolved~~ |
-| ~~GAP-4~~ | ~~Codegen~~ | ~~Resolved: x86-64 native codegen now supports both SysV and Win64 ABIs~~ | ~~Resolved~~ |
-| GAP-5 | Graphics | Linux requires X11 dev headers; configure fails in `REQUIRE` mode and reports explicitly in `AUTO` mode | Low |
-| GAP-6 | Audio | Linux requires ALSA dev headers; configure fails in `REQUIRE` mode and reports explicitly in `AUTO` mode | Low |
+| GAP-5 | Graphics | The Linux X11 fallback adapter needs X11 development headers at configure time. `ZANNA_GRAPHICS_BACKEND=X11` fails without them; the default `AUTO` build reports the omission and continues Wayland-only | Low |
+| GAP-6 | Audio | Linux audio needs ALSA development headers at configure time. `ZANNA_AUDIO_MODE=REQUIRE` fails without them; `AUTO` reports the omission and builds without audio | Low |
+| GAP-7 | Input | macOS gamepads have no vibration path through the generic IOKit HID interface | Low |
+
+GAP-3 and GAP-4 are closed: Windows test infrastructure uses `CreateProcess`
+self-relaunch plus a Job Object rather than `fork()`, and the x86-64 backend
+implements both the System V AMD64 and Windows x64 ABIs.

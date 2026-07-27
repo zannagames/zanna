@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-05-17
+last-verified: 2026-07-26
 ---
 
 # Scene Graph
@@ -106,10 +106,10 @@ DO WHILE NOT canvas.ShouldClose
     canvas.Clear(0)
 
     ' Move player
-    IF Zanna.Input.Keyboard.Held(262) THEN playerX = playerX + 5
-    IF Zanna.Input.Keyboard.Held(263) THEN playerX = playerX - 5
-    IF Zanna.Input.Keyboard.Held(265) THEN playerY = playerY - 5
-    IF Zanna.Input.Keyboard.Held(264) THEN playerY = playerY + 5
+    IF Zanna.Input.Keyboard.IsDown(Zanna.Input.Key.Right) THEN playerX = playerX + 5
+    IF Zanna.Input.Keyboard.IsDown(Zanna.Input.Key.Left) THEN playerX = playerX - 5
+    IF Zanna.Input.Keyboard.IsDown(Zanna.Input.Key.Up) THEN playerY = playerY - 5
+    IF Zanna.Input.Keyboard.IsDown(Zanna.Input.Key.Down) THEN playerY = playerY + 5
 
     ' Camera follows player
     camera.Follow(playerX, playerY)
@@ -131,8 +131,8 @@ DO WHILE NOT canvas.ShouldClose
     canvas.Text(10, 10, "World: " + STR$(worldX) + "," + STR$(worldY), 16777215)
 
     ' Zoom with +/-
-    IF Zanna.Input.Keyboard.Pressed(61) THEN camera.Zoom = camera.Zoom + 10
-    IF Zanna.Input.Keyboard.Pressed(45) THEN camera.Zoom = camera.Zoom - 10
+    IF Zanna.Input.Keyboard.WasPressed(Zanna.Input.Key.Equals) THEN camera.Zoom = camera.Zoom + 10
+    IF Zanna.Input.Keyboard.WasPressed(Zanna.Input.Key.Minus) THEN camera.Zoom = camera.Zoom - 10
 
     canvas.Flip()
 LOOP
@@ -487,7 +487,7 @@ Batched sprite rendering for improved performance when drawing many sprites.
 **Type:** Instance (obj)
 **Constructor:** `NEW Zanna.Graphics.SpriteBatch(capacity)`
 
-Creates a sprite batch with the given initial capacity (use 0 for default). SpriteBatch records draw calls, optionally sorts them by depth, applies shared tint/alpha state, and flushes them during `End(canvas)`. `End(canvas)` also clears the recorded batch so the same instance can be reused next frame. Use `Draw`/`DrawEx` for `Sprite` objects and `DrawPixels`/`DrawRegion` for raw `Pixels` buffers. `DrawPixels` preserves per-pixel alpha, so transparent sprites and overlays blend like `Canvas.BlitAlpha`. `DrawRegion` draws its extracted region at the requested destination top-left; any temporary transform or color copy does not recenter the final blit. When depth sorting is enabled, items with the same depth still preserve their original submission order. Scale values below `1` clamp to `1` for both sprite and raw-pixels batch entries. `Color.RGBA` tint values preserve their explicit alpha channel.
+Creates a sprite batch with the given initial capacity (use 0 for default). SpriteBatch records draw calls, optionally sorts them by depth, applies shared tint/alpha state, and flushes them during `End(canvas)`. `End(canvas)` also clears the recorded batch so the same instance can be reused next frame. Use the `Draw` overloads for `Sprite` objects and `DrawPixels`/`DrawRegion` for raw `Pixels` buffers. `DrawPixels` preserves per-pixel alpha, so transparent sprites and overlays blend like `Canvas.BlitAlpha`. `DrawRegion` draws its extracted region at the requested destination top-left; any temporary transform or color copy does not recenter the final blit. When depth sorting is enabled, items with the same depth still preserve their original submission order. Scale values below `1` clamp to `1` for both sprite and raw-pixels batch entries. `Color.Rgba` tint values preserve their explicit alpha channel.
 SpriteBatch methods validate the batch receiver before recording or flushing; invalid handles are treated as empty/inactive batches or no-ops. Draw calls also validate their source objects: sprite draw methods require a real `Sprite`, and raw-pixels methods require a real `Pixels` buffer.
 
 ### Properties
@@ -504,7 +504,7 @@ SpriteBatch methods validate the batch receiver before recording or flushing; in
 |-------------------------------------------------|--------------------------------------------------------|------------------------------------------------|
 | `Begin()`                                       | `Void()`                                               | Begin batch - call before drawing              |
 | `Draw(sprite, x, y)`                            | `Void(Sprite, Integer, Integer)`                       | Draw sprite at position                        |
-| `DrawEx(sprite, x, y, scaleX, scaleY, rotation)`| `Void(Sprite, Integer, Integer, Integer, Integer, Integer)` | Draw with full transform              |
+| `Draw(sprite, x, y, scaleX, scaleY, rotation)`  | `Void(Sprite, Integer, Integer, Integer, Integer, Integer)` | Draw with full transform              |
 | `DrawPixels(pixels, x, y)`                      | `Void(Pixels, Integer, Integer)`                       | Draw pixels buffer at position                 |
 | `DrawRegion(pixels, dx, dy, sx, sy, sw, sh)`    | `Void(Pixels, Integer...)`                             | Draw a sub-region of a Pixels buffer           |
 | `DrawScaled(sprite, x, y, scale)`               | `Void(Sprite, Integer, Integer, Integer)`              | Draw sprite with uniform scale (100 = 100%)    |
@@ -512,10 +512,10 @@ SpriteBatch methods validate the batch receiver before recording or flushing; in
 | `ResetSettings()`                               | `Void()`                                               | Clear all settings to defaults                 |
 | `SetAlpha(alpha)`                               | `Void(Integer)`                                        | Set global alpha (0-255) for all sprites       |
 | `SetSortByDepth(enabled)`                       | `Void(Integer)`                                        | Enable/disable depth sorting (1=on, 0=off); equal depths stay stable in submission order |
-| `SetTint(color)`                                | `Void(Integer)`                                        | Set tint color (`Color.RGB`, `Color.RGBA`, or RGB literal); pass `-1` for no tint |
+| `SetTint(color)`                                | `Void(Integer)`                                        | Set tint color (`Color.Rgb`, `Color.Rgba`, or RGB literal); pass `-1` for no tint |
 | `DrawAtlas(atlas, name, x, y)`                  | `Void(TextureAtlas, String, Integer, Integer)`         | Draw named atlas region at position            |
 | `DrawAtlasScaled(atlas, name, x, y, scale)`     | `Void(TextureAtlas, String, Integer, Integer, Integer)`| Draw named atlas region with uniform scale     |
-| `DrawAtlasEx(atlas, name, x, y, scale, rot, depth)` | `Void(TextureAtlas, String, Integer...)`           | Draw named atlas region with full transform    |
+| `DrawAtlas(atlas, name, x, y, scale, rot, depth)` | `Void(TextureAtlas, String, Integer...)`             | Draw named atlas region with full transform    |
 
 ### Zia Example
 
@@ -538,7 +538,7 @@ func start() {
 
     // Draw sprites
     var px = Pixels.New(16, 16);
-    px.FillColor(Color.RGB(255, 0, 0));
+    px.FillColor(Color.Rgb(255, 0, 0));
     batch.DrawPixels(px, 10, 20);
     batch.DrawPixels(px, 30, 40);
     batch.DrawPixels(px, 50, 60);
@@ -546,7 +546,7 @@ func start() {
 
     // Rendering settings
     batch.SetSortByDepth(true);
-    batch.SetTint(Color.RGBA(255, 0, 0, 128));
+    batch.SetTint(Color.Rgba(255, 0, 0, 128));
     batch.SetAlpha(200);
     batch.ResetSettings();
 }
@@ -649,7 +649,7 @@ batch.Draw(sprite, 400, 100)
 batch.End(canvas)
 ```
 
-`SetTint(0)` applies a black multiplicative tint. Use `SetTint(-1)` or `ResetSettings()` when you want no tint. `SetTint(Color.RGBA(...))` keeps the tint alpha rather than collapsing it to opaque RGB.
+`SetTint(0)` applies a black multiplicative tint. Use `SetTint(-1)` or `ResetSettings()` when you want no tint. `SetTint(Color.Rgba(...))` keeps the tint alpha rather than collapsing it to opaque RGB.
 
 ### Performance Tips
 

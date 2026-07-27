@@ -11,7 +11,6 @@ the IL specification, verifier rules, runtime C ABI surface, cross-layer
 dependencies, or other contracts that must not drift silently. New ADRs start
 from [0000-template.md](0000-template.md) and take the next unused number.
 
-
 ## Process & Governance
 
 - [ADR 0006](0006-spec-currency-and-adr-triggers.md) — Spec Currency and ADR Triggers
@@ -41,27 +40,6 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0028](0028-terminal-option-result-input-apis.md) — Terminal Option and Result Input APIs
 - [ADR 0029](0029-diagnostics-current-trap-api.md) — Diagnostics Current Trap API
 - [ADR 0030](0030-runtime-memory-and-gc-namespaces.md) — Runtime Memory and GC Namespaces
-- [ADR 0115](0115-retained-runtime-resource-snapshots.md) — Retain Runtime Resources Across Unlocked Work
-- [ADR 0116](0116-gc-mutator-quiescence-and-array-cycles.md) — Coordinate Cycle Collection with Managed-Graph Mutators
-- [ADR 0117](0117-archive-validation-resource-and-concurrency-policy.md) — Validate Archive Structure and Bound Serialized Writer Transactions
-- [ADR 0119](0119-trap-safe-managed-io-ownership.md) — Make Managed I/O Construction and Result Ownership Trap-Safe
-- [ADR 0120](0120-http-router-stable-publication-and-trap-safe-matching.md) — Keep HTTP Router Publication Stable and Matching Trap-Safe
-- [ADR 0121](0121-network-policy-identity-and-atomic-retry-state.md) — Give Network Policies Stable Identity and Atomic Retry State
-- [ADR 0122](0122-network-transport-identity-and-exclusive-pool-leases.md) — Validate Network Transports and Lease Pooled TCP Handles Exclusively
-- [ADR 0123](0123-udp-managed-identity-and-datagram-integrity.md) — Preserve UDP Managed Identity and Atomic Datagram Integrity
-- [ADR 0124](0124-trap-safe-native-promise-completion-and-async-socket-initialization.md) — Make Native Promise Completion and AsyncSocket Initialization Trap-Safe
-- [ADR 0125](0125-multipart-stable-identity-and-atomic-native-staging.md) — Give Multipart Stable Identity and Atomic Native Staging
-- [ADR 0126](0126-http-client-stable-identity-and-transactional-ownership.md) — Make HTTP Client Identity and Ownership Transactional
-- [ADR 0127](0127-session-http-client-identity-and-synchronized-snapshots.md) — Give Session HTTP Clients Stable Identity and Synchronized Snapshots
-- [ADR 0128](0128-http-server-stable-identity-and-serialized-lifecycle.md) — Give HTTP Servers Stable Identity and Serialized Lifecycles
-- [ADR 0129](0129-tls-session-identity-and-native-socket-width.md) — Give TLS Sessions Stable Identity and Native-Width Socket Ownership
-- [ADR 0130](0130-websocket-client-identity-strict-framing-and-transactional-ownership.md) — Give WebSocket Clients Stable Identity and Strict Transactional Framing
-- [ADR 0131](0131-websocket-server-identity-strict-upgrades-and-generation-safe-lifecycle.md) — Give WebSocket Servers Stable Identity and Generation-Safe Lifecycles
-- [ADR 0132](0132-sse-smtp-identity-strict-framing-and-cancellation-safe-lifecycles.md) — Give SSE and SMTP Strict Framing and Cancellation-Safe Lifecycles
-- [ADR 0133](0133-runtime-concurrency-and-collection-hardening.md) — Make Runtime Concurrency Ownership Typed and Collection Capacity Explicit
-- [ADR 0134](0134-zpak-v2-validation-and-entry-checksums.md) — Validate ZPAK Metadata and Checksum Every Version 2 Entry
-- [ADR 0135](0135-runtime-cppcheck-build-and-ci-gate.md) — Gate Runtime Portability and Correctness Diagnostics with Cppcheck
-- [ADR 0136](0136-runtime-context-binding-lifecycle-and-state-locks.md) — Serialize Runtime Context State and Reserve Child Bindings Before Native Start
 - [ADR 0031](0031-core-parse-double-aliases.md) — Core Parse Double Aliases
 - [ADR 0032](0032-math-bits-full-name-aliases.md) — Math Bits Full-Name Aliases
 - [ADR 0033](0033-core-convert-string-aliases.md) — Core Convert String Aliases
@@ -72,7 +50,6 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0038](0038-graphics-factory-aliases.md) — Graphics Factory Aliases
 - [ADR 0039](0039-option-failure-aliases.md) — Option Failure Aliases
 - [ADR 0040](0040-input-key-namespace.md) — Input Key Namespace
-- [ADR 0169](0169-super-modifier-keys-and-studio-viewport-picking.md) — Add Super Keys and Geometry-Aware Studio Viewport Interaction
 - [ADR 0041](0041-crypto-result-and-legacy-apis.md) — Crypto Result APIs and Legacy Namespaces
 - [ADR 0042](0042-http-tls-verification-bypass-api.md) — HTTP TLS Verification Bypass API
 - [ADR 0043](0043-random-chance-boolean-api.md) — Random Chance Boolean API
@@ -95,7 +72,29 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0066](0066-process-pty-read-result-apis.md) — Process And PTY Read Result APIs
 - [ADR 0101](0101-modular-runtime-definitions-and-documentation.md) — Modular Runtime Definitions and Authored API Documentation
 - [ADR 0104](0104-entity3d-position-accessor-properties.md) — Normalize Entity3D Position Accessors to Properties
+- [ADR 0115](0115-retained-runtime-resource-snapshots.md) — Retain Runtime Resources Across Unlocked Work
+- [ADR 0116](0116-gc-mutator-quiescence-and-array-cycles.md) — Coordinate Cycle Collection with Managed-Graph Mutators
+- [ADR 0117](0117-archive-validation-resource-and-concurrency-policy.md) — Validate Archive Structure and Bound Serialized Writer Transactions
+- [ADR 0119](0119-trap-safe-managed-io-ownership.md) — Make Managed I/O Construction and Result Ownership Trap-Safe
+- [ADR 0120](0120-http-router-stable-publication-and-trap-safe-matching.md) — Keep HTTP Router Publication Stable and Matching Trap-Safe
+- [ADR 0121](0121-network-policy-identity-and-atomic-retry-state.md) — Give Network Policies Stable Identity and Atomic Retry State
+- [ADR 0122](0122-network-transport-identity-and-exclusive-pool-leases.md) — Validate Network Transports and Lease Pooled TCP Handles Exclusively
+- [ADR 0123](0123-udp-managed-identity-and-datagram-integrity.md) — Preserve UDP Managed Identity and Atomic Datagram Integrity
+- [ADR 0124](0124-trap-safe-native-promise-completion-and-async-socket-initialization.md) — Make Native Promise Completion and AsyncSocket Initialization Trap-Safe
+- [ADR 0125](0125-multipart-stable-identity-and-atomic-native-staging.md) — Give Multipart Stable Identity and Atomic Native Staging
+- [ADR 0126](0126-http-client-stable-identity-and-transactional-ownership.md) — Make HTTP Client Identity and Ownership Transactional
+- [ADR 0127](0127-session-http-client-identity-and-synchronized-snapshots.md) — Give Session HTTP Clients Stable Identity and Synchronized Snapshots
+- [ADR 0128](0128-http-server-stable-identity-and-serialized-lifecycle.md) — Give HTTP Servers Stable Identity and Serialized Lifecycles
+- [ADR 0129](0129-tls-session-identity-and-native-socket-width.md) — Give TLS Sessions Stable Identity and Native-Width Socket Ownership
+- [ADR 0130](0130-websocket-client-identity-strict-framing-and-transactional-ownership.md) — Give WebSocket Clients Stable Identity and Strict Transactional Framing
+- [ADR 0131](0131-websocket-server-identity-strict-upgrades-and-generation-safe-lifecycle.md) — Give WebSocket Servers Stable Identity and Generation-Safe Lifecycles
+- [ADR 0132](0132-sse-smtp-identity-strict-framing-and-cancellation-safe-lifecycles.md) — Give SSE and SMTP Strict Framing and Cancellation-Safe Lifecycles
+- [ADR 0133](0133-runtime-concurrency-and-collection-hardening.md) — Make Runtime Concurrency Ownership Typed and Collection Capacity Explicit
+- [ADR 0134](0134-zpak-v2-validation-and-entry-checksums.md) — Validate ZPAK Metadata and Checksum Every Version 2 Entry
+- [ADR 0135](0135-runtime-cppcheck-build-and-ci-gate.md) — Gate Runtime Portability and Correctness Diagnostics with Cppcheck
+- [ADR 0136](0136-runtime-context-binding-lifecycle-and-state-locks.md) — Serialize Runtime Context State and Reserve Child Bindings Before Native Start
 - [ADR 0143](0143-generated-runtime-class-inheritance.md) — Generate Runtime Class Inheritance Metadata
+- [ADR 0169](0169-super-modifier-keys-and-studio-viewport-picking.md) — Add Super Keys and Geometry-Aware Studio Viewport Interaction
 
 ## GUI & IDE
 
@@ -122,6 +121,8 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0107](0107-gui-theme-accessibility-input-and-render-policy.md) — Unify GUI Theme, Accessibility, Input, and Rendering State
 - [ADR 0108](0108-gui-control-layout-and-model-completeness.md) — Complete the GUI Control, Layout, and Virtual Model Surface
 - [ADR 0109](0109-gui-dialog-media-scheduling-and-automation.md) — Make GUI Dialogs, Media, and Automation Frame-Driven
+- [ADR 0137](0137-premium-rendering-surface.md) — Premium Rendering Surface for Zanna Studio
+- [ADR 0138](0138-debug-class-layout-sidecar.md) — Debug Class-Layout Sidecar for VM Debugger Field Expansion
 - [ADR 0148](0148-bounded-directory-paging.md) — Page Immediate Directory Entries Without Blocking GUI Work Loops
 - [ADR 0150](0150-gui-native-minimum-window-size.md) — Enforce GUI Minimum Window Sizes Through Native Adapters
 - [ADR 0151](0151-transactional-multi-root-workspace-edits.md) — Bound Transactional Workspace Edits to Explicit Multiple Roots
@@ -135,34 +136,6 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 
 ## Graphics3D & Game Systems
 
-- [ADR 0157](0157-material-texture-pixel-inspection.md) — Expose Read-Only Material Texture Pixels for Authoring Tools
-- [ADR 0158](0158-scene-level-property-authoring.md) — Make Scene-Level Properties Fully Authorable
-- [ADR 0159](0159-typed-scenenode-metadata-and-vscn-v6.md) — Add Typed SceneNode Metadata and VSCN v6
-- [ADR 0160](0160-project-scene-component-schemas.md) — Add Project Scene Component Schemas
-- [ADR 0161](0161-stable-scenenode-sibling-reordering.md) — Add Stable SceneNode Sibling Reordering
-- [ADR 0162](0162-exact-preserve-world-scenenode-reparenting.md) — Add Exact Preserve-World SceneNode Reparenting
-- [ADR 0164](0164-backward-compatible-2d-scene-object-hierarchy.md) — Add Backward-Compatible 2D Scene Object Hierarchy
-- [ADR 0166](0166-exact-scenenode-world-matrix-assignment.md) — Add Exact SceneNode World-Matrix Assignment
-- [ADR 0168](0168-windowless-canvas3d-rendering.md) — Add Windowless Canvas3D Rendering
-- [ADR 0170](0170-studio-2d-canvas-marquee-selection.md) — Add Modifier and Marquee Selection to the Studio 2D Canvas
-- [ADR 0171](0171-bounded-scene-flood-fill-and-studio-tile-tools.md) — Add Bounded Scene Flood Fill and Studio Tile Tools
-- [ADR 0172](0172-public-scenenode-light-authoring-and-studio-light-inspector.md) — Expose SceneNode Lights and Add Studio Light Authoring
-- [ADR 0173](0173-graphics3d-transactional-hardening-and-retained-work.md) — Make Graphics3D State Transactional and Retain Reusable Work
-- [ADR 0174](0174-scene-object-authoring-metadata-and-duplication.md) — Make Scene Object Metadata and Duplication Authorable
-- [ADR 0176](0176-typed-tile-behavior-sections.md) — Make Tile Behavior Sections Fully Authorable
-- [ADR 0177](0177-scene-camera-and-lighting-sections.md) — Add Scene Camera and Lighting Section Contracts
-- [ADR 0178](0178-scene-component-schema-v2-enum-asset-fields.md) — Add Enum and Asset Fields to Scene Component Schemas
-- [ADR 0179](0179-2d-object-sprite-preview-and-route-conventions.md) — Add 2D Object Sprite Previews and Route Visualization Conventions
-- [ADR 0180](0180-workspace-asset-library.md) — Add Workspace Asset Libraries
-- [ADR 0181](0181-2d-scene-preview-and-run-scene.md) — Add 2D Scene Preview and Run Scene
-- [ADR 0182](0182-canonical-scene2d-scene3d-extensions.md) — Adopt Canonical .scene2d and .scene3d Extensions
-- [ADR 0183](0183-perspective-editor-viewport-and-fly-navigation.md) — Add a Perspective Editor Viewport with Fly Navigation
-- [ADR 0184](0184-scene-camera-nodes-look-through-and-preview.md) — Author Scene Camera Nodes with Look-Through and Preview
-- [ADR 0185](0185-collider-authoring-and-gameplay-overlays.md) — Author Colliders and Gameplay Overlays on Scene Nodes
-- [ADR 0186](0186-batch-light-editing.md) — Add Mixed-Value Batch Light Editing
-- [ADR 0187](0187-vscn-v7-prefab-reference-nodes.md) — Add VSCN v7 Prefab Reference Nodes
-- [ADR 0188](0188-studio-bake-and-environment-workflow.md) — Add the Studio Bake and Environment Workflow
-- [ADR 0189](0189-project-material-library.md) — Add a Project Material Library
 - [ADR 0004](0004-graphics3d-runtime-surface-expansion.md) — Graphics3D Runtime Surface Expansion Uses Registry-Only Semantics
 - [ADR 0046](0046-game3d-prefab-loading-api.md) — Game3D Prefab Loading API
 - [ADR 0059](0059-graphics3d-lookup-option-apis.md) — Graphics3D Lookup Option APIs
@@ -201,22 +174,61 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0102](0102-graphics3d-runtime-boundary-and-contract-manifest.md) — Graphics3D Runtime Boundary and Contract Manifest
 - [ADR 0105](0105-game3d-character-controller-gravity.md) — CharacterController3D Gravity Magnitude
 - [ADR 0112](0112-linux-graphics-backend-selection.md) — Linux Graphics Backend Selection
-- [ADR 0139](0139-native-wayland-backend-and-linux-runtime-selection.md) — Native Wayland Backend and Linux Runtime Selection
 - [ADR 0114](0114-ieee-floating-constant-folding.md) — Preserve IEEE-754 Results During IL Constant Folding
+- [ADR 0139](0139-native-wayland-backend-and-linux-runtime-selection.md) — Native Wayland Backend and Linux Runtime Selection
 - [ADR 0140](0140-tiled-map-and-scene-import.md) — Import Tiled Maps as Scene Documents and Tilemaps
 - [ADR 0141](0141-vscn-v4-scene-asset-fidelity.md) — Preserve Complete Scene Assets in VSCN v4
 - [ADR 0142](0142-complete-fbx-scene-animation-import.md) — Complete FBX Scene and Animation Import
 - [ADR 0144](0144-complete-tiled-map-import.md) — Complete Tiled Map Import and Projected Tilemap Rendering
 - [ADR 0145](0145-complete-fbx-evaluation-and-native-lights.md) — Complete FBX Evaluation and Native Authored Lights
 - [ADR 0146](0146-vscn-v5-source-texture-containers.md) — Preserve Source Texture Containers in VSCN v5
+- [ADR 0157](0157-material-texture-pixel-inspection.md) — Expose Read-Only Material Texture Pixels for Authoring Tools
+- [ADR 0158](0158-scene-level-property-authoring.md) — Make Scene-Level Properties Fully Authorable
+- [ADR 0159](0159-typed-scenenode-metadata-and-vscn-v6.md) — Add Typed SceneNode Metadata and VSCN v6
+- [ADR 0160](0160-project-scene-component-schemas.md) — Add Project Scene Component Schemas
+- [ADR 0161](0161-stable-scenenode-sibling-reordering.md) — Add Stable SceneNode Sibling Reordering
+- [ADR 0162](0162-exact-preserve-world-scenenode-reparenting.md) — Add Exact Preserve-World SceneNode Reparenting
+- [ADR 0164](0164-backward-compatible-2d-scene-object-hierarchy.md) — Add Backward-Compatible 2D Scene Object Hierarchy
+- [ADR 0166](0166-exact-scenenode-world-matrix-assignment.md) — Add Exact SceneNode World-Matrix Assignment
+- [ADR 0168](0168-windowless-canvas3d-rendering.md) — Add Windowless Canvas3D Rendering
+- [ADR 0170](0170-studio-2d-canvas-marquee-selection.md) — Add Modifier and Marquee Selection to the Studio 2D Canvas
+- [ADR 0171](0171-bounded-scene-flood-fill-and-studio-tile-tools.md) — Add Bounded Scene Flood Fill and Studio Tile Tools
+- [ADR 0172](0172-public-scenenode-light-authoring-and-studio-light-inspector.md) — Expose SceneNode Lights and Add Studio Light Authoring
+- [ADR 0173](0173-graphics3d-transactional-hardening-and-retained-work.md) — Make Graphics3D State Transactional and Retain Reusable Work
+- [ADR 0174](0174-scene-object-authoring-metadata-and-duplication.md) — Make Scene Object Metadata and Duplication Authorable
+- [ADR 0176](0176-typed-tile-behavior-sections.md) — Make Tile Behavior Sections Fully Authorable
+- [ADR 0177](0177-scene-camera-and-lighting-sections.md) — Add Scene Camera and Lighting Section Contracts
+- [ADR 0178](0178-scene-component-schema-v2-enum-asset-fields.md) — Add Enum and Asset Fields to Scene Component Schemas
+- [ADR 0179](0179-2d-object-sprite-preview-and-route-conventions.md) — Add 2D Object Sprite Previews and Route Visualization Conventions
+- [ADR 0180](0180-workspace-asset-library.md) — Add Workspace Asset Libraries
+- [ADR 0181](0181-2d-scene-preview-and-run-scene.md) — Add 2D Scene Preview and Run Scene
+- [ADR 0182](0182-canonical-scene2d-scene3d-extensions.md) — Adopt Canonical .scene2d and .scene3d Extensions
+- [ADR 0183](0183-perspective-editor-viewport-and-fly-navigation.md) — Add a Perspective Editor Viewport with Fly Navigation
+- [ADR 0184](0184-scene-camera-nodes-look-through-and-preview.md) — Author Scene Camera Nodes with Look-Through and Preview
+- [ADR 0185](0185-collider-authoring-and-gameplay-overlays.md) — Author Colliders and Gameplay Overlays on Scene Nodes
+- [ADR 0186](0186-batch-light-editing.md) — Add Mixed-Value Batch Light Editing
+- [ADR 0187](0187-vscn-v7-prefab-reference-nodes.md) — Add VSCN v7 Prefab Reference Nodes
+- [ADR 0188](0188-studio-bake-and-environment-workflow.md) — Add the Studio Bake and Environment Workflow
+- [ADR 0189](0189-project-material-library.md) — Add a Project Material Library
+- [ADR 0190](0190-scene3d-text-serialization.md) — In-Memory Scene3D Text Serialization
+- [ADR 0191](0191-gpu-offscreen-editor-rendering.md) — GPU-Accelerated Offscreen Editor Rendering
+- [ADR 0192](0192-2d-object-transforms.md) — Optional 2D Scene Object Transforms
+- [ADR 0193](0193-scene3d-precise-raycast.md) — Triangle-Accurate Scene Raycast Queries
+- [ADR 0194](0194-scene-watch-hot-reload.md) — The --scene-watch Hot-Reload Contract
+- [ADR 0195](0195-2d-layer-opacity.md) — Optional 2D Layer Opacity
 
 ## Release & Packaging
 
-- [ADR 0196](0196-map-windows-runtime-hardening-imports.md) — Map Windows Runtime Hardening Imports
-- [ADR 0155](0155-map-msvc-float-classification-to-ucrt.md) — Map MSVC Float Classification to UCRT
-- [ADR 0113](0113-windows-automation-powershell-entry-points.md) — Use PowerShell for Windows Automation Entry Points
 - [ADR 0025](0025-windows-release-installer-workflow.md) — Windows Release Installer Workflow
 - [ADR 0073](0073-cross-platform-installer-release-pipeline.md) — Cross-Platform Installer Release Pipeline
 - [ADR 0103](0103-windows-developer-installer-v2.md) — Windows Developer Installer v2
+- [ADR 0113](0113-windows-automation-powershell-entry-points.md) — Use PowerShell for Windows Automation Entry Points
 - [ADR 0149](0149-macos-zanna-studio-application-identity.md) — Preserve Zanna Studio Identity in the macOS Application Menu
+- [ADR 0155](0155-map-msvc-float-classification-to-ucrt.md) — Map MSVC Float Classification to UCRT
 - [ADR 0175](0175-zanna-games-windows-installer-experience.md) — Give Windows Setup a Native Zanna Games Experience
+- [ADR 0196](0196-map-windows-runtime-hardening-imports.md) — Map Windows Runtime Hardening Imports
+- [ADR 0197](0197-project-owned-2d-object-preview-profiles.md) — Add Project-Owned 2D Object Preview Profiles
+- [ADR 0198](0198-project-owned-3d-scene-preview-profiles.md) — Add Project-Owned 3D Scene Preview Profiles
+- [ADR 0199](0199-project-owned-3d-node-prefab-previews.md) — Add Project-Owned 3D Node Prefab Previews
+- [ADR 0200](0200-project-owned-3d-sky-and-light-preview-rigs.md) — Add Project-Owned 3D Sky and Light Preview Rigs
+- [ADR 0201](0201-project-owned-3d-lens-and-atmosphere-previews.md) — Add Project-Owned 3D Lens and Atmosphere Previews
