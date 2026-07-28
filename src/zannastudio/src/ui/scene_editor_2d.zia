@@ -17,9 +17,13 @@
 //     jumping rows runs ordinary undo operations and keeps redo available.
 //   - Compact windows cycle objects, canvas/palette, and inspector at full
 //     width; no authoring surface becomes an inaccessible sliver.
-//   - Constrained command bars keep Select/Paint/Erase and navigation direct;
-//     complete shape, sampling, object, overlay, and layout commands remain
-//     reachable through truthful Tools and View overflow menus.
+//   - Progressive command bars keep Select/Paint/Erase, the active canvas
+//     context, and Game View direct; complete document, shape, sampling,
+//     object, overlay, and layout commands remain reachable through truthful
+//     Scene, Tools, and View menus at every width.
+//   - The Scene inspector discloses one complete per-document topic at a time;
+//     unrelated setup, properties, lighting, layers, tile rules, and history
+//     never become one permanent wall of controls.
 //   - Focus presentation temporarily collapses every non-floating scene pane
 //     and restores the exact per-document layout without persisting the detour.
 //   - Per-document Game View masks every editor-only canvas overlay and
@@ -194,7 +198,7 @@ final OBJECT_PARENT_TARGET_MIXED: Integer = -2;
 // still giving the canvas the full editor lane.
 final COMPACT_SCENE_2D_WIDTH: Number = 920.0;
 final COMPACT_SCENE_2D_CHROME_WIDTH: Number = 640.0;
-final WRAPPED_SCENE_2D_CHROME_WIDTH: Number = 1180.0;
+final CONCISE_SCENE_2D_CHROME_WIDTH: Number = 1180.0;
 final COMPACT_SCENE_2D_PALETTE_HEIGHT: Number = 520.0;
 // Three persistent columns need enough room for readable object names, a
 // useful canvas, and an inspector that does not collapse every field. Below
@@ -222,6 +226,13 @@ final PROPERTY_TYPE_INT: Integer = 1;
 final PROPERTY_TYPE_FLOAT: Integer = 2;
 final PROPERTY_TYPE_BOOL: Integer = 3;
 final PROPERTY_TYPE_NULL: Integer = 4;
+
+final SCENE_INSPECTOR_SETUP: Integer = 0;
+final SCENE_INSPECTOR_PROPERTIES: Integer = 1;
+final SCENE_INSPECTOR_CAMERA_LIGHTING: Integer = 2;
+final SCENE_INSPECTOR_LAYERS: Integer = 3;
+final SCENE_INSPECTOR_TILE_BEHAVIOR: Integer = 4;
+final SCENE_INSPECTOR_HISTORY: Integer = 5;
 
 final ARRANGE_ALIGN_X: Integer = scene_layout_2d.LAYOUT_ALIGN_X;
 final ARRANGE_ALIGN_Y: Integer = scene_layout_2d.LAYOUT_ALIGN_Y;
@@ -314,9 +325,12 @@ expose func UsesCompactChrome(width: Number) -> Boolean {
     return width > 0.0 and width <= COMPACT_SCENE_2D_CHROME_WIDTH;
 }
 
-/// @brief Return whether complete secondary 2D commands belong in overflow.
+/// @brief Return whether complete secondary 2D commands belong in menus.
+/// @details Progressive disclosure is width-independent: growing a scene lane
+///          gives the authored canvas more room instead of exposing every
+///          secondary action at once. Zero denotes an unmeasured host.
 expose func UsesSceneCommandMenus(width: Number) -> Boolean {
-    return width > 0.0 and width < WRAPPED_SCENE_2D_CHROME_WIDTH;
+    return width > 0.0;
 }
 
 /// @brief Return whether canvas and palette need vertical master/detail.
@@ -402,6 +416,12 @@ class SceneEditor2D {
     expose GUI.VBox root;
     expose GUI.Flex toolbar;
     expose GUI.Flex viewToolbar;
+    expose GUI.Button sceneMenuButton;
+    expose GUI.ContextMenu sceneMenu;
+    expose GUI.MenuItem sceneNewItem;
+    expose GUI.MenuItem sceneImportItem;
+    expose GUI.MenuItem scenePreviewItem;
+    expose GUI.MenuItem sceneRunItem;
     expose GUI.Button newSceneButton;
     expose GUI.Button importButton;
     expose GUI.Button selectButton;
@@ -484,6 +504,12 @@ class SceneEditor2D {
     expose GUI.Button sceneTabButton;
     expose GUI.VBox objectTabHost;
     expose GUI.VBox sceneTabHost;
+    expose GUI.HBox sceneSectionRow;
+    expose GUI.Dropdown sceneSectionDropdown;
+    expose GUI.GroupBox sceneSetupGroup;
+    expose GUI.GroupBox sceneImportGroup;
+    expose GUI.GroupBox layersGroup;
+    expose Integer sceneInspectorSection;
     expose Boolean inspectorSceneTab;
     hide Boolean inspectorAutoFollowHadSelection;
     expose GUI.GroupBox historyGroup;
@@ -714,6 +740,12 @@ class SceneEditor2D {
         root = null;
         toolbar = null;
         viewToolbar = null;
+        sceneMenuButton = null;
+        sceneMenu = null;
+        sceneNewItem = null;
+        sceneImportItem = null;
+        scenePreviewItem = null;
+        sceneRunItem = null;
         newSceneButton = null;
         importButton = null;
         selectButton = null;
@@ -795,6 +827,12 @@ class SceneEditor2D {
         sceneTabButton = null;
         objectTabHost = null;
         sceneTabHost = null;
+        sceneSectionRow = null;
+        sceneSectionDropdown = null;
+        sceneSetupGroup = null;
+        sceneImportGroup = null;
+        layersGroup = null;
+        sceneInspectorSection = SCENE_INSPECTOR_SETUP;
         inspectorSceneTab = true;
         inspectorAutoFollowHadSelection = false;
         canvasScroll = null;
@@ -1119,6 +1157,10 @@ class SceneEditor2D {
         }
         if objectTabButton.WasClicked() { SetInspectorSceneTab(false); }
         if sceneTabButton.WasClicked() { SetInspectorSceneTab(true); }
+        if sceneSectionDropdown.WasChanged() {
+            SetSceneInspectorSection(
+                sceneSectionDropdown.Selected, true);
+        }
 
         var changed = false;
         gestureEscapeConsumed = false;
@@ -1139,13 +1181,15 @@ class SceneEditor2D {
             ApplyPaletteLayout();
             renderDirty = true;
         }
-        if newSceneButton.WasClicked() {
+        if newSceneButton.WasClicked()
+           or sceneNewItem.WasClicked() {
             changed = ReplaceScene(
                 Convert.NumToInt(sceneWidthSpinner.Value),
                 Convert.NumToInt(sceneHeightSpinner.Value),
                 Convert.NumToInt(sceneTileSizeSpinner.Value));
         }
-        if importButton.WasClicked() {
+        if importButton.WasClicked()
+           or sceneImportItem.WasClicked() {
             changed = ImportTiled() or changed;
         }
         tiledAssetBrowser.SetLibraryRoot(ComponentSchemaRoot());
@@ -1229,7 +1273,8 @@ class SceneEditor2D {
            or toolPickerItem.WasClicked() {
             SetMode(MODE_PICKER);
         }
-        if previewButton.WasClicked() {
+        if previewButton.WasClicked()
+           or scenePreviewItem.WasClicked() {
             SetPreviewActive(previewActive == false);
         }
         if gameViewButton.WasClicked()
@@ -1239,7 +1284,10 @@ class SceneEditor2D {
         if gameOutputFramePending and ApplyGameOutputFrame() {
             gameOutputFramePending = false;
         }
-        if runSceneButton.WasClicked() { runSceneRequested = true; }
+        if runSceneButton.WasClicked()
+           or sceneRunItem.WasClicked() {
+            runSceneRequested = true;
+        }
         PumpPreviewClock();
         if objectButton.WasClicked()
            or toolObjectItem.WasClicked() {
@@ -1500,6 +1548,10 @@ class SceneEditor2D {
             state.inspectorScrollY = ClampNumber2D(
                 LogicalScrollY(inspectorScroll), 0.0, 1000000.0);
         }
+        state.inspectorSceneSection = ClampInt(
+            sceneInspectorSection,
+            SCENE_INSPECTOR_SETUP,
+            SCENE_INSPECTOR_HISTORY);
         state.inspectorRequestedVisible = inspectorRequestedVisible;
         state.compactInspectorShown = compactInspectorShown;
         state.paletteRequestedVisible = paletteRequestedVisible;
@@ -1542,6 +1594,11 @@ class SceneEditor2D {
             pendingCanvasScrollX = 0.0;
             pendingCanvasScrollY = 0.0;
             pendingInspectorScrollY = 0.0;
+            sceneInspectorSection = SCENE_INSPECTOR_SETUP;
+            if sceneSectionDropdown != null {
+                sceneSectionDropdown.SetSelected(sceneInspectorSection);
+                sceneSectionDropdown.WasChanged();
+            }
             inspectorRequestedVisible = true;
             compactHierarchyShown = false;
             compactInspectorShown = false;
@@ -1615,6 +1672,14 @@ class SceneEditor2D {
             state.canvasScrollY, 0.0, 1000000.0);
         pendingInspectorScrollY = ClampNumber2D(
             state.inspectorScrollY, 0.0, 1000000.0);
+        sceneInspectorSection = ClampInt(
+            state.inspectorSceneSection,
+            SCENE_INSPECTOR_SETUP,
+            SCENE_INSPECTOR_HISTORY);
+        if sceneSectionDropdown != null {
+            sceneSectionDropdown.SetSelected(sceneInspectorSection);
+            sceneSectionDropdown.WasChanged();
+        }
         inspectorRequestedVisible = state.inspectorRequestedVisible;
         compactHierarchyShown = false;
         compactInspectorShown = state.compactInspectorShown;
@@ -1774,6 +1839,22 @@ class SceneEditor2D {
                 button.GetScreenY() + button.GetScreenHeight()));
     }
 
+    /// @brief Mirror document-level availability into the Scene menu.
+    hide func ConfigureSceneMenu() {
+        var hasDocument = currentDoc != null;
+        var hasScene = scene != null;
+        sceneNewItem.SetEnabled(hasDocument);
+        sceneImportItem.SetEnabled(hasDocument);
+        scenePreviewItem.SetEnabled(
+            hasScene and gameViewActive == false);
+        scenePreviewItem.SetChecked(previewActive);
+        scenePreviewItem.SetText(
+            previewActive
+            ? "Stop Animation Preview"
+            : "Preview Animations");
+        sceneRunItem.SetEnabled(hasScene);
+    }
+
     /// @brief Return the full user-facing name of one canvas tool.
     hide func ToolModeLabel(value: Integer) -> String {
         if value == MODE_PAINT { return "Paint"; }
@@ -1863,6 +1944,10 @@ class SceneEditor2D {
 
     /// @brief Open requested overflow menus after responsive visibility settles.
     hide func PumpCommandMenuButtons() {
+        if sceneMenuButton.WasClicked() {
+            ConfigureSceneMenu();
+            ShowCommandMenu(sceneMenuButton, sceneMenu);
+        }
         if toolMenuButton.WasClicked() {
             ConfigureToolMenu();
             ShowCommandMenu(toolMenuButton, toolMenu);
@@ -1875,6 +1960,13 @@ class SceneEditor2D {
 
     /// @brief Keep compact menu affordances visibly and accessibly truthful.
     hide func UpdateCommandMenuButtons() {
+        if sceneMenuButton != null {
+            sceneMenuButton.SetStyle(previewActive ? 1 : 0);
+            sceneMenuButton.SetAccessibleDescription(
+                previewActive
+                ? "Animation preview is playing."
+                : "Animation preview is stopped.");
+        }
         if toolMenuButton != null {
             var hiddenMode =
                 mode != MODE_SELECT
@@ -1914,6 +2006,12 @@ class SceneEditor2D {
 
     /// @brief Swap dense secondary tools and view actions for complete menus.
     hide func ApplyCommandMenuVisibility(useMenus: Boolean) {
+        sceneMenuButton.SetVisible(useMenus);
+        newSceneButton.SetVisible(!useMenus);
+        importButton.SetVisible(!useMenus);
+        previewButton.SetVisible(!useMenus);
+        runSceneButton.SetVisible(!useMenus);
+
         toolMenuButton.SetVisible(useMenus);
         rectangleButton.SetVisible(!useMenus);
         lineButton.SetVisible(!useMenus);
@@ -1974,12 +2072,13 @@ class SceneEditor2D {
         var useCommandMenus = UsesSceneCommandMenus(lastHostWidth);
         ApplyCommandMenuVisibility(useCommandMenus);
         if compactChrome {
-            // The direct compact set needs at most two tool rows and three
-            // short view rows, leaving most small-window height to the canvas.
+            // The progressive compact set needs one command row and at most
+            // two context rows, leaving most small-window height to the canvas.
             toolbar.SetPreferredSize(0.0, 0.0);
-            toolbar.SetMinSize(0.0, 68.0);
+            toolbar.SetMinSize(0.0, 40.0);
             viewToolbar.SetPreferredSize(0.0, 0.0);
-            viewToolbar.SetMinSize(0.0, 100.0);
+            viewToolbar.SetMinSize(0.0, 76.0);
+            sceneMenuButton.SetText("Scene");
             newSceneButton.SetText("New");
             importButton.SetText("Import...");
             runSceneButton.SetText("Run");
@@ -1992,11 +2091,12 @@ class SceneEditor2D {
             viewToolbar.SetPadding(2.0);
             toolbarStatus.SetVisible(false);
             viewStatusLabel.SetVisible(false);
-        } else if lastHostWidth < WRAPPED_SCENE_2D_CHROME_WIDTH {
+        } else if lastHostWidth < CONCISE_SCENE_2D_CHROME_WIDTH {
             toolbar.SetPreferredSize(0.0, 0.0);
             toolbar.SetMinSize(0.0, 40.0);
             viewToolbar.SetPreferredSize(0.0, 0.0);
             viewToolbar.SetMinSize(0.0, 40.0);
+            sceneMenuButton.SetText("Scene");
             newSceneButton.SetText("New");
             importButton.SetText("Import");
             rectangleButton.SetText("Rect");
@@ -2017,6 +2117,7 @@ class SceneEditor2D {
             toolbar.SetMinSize(0.0, 0.0);
             viewToolbar.SetPreferredSize(0.0, 0.0);
             viewToolbar.SetMinSize(0.0, 0.0);
+            sceneMenuButton.SetText("Scene");
             newSceneButton.SetText("New");
             importButton.SetText("Import");
             rectangleButton.SetText("Rect");
@@ -2034,6 +2135,7 @@ class SceneEditor2D {
             toolbar.SetMinSize(0.0, 0.0);
             viewToolbar.SetPreferredSize(0.0, 0.0);
             viewToolbar.SetMinSize(0.0, 0.0);
+            sceneMenuButton.SetText("Scene...");
             newSceneButton.SetText("New Scene");
             importButton.SetText("Import Tiled...");
             rectangleButton.SetText("Rectangle");
@@ -2192,6 +2294,8 @@ class SceneEditor2D {
     /// @brief Describe the destination of the inspector toggle.
     hide func UpdateInspectorButton() {
         if inspectorButton == null { return; }
+        inspectorButton.SetVisible(
+            compactLayout or inspectorRequestedVisible == false);
         if focusModeActive and inspectorDock.floating == false {
             inspectorButton.SetEnabled(false);
             inspectorButton.SetText("Inspector hidden");
@@ -2233,6 +2337,8 @@ class SceneEditor2D {
     /// @brief Describe the destination of the palette toggle.
     hide func UpdatePaletteButton() {
         if paletteButton == null { return; }
+        paletteButton.SetVisible(
+            compactPaletteLayout or paletteRequestedVisible == false);
         if focusModeActive and paletteDock.floating == false {
             paletteButton.SetEnabled(false);
             paletteButton.SetText("Palette hidden");
@@ -5188,7 +5294,7 @@ class SceneEditor2D {
             }
         }
         var concise = compactChrome
-            or lastHostWidth < WRAPPED_SCENE_2D_CHROME_WIDTH;
+            or lastHostWidth < CONCISE_SCENE_2D_CHROME_WIDTH;
         if gameViewActive {
             if concise { gameViewButton.SetText("Exit Game"); }
             else { gameViewButton.SetText("Exit Game View"); }
@@ -6987,6 +7093,36 @@ class SceneEditor2D {
         if objectTab { objectTabButton.SetStyle(1); }
         objectTabHost.SetVisible(objectTab);
         sceneTabHost.SetVisible(sceneTab);
+        sceneSectionRow.SetVisible(sceneTab);
+        sceneSetupGroup.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SCENE_INSPECTOR_SETUP);
+        sceneImportGroup.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SCENE_INSPECTOR_SETUP);
+        sceneInfoLabel.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SCENE_INSPECTOR_SETUP);
+        sceneProperties.group.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SCENE_INSPECTOR_PROPERTIES);
+        cameraLighting.cameraGroup.SetVisible(
+            sceneTab
+            and sceneInspectorSection
+                == SCENE_INSPECTOR_CAMERA_LIGHTING);
+        cameraLighting.lightingGroup.SetVisible(
+            sceneTab
+            and sceneInspectorSection
+                == SCENE_INSPECTOR_CAMERA_LIGHTING);
+        layersGroup.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SCENE_INSPECTOR_LAYERS);
+        tileBehavior.group.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SCENE_INSPECTOR_TILE_BEHAVIOR);
+        historyGroup.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SCENE_INSPECTOR_HISTORY);
         objectFieldsLabel.SetVisible(objectScope);
         objectTypeInput.SetVisible(objectScope);
         objectIdInput.SetVisible(objectScope);
@@ -7023,6 +7159,28 @@ class SceneEditor2D {
     expose func SetInspectorSceneTab(sceneTab: Boolean) {
         if inspectorSceneTab == sceneTab { return; }
         inspectorSceneTab = sceneTab;
+        UpdateInspectorScope();
+    }
+
+    /// @brief Select one progressive-disclosure topic on the Scene inspector.
+    /// @param section Bounded scene topic index.
+    /// @param resetScroll Whether a direct user change returns to the topic top.
+    expose func SetSceneInspectorSection(section: Integer,
+                                         resetScroll: Boolean) {
+        var bounded = ClampInt(
+            section,
+            SCENE_INSPECTOR_SETUP,
+            SCENE_INSPECTOR_HISTORY);
+        sceneInspectorSection = bounded;
+        if sceneSectionDropdown != null
+           and sceneSectionDropdown.Selected != bounded {
+            sceneSectionDropdown.SetSelected(bounded);
+            sceneSectionDropdown.WasChanged();
+        }
+        if resetScroll and inspectorScroll != null {
+            inspectorScroll.SetScroll(0.0, 0.0);
+            pendingInspectorScrollY = 0.0;
+        }
         UpdateInspectorScope();
     }
 

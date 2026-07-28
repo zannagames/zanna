@@ -363,18 +363,29 @@ func main() {
     }
 
     // Selection-scoped inspector: node groups appear only with a selection,
-    // single-selection groups need exactly one node, and scene-scoped groups
-    // stay visible with the loaded scene. Scoping is pure presentation.
+    // single-selection groups need exactly one node, and the Scene tab
+    // discloses one complete topic at a time. Scoping is pure presentation.
     var emptySelection: List[Integer] = [];
     editor.SelectSceneNodes(emptySelection, -1);
     editor.Pump(sceneDoc);
+    editor.SetSceneInspectorSection(
+        scene_editor_3d.SCENE_INSPECTOR_WORLD, false);
     if editor.lightInspector.group.IsVisible()
        or editor.nameInput.IsVisible()
        or editor.cameraInspector.group.IsVisible()
-       or editor.bakeGroup.IsVisible() == false
+       or editor.bakeGroup.IsVisible()
        or editor.envGroup.IsVisible() == false {
         Fail(shell, harness,
-             "empty selection did not scope the inspector to scene groups");
+             "empty selection did not scope the inspector to World");
+        return;
+    }
+    editor.SetSceneInspectorSection(
+        scene_editor_3d.SCENE_INSPECTOR_LIGHTING, false);
+    if editor.bakeGroup.IsVisible() == false
+       or editor.envGroup.IsVisible()
+       or sceneDoc.content != canonical {
+        Fail(shell, harness,
+             "Lighting topic did not isolate its complete scene group");
         return;
     }
     editor.SelectSceneNodes([0], 0);
@@ -807,16 +818,21 @@ func main() {
         return;
     }
 
-    // Run Scene affordance (4.1): the button raises a one-shot request
-    // the app dispatcher consumes; nothing here touches content.
+    // Run Scene affordance (4.1): the Scene-menu command raises a one-shot
+    // request the app dispatcher consumes; nothing here touches content.
     var runBaseline = sceneDoc.content;
-    ClickWidget(shell, harness, editor.runSceneButton);
+    ClickWidget(shell, harness, editor.sceneMenuButton);
+    editor.Pump(sceneDoc);
+    shell.Render();
+    // New, Import Asset, Import Instance, separator, then Run.
+    ClickCommandMenuOffset(
+        shell, harness, editor.sceneMenuButton, 111.0);
     editor.Pump(sceneDoc);
     if editor.TakeRunSceneRequested() == false
        or editor.TakeRunSceneRequested()
        or sceneDoc.content != runBaseline {
         Fail(shell, harness,
-             "Run Scene button did not raise a one-shot request");
+             "Run Scene menu command did not raise a one-shot request");
         return;
     }
 

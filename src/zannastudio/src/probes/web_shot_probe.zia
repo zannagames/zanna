@@ -1,0 +1,283 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/web_shot_probe.zia
+// Purpose: Capture real Zanna Studio frames as PNGs for the zannagames.com site.
+// Key invariants:
+//   - Frames come from a production AppShell through the normal build,
+//     activate, poll, and render path; no surface is staged for the camera.
+//   - Each capture owns a fresh shell so no shot inherits another's state.
+//   - The probe only reads project files; it never writes into the workspace.
+// Ownership/Lifetime:
+//   - Each capture owns one AppShell and one TestHarness and releases both
+//     before returning, whether or not the capture succeeded.
+// Links: zannastudio/src/probes/smoke_probe.zia,
+//        zannastudio/src/probes/scene_shaded_viewport_probe.zia,
+//        zannaweb/README.md
+//
+//===----------------------------------------------------------------------===//
+
+module web_shot_probe;
+
+// ============================================================================
+// MODULE: web_shot_probe
+// PURPOSE: Produce the Studio screenshots used on zannagames.com.
+//
+// WHERE-THIS-FITS: This is a capture tool, not a regression probe. It asserts
+//          only enough to guarantee the PNG it wrote is a real, populated
+//          frame rather than a blank or transparent one.
+//
+// TEACHING-NOTE: Capture goes through Zanna.GUI.TestHarness.CapturePixels,
+//          which deep-copies the physical framebuffer. Requesting a region
+//          larger than the window yields transparent samples, so the probe
+//          reports the opaque coverage it measured and refuses to claim
+//          success on an empty frame.
+// ============================================================================
+
+bind "../core/document_manager";
+bind "../editor/editor_engine";
+bind "../editor/editor_tabs";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_2d";
+bind "../ui/scene_editor_3d";
+bind "../ui/scene_panels_2d";
+bind "../ui/scene_panels_3d";
+
+bind Env = Zanna.System.Environment;
+bind GUI = Zanna.GUI;
+bind Math = Zanna.Math;
+bind Parse = Zanna.Core.Parse;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Terminal = Zanna.Terminal;
+
+func EnvInt(name: String, fallback: Integer) -> Integer {
+    var raw = Env.GetVariable(name);
+    if raw == "" { return fallback; }
+    return Parse.IntOr(raw, fallback);
+}
+
+func EnvText(name: String, fallback: String) -> String {
+    var raw = Env.GetVariable(name);
+    if raw == "" { return fallback; }
+    return raw;
+}
+
+func Alpha(px: Integer) -> Integer { return Math.Bits.And(px, 0xFF); }
+
+/// @brief Save a capture, reporting the opaque coverage that proves it is real.
+/// @return True when the frame was populated and written.
+func Emit(harness: GUI.TestHarness,
+          width: Integer,
+          height: Integer,
+          path: String,
+          label: String) -> Boolean {
+    var frame = harness.CapturePixels(0, 0, width, height);
+    if frame == null {
+        Terminal.Say("FAIL " + label + " capture returned null");
+        return false;
+    }
+
+    var actualWidth = Pixels.get_Width(frame);
+    var actualHeight = Pixels.get_Height(frame);
+    var opaque = 0;
+    var samples = 0;
+    var y = 0;
+    while y < actualHeight {
+        var x = 0;
+        while x < actualWidth {
+            if Alpha(Pixels.Get(frame, x, y)) > 8 { opaque = opaque + 1; }
+            samples = samples + 1;
+            x = x + 7;
+        }
+        y = y + 7;
+    }
+    if samples == 0 {
+        Terminal.Say("FAIL " + label + " capture produced no samples");
+        return false;
+    }
+
+    var coverage = (opaque + 0.0) * 100.0 / (samples + 0.0);
+    if coverage < 50.0 {
+        Terminal.Say("FAIL " + label + " frame is mostly transparent" +
+                     " coverage=" + toString(opaque) + "/" + toString(samples));
+        return false;
+    }
+    if Pixels.SavePng(frame, path) != 1 {
+        Terminal.Say("FAIL " + label + " write path=" + path);
+        return false;
+    }
+
+    Terminal.Say("OK " + label +
+                 " size=" + toString(actualWidth) + "x" + toString(actualHeight) +
+                 " opaque=" + toString(opaque) + "/" + toString(samples) +
+                 " path=" + path);
+    return true;
+}
+
+/// @brief Capture the 3D scene editor with an authored .scene3d open.
+func Shoot3D(width: Integer, height: Integer, outDir: String, scenePath: String) {
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio", width, height);
+    shell.Activate();
+
+    var editor = new scene_editor_3d.SceneEditor3D();
+    scene_panels_3d.Build(editor, shell.workbench.scene3DHost, shell.app);
+
+    var documents = new document_manager.DocumentManager();
+    var doc = documents.OpenFile(scenePath);
+    if doc == null {
+        Terminal.Say("FAIL scene3d could not open " + scenePath);
+        shell.Destroy();
+        return;
+    }
+
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_3D);
+    editor.Activate(doc);
+    editor.Pump(doc);
+    shell.Poll();
+    shell.Render();
+
+    // Frame the authored geometry, which is what an author actually looks at
+    // rather than the default empty-camera view.
+    editor.FrameAll();
+    editor.Pump(doc);
+    shell.Poll();
+    shell.Render();
+
+    shell.SetStatusLeft("Scene");
+    shell.SetStatusRight(doc.fileName);
+    shell.Poll();
+    shell.Render();
+
+    var harness = GUI.TestHarness.New();
+    if harness.BindApp(shell.app) == false {
+        Terminal.Say("FAIL scene3d harness binding");
+        shell.Destroy();
+        return;
+    }
+    harness.RenderFrame(16.0);
+    Emit(harness, width, height, outDir + "/studio-scene3d.png", "scene3d");
+    harness.UnbindApp();
+    shell.Destroy();
+}
+
+/// @brief Capture the 2D scene editor with an authored .scene2d open.
+func Shoot2D(width: Integer, height: Integer, outDir: String, scenePath: String) {
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio", width, height);
+    shell.Activate();
+
+    var editor = new scene_editor_2d.SceneEditor2D();
+    scene_panels_2d.Build(editor, shell.workbench.scene2DHost, shell.app);
+
+    var documents = new document_manager.DocumentManager();
+    var doc = documents.OpenFile(scenePath);
+    if doc == null {
+        Terminal.Say("FAIL scene2d could not open " + scenePath);
+        shell.Destroy();
+        return;
+    }
+
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_2D);
+    editor.Activate(doc);
+    editor.Pump(doc);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(doc);
+    shell.Poll();
+    shell.Render();
+
+    shell.SetStatusLeft("Scene");
+    shell.SetStatusRight(doc.fileName);
+    shell.Poll();
+    shell.Render();
+
+    var harness = GUI.TestHarness.New();
+    if harness.BindApp(shell.app) == false {
+        Terminal.Say("FAIL scene2d harness binding");
+        shell.Destroy();
+        return;
+    }
+    harness.RenderFrame(16.0);
+    Emit(harness, width, height, outDir + "/studio-scene2d.png", "scene2d");
+    harness.UnbindApp();
+    shell.Destroy();
+}
+
+/// @brief Capture the code surface with a real Zia source file open.
+func ShootCode(width: Integer, height: Integer, outDir: String, sourcePath: String) {
+    var shell = new app_shell.AppShell();
+    var documents = new document_manager.DocumentManager();
+    var engine = new editor_engine.EditorEngine();
+    var tabs = new editor_tabs.EditorTabs();
+
+    shell.Build("Zanna Studio", width, height);
+    shell.Activate();
+    engine.Setup(shell.workbench.editorRow);
+    tabs.Setup(shell.workbench.tabBar);
+
+    var doc = documents.OpenFile(sourcePath);
+    if doc == null {
+        Terminal.Say("FAIL code could not open " + sourcePath);
+        shell.Destroy();
+        return;
+    }
+
+    tabs.AddTab(doc.fileName, 1);
+    tabs.SetActive(0);
+    engine.LoadDocument(doc);
+
+    // Scroll past the license header so the frame shows real code.
+    var topLine = EnvInt("ZANNA_SHOT_LINE", 0);
+    engine.editor.ScrollTopLine = topLine;
+    engine.editor.SetCursor(topLine, 0);
+
+    shell.SetStatusLeft("Zia");
+    shell.SetStatusCenter("Ln " + toString(topLine + 1) + ", Col 1");
+    shell.SetStatusRight(doc.fileName);
+    shell.ApplyWorkbenchWindowConstraints();
+    shell.Poll();
+    shell.Render();
+    shell.Poll();
+    shell.Render();
+
+    var harness = GUI.TestHarness.New();
+    if harness.BindApp(shell.app) == false {
+        Terminal.Say("FAIL code harness binding");
+        shell.Destroy();
+        return;
+    }
+    harness.RenderFrame(16.0);
+    Emit(harness, width, height, outDir + "/studio-editor.png", "code");
+    harness.UnbindApp();
+    shell.Destroy();
+}
+
+func main() {
+    var width = EnvInt("ZANNA_SHOT_W", 1440);
+    var height = EnvInt("ZANNA_SHOT_H", 900);
+    var outDir = EnvText("ZANNA_SHOT_OUT", ".");
+    var which = EnvText("ZANNA_SHOT_WHICH", "all");
+
+    var scene3d = EnvText("ZANNA_SHOT_SCENE3D",
+        "examples/games/ashfall-scenes/assets/scenes/mission-03.scene3d");
+    var scene2d = EnvText("ZANNA_SHOT_SCENE2D",
+        "examples/games/xenoscape-scenes/assets/scenes/region-01.scene2d");
+    var source = EnvText("ZANNA_SHOT_SOURCE",
+        "examples/3d/game3d_hello.zia");
+
+    if which == "all" or which == "3d" {
+        Shoot3D(width, height, outDir, scene3d);
+    }
+    if which == "all" or which == "2d" {
+        Shoot2D(width, height, outDir, scene2d);
+    }
+    if which == "all" or which == "code" {
+        ShootCode(width, height, outDir, source);
+    }
+}

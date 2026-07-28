@@ -130,6 +130,8 @@ func RevealLayerActions(editor: scene_editor_2d.SceneEditor2D,
                         sceneDoc: document.Document,
                         shell: app_shell.AppShell) {
     editor.SetInspectorSceneTab(true);
+    editor.SetSceneInspectorSection(
+        scene_editor_2d.SCENE_INSPECTOR_LAYERS, false);
     editor.inspectorScroll.ScrollTo(editor.addLayerButton);
     Pump(editor, sceneDoc, shell);
 }

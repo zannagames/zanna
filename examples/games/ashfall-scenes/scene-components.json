@@ -1,5 +1,5 @@
 {
-  "version": 13,
+  "version": 15,
   "components": [
     {
       "name": "enemy-spawn",
@@ -333,6 +333,39 @@
       "assets/editor-previews/environment-terrain-01.scene3d",
       "assets/editor-previews/environment-terrain-02.scene3d",
       "assets/editor-previews/environment-terrain-03.scene3d"
+    ],
+    "waterLayers": [
+      {
+        "matchProperty": "af.wantWater",
+        "matchValue": true,
+        "positionXProperty": "af.watX",
+        "positionYProperty": "af.watY",
+        "positionZProperty": "af.watZ",
+        "widthProperty": "af.watW",
+        "depthProperty": "af.watD",
+        "widthMultiplier": 2.0,
+        "depthMultiplier": 2.0,
+        "texture": "assets/editor-previews/water-albedo.png",
+        "normalMap": "assets/editor-previews/water-normal.png",
+        "resolution": 64,
+        "animate": true,
+        "waves": [
+          {
+            "dirX": 1.0,
+            "dirZ": 0.3,
+            "speed": 0.05,
+            "amplitude": 0.4,
+            "wavelength": 1.2
+          },
+          {
+            "dirX": -0.4,
+            "dirZ": 0.8,
+            "speed": 0.035,
+            "amplitude": 0.7,
+            "wavelength": 0.8
+          }
+        ]
+      }
     ],
     "fogRProperty": "lenv.horR",
     "fogGProperty": "lenv.horG",

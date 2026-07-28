@@ -14,7 +14,8 @@
 //     node prefab, version-6 sky/light, version-7 lens/atmosphere, and
 //     version-8 2D backdrop, version-9 3D environment, version-10 post-FX,
 //     version-11 2D object draw stacks, version-12 game-output frames, and
-//     version-13 component creation recipes.
+//     version-13 component creation recipes, version-14 additive 3D
+//     environment layers, and version-15 runtime-backed water layers.
 //   - File writes are atomic, conflict-aware, and exactly undoable/redoable.
 // Ownership/Lifetime: The probe owns only temporary schema files and records.
 // Links: zannastudio/src/ui/scene_component_authoring.zia,
@@ -30,7 +31,9 @@
 //        docs/adr/0204-project-owned-3d-post-processing-previews.md,
 //        docs/adr/0206-project-owned-2d-object-preview-draw-stacks.md,
 //        docs/adr/0208-project-authored-game-output-frames.md,
-//        docs/adr/0209-project-component-creation-recipes.md
+//        docs/adr/0209-project-component-creation-recipes.md,
+//        docs/adr/0212-additive-3d-environment-preview-layers.md,
+//        docs/adr/0213-runtime-backed-water-preview-layers.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -648,6 +651,119 @@ func main() {
         fail(
             "",
             "component edit discarded a version-12 game-output frame");
+        return;
+    }
+
+    var environmentLayerText =
+        "{\"version\":14,\"components\":["
+        + "{\"name\":\"water\",\"target\":\"3d-node\",\"fields\":["
+        + "{\"key\":\"water.enabled\",\"type\":\"bool\","
+        + "\"default\":true}]}],"
+        + "\"scenePreview3D\":{\"environmentLayers\":["
+        + "{\"matchProperty\":\"world.water\",\"matchValue\":true,"
+        + "\"prefab\":\"assets/water.scene3d\","
+        + "\"positionXProperty\":\"water.x\","
+        + "\"scaleXProperty\":\"water.halfWidth\","
+        + "\"scaleZProperty\":\"water.halfDepth\"}]}}";
+    var environmentLayerEdit =
+        scene_component_authoring.UpdateField(
+            environmentLayerText,
+            "water",
+            "water.enabled",
+            "water.enabled",
+            "Water enabled",
+            "bool",
+            "false",
+            "",
+            "");
+    var environmentLayerSchema =
+        scene_component_schema.ParseText(
+            environmentLayerEdit.content, "memory");
+    if environmentLayerEdit.ok == false
+       or environmentLayerEdit.changed == false
+       or environmentLayerSchema.valid == false
+       or environmentLayerSchema.version
+          != scene_component_schema
+              .ADDITIVE_ENVIRONMENT_LAYERS_SCHEMA_VERSION
+       or environmentLayerSchema.scenePreview3D
+              .environmentLayers.count() != 1
+       or environmentLayerSchema.scenePreview3D
+              .environmentLayers.get(0).matchKind != "bool"
+       or environmentLayerSchema.scenePreview3D
+              .environmentLayers.get(0).matchBoolean == false
+       or environmentLayerSchema.scenePreview3D
+              .environmentLayers.get(0).positionXProperty != "water.x"
+       or environmentLayerSchema.scenePreview3D
+              .environmentLayers.get(0).scaleXProperty
+          != "water.halfWidth"
+       or environmentLayerSchema.scenePreview3D
+              .environmentLayers.get(0).scaleZProperty
+          != "water.halfDepth" {
+        fail(
+            "",
+            "component edit discarded a version-14 environment layer");
+        return;
+    }
+
+    var waterLayerText =
+        "{\"version\":15,\"components\":["
+        + "{\"name\":\"water\",\"target\":\"3d-node\",\"fields\":["
+        + "{\"key\":\"water.enabled\",\"type\":\"bool\","
+        + "\"default\":true}]}],"
+        + "\"scenePreview3D\":{\"waterLayers\":["
+        + "{\"matchProperty\":\"world.water\",\"matchValue\":true,"
+        + "\"positionXProperty\":\"water.x\","
+        + "\"positionY\":0.25,"
+        + "\"widthProperty\":\"water.halfWidth\","
+        + "\"depthProperty\":\"water.halfDepth\","
+        + "\"widthMultiplier\":2.0,\"depthMultiplier\":2.0,"
+        + "\"texture\":\"assets/water.png\","
+        + "\"normalMap\":\"assets/water-normal.png\","
+        + "\"resolution\":48,\"animate\":true,\"waves\":["
+        + "{\"dirX\":1.0,\"dirZ\":0.25,\"speed\":0.05,"
+        + "\"amplitude\":0.4,\"wavelength\":1.2}]}]}}";
+    var waterLayerEdit =
+        scene_component_authoring.UpdateField(
+            waterLayerText,
+            "water",
+            "water.enabled",
+            "water.enabled",
+            "Water enabled",
+            "bool",
+            "false",
+            "",
+            "");
+    var waterLayerSchema =
+        scene_component_schema.ParseText(
+            waterLayerEdit.content, "memory");
+    var retainedWater =
+        waterLayerSchema.scenePreview3D.waterLayers;
+    if waterLayerEdit.ok == false
+       or waterLayerEdit.changed == false
+       or waterLayerSchema.valid == false
+       or waterLayerSchema.version
+          != scene_component_schema
+              .RUNTIME_WATER_PREVIEW_3D_SCHEMA_VERSION
+       or retainedWater.count() != 1
+       or retainedWater.get(0).matchKind != "bool"
+       or retainedWater.get(0).matchBoolean == false
+       or retainedWater.get(0).positionXProperty != "water.x"
+       or near(retainedWater.get(0).positionY, 0.25) == false
+       or retainedWater.get(0).widthProperty != "water.halfWidth"
+       or retainedWater.get(0).depthProperty != "water.halfDepth"
+       or near(retainedWater.get(0).widthMultiplier, 2.0) == false
+       or near(retainedWater.get(0).depthMultiplier, 2.0) == false
+       or retainedWater.get(0).texture != "assets/water.png"
+       or retainedWater.get(0).normalMap != "assets/water-normal.png"
+       or retainedWater.get(0).resolution != 48
+       or retainedWater.get(0).animate == false
+       or retainedWater.get(0).waves.count() != 1
+       or near(
+              retainedWater.get(0).waves.get(0).wavelength,
+              1.2) == false {
+        fail(
+            "",
+            "component edit discarded a version-15 runtime water layer");
         return;
     }
 

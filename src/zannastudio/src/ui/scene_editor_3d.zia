@@ -14,9 +14,13 @@
 //   - One complete gizmo drag creates one local-transform history snapshot.
 //   - Compact windows cycle hierarchy, viewport, and inspector at full width;
 //     no authoring surface becomes an inaccessible sliver.
-//   - Constrained command bars keep primary creation, transform, and gameplay
-//     actions direct while complete secondary sets remain reachable through
-//     truthful Create, Placement, and View overflow menus.
+//   - Progressive command bars keep active transforms, viewport context, Game
+//     View, and contextual pane navigation direct while complete document,
+//     creation, placement, camera, overlay, and layout commands remain
+//     reachable through truthful Scene, Create, Placement, and View menus at
+//     every width.
+//   - The Scene inspector discloses one complete per-document topic at a time;
+//     world, bake, assets, materials, and history never compete in one page.
 //   - Focus presentation temporarily collapses every non-floating scene pane
 //     and restores the exact per-document layout without persisting the detour.
 //   - Per-document Game View renders only authored/project gameplay pixels;
@@ -54,6 +58,12 @@
 //     never changes canonical VSCN content, revision, history, or dirty state.
 //   - Project node previews instantiate only into a bounded transient graph;
 //     rendering and picking map back to canonical metadata marker identities.
+//   - Schema-v14 environment layers compose independently matched, root-
+//     metadata-transformed preview prefabs beside the base environment without
+//     entering the hierarchy, selection, serialization, or history.
+//   - Schema-v15 water layers build the public runtime Water3D path from
+//     bounded project data; canonical, prefab, and procedural presentation
+//     share one deferred frame, depth buffer, transparent sort, and post-FX.
 //   - Project gameplay view can be reapplied after navigation without changing
 //     canonical VSCN bytes, dirty state, revision, or undo history.
 //   - Project sky palettes and directional rigs resolve typed root metadata
@@ -131,12 +141,15 @@
 //        docs/adr/0199-project-owned-3d-node-prefab-previews.md,
 //        docs/adr/0200-project-owned-3d-sky-and-light-preview-rigs.md,
 //        docs/adr/0201-project-owned-3d-lens-and-atmosphere-previews.md,
+//        docs/adr/0203-project-owned-3d-scene-environment-previews.md,
 //        docs/adr/0204-project-owned-3d-post-processing-previews.md,
 //        docs/adr/0207-non-destructive-scene-game-view.md,
 //        docs/adr/0208-project-authored-game-output-frames.md,
 //        docs/adr/0209-project-component-creation-recipes.md,
 //        docs/adr/0210-read-only-mesh-vertex-positions.md,
-//        docs/adr/0211-canonical-mesh-terrain-sculpting.md
+//        docs/adr/0211-canonical-mesh-terrain-sculpting.md,
+//        docs/adr/0212-additive-3d-environment-preview-layers.md,
+//        docs/adr/0213-runtime-backed-water-preview-layers.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -200,6 +213,7 @@ bind PostFX3D = Zanna.Graphics3D.PostFX3D;
 bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
 bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
 bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
 bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
 bind Pixels = Zanna.Graphics.Pixels;
 bind Color = Zanna.Graphics.Color;
@@ -233,6 +247,8 @@ final MAX_TEXTURE_SOURCE_BYTES: Integer = 16000000;
 final MAX_EDITOR_NODES: Integer = 4096;
 final MAX_PROJECT_PREVIEW_NODES: Integer = 4096;
 final MAX_PROJECT_PREVIEW_ASSETS: Integer = 256;
+final PROJECT_WATER_ANIMATION_FRAME_MS: Integer = 33;
+final PROJECT_WATER_MAX_STEP_MS: Integer = 100;
 final MAX_HIERARCHY_DEPTH: Integer = 256;
 final MAX_3D_SCENE_HISTORY: Integer = 100;
 final DEG_TO_RAD: Number = 0.017453292519943295;
@@ -250,9 +266,10 @@ final GIZMO_PLANE_OUTER_FRACTION: Number = 0.55;
 // hosts, keeping dock-heavy desktop windows concise without oversized rows.
 final COMPACT_SCENE_3D_WIDTH: Number = 980.0;
 final COMPACT_SCENE_3D_CHROME_WIDTH: Number = 700.0;
-// Below this width the denser secondary actions move to complete overflow
-// menus, avoiding defensive multi-row toolbar height.
-final WRAPPED_SCENE_3D_VIEW_WIDTH: Number = 1180.0;
+final SCENE_INSPECTOR_WORLD: Integer = 0;
+final SCENE_INSPECTOR_LIGHTING: Integer = 1;
+final SCENE_INSPECTOR_ASSETS: Integer = 2;
+final SCENE_INSPECTOR_HISTORY: Integer = 3;
 // Three persistent columns need enough room for readable node paths, a useful
 // viewport, and an inspector that does not collapse every field. Below this
 // width the hierarchy remains one click away as a full-width master.
@@ -663,12 +680,12 @@ expose func UsesCompactChrome(width: Number) -> Boolean {
     return width > 0.0 and width <= COMPACT_SCENE_3D_CHROME_WIDTH;
 }
 
-/// @brief Return whether complete secondary command sets belong in overflow.
-/// @details The threshold is the width at which the dense view strip would
-///          otherwise need defensive multi-row height. Desktop-wide lanes
-///          retain the familiar direct buttons.
+/// @brief Return whether complete secondary command sets belong in menus.
+/// @details Progressive disclosure is width-independent: growing a scene lane
+///          gives the authored viewport more room instead of exposing every
+///          secondary action at once. Zero denotes an unmeasured host.
 expose func UsesSceneCommandMenus(width: Number) -> Boolean {
-    return width > 0.0 and width < WRAPPED_SCENE_3D_VIEW_WIDTH;
+    return width > 0.0;
 }
 
 /// @brief Return whether the hierarchy may remain docked beside viewport detail.
@@ -782,6 +799,25 @@ class TerrainPointerHit3D {
         localX = 0.0;
         localY = 0.0;
         localZ = 0.0;
+    }
+}
+
+/// @brief Resolved, validated runtime-water geometry for one scene root.
+class ProjectWaterPreviewState {
+    expose Boolean valid;
+    expose Number width;
+    expose Number depth;
+    expose Number x;
+    expose Number y;
+    expose Number z;
+
+    expose func init() {
+        valid = false;
+        width = 1.0;
+        depth = 1.0;
+        x = 0.0;
+        y = 0.0;
+        z = 0.0;
     }
 }
 
@@ -899,6 +935,12 @@ class SceneEditor3D {
     expose GUI.Label viewSectionLabel;
     expose GUI.Label transformSectionLabel;
     expose GUI.Label zoomSectionLabel;
+    expose GUI.Button sceneMenuButton;
+    expose GUI.ContextMenu sceneMenu;
+    expose GUI.MenuItem sceneNewItem;
+    expose GUI.MenuItem sceneImportAssetItem;
+    expose GUI.MenuItem sceneImportInstanceItem;
+    expose GUI.MenuItem sceneRunItem;
     expose GUI.Button newSceneButton;
     expose GUI.Button importAssetButton;
     expose GUI.Button createMenuButton;
@@ -1041,6 +1083,9 @@ class SceneEditor3D {
     expose GUI.GroupBox componentAssetHost;
     expose GUI.Button objectTabButton;
     expose GUI.Button sceneTabButton;
+    expose GUI.HBox sceneSectionRow;
+    expose GUI.Dropdown sceneSectionDropdown;
+    expose Integer sceneInspectorSection;
     expose Boolean inspectorSceneTab;
     hide Boolean inspectorAutoFollowHadSelection;
     expose GUI.HBox addComponentRow;
@@ -1109,6 +1154,16 @@ class SceneEditor3D {
     hide List[SceneAsset] projectPreviewAssets;
     hide List[SceneNode] projectPreviewNodes;
     hide List[Integer] projectPreviewOwners;
+    expose List[Water3D] projectWaterPreviews;
+    expose List[Number] projectWaterWidths;
+    expose List[Number] projectWaterDepths;
+    expose List[Number] projectWaterXs;
+    expose List[Number] projectWaterYs;
+    expose List[Number] projectWaterZs;
+    hide List[Boolean] projectWaterAnimated;
+    hide List[String] projectWaterImagePaths;
+    hide List[Pixels] projectWaterImages;
+    hide Integer projectWaterLastAnimationMs;
     expose document.Document currentDoc;
     expose SceneGraph scene;
     expose Pixels viewportPixels;
@@ -1331,6 +1386,12 @@ class SceneEditor3D {
         viewSectionLabel = null;
         transformSectionLabel = null;
         zoomSectionLabel = null;
+        sceneMenuButton = null;
+        sceneMenu = null;
+        sceneNewItem = null;
+        sceneImportAssetItem = null;
+        sceneImportInstanceItem = null;
+        sceneRunItem = null;
         newSceneButton = null;
         importAssetButton = null;
         createMenuButton = null;
@@ -1478,6 +1539,9 @@ class SceneEditor3D {
         componentAssetHost = null;
         objectTabButton = null;
         sceneTabButton = null;
+        sceneSectionRow = null;
+        sceneSectionDropdown = null;
+        sceneInspectorSection = SCENE_INSPECTOR_WORLD;
         inspectorSceneTab = true;
         inspectorAutoFollowHadSelection = false;
         addComponentRow = null;
@@ -1555,6 +1619,16 @@ class SceneEditor3D {
         projectPreviewAssets = [];
         projectPreviewNodes = [];
         projectPreviewOwners = [];
+        projectWaterPreviews = [];
+        projectWaterWidths = [];
+        projectWaterDepths = [];
+        projectWaterXs = [];
+        projectWaterYs = [];
+        projectWaterZs = [];
+        projectWaterAnimated = [];
+        projectWaterImagePaths = [];
+        projectWaterImages = [];
+        projectWaterLastAnimationMs = 0;
         currentDoc = null;
         scene = null;
         viewportPixels = null;
@@ -1879,6 +1953,331 @@ class SceneEditor3D {
         return profile.environmentPrefab;
     }
 
+    /// @brief Match one exact typed scalar against the canonical scene root.
+    hide func ProjectRootMetadataMatches(
+        matchProperty: String,
+        matchKind: String,
+        matchBoolean: Boolean,
+        matchInteger: Integer,
+        matchString: String) -> Boolean {
+        if scene == null or scene.Root == null
+           or matchProperty == ""
+           or scene.Root.MetadataHas(matchProperty) == false
+           or scene.Root.MetadataKind(matchProperty) != matchKind {
+            return false;
+        }
+        if matchKind == "bool" {
+            return scene.Root.MetadataGetBool(
+                matchProperty, false) == matchBoolean;
+        }
+        if matchKind == "int" {
+            return scene.Root.MetadataGetInt(
+                matchProperty, 0) == matchInteger;
+        }
+        if matchKind == "string" {
+            return scene.Root.MetadataGetString(
+                matchProperty, "") == matchString;
+        }
+        return false;
+    }
+
+    /// @brief Return whether one additive layer matches exact typed root data.
+    hide func ProjectEnvironmentLayerMatches(
+        layer: scene_component_schema.SceneEnvironmentLayer3DDefinition)
+        -> Boolean {
+        if layer == null { return false; }
+        return ProjectRootMetadataMatches(
+            layer.matchProperty,
+            layer.matchKind,
+            layer.matchBoolean,
+            layer.matchInteger,
+            layer.matchString);
+    }
+
+    /// @brief Validate every configured additive-layer transform property.
+    /// @details A missing mapping uses identity; an explicitly mapped property
+    ///          must remain a float so malformed scene data cannot silently
+    ///          relocate a project preview.
+    hide func ProjectEnvironmentLayerTransformUsable(
+        layer: scene_component_schema.SceneEnvironmentLayer3DDefinition)
+        -> Boolean {
+        if scene == null or scene.Root == null or layer == null {
+            return false;
+        }
+        var properties: List[String] = [
+            layer.positionXProperty,
+            layer.positionYProperty,
+            layer.positionZProperty,
+            layer.scaleXProperty,
+            layer.scaleYProperty,
+            layer.scaleZProperty,
+            layer.yawProperty
+        ];
+        var index = 0;
+        while index < properties.count() {
+            var mappedProperty = properties.get(index);
+            if mappedProperty != ""
+               and (scene.Root.MetadataHas(mappedProperty) == false
+                    or scene.Root.MetadataKind(mappedProperty) != "float") {
+                return false;
+            }
+            index = index + 1;
+        }
+        return true;
+    }
+
+    /// @brief Resolve one additive layer's bounded root-metadata transform.
+    hide func ProjectEnvironmentLayerWorldMatrix(
+        layer: scene_component_schema.SceneEnvironmentLayer3DDefinition)
+        -> Mat4 {
+        var rootNode = scene.Root;
+        var x = 0.0;
+        var y = 0.0;
+        var z = 0.0;
+        var scaleX = 1.0;
+        var scaleY = 1.0;
+        var scaleZ = 1.0;
+        var yaw = 0.0;
+        if layer.positionXProperty != "" {
+            x = ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    layer.positionXProperty, 0.0),
+                -1000000.0, 1000000.0);
+        }
+        if layer.positionYProperty != "" {
+            y = ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    layer.positionYProperty, 0.0),
+                -1000000.0, 1000000.0);
+        }
+        if layer.positionZProperty != "" {
+            z = ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    layer.positionZProperty, 0.0),
+                -1000000.0, 1000000.0);
+        }
+        if layer.scaleXProperty != "" {
+            scaleX = ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    layer.scaleXProperty, 1.0),
+                -1000.0, 1000.0);
+        }
+        if layer.scaleYProperty != "" {
+            scaleY = ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    layer.scaleYProperty, 1.0),
+                -1000.0, 1000.0);
+        }
+        if layer.scaleZProperty != "" {
+            scaleZ = ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    layer.scaleZProperty, 1.0),
+                -1000.0, 1000.0);
+        }
+        if layer.yawProperty != "" {
+            yaw = ClampNumber3D(
+                rootNode.MetadataGetFloat(layer.yawProperty, 0.0),
+                -1000000.0, 1000000.0);
+            if layer.yawUnit == "degrees" {
+                yaw = yaw * DEG_TO_RAD;
+            }
+        }
+        return Mat4.Mul(
+            Mat4.Translate(x, y, z),
+            Mat4.Mul(
+                Mat4.RotateY(yaw),
+                Mat4.Scale(scaleX, scaleY, scaleZ)));
+    }
+
+    /// @brief Return whether one runtime water layer is active for this scene.
+    hide func ProjectWaterLayerMatches(
+        layer: scene_component_schema.SceneWaterLayer3DDefinition)
+        -> Boolean {
+        if layer == null { return false; }
+        return ProjectRootMetadataMatches(
+            layer.matchProperty,
+            layer.matchKind,
+            layer.matchBoolean,
+            layer.matchInteger,
+            layer.matchString);
+    }
+
+    /// @brief Resolve one runtime water layer from typed root metadata.
+    /// @details Configured mappings replace their static values and must remain
+    ///          floats. Invalid or nonpositive resolved dimensions fail closed.
+    hide func ResolveProjectWaterLayer(
+        layer: scene_component_schema.SceneWaterLayer3DDefinition)
+        -> ProjectWaterPreviewState {
+        var state = new ProjectWaterPreviewState();
+        if scene == null or scene.Root == null or layer == null {
+            return state;
+        }
+        var properties: List[String] = [
+            layer.positionXProperty,
+            layer.positionYProperty,
+            layer.positionZProperty,
+            layer.widthProperty,
+            layer.depthProperty
+        ];
+        var index = 0;
+        while index < properties.count() {
+            var mappedProperty = properties.get(index);
+            if mappedProperty != ""
+               and (scene.Root.MetadataHas(mappedProperty) == false
+                    or scene.Root.MetadataKind(mappedProperty) != "float") {
+                return state;
+            }
+            index = index + 1;
+        }
+        state.x = layer.positionX;
+        state.y = layer.positionY;
+        state.z = layer.positionZ;
+        state.width = layer.width;
+        state.depth = layer.depth;
+        if layer.positionXProperty != "" {
+            state.x = scene.Root.MetadataGetFloat(
+                layer.positionXProperty, state.x);
+        }
+        if layer.positionYProperty != "" {
+            state.y = scene.Root.MetadataGetFloat(
+                layer.positionYProperty, state.y);
+        }
+        if layer.positionZProperty != "" {
+            state.z = scene.Root.MetadataGetFloat(
+                layer.positionZProperty, state.z);
+        }
+        if layer.widthProperty != "" {
+            state.width = scene.Root.MetadataGetFloat(
+                layer.widthProperty, state.width);
+        }
+        if layer.depthProperty != "" {
+            state.depth = scene.Root.MetadataGetFloat(
+                layer.depthProperty, state.depth);
+        }
+        state.width = state.width * layer.widthMultiplier;
+        state.depth = state.depth * layer.depthMultiplier;
+        if state.width
+              < scene_component_schema.MIN_SCENE_WATER_PREVIEW_SIZE
+           or state.width
+              > scene_component_schema.MAX_SCENE_WATER_PREVIEW_SIZE
+           or state.depth
+              < scene_component_schema.MIN_SCENE_WATER_PREVIEW_SIZE
+           or state.depth
+              > scene_component_schema.MAX_SCENE_WATER_PREVIEW_SIZE {
+            return state;
+        }
+        state.x = ClampNumber3D(
+            state.x,
+            0.0 - scene_component_schema
+                .MAX_SCENE_WATER_PREVIEW_POSITION,
+            scene_component_schema.MAX_SCENE_WATER_PREVIEW_POSITION);
+        state.y = ClampNumber3D(
+            state.y,
+            0.0 - scene_component_schema
+                .MAX_SCENE_WATER_PREVIEW_POSITION,
+            scene_component_schema.MAX_SCENE_WATER_PREVIEW_POSITION);
+        state.z = ClampNumber3D(
+            state.z,
+            0.0 - scene_component_schema
+                .MAX_SCENE_WATER_PREVIEW_POSITION,
+            scene_component_schema.MAX_SCENE_WATER_PREVIEW_POSITION);
+        state.valid = true;
+        return state;
+    }
+
+    /// @brief Load and cache one bounded project-owned water image.
+    hide func ProjectWaterImage(reference: String) -> Pixels {
+        if reference == "" { return null; }
+        var index = 0;
+        while index < projectWaterImagePaths.count() {
+            if projectWaterImagePaths.get(index) == reference {
+                return projectWaterImages.get(index);
+            }
+            index = index + 1;
+        }
+        if projectWaterImagePaths.count()
+           >= scene_component_schema.MAX_SCENE_WATER_PREVIEW_LAYERS * 2 {
+            projectPreviewClipped = true;
+            return null;
+        }
+        var root = ComponentSchemaRoot();
+        if root == "" { return null; }
+        var fullPath = Path.Join(root, reference);
+        var sourceBytes = safe_io.SizeBytes(fullPath);
+        if sourceBytes <= 0 or sourceBytes > MAX_TEXTURE_SOURCE_BYTES {
+            return null;
+        }
+        var image = Pixels.Load(fullPath);
+        if image == null
+           or Pixels.get_Width(image) <= 0
+           or Pixels.get_Height(image) <= 0
+           or Pixels.get_Width(image)
+              > 16777216 / Pixels.get_Height(image) {
+            return null;
+        }
+        projectWaterImagePaths.add(reference);
+        projectWaterImages.add(image);
+        return image;
+    }
+
+    /// @brief Construct one bounded public-runtime water surface.
+    hide func AddProjectWaterPreview(
+        layer: scene_component_schema.SceneWaterLayer3DDefinition)
+        -> Boolean {
+        var resolved = ResolveProjectWaterLayer(layer);
+        if resolved.valid == false { return false; }
+        var texture: Pixels = null;
+        var normalMap: Pixels = null;
+        if layer.texture != "" {
+            texture = ProjectWaterImage(layer.texture);
+            if texture == null { return false; }
+        }
+        if layer.normalMap != "" {
+            normalMap = ProjectWaterImage(layer.normalMap);
+            if normalMap == null { return false; }
+        }
+        var water = Water3D.New(resolved.width, resolved.depth);
+        if water == null { return false; }
+        Water3D.SetPosition(
+            water, resolved.x, resolved.y, resolved.z);
+        Water3D.SetResolution(water, layer.resolution);
+        if layer.hasColor {
+            Water3D.SetColor(
+                water,
+                layer.colorR,
+                layer.colorG,
+                layer.colorB,
+                layer.colorA);
+        }
+        if texture != null { Water3D.SetTexture(water, texture); }
+        if normalMap != null {
+            Water3D.SetNormalMap(water, normalMap);
+        }
+        var waveIndex = 0;
+        while waveIndex < layer.waves.count() {
+            var wave = layer.waves.get(waveIndex);
+            Water3D.AddWave(
+                water,
+                wave.dirX,
+                wave.dirZ,
+                wave.speed,
+                wave.amplitude,
+                wave.wavelength);
+            waveIndex = waveIndex + 1;
+        }
+        Water3D.Update(water, 0.0);
+        projectWaterPreviews.add(water);
+        projectWaterWidths.add(resolved.width);
+        projectWaterDepths.add(resolved.depth);
+        projectWaterXs.add(resolved.x);
+        projectWaterYs.add(resolved.y);
+        projectWaterZs.add(resolved.z);
+        projectWaterAnimated.add(layer.animate);
+        projectPreviewInstanceCount =
+            projectPreviewInstanceCount + 1;
+        return true;
+    }
+
     /// @brief Load and cache one validated project preview asset.
     hide func ProjectNodePreviewAsset(path: String) -> SceneAsset {
         var index = 0;
@@ -1952,6 +2351,57 @@ class SceneEditor3D {
             Mat4.Mul(Mat4.RotateY(yaw), Mat4.ScaleUniform(scale)));
     }
 
+    /// @brief Instantiate one base or additive scene-environment preview.
+    hide func AddProjectEnvironmentPreview(
+        projectRoot: String,
+        reference: String,
+        label: String,
+        worldMatrix: Mat4) -> Boolean {
+        if projectPreviewScene == null or reference == "" {
+            return false;
+        }
+        var environmentPath = Path.Normalize(Path.Absolute(
+            Path.Join(projectRoot, reference)));
+        var environmentAsset =
+            ProjectNodePreviewAsset(environmentPath);
+        var environmentInstance: SceneGraph = null;
+        if environmentAsset != null {
+            environmentInstance =
+                environmentAsset.InstantiateScene() as SceneGraph;
+        }
+        if environmentInstance == null
+           or environmentInstance.Root == null
+           or environmentInstance.Root.ChildCount == 0 {
+            projectPreviewMissingCount =
+                projectPreviewMissingCount + 1;
+            return false;
+        }
+        if projectPreviewNodes.count() + environmentInstance.NodeCount
+           > MAX_PROJECT_PREVIEW_NODES {
+            projectPreviewClipped = true;
+            return false;
+        }
+        var environmentWrapper = SceneNode.New();
+        environmentWrapper.Name = label;
+        var environmentRoot = environmentInstance.Root;
+        while environmentRoot.ChildCount > 0 {
+            var environmentChild =
+                environmentRoot.GetChild(0);
+            environmentRoot.RemoveChild(environmentChild);
+            environmentWrapper.AddChild(environmentChild);
+        }
+        if environmentWrapper.TrySetWorldMatrix(worldMatrix) == false {
+            projectPreviewMissingCount =
+                projectPreviewMissingCount + 1;
+            return false;
+        }
+        projectPreviewScene.Add(environmentWrapper);
+        AppendProjectPreviewOwners(environmentWrapper, -1);
+        projectPreviewInstanceCount =
+            projectPreviewInstanceCount + 1;
+        return true;
+    }
+
     /// @brief Rebuild every project preview in a disposable scene graph.
     /// @details No transient node ever enters the canonical scene or history.
     hide func RebuildProjectNodePreviews() {
@@ -1963,50 +2413,70 @@ class SceneEditor3D {
         projectPreviewAssets = [];
         projectPreviewNodes = [];
         projectPreviewOwners = [];
+        projectWaterPreviews = [];
+        projectWaterWidths = [];
+        projectWaterDepths = [];
+        projectWaterXs = [];
+        projectWaterYs = [];
+        projectWaterZs = [];
+        projectWaterAnimated = [];
+        projectWaterImagePaths = [];
+        projectWaterImages = [];
+        projectWaterLastAnimationMs = 0;
         var environmentReference =
             ProjectEnvironmentPreviewPrefab();
+        var profile:
+            scene_component_schema.ScenePreview3DDefinition = null;
+        if componentSchema != null {
+            profile = componentSchema.scenePreview3D;
+        }
         if scene == null or componentSchema == null
            or componentSchema.valid == false
            or (componentSchema.nodePreviews3D.count() == 0
-               and environmentReference == "") {
+               and environmentReference == ""
+               and (profile == null
+                    or (profile.environmentLayers.count() == 0
+                        and profile.waterLayers.count() == 0))) {
             return;
         }
         var projectRoot = ComponentSchemaRoot();
         if projectRoot == "" { return; }
         projectPreviewScene = SceneGraph.New();
         if environmentReference != "" {
-            var environmentPath = Path.Normalize(Path.Absolute(
-                Path.Join(projectRoot, environmentReference)));
-            var environmentAsset =
-                ProjectNodePreviewAsset(environmentPath);
-            var environmentInstance: SceneGraph = null;
-            if environmentAsset != null {
-                environmentInstance =
-                    environmentAsset.InstantiateScene() as SceneGraph;
-            }
-            if environmentInstance == null
-               or environmentInstance.Root == null
-               or environmentInstance.Root.ChildCount == 0 {
-                projectPreviewMissingCount =
-                    projectPreviewMissingCount + 1;
-            } else if environmentInstance.NodeCount
-                      > MAX_PROJECT_PREVIEW_NODES {
-                projectPreviewClipped = true;
-            } else {
-                var environmentWrapper = SceneNode.New();
-                environmentWrapper.Name = "Scene environment preview";
-                var environmentRoot = environmentInstance.Root;
-                while environmentRoot.ChildCount > 0 {
-                    var environmentChild =
-                        environmentRoot.GetChild(0);
-                    environmentRoot.RemoveChild(environmentChild);
-                    environmentWrapper.AddChild(environmentChild);
+            AddProjectEnvironmentPreview(
+                projectRoot,
+                environmentReference,
+                "Scene environment preview",
+                Mat4.Identity());
+        }
+        if profile != null {
+            var layerIndex = 0;
+            while layerIndex < profile.environmentLayers.count() {
+                var layer = profile.environmentLayers.get(layerIndex);
+                if ProjectEnvironmentLayerMatches(layer) {
+                    if ProjectEnvironmentLayerTransformUsable(layer) {
+                        AddProjectEnvironmentPreview(
+                            projectRoot,
+                            layer.prefab,
+                            "Scene environment layer " + layerIndex,
+                            ProjectEnvironmentLayerWorldMatrix(layer));
+                    } else {
+                        projectPreviewMissingCount =
+                            projectPreviewMissingCount + 1;
+                    }
                 }
-                projectPreviewScene.Add(environmentWrapper);
-                AppendProjectPreviewOwners(
-                    environmentWrapper, -1);
-                projectPreviewInstanceCount =
-                    projectPreviewInstanceCount + 1;
+                if projectPreviewClipped { break; }
+                layerIndex = layerIndex + 1;
+            }
+            var waterIndex = 0;
+            while waterIndex < profile.waterLayers.count() {
+                var waterLayer = profile.waterLayers.get(waterIndex);
+                if ProjectWaterLayerMatches(waterLayer)
+                   and AddProjectWaterPreview(waterLayer) == false {
+                    projectPreviewMissingCount =
+                        projectPreviewMissingCount + 1;
+                }
+                waterIndex = waterIndex + 1;
             }
         }
         var sourceIndex = 0;
@@ -2063,7 +2533,7 @@ class SceneEditor3D {
         if sourceIndex < flatNodes.count() {
             projectPreviewClipped = true;
         }
-        if projectPreviewInstanceCount == 0 {
+        if projectPreviewNodes.count() == 0 {
             projectPreviewScene = null;
         }
         renderDirty = true;
@@ -2097,6 +2567,64 @@ class SceneEditor3D {
             }
             index = index + 1;
         }
+        renderDirty = true;
+    }
+
+    /// @brief Advance every retained runtime-water preview deterministically.
+    /// @details This probe-facing path is also useful for explicit preview
+    ///          stepping; it never changes canonical scene or history state.
+    expose func AdvanceProjectWaterPreview(deltaSeconds: Number)
+        -> Boolean {
+        if projectWaterPreviews.count() == 0
+           or deltaSeconds <= 0.0 {
+            return false;
+        }
+        var bounded = ClampNumber3D(
+            deltaSeconds,
+            0.000001,
+            PROJECT_WATER_MAX_STEP_MS / 1000.0);
+        var index = 0;
+        while index < projectWaterPreviews.count() {
+            Water3D.Update(
+                projectWaterPreviews.get(index), bounded);
+            index = index + 1;
+        }
+        renderDirty = true;
+        return true;
+    }
+
+    /// @brief Advance opted-in water previews on a bounded 30 Hz cadence.
+    hide func PumpProjectWaterPreviewAnimation() {
+        if projectWaterPreviews.count() == 0 { return; }
+        var hasAnimated = false;
+        var index = 0;
+        while index < projectWaterAnimated.count() {
+            if projectWaterAnimated.get(index) { hasAnimated = true; }
+            index = index + 1;
+        }
+        if hasAnimated == false { return; }
+        var now = Zanna.Time.Clock.NowMs();
+        if projectWaterLastAnimationMs <= 0
+           or now < projectWaterLastAnimationMs {
+            projectWaterLastAnimationMs = now;
+            return;
+        }
+        var elapsed = now - projectWaterLastAnimationMs;
+        if elapsed < PROJECT_WATER_ANIMATION_FRAME_MS { return; }
+        if elapsed > PROJECT_WATER_MAX_STEP_MS {
+            elapsed = PROJECT_WATER_MAX_STEP_MS;
+        }
+        var deltaSeconds = elapsed / 1000.0;
+        index = 0;
+        while index < projectWaterPreviews.count()
+              and index < projectWaterAnimated.count() {
+            if projectWaterAnimated.get(index) {
+                Water3D.Update(
+                    projectWaterPreviews.get(index), deltaSeconds);
+            }
+            index = index + 1;
+        }
+        projectWaterLastAnimationMs = now;
         renderDirty = true;
     }
 
@@ -2149,6 +2677,10 @@ class SceneEditor3D {
         }
         if objectTabButton.WasClicked() { SetInspectorSceneTab(false); }
         if sceneTabButton.WasClicked() { SetInspectorSceneTab(true); }
+        if sceneSectionDropdown.WasChanged() {
+            SetSceneInspectorSection(
+                sceneSectionDropdown.Selected, true);
+        }
 
         var changed = false;
         // Commit or cancel a pending live transform edit before selection
@@ -2158,7 +2690,8 @@ class SceneEditor3D {
            and selectedIndices.count() > 0 {
             changed = AddSelectedComponentChoice() or changed;
         }
-        if newSceneButton.WasClicked() {
+        if newSceneButton.WasClicked()
+           or sceneNewItem.WasClicked() {
             scene = SceneGraph.New();
             loadError = "";
             selectedIndex = -1;
@@ -2173,13 +2706,15 @@ class SceneEditor3D {
             RefreshHierarchy(null);
             changed = CommitScene("Created empty 3D scene") or changed;
         }
-        if importAssetButton.WasClicked() {
+        if importAssetButton.WasClicked()
+           or sceneImportAssetItem.WasClicked() {
             importBrowserInstanceMode = false;
             importAssetBrowser.SetExtensions(
                 ".scene3d,.vscn,.gltf,.glb,.fbx,.obj,.stl");
             changed = ImportAsset() or changed;
         }
-        if importInstanceButton.WasClicked() {
+        if importInstanceButton.WasClicked()
+           or sceneImportInstanceItem.WasClicked() {
             importBrowserInstanceMode = true;
             importAssetBrowser.SetExtensions(".scene3d,.vscn");
             importAssetBrowser.Open();
@@ -2311,6 +2846,7 @@ class SceneEditor3D {
             SetViewOptionsVisible(!viewOptionsVisible);
         }
         PumpViewOptionControls();
+        PumpProjectWaterPreviewAnimation();
         if scene == null {
             if renderDirty { RenderViewport(); }
             ApplyPendingWorkspaceScroll();
@@ -2570,7 +3106,10 @@ class SceneEditor3D {
             }
         }
 
-        if runSceneButton.WasClicked() { runSceneRequested = true; }
+        if runSceneButton.WasClicked()
+           or sceneRunItem.WasClicked() {
+            runSceneRequested = true;
+        }
         if topViewButton.WasClicked()
            or viewTopItem.WasClicked() {
             SetQuickView(0);
@@ -2845,6 +3384,10 @@ class SceneEditor3D {
             state.inspectorScrollY = ClampNumber3D(
                 LogicalScrollY(inspectorScroll), 0.0, 1000000.0);
         }
+        state.inspectorSceneSection = ClampInt3D(
+            sceneInspectorSection,
+            SCENE_INSPECTOR_WORLD,
+            SCENE_INSPECTOR_HISTORY);
         state.inspectorRequestedVisible = inspectorRequestedVisible;
         state.compactInspectorShown = compactInspectorShown;
         state.pickLockedPaths = pickLockedPaths;
@@ -2903,6 +3446,11 @@ class SceneEditor3D {
             if bodySplit != null { bodySplit.SetPosition(0.62); }
             if hierarchySplit != null { hierarchySplit.SetPosition(0.22); }
             pendingInspectorScrollY = 0.0;
+            sceneInspectorSection = SCENE_INSPECTOR_WORLD;
+            if sceneSectionDropdown != null {
+                sceneSectionDropdown.SetSelected(sceneInspectorSection);
+                sceneSectionDropdown.WasChanged();
+            }
             inspectorRequestedVisible = true;
             compactHierarchyShown = false;
             compactInspectorShown = false;
@@ -2979,6 +3527,14 @@ class SceneEditor3D {
         }
         pendingInspectorScrollY = ClampNumber3D(
             state.inspectorScrollY, 0.0, 1000000.0);
+        sceneInspectorSection = ClampInt3D(
+            state.inspectorSceneSection,
+            SCENE_INSPECTOR_WORLD,
+            SCENE_INSPECTOR_HISTORY);
+        if sceneSectionDropdown != null {
+            sceneSectionDropdown.SetSelected(sceneInspectorSection);
+            sceneSectionDropdown.WasChanged();
+        }
         inspectorRequestedVisible = state.inspectorRequestedVisible;
         compactHierarchyShown = false;
         compactInspectorShown = state.compactInspectorShown;
@@ -3487,6 +4043,16 @@ class SceneEditor3D {
                 button.GetScreenY() + button.GetScreenHeight()));
     }
 
+    /// @brief Mirror document-level availability into the Scene menu.
+    hide func ConfigureSceneMenu() {
+        var hasDocument = currentDoc != null;
+        var hasScene = scene != null;
+        sceneNewItem.SetEnabled(hasDocument);
+        sceneImportAssetItem.SetEnabled(hasDocument);
+        sceneImportInstanceItem.SetEnabled(hasDocument);
+        sceneRunItem.SetEnabled(hasScene);
+    }
+
     /// @brief Mirror current scene/selection state into creation commands.
     hide func ConfigureCreateMenu() {
         var enabled = scene != null;
@@ -3574,6 +4140,10 @@ class SceneEditor3D {
 
     /// @brief Open requested overflow menus after responsive visibility settles.
     hide func PumpCommandMenuButtons() {
+        if sceneMenuButton.WasClicked() {
+            ConfigureSceneMenu();
+            ShowCommandMenu(sceneMenuButton, sceneMenu);
+        }
         if createMenuButton.WasClicked() {
             ConfigureCreateMenu();
             ShowCommandMenu(createMenuButton, createMenu);
@@ -3618,11 +4188,19 @@ class SceneEditor3D {
         }
     }
 
-    /// @brief Swap dense secondary actions for three complete overflow menus.
-    /// @details Primary file, selection, transform, gameplay, hierarchy, and
-    ///          inspector commands remain one click away. Wide lanes retain
-    ///          every historical direct control.
+    /// @brief Swap dense secondary actions for complete progressive menus.
+    /// @details Active transforms, gameplay presentation, and contextual pane
+    ///          navigation remain direct. Width changes viewport capacity
+    ///          rather than repopulating chrome with historical controls.
     hide func ApplyCommandMenuVisibility(useMenus: Boolean) {
+        sceneMenuButton.SetVisible(useMenus);
+        newSceneButton.SetVisible(!useMenus);
+        importAssetButton.SetVisible(!useMenus);
+        importInstanceButton.SetVisible(!useMenus);
+        runSceneButton.SetVisible(!useMenus);
+        duplicateNodeButton.SetVisible(!useMenus);
+        deleteNodeButton.SetVisible(!useMenus);
+
         createMenuButton.SetVisible(useMenus);
         addEmptyButton.SetVisible(!useMenus);
         addChildButton.SetVisible(!useMenus);
@@ -3664,16 +4242,17 @@ class SceneEditor3D {
         var useCommandMenus = UsesSceneCommandMenus(lastHostWidth);
         ApplyCommandMenuVisibility(useCommandMenus);
         if compactChrome {
-            // The compact direct set fits one creation row and at most three
-            // short view rows, leaving the majority of a small window to the
+            // The progressive compact set fits one command row and at most two
+            // context rows, leaving the majority of a small window to the
             // authored scene rather than toolbar chrome.
             toolbar.SetPreferredSize(0.0, 0.0);
             toolbar.SetMinSize(0.0, 40.0);
             viewToolbar.SetPreferredSize(0.0, 0.0);
-            viewToolbar.SetMinSize(0.0, 112.0);
+            viewToolbar.SetMinSize(0.0, 76.0);
             viewSectionLabel.SetVisible(false);
             transformSectionLabel.SetVisible(false);
             zoomSectionLabel.SetVisible(false);
+            sceneMenuButton.SetText("Scene");
             newSceneButton.SetText("New");
             importAssetButton.SetText("Import...");
             importInstanceButton.SetText("Instance...");
@@ -3711,6 +4290,7 @@ class SceneEditor3D {
             viewSectionLabel.SetVisible(false);
             transformSectionLabel.SetVisible(false);
             zoomSectionLabel.SetVisible(false);
+            sceneMenuButton.SetText("Scene");
             newSceneButton.SetText("New");
             importAssetButton.SetText("Import");
             importInstanceButton.SetText("Instance");
@@ -3737,9 +4317,10 @@ class SceneEditor3D {
             toolbar.SetMinSize(0.0, 0.0);
             viewToolbar.SetPreferredSize(0.0, 0.0);
             viewToolbar.SetMinSize(0.0, 0.0);
-            viewSectionLabel.SetVisible(true);
-            transformSectionLabel.SetVisible(true);
-            zoomSectionLabel.SetVisible(true);
+            viewSectionLabel.SetVisible(false);
+            transformSectionLabel.SetVisible(false);
+            zoomSectionLabel.SetVisible(false);
+            sceneMenuButton.SetText("Scene...");
             newSceneButton.SetText("New");
             importAssetButton.SetText("Import Asset...");
             importInstanceButton.SetText("Import Instance...");
@@ -3885,6 +4466,8 @@ class SceneEditor3D {
     /// @brief Describe the destination of the inspector toggle.
     hide func UpdateInspectorButton() {
         if inspectorButton == null { return; }
+        inspectorButton.SetVisible(
+            compactLayout or inspectorRequestedVisible == false);
         if focusModeActive and inspectorDock.floating == false {
             inspectorButton.SetEnabled(false);
             inspectorButton.SetText("Inspector hidden");
@@ -10937,6 +11520,8 @@ class SceneEditor3D {
         sceneTabButton.SetStyle(0);
         if sceneTab { sceneTabButton.SetStyle(1); }
         if objectTab { objectTabButton.SetStyle(1); }
+        sceneSectionRow.SetVisible(sceneTab);
+        selectionInfo.SetVisible(objectTab);
         nameLabel.SetVisible(nodeScope);
         nameInput.SetVisible(nodeScope);
         visibleCheck.SetVisible(nodeScope);
@@ -10970,11 +11555,21 @@ class SceneEditor3D {
         probeGroup.SetVisible(singleScope);
         addComponentRow.SetVisible(
             nodeScope and addComponentKinds.count() > 0);
-        importGroup.SetVisible(sceneTab);
-        bakeGroup.SetVisible(sceneTab);
-        historyGroup.SetVisible(sceneTab);
-        envGroup.SetVisible(sceneTab);
-        materialLibraryGroup.SetVisible(sceneTab);
+        importGroup.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SCENE_INSPECTOR_ASSETS);
+        bakeGroup.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SCENE_INSPECTOR_LIGHTING);
+        historyGroup.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SCENE_INSPECTOR_HISTORY);
+        envGroup.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SCENE_INSPECTOR_WORLD);
+        materialLibraryGroup.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SCENE_INSPECTOR_ASSETS);
         // Programmatic visibility toggles advance widget revisions; re-baseline
         // the write-through checkbox trackers so scoping can never masquerade
         // as a user resolving the Visible or Static state onto the selection.
@@ -10994,6 +11589,28 @@ class SceneEditor3D {
     expose func SetInspectorSceneTab(sceneTab: Boolean) {
         if inspectorSceneTab == sceneTab { return; }
         inspectorSceneTab = sceneTab;
+        UpdateInspectorScope();
+    }
+
+    /// @brief Select one progressive-disclosure topic on the Scene inspector.
+    /// @param section Bounded scene topic index.
+    /// @param resetScroll Whether a direct user change returns to the topic top.
+    expose func SetSceneInspectorSection(section: Integer,
+                                         resetScroll: Boolean) {
+        var bounded = ClampInt3D(
+            section,
+            SCENE_INSPECTOR_WORLD,
+            SCENE_INSPECTOR_HISTORY);
+        sceneInspectorSection = bounded;
+        if sceneSectionDropdown != null
+           and sceneSectionDropdown.Selected != bounded {
+            sceneSectionDropdown.SetSelected(bounded);
+            sceneSectionDropdown.WasChanged();
+        }
+        if resetScroll and inspectorScroll != null {
+            inspectorScroll.SetScroll(0.0, 0.0);
+            pendingInspectorScrollY = 0.0;
+        }
         UpdateInspectorScope();
     }
 
@@ -16125,6 +16742,19 @@ class SceneEditor3D {
             viewportRenderCanvas, viewportRenderPostFX);
     }
 
+    /// @brief Submit every runtime-backed water surface to one active frame.
+    hide func DrawProjectWaterPreviews(
+        canvas: Canvas3D,
+        camera: Camera3D) {
+        if canvas == null or camera == null { return; }
+        var index = 0;
+        while index < projectWaterPreviews.count() {
+            Canvas3D.DrawWater(
+                canvas, projectWaterPreviews.get(index), camera);
+            index = index + 1;
+        }
+    }
+
     /// @brief Rasterize authored meshes and materials into the embedded image.
     hide func RenderAuthoredViewport() -> Boolean {
         if ConfigureViewportCamera() == false { return false; }
@@ -16143,11 +16773,18 @@ class SceneEditor3D {
             authoredSkyPresent,
             editorLightAssist and gameViewActive == false);
         ApplyProjectPreviewPostFX();
+        // One explicit frame is essential: every SceneGraph.Draw otherwise
+        // opens and finalizes its own queue, resetting depth/transparency
+        // between canonical, prefab, and procedural presentation.
+        Canvas3D.Begin(
+            viewportRenderCanvas, viewportRenderCamera);
         scene.Draw(viewportRenderCanvas, viewportRenderCamera);
         if projectPreviewScene != null {
             projectPreviewScene.Draw(
                 viewportRenderCanvas, viewportRenderCamera);
         }
+        DrawProjectWaterPreviews(
+            viewportRenderCanvas, viewportRenderCamera);
         if renderMode == VIEWPORT_MODE_SHADED_WIRE {
             // Combined mode: the wire pass draws over the shaded frame
             // without clearing, giving Unity's Shaded Wireframe look.
@@ -16157,8 +16794,11 @@ class SceneEditor3D {
                 projectPreviewScene.Draw(
                     viewportRenderCanvas, viewportRenderCamera);
             }
+            DrawProjectWaterPreviews(
+                viewportRenderCanvas, viewportRenderCamera);
             viewportRenderCanvas.Wireframe = false;
         }
+        Canvas3D.End(viewportRenderCanvas);
         var rendered: Pixels = null;
         if viewportRenderPostFX != null
            and renderMode != VIEWPORT_MODE_WIREFRAME {
@@ -17221,7 +17861,15 @@ class SceneEditor3D {
                 ProjectPreviewRenderState(),
                 insetAuthoredSky,
                 false);
+            Canvas3D.Begin(insetRenderCanvas, insetRenderCamera);
             scene.Draw(insetRenderCanvas, insetRenderCamera);
+            if projectPreviewScene != null {
+                projectPreviewScene.Draw(
+                    insetRenderCanvas, insetRenderCamera);
+            }
+            DrawProjectWaterPreviews(
+                insetRenderCanvas, insetRenderCamera);
+            Canvas3D.End(insetRenderCanvas);
             var rendered = insetRenderTarget.AsPixels();
             if rendered != null {
                 insetPixels = rendered;

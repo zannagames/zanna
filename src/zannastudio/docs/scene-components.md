@@ -135,7 +135,7 @@ type or node discriminator from the component label.
 
 | Member | Required | Contract |
 | --- | --- | --- |
-| Root `version` | Yes | Numeric integer `1` through `13`; use the lowest version required by the optional members below. |
+| Root `version` | Yes | Numeric integer `1` through `15`; use the lowest version required by the optional members below. |
 | Root `components` | Yes | Array with at most 128 entries. |
 | Component `name` | Yes | Stable portable identifier, at most 64 characters; unique without regard to case. |
 | Component `target` | Yes | `2d-object`, `3d-node`, or `both`. |
@@ -178,7 +178,7 @@ always writes the lowest version its content requires, so a file that stops
 using version-2 kinds returns to `"version": 1`. A version-2 file presented to
 an older Studio is rejected wholesale, exactly like any unknown version.
 
-## Versions 3–13: Preview And Creation Extensions
+## Versions 3–14: Preview And Creation Extensions
 
 Later versions add declarative, editor-only visualization conventions while
 keeping component fields and canonical scene formats unchanged:
@@ -196,6 +196,7 @@ keeping component fields and canonical scene formats unchanged:
 | 11 | extended `objectPreviews` | Interleave 2D object sprites with tile layers and reproduce game draw priorities. |
 | 12 | extended `scenePreview2D` / `scenePreview3D` | Declare the exact project output size used by locked Game View framing. |
 | 13 | component `createObjectType` / `createNodeName` | Create gameplay-ready objects or nodes directly from a component recipe. |
+| 14 | extended `scenePreview3D` | Compose independently matched and metadata-transformed environment layers beside the base environment. |
 
 Studio never executes project code to apply these profiles, and preview
 resolution never writes scene bytes, dirty state, revision, or history. The
@@ -444,9 +445,137 @@ the result, and lets existing project object/node preview rules render it
 immediately. Recipe data never enters the canonical scene; only the created
 object or node and its ordinary typed fields do.
 
+### Version 14 Additive 3D Environment Layers
+
+Version 14 lets a scene combine several pieces of runtime-built visual context
+instead of selecting only one base environment:
+
+```json
+{
+  "version": 14,
+  "components": [],
+  "scenePreview3D": {
+    "environmentVariantProperty": "terrain.kind",
+    "environmentVariantOffset": -1,
+    "environmentVariantPrefabs": [
+      "assets/editor-previews/canyon.scene3d",
+      "assets/editor-previews/ash-sea.scene3d"
+    ],
+    "environmentLayers": [
+      {
+        "matchProperty": "weather.dustStorm",
+        "matchValue": true,
+        "prefab": "assets/editor-previews/dust-storm.scene3d",
+        "positionXProperty": "weather.centerX",
+        "positionYProperty": "weather.centerY",
+        "positionZProperty": "weather.centerZ",
+        "scaleXProperty": "weather.radiusX",
+        "scaleYProperty": "weather.height",
+        "scaleZProperty": "weather.radiusZ"
+      }
+    ]
+  }
+}
+```
+
+`environmentLayers` contains 1–32 entries. Every entry requires a portable
+`matchProperty`, a Boolean/integer/string `matchValue`, and a safe
+project-relative `.scene3d` or `.vscn` `prefab`. Studio compares the canonical
+scene root's metadata kind and value exactly; missing, wrong-typed, or unequal
+metadata leaves that layer inactive.
+
+The six optional position/scale property names map individual axes from
+root-level **float** metadata. Unmapped positions default to zero and unmapped
+scales to one. An optional `yawProperty` must be paired with a `yawUnit` of
+`degrees` or `radians`. A matched layer with a missing or wrong-typed mapped
+transform is omitted with preview status instead of being placed at a guessed
+location.
+
+Each matching prefab receives its own transient wrapper and composes after the
+version-9 base environment. Layers share depth, lighting, atmosphere, post-FX,
+and the project Game View frame, but never appear in hierarchy, picking,
+selection, VSCN bytes, dirty state, or history. Use a centered unit asset when
+metadata supplies its dimensions—for example, a distant shell or weather volume
+scaled by authored extents. Use version-15 runtime water layers rather than a
+flat prefab when the game uses `Water3D`.
+
+### Version 15 Runtime-Backed 3D Water Layers
+
+Version 15 lets Studio construct bounded instances of the public runtime
+`Water3D` rather than approximating a procedural surface with a static plane:
+
+```json
+{
+  "version": 15,
+  "components": [],
+  "scenePreview3D": {
+    "waterLayers": [
+      {
+        "matchProperty": "water.enabled",
+        "matchValue": true,
+        "positionXProperty": "water.x",
+        "positionYProperty": "water.y",
+        "positionZProperty": "water.z",
+        "widthProperty": "water.halfWidth",
+        "depthProperty": "water.halfDepth",
+        "widthMultiplier": 2.0,
+        "depthMultiplier": 2.0,
+        "texture": "assets/editor-previews/water-albedo.png",
+        "normalMap": "assets/editor-previews/water-normal.png",
+        "resolution": 64,
+        "animate": true,
+        "waves": [
+          {
+            "dirX": 1.0,
+            "dirZ": 0.3,
+            "speed": 0.05,
+            "amplitude": 0.4,
+            "wavelength": 1.2
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+`waterLayers` contains 1–8 entries. Every entry requires the same portable
+`matchProperty` and exact Boolean, integer, or string `matchValue` used by
+version-14 environment layers. Missing, wrong-kind, or unequal root metadata
+leaves the layer inactive.
+
+Static `positionX`, `positionY`, and `positionZ` default to zero. Static
+`width` and `depth` default to one and must remain in `[0.01, 100000]`.
+Each corresponding `*Property` replaces that static value from exact float
+root metadata. `widthMultiplier` and `depthMultiplier` are optional positive
+values in the same range, but each is valid only with its corresponding
+property. The final dimensions must remain in range; positions are bounded to
+±1,000,000. A matched layer with missing, wrong-typed, nonpositive, or
+out-of-range mapped data is omitted with preview status.
+
+The optional color is an all-or-none `colorR/G/B/A` group in `[0, 1]`.
+`texture` and `normalMap` use the same safe, project-relative raster-path and
+bounded decode contract as other scene previews. `resolution` is an integer
+from 8 through 64 and defaults to 64. `animate` is a Boolean and defaults to
+false.
+
+`waves` may contain zero through eight complete records. `dirX` and `dirZ`
+must form a nonzero direction and each stay within ±1,000; `speed` stays
+within ±1,000; `amplitude` is in `[0, 1000]`; and `wavelength` is in
+`[0.01, 100000]`. Studio passes these values to `Water3D.AddWave` in declared
+order. An animated surface advances at most 30 times per second, with each
+elapsed step capped at 100 milliseconds.
+
+Studio opens one explicit `Canvas3D` frame and submits the canonical scene,
+transient project-prefab graph, and water surfaces before ending and finalizing
+it. Depth, transparent ordering, lighting, atmosphere, post-processing, and
+frame statistics therefore see one complete authored view. Water remains
+presentation-only: it is absent from hierarchy, picking, selection, VSCN
+serialization, dirty state, revision, and undo history.
+
 See [ADR 0197](../../../docs/adr/0197-project-owned-2d-object-preview-profiles.md)
 through
-[ADR 0209](../../../docs/adr/0209-project-component-creation-recipes.md)
+[ADR 0213](../../../docs/adr/0213-runtime-backed-water-preview-layers.md)
 for the complete bounds, precedence, and 3D profile contracts.
 
 ## Migration Assistant

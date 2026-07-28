@@ -593,6 +593,8 @@ func main() {
     // workspace-only and refuses tile edits; solo is preview-only state.
     editor2d.SelectSceneObjects([], -1);
     editor2d.Pump(doc2d);
+    editor2d.SetSceneInspectorSection(
+        scene_editor_2d.SCENE_INSPECTOR_LAYERS, false);
     shell.Poll();
     shell.Render();
     var layerBaseline = doc2d.content;

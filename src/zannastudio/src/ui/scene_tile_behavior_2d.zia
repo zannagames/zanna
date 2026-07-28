@@ -12,6 +12,8 @@
 //   - This presentation object never mutates SceneDocument or Document state.
 //   - Rows and drafts always rebuild from canonical typed runtime state.
 //   - Every control returns intent; SceneEditor2D owns validation and history.
+//   - Canonical refreshes drain programmatic collision-dropdown revisions so
+//     they can never masquerade as user edits or publish stale no-op status.
 //   - Live autotile preview is presentation state independent of the selected
 //     tile draft and never rewrites canonical base-tile cells.
 // Ownership/Lifetime: SceneEditor2D owns one inspector; GUI owns its widgets.
@@ -216,6 +218,7 @@ class SceneTileBehavior2D {
                     + "rules for the selected palette tile.");
             }
             collisionDropdown.SetSelected(COLLISION_NONE);
+            collisionDropdown.WasChanged();
             animFramesInput.SetText("");
             animDurationsInput.SetText("");
             autotileInput.SetText("");
@@ -228,6 +231,7 @@ class SceneTileBehavior2D {
             "Behavior for tile " + tile
             + ". BuildTilemap carries it into the runtime copy.");
         collisionDropdown.SetSelected(scene.TileCollision(tile));
+        collisionDropdown.WasChanged();
 
         var keys = scene.TilePropertyKeys(tile);
         var total = Seq.get_Count(keys);

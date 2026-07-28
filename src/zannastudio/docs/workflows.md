@@ -501,7 +501,16 @@ The status says when matching is limited to the editor's bounded represented
 hierarchy. Searching and jumping do not change canonical scene bytes, revision,
 undo/redo, dirty state, 2D coordinates, or the 3D camera.
 
-Both scene editors expose a **History** list on the Scene inspector tab.
+The Scene inspector uses one compact **Topic** selector instead of stacking
+every scene-wide form into one long page. In 2D, choose Setup & Import,
+Properties, Camera & Lighting, Layers, Tile Behavior, or History. In 3D,
+choose World, Lighting & Bake, Assets & Materials, or History. Each choice
+reveals the complete selected topic and hides unrelated groups; it is
+per-document workspace state, survives session restore, and never changes
+scene bytes, dirty state, revision, or history.
+
+Both scene editors expose a **History** list under the Scene inspector's
+History topic.
 Rows are oldest-first transaction labels followed by **Current**. Selecting an
 older row runs the equivalent normal Undo sequence, so the exact canonical
 bytes are restored and every later edit remains available through Redo. The 2D
@@ -539,14 +548,15 @@ composites any unused editor space as matte. The prior camera,
 Wireframe/Shaded+Wire choice, and complete View-options state return on exit.
 
 Scene command bars preserve canvas/viewport height instead of growing into
-large stacks. Below 1,180 logical pixels, the 2D bar keeps Select, Paint, and
-Erase direct; **Tools** exposes the complete checked tool set, while **View**
-contains Fit, 1:1, grid, rulers, pane, Focus, and Scene Layout actions. The 3D
-bar uses **Create** for nodes/primitives/lights/cameras, **Placement** for Drop,
-Surface, Align, and Vertex state, and **View** for camera navigation, framing,
-projection, options, Focus, and Scene Layout. Checked menu items mirror the
-active tool and workspace state. Wider lanes restore the corresponding direct
-controls without changing shortcuts or transactions.
+large stacks. At every width, the 2D bar keeps Select, Paint, and Erase direct;
+**Scene** owns new/import/animation-preview/run, **Tools** exposes the complete
+checked tool set, and **View** contains Fit, 1:1, grid, rulers, pane, Focus,
+and Scene Layout actions. The 3D bar uses **Scene** for new/import/instance/run,
+**Create** for nodes/primitives/lights/cameras, **Placement** for Drop, Surface,
+Align, and Vertex state, and **View** for camera navigation, framing,
+projection, options, Focus, and Scene Layout. Checked menu items mirror active
+tool and workspace state. Wider lanes grow the authored surface instead of
+restoring secondary controls; shortcuts and transactions do not change.
 
 The 2D command set switches among Select, Paint, Erase, Rectangle, Line,
 Ellipse, Fill, Pick, and Object modes. Paint, Fill, and the shape tools composite the
@@ -804,6 +814,35 @@ preview assets rather than executing project code in Studio. See
 [scene-components.md](scene-components.md#version-9-3d-scene-environments)
 for the fail-closed path and variant contract.
 
+Schema version 14 can compose another 1–32 independent environment layers
+beside that base. Each layer matches an exact Boolean, integer, or string on
+the canonical scene root, then optionally maps float metadata to its prefab's
+position, nonuniform scale, and yaw. Use these ordinary prefab layers for
+runtime-built scenery such as distant shells, weather volumes, and optional set
+dressing. Missing or wrong-typed match data leaves the layer inactive; a
+matched layer with invalid transform metadata reports preview status instead
+of guessing a pose. The disposable layers share the camera and render pipeline
+but never join hierarchy, picking, save bytes, dirty state, or history. See
+[scene-components.md](scene-components.md#version-14-additive-3d-environment-layers)
+for the exact fields and bounds.
+
+Schema version 15 can instead construct 1–8 real runtime `Water3D` surfaces.
+Each layer uses the same exact typed root match, then resolves its center and
+full width/depth from static values or float metadata. Optional multipliers
+handle projects that store half extents. A complete color, safe project texture
+and normal map, 8–64 grid resolution, animation flag, and up to eight complete
+Gerstner waves feed the public runtime object directly. Animated previews
+advance at no more than 30 Hz with a 100 ms maximum step.
+
+The canonical graph, disposable prefab graph, and runtime water all submit
+inside one explicit `Canvas3D` frame. Depth, transparency, lighting, fog,
+post-processing, and statistics therefore operate on the complete authored
+view. The surfaces remain absent from hierarchy, picking, save bytes, dirty
+state, and history. Ashfall uses this path for Mission 05 with the exact
+production water image, concrete normal map, dimensions, and two game wave
+records. See
+[scene-components.md](scene-components.md#version-15-runtime-backed-3d-water-layers).
+
 Schema version 10 can add a portable post-processing recipe to that same
 profile. Complete tonemap, bloom, color-grade, and vignette groups plus optional
 FXAA are validated against runtime bounds and applied in a fixed order to
@@ -848,8 +887,7 @@ vertically, Shift accelerates, and the wheel adjusts fly speed until release
 or Escape. Outside fly mode the wheel zooms, and Frame All/Frame Selected
 reposition the view around the complete scene or selection.
 
-Use **Drop** in the wide Transform row, **Placement > Drop Selection to
-Surface** on a constrained command bar, or press End while the viewport or a
+Use **Placement > Drop Selection to Surface**, or press End while the viewport or a
 transform control owns focus, to place selected hierarchy roots on visible
 geometry below them. Studio casts independently from the world-space bottom
 center of each selected top-level subtree, so a multi-selection conforms to
@@ -862,8 +900,7 @@ commits once and keeps its selection. A lossy parent-relative conversion rolls
 the group back, while already-grounded roots and roots with no surface below
 create no history.
 
-Enable **Surface** beside Snap on a wide bar, or **Surface Move** in
-**Placement** on a constrained bar, to keep X, Z, and XZ Move-handle drags
+Enable **Placement > Surface Move** to keep X, Z, and XZ Move-handle drags
 grounded while they are in progress. Every selected top-level hierarchy root queries
 independently after the horizontal target is applied, so props follow uneven
 authored geometry and schema-v9 environment previews instead of floating at
@@ -875,7 +912,7 @@ participate in placement and those previews follow their source nodes live
 during every transform gesture. A root with no reachable surface keeps its
 horizontal move at the current height.
 
-Enable **Align** directly or choose **Placement > Align to Surface Normal** to
+Choose **Placement > Align to Surface Normal** to
 preserve each root's existing twist while rotating its world up axis to the
 precise upward-facing hit normal. Alignment applies to
 both Surface Move and explicit **Drop**, then recomputes the complete
@@ -887,8 +924,8 @@ uncommitted. For predictable interactive cost, Surface Move refuses gestures
 containing more than 256 selected hierarchy roots.
 
 Hold **V** while the viewport or a transform control owns focus to enter
-transient vertex-snap mode, or use **Shift+V** / the persistent **Vertex**
-toggle (direct on wide bars, under **Placement** when constrained) for repeated
+transient vertex-snap mode, or use **Shift+V** / **Placement > Vertex Move**
+for repeated
 placement. Point at an exact mesh vertex on the primary
 selection (or its pivot), press and drag, then point at an exact vertex on
 unselected geometry. When no target vertex is within the screen-space pick
@@ -1108,8 +1145,8 @@ material and decoded source identity are unchanged.
 
 ### 3D Terrain Authoring
 
-Use **+ Terrain** on a wide Create row, **Create > Terrain** on a constrained
-row, or the hierarchy/viewport context menu to add a centered 33-by-33 terrain.
+Use **Create > Terrain** or the hierarchy/viewport context menu to add a
+centered 33-by-33 terrain.
 Studio selects the new node and activates **Sculpt Terrain** immediately. The
 visible surface is the ordinary mesh saved in the VSCN, not a project-only
 preview: games that load the scene receive the same vertices, triangles,

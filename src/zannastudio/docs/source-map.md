@@ -841,8 +841,12 @@ button/scroll sizing. It has no build-system or debug-session dependency.
 ### `ui/scene_editor_2d.zia`
 
 Document-backed 2D layer/tile/object authoring surface. It owns responsive
-canvas coordination, including stateful Tools/View overflow below the dense
-wrap threshold and direct-control restoration on wide lanes. It owns layer
+canvas coordination, including stable progressive Scene/Tools/View menus at
+every width so wider lanes grow the canvas instead of restoring secondary
+controls. Its per-document Scene-inspector topic keeps Setup & Import,
+Properties, Camera & Lighting, Layers, Tile Behavior, and History complete but
+mutually disclosed, so unrelated scene-wide forms do not compete for the
+visible inspector. It owns layer
 selection and asset assignment, gap-free
 captured paint/erase strokes with exact Escape rollback, inclusive rectangle
 painting, integer-walk lines, ellipse outlines, runtime-backed four-connected
@@ -894,8 +898,9 @@ presentation live in smaller leaf modules.
 ### `ui/scene_panels_2d.zia`
 
 Constructs the complete retained 2D scene widget tree, including stable
-checkable Tools/View menu-item handles. `SceneEditor2D` owns their responsive
-visibility, checked/enabled state, and dispatch through existing commands.
+Scene/Tools/View menu-item handles and the compact Scene-inspector topic
+selector. `SceneEditor2D` owns their responsive labels, checked/enabled state,
+topic visibility, and dispatch through existing commands.
 
 ### `ui/scene_property_inspector_2d.zia`
 
@@ -931,13 +936,14 @@ before either controller can reconstruct selected 2D objects or 3D subtrees.
 ### `ui/scene_component_schema.zia`
 
 Document-independent, fail-closed loader for project-root
-`scene-components.json`. It validates versions 1 through 13, target,
+`scene-components.json`. It validates versions 1 through 15, target,
 identifiers, limits, scalar kinds, exact defaults, asset/object/node preview
 conventions, 3D gameplay-view profiles, scene environments and portable
 post-processing, 2D scene backgrounds, object draw-stack rules, and paired
 project output dimensions plus target-compatible component creation recipes
-into value-only records. It does not own widgets, scenes, project state, or
-document mutation.
+and independently matched metadata-transformed 3D environment layers plus
+runtime-water construction inputs into value-only records. It does not own
+widgets, scenes, project state, or document mutation.
 
 ### `ui/scene_component_authoring.zia`
 
@@ -1036,9 +1042,11 @@ viewport. It retains one windowless Canvas3D, RenderTarget3D, and exactly
 matched projection-switchable camera, then draws deterministic editor overlays
 on the readback. The same camera unprojects pointer rays for
 closest-visible-mesh bounds picking before a meshless origin-marker fallback.
-Its responsive chrome keeps primary commands direct and swaps dense secondary
-sets for complete stateful Create/Placement/View menus below 1,180 logical
-pixels, restoring all direct buttons on wider lanes.
+Its responsive chrome keeps active transforms and Game View direct while
+stable Scene/Create/Placement/View menus own secondary commands at every width;
+wider lanes enlarge the viewport instead of repopulating the chrome.
+Its per-document Scene-inspector topic discloses exactly one complete World,
+Lighting & Bake, Assets & Materials, or History surface at a time.
 The responsive corner orientation navigator owns six axis views, projection
 switching, active/hover presentation, and priority pointer routing entirely as
 per-document workspace state. It owns
@@ -1070,7 +1078,12 @@ with preserve-local opt-out, mixed-state batch visibility, bounded native
 texture selection, stable contiguous sibling-block ordering, typed
 gameplay-metadata transactions, exact responsive gameplay-eye anchoring,
 transient project node/environment preview composition, retained project
-post-FX construction with finalized shaded readback, atomic multi-node
+post-FX construction with finalized shaded readback, schema-v14 additive
+environment layers that transform ordinary project prefabs from exact typed
+root metadata, schema-v15 bounded runtime `Water3D` construction with exact
+typed dimensions/images/waves and 30 Hz animation, one explicit composition
+frame shared by canonical geometry, project prefabs, and procedural water,
+atomic multi-node
 component application, selection-free schema-v13 gameplay-node creation at the
 viewport target with all metadata staged before one commit, and a per-document
 Game View that derives a clean
@@ -1083,8 +1096,9 @@ history.
 ### `ui/scene_panels_3d.zia`
 
 Constructs the complete retained 3D scene widget tree, including stable
-Create/Placement/View menu-item handles. `SceneEditor3D` owns responsive
-visibility, truthful check/enable state, and transactional dispatch.
+Scene/Create/Placement/View menu-item handles and the compact Scene-inspector
+topic selector. `SceneEditor3D` owns responsive labels, truthful check/enable
+state, topic visibility, and transactional dispatch.
 
 ### `ui/scene_metadata_inspector_3d.zia`
 
@@ -1333,9 +1347,12 @@ Important probe groups:
   rollback and preserve-local opt-out, stable contiguous sibling-block
   ordering, truthful mixed-state batch visibility, post-move selection
   remapping, and rollback behavior.
-- `scene_command_bar_probe.zia`: real compact Tools/Create/Placement/View menu
-  clicks, checked-state refresh, bounded bar/canvas/viewport height, and wide
-  direct-control restoration across both scene editors.
+- `scene_command_bar_probe.zia`: real Scene/Tools/Create/Placement/View menu
+  clicks, checked-state refresh, bounded bar/canvas/viewport height, and
+  stable progressive disclosure across compact, medium, and wide editors.
+- `scene_inspector_topics_probe.zia`: one-topic-at-a-time 2D/3D Scene
+  inspector visibility, real dropdown dispatch, canonical isolation, and
+  per-document topic restoration.
 - `scene_canvas_selection_probe.zia`: public 2D point replace/add/toggle/group
   preservation policy, reverse inclusive cell queries, marquee
   replace/union/toggle/empty behavior, real captured blank-space dragging,
@@ -1418,9 +1435,11 @@ Important probe groups:
   restoration, clean Game View capture, and canonical content/history isolation
   across native control realization.
 - `scene_gameplay_preview_probe.zia`: real Ashfall project loading, exact
-  gameplay eye/FOV retention across responsive dock changes, schema-v9
-  environment composition, schema-v10 retained five-pass post-FX and finalized
-  high-key luminance, schema-v13 direct spawn creation at the viewport target
+  gameplay eye/FOV retention across responsive dock changes, schema-v9 terrain
+  composition, schema-v15 exact runtime `Water3D` dimensions, production image
+  inputs, two wave records, bounded animation pixel changes, and one-frame
+  canonical/preview/water draw accounting, schema-v10 retained five-pass
+  post-FX and finalized high-key luminance, schema-v13 direct spawn creation at the viewport target
   with exact runtime metadata, immediate prefab preview, and byte-exact
   one-step undo/redo, schema-v12 1600-by-900 render-target
   framing/matte/camera lock and restoration, explicit Gameplay View recovery,

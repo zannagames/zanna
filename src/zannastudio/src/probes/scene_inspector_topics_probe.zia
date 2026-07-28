@@ -1,0 +1,198 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_inspector_topics_probe.zia
+// Purpose: Verify progressive 2D/3D Scene-inspector topic disclosure.
+// Key invariants:
+//   - One compact topic selector replaces the wall of unrelated scene groups.
+//   - Selecting a topic reveals its complete controls and hides every sibling.
+//   - Topic changes are workspace-only and survive document switches.
+// Ownership/Lifetime:
+//   - The probe owns two short-lived shells, editors, and document managers.
+// Links: zannastudio/src/ui/scene_editor_2d.zia,
+//        zannastudio/src/ui/scene_editor_3d.zia,
+//        zannastudio/src/ui/scene_panels_2d.zia,
+//        zannastudio/src/ui/scene_panels_3d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_inspector_topics_probe;
+
+// ============================================================================
+// MODULE: scene_inspector_topics_probe
+// PURPOSE: Keep scene-wide inspector power discoverable without visual noise.
+//
+// WHERE-THIS-FITS: Component probes own the contents of individual groups;
+//          this display probe owns topic scoping and per-document retention.
+//
+// TEACHING-NOTE: SetSelected advances the real Dropdown revision. Pump must
+//          consume that edge exactly as it would for a pointer selection.
+// ============================================================================
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_2d";
+bind "../ui/scene_editor_3d";
+bind "../ui/scene_panels_2d";
+bind "../ui/scene_panels_3d";
+
+bind Terminal = Zanna.Terminal;
+
+func Fail(shell: app_shell.AppShell, reason: String) {
+    if shell != null { shell.Destroy(); }
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func Pump2D(shell: app_shell.AppShell,
+            editor: scene_editor_2d.SceneEditor2D,
+            doc: document.Document) {
+    editor.Pump(doc);
+    shell.Poll();
+    shell.Render();
+}
+
+func Pump3D(shell: app_shell.AppShell,
+            editor: scene_editor_3d.SceneEditor3D,
+            doc: document.Document) {
+    editor.Pump(doc);
+    shell.Poll();
+    shell.Render();
+}
+
+func main() {
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio 2D Inspector Topics Probe", 1440, 900);
+    shell.SetSceneWorkspaceMode(true);
+    var documents2d = new document_manager.DocumentManager();
+    var editor2d = new scene_editor_2d.SceneEditor2D();
+    scene_panels_2d.Build(
+        editor2d, shell.workbench.scene2DHost, shell.app);
+    var doc2d = documents2d.NewScene2DDocument();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_2D);
+    editor2d.Activate(doc2d);
+    Pump2D(shell, editor2d, doc2d);
+    Pump2D(shell, editor2d, doc2d);
+    var baseline2d = doc2d.content;
+
+    if editor2d.sceneSectionRow.IsVisible() == false
+       or editor2d.sceneSectionDropdown.Selected
+          != scene_editor_2d.SCENE_INSPECTOR_SETUP
+       or editor2d.sceneSetupGroup.IsVisible() == false
+       or editor2d.sceneImportGroup.IsVisible() == false
+       or editor2d.sceneProperties.group.IsVisible()
+       or editor2d.cameraLighting.cameraGroup.IsVisible()
+       or editor2d.cameraLighting.lightingGroup.IsVisible()
+       or editor2d.layersGroup.IsVisible()
+       or editor2d.tileBehavior.group.IsVisible()
+       or editor2d.historyGroup.IsVisible() {
+        Fail(shell, "2D default Scene topic was not concise setup");
+        return;
+    }
+
+    editor2d.sceneSectionDropdown.SetSelected(
+        scene_editor_2d.SCENE_INSPECTOR_LAYERS);
+    Pump2D(shell, editor2d, doc2d);
+    if editor2d.sceneInspectorSection
+          != scene_editor_2d.SCENE_INSPECTOR_LAYERS
+       or editor2d.layersGroup.IsVisible() == false
+       or editor2d.sceneSetupGroup.IsVisible()
+       or editor2d.sceneImportGroup.IsVisible()
+       or editor2d.sceneProperties.group.IsVisible()
+       or editor2d.cameraLighting.cameraGroup.IsVisible()
+       or editor2d.tileBehavior.group.IsVisible()
+       or editor2d.historyGroup.IsVisible()
+       or doc2d.content != baseline2d {
+        Fail(shell, "2D Layers topic leaked sibling groups or edited content");
+        return;
+    }
+
+    editor2d.sceneSectionDropdown.SetSelected(
+        scene_editor_2d.SCENE_INSPECTOR_TILE_BEHAVIOR);
+    Pump2D(shell, editor2d, doc2d);
+    var other2d = documents2d.NewScene2DDocument();
+    editor2d.Activate(other2d);
+    Pump2D(shell, editor2d, other2d);
+    editor2d.Activate(doc2d);
+    Pump2D(shell, editor2d, doc2d);
+    if editor2d.sceneInspectorSection
+          != scene_editor_2d.SCENE_INSPECTOR_TILE_BEHAVIOR
+       or editor2d.sceneSectionDropdown.Selected
+          != scene_editor_2d.SCENE_INSPECTOR_TILE_BEHAVIOR
+       or editor2d.tileBehavior.group.IsVisible() == false
+       or editor2d.layersGroup.IsVisible()
+       or doc2d.content != baseline2d {
+        Fail(shell, "2D Scene topic did not survive a document switch");
+        return;
+    }
+    shell.Destroy();
+
+    shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio 3D Inspector Topics Probe", 1440, 900);
+    shell.SetSceneWorkspaceMode(true);
+    var documents3d = new document_manager.DocumentManager();
+    var editor3d = new scene_editor_3d.SceneEditor3D();
+    scene_panels_3d.Build(
+        editor3d, shell.workbench.scene3DHost, shell.app);
+    var doc3d = documents3d.NewScene3DDocument();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_3D);
+    editor3d.Activate(doc3d);
+    Pump3D(shell, editor3d, doc3d);
+    Pump3D(shell, editor3d, doc3d);
+    var baseline3d = doc3d.content;
+
+    if editor3d.sceneSectionRow.IsVisible() == false
+       or editor3d.sceneSectionDropdown.Selected
+          != scene_editor_3d.SCENE_INSPECTOR_WORLD
+       or editor3d.envGroup.IsVisible() == false
+       or editor3d.importGroup.IsVisible()
+       or editor3d.bakeGroup.IsVisible()
+       or editor3d.materialLibraryGroup.IsVisible()
+       or editor3d.historyGroup.IsVisible() {
+        Fail(shell, "3D default Scene topic was not concise World");
+        return;
+    }
+
+    editor3d.sceneSectionDropdown.SetSelected(
+        scene_editor_3d.SCENE_INSPECTOR_ASSETS);
+    Pump3D(shell, editor3d, doc3d);
+    if editor3d.sceneInspectorSection
+          != scene_editor_3d.SCENE_INSPECTOR_ASSETS
+       or editor3d.importGroup.IsVisible() == false
+       or editor3d.materialLibraryGroup.IsVisible() == false
+       or editor3d.envGroup.IsVisible()
+       or editor3d.bakeGroup.IsVisible()
+       or editor3d.historyGroup.IsVisible()
+       or doc3d.content != baseline3d {
+        Fail(shell, "3D Assets topic leaked sibling groups or edited content");
+        return;
+    }
+
+    editor3d.sceneSectionDropdown.SetSelected(
+        scene_editor_3d.SCENE_INSPECTOR_LIGHTING);
+    Pump3D(shell, editor3d, doc3d);
+    var other3d = documents3d.NewScene3DDocument();
+    editor3d.Activate(other3d);
+    Pump3D(shell, editor3d, other3d);
+    editor3d.Activate(doc3d);
+    Pump3D(shell, editor3d, doc3d);
+    if editor3d.sceneInspectorSection
+          != scene_editor_3d.SCENE_INSPECTOR_LIGHTING
+       or editor3d.sceneSectionDropdown.Selected
+          != scene_editor_3d.SCENE_INSPECTOR_LIGHTING
+       or editor3d.bakeGroup.IsVisible() == false
+       or editor3d.envGroup.IsVisible()
+       or editor3d.importGroup.IsVisible()
+       or doc3d.content != baseline3d {
+        Fail(shell, "3D Scene topic did not survive a document switch");
+        return;
+    }
+
+    shell.Destroy();
+    Terminal.Say("RESULT: ok");
+}

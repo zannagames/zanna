@@ -210,11 +210,13 @@ authored same-kind values. Their shared structured schema form maintains every
 cross-target definition with validated atomic writes, unknown-member
 preservation, external-conflict detection, and independent 20-step file
 undo/redo without dirtying a scene. Project component schemas accept versions
-1 through 13. Validated enum-choice and asset-reference fields are authored as
+1 through 15. Validated enum-choice and asset-reference fields are authored as
 ordinary string values; later versions add asset libraries, object/node
 previews, 3D gameplay-view profiles, project-owned 2D backgrounds, 3D scene
 environments, portable post-processing previews, 2D object draw stacks, exact
-Game View output frames, and direct component creation recipes. On the
+Game View output frames, direct component creation recipes, independently
+matched metadata-transformed 3D environment layers, and bounded runtime-backed
+water layers. On the
 selection-free Object tab, a compatible schema-v13 recipe creates a correctly
 typed 2D object at the selected/visible cell or a uniquely named 3D node at the
 viewport target, applies all typed defaults before one canonical commit,
@@ -293,7 +295,7 @@ scene authoring, and panel virtualization for very large result sets.
 | Zia IntelliSense | Implemented with limits | Completion, diagnostics, hover, signature help, symbols, definition, references, rename, workspace symbols. |
 | BASIC IntelliSense | Implemented with limits | Completion, diagnostics, hover, document symbols, scanner-backed definition, references, rename, workspace symbols, call hierarchy, and signature help. |
 | Plain text | Implemented | Opens unknown/text-like files as text without semantic features. |
-| Scene files | Implemented with limits | `.scene2d` mounts the 2D editor and `.scene3d` mounts the 3D editor (legacy `.scene`/`.level`/`.vscn` remain accepted). Both retain per-document workspace/history state and provide real expandable multi-select hierarchies, transactional before/into/after row drops, group edits, typed gameplay data, searchable project assets, hierarchy-preserving clipboard transfer, undo/redo, and safe save/import flows. Below 1,180 logical pixels, complete stateful 2D Tools/View and 3D Create/Placement/View menus replace dense secondary button sets so the authored canvas/viewport remains useful; wide lanes restore every direct control. The 2D surface includes a runtime-backed organizational hierarchy with absolute positions, one-step root/child creation, explicit cycle-safe multi-root reparenting, stable subtree/sibling ordering, real bounded atlas rendering/palettes, viewport-windowed canvas rasterization (only visible cells render, so large maps stay fully scroll-reachable; 100% zoom equals the authored tile resolution, the wheel zooms around the pointer, and Fit/1:1/grid-toggle controls remain reachable through direct or View actions), captured gap-free paint/erase with exact cancellation, inclusive rectangle paint, four-connected fill, active-layer tile picking, modifier-aware point and inclusive authored-cell marquee selection, object dragging, scene/object properties, nudging, alignment, and distribution. The 3D surface includes a runtime-backed shaded/triangle-wireframe viewport with exact editor-overlay alignment, exact preserve-world chooser/direct reparenting with preserve-local opt-out, stable sibling ordering, mixed-state batch visibility, switchable Local/World Move/Rotate/Scale with snapping and atomic exact-or-reject world conversion, filled Move-plane and crossed Scale-plane XY/XZ/YZ handles, projected X/Y/Z rotation rings with wrap-safe angular dragging, truthful mixed-value batch PBR materials, batch embedded texture maps, mixed-value batch authoring for every runtime light type with hierarchy/viewport feedback, authored camera nodes with look-through and a bounded preview inset, collider-convention authoring with wireframe overlays, exact canonical-mesh terrain creation and four-mode viewport sculpting, and route polylines/badges for project gameplay components. Both load compatible definitions from bounded root-local `scene-components.json`; Add Missing preserves same-kind values, rejects any type conflict before mutation, and commits the complete selection once. A shared structured form maintains the complete cross-target schema through parser-validated atomic writes, external-conflict detection, and separate bounded file undo/redo. The 2D tile palette authors per-tile collision, typed int/bool properties, per-frame animations, and 16-variant autotile rules as one-transaction typed-section edits with palette behavior badges. Schema v2 enum/asset fields, the explicit 2D/3D migration assistant, the per-root asset library with tag filtering and import-grid surfacing, and the project material library are present; automatic unattended migration and generalized runtime components are not. |
+| Scene files | Implemented with limits | `.scene2d` mounts the 2D editor and `.scene3d` mounts the 3D editor (legacy `.scene`/`.level`/`.vscn` remain accepted). Both retain per-document workspace/history state and provide real expandable multi-select hierarchies, transactional before/into/after row drops, group edits, typed gameplay data, searchable project assets, hierarchy-preserving clipboard transfer, undo/redo, and safe save/import flows. At every width, complete stateful 2D Scene/Tools/View and 3D Scene/Create/Placement/View menus keep secondary commands out of permanent chrome; wide lanes grow the authored canvas/viewport instead of restoring every historical button, while active tools, Game View, and contextual pane navigation remain direct. Each Scene inspector also exposes one per-document Topic at a time—six complete 2D topics or four complete 3D topics—so unrelated setup, history, lighting, assets, layers, and metadata do not form one endless page. The 2D surface includes a runtime-backed organizational hierarchy with absolute positions, one-step root/child creation, explicit cycle-safe multi-root reparenting, stable subtree/sibling ordering, real bounded atlas rendering/palettes, viewport-windowed canvas rasterization (only visible cells render, so large maps stay fully scroll-reachable; 100% zoom equals the authored tile resolution, the wheel zooms around the pointer, and Fit/1:1/grid-toggle controls remain reachable through View actions), captured gap-free paint/erase with exact cancellation, inclusive rectangle paint, four-connected fill, active-layer tile picking, modifier-aware point and inclusive authored-cell marquee selection, object dragging, scene/object properties, nudging, alignment, and distribution. The 3D surface includes a runtime-backed shaded/triangle-wireframe viewport with exact editor-overlay alignment, exact preserve-world chooser/direct reparenting with preserve-local opt-out, stable sibling ordering, mixed-state batch visibility, switchable Local/World Move/Rotate/Scale with snapping and atomic exact-or-reject world conversion, filled Move-plane and crossed Scale-plane XY/XZ/YZ handles, projected X/Y/Z rotation rings with wrap-safe angular dragging, truthful mixed-value batch PBR materials, batch embedded texture maps, mixed-value batch authoring for every runtime light type with hierarchy/viewport feedback, authored camera nodes with look-through and a bounded preview inset, collider-convention authoring with wireframe overlays, exact canonical-mesh terrain creation and four-mode viewport sculpting, and route polylines/badges for project gameplay components. Both load compatible definitions from bounded root-local `scene-components.json`; Add Missing preserves same-kind values, rejects any type conflict before mutation, and commits the complete selection once. A shared structured form maintains the complete cross-target schema through parser-validated atomic writes, external-conflict detection, and separate bounded file undo/redo. The 2D tile palette authors per-tile collision, typed int/bool properties, per-frame animations, and 16-variant autotile rules as one-transaction typed-section edits with palette behavior badges. Schema v2 enum/asset fields, the explicit 2D/3D migration assistant, the per-root asset library with tag filtering and import-grid surfacing, and the project material library are present; automatic unattended migration and generalized runtime components are not. |
 | 3D node gameplay metadata | Implemented with limits | One selected `SceneNode` exposes deterministically ordered null, Boolean, integer, float, and string values for roles, IDs, spawn/trigger data, and component parameters. Create, rename, update, and remove validate bounds/no-ops before one canonical VSCN history transaction; values round-trip through VSCN v6 and row selection stays with its tab/session. Project schemas can batch-add missing metadata to multiple nodes, while arbitrary raw metadata editing remains single-node. |
 | Scene clipboard | Implemented with limits | Standard Cut/Copy/Paste/Select All commands follow the active visual editor. A versioned, typed text envelope supports same-kind cross-tab transfer of up to 1,024 selected identities and 64 MB total, preserving typed 2D properties and internal parent links or serializable 3D subtrees. Cut and paste are one-step history transactions with exact rollback. Mixed 2D/3D paste and interchange with other editors are intentionally rejected. |
 | Project explorer | Implemented with limits | Demand-loaded, scrollable tree; multi-root support; Quick Open cache; file actions; ignores. Rename/move preserve live editor buffers and undo state, while delete releases any removed split-pane owner. |
@@ -402,14 +404,14 @@ camera controls, property editing, object creation/deletion/duplication,
 history, and import/export-oriented file workflows. A 2D object drag and a 3D
 transform drag each become one undo entry.
 
-Below 1,180 logical pixels, dense secondary commands move into stable,
-state-synchronized overflow surfaces instead of consuming several scene rows.
-2D keeps Select/Paint/Erase direct and exposes complete **Tools** and **View**
-menus. 3D exposes complete **Create**, **Placement**, and **View** menus while
-keeping file, selection, transform, Game View, hierarchy, and inspector actions
-direct. Wide lanes restore every corresponding button. The compact bars keep a
-useful full-width canvas/viewport and all menu actions call the same validated,
-undo-aware editor paths as their wide controls.
+Dense secondary commands remain in stable, state-synchronized menus at every
+scene width instead of consuming several permanent rows. 2D keeps
+Select/Paint/Erase direct and exposes complete **Scene**, **Tools**, and
+**View** menus. 3D exposes complete **Scene**, **Create**, **Placement**, and
+**View** menus while keeping active transforms, Game View, and contextual pane
+navigation direct. Wider lanes enlarge the canvas/viewport instead of
+repopulating the chrome. Every menu action calls the same validated,
+undo-aware editor path as its shortcut or contextual counterpart.
 
 Both editors expose a per-document **Game View** that removes editor-only
 viewport chrome in one reversible action while preserving every underlying
@@ -469,10 +471,10 @@ merging, edge redocking, persisted membership migration) remains the
 deeper integration and is not implemented — the dock model validates a
 fixed eight-panel set today.
 
-Run Scene is one key and one click away: Ctrl+R triggers the existing
-Run Scene command (save-preflight, then the owning project with the scene
-path appended per ADR 0181), and both scene editors carry a Run Scene
-toolbar button feeding the same dispatcher path. Scene hot reload is a
+Run Scene is one shortcut or compact menu command away: Ctrl+R triggers the
+existing Run Scene command (save-preflight, then the owning project with the
+scene path appended per ADR 0181), and both scene editors expose Run Scene in
+their Scene menu through the same dispatcher path. Scene hot reload is a
 documented contract rather than an engine feature (ADR 0194): a game
 opting into --scene-watch re-runs its own scene-load path when the scene
 file's modification stamp changes, treats reloads as fresh loads with no
@@ -644,8 +646,8 @@ complete affordance without forcing horizontal scrolling.
 Creation is cursor-aware: the 3D viewport context menu's create items spawn
 at the precise triangle hit under the right-click point, at the ground-plane
 intersection when the ray misses geometry, or at the view target when it
-misses both; wide toolbar primitive buttons and constrained **Create** items
-spawn at the view target rather than the world origin, and Cylinder joins
+misses both; **Create** menu items spawn at the view target rather than the
+world origin, and Cylinder joins
 Box/Sphere/Plane in every creation surface. Context-menu creates arm the inline hierarchy rename so
 the name is typed immediately; when the hierarchy is collapsed, the action
 opens its full-width master before editing. The 2D canvas menu gains "Add
@@ -804,12 +806,11 @@ checkboxes both present truthful native mixed states for group selections. A man
 change. Both split positions persist per document. Below 1,400 logical pixels
 the Hierarchy pane collapses before it can starve the viewport and inspector;
 an explicit Hierarchy action and standard Find open the same full-width master.
-Below 1,180 logical pixels, complete Create, Placement, and View overflow menus
-replace the dense secondary button sets; primary file, selection, transform,
-Game View, hierarchy, and inspector actions stay direct. This caps defensive
-command-bar height and gives the authored viewport substantially more vertical
-space. Wider lanes restore every direct creation, placement, and navigation
-control.
+Complete Scene, Create, Placement, and View menus own secondary document,
+creation, placement, and navigation commands at every width. Active transforms,
+Game View, and contextual hierarchy navigation stay direct. This caps
+command-bar height, gives the authored viewport substantially more vertical
+space, and prevents wide layouts from turning capability into visual noise.
 
 The 3D viewport is projection-switchable through one retained camera:
 perspective is the default and orthographic is one toggle away. Every overlay
@@ -826,8 +827,8 @@ the W/E/R tool shortcuts stay suppressed during it. Otherwise the wheel
 dollies about the pointer, middle-drag orbits, Shift+drag pans, and F frames
 the selection or the whole scene. A Persp/Ortho toggle and a View-options row
 (grid, marker, and light-overlay visibility, a live visible/culled stats
-readout, and the three snap increments) are direct on wide command bars and
-reachable through the checked **View** menu when constrained; the
+readout, and the three snap increments) open through the checked **View** menu;
+the
 perspective grid distance-fades while the ortho grid is unchanged. All of this
 state — projection, overlay toggles, stats, and snap increments — is
 per-scene workspace state that follows the owning tab and session and never
@@ -842,6 +843,21 @@ bounded scene-level environment prefab from exact integer root metadata.
 Studio composes that transient graph with the canonical scene under the same
 camera, depth, lighting, sky, and fog, but excludes it from the hierarchy,
 saved selection, picking, VSCN bytes, dirty state, and history (ADR 0203).
+Schema-v14 profiles can additionally compose up to 32 independently matched
+environment layers. Exact Boolean/integer/string root values decide whether a
+layer exists, while optional float metadata positions, scales, and yaws its
+ordinary project prefab. These layers share the base environment's bounded
+disposable graph and render pipeline but remain equally absent from canonical
+state (ADR 0212).
+Schema-v15 profiles can construct up to eight real runtime `Water3D` surfaces
+from the same exact typed match, float center/dimension mappings, optional
+color/texture/normal-map inputs, 8–64 grid resolution, and up to eight waves.
+Studio submits canonical geometry, the disposable prefab graph, and water
+inside one explicit frame, so depth, transparency, atmosphere, post-FX, and
+statistics see the complete authored view. Animation is capped at 30 Hz and a
+100 ms step. Ashfall Mission 05 uses its production water image, concrete
+normal map, full dimensions derived from its half extents, and both game wave
+records while remaining absent from canonical state (ADR 0213).
 Schema-v10 profiles can also declare the portable tonemap, bloom, color-grade,
 vignette, and FXAA recipe used by the game. Studio retains one runtime
 `PostFX3D` chain, finalizes the shaded offscreen frame before readback, and

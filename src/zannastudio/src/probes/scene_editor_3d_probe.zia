@@ -537,9 +537,8 @@ func main() {
     }
     editor.SetWorkspaceModeActive(false);
 
-    // A laptop-width Scene Layout has room for one creation row. Its Flex
-    // measurement must reclaim the old defensive second-row reservation
-    // instead of leaving a dead band above the viewport.
+    // A laptop-width Scene Layout has one progressive document/create row.
+    // Its Flex measurement must not retain a dead band for hidden primitives.
     shell.app.SetWindowSize(1320, 760);
     shell.SetSceneWorkspaceMode(true);
     shell.Poll();
@@ -551,8 +550,8 @@ func main() {
     var laptopLaneWidth = editor.root.GetScreenWidth();
     var laptopToolbarBottom = editor.toolbar.GetScreenY()
         + editor.toolbar.GetScreenHeight();
-    var laptopLastActionBottom = editor.deleteNodeButton.GetScreenY()
-        + editor.deleteNodeButton.GetScreenHeight();
+    var laptopLastActionBottom = editor.createMenuButton.GetScreenY()
+        + editor.createMenuButton.GetScreenHeight();
     if laptopLaneWidth < 1180.0 or laptopLaneWidth >= 1400.0
        or laptopToolbarBottom - laptopLastActionBottom > 12.0 {
         fail(shell, tempPath,
@@ -563,9 +562,8 @@ func main() {
     }
 
     // The real workbench's activity rail leaves an approximately 1120-pixel
-    // scene lane in a 1180-pixel laptop window. The concise creation actions
-    // still fit on one row there; a width-bracket floor must not reserve an
-    // invisible second row after the native widgets finish realizing.
+    // scene lane in a 1180-pixel laptop window. The progressive commands still
+    // fit on one row there; no invisible primitive row may be reserved.
     shell.app.SetWindowSize(1180, 760);
     shell.Poll();
     shell.Render();
@@ -576,8 +574,8 @@ func main() {
     var ordinaryLaneWidth = editor.root.GetScreenWidth();
     var ordinaryToolbarBottom = editor.toolbar.GetScreenY()
         + editor.toolbar.GetScreenHeight();
-    var ordinaryLastActionBottom = editor.deleteNodeButton.GetScreenY()
-        + editor.deleteNodeButton.GetScreenHeight();
+    var ordinaryLastActionBottom = editor.createMenuButton.GetScreenY()
+        + editor.createMenuButton.GetScreenHeight();
     if ordinaryLaneWidth >= 1180.0
        or ordinaryToolbarBottom - ordinaryLastActionBottom > 12.0 {
         fail(shell, tempPath,
@@ -645,28 +643,26 @@ func main() {
         editor.toolbar.GetScreenX() + editor.toolbar.GetScreenWidth() + 1.0;
     var toolbarBottom =
         editor.toolbar.GetScreenY() + editor.toolbar.GetScreenHeight() + 1.0;
-    var deleteRight = editor.deleteNodeButton.GetScreenX()
-        + editor.deleteNodeButton.GetScreenWidth();
-    var deleteBottom = editor.deleteNodeButton.GetScreenY()
-        + editor.deleteNodeButton.GetScreenHeight();
-    if deleteRight > toolbarRight or deleteBottom > toolbarBottom {
+    var createRight = editor.createMenuButton.GetScreenX()
+        + editor.createMenuButton.GetScreenWidth();
+    var createBottom = editor.createMenuButton.GetScreenY()
+        + editor.createMenuButton.GetScreenHeight();
+    if editor.sceneMenuButton.IsVisible() == false
+       or editor.createMenuButton.IsVisible() == false
+       or editor.newSceneButton.IsVisible()
+       or editor.addBoxButton.IsVisible()
+       or editor.deleteNodeButton.IsVisible()
+       or createRight > toolbarRight or createBottom > toolbarBottom {
         fail(shell, tempPath, "compact 3D creation actions were clipped: action="
-             + deleteRight + "," + deleteBottom + " toolbar="
+             + createRight + "," + createBottom + " toolbar="
              + toolbarRight + "," + toolbarBottom
              + " rect=" + editor.toolbar.GetScreenX() + ","
              + editor.toolbar.GetScreenY() + ","
              + editor.toolbar.GetScreenWidth() + ","
              + editor.toolbar.GetScreenHeight()
              + " rootWidth=" + editor.root.GetScreenWidth()
-             + " rows=" + editor.newSceneButton.GetScreenY() + "/"
-             + editor.importAssetButton.GetScreenY() + "/"
-             + editor.addEmptyButton.GetScreenY() + "/"
-             + editor.addChildButton.GetScreenY() + "/"
-             + editor.addBoxButton.GetScreenY() + "/"
-             + editor.addSphereButton.GetScreenY() + "/"
-             + editor.addPlaneButton.GetScreenY() + "/"
-             + editor.duplicateNodeButton.GetScreenY() + "/"
-             + editor.deleteNodeButton.GetScreenY());
+             + " rows=" + editor.sceneMenuButton.GetScreenY() + "/"
+             + editor.createMenuButton.GetScreenY());
         return;
     }
     var viewToolbarRight = editor.viewToolbar.GetScreenX()

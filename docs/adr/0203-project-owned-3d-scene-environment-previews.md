@@ -78,6 +78,10 @@ the ordinary scene asset and does not import or execute that tooling.
   Windows, and Linux without dependencies or runtime ABI changes.
 - Versions 1–8 and projects without an environment mapping retain their prior
   behavior.
+- ADR 0212 extends this single base slot with independently matched additive
+  layers; it does not change the version-9 fallback or variant contract.
+- ADR 0213 adds bounded runtime-backed water surfaces and makes every
+  canonical/project preview share one explicit canvas frame.
 - Probes must pin schema version/path/variant rejection, real-project loading,
   exact gameplay-camera retention across layout changes, and canonical
   content/history isolation.

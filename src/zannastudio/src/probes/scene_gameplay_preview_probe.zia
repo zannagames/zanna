@@ -11,6 +11,8 @@
 //   - Ashfall mission 01 opens at the authored player eye and heading.
 //   - The retained render camera, projection, and project profile agree.
 //   - Runtime-generated terrain appears through a read-only environment prefab.
+//   - Mission 05 composes its metadata-sized pool through the real Water3D
+//     runtime path with production images, waves, and one-frame depth state.
 //   - Project recipes can create runtime-discriminated gameplay nodes directly.
 //   - The real project's portable post-FX chain is retained on the viewport.
 //   - Finalized pixels retain Ashfall's pale high-key visual envelope.
@@ -28,7 +30,9 @@
 //        docs/adr/0204-project-owned-3d-post-processing-previews.md,
 //        docs/adr/0207-non-destructive-scene-game-view.md,
 //        docs/adr/0208-project-authored-game-output-frames.md,
-//        docs/adr/0209-project-component-creation-recipes.md
+//        docs/adr/0209-project-component-creation-recipes.md,
+//        docs/adr/0212-additive-3d-environment-preview-layers.md,
+//        docs/adr/0213-runtime-backed-water-preview-layers.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -100,6 +104,36 @@ func sceneMeanLumaRegion(pixels: Pixels,
     }
     if samples <= 0 { return 0.0; }
     return (total + 0.0) / (samples + 0.0);
+}
+
+/// @brief Count changed pixels in a bounded square around one projected point.
+func pixelDifferenceAround(first: Pixels,
+                           second: Pixels,
+                           centerX: Integer,
+                           centerY: Integer,
+                           radius: Integer) -> Integer {
+    if first == null or second == null { return 0; }
+    var left = centerX - radius;
+    var top = centerY - radius;
+    var right = centerX + radius;
+    var bottom = centerY + radius;
+    if left < 0 { left = 0; }
+    if top < 0 { top = 0; }
+    if right >= first.Width { right = first.Width - 1; }
+    if bottom >= first.Height { bottom = first.Height - 1; }
+    var changed = 0;
+    var y = top;
+    while y <= bottom {
+        var x = left;
+        while x <= right {
+            if first.GetRgba(x, y) != second.GetRgba(x, y) {
+                changed = changed + 1;
+            }
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    return changed;
 }
 
 func projectRoot() -> String {
@@ -191,7 +225,9 @@ func main() {
             "enemy-spawn", scene_component_schema.TARGET_3D_NODE);
     }
     if editor.componentSchema == null
-       or editor.componentSchema.version != 13
+       or editor.componentSchema.version
+          != scene_component_schema
+              .RUNTIME_WATER_PREVIEW_3D_SCHEMA_VERSION
        or enemyRecipe == null
        or enemyRecipe.createNodeName != "Enemy Spawn"
        or enemyRecipe.FieldNamed("af.kind") == null
@@ -203,9 +239,14 @@ func main() {
        or editor.componentSchema.scenePreview3D.outputWidth != 1600
        or editor.componentSchema.scenePreview3D.outputHeight != 900
        or editor.componentSchema.scenePreview3D
+              .environmentLayers.count() != 0
+       or editor.componentSchema.scenePreview3D
+              .waterLayers.count() != 1
+       or editor.componentSchema.scenePreview3D
               .EnvironmentPrefabForVariant(1)
           != "assets/editor-previews/environment-terrain-01.scene3d"
        or hasEnvironmentPreview == false
+       or editor.projectWaterPreviews.count() != 0
        or editor.projectPreviewInstanceCount <= 0
        or editor.projectPreviewMissingCount != 0
        or editor.projectPreviewClipped {
@@ -573,6 +614,180 @@ func main() {
             return;
         }
     }
+
+    // The real game builds mission 05's pool from these same root values,
+    // production images, and wave records. Studio must construct one real
+    // Water3D and submit it with canonical geometry in the same canvas frame.
+    var waterScenePath =
+        Path.Join(root, "assets/scenes/mission-05.scene3d");
+    var waterDoc = new document.Document();
+    waterDoc.fileName = "mission-05.scene3d";
+    waterDoc.filePath = waterScenePath;
+    waterDoc.language = "scene3d";
+    waterDoc.kind = file_utils.DOC_KIND_SCENE_3D;
+    waterDoc.content = File.ReadAllText(waterScenePath);
+    var waterBaseline = waterDoc.content;
+    var waterBaselineRevision = editor.GetRevision();
+    editor.Activate(waterDoc);
+    pump(editor, waterDoc, shell);
+    pump(editor, waterDoc, shell);
+    var hasLegacyWaterProxy = false;
+    if editor.projectPreviewScene != null
+       and editor.projectPreviewScene.Root != null {
+        var waterPreviewIndex = 0;
+        while waterPreviewIndex
+              < editor.projectPreviewScene.Root.ChildCount {
+            var candidate = editor.projectPreviewScene.Root.GetChild(
+                waterPreviewIndex);
+            if candidate != null
+               and candidate.Name == "Scene environment layer 0" {
+                hasLegacyWaterProxy = true;
+            }
+            waterPreviewIndex = waterPreviewIndex + 1;
+        }
+    }
+    var waterDefinition =
+        editor.componentSchema.scenePreview3D.waterLayers.get(0);
+    var waterCenter = editor.ProjectWorldPoint(-12.0, 0.28, -14.0);
+    if editor.componentSchema.version
+          != scene_component_schema
+              .RUNTIME_WATER_PREVIEW_3D_SCHEMA_VERSION
+       or editor.componentSchema.scenePreview3D
+              .environmentLayers.count() != 0
+       or editor.componentSchema.scenePreview3D.waterLayers.count() != 1
+       or waterDefinition.matchKind != "bool"
+       or waterDefinition.matchBoolean == false
+       or waterDefinition.positionXProperty != "af.watX"
+       or waterDefinition.positionYProperty != "af.watY"
+       or waterDefinition.positionZProperty != "af.watZ"
+       or waterDefinition.widthProperty != "af.watW"
+       or waterDefinition.depthProperty != "af.watD"
+       or near(waterDefinition.widthMultiplier, 2.0) == false
+       or near(waterDefinition.depthMultiplier, 2.0) == false
+       or waterDefinition.texture
+          != "assets/editor-previews/water-albedo.png"
+       or waterDefinition.normalMap
+          != "assets/editor-previews/water-normal.png"
+       or waterDefinition.resolution != 64
+       or waterDefinition.animate == false
+       or waterDefinition.waves.count() != 2
+       or near(waterDefinition.waves.get(0).dirX, 1.0) == false
+       or near(waterDefinition.waves.get(0).dirZ, 0.3) == false
+       or near(waterDefinition.waves.get(0).speed, 0.05) == false
+       or near(waterDefinition.waves.get(0).amplitude, 0.4) == false
+       or near(waterDefinition.waves.get(0).wavelength, 1.2) == false
+       or near(waterDefinition.waves.get(1).dirX, -0.4) == false
+       or near(waterDefinition.waves.get(1).dirZ, 0.8) == false
+       or near(waterDefinition.waves.get(1).speed, 0.035) == false
+       or near(waterDefinition.waves.get(1).amplitude, 0.7) == false
+       or near(waterDefinition.waves.get(1).wavelength, 0.8) == false
+       or editor.projectWaterPreviews.count() != 1
+       or editor.projectWaterWidths.count() != 1
+       or editor.projectWaterDepths.count() != 1
+       or editor.projectWaterXs.count() != 1
+       or editor.projectWaterYs.count() != 1
+       or editor.projectWaterZs.count() != 1
+       or near(editor.projectWaterWidths.get(0), 6.4) == false
+       or near(editor.projectWaterDepths.get(0), 6.4) == false
+       or near(editor.projectWaterXs.get(0), -12.0) == false
+       or near(editor.projectWaterYs.get(0), 0.28) == false
+       or near(editor.projectWaterZs.get(0), -14.0) == false
+       or hasLegacyWaterProxy
+       or waterCenter.visible == false
+       or editor.projectPreviewMissingCount != 0
+       or editor.projectPreviewClipped
+       or editor.viewportRenderCanvas.FrameFinalized == false
+       or editor.viewportRenderCanvas.DrawCount <= 1
+       or waterDoc.content != waterBaseline
+       or waterDoc.isModified
+       or editor.GetRevision() != waterBaselineRevision
+       or editor.undoStack.count() != 0
+       or editor.redoStack.count() != 0 {
+        fail(shell, project,
+             "mission 05 water did not become one exact runtime-backed "
+             + "one-frame preview");
+        return;
+    }
+    editor.viewTargetX = -12.0;
+    editor.viewTargetY = 0.28;
+    editor.viewTargetZ = -14.0;
+    editor.viewScale = 28;
+    editor.SetViewProjection(false);
+    editor.SetQuickView(0);
+    editor.viewYawDegrees = 35;
+    editor.viewPitchDegrees = 35;
+    editor.SetViewProjection(true);
+    pump(editor, waterDoc, shell);
+    pump(editor, waterDoc, shell);
+    var waterTopCenter =
+        editor.ProjectWorldPoint(-12.0, 0.28, -14.0);
+    var waterTopCorner =
+        editor.ProjectWorldPoint(-8.8, 0.28, -10.8);
+    if waterTopCenter.visible == false
+       or waterTopCorner.visible == false {
+        fail(shell, project,
+             "mission 05 water footprint could not be framed for authoring");
+        return;
+    }
+    var waterBefore = editor.viewportPixels.Clone() as Pixels;
+    var waterStep = 0;
+    while waterStep < 10 {
+        if editor.AdvanceProjectWaterPreview(0.1) == false {
+            fail(shell, project,
+                 "mission 05 runtime water refused a bounded preview step");
+            return;
+        }
+        waterStep = waterStep + 1;
+    }
+    pump(editor, waterDoc, shell);
+    var changedWaterPixels = pixelDifferenceAround(
+        waterBefore,
+        editor.viewportPixels,
+        waterTopCenter.x,
+        waterTopCenter.y,
+        128);
+    if changedWaterPixels <= 0
+       or editor.viewportRenderCanvas.FrameFinalized == false
+       or editor.viewportRenderCanvas.DrawCount <= 1
+       or waterDoc.content != waterBaseline
+       or waterDoc.isModified
+       or editor.GetRevision() != waterBaselineRevision
+       or editor.undoStack.count() != 0
+       or editor.redoStack.count() != 0 {
+        var waterBeforePath =
+            Path.Join(TempFile.Dir(), "zannastudio_water_before.png");
+        var waterAfterPath =
+            Path.Join(TempFile.Dir(), "zannastudio_water_after.png");
+        Pixels.SavePng(waterBefore, waterBeforePath);
+        Pixels.SavePng(editor.viewportPixels, waterAfterPath);
+        fail(shell, project,
+             "runtime water animation or one-frame composition changed "
+             + "canonical state or produced no visible frame delta"
+             + " changedPixels=" + changedWaterPixels
+             + " draws=" + editor.viewportRenderCanvas.DrawCount
+             + " before=" + waterBeforePath
+             + " after=" + waterAfterPath);
+        return;
+    }
+    var waterScreenshotPath =
+        Path.Join(
+            TempFile.Dir(),
+            "zannastudio_ashfall_water_preview.png");
+    if editor.viewportPixels == null
+       or Pixels.SavePng(
+              editor.viewportPixels, waterScreenshotPath) != 1 {
+        fail(shell, project,
+             "could not capture the mission 05 water preview");
+        return;
+    }
+    Terminal.Say(
+        "METRIC: water=-12,0.28,-14 size=6.4x6.4 runtime=Water3D"
+        + " waves=2 resolution=64"
+        + " changedPixels=" + changedWaterPixels
+        + " composedDraws=" + editor.viewportRenderCanvas.DrawCount
+        + " gameplayScreen=" + waterCenter.x + "," + waterCenter.y
+        + " authoringScreen=" + waterTopCenter.x + "," + waterTopCenter.y
+        + " screenshot=" + waterScreenshotPath);
 
     project.CloseProject();
     shell.Destroy();

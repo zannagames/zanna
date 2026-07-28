@@ -17,7 +17,7 @@
 //   - Writers retain at most the restore limits and cap aggregate embedded
 //     recovery text, prioritizing the active document when truncation is needed.
 //   - Scene view state is fixed-point, versioned, and bounded before it reaches
-//     a live canvas, hierarchy, split pane, or camera.
+//     a live canvas, hierarchy, split pane, camera, or inspector topic.
 //   - All nine 2D authoring modes, including Line and Ellipse, retain their
 //     exact bounded identity through named-scene session restoration.
 //   - Structured split panes map through validated durable slots; a rejected
@@ -976,6 +976,9 @@ class SessionManager {
                     "" + ClampSessionInt(
                         Convert.NumToInt(state2D.inspectorScrollY),
                         0, MAX_SCENE_WORKSPACE_SCROLL));
+            Ini.Set(ini, section, "scene2dInspectorSection",
+                    "" + ClampSessionInt(
+                        state2D.inspectorSceneSection, 0, 5));
             Ini.Set(ini, section, "scene2dInspectorVisible",
                     SessionBool(state2D.inspectorRequestedVisible));
             Ini.Set(ini, section, "scene2dCompactInspector",
@@ -1033,6 +1036,9 @@ class SessionManager {
                     "" + ClampSessionInt(
                         Convert.NumToInt(state3D.inspectorScrollY),
                         0, MAX_SCENE_WORKSPACE_SCROLL));
+            Ini.Set(ini, section, "scene3dInspectorSection",
+                    "" + ClampSessionInt(
+                        state3D.inspectorSceneSection, 0, 3));
             Ini.Set(ini, section, "scene3dInspectorVisible",
                     SessionBool(state3D.inspectorRequestedVisible));
             Ini.Set(ini, section, "scene3dCompactInspector",
@@ -1081,6 +1087,8 @@ class SessionManager {
             state2D.inspectorScrollY = ReadSessionInt(
                 ini, section, "scene2dInspectorScrollY", 0,
                 0, MAX_SCENE_WORKSPACE_SCROLL) / 1.0;
+            state2D.inspectorSceneSection = ReadSessionInt(
+                ini, section, "scene2dInspectorSection", 0, 0, 5);
             state2D.inspectorRequestedVisible = ReadSessionInt(
                 ini, section, "scene2dInspectorVisible", 1, 0, 1) != 0;
             state2D.compactInspectorShown = ReadSessionInt(
@@ -1138,6 +1146,8 @@ class SessionManager {
             state3D.inspectorScrollY = ReadSessionInt(
                 ini, section, "scene3dInspectorScrollY", 0,
                 0, MAX_SCENE_WORKSPACE_SCROLL) / 1.0;
+            state3D.inspectorSceneSection = ReadSessionInt(
+                ini, section, "scene3dInspectorSection", 0, 0, 3);
             state3D.inspectorRequestedVisible = ReadSessionInt(
                 ini, section, "scene3dInspectorVisible", 1, 0, 1) != 0;
             state3D.compactInspectorShown = ReadSessionInt(

@@ -242,3 +242,5 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0209](0209-project-component-creation-recipes.md) — Add Project Component Creation Recipes
 - [ADR 0210](0210-read-only-mesh-vertex-positions.md) — Expose Read-Only Mesh Vertex Positions for Authoring Tools
 - [ADR 0211](0211-canonical-mesh-terrain-sculpting.md) — Author Terrain as a Canonical Scene Mesh
+- [ADR 0212](0212-additive-3d-environment-preview-layers.md) — Compose Additive 3D Environment Preview Layers
+- [ADR 0213](0213-runtime-backed-water-preview-layers.md) — Render Runtime-Backed Water Preview Layers

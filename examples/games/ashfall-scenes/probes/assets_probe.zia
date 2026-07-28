@@ -12,18 +12,22 @@
 //   - Every metadata variant referenced by Studio has a loadable, nonempty
 //     self-contained preview prefab.
 //   - Procedural terrain variants have deterministic scene-level previews.
+//   - Schema-v15 runtime water owns exact loadable production albedo/normal maps.
 // Ownership/Lifetime:
 //   - Each probe game and loaded preview graph is process-local and temporary.
 //   - The probe never writes or mutates source assets.
 // Links: ../tools/build_studio_previews.zia, ../scene-components.json,
 //        docs/adr/0199-project-owned-3d-node-prefab-previews.md,
-//        docs/adr/0203-project-owned-3d-scene-environment-previews.md
+//        docs/adr/0203-project-owned-3d-scene-environment-previews.md,
+//        docs/adr/0212-additive-3d-environment-preview-layers.md,
+//        docs/adr/0213-runtime-backed-water-preview-layers.md
 //
 //===----------------------------------------------------------------------===//
 
 module assets_probe;
 
 bind Zanna.Graphics3D as G3D;
+bind Zanna.Graphics.Pixels as Pixels;
 bind Zanna.IO.File as File;
 bind Zanna.Terminal as Terminal;
 bind "../config" as config;
@@ -90,7 +94,27 @@ func validateStudioPreviews() -> Boolean {
         }
         terrainIndex = terrainIndex + 1;
     }
-    Terminal.Say("studioPreviews=ok count=46");
+    var waterImages: List[String] = [
+        root + "/water-albedo.png",
+        root + "/water-normal.png"
+    ];
+    var waterIndex = 0;
+    while waterIndex < waterImages.Count {
+        var waterPath = waterImages[waterIndex];
+        if File.Exists(waterPath) == false {
+            Terminal.Say("FAIL: missing Studio water image " + waterPath);
+            return false;
+        }
+        var water = Pixels.Load(waterPath);
+        if water == null
+           or Pixels.get_Width(water) != 256
+           or Pixels.get_Height(water) != 256 {
+            Terminal.Say("FAIL: invalid Studio water image " + waterPath);
+            return false;
+        }
+        waterIndex = waterIndex + 1;
+    }
+    Terminal.Say("studioPreviews=ok prefabs=46 waterImages=2");
     return true;
 }
 

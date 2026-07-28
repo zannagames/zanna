@@ -14,8 +14,12 @@
 //     no state and is safe to call exactly once per editor instance.
 //   - Game View is a first-class view action, separate from the project camera
 //     reset and reversible Focus/layout presentation.
-//   - Compact overflow menus are built once with stable item handles; the
-//     editor owns their state and routes every action through existing commands.
+//   - Scene, Create, Placement, and View menus are built once with stable item
+//     handles; the editor owns their state and command dispatch.
+//   - Progressive disclosure is stable across widths: wider lanes enlarge the
+//     viewport instead of repopulating chrome with secondary commands.
+//   - One compact Scene-topic dropdown owns mutually exclusive complete
+//     scene-wide inspector groups; the controller owns its live visibility.
 // Ownership/Lifetime:
 //   - The editor owns every constructed widget; this module owns nothing.
 // Links: zannastudio/src/ui/scene_editor_3d.zia
@@ -67,15 +71,36 @@ expose func Build(editor: scene_editor_3d.SceneEditor3D,
         editor.toolbar.SetGap(4.0);
         editor.toolbar.SetPadding(4.0);
         editor.root.AddChild(editor.toolbar);
+
+        editor.sceneMenuButton =
+            GUI.Button.New(editor.toolbar, "Scene...");
+        editor.sceneMenuButton.SetAccessibleName(
+            "Open 3D scene document commands");
+        editor.sceneMenuButton.SetTooltip(
+            "New, import, instance, and run commands");
+        editor.sceneMenu = GUI.ContextMenu.New();
+        editor.sceneNewItem =
+            editor.sceneMenu.AddItem("New Empty Scene");
+        editor.sceneImportAssetItem =
+            editor.sceneMenu.AddItem("Import Asset...");
+        editor.sceneImportInstanceItem =
+            editor.sceneMenu.AddItem("Import Scene Instance...");
+        editor.sceneMenu.AddSeparator();
+        editor.sceneRunItem =
+            editor.sceneMenu.AddItemWithShortcut("Run Scene", "Ctrl+R");
+
         editor.newSceneButton = GUI.Button.New(editor.toolbar, "New");
         editor.newSceneButton.SetTooltip("Replace this document with an empty 3D scene");
+        editor.newSceneButton.SetVisible(false);
         editor.importAssetButton = GUI.Button.New(editor.toolbar, "Import Asset...");
         editor.importAssetButton.SetTooltip(
             "Import Scene3D/VSCN, glTF, GLB, FBX, OBJ, or STL into this scene document");
+        editor.importAssetButton.SetVisible(false);
         editor.importInstanceButton = GUI.Button.New(editor.toolbar, "Import Instance...");
         editor.importInstanceButton.SetTooltip(
             "Place a scene by reference (VSCN v7 prefab): the file stores "
             + "only the reference plus this node's overrides");
+        editor.importInstanceButton.SetVisible(false);
         editor.createMenuButton =
             GUI.Button.New(editor.toolbar, "Create...");
         editor.createMenuButton.SetAccessibleName(
@@ -125,10 +150,13 @@ expose func Build(editor: scene_editor_3d.SceneEditor3D,
         editor.duplicateNodeButton = GUI.Button.New(editor.toolbar, "Duplicate");
         editor.duplicateNodeButton.SetTooltip(
             "Duplicate selected hierarchy roots with their complete subtrees");
+        editor.duplicateNodeButton.SetVisible(false);
         editor.deleteNodeButton = GUI.Button.New(editor.toolbar, "Delete");
+        editor.deleteNodeButton.SetVisible(false);
         editor.runSceneButton = GUI.Button.New(editor.toolbar, "Run Scene");
         editor.runSceneButton.SetTooltip(
             "Save and run the owning project with this scene (Ctrl+R)");
+        editor.runSceneButton.SetVisible(false);
         editor.toolbarStatus = GUI.Label.New(editor.toolbar, "Open or create a 3D scene");
         editor.toolbarStatus.SetFlex(1.0);
         editor.toolbarStatus.SetPreferredSize(180.0, 0.0);
@@ -454,6 +482,24 @@ expose func Build(editor: scene_editor_3d.SceneEditor3D,
         editor.sceneTabButton.SetTooltip(
             "Author scene-wide imports, bake, environment, and the "
             + "material library");
+        editor.sceneSectionRow = GUI.HBox.New();
+        editor.sceneSectionRow.SetSpacing(4.0);
+        inspector.AddChild(editor.sceneSectionRow);
+        GUI.Label.New(editor.sceneSectionRow, "Topic");
+        editor.sceneSectionDropdown =
+            GUI.Dropdown.New(editor.sceneSectionRow);
+        editor.sceneSectionDropdown.SetFlex(1.0);
+        editor.sceneSectionDropdown.SetAccessibleName(
+            "3D Scene inspector topic");
+        editor.sceneSectionDropdown.SetTooltip(
+            "Show one scene-wide authoring topic at a time");
+        editor.sceneSectionDropdown.AddItem("World");
+        editor.sceneSectionDropdown.AddItem("Lighting & Bake");
+        editor.sceneSectionDropdown.AddItem("Assets & Materials");
+        editor.sceneSectionDropdown.AddItem("History");
+        editor.sceneSectionDropdown.SetSelected(
+            scene_editor_3d.SCENE_INSPECTOR_WORLD);
+        editor.sceneSectionDropdown.WasChanged();
 
         GUI.Label.New(hierarchyPane, "Scene hierarchy");
         var hierarchySearchRow = GUI.HBox.New();

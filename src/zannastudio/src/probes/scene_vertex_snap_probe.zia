@@ -12,7 +12,8 @@
 //   - Vertex-to-vertex and vertex-to-surface drags mutate live then commit once.
 //   - A selected pivot can drive the same gesture.
 //   - Escape restores exact canonical bytes and releases pointer capture.
-//   - The persistent Vertex control fits its toolbar and follows document state.
+//   - The Placement menu remains visible while its hidden Vertex state follows
+//     the active document exactly.
 // Ownership/Lifetime:
 //   - The probe owns one hidden AppShell, editor, document, and input harness.
 // Links: zannastudio/src/ui/scene_editor_3d.zia,
@@ -142,14 +143,8 @@ func main() {
        or editor.vertexSnapCheck.IsChecked() == false
        or editor.vertexSnapEnabled == false
        or sceneDoc.scene3DWorkspace.transformVertexSnapEnabled == false
-       or editor.vertexSnapCheck.GetScreenX()
-              + editor.vertexSnapCheck.GetScreenWidth()
-          > editor.viewToolbar.GetScreenX()
-              + editor.viewToolbar.GetScreenWidth() + 1.0
-       or editor.vertexSnapCheck.GetScreenY()
-              + editor.vertexSnapCheck.GetScreenHeight()
-          > editor.viewToolbar.GetScreenY()
-              + editor.viewToolbar.GetScreenHeight() + 1.0 {
+       or editor.placementMenuButton.IsVisible() == false
+       or editor.vertexSnapCheck.IsVisible() {
         fail(shell, null, "Vertex control layout or document state");
         return;
     }

@@ -298,6 +298,8 @@ func main() {
     // is pure presentation. Poll first so the consumed Escape edge above
     // cannot re-clear the selection on the next pump.
     shell.Poll();
+    editor.SetSceneInspectorSection(
+        scene_editor_2d.SCENE_INSPECTOR_PROPERTIES, false);
     if editor.objectFieldsLabel.IsVisible()
        or editor.objectTypeInput.IsVisible()
        or editor.tilesetInspector.group.IsVisible() == false

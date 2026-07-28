@@ -1693,6 +1693,14 @@ set_tests_properties(zia_zannastudio_scene_command_bar PROPERTIES
         LABELS "zia;zannastudio;scene;requires_display"
         TIMEOUT 150)
 
+add_test(NAME zia_zannastudio_scene_inspector_topics
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/scene_inspector_topics_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
+set_tests_properties(zia_zannastudio_scene_inspector_topics PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;scene;requires_display"
+        TIMEOUT 150)
+
 add_test(NAME zia_zannastudio_scene_workspace_state
         COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/scene_workspace_state_probe.zia"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")

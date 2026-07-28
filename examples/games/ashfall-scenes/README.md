@@ -43,6 +43,12 @@ terrain formula across the same 256-meter footprint. The root `af.terrain`
 value selects the canyon, ash-sea, or terrace variant, so the gameplay view
 includes the runtime-generated horizon without placing derived terrain in the
 mission hierarchy or save data.
+Schema-v15 runtime water maps `af.wantWater` and `af.watX/Y/Z/W/D` to the
+public `Water3D` surface. Mission 05 therefore previews the same full
+dimensions, generated production water image, concrete normal map, 64-by-64
+grid, and two wave records as the running game. Studio submits canonical
+geometry, project prefabs, and transparent water in one frame while keeping the
+surface out of hierarchy, picking, save data, dirty state, and history.
 The schema also carries the balanced runtime tonemap, bloom, color-grade,
 vignette, and FXAA values. Studio finalizes that retained chain before viewport
 readback, giving the mission the same pale high-key atmosphere as the running
@@ -66,10 +72,12 @@ surface-class palette. The generic contracts are documented by
 [ADR 0203](../../../docs/adr/0203-project-owned-3d-scene-environment-previews.md),
 [ADR 0204](../../../docs/adr/0204-project-owned-3d-post-processing-previews.md),
 [ADR 0208](../../../docs/adr/0208-project-authored-game-output-frames.md),
-and [ADR 0209](../../../docs/adr/0209-project-component-creation-recipes.md).
+[ADR 0209](../../../docs/adr/0209-project-component-creation-recipes.md),
+[ADR 0212](../../../docs/adr/0212-additive-3d-environment-preview-layers.md),
+and [ADR 0213](../../../docs/adr/0213-runtime-backed-water-preview-layers.md).
 
-Regenerate the preview prefabs deterministically after changing production
-prop, enemy, pickup, or terrain presentation:
+Regenerate the preview prefabs and water images deterministically after
+changing production prop, enemy, pickup, terrain, or water presentation:
 
 ```sh
 (
@@ -78,9 +86,9 @@ prop, enemy, pickup, or terrain presentation:
 )
 ```
 
-`probes/assets_probe.zia` loads all 46 files as part of the portable asset
-check, in addition to exercising optional art and the complete runtime fallback
-path.
+`probes/assets_probe.zia` loads all 46 prefab scenes and decodes both 256×256
+water images as part of the portable asset check, in addition to exercising
+optional art and the complete runtime fallback path.
 
 ---
 

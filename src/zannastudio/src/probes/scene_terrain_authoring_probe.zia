@@ -13,6 +13,8 @@
 //   - Real pointer strokes mutate live without history, then commit once.
 //   - Escape restores the original mesh and exact canonical document bytes.
 //   - Flatten/regenerate are explicit one-step transactions with exact undo.
+//   - Terrain creation remains reachable through the progressive Create menu
+//     without restoring a permanent primitive strip on wide scene lanes.
 // Ownership/Lifetime:
 //   - The probe owns one AppShell, editor, document, and input harness.
 // Links: zannastudio/src/ui/scene_terrain_3d.zia,
@@ -89,6 +91,20 @@ func clickWidget(shell: app_shell.AppShell,
     var y = harnessCoordinate(
         shell,
         widget.GetScreenY() + widget.GetScreenHeight() * 0.5);
+    harness.SendMouse("move", x, y, 0);
+    harness.SendMouse("down", x, y, 0);
+    harness.SendMouse("up", x, y, 0);
+    harness.DispatchPending();
+}
+
+func clickMenuOffset(shell: app_shell.AppShell,
+                     harness: GUI.TestHarness,
+                     button: GUI.Button,
+                     offsetY: Number) {
+    var x = harnessCoordinate(shell, button.GetScreenX() + 20.0);
+    var y = harnessCoordinate(
+        shell,
+        button.GetScreenY() + button.GetScreenHeight() + offsetY);
     harness.SendMouse("move", x, y, 0);
     harness.SendMouse("down", x, y, 0);
     harness.SendMouse("up", x, y, 0);
@@ -195,14 +211,23 @@ func main() {
         fail(shell, harness, "input harness binding");
         return;
     }
-    if editor.addTerrainButton.IsVisible() == false
-       or editor.addTerrainButton.IsEnabled() == false {
-        fail(shell, harness, "wide Create Terrain control missing");
+    if editor.createMenuButton.IsVisible() == false
+       or editor.createMenuButton.IsEnabled() == false
+       or editor.addTerrainButton.IsVisible() {
+        fail(shell, harness, "progressive Create menu state");
         return;
     }
     var createBaseline = sceneDoc.content;
     var createRevision = editor.GetRevision();
-    clickWidget(shell, harness, editor.addTerrainButton);
+    clickWidget(shell, harness, editor.createMenuButton);
+    pump(editor, sceneDoc, shell);
+    if editor.createMenu.IsVisible() == false
+       or editor.createTerrainItem.IsEnabled() == false {
+        fail(shell, harness, "Create Terrain menu item missing");
+        return;
+    }
+    // Empty, Child, separator, Box, Sphere, Plane, Cylinder, then Terrain.
+    clickMenuOffset(shell, harness, editor.createMenuButton, 195.0);
     pump(editor, sceneDoc, shell);
     if editor.GetRevision() != createRevision + 1
        or sceneDoc.content == createBaseline

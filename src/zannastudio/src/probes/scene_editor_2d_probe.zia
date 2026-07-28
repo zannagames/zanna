@@ -577,12 +577,13 @@ func main() {
     shell.Render();
     var toolRowDelta =
         editor.toolMenuButton.GetScreenY()
-        - editor.newSceneButton.GetScreenY();
-    if editor.toolMenuButton.IsVisible() == false
+        - editor.sceneMenuButton.GetScreenY();
+    if editor.sceneMenuButton.IsVisible() == false
+       or editor.toolMenuButton.IsVisible() == false
        or editor.objectButton.IsVisible()
        or toolRowDelta < -1.0 or toolRowDelta > 1.0 {
         fail(shell, "medium-width 2D primary tools did not remain one row: "
-             + editor.newSceneButton.GetScreenY() + "/"
+             + editor.sceneMenuButton.GetScreenY() + "/"
              + editor.toolMenuButton.GetScreenY()
              + " root=" + editor.root.GetScreenWidth());
         return;
@@ -605,6 +606,10 @@ func main() {
     editor.Activate(sceneDoc);
     editor.Pump(sceneDoc);
     shell.Render();
+    editor.SetSceneInspectorSection(
+        scene_editor_2d.SCENE_INSPECTOR_TILE_BEHAVIOR, false);
+    editor.Pump(sceneDoc);
+    shell.Render();
     editor.canvasScroll.SetScroll(120.0, 80.0);
     editor.inspectorScroll.SetScroll(0.0, 90.0);
     editor.Pump(sceneDoc);
@@ -614,11 +619,14 @@ func main() {
     var expectedSplitPosition = editor.bodySplit.GetPosition();
     var continuityTileChanged = editor.SetSceneTile(0, 0, 0, 3);
     if expectedCanvasScrollX < 1.0 or expectedCanvasScrollY < 1.0
-       or expectedInspectorScrollY < 1.0
+       or editor.sceneInspectorSection
+          != scene_editor_2d.SCENE_INSPECTOR_TILE_BEHAVIOR
        or continuityTileChanged == false {
         fail(shell, "2D workspace continuity setup did not create "
-             + "scroll/history state: canvas=" + expectedCanvasScrollX + ","
+             + "scroll/topic/history state: canvas="
+             + expectedCanvasScrollX + ","
              + expectedCanvasScrollY + " inspector=" + expectedInspectorScrollY
+             + " topic=" + editor.sceneInspectorSection
              + " tile=" + continuityTileChanged
              + " zoom=" + editor.zoomPercent
              + " stage=" + editor.canvasStage.GetLogicalWidth() + "x"
@@ -640,6 +648,8 @@ func main() {
     shell.Render();
     if editor.mode != scene_editor_2d.MODE_SELECT
        or Convert.NumToInt(editor.tileSpinner.Value) != 1
+       or editor.sceneInspectorSection
+          != scene_editor_2d.SCENE_INSPECTOR_SETUP
        or editor.CanUndo()
        or editor.compactInspectorShown
        or near(editor.bodySplit.GetPosition(), 0.66) == false {
@@ -658,6 +668,8 @@ func main() {
         and editor.zoomPercent == 400
         and Convert.NumToInt(editor.tileSpinner.Value) == 17
         and editor.selectedCellX == 6 and editor.selectedCellY == 4
+        and editor.sceneInspectorSection
+            == scene_editor_2d.SCENE_INSPECTOR_TILE_BEHAVIOR
         and editor.compactInspectorShown
         and near(editor.bodySplit.GetPosition(), expectedSplitPosition)
         and near(editor.canvasScroll.GetScrollX(), expectedCanvasScrollX)
@@ -669,6 +681,7 @@ func main() {
              + editor.mode + " zoom=" + editor.zoomPercent
              + " tile=" + Convert.NumToInt(editor.tileSpinner.Value)
              + " cell=" + editor.selectedCellX + "," + editor.selectedCellY
+             + " topic=" + editor.sceneInspectorSection
              + " split=" + editor.bodySplit.GetPosition()
              + "/" + expectedSplitPosition
              + " canvas=" + editor.canvasScroll.GetScrollX()

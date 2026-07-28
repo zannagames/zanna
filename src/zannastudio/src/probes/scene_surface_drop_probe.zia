@@ -441,14 +441,8 @@ func main() {
        or editor.surfaceAlignCheck.IsChecked() == false
        or editor.surfaceAlignEnabled == false
        or sceneDoc.scene3DWorkspace.transformSurfaceAlignEnabled == false
-       or editor.surfaceAlignCheck.GetScreenX()
-              + editor.surfaceAlignCheck.GetScreenWidth()
-          > editor.viewToolbar.GetScreenX()
-              + editor.viewToolbar.GetScreenWidth() + 1.0
-       or editor.surfaceAlignCheck.GetScreenY()
-              + editor.surfaceAlignCheck.GetScreenHeight()
-          > editor.viewToolbar.GetScreenY()
-              + editor.viewToolbar.GetScreenHeight() + 1.0 {
+       or editor.placementMenuButton.IsVisible() == false
+       or editor.surfaceAlignCheck.IsVisible() {
         finish(
             shell, project, harness, workDir,
             "surface-normal Align control or document workspace state");
@@ -693,40 +687,37 @@ func main() {
         + editor.viewToolbar.GetScreenWidth() + 1.0;
     var laptopToolbarBottom = editor.viewToolbar.GetScreenY()
         + editor.viewToolbar.GetScreenHeight() + 1.0;
-    var laptopFrameRight = editor.frameSelectedButton.GetScreenX()
-        + editor.frameSelectedButton.GetScreenWidth();
-    var laptopFrameBottom = editor.frameSelectedButton.GetScreenY()
-        + editor.frameSelectedButton.GetScreenHeight();
+    var laptopViewRight = editor.viewMenuButton.GetScreenX()
+        + editor.viewMenuButton.GetScreenWidth();
+    var laptopViewBottom = editor.viewMenuButton.GetScreenY()
+        + editor.viewMenuButton.GetScreenHeight();
+    var laptopPlacementRight = editor.placementMenuButton.GetScreenX()
+        + editor.placementMenuButton.GetScreenWidth();
+    var laptopPlacementBottom = editor.placementMenuButton.GetScreenY()
+        + editor.placementMenuButton.GetScreenHeight();
     var laptopHierarchyRight = editor.hierarchyButton.GetScreenX()
         + editor.hierarchyButton.GetScreenWidth();
     var laptopHierarchyBottom = editor.hierarchyButton.GetScreenY()
         + editor.hierarchyButton.GetScreenHeight();
-    var laptopWorkspaceRight = editor.workspaceButton.GetScreenX()
-        + editor.workspaceButton.GetScreenWidth();
-    var laptopWorkspaceBottom = editor.workspaceButton.GetScreenY()
-        + editor.workspaceButton.GetScreenHeight();
-    var laptopVertexRight = editor.vertexSnapCheck.GetScreenX()
-        + editor.vertexSnapCheck.GetScreenWidth();
-    var laptopVertexBottom = editor.vertexSnapCheck.GetScreenY()
-        + editor.vertexSnapCheck.GetScreenHeight();
-    if laptopFrameRight > laptopToolbarRight
-       or laptopFrameBottom > laptopToolbarBottom
+    if editor.viewMenuButton.IsVisible() == false
+       or editor.placementMenuButton.IsVisible() == false
+       or editor.frameSelectedButton.IsVisible()
+       or editor.workspaceButton.IsVisible()
+       or editor.vertexSnapCheck.IsVisible()
+       or laptopViewRight > laptopToolbarRight
+       or laptopViewBottom > laptopToolbarBottom
+       or laptopPlacementRight > laptopToolbarRight
+       or laptopPlacementBottom > laptopToolbarBottom
        or laptopHierarchyRight > laptopToolbarRight
-       or laptopHierarchyBottom > laptopToolbarBottom
-       or laptopWorkspaceRight > laptopToolbarRight
-       or laptopWorkspaceBottom > laptopToolbarBottom
-       or laptopVertexRight > laptopToolbarRight
-       or laptopVertexBottom > laptopToolbarBottom {
+       or laptopHierarchyBottom > laptopToolbarBottom {
         finish(
             shell, project, harness, workDir,
-            "terrain controls clipped laptop view actions frame="
-            + laptopFrameRight + "," + laptopFrameBottom
+            "progressive controls clipped laptop view actions view="
+            + laptopViewRight + "," + laptopViewBottom
+            + " placement=" + laptopPlacementRight + ","
+            + laptopPlacementBottom
             + " hierarchy=" + laptopHierarchyRight + ","
             + laptopHierarchyBottom
-            + " workspace=" + laptopWorkspaceRight + ","
-            + laptopWorkspaceBottom
-            + " vertex=" + laptopVertexRight + ","
-            + laptopVertexBottom
             + " toolbar=" + laptopToolbarRight + ","
             + laptopToolbarBottom
             + " root=" + editor.root.GetLogicalWidth());

@@ -11,9 +11,9 @@
 //   - Every candidate is reparsed by scene_component_schema before publication.
 //   - Known-member edits preserve unknown supported-version JSON members.
 //   - Version inference recognizes object, 2D scene, 3D scene, node,
-//     sky/light, lens/atmosphere, environment, post-FX, and 2D object draw
-//     stack, game-output, and component-creation extensions before replacing
-//     unrelated component fields.
+//     sky/light, lens/atmosphere, environment, post-FX, 2D object draw stack,
+//     game-output, component-creation, additive 3D environment-layer, and
+//     runtime-backed water-layer extensions before replacing unrelated fields.
 //   - Existing files are replaced through expected-metadata workspace edits;
 //     new files use a no-overwrite same-directory atomic create.
 //   - Bounded file snapshots make each accepted edit exactly undoable/redoable.
@@ -30,7 +30,9 @@
 //        docs/adr/0204-project-owned-3d-post-processing-previews.md,
 //        docs/adr/0206-project-owned-2d-object-preview-draw-stacks.md,
 //        docs/adr/0208-project-authored-game-output-frames.md,
-//        docs/adr/0209-project-component-creation-recipes.md
+//        docs/adr/0209-project-component-creation-recipes.md,
+//        docs/adr/0212-additive-3d-environment-preview-layers.md,
+//        docs/adr/0213-runtime-backed-water-preview-layers.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -775,7 +777,15 @@ func SyncSchemaVersion(root: Any) {
         var scenePreview = Map.Get(root, "scenePreview3D");
         if scenePreview != null
            and Json.TypeOf(scenePreview) == "object" {
-            if ScenePreviewHasOutputMembers(scenePreview) {
+            if ScenePreviewHasWaterLayers(scenePreview) {
+                scenePreviewVersion =
+                    scene_component_schema
+                        .RUNTIME_WATER_PREVIEW_3D_SCHEMA_VERSION;
+            } else if ScenePreviewHasEnvironmentLayers(scenePreview) {
+                scenePreviewVersion =
+                    scene_component_schema
+                        .ADDITIVE_ENVIRONMENT_LAYERS_SCHEMA_VERSION;
+            } else if ScenePreviewHasOutputMembers(scenePreview) {
                 scenePreviewVersion =
                     scene_component_schema
                         .GAME_VIEW_OUTPUT_SCHEMA_VERSION;
@@ -845,6 +855,16 @@ func SyncSchemaVersion(root: Any) {
         }
     }
     Map.SetInt(root, "version", required);
+}
+
+/// @brief Return whether one raw scene profile requires schema version 15.
+func ScenePreviewHasWaterLayers(raw: Any) -> Boolean {
+    return Map.Has(raw, "waterLayers");
+}
+
+/// @brief Return whether one raw scene profile requires schema version 14.
+func ScenePreviewHasEnvironmentLayers(raw: Any) -> Boolean {
+    return Map.Has(raw, "environmentLayers");
 }
 
 /// @brief Return whether one raw scene profile requires schema version 12.

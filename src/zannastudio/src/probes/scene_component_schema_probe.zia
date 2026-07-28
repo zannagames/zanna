@@ -24,6 +24,10 @@
 //   - Version-11 object preview draw stacks are bounded and layer-aware.
 //   - Version-12 game-output dimensions are paired, integral, and bounded.
 //   - Version-13 component creation recipes are target-safe and bounded.
+//   - Version-14 additive 3D environment layers retain typed conditions and
+//     independent metadata-driven transforms while malformed layers fail closed.
+//   - Version-15 runtime water layers retain bounded dimensions, images,
+//     colors, animation intent, and complete Gerstner wave records.
 //   - Explicitly opened nested scenes discover their nearest project manifest.
 // Ownership/Lifetime: The probe owns only in-memory schema fixtures.
 // Links: zannastudio/src/ui/scene_component_schema.zia,
@@ -38,7 +42,9 @@
 //        docs/adr/0204-project-owned-3d-post-processing-previews.md,
 //        docs/adr/0206-project-owned-2d-object-preview-draw-stacks.md,
 //        docs/adr/0208-project-authored-game-output-frames.md,
-//        docs/adr/0209-project-component-creation-recipes.md
+//        docs/adr/0209-project-component-creation-recipes.md,
+//        docs/adr/0212-additive-3d-environment-preview-layers.md,
+//        docs/adr/0213-runtime-backed-water-preview-layers.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -168,7 +174,7 @@ func main() {
         + "]}",
         "bad-default");
     var badVersion = scene_component_schema.ParseText(
-        "{\"version\":14,\"components\":[]}", "bad-version");
+        "{\"version\":16,\"components\":[]}", "bad-version");
     if duplicateName.valid or duplicateName.components.count() != 0
        or duplicateKey.valid or duplicateKey.components.count() != 0
        or badDefault.valid or badDefault.components.count() != 0
@@ -921,6 +927,201 @@ func main() {
        or emptyNodeName.valid
        or v12Creation.components.count() != 0 {
         fail("invalid version-13 component creation recipe was not fail-closed");
+        return;
+    }
+
+    // ADR 0212: independent runtime-built context can layer beside the base
+    // environment from exact typed root metadata and bounded TRS mappings.
+    var v14Text =
+        "{\"version\":14,\"components\":[],\"scenePreview3D\":{"
+        + "\"environmentLayers\":["
+        + "{\"matchProperty\":\"af.wantWater\",\"matchValue\":true,"
+        + "\"prefab\":\"assets/water.scene3d\","
+        + "\"positionXProperty\":\"af.watX\","
+        + "\"positionYProperty\":\"af.watY\","
+        + "\"positionZProperty\":\"af.watZ\","
+        + "\"scaleXProperty\":\"af.watW\","
+        + "\"scaleZProperty\":\"af.watD\"},"
+        + "{\"matchProperty\":\"weather.kind\",\"matchValue\":3,"
+        + "\"prefab\":\"assets/storm.vscn\","
+        + "\"yawProperty\":\"weather.yaw\",\"yawUnit\":\"degrees\"},"
+        + "{\"matchProperty\":\"world.phase\",\"matchValue\":\"night\","
+        + "\"prefab\":\"assets/night.scene3d\"}]}}";
+    var v14 = scene_component_schema.ParseText(
+        v14Text, "v14-environment-layers");
+    var layers = v14.scenePreview3D.environmentLayers;
+    if v14.valid == false or v14.version != 14
+       or layers.count() != 3
+       or layers.get(0).matchKind != "bool"
+       or layers.get(0).matchBoolean == false
+       or layers.get(0).prefab != "assets/water.scene3d"
+       or layers.get(0).positionXProperty != "af.watX"
+       or layers.get(0).positionYProperty != "af.watY"
+       or layers.get(0).positionZProperty != "af.watZ"
+       or layers.get(0).scaleXProperty != "af.watW"
+       or layers.get(0).scaleYProperty != ""
+       or layers.get(0).scaleZProperty != "af.watD"
+       or layers.get(1).matchKind != "int"
+       or layers.get(1).matchInteger != 3
+       or layers.get(1).yawProperty != "weather.yaw"
+       or layers.get(1).yawUnit != "degrees"
+       or layers.get(2).matchKind != "string"
+       or layers.get(2).matchString != "night" {
+        fail("valid version-14 environment layers did not round trip");
+        return;
+    }
+    var v13Layers = scene_component_schema.ParseText(
+        "{\"version\":13,\"components\":[],\"scenePreview3D\":{"
+        + "\"environmentLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true,\"prefab\":\"assets/water.scene3d\"}]}}",
+        "v13-environment-layers");
+    var fractionalLayerMatch = scene_component_schema.ParseText(
+        "{\"version\":14,\"components\":[],\"scenePreview3D\":{"
+        + "\"environmentLayers\":[{\"matchProperty\":\"weather\","
+        + "\"matchValue\":1.5,\"prefab\":\"assets/weather.scene3d\"}]}}",
+        "fractional-environment-layer-match");
+    var unsafeLayer = scene_component_schema.ParseText(
+        "{\"version\":14,\"components\":[],\"scenePreview3D\":{"
+        + "\"environmentLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true,\"prefab\":\"../water.scene3d\"}]}}",
+        "unsafe-environment-layer");
+    var orphanLayerYaw = scene_component_schema.ParseText(
+        "{\"version\":14,\"components\":[],\"scenePreview3D\":{"
+        + "\"environmentLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true,\"prefab\":\"assets/water.scene3d\","
+        + "\"yawProperty\":\"water.yaw\"}]}}",
+        "orphan-environment-layer-yaw");
+    var invalidLayerProperty = scene_component_schema.ParseText(
+        "{\"version\":14,\"components\":[],\"scenePreview3D\":{"
+        + "\"environmentLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true,\"prefab\":\"assets/water.scene3d\","
+        + "\"positionXProperty\":\"../water.x\"}]}}",
+        "invalid-environment-layer-property");
+    if v13Layers.valid or fractionalLayerMatch.valid
+       or unsafeLayer.valid or orphanLayerYaw.valid
+       or invalidLayerProperty.valid
+       or unsafeLayer.scenePreview3D.environmentLayers.count() != 0 {
+        fail("invalid version-14 environment layers were not fail-closed");
+        return;
+    }
+
+    // ADR 0213: procedural water uses the public runtime path while every
+    // construction input stays bounded, declarative, and project-relative.
+    var v15Text =
+        "{\"version\":15,\"components\":[],\"scenePreview3D\":{"
+        + "\"waterLayers\":["
+        + "{\"matchProperty\":\"af.wantWater\",\"matchValue\":true,"
+        + "\"positionXProperty\":\"af.watX\","
+        + "\"positionYProperty\":\"af.watY\","
+        + "\"positionZProperty\":\"af.watZ\","
+        + "\"widthProperty\":\"af.watW\","
+        + "\"depthProperty\":\"af.watD\","
+        + "\"widthMultiplier\":2.0,\"depthMultiplier\":2.0,"
+        + "\"colorR\":0.1,\"colorG\":0.3,"
+        + "\"colorB\":0.6,\"colorA\":0.5,"
+        + "\"texture\":\"assets/water.png\","
+        + "\"normalMap\":\"assets/water-normal.png\","
+        + "\"resolution\":48,\"animate\":true,"
+        + "\"waves\":["
+        + "{\"dirX\":1.0,\"dirZ\":0.3,\"speed\":0.05,"
+        + "\"amplitude\":0.4,\"wavelength\":1.2},"
+        + "{\"dirX\":-0.4,\"dirZ\":0.8,\"speed\":0.035,"
+        + "\"amplitude\":0.7,\"wavelength\":0.8}]},"
+        + "{\"matchProperty\":\"weather.kind\",\"matchValue\":3,"
+        + "\"positionX\":4.0,\"positionY\":0.25,\"positionZ\":-2.0,"
+        + "\"width\":8.0,\"depth\":12.0},"
+        + "{\"matchProperty\":\"world.phase\",\"matchValue\":\"night\"}"
+        + "]}}";
+    var v15 = scene_component_schema.ParseText(
+        v15Text, "v15-water-layers");
+    var waterLayers = v15.scenePreview3D.waterLayers;
+    if v15.valid == false or v15.version != 15
+       or waterLayers.count() != 3
+       or waterLayers.get(0).matchKind != "bool"
+       or waterLayers.get(0).matchBoolean == false
+       or waterLayers.get(0).positionXProperty != "af.watX"
+       or waterLayers.get(0).widthProperty != "af.watW"
+       or waterLayers.get(0).depthProperty != "af.watD"
+       or near(waterLayers.get(0).widthMultiplier, 2.0) == false
+       or near(waterLayers.get(0).depthMultiplier, 2.0) == false
+       or waterLayers.get(0).hasColor == false
+       or near(waterLayers.get(0).colorA, 0.5) == false
+       or waterLayers.get(0).texture != "assets/water.png"
+       or waterLayers.get(0).normalMap != "assets/water-normal.png"
+       or waterLayers.get(0).resolution != 48
+       or waterLayers.get(0).animate == false
+       or waterLayers.get(0).waves.count() != 2
+       or near(waterLayers.get(0).waves.get(0).amplitude, 0.4)
+          == false
+       or near(waterLayers.get(0).waves.get(1).wavelength, 0.8)
+          == false
+       or waterLayers.get(1).matchKind != "int"
+       or waterLayers.get(1).matchInteger != 3
+       or near(waterLayers.get(1).positionX, 4.0) == false
+       or near(waterLayers.get(1).width, 8.0) == false
+       or near(waterLayers.get(1).depth, 12.0) == false
+       or waterLayers.get(2).matchKind != "string"
+       or waterLayers.get(2).matchString != "night"
+       or waterLayers.get(2).resolution != 64
+       or waterLayers.get(2).waves.count() != 0 {
+        fail("valid version-15 water layers did not round trip");
+        return;
+    }
+    var v14Water = scene_component_schema.ParseText(
+        "{\"version\":14,\"components\":[],\"scenePreview3D\":{"
+        + "\"waterLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true}]}}",
+        "v14-water-layers");
+    var unsafeWaterImage = scene_component_schema.ParseText(
+        "{\"version\":15,\"components\":[],\"scenePreview3D\":{"
+        + "\"waterLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true,\"texture\":\"../water.png\"}]}}",
+        "unsafe-water-image");
+    var orphanWaterMultiplier = scene_component_schema.ParseText(
+        "{\"version\":15,\"components\":[],\"scenePreview3D\":{"
+        + "\"waterLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true,\"widthMultiplier\":2.0}]}}",
+        "orphan-water-multiplier");
+    var incompleteWaterColor = scene_component_schema.ParseText(
+        "{\"version\":15,\"components\":[],\"scenePreview3D\":{"
+        + "\"waterLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true,\"colorR\":0.1,\"colorG\":0.2}]}}",
+        "incomplete-water-color");
+    var zeroWaterWave = scene_component_schema.ParseText(
+        "{\"version\":15,\"components\":[],\"scenePreview3D\":{"
+        + "\"waterLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true,\"waves\":[{\"dirX\":0.0,"
+        + "\"dirZ\":0.0,\"speed\":1.0,\"amplitude\":0.1,"
+        + "\"wavelength\":2.0}]}]}}",
+        "zero-water-wave");
+    var incompleteWaterWave = scene_component_schema.ParseText(
+        "{\"version\":15,\"components\":[],\"scenePreview3D\":{"
+        + "\"waterLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true,\"waves\":[{\"dirX\":1.0,"
+        + "\"dirZ\":0.0,\"speed\":1.0,\"amplitude\":0.1}]}]}}",
+        "incomplete-water-wave");
+    var oversizedWaterGrid = scene_component_schema.ParseText(
+        "{\"version\":15,\"components\":[],\"scenePreview3D\":{"
+        + "\"waterLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true,\"resolution\":65}]}}",
+        "oversized-water-grid");
+    var undersizedWaterGrid = scene_component_schema.ParseText(
+        "{\"version\":15,\"components\":[],\"scenePreview3D\":{"
+        + "\"waterLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true,\"resolution\":7}]}}",
+        "undersized-water-grid");
+    var invalidWaterProperty = scene_component_schema.ParseText(
+        "{\"version\":15,\"components\":[],\"scenePreview3D\":{"
+        + "\"waterLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true,\"widthProperty\":\"../water.w\"}]}}",
+        "invalid-water-property");
+    if v14Water.valid or unsafeWaterImage.valid
+       or orphanWaterMultiplier.valid or incompleteWaterColor.valid
+       or zeroWaterWave.valid or incompleteWaterWave.valid
+       or oversizedWaterGrid.valid or undersizedWaterGrid.valid
+       or invalidWaterProperty.valid
+       or unsafeWaterImage.scenePreview3D.waterLayers.count() != 0 {
+        fail("invalid version-15 water layers were not fail-closed");
         return;
     }
 

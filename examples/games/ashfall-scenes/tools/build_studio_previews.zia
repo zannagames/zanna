@@ -11,14 +11,18 @@
 //   - Prop and enemy geometry comes from the exact runtime fallback mesh bakers.
 //   - Environment meshes sample the runtime terrain formula at a bounded,
 //     authoring-friendly resolution without executing game code in Studio.
+//   - Water albedo and normal images come from the exact runtime TextureLib;
+//     schema-v15 constructs the public Water3D path at the authored footprint.
 //   - Stable numeric ordering matches scene metadata variant ids one-for-one.
-//   - Outputs contain no external resources and are deterministic across hosts.
+//   - Outputs contain no external dependencies and are deterministic across hosts.
 // Ownership/Lifetime:
 //   - The process owns all temporary graphs, nodes, meshes, and materials.
 //   - Saved scene assets are project-owned authoring data, never runtime nodes.
 // Links: ../world/props.zia, ../assets/enemy_models.zia,
 //        docs/adr/0199-project-owned-3d-node-prefab-previews.md,
-//        docs/adr/0203-project-owned-3d-scene-environment-previews.md
+//        docs/adr/0203-project-owned-3d-scene-environment-previews.md,
+//        docs/adr/0212-additive-3d-environment-preview-layers.md,
+//        docs/adr/0213-runtime-backed-water-preview-layers.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,8 +30,10 @@ module build_studio_previews;
 
 bind "../ai/enemy_defs" as enemy_defs;
 bind "../assets/enemy_models" as enemy_models;
+bind "../assets/textures" as textures;
 bind "../config" as config;
 bind "../world/props" as props;
+bind Zanna.Graphics.Pixels as Pixels;
 bind Zanna.Graphics3D as G3D;
 bind Zanna.IO.Dir as Dir;
 bind Zanna.Math as Math;
@@ -160,6 +166,24 @@ func terrainPreviewMaterial(kind: Integer) -> G3D.Material3D {
     material.Roughness = 0.94;
     material.Metallic = 0.02;
     return material;
+}
+
+/// @brief Save exact production water inputs for Studio's runtime Water3D.
+/// @details TextureLib uses the same fixed seed and 256-pixel interactive
+///          resolution as the game. The schema owns dimensions and waves.
+func saveWaterPreviewImages() -> Boolean {
+    var library = new textures.TextureLib();
+    library.init();
+    library.setup(false);
+    var albedo = library.waterTexture();
+    var normal = library.rawNormal(textures.SURF_CONCRETE);
+    if albedo == null or normal == null { return false; }
+    if Pixels.SavePng(
+           albedo, OUTPUT_ROOT + "/water-albedo.png") != 1 {
+        return false;
+    }
+    return Pixels.SavePng(
+        normal, OUTPUT_ROOT + "/water-normal.png") == 1;
 }
 
 /// @brief Bake one decimated copy of the runtime's procedural terrain.
@@ -363,9 +387,13 @@ func main() {
         }
         index = index + 1;
     }
+    if saveWaterPreviewImages() == false {
+        Terminal.Say("RESULT: fail water preview images");
+        return;
+    }
 
     Terminal.Say(
         "Built " + (props.PROP_COUNT + config.EN_TYPE_COUNT + 8)
-        + " Studio preview prefabs in " + OUTPUT_ROOT);
+        + " Studio preview prefabs and 2 water images in " + OUTPUT_ROOT);
     Terminal.Say("RESULT: ok");
 }

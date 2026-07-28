@@ -14,6 +14,8 @@
 //     shared widget controller that happens to display the active tab.
 //   - Temporary Game View state is tab-local and records whether a project
 //     output frame is active without entering canonical document content.
+//   - Scene-inspector topic selection follows its document like camera, split,
+//     scroll, and tool state; it never enters scene content.
 // Ownership/Lifetime:
 //   - DocumentManager owns instances for the lifetime of their editor tabs.
 // Links: zannastudio/src/core/document_manager.zia,
@@ -73,6 +75,7 @@ class Scene2DWorkspaceState {
     expose Number canvasScrollX;
     expose Number canvasScrollY;
     expose Number inspectorScrollY;
+    expose Integer inspectorSceneSection;
     expose Boolean inspectorRequestedVisible;
     expose Boolean compactInspectorShown;
     expose Boolean paletteRequestedVisible;
@@ -112,6 +115,7 @@ class Scene2DWorkspaceState {
         canvasScrollX = 0.0;
         canvasScrollY = 0.0;
         inspectorScrollY = 0.0;
+        inspectorSceneSection = 0;
         inspectorRequestedVisible = true;
         compactInspectorShown = false;
         paletteRequestedVisible = true;
@@ -176,6 +180,7 @@ class Scene3DWorkspaceState {
     expose Number splitPosition;
     expose Number hierarchySplitPosition;
     expose Number inspectorScrollY;
+    expose Integer inspectorSceneSection;
     expose Boolean inspectorRequestedVisible;
     expose Boolean compactInspectorShown;
     expose Boolean previewActive;
@@ -224,6 +229,7 @@ class Scene3DWorkspaceState {
         splitPosition = 0.62;
         hierarchySplitPosition = 0.22;
         inspectorScrollY = 0.0;
+        inspectorSceneSection = 0;
         inspectorRequestedVisible = true;
         compactInspectorShown = false;
         previewActive = false;

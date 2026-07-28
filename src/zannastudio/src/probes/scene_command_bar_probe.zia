@@ -6,12 +6,13 @@
 //===----------------------------------------------------------------------===//
 //
 // File: zannastudio/src/probes/scene_command_bar_probe.zia
-// Purpose: Verify compact 2D/3D scene command bars and overflow dispatch.
+// Purpose: Verify progressive 2D/3D scene command bars and menu dispatch.
 // Key invariants:
-//   - Medium lanes keep primary commands direct and move complete secondary
-//     sets into bounded, stateful overflow menus.
-//   - Menu item clicks route through the same editor commands as wide buttons.
-//   - Wide lanes restore the familiar direct controls without losing state.
+//   - Complete secondary command sets remain in bounded, stateful menus at
+//     compact, medium, and wide scene widths.
+//   - Wider lanes enlarge the authored canvas/viewport instead of restoring
+//     every historical direct control.
+//   - Menu item clicks route through the same canonical editor commands.
 // Ownership/Lifetime:
 //   - The probe owns one AppShell, both editors, documents, and input harness.
 // Links: zannastudio/src/ui/scene_editor_2d.zia,
@@ -130,14 +131,59 @@ func main() {
 
     if scene_editor_2d.UsesSceneCommandMenus(
            editor2d.root.GetLogicalWidth()) == false
+       or editor2d.sceneMenuButton.IsVisible() == false
        or editor2d.toolMenuButton.IsVisible() == false
        or editor2d.viewMenuButton.IsVisible() == false
+       or editor2d.newSceneButton.IsVisible()
+       or editor2d.importButton.IsVisible()
+       or editor2d.previewButton.IsVisible()
+       or editor2d.runSceneButton.IsVisible()
        or editor2d.rectangleButton.IsVisible()
        or editor2d.gridButton.IsVisible()
        or editor2d.canvasScroll.GetScreenHeight() < 220.0
-       or editor2d.toolbar.GetScreenHeight() > 76.0
-       or editor2d.viewToolbar.GetScreenHeight() > 108.0 {
+       or editor2d.toolbar.GetScreenHeight() > 48.0
+       or editor2d.viewToolbar.GetScreenHeight() > 84.0 {
         Fail(shell, harness, "2D medium command-bar geometry");
+        return;
+    }
+
+    ClickWidget(shell, harness, editor2d.sceneMenuButton);
+    editor2d.Pump(doc2d);
+    shell.Render();
+    if editor2d.sceneMenu.IsVisible() == false
+       or editor2d.sceneNewItem.IsEnabled() == false
+       or editor2d.sceneImportItem.IsEnabled() == false
+       or editor2d.scenePreviewItem.IsCheckable() == false
+       or editor2d.scenePreviewItem.IsChecked()
+       or editor2d.sceneRunItem.IsEnabled() == false {
+        Fail(shell, harness, "2D Scene menu state");
+        return;
+    }
+    // New, Import, separator, then animation Preview.
+    ClickMenuOffset(shell, harness, editor2d.sceneMenuButton, 83.0);
+    editor2d.Pump(doc2d);
+    if editor2d.PreviewActive() == false {
+        Fail(shell, harness, "2D Scene Preview dispatch");
+        return;
+    }
+    ClickWidget(shell, harness, editor2d.sceneMenuButton);
+    editor2d.Pump(doc2d);
+    shell.Render();
+    if editor2d.scenePreviewItem.IsChecked() == false {
+        Fail(shell, harness, "2D Scene Preview check state");
+        return;
+    }
+    editor2d.sceneMenu.Hide();
+    editor2d.SetPreviewActive(false);
+
+    ClickWidget(shell, harness, editor2d.sceneMenuButton);
+    editor2d.Pump(doc2d);
+    shell.Render();
+    // New, Import, separator, Preview, then Run.
+    ClickMenuOffset(shell, harness, editor2d.sceneMenuButton, 111.0);
+    editor2d.Pump(doc2d);
+    if editor2d.TakeRunSceneRequested() == false {
+        Fail(shell, harness, "2D Scene Run dispatch");
         return;
     }
 
@@ -197,12 +243,19 @@ func main() {
     Pump2D(shell, editor2d, doc2d);
     Pump2D(shell, editor2d, doc2d);
     if scene_editor_2d.UsesSceneCommandMenus(
-           editor2d.root.GetLogicalWidth())
-       or editor2d.toolMenuButton.IsVisible()
-       or editor2d.viewMenuButton.IsVisible()
-       or editor2d.rectangleButton.IsVisible() == false
-       or editor2d.gridButton.IsVisible() == false {
-        Fail(shell, harness, "2D wide direct controls did not restore");
+           editor2d.root.GetLogicalWidth()) == false
+       or editor2d.sceneMenuButton.IsVisible() == false
+       or editor2d.toolMenuButton.IsVisible() == false
+       or editor2d.viewMenuButton.IsVisible() == false
+       or editor2d.newSceneButton.IsVisible()
+       or editor2d.previewButton.IsVisible()
+       or editor2d.rectangleButton.IsVisible()
+       or editor2d.gridButton.IsVisible()
+       or editor2d.selectButton.IsVisible() == false
+       or editor2d.paintButton.IsVisible() == false
+       or editor2d.eraseButton.IsVisible() == false
+       or editor2d.gameViewButton.IsVisible() == false {
+        Fail(shell, harness, "2D wide progressive commands expanded");
         return;
     }
 
@@ -233,16 +286,42 @@ func main() {
 
     if scene_editor_3d.UsesSceneCommandMenus(
            editor3d.root.GetLogicalWidth()) == false
+       or editor3d.sceneMenuButton.IsVisible() == false
        or editor3d.createMenuButton.IsVisible() == false
        or editor3d.placementMenuButton.IsVisible() == false
        or editor3d.viewMenuButton.IsVisible() == false
+       or editor3d.newSceneButton.IsVisible()
+       or editor3d.importAssetButton.IsVisible()
+       or editor3d.importInstanceButton.IsVisible()
+       or editor3d.duplicateNodeButton.IsVisible()
+       or editor3d.deleteNodeButton.IsVisible()
+       or editor3d.runSceneButton.IsVisible()
        or editor3d.addTerrainButton.IsVisible()
        or editor3d.vertexSnapCheck.IsVisible()
        or editor3d.frameSelectedButton.IsVisible()
        or editor3d.viewportScroll.GetScreenHeight() < 220.0
-       or editor3d.toolbar.GetScreenHeight() > 76.0
-       or editor3d.viewToolbar.GetScreenHeight() > 120.0 {
+       or editor3d.toolbar.GetScreenHeight() > 48.0
+       or editor3d.viewToolbar.GetScreenHeight() > 84.0 {
         Fail(shell, harness, "3D medium command-bar geometry");
+        return;
+    }
+
+    ClickWidget(shell, harness, editor3d.sceneMenuButton);
+    editor3d.Pump(doc3d);
+    shell.Render();
+    if editor3d.sceneMenu.IsVisible() == false
+       or editor3d.sceneNewItem.IsEnabled() == false
+       or editor3d.sceneImportAssetItem.IsEnabled() == false
+       or editor3d.sceneImportInstanceItem.IsEnabled() == false
+       or editor3d.sceneRunItem.IsEnabled() == false {
+        Fail(shell, harness, "3D Scene menu state");
+        return;
+    }
+    // New, Import Asset, Import Instance, separator, then Run.
+    ClickMenuOffset(shell, harness, editor3d.sceneMenuButton, 111.0);
+    editor3d.Pump(doc3d);
+    if editor3d.TakeRunSceneRequested() == false {
+        Fail(shell, harness, "3D Scene Run dispatch");
         return;
     }
 
@@ -347,15 +426,24 @@ func main() {
     Pump3D(shell, editor3d, doc3d);
     Pump3D(shell, editor3d, doc3d);
     if scene_editor_3d.UsesSceneCommandMenus(
-           editor3d.root.GetLogicalWidth())
-       or editor3d.createMenuButton.IsVisible()
-       or editor3d.placementMenuButton.IsVisible()
-       or editor3d.viewMenuButton.IsVisible()
-       or editor3d.addBoxButton.IsVisible() == false
-       or editor3d.addTerrainButton.IsVisible() == false
-       or editor3d.vertexSnapCheck.IsVisible() == false
-       or editor3d.frameSelectedButton.IsVisible() == false {
-        Fail(shell, harness, "3D wide direct controls did not restore");
+           editor3d.root.GetLogicalWidth()) == false
+       or editor3d.sceneMenuButton.IsVisible() == false
+       or editor3d.createMenuButton.IsVisible() == false
+       or editor3d.placementMenuButton.IsVisible() == false
+       or editor3d.viewMenuButton.IsVisible() == false
+       or editor3d.newSceneButton.IsVisible()
+       or editor3d.importAssetButton.IsVisible()
+       or editor3d.duplicateNodeButton.IsVisible()
+       or editor3d.deleteNodeButton.IsVisible()
+       or editor3d.addBoxButton.IsVisible()
+       or editor3d.addTerrainButton.IsVisible()
+       or editor3d.vertexSnapCheck.IsVisible()
+       or editor3d.frameSelectedButton.IsVisible()
+       or editor3d.moveToolButton.IsVisible() == false
+       or editor3d.rotateToolButton.IsVisible() == false
+       or editor3d.scaleToolButton.IsVisible() == false
+       or editor3d.gameViewButton.IsVisible() == false {
+        Fail(shell, harness, "3D wide progressive commands expanded");
         return;
     }
 

@@ -97,6 +97,7 @@ func main() {
     source2D.scene2DWorkspace.canvasScrollX = 128.0;
     source2D.scene2DWorkspace.canvasScrollY = 64.0;
     source2D.scene2DWorkspace.inspectorScrollY = 96.0;
+    source2D.scene2DWorkspace.inspectorSceneSection = 4;
     source2D.scene2DWorkspace.inspectorRequestedVisible = false;
     source2D.scene2DWorkspace.compactInspectorShown = true;
 
@@ -119,6 +120,7 @@ func main() {
     source3D.scene3DWorkspace.viewTargetZ = 3.75;
     source3D.scene3DWorkspace.splitPosition = 0.575;
     source3D.scene3DWorkspace.inspectorScrollY = 48.0;
+    source3D.scene3DWorkspace.inspectorSceneSection = 2;
     source3D.scene3DWorkspace.inspectorRequestedVisible = true;
     source3D.scene3DWorkspace.compactInspectorShown = false;
 
@@ -133,6 +135,8 @@ func main() {
     if Ini.Get(savedIni, "session.file.0", "scene2dVersion") != "1"
        or Ini.Get(savedIni, "session.file.0", "scene2dMode") != "8"
        or Ini.Get(savedIni, "session.file.0", "scene2dSplit") != "6250"
+       or Ini.Get(
+              savedIni, "session.file.0", "scene2dInspectorSection") != "4"
        or Ini.Get(savedIni, "session.file.0", "scene2dInspectorVisible") != "0"
        or Ini.Get(savedIni, "session.file.0", "scene2dCompactInspector") != "1"
        or Ini.Get(
@@ -148,6 +152,8 @@ func main() {
        or Ini.Get(savedIni, "session.file.1", "scene3dVertexSnap") != "1"
        or Ini.Get(savedIni, "session.file.1", "scene3dViewportMode") != "1"
        or Ini.Get(savedIni, "session.file.1", "scene3dTargetY") != "-2500"
+       or Ini.Get(
+              savedIni, "session.file.1", "scene3dInspectorSection") != "2"
        or Ini.Get(savedIni, "session.file.1", "scene3dInspectorVisible") != "1"
        or Ini.Get(savedIni, "session.file.1", "scene3dCompactInspector") != "0" {
         fail(root, "scene state was not written as versioned fixed-point fields");
@@ -197,6 +203,8 @@ func main() {
        or near(restored3D.scene3DWorkspace.viewTargetX, 1.25) == false
        or near(restored3D.scene3DWorkspace.viewTargetY, -2.5) == false
        or near(restored3D.scene3DWorkspace.viewTargetZ, 3.75) == false
+       or restored2D.scene2DWorkspace.inspectorSceneSection != 4
+       or restored3D.scene3DWorkspace.inspectorSceneSection != 2
        or restored3D.scene3DWorkspace.inspectorRequestedVisible == false
        or restored3D.scene3DWorkspace.compactInspectorShown {
         fail(root, "named scene workspace values did not round trip");
@@ -209,6 +217,8 @@ func main() {
     Ini.Set(savedIni, "session.file.0", "scene2dScrollX", "2000000");
     Ini.Set(
         savedIni, "session.file.0", "scene2dSceneProperty", "999999");
+    Ini.Set(
+        savedIni, "session.file.0", "scene2dInspectorSection", "999999");
     Ini.Set(savedIni, "session.file.0", "scene2dInspectorVisible", "99");
     Ini.Set(savedIni, "session.file.0", "scene2dCompactInspector", "-5");
     Ini.Set(savedIni, "session.file.1", "scene3dSelection", "999999");
@@ -225,6 +235,8 @@ func main() {
     Ini.Set(savedIni, "session.file.1", "scene3dScale", "0");
     Ini.Set(savedIni, "session.file.1", "scene3dViewportMode", "999");
     Ini.Set(savedIni, "session.file.1", "scene3dTargetX", "2000000000");
+    Ini.Set(
+        savedIni, "session.file.1", "scene3dInspectorSection", "-999");
     Ini.Set(savedIni, "session.file.1", "scene3dInspectorVisible", "-9");
     Ini.Set(savedIni, "session.file.1", "scene3dCompactInspector", "50");
     File.WriteAllText(settingsPath, Ini.Format(savedIni));
@@ -245,6 +257,7 @@ func main() {
        or near(bounded2D.scene2DWorkspace.splitPosition, 0.20) == false
        or near(bounded2D.scene2DWorkspace.canvasScrollX, 1000000.0) == false
        or bounded2D.scene2DWorkspace.selectedSceneProperty != 511
+       or bounded2D.scene2DWorkspace.inspectorSceneSection != 5
        or bounded2D.scene2DWorkspace.inspectorRequestedVisible == false
        or bounded2D.scene2DWorkspace.compactInspectorShown
        or bounded3D.scene3DWorkspace.selectedIndex != 1023
@@ -260,6 +273,7 @@ func main() {
        or bounded3D.scene3DWorkspace.viewScale != 4
        or bounded3D.scene3DWorkspace.viewportMode != 1
        or near(bounded3D.scene3DWorkspace.viewTargetX, 1000000.0) == false
+       or bounded3D.scene3DWorkspace.inspectorSceneSection != 0
        or bounded3D.scene3DWorkspace.inspectorRequestedVisible
        or bounded3D.scene3DWorkspace.compactInspectorShown == false {
         fail(root, "hostile scene workspace fields were not bounded");

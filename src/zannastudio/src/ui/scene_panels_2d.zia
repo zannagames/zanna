@@ -15,8 +15,12 @@
 //   - Inspector rows wrap before they can overflow the narrow detail pane.
 //   - Game View is a first-class view action, separate from animation Preview
 //     and reversible Focus/layout presentation.
-//   - Compact Tools and View menus are built once with stable item handles;
+//   - Scene, Tools, and View menus are built once with stable item handles;
 //     the editor owns state synchronization and command dispatch.
+//   - Progressive disclosure is stable across widths: wider lanes enlarge the
+//     canvas instead of repopulating the chrome with secondary commands.
+//   - One compact Scene-topic dropdown owns mutually exclusive complete
+//     scene-wide inspector groups; the controller owns its live visibility.
 // Ownership/Lifetime:
 //   - The editor owns every constructed widget; this module owns nothing.
 // Links: zannastudio/src/ui/scene_editor_2d.zia
@@ -72,11 +76,31 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
         editor.toolbar.SetPadding(4.0);
         editor.root.AddChild(editor.toolbar);
 
+        editor.sceneMenuButton =
+            GUI.Button.New(editor.toolbar, "Scene...");
+        editor.sceneMenuButton.SetAccessibleName(
+            "Open 2D scene document commands");
+        editor.sceneMenuButton.SetTooltip(
+            "New, import, animation preview, and run commands");
+        editor.sceneMenu = GUI.ContextMenu.New();
+        editor.sceneNewItem =
+            editor.sceneMenu.AddItem("New Empty Scene");
+        editor.sceneImportItem =
+            editor.sceneMenu.AddItem("Import Tiled...");
+        editor.sceneMenu.AddSeparator();
+        editor.scenePreviewItem =
+            editor.sceneMenu.AddItem("Preview Animations");
+        editor.scenePreviewItem.SetCheckable(true);
+        editor.sceneRunItem =
+            editor.sceneMenu.AddItemWithShortcut("Run Scene", "Ctrl+R");
+
         editor.newSceneButton = GUI.Button.New(editor.toolbar, "New Scene");
         editor.newSceneButton.SetTooltip(
             "Replace this document using the inspector dimensions (undoable)");
+        editor.newSceneButton.SetVisible(false);
         editor.importButton = GUI.Button.New(editor.toolbar, "Import Tiled...");
         editor.importButton.SetTooltip("Import a Tiled JSON or TMX map into this document");
+        editor.importButton.SetVisible(false);
         editor.selectButton = GUI.Button.New(editor.toolbar, "Select");
         editor.selectButton.SetTooltip(
             "Select and drag objects; Arrow keys nudge one pixel and "
@@ -134,9 +158,11 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
         editor.previewButton.SetTooltip(
             "Play authored tile animations and framing overlays without "
             + "changing the scene");
+        editor.previewButton.SetVisible(false);
         editor.runSceneButton = GUI.Button.New(editor.toolbar, "Run Scene");
         editor.runSceneButton.SetTooltip(
             "Run the owning project with this saved scene's path appended");
+        editor.runSceneButton.SetVisible(false);
         editor.pickerButton.SetTooltip(
             "Sample one active-layer tile and return to Paint");
         editor.objectButton = GUI.Button.New(editor.toolbar, "Object");
@@ -408,10 +434,32 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
         editor.sceneTabHost.SetSpacing(6.0);
         inspector.AddChild(editor.sceneTabHost);
 
-        GUI.Label.New(editor.sceneTabHost, "New scene setup");
+        editor.sceneSectionRow = GUI.HBox.New();
+        editor.sceneSectionRow.SetSpacing(4.0);
+        editor.sceneTabHost.AddChild(editor.sceneSectionRow);
+        GUI.Label.New(editor.sceneSectionRow, "Topic");
+        editor.sceneSectionDropdown =
+            GUI.Dropdown.New(editor.sceneSectionRow);
+        editor.sceneSectionDropdown.SetFlex(1.0);
+        editor.sceneSectionDropdown.SetAccessibleName(
+            "2D Scene inspector topic");
+        editor.sceneSectionDropdown.SetTooltip(
+            "Show one scene-wide authoring topic at a time");
+        editor.sceneSectionDropdown.AddItem("Setup & Import");
+        editor.sceneSectionDropdown.AddItem("Properties");
+        editor.sceneSectionDropdown.AddItem("Camera & Lighting");
+        editor.sceneSectionDropdown.AddItem("Layers");
+        editor.sceneSectionDropdown.AddItem("Tile Behavior");
+        editor.sceneSectionDropdown.AddItem("History");
+        editor.sceneSectionDropdown.SetSelected(
+            scene_editor_2d.SCENE_INSPECTOR_SETUP);
+        editor.sceneSectionDropdown.WasChanged();
+
+        editor.sceneSetupGroup =
+            GUI.GroupBox.New(editor.sceneTabHost, "Scene setup");
         var sceneSizeRow = GUI.HBox.New();
         sceneSizeRow.SetSpacing(4.0);
-        editor.sceneTabHost.AddChild(sceneSizeRow);
+        editor.sceneSetupGroup.AddChild(sceneSizeRow);
         GUI.Label.New(sceneSizeRow, "W");
         editor.sceneWidthSpinner = GUI.Spinner.New(sceneSizeRow);
         editor.ConfigureSceneSpinner(editor.sceneWidthSpinner, scene_editor_2d.DEFAULT_SCENE_WIDTH, 256);
@@ -420,20 +468,22 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
         editor.ConfigureSceneSpinner(editor.sceneHeightSpinner, scene_editor_2d.DEFAULT_SCENE_HEIGHT, 256);
         var tileSizeRow = GUI.HBox.New();
         tileSizeRow.SetSpacing(4.0);
-        editor.sceneTabHost.AddChild(tileSizeRow);
+        editor.sceneSetupGroup.AddChild(tileSizeRow);
         GUI.Label.New(tileSizeRow, "Tile size");
         editor.sceneTileSizeSpinner = GUI.Spinner.New(tileSizeRow);
         editor.ConfigureSceneSpinner(editor.sceneTileSizeSpinner, scene_editor_2d.DEFAULT_TILE_SIZE, 512);
-        var importGroup = GUI.GroupBox.New(editor.sceneTabHost, "Project map imports");
+        editor.sceneInfoLabel =
+            GUI.Label.New(editor.sceneSetupGroup, "No scene loaded");
+        editor.sceneInfoLabel.SetWordWrap(true);
+        editor.sceneInfoLabel.SetMaxLines(2);
+
+        editor.sceneImportGroup =
+            GUI.GroupBox.New(editor.sceneTabHost, "Project map imports");
         editor.tiledAssetBrowser.Setup(
-            importGroup,
+            editor.sceneImportGroup,
             "Import Project Tiled Map...",
             ".tmj,.json,.tmx",
             "Import Map");
-
-        editor.sceneInfoLabel = GUI.Label.New(editor.sceneTabHost, "No scene loaded");
-        editor.sceneInfoLabel.SetWordWrap(true);
-        editor.sceneInfoLabel.SetMaxLines(2);
 
         editor.historyGroup =
             GUI.GroupBox.New(editor.sceneTabHost, "History");
@@ -445,8 +495,9 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
         editor.sceneProperties.Setup(editor.sceneTabHost);
         editor.cameraLighting.Setup(editor.sceneTabHost);
 
-        GUI.Label.New(editor.sceneTabHost, "Layers");
-        editor.layerList = GUI.ListBox.New(editor.sceneTabHost);
+        editor.layersGroup =
+            GUI.GroupBox.New(editor.sceneTabHost, "Layers");
+        editor.layerList = GUI.ListBox.New(editor.layersGroup);
         editor.layerList.SetAccessibleName("Scene layers");
         editor.layerList.SetAccessibleDescription(
             "Visible, hidden, locked, solo, and opacity state. "
@@ -463,7 +514,7 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
         layerButtons.SetWrap(GUI.FlexWrap.Wrap);
         layerButtons.SetAlign(GUI.Align.Center);
         layerButtons.SetGap(4.0);
-        editor.sceneTabHost.AddChild(layerButtons);
+        editor.layersGroup.AddChild(layerButtons);
         editor.addLayerButton = GUI.Button.New(layerButtons, "Add");
         editor.addLayerButton.SetAccessibleName("Add 2D scene layer");
         editor.addLayerButton.SetTooltip(
@@ -483,9 +534,10 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
             "Move active 2D scene layer down");
         editor.layerDownButton.SetTooltip(
             "Move the active layer one draw-order position later");
-        editor.layerVisibleCheck = GUI.Checkbox.New(editor.sceneTabHost, "Layer visible");
+        editor.layerVisibleCheck =
+            GUI.Checkbox.New(editor.layersGroup, "Layer visible");
         var layerStateRow = inspector_rows.NewWrapRow();
-        editor.sceneTabHost.AddChild(layerStateRow);
+        editor.layersGroup.AddChild(layerStateRow);
         GUI.Label.New(layerStateRow, "Opacity");
         editor.layerOpacitySpinner = GUI.Spinner.New(layerStateRow);
         editor.layerOpacitySpinner.SetRange(0.0, 1.0);
@@ -500,12 +552,12 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
         editor.layerSoloCheck = GUI.Checkbox.New(layerStateRow, "Solo");
         editor.layerSoloCheck.SetTooltip(
             "Workspace-only: preview only this layer; never saves");
-        editor.layerNameInput = GUI.TextInput.New(editor.sceneTabHost);
+        editor.layerNameInput = GUI.TextInput.New(editor.layersGroup);
         editor.layerNameInput.SetPlaceholder("Layer name");
-        editor.layerAssetInput = GUI.TextInput.New(editor.sceneTabHost);
+        editor.layerAssetInput = GUI.TextInput.New(editor.layersGroup);
         editor.layerAssetInput.SetPlaceholder("Layer asset path");
         editor.chooseLayerAssetButton =
-            GUI.Button.New(editor.sceneTabHost, "Choose Layer Image...");
+            GUI.Button.New(editor.layersGroup, "Choose Layer Image...");
         editor.chooseLayerAssetButton.SetTooltip(
             "Reference a PNG, JPEG, BMP, or GIF tileset for this layer");
 
