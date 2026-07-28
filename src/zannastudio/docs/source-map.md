@@ -841,7 +841,9 @@ button/scroll sizing. It has no build-system or debug-session dependency.
 ### `ui/scene_editor_2d.zia`
 
 Document-backed 2D layer/tile/object authoring surface. It owns responsive
-canvas coordination, layer selection and asset assignment, gap-free
+canvas coordination, including stateful Tools/View overflow below the dense
+wrap threshold and direct-control restoration on wide lanes. It owns layer
+selection and asset assignment, gap-free
 captured paint/erase strokes with exact Escape rollback, inclusive rectangle
 painting, integer-walk lines, ellipse outlines, runtime-backed four-connected
 fill, and active-layer atlas-true hover/captured-shape/stamp previews that never
@@ -860,7 +862,9 @@ subtree drops, one-step root/child creation, bounded cycle-safe explicit parent
 selection for subtree groups, hierarchy-preserving duplicate/paste, group
 drag/delete, focus-scoped pixel/tile nudging, primary-axis alignment,
 deterministic distribution, typed scene-wide and object properties, atomic
-multi-object component application, Tiled import, external-image reload, and
+multi-object component application, selection-free schema-v13 gameplay-object
+creation with typed defaults staged before one commit, Tiled import,
+external-image reload, and
 process-local canonical history with an oldest-first labeled Scene-tab
 timeline that jumps through normal undo and retains redo. Timeline labels
 follow the owning document across tab switches. The layer navigator presents
@@ -875,11 +879,23 @@ derive exact ticks from window origin, zoom, and centered padding; their
 bounded vertical/horizontal guides are tab-local presentation layered over the
 canvas. Captured ruler gestures provide live create, move, drag-out removal,
 collision refusal, and Escape rollback without leaking transient coordinates
-into document state. Project-owned 2D background profiles resolve typed scene
-variants and composite bounded fixed-screen imagery behind the editable layers
-without executing project code. Real atlas decoding/rendering, project-asset
-discovery, selection normalization, precision-layout rules, hierarchy matching,
-and palette presentation live in smaller leaf modules.
+into document state. Per-document Game View masks all editor overlays and
+canvas editing while preserving selection, tools, preferences, bytes, and
+history; legacy profiles retain free pan/zoom, while schema-v12 output profiles
+fit the authored player start into a centered project-aspect frame, lock
+navigation, and restore the exact editor view on exit. Game View also makes
+animation playback effective without rewriting the independent Preview toggle.
+Project-owned 2D background profiles resolve typed scene variants and composite
+bounded fixed-screen imagery behind the editable layers without executing
+project code. Real atlas decoding/rendering, project-asset discovery, selection
+normalization, precision-layout rules, hierarchy matching, and palette
+presentation live in smaller leaf modules.
+
+### `ui/scene_panels_2d.zia`
+
+Constructs the complete retained 2D scene widget tree, including stable
+checkable Tools/View menu-item handles. `SceneEditor2D` owns their responsive
+visibility, checked/enabled state, and dispatch through existing commands.
 
 ### `ui/scene_property_inspector_2d.zia`
 
@@ -895,6 +911,15 @@ Stateless helper for 2D alignment/distribution operation identity, selection
 requirements, stable coordinate ordering, and deterministically rounded
 distribution targets. It has no GUI, document, or Scene2D ownership.
 
+### `ui/scene_object_draw_stack_2d.zia`
+
+Stateless bounded compositor ordering for 2D object previews. It resolves
+exact integer `editor.afterLayer`/`editor.drawOrder` overrides over validated
+project rules, maps them to tile-layer boundaries, and builds one stable
+bottom-to-top identity stack with fixed buckets. The 2D editor shares that
+stack between sprite rendering, marquee ordering, and topmost canvas picking;
+the helper owns no GUI, pixels, document mutation, or history.
+
 ### `ui/scene_clipboard.zia`
 
 Shared document-independent clipboard envelope for both visual editors. It
@@ -906,11 +931,13 @@ before either controller can reconstruct selected 2D objects or 3D subtrees.
 ### `ui/scene_component_schema.zia`
 
 Document-independent, fail-closed loader for project-root
-`scene-components.json`. It validates versions 1 through 10, target,
+`scene-components.json`. It validates versions 1 through 13, target,
 identifiers, limits, scalar kinds, exact defaults, asset/object/node preview
 conventions, 3D gameplay-view profiles, scene environments and portable
-post-processing, and 2D scene backgrounds into value-only records. It does not
-own widgets, scenes, project state, or document mutation.
+post-processing, 2D scene backgrounds, object draw-stack rules, and paired
+project output dimensions plus target-compatible component creation recipes
+into value-only records. It does not own widgets, scenes, project state, or
+document mutation.
 
 ### `ui/scene_component_authoring.zia`
 
@@ -1009,6 +1036,9 @@ viewport. It retains one windowless Canvas3D, RenderTarget3D, and exactly
 matched projection-switchable camera, then draws deterministic editor overlays
 on the readback. The same camera unprojects pointer rays for
 closest-visible-mesh bounds picking before a meshless origin-marker fallback.
+Its responsive chrome keeps primary commands direct and swaps dense secondary
+sets for complete stateful Create/Placement/View menus below 1,180 logical
+pixels, restoring all direct buttons on wider lanes.
 The responsive corner orientation navigator owns six axis views, projection
 switching, active/hover presentation, and priority pointer routing entirely as
 per-document workspace state. It owns
@@ -1022,17 +1052,39 @@ remapping and retained-row cues, transactional
 before/into/after hierarchy drops, parent-aware group Move/Rotate/Scale handles,
 conditioned XY/XZ/YZ Move/Scale-plane picking and transactional two-axis
 dragging,
+bottom-bound Drop-to-Surface placement across canonical and project-preview
+geometry with selected-subtree exclusion and one-step exact rollback,
+bounded live X/Z/XZ Surface Move conformance with transient prefab
+bounds/following and twist-preserving precise-normal alignment,
+runtime-backed vertex/pivot-to-vertex snapping with precise-surface fallback,
+bounded source/target scans, live selected-root transforms, and exact
+release/Escape transactions,
+canonical centered mesh-heightfield terrain creation, typed-contract
+validation, responsive inspector drafts, conforming brush feedback, bounded
+Raise/Lower/Smooth/Flatten strokes, and exact release/Escape history,
 subtree-aware batch duplicate/delete, pointer capture and Escape rollback,
-focus-scoped W/E/R and Duplicate/Delete selection commands, live single-node
-transforms, relative multi-node numeric transform batches, compact PBR
+focus-scoped W/E/R/V/End and Duplicate/Delete selection commands, live
+single-node transforms, relative multi-node numeric transform batches, compact PBR
 material component coordination, cycle-safe exact preserve-world reparenting
 with preserve-local opt-out, mixed-state batch visibility, bounded native
 texture selection, stable contiguous sibling-block ordering, typed
 gameplay-metadata transactions, exact responsive gameplay-eye anchoring,
 transient project node/environment preview composition, retained project
 post-FX construction with finalized shaded readback, atomic multi-node
-component application, and
-canonical one-step edit history.
+component application, selection-free schema-v13 gameplay-node creation at the
+viewport target with all metadata staged before one commit, and a per-document
+Game View that derives a clean
+temporary shaded pass, masks editor lighting/overlays/editing, retains free
+camera navigation for legacy profiles, locks schema-v12 output profiles to
+their project gameplay camera and centered aspect frame, restores every
+underlying camera/preference/selection exactly, and canonical one-step edit
+history.
+
+### `ui/scene_panels_3d.zia`
+
+Constructs the complete retained 3D scene widget tree, including stable
+Create/Placement/View menu-item handles. `SceneEditor3D` owns responsive
+visibility, truthful check/enable state, and transactional dispatch.
 
 ### `ui/scene_metadata_inspector_3d.zia`
 
@@ -1281,6 +1333,9 @@ Important probe groups:
   rollback and preserve-local opt-out, stable contiguous sibling-block
   ordering, truthful mixed-state batch visibility, post-move selection
   remapping, and rollback behavior.
+- `scene_command_bar_probe.zia`: real compact Tools/Create/Placement/View menu
+  clicks, checked-state refresh, bounded bar/canvas/viewport height, and wide
+  direct-control restoration across both scene editors.
 - `scene_canvas_selection_probe.zia`: public 2D point replace/add/toggle/group
   preservation policy, reverse inclusive cell queries, marquee
   replace/union/toggle/empty behavior, real captured blank-space dragging,
@@ -1303,6 +1358,14 @@ Important probe groups:
   visibility with exact undo, real retained-row drag ordering, tab-local
   Lock/Solo isolation, live add/move/remove identity remapping, boundary-aware
   actions, and responsive containment.
+- `scene2d_object_draw_stack_probe.zia`: stable project priority/layer
+  ordering, invalid override fallback, real tile/sprite interleaving and
+  overlap pixels, matching topmost pointer selection, direct inspector
+  Apply/no-op/Use Project transactions, and byte-exact default restoration.
+- `scene_game_view_probe.zia`: exact clean 2D authored pixels, 3D
+  navigator/gizmo/editor-light masking, temporary shaded presentation,
+  disabled viewport editing, real click suppression, tab-local restoration,
+  and byte-exact content/history isolation.
 - `scene_light_authoring_probe.zia`: every runtime light constructor,
   normalized public cone readback, independent replacement, exact no-op
   suppression, add/apply/remove history, VSCN round trips, hierarchy and
@@ -1311,6 +1374,25 @@ Important probe groups:
   seam-safe angular math, real hover/down/move/up input, stable viewport
   geometry during status changes, one-step snapped rotation history, and exact
   undo.
+- `scene_surface_drop_probe.zia`: viewport-focused End placement, independent
+  multi-root world-bottom casts, selected canonical/prefab self-ray exclusion,
+  canonical/project-environment nearest hits, real X-axis Surface Move input,
+  bounded acquisition of a raised 30-degree ramp, twist-preserving normal
+  alignment through live Move and explicit Drop, live transient-prefab
+  alignment before deferred serialization, workspace state, exact undo/redo,
+  grounded or missing-surface history no-ops, and complete terrain-action
+  containment across medium dock-heavy, laptop Scene Layout, and compact
+  viewport widths.
+- `scene_vertex_snap_probe.zia`: authoritative runtime mesh-vertex source and
+  target queries, persistent control state, real vertex-to-vertex,
+  pivot-to-vertex, and vertex-to-precise-surface pointer gestures, live
+  canonical/history isolation, one-step release history, exact Escape and undo
+  restoration, and transform-toolbar containment.
+- `scene_terrain_authoring_probe.zia`: canonical grid topology and typed
+  convention protection, pure deterministic brush math, real direct creation
+  and precise viewport sculpt input, live no-history feedback, one-step
+  release, exact Escape/undo/redo, flatten/regenerate transactions, VSCN round
+  trips, and responsive inspector containment.
 - `scene_orientation_navigator_probe.zia`: production navigator geometry,
   six axis-aligned camera poses, per-tab camera restoration, real hover/click
   and projection-chip routing, overlay input priority, captured pixels, and
@@ -1328,18 +1410,26 @@ Important probe groups:
   grid-click/list-model selection identity, mode-switch retention, selected
   model detail rendering, and captured thumbnail pixels.
 - `scene_gameplay_preview_2d_probe.zia`: real Xenoscape project loading,
-  native-scale player-start framing, schema-v8 biome and object art decoding,
-  exact 150-by-17/530-tile/82-object fixture retention, actual canvas capture,
-  and canonical content/history isolation across native control realization.
+  native-scale player-start framing, schema-v11 biome/object art and exact game
+  category ordering despite a differently grouped canonical array, exact
+  150-by-17/530-tile/82-object fixture retention, schema-v13 direct enemy
+  creation at a chosen cell with project preview and byte-exact one-step
+  undo/redo, schema-v12 1280-by-720 output framing/matte/navigation lock and
+  restoration, clean Game View capture, and canonical content/history isolation
+  across native control realization.
 - `scene_gameplay_preview_probe.zia`: real Ashfall project loading, exact
   gameplay eye/FOV retention across responsive dock changes, schema-v9
   environment composition, schema-v10 retained five-pass post-FX and finalized
-  high-key luminance, explicit Gameplay View recovery, actual viewport capture,
-  and canonical content/history isolation.
+  high-key luminance, schema-v13 direct spawn creation at the viewport target
+  with exact runtime metadata, immediate prefab preview, and byte-exact
+  one-step undo/redo, schema-v12 1600-by-900 render-target
+  framing/matte/camera lock and restoration, explicit Gameplay View recovery,
+  clean Game View capture, and canonical content/history isolation.
 - `scene_viewport_picking_probe.zia`: off-origin nearest-depth mesh-bounds
   selection, shaded/wireframe parity, meshless marker fallback, additive and
   primary-modifier selection policy, blank clear/preserve behavior, exact
-  camera-plane pan, public Super key constants, and VSCN/history isolation.
+  camera-plane pan, real compact Create-menu Box/Cylinder dispatch, public
+  Super key constants, and VSCN/history isolation.
 - `terminal_*`: PTY terminal behavior and rendering.
 - `scm_probe.zia`: Git Source Control behavior.
 - `scm_view_probe.zia`: real-Git responsive panel, pointer staging,
@@ -1404,6 +1494,9 @@ Use this practical decision table:
 | 2D tileset inspector presentation | `ui/scene_tileset_inspector_2d.zia` |
 | 2D tile-behavior inspector presentation | `ui/scene_tile_behavior_2d.zia` |
 | 3D visual scene authoring | `ui/scene_editor_3d.zia` |
+| 3D surface-placement query/history workflow | `ui/scene_editor_3d.zia` |
+| 3D canonical terrain mesh/brush rules (ADR 0211) | `ui/scene_terrain_3d.zia` |
+| 3D terrain inspector presentation | `ui/scene_terrain_inspector_3d.zia` |
 | 3D node gameplay-metadata presentation | `ui/scene_metadata_inspector_3d.zia` |
 | 3D hierarchy reparent rules | `ui/scene_hierarchy_3d.zia` |
 | 3D transform mode/space and gizmo math | `ui/scene_transform_3d.zia` |

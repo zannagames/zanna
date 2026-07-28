@@ -107,6 +107,9 @@ func main() {
     source3D.scene3DWorkspace.transformMode = 2;
     source3D.scene3DWorkspace.transformSpace = 1;
     source3D.scene3DWorkspace.transformSnapEnabled = true;
+    source3D.scene3DWorkspace.transformSurfaceSnapEnabled = true;
+    source3D.scene3DWorkspace.transformSurfaceAlignEnabled = true;
+    source3D.scene3DWorkspace.transformVertexSnapEnabled = true;
     source3D.scene3DWorkspace.viewYawDegrees = -70;
     source3D.scene3DWorkspace.viewPitchDegrees = 35;
     source3D.scene3DWorkspace.viewScale = 52;
@@ -140,6 +143,9 @@ func main() {
        or Ini.Get(savedIni, "session.file.1", "scene3dTransformMode") != "2"
        or Ini.Get(savedIni, "session.file.1", "scene3dTransformSpace") != "1"
        or Ini.Get(savedIni, "session.file.1", "scene3dTransformSnap") != "1"
+       or Ini.Get(savedIni, "session.file.1", "scene3dSurfaceSnap") != "1"
+       or Ini.Get(savedIni, "session.file.1", "scene3dSurfaceAlign") != "1"
+       or Ini.Get(savedIni, "session.file.1", "scene3dVertexSnap") != "1"
        or Ini.Get(savedIni, "session.file.1", "scene3dViewportMode") != "1"
        or Ini.Get(savedIni, "session.file.1", "scene3dTargetY") != "-2500"
        or Ini.Get(savedIni, "session.file.1", "scene3dInspectorVisible") != "1"
@@ -181,6 +187,9 @@ func main() {
        or restored3D.scene3DWorkspace.transformMode != 2
        or restored3D.scene3DWorkspace.transformSpace != 1
        or restored3D.scene3DWorkspace.transformSnapEnabled == false
+       or restored3D.scene3DWorkspace.transformSurfaceSnapEnabled == false
+       or restored3D.scene3DWorkspace.transformSurfaceAlignEnabled == false
+       or restored3D.scene3DWorkspace.transformVertexSnapEnabled == false
        or restored3D.scene3DWorkspace.viewYawDegrees != -70
        or restored3D.scene3DWorkspace.viewPitchDegrees != 35
        or restored3D.scene3DWorkspace.viewScale != 52
@@ -208,6 +217,9 @@ func main() {
     Ini.Set(savedIni, "session.file.1", "scene3dTransformMode", "-99");
     Ini.Set(savedIni, "session.file.1", "scene3dTransformSpace", "99");
     Ini.Set(savedIni, "session.file.1", "scene3dTransformSnap", "50");
+    Ini.Set(savedIni, "session.file.1", "scene3dSurfaceSnap", "50");
+    Ini.Set(savedIni, "session.file.1", "scene3dSurfaceAlign", "50");
+    Ini.Set(savedIni, "session.file.1", "scene3dVertexSnap", "50");
     Ini.Set(savedIni, "session.file.1", "scene3dYaw", "-999");
     Ini.Set(savedIni, "session.file.1", "scene3dPitch", "999");
     Ini.Set(savedIni, "session.file.1", "scene3dScale", "0");
@@ -240,6 +252,9 @@ func main() {
        or bounded3D.scene3DWorkspace.transformMode != 0
        or bounded3D.scene3DWorkspace.transformSpace != 1
        or bounded3D.scene3DWorkspace.transformSnapEnabled == false
+       or bounded3D.scene3DWorkspace.transformSurfaceSnapEnabled == false
+       or bounded3D.scene3DWorkspace.transformSurfaceAlignEnabled == false
+       or bounded3D.scene3DWorkspace.transformVertexSnapEnabled == false
        or bounded3D.scene3DWorkspace.viewYawDegrees != -180
        or bounded3D.scene3DWorkspace.viewPitchDegrees != 80
        or bounded3D.scene3DWorkspace.viewScale != 4
@@ -265,6 +280,9 @@ func main() {
     recovery3D.scene3DWorkspace.transformMode = 1;
     recovery3D.scene3DWorkspace.transformSpace = 1;
     recovery3D.scene3DWorkspace.transformSnapEnabled = true;
+    recovery3D.scene3DWorkspace.transformSurfaceSnapEnabled = true;
+    recovery3D.scene3DWorkspace.transformSurfaceAlignEnabled = true;
+    recovery3D.scene3DWorkspace.transformVertexSnapEnabled = true;
     recovery3D.scene3DWorkspace.viewScale = 64;
     recovery3D.scene3DWorkspace.viewportMode = 1;
     var recoveryWriter = new session.SessionManager();
@@ -291,6 +309,12 @@ func main() {
        or recoveredDocs.documents.get(1).scene3DWorkspace.transformSpace != 1
        or recoveredDocs.documents.get(1).scene3DWorkspace.transformSnapEnabled
            == false
+       or recoveredDocs.documents.get(1).scene3DWorkspace
+              .transformSurfaceSnapEnabled == false
+       or recoveredDocs.documents.get(1).scene3DWorkspace
+              .transformSurfaceAlignEnabled == false
+       or recoveredDocs.documents.get(1).scene3DWorkspace
+              .transformVertexSnapEnabled == false
        or recoveredDocs.documents.get(1).scene3DWorkspace.viewScale != 64
        or recoveredDocs.documents.get(1).scene3DWorkspace.viewportMode != 1 {
         fail(root, "dirty untitled scenes did not recover as visual tabs");

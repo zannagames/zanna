@@ -210,7 +210,8 @@ void rt_canvas3d_set_shadow_quality(void *obj, int64_t quality);
 int64_t rt_canvas3d_get_width(void *obj);
 /// @brief Get the canvas height in pixels.
 /// @param obj Borrowed Canvas3D handle.
-/// @return Bound render-target height when present, otherwise logical window height; zero if invalid.
+/// @return Bound render-target height when present, otherwise logical window height; zero if
+/// invalid.
 int64_t rt_canvas3d_get_height(void *obj);
 /// @brief Get the backing window width, ignoring any bound render target.
 /// @param obj Borrowed Canvas3D handle.
@@ -879,6 +880,13 @@ void *rt_mesh3d_from_stl(rt_string path);
 /// @param obj Borrowed Mesh3D handle.
 /// @return Non-negative vertex count, or zero for invalid input.
 int64_t rt_mesh3d_get_vertex_count(void *obj);
+/// @brief Read one mesh-local vertex position without exposing mutable geometry storage.
+/// @details The returned vector preserves an authoritative double-precision position sidecar
+/// when one exists and is independent of later mesh mutation.
+/// @param obj Borrowed Mesh3D handle.
+/// @param index Zero-based vertex index.
+/// @return Fresh GC-managed Vec3 handle, or NULL for an invalid mesh or out-of-range index.
+void *rt_mesh3d_get_vertex_position(void *obj, int64_t index);
 /// @brief Number of triangles currently in the mesh (== indices / 3).
 /// @param obj Borrowed Mesh3D handle.
 /// @return Non-negative triangle count, or zero for invalid input.
@@ -1079,7 +1087,8 @@ double rt_camera3d_get_effective_far_plane(void *obj);
 void rt_camera3d_set_far_plane(void *obj, double far_plane);
 /// @brief Get the camera world-space position as a Vec3.
 /// @param obj Borrowed Camera3D handle.
-/// @return New GC-managed Vec3 containing the position, or NULL for invalid input/allocation failure.
+/// @return New GC-managed Vec3 containing the position, or NULL for invalid input/allocation
+/// failure.
 void *rt_camera3d_get_position(void *obj);
 /// @brief Move the camera to the given world-space position (Vec3).
 /// @param obj Borrowed Camera3D handle.
@@ -1871,20 +1880,16 @@ void rt_canvas3d_set_vsync(void *canvas, int8_t enabled);
 /// @param canvas Borrowed Canvas3D handle.
 /// @return Requested state, or 1 for invalid input to preserve the default contract.
 int8_t rt_canvas3d_get_vsync(void *canvas);
-/**
- * @brief Try to render the window-backed 3D scene at a scale in `[0.25, 1]`.
- *
- * Reduced scales require the `"render-scale"` backend capability and are upscaled to
- * the logical output dimensions before overlays, readback, and presentation. Values
- * greater than or equal to one request native resolution and work on fixed-scale
- * backends. A capable backend can reject a transition during an active frame or when
- * target allocation fails; on rejection, the previous scale remains active.
- *
- * @param canvas Canvas3D receiver, or `NULL`.
- * @param scale Requested scene scale. Non-finite and values at least one request 1:1;
- * finite values below 0.25 are clamped to 0.25.
- * @return Non-zero if the requested scale is active, otherwise zero.
- */
+/// @brief Try to render the window-backed 3D scene at a scale in `[0.25, 1]`.
+/// @details Reduced scales require the `"render-scale"` backend capability and are upscaled to
+/// the logical output dimensions before overlays, readback, and presentation. Values greater
+/// than or equal to one request native resolution and work on fixed-scale backends. A capable
+/// backend can reject a transition during an active frame or when target allocation fails; on
+/// rejection, the previous scale remains active.
+/// @param canvas Canvas3D receiver, or `NULL`.
+/// @param scale Requested scene scale. Non-finite and values at least one request 1:1; finite
+/// values below 0.25 are clamped to 0.25.
+/// @return Non-zero if the requested scale is active, otherwise zero.
 int8_t rt_canvas3d_try_set_render_scale(void *canvas, double scale);
 /**
  * @brief Return the currently active window-backed scene scale.

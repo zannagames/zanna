@@ -11,8 +11,9 @@
 //   - Every candidate is reparsed by scene_component_schema before publication.
 //   - Known-member edits preserve unknown supported-version JSON members.
 //   - Version inference recognizes object, 2D scene, 3D scene, node,
-//     sky/light, lens/atmosphere, environment, and post-FX preview extensions
-//     before replacing otherwise unrelated component fields.
+//     sky/light, lens/atmosphere, environment, post-FX, and 2D object draw
+//     stack, game-output, and component-creation extensions before replacing
+//     unrelated component fields.
 //   - Existing files are replaced through expected-metadata workspace edits;
 //     new files use a no-overwrite same-directory atomic create.
 //   - Bounded file snapshots make each accepted edit exactly undoable/redoable.
@@ -26,7 +27,10 @@
 //        docs/adr/0201-project-owned-3d-lens-and-atmosphere-previews.md,
 //        docs/adr/0202-project-owned-2d-scene-background-previews.md,
 //        docs/adr/0203-project-owned-3d-scene-environment-previews.md,
-//        docs/adr/0204-project-owned-3d-post-processing-previews.md
+//        docs/adr/0204-project-owned-3d-post-processing-previews.md,
+//        docs/adr/0206-project-owned-2d-object-preview-draw-stacks.md,
+//        docs/adr/0208-project-authored-game-output-frames.md,
+//        docs/adr/0209-project-component-creation-recipes.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -110,6 +114,14 @@ expose func AddStarterComponent(
     Map.SetStr(component, "name", name);
     Map.SetStr(component, "label", "New Component");
     Map.SetStr(component, "target", nextTarget);
+    if nextTarget == scene_component_schema.TARGET_2D_OBJECT
+       or nextTarget == scene_component_schema.TARGET_BOTH {
+        Map.SetStr(component, "createObjectType", name);
+    }
+    if nextTarget == scene_component_schema.TARGET_3D_NODE
+       or nextTarget == scene_component_schema.TARGET_BOTH {
+        Map.SetStr(component, "createNodeName", "New Component");
+    }
     var fields = Seq.New();
     var field = Map.New();
     Map.SetStr(field, "key", name + ".enabled");
@@ -132,7 +144,9 @@ expose func UpdateComponent(
     name: String,
     label: String,
     target: String,
-    description: String) -> SceneComponentEditResult {
+    description: String,
+    createObjectType: String,
+    createNodeName: String) -> SceneComponentEditResult {
     var result = BeginEdit(text);
     var root = ValidRoot(text, result);
     if root == null { return result; }
@@ -153,10 +167,19 @@ expose func UpdateComponent(
     if nextLabel == "" { nextLabel = nextName; }
     var nextTarget = Str.ToLower(Str.Trim(target));
     var nextDescription = description;
+    var nextCreateObjectType = Str.Trim(createObjectType);
+    var nextCreateNodeName = Str.Trim(createNodeName);
+    if nextTarget == scene_component_schema.TARGET_2D_OBJECT {
+        nextCreateNodeName = "";
+    } else if nextTarget == scene_component_schema.TARGET_3D_NODE {
+        nextCreateObjectType = "";
+    }
     if previous.name == nextName
        and previous.label == nextLabel
        and previous.target == nextTarget
-       and previous.description == nextDescription {
+       and previous.description == nextDescription
+       and previous.createObjectType == nextCreateObjectType
+       and previous.createNodeName == nextCreateNodeName {
         return NoChange(result);
     }
 
@@ -172,6 +195,10 @@ expose func UpdateComponent(
     }
     Map.SetStr(raw, "target", nextTarget);
     SetOptionalText(raw, "description", description);
+    SetOptionalTrimmed(
+        raw, "createObjectType", nextCreateObjectType);
+    SetOptionalTrimmed(
+        raw, "createNodeName", nextCreateNodeName);
     result.componentName = nextName;
     return FinishEdit(root, text, result);
 }
@@ -729,6 +756,13 @@ func SyncSchemaVersion(root: Any) {
     if Map.Has(root, "scenePreview2D") {
         required =
             scene_component_schema.SCENE_PREVIEW_2D_SCHEMA_VERSION;
+        var scenePreview2D = Map.Get(root, "scenePreview2D");
+        if scenePreview2D != null
+           and Json.TypeOf(scenePreview2D) == "object"
+           and ScenePreviewHasOutputMembers(scenePreview2D) {
+            required =
+                scene_component_schema.GAME_VIEW_OUTPUT_SCHEMA_VERSION;
+        }
     }
     if Map.Has(root, "nodePreviews3D") {
         var nodeVersion =
@@ -741,7 +775,11 @@ func SyncSchemaVersion(root: Any) {
         var scenePreview = Map.Get(root, "scenePreview3D");
         if scenePreview != null
            and Json.TypeOf(scenePreview) == "object" {
-            if ScenePreviewHasPostFXMembers(scenePreview) {
+            if ScenePreviewHasOutputMembers(scenePreview) {
+                scenePreviewVersion =
+                    scene_component_schema
+                        .GAME_VIEW_OUTPUT_SCHEMA_VERSION;
+            } else if ScenePreviewHasPostFXMembers(scenePreview) {
                 scenePreviewVersion =
                     scene_component_schema
                         .SCENE_POSTFX_PREVIEW_3D_SCHEMA_VERSION;
@@ -766,6 +804,12 @@ func SyncSchemaVersion(root: Any) {
     if Map.Has(root, "objectPreviews") {
         var previewVersion =
             scene_component_schema.OBJECT_PREVIEW_SCHEMA_VERSION;
+        if ObjectPreviewsHaveDrawStackMembers(
+               Map.Get(root, "objectPreviews")) {
+            previewVersion =
+                scene_component_schema
+                    .OBJECT_PREVIEW_DRAW_STACK_SCHEMA_VERSION;
+        }
         if previewVersion > required { required = previewVersion; }
     }
     var components = Map.Get(root, "components");
@@ -780,6 +824,14 @@ func SyncSchemaVersion(root: Any) {
         if component == null or Json.TypeOf(component) != "object" {
             continue;
         }
+        if Map.Has(component, "createObjectType")
+           or Map.Has(component, "createNodeName") {
+            var creationVersion =
+                scene_component_schema.COMPONENT_CREATION_SCHEMA_VERSION;
+            if creationVersion > required {
+                required = creationVersion;
+            }
+        }
         var fields = Map.Get(component, "fields");
         if fields == null or Json.TypeOf(fields) != "array" { continue; }
         var fieldIndex = 0;
@@ -793,6 +845,27 @@ func SyncSchemaVersion(root: Any) {
         }
     }
     Map.SetInt(root, "version", required);
+}
+
+/// @brief Return whether one raw scene profile requires schema version 12.
+func ScenePreviewHasOutputMembers(raw: Any) -> Boolean {
+    return Map.Has(raw, "outputWidth") or Map.Has(raw, "outputHeight");
+}
+
+/// @brief Return whether object-preview content requires schema version 11.
+func ObjectPreviewsHaveDrawStackMembers(raw: Any) -> Boolean {
+    if raw == null or Json.TypeOf(raw) != "array" { return false; }
+    var index = 0;
+    while index < Seq.get_Count(raw) {
+        var preview = Seq.Get(raw, index);
+        if preview != null and Json.TypeOf(preview) == "object"
+           and (Map.Has(preview, "drawOrder")
+                or Map.Has(preview, "afterLayer")) {
+            return true;
+        }
+        index = index + 1;
+    }
+    return false;
 }
 
 /// @brief Return whether one raw scene profile requires schema version 10.

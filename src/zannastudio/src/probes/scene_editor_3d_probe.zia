@@ -507,8 +507,8 @@ func main() {
         return;
     }
 
-    // Exact toolbar heights used to clip the trailing Exit Layout action at
-    // this common medium window size even though the Flex row was arranged.
+    // Medium lanes collapse complete secondary sets into bounded overflow
+    // surfaces instead of reserving several wrapped toolbar rows.
     shell.app.SetMinimumSize(1, 1);
     shell.app.SetWindowSize(1000, 700);
     editor.SetWorkspaceModeActive(true);
@@ -518,18 +518,21 @@ func main() {
     shell.Render();
     editor.Pump(sceneDoc);
     shell.Render();
-    var mediumWorkspaceRight = editor.workspaceButton.GetScreenX()
-        + editor.workspaceButton.GetScreenWidth();
-    var mediumWorkspaceBottom = editor.workspaceButton.GetScreenY()
-        + editor.workspaceButton.GetScreenHeight();
-    if mediumWorkspaceRight
+    var mediumViewMenuRight = editor.viewMenuButton.GetScreenX()
+        + editor.viewMenuButton.GetScreenWidth();
+    var mediumViewMenuBottom = editor.viewMenuButton.GetScreenY()
+        + editor.viewMenuButton.GetScreenHeight();
+    if editor.viewMenuButton.IsVisible() == false
+       or editor.workspaceButton.IsVisible()
+       or editor.viewWorkspaceItem.IsCheckable() == false
+       or mediumViewMenuRight
           > editor.viewToolbar.GetScreenX()
               + editor.viewToolbar.GetScreenWidth() + 1.0
-       or mediumWorkspaceBottom
+       or mediumViewMenuBottom
           > editor.viewToolbar.GetScreenY()
               + editor.viewToolbar.GetScreenHeight() + 1.0 {
         fail(shell, tempPath,
-             "medium 3D Exit Layout action was clipped by wrapped toolbar");
+             "medium 3D View overflow was missing or clipped");
         return;
     }
     editor.SetWorkspaceModeActive(false);
@@ -670,26 +673,44 @@ func main() {
         + editor.viewToolbar.GetScreenWidth() + 1.0;
     var viewToolbarBottom = editor.viewToolbar.GetScreenY()
         + editor.viewToolbar.GetScreenHeight() + 1.0;
-    var frameRight = editor.frameSelectedButton.GetScreenX()
-        + editor.frameSelectedButton.GetScreenWidth();
-    var frameBottom = editor.frameSelectedButton.GetScreenY()
-        + editor.frameSelectedButton.GetScreenHeight();
+    var viewMenuRight = editor.viewMenuButton.GetScreenX()
+        + editor.viewMenuButton.GetScreenWidth();
+    var viewMenuBottom = editor.viewMenuButton.GetScreenY()
+        + editor.viewMenuButton.GetScreenHeight();
+    var placementMenuRight = editor.placementMenuButton.GetScreenX()
+        + editor.placementMenuButton.GetScreenWidth();
+    var placementMenuBottom = editor.placementMenuButton.GetScreenY()
+        + editor.placementMenuButton.GetScreenHeight();
     var hierarchyButtonRight = editor.hierarchyButton.GetScreenX()
         + editor.hierarchyButton.GetScreenWidth();
     var hierarchyButtonBottom = editor.hierarchyButton.GetScreenY()
         + editor.hierarchyButton.GetScreenHeight();
-    var workspaceButtonRight = editor.workspaceButton.GetScreenX()
-        + editor.workspaceButton.GetScreenWidth();
-    var workspaceButtonBottom = editor.workspaceButton.GetScreenY()
-        + editor.workspaceButton.GetScreenHeight();
-    if frameRight > viewToolbarRight or frameBottom > viewToolbarBottom
+    if editor.viewMenuButton.IsVisible() == false
+       or editor.placementMenuButton.IsVisible() == false
+       or editor.frameSelectedButton.IsVisible()
+       or editor.vertexSnapCheck.IsVisible()
+       or editor.workspaceButton.IsVisible()
+       or viewMenuRight > viewToolbarRight
+       or viewMenuBottom > viewToolbarBottom
+       or placementMenuRight > viewToolbarRight
+       or placementMenuBottom > viewToolbarBottom
        or hierarchyButtonRight > viewToolbarRight
-       or hierarchyButtonBottom > viewToolbarBottom
-       or workspaceButtonRight > viewToolbarRight
-       or workspaceButtonBottom > viewToolbarBottom {
-        fail(shell, tempPath, "compact 3D view actions were clipped: action="
-             + frameRight + "," + frameBottom + " toolbar="
-             + viewToolbarRight + "," + viewToolbarBottom);
+       or hierarchyButtonBottom > viewToolbarBottom {
+        fail(shell, tempPath,
+             "compact 3D overflow actions were clipped: view="
+             + viewMenuRight + "," + viewMenuBottom
+             + " placement=" + placementMenuRight + ","
+             + placementMenuBottom
+             + " hierarchy=" + hierarchyButtonRight + ","
+             + hierarchyButtonBottom
+             + " toolbar=" + viewToolbarRight + "," + viewToolbarBottom
+             + " root=" + editor.root.GetLogicalWidth());
+        return;
+    }
+    if editor.viewportScroll.GetScreenHeight()
+          < editor.bodySplit.GetScreenHeight() - 8.0 {
+        fail(shell, tempPath,
+             "compact 3D chrome did not leave a useful full-height viewport");
         return;
     }
 
@@ -1544,7 +1565,9 @@ func main() {
         "two-d-only",
         "2D Only",
         scene_component_schema.TARGET_2D_OBJECT,
-        "Edited safely from the shared 3D schema form.");
+        "Edited safely from the shared 3D schema form.",
+        "",
+        "");
     if editor.componentSchema.components.count() != 3
        or editor.componentPalette.components.count() != 2
        or editor.componentPalette.schemaEditorGroup.IsVisible() == false

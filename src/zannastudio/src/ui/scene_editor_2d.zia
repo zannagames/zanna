@@ -17,8 +17,14 @@
 //     jumping rows runs ordinary undo operations and keeps redo available.
 //   - Compact windows cycle objects, canvas/palette, and inspector at full
 //     width; no authoring surface becomes an inaccessible sliver.
+//   - Constrained command bars keep Select/Paint/Erase and navigation direct;
+//     complete shape, sampling, object, overlay, and layout commands remain
+//     reachable through truthful Tools and View overflow menus.
 //   - Focus presentation temporarily collapses every non-floating scene pane
 //     and restores the exact per-document layout without persisting the detour.
+//   - Per-document Game View masks every editor-only canvas overlay and
+//     editing gesture; schema-v12 output profiles lock an exact-aspect project
+//     frame and restore the prior editor camera exactly on exit.
 //   - Raster work is viewport-windowed: only visible cells rasterize, 100%
 //     zoom is the authored tile resolution, wheel zoom anchors at the
 //     pointer, and every cell of every scene stays scroll-reachable.
@@ -33,6 +39,8 @@
 //     never invalidate or rewrite authored scene JSON.
 //   - Project-owned scene backgrounds composite behind tiles in screen space
 //     without executing game code or changing canonical scene/history state.
+//   - Project-owned and per-object preview draw stacks interleave sprites with
+//     tile layers; rendering and picking share the exact stable visual order.
 //   - Multi-object property, layout, nudge, and selection commands commit once
 //     or restore the complete prior selection/content; inspector inputs never
 //     own scene keys.
@@ -41,6 +49,8 @@
 //   - Zero-rotation render and hit-test fast paths share one epsilon predicate.
 //   - Project components add only missing typed object properties across a
 //     selection, aborting atomically on every type conflict.
+//   - Schema-v13 recipes create a correctly typed gameplay object at the
+//     selected/visible cell with every default staged before one commit.
 //   - Project schema authoring has independent conflict-safe file history and
 //     never changes canonical scene content, revision, history, or dirty state.
 //   - Objects use a retained expandable hierarchy with stable multi-selection;
@@ -70,6 +80,7 @@
 //        zannastudio/src/ui/scene_component_schema.zia,
 //        zannastudio/src/ui/scene_hierarchy_search.zia,
 //        zannastudio/src/ui/scene_layout_2d.zia,
+//        zannastudio/src/ui/scene_object_draw_stack_2d.zia,
 //        zannastudio/src/ui/scene_property_inspector_2d.zia,
 //        zannastudio/src/ui/scene_tileset_2d.zia,
 //        zannastudio/src/ui/scene_tileset_inspector_2d.zia,
@@ -84,7 +95,11 @@
 //        docs/adr/0170-studio-2d-canvas-marquee-selection.md,
 //        docs/adr/0171-bounded-scene-flood-fill-and-studio-tile-tools.md,
 //        docs/adr/0202-project-owned-2d-scene-background-previews.md,
-//        docs/adr/0205-listbox-application-directed-reordering.md
+//        docs/adr/0205-listbox-application-directed-reordering.md,
+//        docs/adr/0206-project-owned-2d-object-preview-draw-stacks.md,
+//        docs/adr/0207-non-destructive-scene-game-view.md,
+//        docs/adr/0208-project-authored-game-output-frames.md,
+//        docs/adr/0209-project-component-creation-recipes.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -103,6 +118,7 @@ bind "scene_hierarchy_search";
 bind "scene_history";
 bind "inspector_rows";
 bind "scene_layout_2d";
+bind "scene_object_draw_stack_2d";
 bind "scene_pane_docking";
 bind "scene_camera_lighting_2d";
 bind "property_rows";
@@ -199,6 +215,7 @@ final CANVAS_GUIDE_HIT_RADIUS: Integer = 6;
 final CANVAS_GUIDE_DRAG_THRESHOLD: Integer = 3;
 final MAX_AUTOTILE_PREVIEW_RULES: Integer = 64;
 final AUTOTILE_LOOKUP_MAX_TILE: Integer = 4095;
+final GAME_VIEW_MATTE_COLOR: Integer = 0x080A0E;
 
 final PROPERTY_TYPE_STRING: Integer = 0;
 final PROPERTY_TYPE_INT: Integer = 1;
@@ -297,6 +314,11 @@ expose func UsesCompactChrome(width: Number) -> Boolean {
     return width > 0.0 and width <= COMPACT_SCENE_2D_CHROME_WIDTH;
 }
 
+/// @brief Return whether complete secondary 2D commands belong in overflow.
+expose func UsesSceneCommandMenus(width: Number) -> Boolean {
+    return width > 0.0 and width < WRAPPED_SCENE_2D_CHROME_WIDTH;
+}
+
 /// @brief Return whether canvas and palette need vertical master/detail.
 expose func UsesCompactPaletteLayout(height: Number) -> Boolean {
     return height > 0.0 and height <= COMPACT_SCENE_2D_PALETTE_HEIGHT;
@@ -385,14 +407,29 @@ class SceneEditor2D {
     expose GUI.Button selectButton;
     expose GUI.Button paintButton;
     expose GUI.Button eraseButton;
+    expose GUI.Button toolMenuButton;
+    expose GUI.ContextMenu toolMenu;
+    expose GUI.MenuItem toolSelectItem;
+    expose GUI.MenuItem toolPaintItem;
+    expose GUI.MenuItem toolEraseItem;
+    expose GUI.MenuItem toolRectangleItem;
+    expose GUI.MenuItem toolLineItem;
+    expose GUI.MenuItem toolEllipseItem;
+    expose GUI.MenuItem toolFillItem;
+    expose GUI.MenuItem toolPickerItem;
+    expose GUI.MenuItem toolObjectItem;
     expose GUI.Button rectangleButton;
     expose GUI.Button lineButton;
     expose GUI.Button ellipseButton;
     expose GUI.Button fillButton;
     expose GUI.Button pickerButton;
     expose GUI.Button previewButton;
+    expose GUI.Button gameViewButton;
     expose GUI.Button runSceneButton;
     hide Boolean previewActive;
+    expose Boolean gameViewActive;
+    expose Boolean gameViewOutputFramed;
+    hide Boolean gameOutputFramePending;
     expose Boolean autotilePreviewEnabled;
     expose Integer autotilePreviewRuleCount;
     hide List[Integer] autotilePreviewBases;
@@ -410,6 +447,18 @@ class SceneEditor2D {
     expose GUI.Button actualSizeButton;
     expose GUI.Button gridButton;
     expose GUI.Button rulersButton;
+    expose GUI.Button viewMenuButton;
+    expose GUI.ContextMenu viewMenu;
+    expose GUI.MenuItem viewFitItem;
+    expose GUI.MenuItem viewActualSizeItem;
+    expose GUI.MenuItem viewGridItem;
+    expose GUI.MenuItem viewRulersItem;
+    expose GUI.MenuItem viewGameItem;
+    expose GUI.MenuItem viewHierarchyItem;
+    expose GUI.MenuItem viewInspectorItem;
+    expose GUI.MenuItem viewPaletteItem;
+    expose GUI.MenuItem viewFocusItem;
+    expose GUI.MenuItem viewWorkspaceItem;
     expose GUI.Button hierarchyButton;
     expose GUI.Button inspectorButton;
     expose GUI.Button paletteButton;
@@ -501,6 +550,12 @@ class SceneEditor2D {
     expose GUI.Spinner objectPivotXSpinner;
     expose GUI.Spinner objectPivotYSpinner;
     expose GUI.TextInput objectTintInput;
+    expose GUI.GroupBox objectDrawStackGroup;
+    expose GUI.Label objectDrawStackSummary;
+    expose GUI.Dropdown objectAfterLayerDropdown;
+    expose GUI.Spinner objectDrawOrderSpinner;
+    expose GUI.Button objectDrawStackApplyButton;
+    expose GUI.Button objectDrawStackResetButton;
     expose GUI.Button addObjectButton;
     expose GUI.Button addChildObjectButton;
     expose GUI.Button applyObjectButton;
@@ -664,14 +719,29 @@ class SceneEditor2D {
         selectButton = null;
         paintButton = null;
         eraseButton = null;
+        toolMenuButton = null;
+        toolMenu = null;
+        toolSelectItem = null;
+        toolPaintItem = null;
+        toolEraseItem = null;
+        toolRectangleItem = null;
+        toolLineItem = null;
+        toolEllipseItem = null;
+        toolFillItem = null;
+        toolPickerItem = null;
+        toolObjectItem = null;
         rectangleButton = null;
         lineButton = null;
         ellipseButton = null;
         fillButton = null;
         pickerButton = null;
         previewButton = null;
+        gameViewButton = null;
         runSceneButton = null;
         previewActive = false;
+        gameViewActive = false;
+        gameViewOutputFramed = false;
+        gameOutputFramePending = false;
         autotilePreviewEnabled = true;
         autotilePreviewRuleCount = 0;
         autotilePreviewBases = [];
@@ -689,6 +759,18 @@ class SceneEditor2D {
         actualSizeButton = null;
         gridButton = null;
         rulersButton = null;
+        viewMenuButton = null;
+        viewMenu = null;
+        viewFitItem = null;
+        viewActualSizeItem = null;
+        viewGridItem = null;
+        viewRulersItem = null;
+        viewGameItem = null;
+        viewHierarchyItem = null;
+        viewInspectorItem = null;
+        viewPaletteItem = null;
+        viewFocusItem = null;
+        viewWorkspaceItem = null;
         hierarchyButton = null;
         inspectorButton = null;
         paletteButton = null;
@@ -776,6 +858,12 @@ class SceneEditor2D {
         objectPivotXSpinner = null;
         objectPivotYSpinner = null;
         objectTintInput = null;
+        objectDrawStackGroup = null;
+        objectDrawStackSummary = null;
+        objectAfterLayerDropdown = null;
+        objectDrawOrderSpinner = null;
+        objectDrawStackApplyButton = null;
+        objectDrawStackResetButton = null;
         objectDraftOriginRotation = 0.0;
         objectDraftOriginScaleX = 1.0;
         objectDraftOriginScaleY = 1.0;
@@ -1008,13 +1096,27 @@ class SceneEditor2D {
         }
 
         RefreshResponsiveLayout();
-        if hierarchyButton.WasClicked() { ToggleHierarchyPane(); }
-        if inspectorButton.WasClicked() { ToggleInspectorPane(); }
-        if paletteButton.WasClicked() { TogglePalettePane(); }
-        if workspaceButton.WasClicked() {
+        PumpCommandMenuButtons();
+        if hierarchyButton.WasClicked()
+           or viewHierarchyItem.WasClicked() {
+            ToggleHierarchyPane();
+        }
+        if inspectorButton.WasClicked()
+           or viewInspectorItem.WasClicked() {
+            ToggleInspectorPane();
+        }
+        if paletteButton.WasClicked()
+           or viewPaletteItem.WasClicked() {
+            TogglePalettePane();
+        }
+        if workspaceButton.WasClicked()
+           or viewWorkspaceItem.WasClicked() {
             RequestWorkspaceModeToggle();
         }
-        if focusButton.WasClicked() { RequestFocusModeToggle(); }
+        if focusButton.WasClicked()
+           or viewFocusItem.WasClicked() {
+            RequestFocusModeToggle();
+        }
         if objectTabButton.WasClicked() { SetInspectorSceneTab(false); }
         if sceneTabButton.WasClicked() { SetInspectorSceneTab(true); }
 
@@ -1095,34 +1197,74 @@ class SceneEditor2D {
         PollTilesetExternalChanges(250);
 
         UpdateCanvasViewportSize();
-        if selectButton.WasClicked() { SetMode(MODE_SELECT); }
-        if paintButton.WasClicked() { SetMode(MODE_PAINT); }
-        if eraseButton.WasClicked() { SetMode(MODE_ERASE); }
-        if rectangleButton.WasClicked() { SetMode(MODE_RECTANGLE); }
-        if lineButton.WasClicked() { SetMode(MODE_LINE); }
-        if ellipseButton.WasClicked() { SetMode(MODE_ELLIPSE); }
-        if fillButton.WasClicked() { SetMode(MODE_FILL); }
-        if pickerButton.WasClicked() { SetMode(MODE_PICKER); }
+        if selectButton.WasClicked()
+           or toolSelectItem.WasClicked() {
+            SetMode(MODE_SELECT);
+        }
+        if paintButton.WasClicked()
+           or toolPaintItem.WasClicked() {
+            SetMode(MODE_PAINT);
+        }
+        if eraseButton.WasClicked()
+           or toolEraseItem.WasClicked() {
+            SetMode(MODE_ERASE);
+        }
+        if rectangleButton.WasClicked()
+           or toolRectangleItem.WasClicked() {
+            SetMode(MODE_RECTANGLE);
+        }
+        if lineButton.WasClicked()
+           or toolLineItem.WasClicked() {
+            SetMode(MODE_LINE);
+        }
+        if ellipseButton.WasClicked()
+           or toolEllipseItem.WasClicked() {
+            SetMode(MODE_ELLIPSE);
+        }
+        if fillButton.WasClicked()
+           or toolFillItem.WasClicked() {
+            SetMode(MODE_FILL);
+        }
+        if pickerButton.WasClicked()
+           or toolPickerItem.WasClicked() {
+            SetMode(MODE_PICKER);
+        }
         if previewButton.WasClicked() {
             SetPreviewActive(previewActive == false);
         }
+        if gameViewButton.WasClicked()
+           or viewGameItem.WasClicked() {
+            SetGameViewActive(gameViewActive == false);
+        }
+        if gameOutputFramePending and ApplyGameOutputFrame() {
+            gameOutputFramePending = false;
+        }
         if runSceneButton.WasClicked() { runSceneRequested = true; }
         PumpPreviewClock();
-        if objectButton.WasClicked() { SetMode(MODE_OBJECT); }
+        if objectButton.WasClicked()
+           or toolObjectItem.WasClicked() {
+            SetMode(MODE_OBJECT);
+        }
         if zoomOutButton.WasClicked() { ZoomAtWindowCenter(-1); }
         if zoomInButton.WasClicked() { ZoomAtWindowCenter(1); }
-        if actualSizeButton.WasClicked() { ZoomToPercentAtWindowCenter(100); }
-        if gridButton.WasClicked() {
+        if actualSizeButton.WasClicked()
+           or viewActualSizeItem.WasClicked() {
+            ZoomToPercentAtWindowCenter(100);
+        }
+        if gridButton.WasClicked()
+           or viewGridItem.WasClicked() {
             showGrid = showGrid == false;
             RefreshGridButton();
             renderDirty = true;
         }
-        if rulersButton.WasClicked() {
+        if rulersButton.WasClicked()
+           or viewRulersItem.WasClicked() {
             showRulers = showRulers == false;
             RefreshRulerPresentation();
             renderDirty = true;
         }
-        if fitButton.WasClicked() {
+        if fitButton.WasClicked()
+           or viewFitItem.WasClicked() {
             initialFramePending = false;
             fitPending = false;
             if FitScene() { renderDirty = true; }
@@ -1319,8 +1461,10 @@ class SceneEditor2D {
         var state = currentDoc.scene2DWorkspace;
         state.initialized = true;
         state.mode = ClampInt(mode, MODE_SELECT, MODE_ELLIPSE);
-        state.zoomPercent = ClampInt(
-            zoomPercent, MIN_ZOOM_PERCENT, MAX_ZOOM_PERCENT);
+        if gameViewOutputFramed == false {
+            state.zoomPercent = ClampInt(
+                zoomPercent, MIN_ZOOM_PERCENT, MAX_ZOOM_PERCENT);
+        }
         state.activeLayer = activeLayer;
         state.selectedObject = selectedObject;
         state.selectedObjects = selectedObjects;
@@ -1346,7 +1490,7 @@ class SceneEditor2D {
             state.canvasSplitPosition = ClampNumber2D(
                 canvasSplit.GetPosition(), 0.40, 0.92);
         }
-        if canvasScroll != null {
+        if canvasScroll != null and gameViewOutputFramed == false {
             state.canvasScrollX = ClampNumber2D(
                 LogicalScrollX(canvasScroll), 0.0, 1000000.0);
             state.canvasScrollY = ClampNumber2D(
@@ -1361,6 +1505,8 @@ class SceneEditor2D {
         state.paletteRequestedVisible = paletteRequestedVisible;
         state.compactPaletteShown = compactPaletteShown;
         state.previewActive = previewActive;
+        state.gameViewActive = gameViewActive;
+        state.gameViewOutputFramed = gameViewOutputFramed;
         state.autotilePreviewEnabled = autotilePreviewEnabled;
         state.showGrid = showGrid;
         state.showRulers = showRulers;
@@ -1401,6 +1547,10 @@ class SceneEditor2D {
             compactInspectorShown = false;
             paletteRequestedVisible = true;
             compactPaletteShown = false;
+            previewActive = false;
+            gameViewActive = false;
+            gameViewOutputFramed = false;
+            gameOutputFramePending = false;
             autotilePreviewEnabled = true;
             showGrid = true;
             showRulers = true;
@@ -1414,6 +1564,8 @@ class SceneEditor2D {
                and componentSchema.scenePreview2D.hasShowGrid {
                 showGrid = componentSchema.scenePreview2D.showGrid;
             }
+            RefreshPreviewButton();
+            UpdateGameViewButton();
             RefreshGridButton();
             RefreshRulerPresentation();
             if tileBehavior != null
@@ -1469,6 +1621,10 @@ class SceneEditor2D {
         paletteRequestedVisible = state.paletteRequestedVisible;
         compactPaletteShown = state.compactPaletteShown;
         previewActive = state.previewActive;
+        gameViewActive = state.gameViewActive;
+        gameViewOutputFramed =
+            state.gameViewActive and state.gameViewOutputFramed;
+        gameOutputFramePending = gameViewOutputFramed;
         autotilePreviewEnabled = state.autotilePreviewEnabled;
         showGrid = state.showGrid;
         showRulers = state.showRulers;
@@ -1477,6 +1633,7 @@ class SceneEditor2D {
         lockedLayers = state.lockedLayers;
         soloLayer = ClampInt(state.soloLayer, -1, 1023);
         RefreshPreviewButton();
+        UpdateGameViewButton();
         RefreshGridButton();
         RefreshRulerPresentation();
         if tileBehavior != null
@@ -1484,7 +1641,7 @@ class SceneEditor2D {
             tileBehavior.SetAutotilePreviewEnabled(
                 autotilePreviewEnabled);
         }
-        restoreScrollPending = true;
+        restoreScrollPending = gameViewOutputFramed == false;
         fitPending = false;
         initialFramePending = false;
         UpdateModeButtons();
@@ -1607,6 +1764,173 @@ class SceneEditor2D {
         return focusModeActive;
     }
 
+    /// @brief Open one persistent command menu beneath its owning button.
+    hide func ShowCommandMenu(button: GUI.Button,
+                              menu: GUI.ContextMenu) {
+        if button == null or menu == null { return; }
+        menu.Show(
+            Convert.NumToInt(button.GetScreenX()),
+            Convert.NumToInt(
+                button.GetScreenY() + button.GetScreenHeight()));
+    }
+
+    /// @brief Return the full user-facing name of one canvas tool.
+    hide func ToolModeLabel(value: Integer) -> String {
+        if value == MODE_PAINT { return "Paint"; }
+        if value == MODE_ERASE { return "Erase"; }
+        if value == MODE_RECTANGLE { return "Rectangle"; }
+        if value == MODE_LINE { return "Line"; }
+        if value == MODE_ELLIPSE { return "Ellipse"; }
+        if value == MODE_FILL { return "Flood Fill"; }
+        if value == MODE_PICKER { return "Pick Tile"; }
+        if value == MODE_OBJECT { return "Object"; }
+        return "Select";
+    }
+
+    /// @brief Mirror active-mode and edit availability into the Tools menu.
+    hide func ConfigureToolMenu() {
+        var enabled =
+            editorControlsEnabled and gameViewActive == false;
+        toolSelectItem.SetEnabled(enabled);
+        toolPaintItem.SetEnabled(enabled);
+        toolEraseItem.SetEnabled(enabled);
+        toolRectangleItem.SetEnabled(enabled);
+        toolLineItem.SetEnabled(enabled);
+        toolEllipseItem.SetEnabled(enabled);
+        toolFillItem.SetEnabled(enabled);
+        toolPickerItem.SetEnabled(enabled);
+        toolObjectItem.SetEnabled(enabled);
+        toolSelectItem.SetChecked(mode == MODE_SELECT);
+        toolPaintItem.SetChecked(mode == MODE_PAINT);
+        toolEraseItem.SetChecked(mode == MODE_ERASE);
+        toolRectangleItem.SetChecked(mode == MODE_RECTANGLE);
+        toolLineItem.SetChecked(mode == MODE_LINE);
+        toolEllipseItem.SetChecked(mode == MODE_ELLIPSE);
+        toolFillItem.SetChecked(mode == MODE_FILL);
+        toolPickerItem.SetChecked(mode == MODE_PICKER);
+        toolObjectItem.SetChecked(mode == MODE_OBJECT);
+    }
+
+    /// @brief Mirror navigation, overlays, and pane state into the View menu.
+    hide func ConfigureViewMenu() {
+        var enabled = scene != null;
+        var navigationEnabled =
+            enabled and gameViewOutputFramed == false;
+        viewFitItem.SetEnabled(navigationEnabled);
+        viewActualSizeItem.SetEnabled(navigationEnabled);
+        viewGridItem.SetEnabled(
+            enabled and gameViewActive == false);
+        viewGridItem.SetChecked(showGrid);
+        viewRulersItem.SetEnabled(
+            enabled and gameViewActive == false);
+        viewRulersItem.SetChecked(showRulers);
+        viewGameItem.SetEnabled(enabled);
+        viewGameItem.SetChecked(gameViewActive);
+        viewGameItem.SetText(
+            gameViewActive ? "Exit Game View" : "Game View");
+
+        var canToggleHierarchy =
+            UsesDockedHierarchy(lastHostWidth) == false
+            and focusModeActive == false
+            and hierarchyDock.floating == false;
+        viewHierarchyItem.SetEnabled(canToggleHierarchy);
+        viewHierarchyItem.SetText(
+            compactHierarchyShown
+            ? "Return to Canvas"
+            : "Open Objects");
+        viewInspectorItem.SetEnabled(
+            focusModeActive == false or inspectorDock.floating);
+        viewInspectorItem.SetText(
+            compactInspectorShown
+            ? "Return to Canvas"
+            : "Toggle Inspector");
+        viewPaletteItem.SetEnabled(
+            focusModeActive == false or paletteDock.floating);
+        viewPaletteItem.SetText(
+            compactPaletteShown
+            ? "Return to Canvas"
+            : "Toggle Palette");
+        viewFocusItem.SetEnabled(
+            focusButton != null and focusButton.IsEnabled());
+        viewFocusItem.SetChecked(focusModeActive);
+        viewFocusItem.SetText(
+            focusModeActive ? "Exit Focus" : "Focus Canvas");
+        viewWorkspaceItem.SetEnabled(true);
+        viewWorkspaceItem.SetChecked(workspaceModeActive);
+        viewWorkspaceItem.SetText(
+            workspaceModeActive ? "Exit Scene Layout" : "Scene Layout");
+    }
+
+    /// @brief Open requested overflow menus after responsive visibility settles.
+    hide func PumpCommandMenuButtons() {
+        if toolMenuButton.WasClicked() {
+            ConfigureToolMenu();
+            ShowCommandMenu(toolMenuButton, toolMenu);
+        }
+        if viewMenuButton.WasClicked() {
+            ConfigureViewMenu();
+            ShowCommandMenu(viewMenuButton, viewMenu);
+        }
+    }
+
+    /// @brief Keep compact menu affordances visibly and accessibly truthful.
+    hide func UpdateCommandMenuButtons() {
+        if toolMenuButton != null {
+            var hiddenMode =
+                mode != MODE_SELECT
+                and mode != MODE_PAINT
+                and mode != MODE_ERASE;
+            var label = "Tools...";
+            if compactChrome { label = "Tools"; }
+            if hiddenMode {
+                label = ToolModeLabel(mode);
+                if compactChrome and mode == MODE_RECTANGLE {
+                    label = "Rect";
+                } else if compactChrome and mode == MODE_ELLIPSE {
+                    label = "Oval";
+                } else if compactChrome and mode == MODE_FILL {
+                    label = "Fill";
+                } else if compactChrome and mode == MODE_PICKER {
+                    label = "Pick";
+                }
+            }
+            toolMenuButton.SetText(label);
+            toolMenuButton.SetStyle(hiddenMode ? 1 : 0);
+            toolMenuButton.SetAccessibleDescription(
+                "Current 2D scene tool: " + ToolModeLabel(mode) + ".");
+        }
+        if viewMenuButton != null {
+            var presentationActive =
+                focusModeActive or workspaceModeActive;
+            viewMenuButton.SetStyle(presentationActive ? 1 : 2);
+            viewMenuButton.SetAccessibleDescription(
+                "Grid " + (showGrid ? "on" : "off")
+                + ", rulers " + (showRulers ? "on" : "off")
+                + ", Focus " + (focusModeActive ? "on" : "off")
+                + ", Scene Layout "
+                + (workspaceModeActive ? "on" : "off") + ".");
+        }
+    }
+
+    /// @brief Swap dense secondary tools and view actions for complete menus.
+    hide func ApplyCommandMenuVisibility(useMenus: Boolean) {
+        toolMenuButton.SetVisible(useMenus);
+        rectangleButton.SetVisible(!useMenus);
+        lineButton.SetVisible(!useMenus);
+        ellipseButton.SetVisible(!useMenus);
+        fillButton.SetVisible(!useMenus);
+        pickerButton.SetVisible(!useMenus);
+        objectButton.SetVisible(!useMenus);
+
+        viewMenuButton.SetVisible(useMenus);
+        fitButton.SetVisible(!useMenus);
+        actualSizeButton.SetVisible(!useMenus);
+        gridButton.SetVisible(!useMenus);
+        rulersButton.SetVisible(!useMenus);
+        focusButton.SetVisible(!useMenus);
+        workspaceButton.SetVisible(!useMenus);
+    }
+
     /// @brief Reconcile wrapping chrome and master/detail layout after resize.
     expose func RefreshResponsiveLayout() {
         if root == null or bodySplit == null { return; }
@@ -1647,13 +1971,15 @@ class SceneEditor2D {
 
     /// @brief Keep essential scene actions reachable when toolbar rows wrap.
     hide func ApplyResponsiveChrome() {
+        var useCommandMenus = UsesSceneCommandMenus(lastHostWidth);
+        ApplyCommandMenuVisibility(useCommandMenus);
         if compactChrome {
-            // Flex computes the actual wrapped height. Keep a defensive floor
-            // without pinning an exact height that can clip a trailing action.
+            // The direct compact set needs at most two tool rows and three
+            // short view rows, leaving most small-window height to the canvas.
             toolbar.SetPreferredSize(0.0, 0.0);
-            toolbar.SetMinSize(0.0, 100.0);
+            toolbar.SetMinSize(0.0, 68.0);
             viewToolbar.SetPreferredSize(0.0, 0.0);
-            viewToolbar.SetMinSize(0.0, 96.0);
+            viewToolbar.SetMinSize(0.0, 100.0);
             newSceneButton.SetText("New");
             importButton.SetText("Import...");
             runSceneButton.SetText("Run");
@@ -1668,11 +1994,9 @@ class SceneEditor2D {
             viewStatusLabel.SetVisible(false);
         } else if lastHostWidth < WRAPPED_SCENE_2D_CHROME_WIDTH {
             toolbar.SetPreferredSize(0.0, 0.0);
-            toolbar.SetMinSize(0.0, 68.0);
-            // The hierarchy master action may wrap the view controls to a
-            // second or third row in the medium-width scene lane.
+            toolbar.SetMinSize(0.0, 40.0);
             viewToolbar.SetPreferredSize(0.0, 0.0);
-            viewToolbar.SetMinSize(0.0, 68.0);
+            viewToolbar.SetMinSize(0.0, 40.0);
             newSceneButton.SetText("New");
             importButton.SetText("Import");
             rectangleButton.SetText("Rect");
@@ -1728,6 +2052,9 @@ class SceneEditor2D {
         UpdateHierarchyButton();
         UpdateWorkspaceButton();
         UpdateFocusButton();
+        UpdateGameViewButton();
+        UpdateModeButtons();
+        UpdateCommandMenuButtons();
     }
 
     /// @brief Apply wide split or compact one-pane-at-a-time presentation.
@@ -1973,6 +2300,7 @@ class SceneEditor2D {
                     + "and inspector available");
             workspaceButton.SetStyle(2);
         }
+        UpdateCommandMenuButtons();
     }
 
     /// @brief Keep the reversible outer-workbench action truthful.
@@ -1990,6 +2318,7 @@ class SceneEditor2D {
                 + "(Shift+Space)");
             focusButton.SetStyle(2);
         }
+        UpdateCommandMenuButtons();
     }
 
     /// @brief Apply deferred scroll state after the canvas content size is known.
@@ -2472,7 +2801,7 @@ class SceneEditor2D {
     }
 
     /// @brief Return authored objects whose point occupies an inclusive cell box.
-    /// @details Results follow canonical object draw order, so the final item
+    /// @details Results follow effective preview draw order, so the final item
     ///          is the same topmost identity a point hit would prefer.
     expose func CanvasObjectsInCellRect(startX: Integer,
                                         startY: Integer,
@@ -2495,15 +2824,17 @@ class SceneEditor2D {
             minimumY = endY;
             maximumY = startY;
         }
-        var index = 0;
-        while index < scene.ObjectCount() {
+        var stack = ObjectPreviewStack();
+        var stackIndex = 0;
+        while stackIndex < stack.count() {
+            var index = stack.get(stackIndex);
             var cellX = scene.ObjectX(index) / scene.TileWidth;
             var cellY = scene.ObjectY(index) / scene.TileHeight;
             if cellX >= minimumX and cellX <= maximumX
                and cellY >= minimumY and cellY <= maximumY {
                 hits.add(index);
             }
-            index = index + 1;
+            stackIndex = stackIndex + 1;
         }
         return hits;
     }
@@ -3290,6 +3621,155 @@ class SceneEditor2D {
                 index, scene.ObjectCount());
             detailLabel.SetText("The object order change could not be committed.");
             RefreshInspector();
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshInspector();
+        return true;
+    }
+
+    /// @brief Author one object's editor-only tile-layer/priority overrides.
+    /// @details The pair commits atomically through ordinary typed properties;
+    ///          games remain free to ignore the editor namespace.
+    expose func SetObjectPreviewStackOverride(
+        objectIndex: Integer,
+        afterLayer: Integer,
+        drawOrder: Integer) -> Boolean {
+        if scene == null or objectIndex < 0
+           or objectIndex >= scene.ObjectCount()
+           or afterLayer
+                < scene_component_schema.MIN_PREVIEW_AFTER_LAYER
+           or afterLayer
+                > scene_component_schema.MAX_PREVIEW_AFTER_LAYER
+           or drawOrder
+                < scene_component_schema.MIN_PREVIEW_DRAW_ORDER
+           or drawOrder
+                > scene_component_schema.MAX_PREVIEW_DRAW_ORDER {
+            return false;
+        }
+        var hasLayer = scene.ObjectPropertyKind(
+            objectIndex,
+            scene_object_draw_stack_2d.EXPLICIT_AFTER_LAYER_KEY) != "";
+        var hasOrder = scene.ObjectPropertyKind(
+            objectIndex,
+            scene_object_draw_stack_2d.EXPLICIT_DRAW_ORDER_KEY) != "";
+        var requestedBoundary = afterLayer + 1;
+        if requestedBoundary < 0 { requestedBoundary = 0; }
+        if requestedBoundary > scene.LayerCount() {
+            requestedBoundary = scene.LayerCount();
+        }
+        var currentBoundary =
+            scene_object_draw_stack_2d.LayerBoundary(
+                scene, componentSchema, objectIndex);
+        if hasLayer == false and hasOrder == false
+           and requestedBoundary == currentBoundary
+           and drawOrder == ObjectPreviewDrawOrder(objectIndex) {
+            detailLabel.SetText(
+                "The object already inherits that preview draw stack.");
+            return false;
+        }
+        if hasLayer and hasOrder
+           and scene.ObjectPropertyKind(
+               objectIndex,
+               scene_object_draw_stack_2d.EXPLICIT_AFTER_LAYER_KEY) == "int"
+           and scene.ObjectPropertyKind(
+               objectIndex,
+               scene_object_draw_stack_2d.EXPLICIT_DRAW_ORDER_KEY) == "int"
+           and scene.ObjectGetInt(
+               objectIndex,
+               scene_object_draw_stack_2d.EXPLICIT_AFTER_LAYER_KEY,
+               afterLayer - 1) == afterLayer
+           and scene.ObjectGetInt(
+               objectIndex,
+               scene_object_draw_stack_2d.EXPLICIT_DRAW_ORDER_KEY,
+               drawOrder - 1) == drawOrder {
+            detailLabel.SetText(
+                "The object preview draw stack is already up to date.");
+            return false;
+        }
+
+        var snapshot = scene.ToJson();
+        scene.ObjectSetInt(
+            objectIndex,
+            scene_object_draw_stack_2d.EXPLICIT_AFTER_LAYER_KEY,
+            afterLayer);
+        scene.ObjectSetInt(
+            objectIndex,
+            scene_object_draw_stack_2d.EXPLICIT_DRAW_ORDER_KEY,
+            drawOrder);
+        if scene.ObjectPropertyKind(
+               objectIndex,
+               scene_object_draw_stack_2d.EXPLICIT_AFTER_LAYER_KEY) != "int"
+           or scene.ObjectGetInt(
+               objectIndex,
+               scene_object_draw_stack_2d.EXPLICIT_AFTER_LAYER_KEY,
+               afterLayer - 1) != afterLayer
+           or scene.ObjectPropertyKind(
+               objectIndex,
+               scene_object_draw_stack_2d.EXPLICIT_DRAW_ORDER_KEY) != "int"
+           or scene.ObjectGetInt(
+               objectIndex,
+               scene_object_draw_stack_2d.EXPLICIT_DRAW_ORDER_KEY,
+               drawOrder - 1) != drawOrder {
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText(
+                "The scene rejected the preview stack. Object properties "
+                + "may be at capacity.");
+            return false;
+        }
+        selectedObject = objectIndex;
+        selectedObjects = scene_selection.Single(
+            objectIndex, scene.ObjectCount());
+        if CommitScene("Updated object preview draw stack") == false {
+            RestoreSceneSnapshot(snapshot);
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshInspector();
+        return true;
+    }
+
+    /// @brief Remove one object's preview-stack overrides atomically.
+    expose func ClearObjectPreviewStackOverride(
+        objectIndex: Integer) -> Boolean {
+        if scene == null or objectIndex < 0
+           or objectIndex >= scene.ObjectCount() {
+            return false;
+        }
+        var layerKind = scene.ObjectPropertyKind(
+            objectIndex,
+            scene_object_draw_stack_2d.EXPLICIT_AFTER_LAYER_KEY);
+        var orderKind = scene.ObjectPropertyKind(
+            objectIndex,
+            scene_object_draw_stack_2d.EXPLICIT_DRAW_ORDER_KEY);
+        if layerKind == "" and orderKind == "" { return false; }
+        var snapshot = scene.ToJson();
+        if layerKind != "" {
+            scene.ObjectRemove(
+                objectIndex,
+                scene_object_draw_stack_2d.EXPLICIT_AFTER_LAYER_KEY);
+        }
+        if orderKind != "" {
+            scene.ObjectRemove(
+                objectIndex,
+                scene_object_draw_stack_2d.EXPLICIT_DRAW_ORDER_KEY);
+        }
+        if scene.ObjectPropertyKind(
+               objectIndex,
+               scene_object_draw_stack_2d.EXPLICIT_AFTER_LAYER_KEY) != ""
+           or scene.ObjectPropertyKind(
+               objectIndex,
+               scene_object_draw_stack_2d.EXPLICIT_DRAW_ORDER_KEY) != "" {
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText(
+                "The scene rejected the preview-stack reset.");
+            return false;
+        }
+        selectedObject = objectIndex;
+        selectedObjects = scene_selection.Single(
+            objectIndex, scene.ObjectCount());
+        if CommitScene("Reset object preview draw stack") == false {
+            RestoreSceneSnapshot(snapshot);
             return false;
         }
         detailLabel.SetText("");
@@ -4166,6 +4646,50 @@ class SceneEditor2D {
             framePixels, path, frame, x, y, displayCellSize);
     }
 
+    /// @brief Paint one effective draw-stack boundary's object sprite pixels.
+    /// @details Stack order is boundary/priority/document order. This pass
+    ///          records successful image draws so the later editor-overlay
+    ///          pass can add markers only for objects without renderable art.
+    /// @return The first stack cursor belonging to a later boundary.
+    hide func DrawObjectSpritesAtBoundary(
+        stack: List[Integer],
+        spriteDrawn: List[Integer],
+        startCursor: Integer,
+        boundary: Integer,
+        windowWidth: Integer,
+        windowHeight: Integer) -> Integer {
+        var cursor = startCursor;
+        while cursor < stack.count() {
+            var objectIndex = stack.get(cursor);
+            var objectBoundary =
+                scene_object_draw_stack_2d.LayerBoundary(
+                    scene, componentSchema, objectIndex);
+            if objectBoundary > boundary { return cursor; }
+            if objectBoundary == boundary {
+                var objectX =
+                    scene.ObjectX(objectIndex) * displayCellSize
+                    / scene.TileWidth - viewOriginX;
+                var objectY =
+                    scene.ObjectY(objectIndex) * displayCellSize
+                    / scene.TileHeight - viewOriginY;
+                var footprint = ObjectCanvasFootprint(objectIndex);
+                var visible = true;
+                if footprint.valid {
+                    visible = footprint.maxX >= 0.0
+                        and footprint.maxY >= 0.0
+                        and footprint.minX < windowWidth
+                        and footprint.minY < windowHeight;
+                }
+                if visible and DrawObjectSpritePreview(
+                       objectIndex, objectX, objectY) {
+                    spriteDrawn.set(objectIndex, 1);
+                }
+            }
+            cursor = cursor + 1;
+        }
+        return cursor;
+    }
+
     /// @brief Resolve one object's sprite reference (`editor.sprite` wins).
     hide func ObjectSpritePath(objectIndex: Integer) -> String {
         var path = Str.Trim(
@@ -4216,6 +4740,24 @@ class SceneEditor2D {
             scene.ObjectType(objectIndex));
     }
 
+    /// @brief Effective bounded object-preview priority (smaller paints first).
+    expose func ObjectPreviewDrawOrder(objectIndex: Integer) -> Integer {
+        return scene_object_draw_stack_2d.EffectiveDrawOrder(
+            scene, componentSchema, objectIndex);
+    }
+
+    /// @brief Effective tile layer after which one object preview paints.
+    expose func ObjectPreviewAfterLayer(objectIndex: Integer) -> Integer {
+        return scene_object_draw_stack_2d.EffectiveAfterLayer(
+            scene, componentSchema, objectIndex);
+    }
+
+    /// @brief Bottom-to-top visual object identities for rendering and picking.
+    expose func ObjectPreviewStack() -> List[Integer] {
+        return scene_object_draw_stack_2d.Build(
+            scene, componentSchema);
+    }
+
     /// @brief Resolve the active project-owned screen-space scene backdrop.
     /// @details A missing/wrong-typed variant key uses the declared fallback.
     hide func ProjectSceneBackground() -> String {
@@ -4237,11 +4779,61 @@ class SceneEditor2D {
     hide func DrawProjectSceneBackground() -> Boolean {
         var path = ProjectSceneBackground();
         if path == "" or componentSchema == null { return false; }
+        if gameViewOutputFramed and framePixels != null {
+            var width = GameOutputFrameWidthFor(
+                framePixels.Width, framePixels.Height);
+            var height = GameOutputFrameHeightFor(
+                framePixels.Width, framePixels.Height);
+            return tilesets.DrawSceneBackgroundRegion(
+                framePixels,
+                path,
+                componentSchema.sourcePath,
+                componentSchema.scenePreview2D.fit,
+                GameOutputFrameXFor(
+                    framePixels.Width, framePixels.Height),
+                GameOutputFrameYFor(
+                    framePixels.Width, framePixels.Height),
+                width,
+                height);
+        }
         return tilesets.DrawSceneBackground(
             framePixels,
             path,
             componentSchema.sourcePath,
             componentSchema.scenePreview2D.fit);
+    }
+
+    /// @brief Cover pixels outside the exact project output with neutral matte.
+    hide func DrawGameOutputMatte(width: Integer, height: Integer) {
+        if gameViewOutputFramed == false or framePixels == null
+           or width <= 0 or height <= 0 {
+            return;
+        }
+        var frameX = GameOutputFrameXFor(width, height);
+        var frameY = GameOutputFrameYFor(width, height);
+        var frameWidth = GameOutputFrameWidthFor(width, height);
+        var frameHeight = GameOutputFrameHeightFor(width, height);
+        if frameY > 0 {
+            framePixels.DrawBox(
+                0, 0, width, frameY, GAME_VIEW_MATTE_COLOR);
+        }
+        var bottomY = frameY + frameHeight;
+        if bottomY < height {
+            framePixels.DrawBox(
+                0, bottomY, width, height - bottomY,
+                GAME_VIEW_MATTE_COLOR);
+        }
+        if frameX > 0 {
+            framePixels.DrawBox(
+                0, frameY, frameX, frameHeight,
+                GAME_VIEW_MATTE_COLOR);
+        }
+        var rightX = frameX + frameWidth;
+        if rightX < width {
+            framePixels.DrawBox(
+                rightX, frameY, width - rightX, frameHeight,
+                GAME_VIEW_MATTE_COLOR);
+        }
     }
 
     /// @brief Draw workspace-only polylines for route objects (ADR 0179).
@@ -4494,6 +5086,262 @@ class SceneEditor2D {
         return previewActive;
     }
 
+    /// @brief Return whether this document is presenting clean gameplay pixels.
+    expose func GameViewActive() -> Boolean {
+        return gameViewActive;
+    }
+
+    /// @brief Enter or leave the non-destructive clean gameplay presentation.
+    /// @details Active mutation gestures must finish or cancel first. The mode
+    ///          preserves selection, tools, overlays, preview preference,
+    ///          canonical bytes, revision, dirty state, and history.
+    expose func SetGameViewActive(active: Boolean) {
+        if active == gameViewActive {
+            UpdateGameViewButton();
+            return;
+        }
+        if active
+           and (paintStrokeActive or tileRectangleActive
+                or canvasMarqueeActive or canvasGuideDragActive
+                or objectDragActive or rectGestureMode != 0) {
+            toolbarStatus.SetText(
+                "Finish or cancel the active canvas gesture before Game View");
+            return;
+        }
+        if active { CaptureWorkspaceState(); }
+        var restoreFramedView = gameViewOutputFramed;
+        gameViewActive = active;
+        if active {
+            gameViewOutputFramed = ProjectGameOutputAvailable();
+            gameOutputFramePending = gameViewOutputFramed;
+        } else {
+            gameViewOutputFramed = false;
+            gameOutputFramePending = false;
+            if restoreFramedView and currentDoc != null
+               and currentDoc.scene2DWorkspace != null {
+                var state = currentDoc.scene2DWorkspace;
+                zoomPercent = ClampInt(
+                    state.zoomPercent,
+                    MIN_ZOOM_PERCENT, MAX_ZOOM_PERCENT);
+                pendingCanvasScrollX = ClampNumber2D(
+                    state.canvasScrollX, 0.0, 1000000.0);
+                pendingCanvasScrollY = ClampNumber2D(
+                    state.canvasScrollY, 0.0, 1000000.0);
+                restoreScrollPending = true;
+                PublishCanvasExtentForZoom();
+                SetLogicalScroll(
+                    canvasScroll,
+                    pendingCanvasScrollX,
+                    pendingCanvasScrollY);
+                restoreScrollPending = false;
+            }
+        }
+        previewLastTickMs = -1;
+        previewElapsedMs = 0;
+        previewFrameStamp = "";
+        hoverCellX = -1;
+        hoverCellY = -1;
+        UpdateGameViewButton();
+        RefreshRulerPresentation();
+        SetEditorControlsEnabled(editorControlsEnabled);
+        renderDirty = true;
+        if active or restoreFramedView == false {
+            CaptureWorkspaceState();
+        }
+        if active {
+            if gameViewOutputFramed {
+                toolbarStatus.SetText(
+                    "Game View: project " + GameOutputSizeLabel()
+                    + " output; exit to navigate");
+            } else {
+                toolbarStatus.SetText(
+                    "Game View: authored pixels with pan and zoom");
+            }
+        } else {
+            toolbarStatus.SetText("Editor overlays and canvas tools restored");
+        }
+    }
+
+    /// @brief Keep the clean-view action and accessibility text truthful.
+    hide func UpdateGameViewButton() {
+        if gameViewButton == null { return; }
+        if canvasImage != null {
+            canvasImage.SetDropTarget(gameViewActive == false);
+            if gameViewActive {
+                if gameViewOutputFramed {
+                    canvasImage.SetTooltip(
+                        "Clean " + GameOutputSizeLabel()
+                        + " project output. The gameplay frame and camera "
+                        + "are locked; exit Game View to navigate or edit.");
+                } else {
+                    canvasImage.SetTooltip(
+                        "Clean Game View: middle-drag pans, the wheel zooms, "
+                        + "and F fits the scene. Exit Game View to edit.");
+                }
+            } else {
+                canvasImage.SetTooltip(
+                    "Paint or erase freehand, drag Rectangle, click Fill or "
+                    + "Pick; Escape cancels captured tile gestures. In Select "
+                    + "mode click or drag a box, Shift adds, Control/Command "
+                    + "toggles, and object drags move the selection. The wheel "
+                    + "zooms around the pointer and middle-drag pans.");
+            }
+        }
+        var concise = compactChrome
+            or lastHostWidth < WRAPPED_SCENE_2D_CHROME_WIDTH;
+        if gameViewActive {
+            if concise { gameViewButton.SetText("Exit Game"); }
+            else { gameViewButton.SetText("Exit Game View"); }
+            gameViewButton.SetStyle(1);
+            gameViewButton.SetTooltip(
+                "Restore canvas tools, selection, grid, rulers, guides, "
+                + "routes, handles, and other editor overlays");
+            gameViewButton.SetAccessibleName("Exit 2D Game View");
+            UpdateCommandMenuButtons();
+            return;
+        }
+        if concise { gameViewButton.SetText("Game"); }
+        else { gameViewButton.SetText("Game View"); }
+        gameViewButton.SetStyle(2);
+        gameViewButton.SetTooltip(
+            "Show only authored gameplay pixels; keep pan and zoom, and "
+            + "restore every editor overlay and tool on exit");
+        gameViewButton.SetAccessibleName("Enter 2D Game View");
+        UpdateCommandMenuButtons();
+    }
+
+    /// @brief Return whether the active project declares an exact 2D output.
+    hide func ProjectGameOutputAvailable() -> Boolean {
+        return componentSchema != null and componentSchema.valid
+            and componentSchema.scenePreview2D != null
+            and componentSchema.scenePreview2D.present
+            and componentSchema.scenePreview2D.HasOutputSize();
+    }
+
+    /// @brief Project-authored output width, or zero when no frame is declared.
+    expose func GameOutputWidth() -> Integer {
+        if ProjectGameOutputAvailable() == false { return 0; }
+        return componentSchema.scenePreview2D.outputWidth;
+    }
+
+    /// @brief Project-authored output height, or zero when absent.
+    expose func GameOutputHeight() -> Integer {
+        if ProjectGameOutputAvailable() == false { return 0; }
+        return componentSchema.scenePreview2D.outputHeight;
+    }
+
+    /// @brief Human-readable exact project output dimensions.
+    hide func GameOutputSizeLabel() -> String {
+        var width = GameOutputWidth();
+        var height = GameOutputHeight();
+        if width <= 0 or height <= 0 { return "authored"; }
+        return width + "x" + height;
+    }
+
+    /// @brief Largest centered project-aspect width inside one viewport.
+    expose func GameOutputFrameWidthFor(
+        viewportWidth: Integer,
+        viewportHeight: Integer) -> Integer {
+        var outputWidth = GameOutputWidth();
+        var outputHeight = GameOutputHeight();
+        if viewportWidth <= 0 or viewportHeight <= 0
+           or outputWidth <= 0 or outputHeight <= 0 {
+            return viewportWidth;
+        }
+        if viewportWidth * outputHeight
+           <= viewportHeight * outputWidth {
+            return viewportWidth;
+        }
+        var width = viewportHeight * outputWidth / outputHeight;
+        if width < 1 { width = 1; }
+        return width;
+    }
+
+    /// @brief Largest centered project-aspect height inside one viewport.
+    expose func GameOutputFrameHeightFor(
+        viewportWidth: Integer,
+        viewportHeight: Integer) -> Integer {
+        var outputWidth = GameOutputWidth();
+        var outputHeight = GameOutputHeight();
+        if viewportWidth <= 0 or viewportHeight <= 0
+           or outputWidth <= 0 or outputHeight <= 0 {
+            return viewportHeight;
+        }
+        if viewportWidth * outputHeight
+           <= viewportHeight * outputWidth {
+            var height = viewportWidth * outputHeight / outputWidth;
+            if height < 1 { height = 1; }
+            return height;
+        }
+        return viewportHeight;
+    }
+
+    /// @brief Centered horizontal origin of the project output frame.
+    expose func GameOutputFrameXFor(
+        viewportWidth: Integer,
+        viewportHeight: Integer) -> Integer {
+        return (viewportWidth
+            - GameOutputFrameWidthFor(viewportWidth, viewportHeight)) / 2;
+    }
+
+    /// @brief Centered vertical origin of the project output frame.
+    expose func GameOutputFrameYFor(
+        viewportWidth: Integer,
+        viewportHeight: Integer) -> Integer {
+        return (viewportHeight
+            - GameOutputFrameHeightFor(viewportWidth, viewportHeight)) / 2;
+    }
+
+    /// @brief Fit authored output pixels and center the gameplay start.
+    hide func ApplyGameOutputFrame() -> Boolean {
+        if gameViewActive == false or gameViewOutputFramed == false
+           or scene == null or canvasScroll == null {
+            return false;
+        }
+        var viewportWidth = lastCanvasViewportWidth;
+        var viewportHeight = lastCanvasViewportHeight;
+        if viewportWidth <= 0 {
+            viewportWidth =
+                Convert.NumToInt(canvasScroll.GetLogicalWidth());
+        }
+        if viewportHeight <= 0 {
+            viewportHeight =
+                Convert.NumToInt(canvasScroll.GetLogicalHeight());
+        }
+        if viewportWidth <= 0 or viewportHeight <= 0 { return false; }
+        var frameWidth =
+            GameOutputFrameWidthFor(viewportWidth, viewportHeight);
+        var frameHeight =
+            GameOutputFrameHeightFor(viewportWidth, viewportHeight);
+        var outputWidth = GameOutputWidth();
+        var outputHeight = GameOutputHeight();
+        if frameWidth <= 0 or frameHeight <= 0
+           or outputWidth <= 0 or outputHeight <= 0 {
+            return false;
+        }
+        var widthZoom = frameWidth * 100 / outputWidth;
+        var heightZoom = frameHeight * 100 / outputHeight;
+        var nextZoom = widthZoom;
+        if heightZoom < nextZoom { nextZoom = heightZoom; }
+        zoomPercent = ClampInt(
+            nextZoom, MIN_ZOOM_PERCENT, MAX_ZOOM_PERCENT);
+        initialFramePending = false;
+        fitPending = false;
+        restoreScrollPending = false;
+        var centered = CenterCanvasAtWorldPoint(
+            InitialSceneFocusWorldX(), InitialSceneFocusWorldY());
+        if centered {
+            renderDirty = true;
+            SetEditorControlsEnabled(editorControlsEnabled);
+        }
+        return centered;
+    }
+
+    /// @brief Return effective animation playback without rewriting its toggle.
+    hide func PreviewPlaybackActive() -> Boolean {
+        return previewActive or gameViewActive;
+    }
+
     /// @brief Toggle workspace-only preview playback for the active tab.
     expose func SetPreviewActive(active: Boolean) {
         previewActive = active;
@@ -4524,7 +5372,7 @@ class SceneEditor2D {
 
     /// @brief Deterministically advance the preview clock (probes and tests).
     expose func AdvancePreviewClock(deltaMs: Integer) {
-        if previewActive == false or deltaMs <= 0 { return; }
+        if PreviewPlaybackActive() == false or deltaMs <= 0 { return; }
         previewElapsedMs = previewElapsedMs + deltaMs;
         previewLastTickMs = Clock.NowMs();
         previewFrameStamp = "";
@@ -4545,7 +5393,7 @@ class SceneEditor2D {
     /// @details Workspace-only: canonical bytes, history, revision, and dirty
     ///          state never change, and edits behave identically while active.
     hide func PumpPreviewClock() {
-        if previewActive == false or scene == null { return; }
+        if PreviewPlaybackActive() == false or scene == null { return; }
         var now = Clock.NowMs();
         if previewLastTickMs >= 0 {
             var delta = now - previewLastTickMs;
@@ -4792,7 +5640,7 @@ class SceneEditor2D {
 
     /// @brief Resolve one tile through preview animation state when active.
     hide func PreviewResolvedTile(tile: Integer) -> Integer {
-        if previewActive == false or scene == null or tile <= 0 {
+        if PreviewPlaybackActive() == false or scene == null or tile <= 0 {
             return tile;
         }
         var frames = scene.TileAnimFrames(tile);
@@ -5285,6 +6133,95 @@ class SceneEditor2D {
         return true;
     }
 
+    /// @brief Create one project-defined gameplay object in one transaction.
+    /// @details The selected cell wins; otherwise the center visible cell is
+    ///          used. The object type and every typed default are staged
+    ///          before one canonical commit, so Undo never exposes a generic
+    ///          intermediate object.
+    expose func CreateObjectFromComponent(
+        component: scene_component_schema.SceneComponentDefinition)
+        -> Integer {
+        if scene == null or component == null
+           or component.CanCreateFor(
+               scene_component_schema.TARGET_2D_OBJECT) == false {
+            detailLabel.SetText(
+                "This project component has no 2D creation recipe.");
+            return -1;
+        }
+
+        var cellX = selectedCellX;
+        var cellY = selectedCellY;
+        if cellX < 0 or cellY < 0
+           or cellX >= scene.Width or cellY >= scene.Height {
+            var viewportWidth = lastCanvasViewportWidth;
+            var viewportHeight = lastCanvasViewportHeight;
+            if viewportWidth <= 0 { viewportWidth = displayCellSize; }
+            if viewportHeight <= 0 { viewportHeight = displayCellSize; }
+            var contentX =
+                viewOriginX + viewportWidth / 2 - centerPadX;
+            var contentY =
+                viewOriginY + viewportHeight / 2 - centerPadY;
+            cellX = ClampInt(
+                contentX / displayCellSize, 0, scene.Width - 1);
+            cellY = ClampInt(
+                contentY / displayCellSize, 0, scene.Height - 1);
+        }
+
+        var snapshot = scene.ToJson();
+        var previousSelection = selectedObjects;
+        var previousPrimary = selectedObject;
+        var previousProperty = selectedObjectProperty;
+        var objectId = UniqueObjectId(
+            component.name + "-" + (scene.ObjectCount() + 1));
+        var objectIndex = scene.AddObject(
+            component.createObjectType,
+            objectId,
+            cellX * scene.TileWidth,
+            cellY * scene.TileHeight);
+        if objectIndex < 0 {
+            detailLabel.SetText(
+                "The scene rejected the project object recipe.");
+            return -1;
+        }
+        var fieldIndex = 0;
+        while fieldIndex < component.fields.count() {
+            if WriteObjectComponentField(
+                   objectIndex, component.fields.get(fieldIndex)) == false {
+                RestoreSceneSnapshot(snapshot);
+                selectedObjects = previousSelection;
+                selectedObject = previousPrimary;
+                selectedObjectProperty = previousProperty;
+                RefreshInspector();
+                detailLabel.SetText(
+                    "Project object creation was rejected; the scene "
+                    + "was restored.");
+                return -1;
+            }
+            fieldIndex = fieldIndex + 1;
+        }
+
+        selectedObject = objectIndex;
+        selectedObjects = scene_selection.Single(
+            objectIndex, scene.ObjectCount());
+        selectedObjectProperty = -1;
+        if CommitScene("Created " + component.label) == false {
+            RestoreSceneSnapshot(snapshot);
+            selectedObjects = previousSelection;
+            selectedObject = previousPrimary;
+            selectedObjectProperty = previousProperty;
+            RefreshInspector();
+            detailLabel.SetText(
+                "The project object could not be committed; the scene "
+                + "was restored.");
+            return -1;
+        }
+        detailLabel.SetText(
+            "Created " + component.label + " \"" + objectId
+            + "\" at cell " + cellX + ", " + cellY + ".");
+        RefreshInspector();
+        return objectIndex;
+    }
+
     /// @brief Write one already-validated schema default and verify exact kind.
     hide func WriteObjectComponentField(
         index: Integer,
@@ -5682,15 +6619,18 @@ class SceneEditor2D {
 
     expose func UpdateModeButtons() {
         if selectButton == null { return; }
-        selectButton.SetEnabled(editorControlsEnabled);
-        paintButton.SetEnabled(editorControlsEnabled);
-        eraseButton.SetEnabled(editorControlsEnabled);
-        rectangleButton.SetEnabled(editorControlsEnabled);
-        lineButton.SetEnabled(editorControlsEnabled);
-        ellipseButton.SetEnabled(editorControlsEnabled);
-        fillButton.SetEnabled(editorControlsEnabled);
-        pickerButton.SetEnabled(editorControlsEnabled);
-        objectButton.SetEnabled(editorControlsEnabled);
+        var canvasEditingEnabled =
+            editorControlsEnabled and gameViewActive == false;
+        selectButton.SetEnabled(canvasEditingEnabled);
+        paintButton.SetEnabled(canvasEditingEnabled);
+        eraseButton.SetEnabled(canvasEditingEnabled);
+        rectangleButton.SetEnabled(canvasEditingEnabled);
+        lineButton.SetEnabled(canvasEditingEnabled);
+        ellipseButton.SetEnabled(canvasEditingEnabled);
+        fillButton.SetEnabled(canvasEditingEnabled);
+        pickerButton.SetEnabled(canvasEditingEnabled);
+        objectButton.SetEnabled(canvasEditingEnabled);
+        toolMenuButton.SetEnabled(canvasEditingEnabled);
         selectButton.SetStyle(0);
         paintButton.SetStyle(0);
         eraseButton.SetStyle(0);
@@ -5719,19 +6659,24 @@ class SceneEditor2D {
         } else {
             selectButton.SetStyle(1);
         }
+        UpdateCommandMenuButtons();
     }
 
     expose func SetEditorControlsEnabled(enabled: Boolean) {
         if selectButton == null { return; }
         editorControlsEnabled = enabled;
         UpdateModeButtons();
-        tileSpinner.SetEnabled(enabled);
-        zoomOutButton.SetEnabled(enabled);
-        zoomInButton.SetEnabled(enabled);
-        fitButton.SetEnabled(enabled);
-        actualSizeButton.SetEnabled(enabled);
-        gridButton.SetEnabled(enabled);
-        rulersButton.SetEnabled(enabled);
+        tileSpinner.SetEnabled(enabled and gameViewActive == false);
+        previewButton.SetEnabled(enabled and gameViewActive == false);
+        gameViewButton.SetEnabled(enabled);
+        zoomOutButton.SetEnabled(enabled and gameViewOutputFramed == false);
+        zoomInButton.SetEnabled(enabled and gameViewOutputFramed == false);
+        fitButton.SetEnabled(enabled and gameViewOutputFramed == false);
+        actualSizeButton.SetEnabled(
+            enabled and gameViewOutputFramed == false);
+        gridButton.SetEnabled(enabled and gameViewActive == false);
+        rulersButton.SetEnabled(enabled and gameViewActive == false);
+        viewMenuButton.SetEnabled(true);
         layerList.SetEnabled(enabled);
         UpdateLayerActionControls();
         sceneProperties.SetEnabled(enabled);
@@ -5755,8 +6700,13 @@ class SceneEditor2D {
         objectIdInput.SetEnabled(enabled);
         objectXSpinner.SetEnabled(enabled);
         objectYSpinner.SetEnabled(enabled);
+        objectAfterLayerDropdown.SetEnabled(enabled);
+        objectDrawOrderSpinner.SetEnabled(enabled);
+        objectDrawStackApplyButton.SetEnabled(enabled);
+        objectDrawStackResetButton.SetEnabled(enabled);
         UpdateHierarchySearchControls();
         UpdateInspectorScope();
+        UpdateCommandMenuButtons();
     }
 
     /// @brief Keep layer controls truthful at empty and draw-order boundaries.
@@ -6043,6 +6993,8 @@ class SceneEditor2D {
         objectPositionRow.SetVisible(objectScope);
         objectTransformRow.SetVisible(
             objectScope and selectedObjects.count() == 1);
+        objectDrawStackGroup.SetVisible(
+            objectScope and selectedObjects.count() == 1);
         objectArrangeRow.SetVisible(objectScope);
         objectPropertyLabel.SetVisible(objectScope);
         objectProperties.host.SetVisible(objectScope);
@@ -6052,7 +7004,9 @@ class SceneEditor2D {
         // X/Y edits commit live and the id/type fields commit on Enter, so
         // the explicit Apply is retired from the visible surface.
         applyObjectButton.SetVisible(false);
-        componentPalette.group.SetVisible(objectScope);
+        // Keep project recipes available on the Object tab without a
+        // selection so gameplay-ready objects need no generic placeholder.
+        componentPalette.group.SetVisible(objectTab);
         componentAssetHost.SetVisible(objectScope);
         tilesetInspector.group.SetVisible(hasScene);
         // Scope storms reflow the whole inspector column; force a complete
@@ -6771,6 +7725,72 @@ class SceneEditor2D {
         if tileId > 0 { SelectPaletteTile(tileId); }
     }
 
+    /// @brief Human-readable effective layer placement for inspector status.
+    hide func ObjectDrawStackLayerText(afterLayer: Integer) -> String {
+        if scene == null or scene.LayerCount() <= 0 {
+            return "after all tile layers";
+        }
+        if afterLayer < 0 { return "before all tile layers"; }
+        var clamped = afterLayer;
+        if clamped >= scene.LayerCount() {
+            clamped = scene.LayerCount() - 1;
+        }
+        return "after layer " + (clamped + 1)
+            + " · " + scene.LayerName(clamped);
+    }
+
+    /// @brief Rebuild the selected object's direct preview-stack controls.
+    hide func RefreshObjectDrawStackControls(hasSingle: Boolean) {
+        if objectAfterLayerDropdown == null { return; }
+        objectAfterLayerDropdown.Clear();
+        objectAfterLayerDropdown.AddItem("Before all tile layers");
+        if scene != null {
+            var layer = 0;
+            while layer < scene.LayerCount() {
+                objectAfterLayerDropdown.AddItem(
+                    "After " + (layer + 1) + " · "
+                    + scene.LayerName(layer));
+                layer = layer + 1;
+            }
+        }
+        var enabled = editorControlsEnabled and hasSingle;
+        objectAfterLayerDropdown.SetEnabled(enabled);
+        objectDrawOrderSpinner.SetEnabled(enabled);
+        objectDrawStackApplyButton.SetEnabled(enabled);
+        if hasSingle == false {
+            objectAfterLayerDropdown.SetSelected(0);
+            objectDrawOrderSpinner.SetValue(0.0);
+            objectDrawStackResetButton.SetEnabled(false);
+            objectDrawStackSummary.SetText(
+                "Select one object to inspect its game-like preview order.");
+            return;
+        }
+        var effectiveLayer = ObjectPreviewAfterLayer(selectedObject);
+        var selectedLayer = effectiveLayer + 1;
+        if selectedLayer < 0 { selectedLayer = 0; }
+        if selectedLayer > scene.LayerCount() {
+            selectedLayer = scene.LayerCount();
+        }
+        objectAfterLayerDropdown.SetSelected(selectedLayer);
+        objectDrawOrderSpinner.SetValue(
+            ObjectPreviewDrawOrder(selectedObject));
+        var explicitLayer = scene.ObjectPropertyKind(
+            selectedObject,
+            scene_object_draw_stack_2d.EXPLICIT_AFTER_LAYER_KEY) != "";
+        var explicitOrder = scene.ObjectPropertyKind(
+            selectedObject,
+            scene_object_draw_stack_2d.EXPLICIT_DRAW_ORDER_KEY) != "";
+        var hasOverride = explicitLayer or explicitOrder;
+        objectDrawStackResetButton.SetEnabled(
+            editorControlsEnabled and hasOverride);
+        var source = "Project/default";
+        if hasOverride { source = "Per-object override"; }
+        objectDrawStackSummary.SetText(
+            source + ": " + ObjectDrawStackLayerText(effectiveLayer)
+            + ", priority " + ObjectPreviewDrawOrder(selectedObject)
+            + ". Higher priorities paint and pick later.");
+    }
+
     hide func RefreshObjectFields() {
         var objectCount = 0;
         if scene != null { objectCount = scene.ObjectCount(); }
@@ -6808,6 +7828,7 @@ class SceneEditor2D {
         objectPivotXSpinner.SetEnabled(hasSingle);
         objectPivotYSpinner.SetEnabled(hasSingle);
         objectTintInput.SetEnabled(hasSingle);
+        RefreshObjectDrawStackControls(hasSingle);
         RefreshObjectParentTargets();
         RefreshObjectArrangeControls(hasSelection);
         removeObjectButton.SetText("Remove");
@@ -6897,8 +7918,9 @@ class SceneEditor2D {
                 selectionIndex = selectionIndex + 1;
             }
         }
-        componentPalette.SetContext(
-            enabled, present, missing, conflicts);
+        componentPalette.SetCreationContext(
+            scene != null, "Create Object");
+        componentPalette.SetContext(enabled, present, missing, conflicts);
     }
 
     /// @brief Copy one schema field into the raw typed-property controls.
@@ -7536,6 +8558,22 @@ class SceneEditor2D {
                 Convert.NumToInt(objectXSpinner.Value),
                 Convert.NumToInt(objectYSpinner.Value)) or changed;
         }
+        if objectDrawStackApplyButton.WasClicked()
+           and selectedObjects.count() == 1
+           and selectedObject >= 0
+           and selectedObject < scene.ObjectCount() {
+            changed = SetObjectPreviewStackOverride(
+                selectedObject,
+                objectAfterLayerDropdown.Selected - 1,
+                Convert.NumToInt(objectDrawOrderSpinner.Value)) or changed;
+        }
+        if objectDrawStackResetButton.WasClicked()
+           and selectedObjects.count() == 1
+           and selectedObject >= 0
+           and selectedObject < scene.ObjectCount() {
+            changed = ClearObjectPreviewStackOverride(
+                selectedObject) or changed;
+        }
         if duplicateObjectButton.WasClicked() and selectedObject >= 0 {
             if DuplicateSelectedSceneObjects() > 0 { changed = true; }
         }
@@ -7610,6 +8648,10 @@ class SceneEditor2D {
         }
         if componentPalette.TakeEditFieldRequested() {
             EditSelectedComponentField();
+        }
+        if componentPalette.TakeCreateRequested() {
+            return CreateObjectFromComponent(
+                       componentPalette.SelectedComponent()) >= 0;
         }
         if componentPalette.TakeApplyRequested() {
             return ApplySelectedComponent(
@@ -8022,8 +9064,60 @@ class SceneEditor2D {
         toolbarStatus.SetText("Tile stroke canceled");
     }
 
+    /// @brief Keep clean-view pan/zoom live while consuming every edit gesture.
+    hide func PumpGameViewCanvasNavigation() -> Boolean {
+        if canvasImage != null and canvasImage.WasDropped() {
+            toolbarStatus.SetText(
+                "Exit Game View before dropping assets onto the canvas");
+            return false;
+        }
+        if scene == null or canvasImage == null
+           or canvasImage.IsHovered() == false {
+            return false;
+        }
+        var leftPressed =
+            Input.Mouse.WasPressed(Input.Mouse.ButtonLeft);
+        var leftClicked =
+            Input.Mouse.WasClicked(Input.Mouse.ButtonLeft);
+        if leftPressed or leftClicked
+           or Input.Mouse.WasPressed(Input.Mouse.ButtonMiddle) {
+            canvasImage.Focus();
+        }
+        if gameViewOutputFramed { return false; }
+        if Input.Mouse.IsDown(Input.Mouse.ButtonMiddle) {
+            var panX = PhysicalPointerToUi(Input.Mouse.DeltaX());
+            var panY = PhysicalPointerToUi(Input.Mouse.DeltaY());
+            if panX != 0 or panY != 0 {
+                SetLogicalScroll(
+                    canvasScroll,
+                    LogicalScrollX(canvasScroll) - panX,
+                    LogicalScrollY(canvasScroll) - panY);
+            }
+            return false;
+        }
+        var relativeX = PhysicalPointerToUi(Input.Mouse.X())
+            - canvasImage.GetScreenX();
+        var relativeY = PhysicalPointerToUi(Input.Mouse.Y())
+            - canvasImage.GetScreenY();
+        var wheel = Input.Mouse.WheelYFloat();
+        if wheel > 0.0 or wheel < 0.0 {
+            var direction = 1;
+            if wheel < 0.0 { direction = -1; }
+            ZoomStepAnchored(
+                direction,
+                relativeX + viewOriginX,
+                relativeY + viewOriginY,
+                relativeX + centerPadX,
+                relativeY + centerPadY);
+        }
+        return false;
+    }
+
     /// @brief Apply the current mouse tool to one bounded scene cell.
     hide func PumpCanvas() -> Boolean {
+        if gameViewActive {
+            return PumpGameViewCanvasNavigation();
+        }
         if canvasImage != null and canvasImage.WasDropped() {
             return CreateSpriteObjectFromDrop(
                 canvasImage.GetDropData(),
@@ -8298,6 +9392,19 @@ class SceneEditor2D {
     ///          tile on each axis; a diagonal key frame still commits once.
     ///          The focused canvas surface and the Select button both qualify.
     hide func PumpCanvasKeyboard() -> Boolean {
+        if gameViewActive {
+            if gameViewOutputFramed { return false; }
+            if scene == null or canvasImage == null
+               or canvasImage.IsFocused() == false {
+                return false;
+            }
+            if Input.Keyboard.WasPressed(Input.Key.F) {
+                initialFramePending = false;
+                fitPending = false;
+                if FitScene() { renderDirty = true; }
+            }
+            return false;
+        }
         if scene == null or mode != MODE_SELECT
            or objectDragActive or paintStrokeActive
            or canvasMarqueeActive {
@@ -9324,32 +10431,36 @@ class SceneEditor2D {
     }
 
     /// @brief Topmost object whose transformed sprite contains one point.
-    /// @details Later document order wins (drawn on top). Sprite objects
-    ///          test their exact rotated footprint (ADR 0192); markers keep
-    ///          their legacy one-cell footprint.
+    /// @details The same project/per-object stack used for painting wins.
+    ///          Sprite objects test their exact rotated footprint (ADR 0192);
+    ///          markers keep their legacy one-cell footprint.
     /// @param pointX Canvas-relative x in display pixels.
     /// @param pointY Canvas-relative y in display pixels.
     hide func FindObjectAtCanvasPoint(pointX: Number,
                                       pointY: Number) -> Integer {
         if scene == null { return -1; }
-        var index = scene.ObjectCount() - 1;
-        while index >= 0 {
+        var stack = ObjectPreviewStack();
+        var stackIndex = stack.count() - 1;
+        while stackIndex >= 0 {
+            var index = stack.get(stackIndex);
             if ObjectFootprintContains(index, pointX, pointY) {
                 return index;
             }
-            index = index - 1;
+            stackIndex = stackIndex - 1;
         }
         return -1;
     }
 
     hide func FindObjectAtCell(cellX: Integer, cellY: Integer) -> Integer {
         if scene == null { return -1; }
-        var index = scene.ObjectCount() - 1;
-        while index >= 0 {
+        var stack = ObjectPreviewStack();
+        var stackIndex = stack.count() - 1;
+        while stackIndex >= 0 {
+            var index = stack.get(stackIndex);
             var objectCellX = scene.ObjectX(index) / scene.TileWidth;
             var objectCellY = scene.ObjectY(index) / scene.TileHeight;
             if objectCellX == cellX and objectCellY == cellY { return index; }
-            index = index - 1;
+            stackIndex = stackIndex - 1;
         }
         return -1;
     }
@@ -9397,6 +10508,7 @@ class SceneEditor2D {
     /// @details Matches the 3D editor's F shortcut: one selection gets detail,
     ///          while a spread-out selection is fitted as a bounded group.
     expose func FrameSelected() -> Boolean {
+        if gameViewOutputFramed { return false; }
         if scene == null or canvasScroll == null { return false; }
         selectedObjects = scene_selection.Normalize(
             selectedObjects, scene.ObjectCount(), selectedObject);
@@ -9622,6 +10734,7 @@ class SceneEditor2D {
     /// @details Wheel zoom anchors at the pointer through the same shared
     ///          helper; this surface serves toolbar, commands, and probes.
     expose func SetZoomPercent(nextPercent: Integer) {
+        if gameViewOutputFramed { return; }
         ZoomToPercentAtWindowCenter(nextPercent);
     }
 
@@ -9640,11 +10753,12 @@ class SceneEditor2D {
     /// @brief Reflect the grid-overlay toggle on its toolbar button.
     hide func RefreshGridButton() {
         if gridButton == null { return; }
-        if showGrid {
+        if showGrid and gameViewActive == false {
             gridButton.SetText("Grid: on");
         } else {
             gridButton.SetText("Grid");
         }
+        UpdateCommandMenuButtons();
     }
 
     /// @brief Return one guide's index or -1 when it is absent.
@@ -10005,6 +11119,7 @@ class SceneEditor2D {
 
     /// @brief Reflect visibility in both the toolbar and retained layout.
     hide func RefreshRulerPresentation() {
+        var rulersVisible = showRulers and gameViewActive == false;
         if rulersButton != null {
             if showRulers {
                 rulersButton.SetText("Rulers: on");
@@ -10014,14 +11129,16 @@ class SceneEditor2D {
                 rulersButton.SetStyle(0);
             }
         }
-        if rulerTopRow != null { rulerTopRow.SetVisible(showRulers); }
+        if rulerTopRow != null { rulerTopRow.SetVisible(rulersVisible); }
         if verticalRulerImage != null {
-            verticalRulerImage.SetVisible(showRulers);
+            verticalRulerImage.SetVisible(rulersVisible);
         }
+        UpdateCommandMenuButtons();
     }
 
     /// @brief Pump click, create-drag, move, cancel, and removal gestures.
     hide func PumpCanvasRulers() {
+        if gameViewActive { return; }
         if canvasGuideDragActive {
             if showRulers == false or scene == null
                or horizontalRulerImage == null
@@ -10091,7 +11208,7 @@ class SceneEditor2D {
 
     /// @brief Draw scroll/zoom-aware cell rulers into their retained images.
     hide func RenderCanvasRulers() {
-        if showRulers == false
+        if gameViewActive or showRulers == false
            or rulerCornerImage == null
            or horizontalRulerImage == null
            or verticalRulerImage == null {
@@ -10594,6 +11711,9 @@ class SceneEditor2D {
            or height != lastCanvasViewportHeight {
             lastCanvasViewportWidth = width;
             lastCanvasViewportHeight = height;
+            if gameViewOutputFramed {
+                gameOutputFramePending = true;
+            }
             renderDirty = true;
         }
         if scene != null {
@@ -10752,10 +11872,22 @@ class SceneEditor2D {
         framePixels.FillColor(Color.RGB(24, 28, 36));
         DrawProjectSceneBackground();
 
+        var objectStack = ObjectPreviewStack();
+        var objectSpriteDrawn: List[Integer] = [];
+        var objectFlagIndex = 0;
+        while objectFlagIndex < scene.ObjectCount() {
+            objectSpriteDrawn.add(0);
+            objectFlagIndex = objectFlagIndex + 1;
+        }
+        var objectVisualCursor = DrawObjectSpritesAtBoundary(
+            objectStack, objectSpriteDrawn, 0, 0,
+            windowWidth, windowHeight);
+
         var layer = 0;
         while layer < scene.LayerCount() {
             var layerShown = scene.LayerVisible(layer)
-                and (soloLayer < 0 or soloLayer == layer);
+                and (gameViewActive
+                     or soloLayer < 0 or soloLayer == layer);
             var layerOpacity = scene.LayerOpacity(layer);
             if layerShown and layerOpacity > 0.001 {
                 var y = firstRow;
@@ -10789,6 +11921,10 @@ class SceneEditor2D {
                     y = y + 1;
                 }
             }
+            objectVisualCursor = DrawObjectSpritesAtBoundary(
+                objectStack, objectSpriteDrawn,
+                objectVisualCursor, layer + 1,
+                windowWidth, windowHeight);
             layer = layer + 1;
         }
 
@@ -10812,12 +11948,16 @@ class SceneEditor2D {
             }
         }
 
-        DrawCameraBoundsOverlay();
-        DrawPreviewDeadzoneOverlay();
-        DrawRoutePolylines();
+        if gameViewActive == false {
+            DrawCameraBoundsOverlay();
+            DrawPreviewDeadzoneOverlay();
+            DrawRoutePolylines();
+        }
         var overlayMargin = displayCellSize * 2 + 32;
-        var objectIndex = 0;
-        while objectIndex < scene.ObjectCount() {
+        var objectStackIndex = 0;
+        if gameViewActive { objectStackIndex = objectStack.count(); }
+        while objectStackIndex < objectStack.count() {
+            var objectIndex = objectStack.get(objectStackIndex);
             var objectX = scene.ObjectX(objectIndex) * displayCellSize
                 / scene.TileWidth - viewOriginX;
             var objectY = scene.ObjectY(objectIndex) * displayCellSize
@@ -10826,7 +11966,7 @@ class SceneEditor2D {
                or objectY < 0 - overlayMargin
                or objectX > windowWidth + overlayMargin
                or objectY > windowHeight + overlayMargin {
-                objectIndex = objectIndex + 1;
+                objectStackIndex = objectStackIndex + 1;
                 continue;
             }
             var objectColor = Color.RGB(255, 190, 72);
@@ -10836,8 +11976,7 @@ class SceneEditor2D {
             if objectIndex == selectedObject {
                 objectColor = Color.RGB(170, 242, 255);
             }
-            var drewSprite = DrawObjectSpritePreview(
-                objectIndex, objectX, objectY);
+            var drewSprite = objectSpriteDrawn.get(objectIndex) != 0;
             if drewSprite == false {
                 framePixels.DrawDisc(objectX + displayCellSize / 2,
                                      objectY + displayCellSize / 2,
@@ -10886,12 +12025,13 @@ class SceneEditor2D {
                                       displayCellSize, displayCellSize,
                                       objectColor);
             }
-            objectIndex = objectIndex + 1;
+            objectStackIndex = objectStackIndex + 1;
         }
 
-        DrawTileBrushGhosts();
+        if gameViewActive == false { DrawTileBrushGhosts(); }
 
-        if selectedCellX >= 0 and selectedCellY >= 0
+        if gameViewActive == false
+           and selectedCellX >= 0 and selectedCellY >= 0
            and selectedCellX < sceneColumns
            and selectedCellY < sceneRows {
             framePixels.DrawFrame(
@@ -10901,7 +12041,7 @@ class SceneEditor2D {
                 displayCellSize + 1,
                 Color.RGB(255, 255, 255));
         }
-        if tileRegionMinX >= 0 {
+        if gameViewActive == false and tileRegionMinX >= 0 {
             framePixels.DrawFrame(
                 tileRegionMinX * displayCellSize - viewOriginX,
                 tileRegionMinY * displayCellSize - viewOriginY,
@@ -10910,7 +12050,8 @@ class SceneEditor2D {
                 Color.RGB(255, 220, 120));
         }
         // Stamp ghost: the grid-anchored footprint the next click writes.
-        if stampActive and mode == MODE_PAINT
+        if gameViewActive == false
+           and stampActive and mode == MODE_PAINT
            and stampWidth > 0 and stampHeight > 0
            and selectedCellX >= 0 and selectedCellY >= 0 {
             var ghostCellX = selectedCellX / stampWidth * stampWidth;
@@ -10923,7 +12064,8 @@ class SceneEditor2D {
                 Color.RGB(140, 235, 170));
         }
 
-        if tileRectangleActive
+        if gameViewActive == false
+           and tileRectangleActive
            and tileRectangleStartX >= 0
            and tileRectangleStartY >= 0
            and tileRectangleCurrentX >= 0
@@ -10970,7 +12112,8 @@ class SceneEditor2D {
             }
         }
 
-        if canvasMarqueeActive
+        if gameViewActive == false
+           and canvasMarqueeActive
            and canvasMarqueeStartX >= 0
            and canvasMarqueeStartY >= 0
            and canvasMarqueeCurrentX >= 0
@@ -10997,7 +12140,8 @@ class SceneEditor2D {
 
         // Guides are editor chrome: keep them legible above authored pixels
         // and transient tool previews without changing either source.
-        DrawCanvasGuides();
+        if gameViewActive == false { DrawCanvasGuides(); }
+        DrawGameOutputMatte(windowWidth, windowHeight);
         RenderCanvasRulers();
         canvasImage.SetPixels(framePixels, windowWidth, windowHeight);
         canvasImage.SetSize(windowWidth, windowHeight);
@@ -11037,18 +12181,40 @@ class SceneEditor2D {
                 + (AbsInt2D(
                     tileRectangleCurrentY - tileRectangleStartY) + 1);
         }
-        viewStatusLabel.SetText(
-            "Layer " + (activeLayer + 1) + "/" + scene.LayerCount()
-            + "  |  zoom " + zoomPercent + "%"
-            + cellStatus + marqueeStatus + rectangleStatus + suffix);
-        canvasImage.SetAccessibleDescription(
-            scene.ObjectCount() + " authored objects on a "
-            + renderedColumns + " by " + renderedRows
-            + " cell preview. Tile tools preview real atlas frames and "
-            + "support freehand Paint and Erase, captured Rectangle, Line, "
-            + "and Ellipse, connected Fill, and active-layer Pick. "
-            + "Cell rulers can toggle workspace-only alignment guides. "
-            + "In Select mode, click objects or drag blank space to box-select; "
-            + "Shift adds and Control or Command toggles.");
+        if gameViewActive {
+            if gameViewOutputFramed {
+                viewStatusLabel.SetText(
+                    "Game View  |  " + GameOutputSizeLabel()
+                    + " project output" + suffix);
+                canvasImage.SetAccessibleDescription(
+                    scene.ObjectCount() + " authored objects in the locked "
+                    + GameOutputSizeLabel()
+                    + " project gameplay frame. Exit Game View to navigate "
+                    + "or edit.");
+            } else {
+                viewStatusLabel.SetText(
+                    "Game View  |  zoom " + zoomPercent + "%" + suffix);
+                canvasImage.SetAccessibleDescription(
+                    scene.ObjectCount() + " authored objects on a "
+                    + renderedColumns + " by " + renderedRows
+                    + " cell clean gameplay preview. Pan with the middle "
+                    + "mouse button, zoom with the wheel, or exit Game View "
+                    + "to edit.");
+            }
+        } else {
+            viewStatusLabel.SetText(
+                "Layer " + (activeLayer + 1) + "/" + scene.LayerCount()
+                + "  |  zoom " + zoomPercent + "%"
+                + cellStatus + marqueeStatus + rectangleStatus + suffix);
+            canvasImage.SetAccessibleDescription(
+                scene.ObjectCount() + " authored objects on a "
+                + renderedColumns + " by " + renderedRows
+                + " cell preview. Tile tools preview real atlas frames and "
+                + "support freehand Paint and Erase, captured Rectangle, Line, "
+                + "and Ellipse, connected Fill, and active-layer Pick. "
+                + "Cell rulers can toggle workspace-only alignment guides. "
+                + "In Select mode, click objects or drag blank space to "
+                + "box-select; Shift adds and Control or Command toggles.");
+        }
     }
 }

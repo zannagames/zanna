@@ -1,12 +1,18 @@
 {
-  "version": 10,
+  "version": 13,
   "components": [
     {
       "name": "enemy-spawn",
       "label": "Enemy Spawn",
       "target": "3d-node",
+      "createNodeName": "Enemy Spawn",
       "description": "One campaign enemy placement (af.kind=spawn nodes).",
       "fields": [
+        {
+          "key": "af.kind",
+          "type": "string",
+          "default": "spawn"
+        },
         {
           "key": "spawn.archetype",
           "type": "enum",
@@ -41,8 +47,14 @@
       "name": "pickup",
       "label": "Pickup",
       "target": "3d-node",
+      "createNodeName": "Pickup",
       "description": "Health/ammo/collectible pickup marker.",
       "fields": [
+        {
+          "key": "af.kind",
+          "type": "string",
+          "default": "pickup"
+        },
         {
           "key": "pickup.kind",
           "type": "int",
@@ -59,8 +71,14 @@
       "name": "prop",
       "label": "Prop",
       "target": "3d-node",
+      "createNodeName": "Prop",
       "description": "Instanced dressing prop (crate, barrel, console...).",
       "fields": [
+        {
+          "key": "af.kind",
+          "type": "string",
+          "default": "prop"
+        },
         {
           "key": "prop.kind",
           "type": "int",
@@ -82,8 +100,14 @@
       "name": "cover",
       "label": "AI Cover Hint",
       "target": "3d-node",
+      "createNodeName": "AI Cover Hint",
       "description": "Preferred firing pocket with a facing vector.",
       "fields": [
+        {
+          "key": "af.kind",
+          "type": "string",
+          "default": "cover"
+        },
         {
           "key": "cover.faceX",
           "type": "float",
@@ -100,6 +124,7 @@
       "name": "flank",
       "label": "Flank Pocket",
       "target": "3d-node",
+      "createNodeName": "Flank Pocket",
       "description": "Authored side pocket for repositioning enemies.",
       "fields": [
         {
@@ -113,8 +138,14 @@
       "name": "route",
       "label": "Route Marker",
       "target": "3d-node",
+      "createNodeName": "Route Marker",
       "description": "Player-guidance marker (0=route 1=objective 2=exit 3=safe).",
       "fields": [
+        {
+          "key": "af.kind",
+          "type": "string",
+          "default": "routeMarker"
+        },
         {
           "key": "routeMarker.kind",
           "type": "enum",
@@ -132,8 +163,14 @@
       "name": "landmark",
       "label": "Landmark",
       "target": "3d-node",
+      "createNodeName": "Landmark",
       "description": "Readable identity anchor (0=hero 1=exit 2=objective 3=hazard).",
       "fields": [
+        {
+          "key": "af.kind",
+          "type": "string",
+          "default": "landmark"
+        },
         {
           "key": "landmark.kind",
           "type": "enum",
@@ -151,8 +188,14 @@
       "name": "beat",
       "label": "Encounter Beat",
       "target": "3d-node",
+      "createNodeName": "Encounter Beat",
       "description": "Authored flow beat (0=reveal 1=ambush 2=holdout 3=boss).",
       "fields": [
+        {
+          "key": "af.kind",
+          "type": "string",
+          "default": "beat"
+        },
         {
           "key": "beat.kind",
           "type": "enum",
@@ -175,8 +218,14 @@
       "name": "gate",
       "label": "Objective Gate",
       "target": "3d-node",
+      "createNodeName": "Objective Gate",
       "description": "Physical blocker opened by an objective index.",
       "fields": [
+        {
+          "key": "af.kind",
+          "type": "string",
+          "default": "gate"
+        },
         {
           "key": "gate.unlock",
           "type": "int",
@@ -225,6 +274,8 @@
     }
   ],
   "scenePreview3D": {
+    "outputWidth": 1600,
+    "outputHeight": 900,
     "startXProperty": "af.startX",
     "startYProperty": "af.startY",
     "startZProperty": "af.startZ",

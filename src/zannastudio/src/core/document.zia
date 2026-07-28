@@ -12,11 +12,15 @@
 //   - Untitled documents never claim an on-disk baseline.
 //   - Editor and scene workspace state belongs to its document, never to the
 //     shared widget controller that happens to display the active tab.
+//   - Temporary Game View state is tab-local and records whether a project
+//     output frame is active without entering canonical document content.
 // Ownership/Lifetime:
 //   - DocumentManager owns instances for the lifetime of their editor tabs.
 // Links: zannastudio/src/core/document_manager.zia,
 //        docs/adr/0166-exact-scenenode-world-matrix-assignment.md,
-//        docs/adr/0168-windowless-canvas3d-rendering.md
+//        docs/adr/0168-windowless-canvas3d-rendering.md,
+//        docs/adr/0207-non-destructive-scene-game-view.md,
+//        docs/adr/0208-project-authored-game-output-frames.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -74,6 +78,8 @@ class Scene2DWorkspaceState {
     expose Boolean paletteRequestedVisible;
     expose Boolean compactPaletteShown;
     expose Boolean previewActive;
+    expose Boolean gameViewActive;
+    expose Boolean gameViewOutputFramed;
     expose Boolean autotilePreviewEnabled;
     expose Boolean showGrid;
     expose Boolean showRulers;
@@ -111,6 +117,8 @@ class Scene2DWorkspaceState {
         paletteRequestedVisible = true;
         compactPaletteShown = false;
         previewActive = false;
+        gameViewActive = false;
+        gameViewOutputFramed = false;
         autotilePreviewEnabled = true;
         showGrid = true;
         showRulers = true;
@@ -140,6 +148,9 @@ class Scene3DWorkspaceState {
     expose Integer transformMode;
     expose Integer transformSpace;
     expose Boolean transformSnapEnabled;
+    expose Boolean transformSurfaceSnapEnabled;
+    expose Boolean transformSurfaceAlignEnabled;
+    expose Boolean transformVertexSnapEnabled;
     expose Boolean viewPerspective;
     expose Boolean showGrid;
     expose Boolean showMarkers;
@@ -168,6 +179,8 @@ class Scene3DWorkspaceState {
     expose Boolean inspectorRequestedVisible;
     expose Boolean compactInspectorShown;
     expose Boolean previewActive;
+    expose Boolean gameViewActive;
+    expose Boolean gameViewOutputFramed;
     expose List[String] cameraBookmarks;
     expose List[String] pickLockedPaths;
     expose List[String] undoStack;
@@ -183,6 +196,9 @@ class Scene3DWorkspaceState {
         transformMode = 0;
         transformSpace = 0;
         transformSnapEnabled = false;
+        transformSurfaceSnapEnabled = false;
+        transformSurfaceAlignEnabled = false;
+        transformVertexSnapEnabled = false;
         viewPerspective = true;
         showGrid = true;
         showMarkers = true;
@@ -211,6 +227,8 @@ class Scene3DWorkspaceState {
         inspectorRequestedVisible = true;
         compactInspectorShown = false;
         previewActive = false;
+        gameViewActive = false;
+        gameViewOutputFramed = false;
         cameraBookmarks = [];
         pickLockedPaths = [];
         undoStack = [];

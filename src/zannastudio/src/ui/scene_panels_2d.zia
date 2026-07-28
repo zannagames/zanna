@@ -12,6 +12,11 @@
 //     body: identical widgets, order, properties, and defaults.
 //   - Every widget lands on the editor's own fields; this module retains
 //     no state and is safe to call exactly once per editor instance.
+//   - Inspector rows wrap before they can overflow the narrow detail pane.
+//   - Game View is a first-class view action, separate from animation Preview
+//     and reversible Focus/layout presentation.
+//   - Compact Tools and View menus are built once with stable item handles;
+//     the editor owns state synchronization and command dispatch.
 // Ownership/Lifetime:
 //   - The editor owns every constructed widget; this module owns nothing.
 // Links: zannastudio/src/ui/scene_editor_2d.zia
@@ -37,6 +42,7 @@ module scene_panels_2d;
 bind "../services/file_utils";
 bind "inspector_rows";
 bind "property_rows";
+bind "scene_component_schema";
 bind "scene_editor_2d";
 bind "scene_pane_docking";
 bind "scene_layout_2d";
@@ -82,6 +88,34 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
         editor.eraseButton = GUI.Button.New(editor.toolbar, "Erase");
         editor.eraseButton.SetTooltip(
             "Freehand clear tiles; Escape cancels a captured stroke");
+        editor.toolMenuButton =
+            GUI.Button.New(editor.toolbar, "Tools...");
+        editor.toolMenuButton.SetAccessibleName(
+            "Open complete 2D scene tool list");
+        editor.toolMenuButton.SetTooltip(
+            "Choose shape, fill, tile-pick, and object editing tools");
+        editor.toolMenuButton.SetVisible(false);
+        editor.toolMenu = GUI.ContextMenu.New();
+        editor.toolSelectItem = editor.toolMenu.AddItem("Select");
+        editor.toolPaintItem = editor.toolMenu.AddItem("Paint");
+        editor.toolEraseItem = editor.toolMenu.AddItem("Erase");
+        editor.toolMenu.AddSeparator();
+        editor.toolRectangleItem =
+            editor.toolMenu.AddItem("Rectangle");
+        editor.toolLineItem = editor.toolMenu.AddItem("Line");
+        editor.toolEllipseItem = editor.toolMenu.AddItem("Ellipse");
+        editor.toolFillItem = editor.toolMenu.AddItem("Flood Fill");
+        editor.toolPickerItem = editor.toolMenu.AddItem("Pick Tile");
+        editor.toolObjectItem = editor.toolMenu.AddItem("Object");
+        editor.toolSelectItem.SetCheckable(true);
+        editor.toolPaintItem.SetCheckable(true);
+        editor.toolEraseItem.SetCheckable(true);
+        editor.toolRectangleItem.SetCheckable(true);
+        editor.toolLineItem.SetCheckable(true);
+        editor.toolEllipseItem.SetCheckable(true);
+        editor.toolFillItem.SetCheckable(true);
+        editor.toolPickerItem.SetCheckable(true);
+        editor.toolObjectItem.SetCheckable(true);
         editor.rectangleButton = GUI.Button.New(editor.toolbar, "Rectangle");
         editor.rectangleButton.SetTooltip(
             "Preview and drag an inclusive atlas-tile rectangle; tile 0 clears");
@@ -145,6 +179,44 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
         editor.rulersButton.SetTooltip(
             "Toggle scroll-aware canvas rulers; click to toggle a guide "
             + "or drag one to move it");
+        editor.viewMenuButton =
+            GUI.Button.New(editor.viewToolbar, "View...");
+        editor.viewMenuButton.SetAccessibleName(
+            "Open 2D canvas view and layout commands");
+        editor.viewMenuButton.SetTooltip(
+            "Framing, overlays, pane visibility, Focus, and Scene Layout");
+        editor.viewMenuButton.SetVisible(false);
+        editor.viewMenu = GUI.ContextMenu.New();
+        editor.viewFitItem =
+            editor.viewMenu.AddItemWithShortcut("Fit Scene", "F");
+        editor.viewActualSizeItem =
+            editor.viewMenu.AddItem("Actual Size (1:1)");
+        editor.viewMenu.AddSeparator();
+        editor.viewGridItem = editor.viewMenu.AddItem("Grid");
+        editor.viewGridItem.SetCheckable(true);
+        editor.viewRulersItem = editor.viewMenu.AddItem("Rulers");
+        editor.viewRulersItem.SetCheckable(true);
+        editor.viewGameItem = editor.viewMenu.AddItem("Game View");
+        editor.viewGameItem.SetCheckable(true);
+        editor.viewMenu.AddSeparator();
+        editor.viewHierarchyItem =
+            editor.viewMenu.AddItem("Open Objects");
+        editor.viewInspectorItem =
+            editor.viewMenu.AddItem("Toggle Inspector");
+        editor.viewPaletteItem =
+            editor.viewMenu.AddItem("Toggle Palette");
+        editor.viewFocusItem =
+            editor.viewMenu.AddItemWithShortcut("Focus Canvas", "Shift+Space");
+        editor.viewFocusItem.SetCheckable(true);
+        editor.viewWorkspaceItem =
+            editor.viewMenu.AddItem("Scene Layout");
+        editor.viewWorkspaceItem.SetCheckable(true);
+        editor.gameViewButton =
+            GUI.Button.New(editor.viewToolbar, "Game View");
+        editor.gameViewButton.SetStyle(2);
+        editor.gameViewButton.SetTooltip(
+            "Show only authored gameplay pixels; keep pan and zoom, and "
+            + "restore every editor overlay and tool on exit");
         editor.hierarchyButton =
             GUI.Button.New(editor.viewToolbar, "Objects");
         editor.hierarchyButton.SetStyle(2);
@@ -601,6 +673,41 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
         editor.objectTintInput.SetTooltip(
             "RGBA multiply tint in hex; FFFFFFFF means no tint. "
             + "Enter commits one undoable edit.");
+        editor.objectDrawStackGroup =
+            GUI.GroupBox.New(editor.objectTabHost, "Preview draw stack");
+        editor.objectDrawStackSummary = GUI.Label.New(
+            editor.objectDrawStackGroup,
+            "Select one object to inspect its game-like preview order.");
+        editor.objectDrawStackSummary.SetWordWrap(true);
+        editor.objectAfterLayerDropdown =
+            GUI.Dropdown.New(editor.objectDrawStackGroup);
+        editor.objectAfterLayerDropdown.SetAccessibleName(
+            "Tile layer after which the object preview draws");
+        editor.objectAfterLayerDropdown.SetTooltip(
+            "Place this object's preview before all tiles or after one "
+            + "authored tile layer");
+        var objectDrawStackActions = inspector_rows.NewWrapRow();
+        editor.objectDrawStackGroup.AddChild(objectDrawStackActions);
+        GUI.Label.New(objectDrawStackActions, "Priority");
+        editor.objectDrawOrderSpinner =
+            GUI.Spinner.New(objectDrawStackActions);
+        editor.objectDrawOrderSpinner.SetRange(
+            scene_component_schema.MIN_PREVIEW_DRAW_ORDER,
+            scene_component_schema.MAX_PREVIEW_DRAW_ORDER);
+        editor.objectDrawOrderSpinner.SetStep(1.0);
+        editor.objectDrawOrderSpinner.SetDecimals(0);
+        editor.objectDrawOrderSpinner.SetTooltip(
+            "Smaller previews paint first; document order breaks ties");
+        editor.objectDrawStackApplyButton =
+            GUI.Button.New(objectDrawStackActions, "Apply");
+        editor.objectDrawStackApplyButton.SetTooltip(
+            "Store editor.afterLayer and editor.drawOrder together "
+            + "as one undoable object edit");
+        editor.objectDrawStackResetButton =
+            GUI.Button.New(objectDrawStackActions, "Use Project");
+        editor.objectDrawStackResetButton.SetTooltip(
+            "Remove per-object preview-stack overrides and inherit the "
+            + "project rule");
         editor.objectArrangeRow = GUI.HBox.New();
         editor.objectArrangeRow.SetSpacing(4.0);
         editor.objectTabHost.AddChild(editor.objectArrangeRow);

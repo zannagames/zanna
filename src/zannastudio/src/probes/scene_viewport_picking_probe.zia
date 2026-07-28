@@ -73,6 +73,21 @@ func ClickWidget(shell: app_shell.AppShell,
     harness.DispatchPending();
 }
 
+/// @brief Click one logical row center in a menu anchored below @p button.
+func ClickCommandMenuOffset(shell: app_shell.AppShell,
+                            harness: GUI.TestHarness,
+                            button: GUI.Button,
+                            offsetY: Number) {
+    var x = HarnessCoordinate(shell, button.GetScreenX() + 20.0);
+    var y = HarnessCoordinate(
+        shell,
+        button.GetScreenY() + button.GetScreenHeight() + offsetY);
+    harness.SendMouse("move", x, y, 0);
+    harness.SendMouse("down", x, y, 0);
+    harness.SendMouse("up", x, y, 0);
+    harness.DispatchPending();
+}
+
 func ClickViewport(shell: app_shell.AppShell,
                    harness: GUI.TestHarness,
                    editor: scene_editor_3d.SceneEditor3D,
@@ -125,14 +140,32 @@ func main() {
         return;
     }
 
-    ClickWidget(shell, harness, editor.addBoxButton);
+    if editor.createMenuButton.IsVisible() == false
+       or editor.addBoxButton.IsVisible() {
+        Fail(shell, harness, "compact creation overflow visibility");
+        return;
+    }
+    ClickWidget(shell, harness, editor.createMenuButton);
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.createMenu.IsVisible() == false {
+        Fail(shell, harness, "creation menu did not open");
+        return;
+    }
+    // Two 28px rows, one 9px separator, then the Box row.
+    ClickCommandMenuOffset(
+        shell, harness, editor.createMenuButton, 83.0);
     if editor.Pump(sceneDoc) == false {
         Fail(shell, harness, "far box production action");
         return;
     }
     shell.Render();
     shell.Poll();
-    ClickWidget(shell, harness, editor.addBoxButton);
+    ClickWidget(shell, harness, editor.createMenuButton);
+    editor.Pump(sceneDoc);
+    shell.Render();
+    ClickCommandMenuOffset(
+        shell, harness, editor.createMenuButton, 83.0);
     if editor.Pump(sceneDoc) == false {
         Fail(shell, harness, "near box production action");
         return;
@@ -603,10 +636,16 @@ func main() {
         return;
     }
 
-    // Toolbar primitives spawn at the view target; Cylinder is offered.
+    // The compact creation menu preserves every primitive and routes it
+    // through the same view-target spawn transaction.
     editor.viewTargetX = 2.5;
     var beforeCount = editor.flatNodes.count();
-    ClickWidget(shell, harness, editor.addCylinderButton);
+    ClickWidget(shell, harness, editor.createMenuButton);
+    editor.Pump(sceneDoc);
+    shell.Render();
+    // Cylinder follows Box, Sphere, and Plane in the same menu.
+    ClickCommandMenuOffset(
+        shell, harness, editor.createMenuButton, 167.0);
     if editor.Pump(sceneDoc) == false
        or editor.flatNodes.count() != beforeCount + 1 {
         Fail(shell, harness,

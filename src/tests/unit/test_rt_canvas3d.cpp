@@ -659,6 +659,27 @@ static void test_mesh_add_vertex_triangle() {
     PASS();
 }
 
+static void test_mesh_vertex_position_readback() {
+    TEST("Mesh3D.VertexPosition preserves precision and rejects invalid indices");
+    void *m = rt_mesh3d_new();
+    const double precise_x = 16777216.125;
+    rt_mesh3d_add_vertex(m, precise_x, -3.25, 7.5, 0.0, 1.0, 0.0, 0.0, 0.0);
+
+    void *position = rt_mesh3d_get_vertex_position(m, 0);
+    EXPECT_TRUE(position != nullptr, "live vertex returns a position");
+    EXPECT_NEAR(rt_vec3_x(position), precise_x, 0.000001);
+    EXPECT_NEAR(rt_vec3_y(position), -3.25, 0.000001);
+    EXPECT_NEAR(rt_vec3_z(position), 7.5, 0.000001);
+
+    EXPECT_TRUE(rt_mesh3d_get_vertex_position(m, -1) == nullptr,
+                "negative vertex index returns null");
+    EXPECT_TRUE(rt_mesh3d_get_vertex_position(m, 1) == nullptr,
+                "past-end vertex index returns null");
+    EXPECT_TRUE(rt_mesh3d_get_vertex_position(nullptr, 0) == nullptr,
+                "invalid receiver returns null");
+    PASS();
+}
+
 static void test_mesh_reserve_presizes_without_dirtying_geometry() {
     TEST("Mesh3D.Reserve presizes without dirtying geometry");
     rt_mesh3d *m = (rt_mesh3d *)rt_mesh3d_new();
@@ -4925,8 +4946,7 @@ static void test_light_spot_cone_authoring() {
     TEST("Light3D spot cone — exposes sanitized degrees and paired mutation");
     void *position = rt_vec3_new(0.0, 5.0, 0.0);
     void *direction = rt_vec3_new(0.0, -1.0, 0.0);
-    void *spot =
-        rt_light3d_new_spot(position, direction, 1.0, 0.8, 0.6, 0.1, 20.0, 35.0);
+    void *spot = rt_light3d_new_spot(position, direction, 1.0, 0.8, 0.6, 0.1, 20.0, 35.0);
     void *point = rt_light3d_new_point(position, 1.0, 1.0, 1.0, 0.1);
     assert(spot && point);
 
@@ -7146,11 +7166,11 @@ static void test_canvas_offscreen_constructor_contract() {
     EXPECT_TRUE(shot->data[0] == 0x3F7FBFFFu,
                 "windowless clear writes deterministic RGBA target pixels");
 
-    EXPECT_TRUE(expect_trap_contains(
-                    [&] { rt_canvas3d_reset_render_target(canvas); }, "requires a render target"),
+    EXPECT_TRUE(expect_trap_contains([&] { rt_canvas3d_reset_render_target(canvas); },
+                                     "requires a render target"),
                 "ResetRenderTarget rejects removal of the only offscreen output");
-    EXPECT_TRUE(expect_trap_contains(
-                    [&] { rt_canvas3d_resize(canvas, 48, 32); }, "replace its render target"),
+    EXPECT_TRUE(expect_trap_contains([&] { rt_canvas3d_resize(canvas, 48, 32); },
+                                     "replace its render target"),
                 "Resize directs offscreen callers to replace the explicit target");
     EXPECT_EQ(rt_canvas3d_get_width(canvas), 96);
     EXPECT_EQ(rt_canvas3d_get_height(canvas), 64);
@@ -7195,12 +7215,12 @@ static void test_canvas_offscreen_rejects_invalid_targets() {
     TEST("Canvas3D.NewOffscreen rejects null and wrong-class targets");
     void *wrong = rt_mesh3d_new_box(1.0, 1.0, 1.0);
 
-    EXPECT_TRUE(expect_trap_contains(
-                    [] { (void)rt_canvas3d_new_offscreen(nullptr); }, "RenderTarget3D"),
-                "NewOffscreen traps on a null target");
-    EXPECT_TRUE(expect_trap_contains(
-                    [&] { (void)rt_canvas3d_new_offscreen(wrong); }, "RenderTarget3D"),
-                "NewOffscreen traps on a wrong-class target");
+    EXPECT_TRUE(
+        expect_trap_contains([] { (void)rt_canvas3d_new_offscreen(nullptr); }, "RenderTarget3D"),
+        "NewOffscreen traps on a null target");
+    EXPECT_TRUE(
+        expect_trap_contains([&] { (void)rt_canvas3d_new_offscreen(wrong); }, "RenderTarget3D"),
+        "NewOffscreen traps on a wrong-class target");
     EXPECT_TRUE(rt_canvas3d_get_is_offscreen(nullptr) == 0,
                 "IsOffscreen is false for a null handle");
     PASS();
@@ -7253,8 +7273,7 @@ static void test_canvas_offscreen_accelerated_constructor_contract() {
         const int r = (int)((px >> 24) & 0xFFu);
         const int g = (int)((px >> 16) & 0xFFu);
         const int b = (int)((px >> 8) & 0xFFu);
-        EXPECT_TRUE(std::abs(r - 0x3F) <= 2 && std::abs(g - 0x7F) <= 2 &&
-                        std::abs(b - 0xBF) <= 2,
+        EXPECT_TRUE(std::abs(r - 0x3F) <= 2 && std::abs(g - 0x7F) <= 2 && std::abs(b - 0xBF) <= 2,
                     "headless GPU clear reads back the requested color");
     }
     PASS();
@@ -10736,6 +10755,7 @@ int main() {
     /* Mesh3D — basic */
     test_mesh_empty();
     test_mesh_add_vertex_triangle();
+    test_mesh_vertex_position_readback();
     test_mesh_reserve_presizes_without_dirtying_geometry();
     test_mesh_mutations_restore_residency_and_counts_are_clamped();
     test_mesh_recalc_normals_reuses_large_accumulator();

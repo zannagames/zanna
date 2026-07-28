@@ -1,0 +1,365 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_command_bar_probe.zia
+// Purpose: Verify compact 2D/3D scene command bars and overflow dispatch.
+// Key invariants:
+//   - Medium lanes keep primary commands direct and move complete secondary
+//     sets into bounded, stateful overflow menus.
+//   - Menu item clicks route through the same editor commands as wide buttons.
+//   - Wide lanes restore the familiar direct controls without losing state.
+// Ownership/Lifetime:
+//   - The probe owns one AppShell, both editors, documents, and input harness.
+// Links: zannastudio/src/ui/scene_editor_2d.zia,
+//        zannastudio/src/ui/scene_editor_3d.zia,
+//        zannastudio/src/ui/scene_panels_2d.zia,
+//        zannastudio/src/ui/scene_panels_3d.zia,
+//        zannastudio/src/ui/scene_terrain_3d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_command_bar_probe;
+
+// ============================================================================
+// MODULE: scene_command_bar_probe
+// PURPOSE: Pin responsive command reachability and real popup interaction.
+//
+// WHERE-THIS-FITS: Broad editor probes own serialization and gesture depth;
+//          this focused display probe owns command-bar layout and dispatch.
+//
+// TEACHING-NOTE: Popup rows are clicked through the real input harness. The
+//          offsets follow ContextMenu's public visual contract: 28px command
+//          rows, 9px separators, and 4px outer padding.
+// ============================================================================
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_2d";
+bind "../ui/scene_editor_3d";
+bind "../ui/scene_panels_2d";
+bind "../ui/scene_panels_3d";
+bind "../ui/scene_terrain_3d";
+
+bind Convert = Zanna.Core.Convert;
+bind GUI = Zanna.GUI;
+bind Terminal = Zanna.Terminal;
+
+func HarnessCoordinate(shell: app_shell.AppShell,
+                       logical: Number) -> Integer {
+    var scale = shell.app.GetEffectiveScale();
+    if scale <= 0.0 { scale = 1.0; }
+    return Convert.NumToInt(logical * scale);
+}
+
+func ClickWidget(shell: app_shell.AppShell,
+                 harness: GUI.TestHarness,
+                 widget: GUI.Widget) {
+    var x = HarnessCoordinate(
+        shell, widget.GetScreenX() + widget.GetScreenWidth() / 2.0);
+    var y = HarnessCoordinate(
+        shell, widget.GetScreenY() + widget.GetScreenHeight() / 2.0);
+    harness.SendMouse("move", x, y, 0);
+    harness.SendMouse("down", x, y, 0);
+    harness.SendMouse("up", x, y, 0);
+    harness.DispatchPending();
+}
+
+func ClickMenuOffset(shell: app_shell.AppShell,
+                     harness: GUI.TestHarness,
+                     button: GUI.Button,
+                     offsetY: Number) {
+    var x = HarnessCoordinate(shell, button.GetScreenX() + 20.0);
+    var y = HarnessCoordinate(
+        shell,
+        button.GetScreenY() + button.GetScreenHeight() + offsetY);
+    harness.SendMouse("move", x, y, 0);
+    harness.SendMouse("down", x, y, 0);
+    harness.SendMouse("up", x, y, 0);
+    harness.DispatchPending();
+}
+
+func Fail(shell: app_shell.AppShell,
+          harness: GUI.TestHarness,
+          reason: String) {
+    if harness != null { harness.UnbindApp(); }
+    if shell != null { shell.Destroy(); }
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func Pump2D(shell: app_shell.AppShell,
+            editor: scene_editor_2d.SceneEditor2D,
+            sceneDoc: document.Document) {
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+}
+
+func Pump3D(shell: app_shell.AppShell,
+            editor: scene_editor_3d.SceneEditor3D,
+            sceneDoc: document.Document) {
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+}
+
+func main() {
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Scene Command Bar Probe", 1120, 720);
+    var documents = new document_manager.DocumentManager();
+
+    var editor2d = new scene_editor_2d.SceneEditor2D();
+    scene_panels_2d.Build(
+        editor2d, shell.workbench.scene2DHost, shell.app);
+    var doc2d = documents.NewScene2DDocument();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_2D);
+    editor2d.Activate(doc2d);
+    Pump2D(shell, editor2d, doc2d);
+    Pump2D(shell, editor2d, doc2d);
+
+    var harness = GUI.TestHarness.New();
+    if harness.BindApp(shell.app) == false {
+        Fail(shell, harness, "input harness binding");
+        return;
+    }
+
+    if scene_editor_2d.UsesSceneCommandMenus(
+           editor2d.root.GetLogicalWidth()) == false
+       or editor2d.toolMenuButton.IsVisible() == false
+       or editor2d.viewMenuButton.IsVisible() == false
+       or editor2d.rectangleButton.IsVisible()
+       or editor2d.gridButton.IsVisible()
+       or editor2d.canvasScroll.GetScreenHeight() < 220.0
+       or editor2d.toolbar.GetScreenHeight() > 76.0
+       or editor2d.viewToolbar.GetScreenHeight() > 108.0 {
+        Fail(shell, harness, "2D medium command-bar geometry");
+        return;
+    }
+
+    ClickWidget(shell, harness, editor2d.toolMenuButton);
+    editor2d.Pump(doc2d);
+    shell.Render();
+    if editor2d.toolMenu.IsVisible() == false
+       or editor2d.toolSelectItem.IsChecked() == false {
+        Fail(shell, harness, "2D Tools menu state");
+        return;
+    }
+    // Select/Paint/Erase, separator, then Rectangle.
+    ClickMenuOffset(shell, harness, editor2d.toolMenuButton, 111.0);
+    editor2d.Pump(doc2d);
+    if editor2d.mode != scene_editor_2d.MODE_RECTANGLE {
+        Fail(shell, harness, "2D Rectangle menu dispatch");
+        return;
+    }
+    ClickWidget(shell, harness, editor2d.toolMenuButton);
+    editor2d.Pump(doc2d);
+    shell.Render();
+    if editor2d.toolRectangleItem.IsChecked() == false
+       or editor2d.toolSelectItem.IsChecked() {
+        Fail(shell, harness, "2D active tool check state");
+        return;
+    }
+    editor2d.toolMenu.Hide();
+
+    ClickWidget(shell, harness, editor2d.viewMenuButton);
+    editor2d.Pump(doc2d);
+    shell.Render();
+    if editor2d.viewMenu.IsVisible() == false
+       or editor2d.viewGridItem.IsChecked() == false
+       or editor2d.viewRulersItem.IsChecked() == false
+       or editor2d.viewWorkspaceItem.IsCheckable() == false {
+        Fail(shell, harness, "2D View menu state");
+        return;
+    }
+    // Fit, Actual Size, separator, then Grid.
+    ClickMenuOffset(shell, harness, editor2d.viewMenuButton, 83.0);
+    editor2d.Pump(doc2d);
+    if editor2d.showGrid {
+        Fail(shell, harness, "2D Grid menu dispatch");
+        return;
+    }
+    ClickWidget(shell, harness, editor2d.viewMenuButton);
+    editor2d.Pump(doc2d);
+    shell.Render();
+    if editor2d.viewGridItem.IsChecked() {
+        Fail(shell, harness, "2D Grid menu check did not refresh");
+        return;
+    }
+    editor2d.viewMenu.Hide();
+
+    shell.SetSceneWorkspaceMode(true);
+    shell.app.SetWindowSize(1500, 900);
+    Pump2D(shell, editor2d, doc2d);
+    Pump2D(shell, editor2d, doc2d);
+    if scene_editor_2d.UsesSceneCommandMenus(
+           editor2d.root.GetLogicalWidth())
+       or editor2d.toolMenuButton.IsVisible()
+       or editor2d.viewMenuButton.IsVisible()
+       or editor2d.rectangleButton.IsVisible() == false
+       or editor2d.gridButton.IsVisible() == false {
+        Fail(shell, harness, "2D wide direct controls did not restore");
+        return;
+    }
+
+    harness.UnbindApp();
+    shell.Destroy();
+
+    shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio 3D Command Bar Probe", 1120, 720);
+    var editor3d = new scene_editor_3d.SceneEditor3D();
+    scene_panels_3d.Build(
+        editor3d, shell.workbench.scene3DHost, shell.app);
+    var doc3d = documents.NewScene3DDocument();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_3D);
+    editor3d.Activate(doc3d);
+    Pump3D(shell, editor3d, doc3d);
+    Pump3D(shell, editor3d, doc3d);
+    harness = GUI.TestHarness.New();
+    if harness.BindApp(shell.app) == false {
+        Fail(shell, harness, "3D input harness binding");
+        return;
+    }
+    if editor3d.AddPrimitiveFromMenu(
+           scene_editor_3d.PRIMITIVE_BOX, false) == false {
+        Fail(shell, harness, "3D placement fixture");
+        return;
+    }
+    Pump3D(shell, editor3d, doc3d);
+
+    if scene_editor_3d.UsesSceneCommandMenus(
+           editor3d.root.GetLogicalWidth()) == false
+       or editor3d.createMenuButton.IsVisible() == false
+       or editor3d.placementMenuButton.IsVisible() == false
+       or editor3d.viewMenuButton.IsVisible() == false
+       or editor3d.addTerrainButton.IsVisible()
+       or editor3d.vertexSnapCheck.IsVisible()
+       or editor3d.frameSelectedButton.IsVisible()
+       or editor3d.viewportScroll.GetScreenHeight() < 220.0
+       or editor3d.toolbar.GetScreenHeight() > 76.0
+       or editor3d.viewToolbar.GetScreenHeight() > 120.0 {
+        Fail(shell, harness, "3D medium command-bar geometry");
+        return;
+    }
+
+    ClickWidget(shell, harness, editor3d.createMenuButton);
+    editor3d.Pump(doc3d);
+    shell.Render();
+    if editor3d.createMenu.IsVisible() == false
+       or editor3d.createTerrainItem.IsEnabled() == false {
+        Fail(shell, harness, "3D Create Terrain menu state");
+        return;
+    }
+    // Empty, Child, separator, Box, Sphere, Plane, Cylinder, then Terrain.
+    ClickMenuOffset(
+        shell, harness, editor3d.createMenuButton, 195.0);
+    editor3d.Pump(doc3d);
+    if editor3d.flatNodes.count() != 2
+       or editor3d.selectedIndex < 0
+       or scene_terrain_3d.IsTerrainNode(
+              editor3d.flatNodes.get(editor3d.selectedIndex)) == false
+       or editor3d.IsTerrainSculptEnabled() == false {
+        Fail(shell, harness, "3D Create Terrain menu dispatch");
+        return;
+    }
+
+    ClickWidget(shell, harness, editor3d.placementMenuButton);
+    var placementButtonClicked =
+        editor3d.placementMenuButton.WasClicked();
+    editor3d.Pump(doc3d);
+    shell.Render();
+    if editor3d.placementMenu.IsVisible() == false
+       or editor3d.placementVertexItem.IsChecked() {
+        Fail(shell, harness,
+             "3D Placement menu state visible="
+             + editor3d.placementMenu.IsVisible()
+             + " button-enabled="
+             + editor3d.placementMenuButton.IsEnabled()
+             + " clicked=" + placementButtonClicked
+             + " bounds=" + editor3d.placementMenuButton.GetScreenX()
+             + "," + editor3d.placementMenuButton.GetScreenY()
+             + " " + editor3d.placementMenuButton.GetScreenWidth()
+             + "x" + editor3d.placementMenuButton.GetScreenHeight()
+             + " selected=" + editor3d.selectedIndices.count()
+             + " vertex=" + editor3d.vertexSnapEnabled + "/"
+             + editor3d.placementVertexItem.IsChecked());
+        return;
+    }
+    // Drop, separator, Surface, Align, then Vertex.
+    ClickMenuOffset(
+        shell, harness, editor3d.placementMenuButton, 111.0);
+    editor3d.Pump(doc3d);
+    if editor3d.vertexSnapEnabled == false {
+        Fail(shell, harness, "3D Vertex Move menu dispatch");
+        return;
+    }
+    ClickWidget(shell, harness, editor3d.placementMenuButton);
+    editor3d.Pump(doc3d);
+    shell.Render();
+    if editor3d.placementVertexItem.IsChecked() == false {
+        Fail(shell, harness, "3D Vertex Move check did not refresh");
+        return;
+    }
+    editor3d.placementMenu.Hide();
+
+    ClickWidget(shell, harness, editor3d.viewMenuButton);
+    editor3d.Pump(doc3d);
+    shell.Render();
+    if editor3d.viewMenu.IsVisible() == false
+       or editor3d.viewProjectionItem.IsChecked() == false
+       or editor3d.viewFocusItem.IsCheckable() == false
+       or editor3d.viewWorkspaceItem.IsCheckable() == false {
+        Fail(shell, harness, "3D View menu state");
+        return;
+    }
+    // Camera Navigation submenu, Frame Selected, Frame All, then Projection.
+    ClickMenuOffset(shell, harness, editor3d.viewMenuButton, 102.0);
+    editor3d.Pump(doc3d);
+    if editor3d.viewPerspective {
+        Fail(shell, harness, "3D Projection menu dispatch");
+        return;
+    }
+    ClickWidget(shell, harness, editor3d.viewMenuButton);
+    editor3d.Pump(doc3d);
+    shell.Render();
+    if editor3d.viewProjectionItem.IsChecked() {
+        Fail(shell, harness, "3D Projection check did not refresh");
+        return;
+    }
+    editor3d.viewMenu.Hide();
+
+    shell.app.SetMinimumSize(1, 1);
+    shell.app.SetWindowSize(560, 420);
+    Pump3D(shell, editor3d, doc3d);
+    Pump3D(shell, editor3d, doc3d);
+    if editor3d.viewMenuButton.IsVisible() == false
+       or editor3d.viewportScroll.GetScreenHeight() < 100.0 {
+        Fail(shell, harness, "3D compact View access or viewport height");
+        return;
+    }
+
+    shell.SetSceneWorkspaceMode(true);
+    shell.app.SetWindowSize(1500, 900);
+    Pump3D(shell, editor3d, doc3d);
+    Pump3D(shell, editor3d, doc3d);
+    if scene_editor_3d.UsesSceneCommandMenus(
+           editor3d.root.GetLogicalWidth())
+       or editor3d.createMenuButton.IsVisible()
+       or editor3d.placementMenuButton.IsVisible()
+       or editor3d.viewMenuButton.IsVisible()
+       or editor3d.addBoxButton.IsVisible() == false
+       or editor3d.addTerrainButton.IsVisible() == false
+       or editor3d.vertexSnapCheck.IsVisible() == false
+       or editor3d.frameSelectedButton.IsVisible() == false {
+        Fail(shell, harness, "3D wide direct controls did not restore");
+        return;
+    }
+
+    harness.UnbindApp();
+    shell.Destroy();
+    Terminal.Say("RESULT: ok");
+}

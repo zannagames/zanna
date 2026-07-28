@@ -11,9 +11,12 @@
 //   - Ashfall mission 01 opens at the authored player eye and heading.
 //   - The retained render camera, projection, and project profile agree.
 //   - Runtime-generated terrain appears through a read-only environment prefab.
+//   - Project recipes can create runtime-discriminated gameplay nodes directly.
 //   - The real project's portable post-FX chain is retained on the viewport.
 //   - Finalized pixels retain Ashfall's pale high-key visual envelope.
 //   - Applying Gameplay View is read-only and survives prior navigation.
+//   - Game View removes navigator, gizmo, selection, and editor-light chrome.
+//   - Game View renders the exact 1600x900 project output inside neutral matte.
 //   - The actual shaded viewport remains capturable for visual comparison.
 // Ownership/Lifetime:
 //   - The probe owns one AppShell and ProjectManager until process exit.
@@ -22,7 +25,10 @@
 //        examples/games/ashfall-scenes/scene-components.json,
 //        examples/games/ashfall-scenes/player/camera_rig.zia,
 //        docs/adr/0203-project-owned-3d-scene-environment-previews.md,
-//        docs/adr/0204-project-owned-3d-post-processing-previews.md
+//        docs/adr/0204-project-owned-3d-post-processing-previews.md,
+//        docs/adr/0207-non-destructive-scene-game-view.md,
+//        docs/adr/0208-project-authored-game-output-frames.md,
+//        docs/adr/0209-project-component-creation-recipes.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -32,6 +38,7 @@ bind "../core/document";
 bind "../core/project_manager";
 bind "../services/file_utils";
 bind "../ui/app_shell";
+bind "../ui/scene_component_schema";
 bind "../ui/scene_editor_3d";
 bind "../ui/scene_panels_3d";
 
@@ -70,12 +77,21 @@ func luminance(pixel: Integer) -> Integer {
 func sceneMeanLuma(pixels: Pixels,
                    width: Integer,
                    height: Integer) -> Number {
+    return sceneMeanLumaRegion(pixels, 0, 0, width, height);
+}
+
+/// @brief Sample one bounded content frame while excluding surrounding matte.
+func sceneMeanLumaRegion(pixels: Pixels,
+                         originX: Integer,
+                         originY: Integer,
+                         width: Integer,
+                         height: Integer) -> Number {
     var samples = 0;
     var total = 0;
-    var y = height / 8;
-    while y < height * 7 / 8 {
-        var x = width / 8;
-        while x < width * 7 / 8 {
+    var y = originY + height / 8;
+    while y < originY + height * 7 / 8 {
+        var x = originX + width / 8;
+        while x < originX + width * 7 / 8 {
             total = total + luminance(Pixels.Get(pixels, x, y));
             samples = samples + 1;
             x = x + 6;
@@ -168,9 +184,24 @@ func main() {
             previewIndex = previewIndex + 1;
         }
     }
+    var enemyRecipe:
+        scene_component_schema.SceneComponentDefinition = null;
+    if editor.componentSchema != null {
+        enemyRecipe = editor.componentSchema.Find(
+            "enemy-spawn", scene_component_schema.TARGET_3D_NODE);
+    }
     if editor.componentSchema == null
-       or editor.componentSchema.version != 10
+       or editor.componentSchema.version != 13
+       or enemyRecipe == null
+       or enemyRecipe.createNodeName != "Enemy Spawn"
+       or enemyRecipe.FieldNamed("af.kind") == null
+       or enemyRecipe.FieldNamed("af.kind").defaultText != "spawn"
+       or enemyRecipe.CanCreateFor(
+              scene_component_schema.TARGET_3D_NODE) == false
        or editor.componentSchema.scenePreview3D == null
+       or editor.componentSchema.scenePreview3D.HasOutputSize() == false
+       or editor.componentSchema.scenePreview3D.outputWidth != 1600
+       or editor.componentSchema.scenePreview3D.outputHeight != 900
        or editor.componentSchema.scenePreview3D
               .EnvironmentPrefabForVariant(1)
           != "assets/editor-previews/environment-terrain-01.scene3d"
@@ -183,6 +214,131 @@ func main() {
              + "scene environment preview");
         return;
     }
+
+    // Create one real Ashfall spawn at the viewport target. The discriminator
+    // and every gameplay default must exist before the node enters canonical
+    // history, and its project prefab preview must appear immediately.
+    editor.SelectSceneNodes([], -1);
+    editor.SetInspectorSceneTab(false);
+    editor.componentPalette.SelectComponent("enemy-spawn");
+    pump(editor, sceneDoc, shell);
+    editor.viewTargetX = 7.5;
+    editor.viewTargetY = 2.25;
+    editor.viewTargetZ = -11.0;
+    var recipeBaselineRevision = editor.GetRevision();
+    var recipeBaselineUndo = editor.undoStack.count();
+    var recipeBaselinePreviewCount =
+        editor.projectPreviewInstanceCount;
+    if editor.componentPalette.group.IsVisible() == false
+       or editor.componentPalette.createButton.IsEnabled() == false
+       or editor.componentPalette.applyButton.IsEnabled() {
+        fail(shell, project,
+             "the selection-free Ashfall creation action was not truthful");
+        return;
+    }
+    var createdSpawn = editor.CreateNodeFromComponent(enemyRecipe);
+    var createdContent = sceneDoc.content;
+    var createdNode = editor.flatNodes.get(createdSpawn);
+    var createdName = "<null>";
+    var createdPosition = "<null>";
+    var createdKind = "<null>";
+    var createdArchetype = "<null>";
+    var createdWave = -1;
+    var createdRouteX = 0.0;
+    var createdRouteZ = 0.0;
+    if createdNode != null {
+        createdName = createdNode.Name;
+        createdPosition =
+            createdNode.Position.X + ","
+            + createdNode.Position.Y + ","
+            + createdNode.Position.Z;
+        createdKind = createdNode.MetadataGetString("af.kind", "");
+        createdArchetype =
+            createdNode.MetadataGetString("spawn.archetype", "");
+        createdWave = createdNode.MetadataGetInt("spawn.wave", -1);
+        createdRouteX =
+            createdNode.MetadataGetFloat("spawn.routeX", 0.0);
+        createdRouteZ =
+            createdNode.MetadataGetFloat("spawn.routeZ", 0.0);
+    }
+    if createdSpawn != 134
+       or editor.flatNodes.count() != 135
+       or createdNode == null
+       or createdNode.Name != "Enemy Spawn"
+       or near(createdNode.Position.X, 7.5) == false
+       or near(createdNode.Position.Y, 2.25) == false
+       or near(createdNode.Position.Z, -11.0) == false
+       or createdNode.MetadataGetString("af.kind", "") != "spawn"
+       or createdNode.MetadataGetString(
+              "spawn.archetype", "") != "0"
+       or createdNode.MetadataGetInt("spawn.wave", -1) != 0
+       or near(createdNode.MetadataGetFloat(
+                 "spawn.routeX", 0.0), 99999.0) == false
+       or near(createdNode.MetadataGetFloat(
+                 "spawn.routeZ", 0.0), 99999.0) == false
+       or editor.selectedIndex != createdSpawn
+       or editor.selectedIndices.count() != 1
+       or editor.selectedIndices.get(0) != createdSpawn
+       or editor.GetRevision() != recipeBaselineRevision + 1
+       or editor.undoStack.count() != recipeBaselineUndo + 1
+       or editor.redoStack.count() != 0
+       or createdContent == baseline
+       or editor.projectPreviewInstanceCount
+          != recipeBaselinePreviewCount + 1
+       or editor.projectPreviewMissingCount != 0 {
+        fail(shell, project,
+             "direct Ashfall node creation was not one exact "
+             + "gameplay-ready preview transaction"
+             + " index=" + createdSpawn
+             + " nodes=" + editor.flatNodes.count()
+             + " name=" + createdName
+             + " position=" + createdPosition
+             + " metadata=" + createdKind + "/"
+             + createdArchetype + "/" + createdWave + "/"
+             + createdRouteX + "/" + createdRouteZ
+             + " selection=" + editor.selectedIndex + "/"
+             + editor.selectedIndices.count()
+             + " revision=" + editor.GetRevision() + "/"
+             + (recipeBaselineRevision + 1)
+             + " history=" + editor.undoStack.count() + "/"
+             + (recipeBaselineUndo + 1)
+             + " redo=" + editor.redoStack.count()
+             + " bytesChanged=" + (createdContent != baseline)
+             + " previews=" + editor.projectPreviewInstanceCount
+             + "/" + (recipeBaselinePreviewCount + 1)
+             + " missing=" + editor.projectPreviewMissingCount);
+        return;
+    }
+    if editor.Undo() == false
+       or sceneDoc.content != baseline
+       or editor.flatNodes.count() != 134
+       or editor.projectPreviewInstanceCount
+          != recipeBaselinePreviewCount
+       or editor.undoStack.count() != recipeBaselineUndo
+       or editor.redoStack.count() != 1
+       or editor.Redo() == false
+       or sceneDoc.content != createdContent
+       or editor.flatNodes.count() != 135
+       or editor.flatNodes.get(134)
+              .MetadataGetString("af.kind", "") != "spawn"
+       or editor.projectPreviewInstanceCount
+          != recipeBaselinePreviewCount + 1
+       or editor.undoStack.count() != recipeBaselineUndo + 1
+       or editor.redoStack.count() != 0
+       or editor.Undo() == false
+       or sceneDoc.content != baseline
+       or editor.flatNodes.count() != 134
+       or editor.projectPreviewInstanceCount
+          != recipeBaselinePreviewCount
+       or editor.undoStack.count() != recipeBaselineUndo
+       or editor.redoStack.count() != 1
+       or editor.GetRevision() != recipeBaselineRevision + 4
+       or sceneDoc.isModified {
+        fail(shell, project,
+             "Ashfall recipe undo/redo did not restore exact scene bytes");
+        return;
+    }
+
     var previewProfile = editor.componentSchema.scenePreview3D;
     if previewProfile.HasPostFX() == false
        or previewProfile.PostFXEffectCount() != 5
@@ -279,6 +435,93 @@ func main() {
         return;
     }
 
+    var baselineRevision = editor.GetRevision();
+    var baselineUndo = editor.undoStack.count();
+    var baselineYaw = editor.viewYawDegrees;
+    var baselinePitch = editor.viewPitchDegrees;
+    var baselineScale = editor.viewScale;
+    var baselineTargetX = editor.viewTargetX;
+    var baselineTargetY = editor.viewTargetY;
+    var baselineTargetZ = editor.viewTargetZ;
+    editor.SetGameViewActive(true);
+    pump(editor, sceneDoc, shell);
+    pump(editor, sceneDoc, shell);
+    var gameFrameWidth = editor.ViewportContentWidth();
+    var gameFrameHeight = editor.ViewportContentHeight();
+    var gameFrameX = editor.ViewportContentX();
+    var gameFrameY = editor.ViewportContentY();
+    meanLuma = sceneMeanLumaRegion(
+        editor.viewportPixels,
+        gameFrameX,
+        gameFrameY,
+        gameFrameWidth,
+        gameFrameHeight);
+    var aspectError =
+        gameFrameWidth * 900 - gameFrameHeight * 1600;
+    if aspectError < 0 { aspectError = 0 - aspectError; }
+    var mattePixel =
+        Pixels.Get(editor.viewportPixels, 0, 0) % 16777216;
+    // Pixels.Get returns packed RGBA; modulo removes the red byte.
+    var expectedMatte = 0x0A0EFF;
+    if editor.GameViewActive() == false
+       or editor.gameViewOutputFramed == false
+       or editor.GameOutputWidth() != 1600
+       or editor.GameOutputHeight() != 900
+       or aspectError >= 1600
+       or (gameFrameX <= 0 and gameFrameY <= 0)
+       or mattePixel != expectedMatte
+       or editor.ViewportTargetWidth() != gameFrameWidth
+       or editor.ViewportTargetHeight() != gameFrameHeight
+       or editor.OrientationNavigatorVisible()
+       or editor.moveToolButton.IsEnabled()
+       or editor.viewOptionsButton.IsEnabled()
+       or editor.orbitLeftButton.IsEnabled()
+       or editor.orbitRightButton.IsEnabled()
+       or editor.zoomOutButton.IsEnabled()
+       or editor.zoomInButton.IsEnabled()
+       or editor.projectionButton.IsEnabled()
+       or editor.projectViewButton.IsEnabled()
+       or editor.viewportModeButton.GetAccessibleName()
+          != "3D viewport mode: Shaded"
+       or meanLuma < 175.0 or meanLuma > 250.0
+       or sceneDoc.content != baseline
+       or sceneDoc.isModified
+       or editor.GetRevision() != baselineRevision
+       or editor.undoStack.count() != baselineUndo {
+        fail(shell, project,
+             "clean Game View changed state, retained editor chrome, "
+             + "or escaped the runtime visual envelope"
+             + " active=" + editor.GameViewActive()
+             + " framed=" + editor.gameViewOutputFramed
+             + " output=" + editor.GameOutputWidth()
+             + "x" + editor.GameOutputHeight()
+             + " frame=" + gameFrameX + "," + gameFrameY
+             + " " + gameFrameWidth + "x" + gameFrameHeight
+             + " target=" + editor.ViewportTargetWidth()
+             + "x" + editor.ViewportTargetHeight()
+             + " aspectError=" + aspectError
+             + " matte=" + mattePixel + "/" + expectedMatte
+             + " luma=" + meanLuma
+             + " navigator=" + editor.OrientationNavigatorVisible()
+             + " controls=" + editor.moveToolButton.IsEnabled()
+             + "/" + editor.viewOptionsButton.IsEnabled()
+             + "/" + editor.orbitLeftButton.IsEnabled()
+             + "/" + editor.orbitRightButton.IsEnabled()
+             + "/" + editor.zoomOutButton.IsEnabled()
+             + "/" + editor.zoomInButton.IsEnabled()
+             + "/" + editor.projectionButton.IsEnabled()
+             + "/" + editor.projectViewButton.IsEnabled()
+             + " mode="
+             + editor.viewportModeButton.GetAccessibleName()
+             + " bytes=" + (sceneDoc.content == baseline)
+             + " modified=" + sceneDoc.isModified
+             + " revision=" + editor.GetRevision()
+             + "/" + baselineRevision
+             + " history=" + editor.undoStack.count()
+             + "/" + baselineUndo);
+        return;
+    }
+
     var screenshotPath =
         Path.Join(TempFile.Dir(),
                   "zannastudio_ashfall_gameplay_preview.png");
@@ -292,6 +535,8 @@ func main() {
         "METRIC: camera=0,1.82,34 forward=0,0,-1"
         + " viewport=" + editor.renderedViewportWidth
         + "x" + editor.renderedViewportHeight
+        + " output=1600x900"
+        + " frame=" + gameFrameWidth + "x" + gameFrameHeight
         + " previews=" + editor.projectPreviewInstanceCount
         + " postfx=" + editor.viewportRenderPostFX.EffectCount
         + " mean_luma=" + meanLuma
@@ -305,6 +550,27 @@ func main() {
             if shell.WasCloseRequested() { break; }
             editor.Pump(sceneDoc);
             shell.Render();
+        }
+    } else {
+        editor.SetGameViewActive(false);
+        pump(editor, sceneDoc, shell);
+        pump(editor, sceneDoc, shell);
+        if editor.GameViewActive()
+           or editor.gameViewOutputFramed
+           or editor.viewYawDegrees != baselineYaw
+           or editor.viewPitchDegrees != baselinePitch
+           or editor.viewScale != baselineScale
+           or near(editor.viewTargetX, baselineTargetX) == false
+           or near(editor.viewTargetY, baselineTargetY) == false
+           or near(editor.viewTargetZ, baselineTargetZ) == false
+           or sceneDoc.content != baseline
+           or sceneDoc.isModified
+           or editor.GetRevision() != baselineRevision
+           or editor.undoStack.count() != baselineUndo {
+            fail(shell, project,
+                 "leaving output-framed Game View did not restore "
+                 + "the exact editor camera and canonical state");
+            return;
         }
     }
 

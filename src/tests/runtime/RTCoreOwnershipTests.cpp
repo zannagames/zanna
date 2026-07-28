@@ -12,7 +12,8 @@
 //                 shared allocations is rejected without changing ownership.
 // Ownership/Lifetime: Test-created managed values and heap blocks are released
 //                     by the creating case after every assertion.
-// Links: src/runtime/core/rt_heap.c, src/il/runtime/RuntimeOwnership.hpp
+// Links: src/runtime/core/rt_heap.c, src/il/runtime/RuntimeOwnership.hpp,
+//        docs/adr/0210-read-only-mesh-vertex-positions.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -221,6 +222,14 @@ static void test_runtime_metadata_matches_core_contracts(void) {
            cameraForward.returnsKnownObject);
     assert(characterPosition.returnsOwned && characterPosition.mayAllocate &&
            characterPosition.returnsKnownObject);
+    const auto meshVertexPosition =
+        il::runtime::classifyRuntimeOwnership("Zanna.Graphics3D.Mesh3D.VertexPosition");
+    const auto meshVertexPositionSymbol =
+        il::runtime::classifyRuntimeOwnership("rt_mesh3d_get_vertex_position");
+    assert(meshVertexPosition.returnsOwned && meshVertexPosition.mayAllocate &&
+           meshVertexPosition.returnsKnownObject);
+    assert(meshVertexPositionSymbol.returnsOwned && meshVertexPositionSymbol.mayAllocate &&
+           meshVertexPositionSymbol.returnsKnownObject);
     const auto borrowedOrbitTarget =
         il::runtime::classifyRuntimeOwnership("Zanna.Game3D.OrbitController.get_Target");
     const auto borrowedFollowOffset =

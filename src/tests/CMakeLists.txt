@@ -1487,6 +1487,22 @@ set_tests_properties(zia_zannastudio_scene2d_autotile_preview PROPERTIES
         LABELS "zia;zannastudio;scene;requires_display"
         TIMEOUT 120)
 
+add_test(NAME zia_zannastudio_scene2d_object_draw_stack
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/scene2d_object_draw_stack_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
+set_tests_properties(zia_zannastudio_scene2d_object_draw_stack PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;scene;requires_display"
+        TIMEOUT 150)
+
+add_test(NAME zia_zannastudio_scene_game_view
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/scene_game_view_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
+set_tests_properties(zia_zannastudio_scene_game_view PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;scene;requires_display"
+        TIMEOUT 150)
+
 add_test(NAME zia_zannastudio_asset_library
         COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/asset_library_probe.zia"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
@@ -1621,6 +1637,30 @@ set_tests_properties(zia_zannastudio_scene_scale_plane PROPERTIES
         LABELS "zia;zannastudio;scene;requires_display"
         TIMEOUT 150)
 
+add_test(NAME zia_zannastudio_scene_surface_drop
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/scene_surface_drop_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
+set_tests_properties(zia_zannastudio_scene_surface_drop PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;scene;requires_display"
+        TIMEOUT 150)
+
+add_test(NAME zia_zannastudio_scene_vertex_snap
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/scene_vertex_snap_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
+set_tests_properties(zia_zannastudio_scene_vertex_snap PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;scene;requires_display"
+        TIMEOUT 150)
+
+add_test(NAME zia_zannastudio_scene_terrain_authoring
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/scene_terrain_authoring_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
+set_tests_properties(zia_zannastudio_scene_terrain_authoring PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;scene;requires_display"
+        TIMEOUT 180)
+
 add_test(NAME zia_zannastudio_scene_material_batch
         COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/scene_material_batch_probe.zia"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
@@ -1641,6 +1681,14 @@ add_test(NAME zia_zannastudio_scene_viewport_picking
         COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/scene_viewport_picking_probe.zia"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
 set_tests_properties(zia_zannastudio_scene_viewport_picking PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;scene;requires_display"
+        TIMEOUT 150)
+
+add_test(NAME zia_zannastudio_scene_command_bar
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/scene_command_bar_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
+set_tests_properties(zia_zannastudio_scene_command_bar PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
         LABELS "zia;zannastudio;scene;requires_display"
         TIMEOUT 150)
@@ -2750,6 +2798,8 @@ set(ZANNA_DISPLAY_TESTS
         zia_zannastudio_scene_editor_3d
         zia_zannastudio_scene_rotation_ring
         zia_zannastudio_scene_scale_plane
+        zia_zannastudio_scene_surface_drop
+        zia_zannastudio_scene_vertex_snap
         zia_zannastudio_scene_material_batch
         zia_zannastudio_scene_shaded_viewport
         zia_zannastudio_scene_viewport_picking

@@ -1,0 +1,530 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_game_view_probe.zia
+// Purpose: Verify clean, non-destructive Game View in both scene editors.
+// Key invariants:
+//   - 2D renders authored tile/sprite pixels without editor overlays.
+//   - 3D renders shaded authored pixels without viewport chrome or assist.
+//   - Viewport editing and drops are unavailable while navigation remains.
+//   - Selection, view preferences, tab-local state, bytes, and history survive.
+// Ownership/Lifetime:
+//   - Each half owns one hidden AppShell; the 2D half owns one temporary PNG.
+// Links: zannastudio/src/ui/scene_editor_2d.zia,
+//        zannastudio/src/ui/scene_editor_3d.zia,
+//        zannastudio/src/ui/scene_panels_2d.zia,
+//        zannastudio/src/ui/scene_panels_3d.zia,
+//        docs/adr/0207-non-destructive-scene-game-view.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_game_view_probe;
+
+// ============================================================================
+// MODULE: scene_game_view_probe
+// PURPOSE: Pin the shared clean-view contract through real retained widgets,
+//          production renderers, document switches, and pointer input.
+//
+// WHERE-THIS-FITS: Real-game probes own Xenoscape/Ashfall fidelity; this small
+//          fixture owns exact overlay masking and reversible workspace state.
+//
+// TEACHING-NOTE: A view mode is safe only when exact canonical bytes and the
+//          edit timeline are identical before, during, and after presentation.
+// ============================================================================
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_2d";
+bind "../ui/scene_editor_3d";
+bind "../ui/scene_panels_2d";
+bind "../ui/scene_panels_3d";
+
+bind Color = Zanna.Graphics.Color;
+bind Convert = Zanna.Core.Convert;
+bind Dir = Zanna.IO.Dir;
+bind GUI = Zanna.GUI;
+bind Path = Zanna.IO.Path;
+bind Pixels = Zanna.Graphics.Pixels;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind TempFile = Zanna.IO.TempFile;
+bind Terminal = Zanna.Terminal;
+
+func HarnessCoordinate(shell: app_shell.AppShell,
+                       logical: Number) -> Integer {
+    var scale = shell.app.GetEffectiveScale();
+    if scale <= 0.0 { scale = 1.0; }
+    return Convert.NumToInt(logical * scale + 0.999999);
+}
+
+func Pump2D(editor: scene_editor_2d.SceneEditor2D,
+            sceneDoc: document.Document,
+            shell: app_shell.AppShell) {
+    editor.Pump(sceneDoc);
+    shell.Render();
+}
+
+func Pump3D(editor: scene_editor_3d.SceneEditor3D,
+            sceneDoc: document.Document,
+            shell: app_shell.AppShell) {
+    editor.Pump(sceneDoc);
+    shell.Render();
+}
+
+func Click2DCell(shell: app_shell.AppShell,
+                 harness: GUI.TestHarness,
+                 editor: scene_editor_2d.SceneEditor2D,
+                 cellX: Integer,
+                 cellY: Integer) {
+    var localX = cellX * editor.displayCellSize
+        - editor.viewOriginX + editor.displayCellSize / 2;
+    var localY = cellY * editor.displayCellSize
+        - editor.viewOriginY + editor.displayCellSize / 2;
+    var x = HarnessCoordinate(
+        shell, editor.canvasImage.GetScreenX() + localX);
+    var y = HarnessCoordinate(
+        shell, editor.canvasImage.GetScreenY() + localY);
+    harness.SendMouse("move", x, y, 0);
+    harness.SendMouse("down", x, y, 0);
+    harness.SendMouse("up", x, y, 0);
+    harness.DispatchPending();
+}
+
+func Click3DPoint(shell: app_shell.AppShell,
+                  harness: GUI.TestHarness,
+                  editor: scene_editor_3d.SceneEditor3D,
+                  localX: Integer,
+                  localY: Integer) {
+    var x = HarnessCoordinate(
+        shell, editor.viewportImage.GetScreenX() + localX);
+    var y = HarnessCoordinate(
+        shell, editor.viewportImage.GetScreenY() + localY);
+    harness.SendMouse("move", x, y, 0);
+    harness.SendMouse("down", x, y, 0);
+    harness.SendMouse("up", x, y, 0);
+    harness.DispatchPending();
+}
+
+func Finish2D(shell: app_shell.AppShell,
+              harness: GUI.TestHarness,
+              tempDir: String,
+              reason: String) -> String {
+    if harness != null { harness.UnbindApp(); }
+    if shell != null { shell.Destroy(); }
+    if tempDir != "" { Dir.RemoveAll(tempDir); }
+    return reason;
+}
+
+func Finish3D(shell: app_shell.AppShell,
+              harness: GUI.TestHarness,
+              reason: String) -> String {
+    if harness != null { harness.UnbindApp(); }
+    if shell != null { shell.Destroy(); }
+    return reason;
+}
+
+func Test2DGameView() -> String {
+    var tempDir =
+        TempFile.CreateDirWithPrefix("zannastudio_game_view_2d_");
+    var tilePath = Path.Join(tempDir, "tile.png");
+    var upperPath = Path.Join(tempDir, "upper.png");
+    var tilePixels = Pixels.New(16, 16);
+    var upperPixels = Pixels.New(16, 16);
+    if tempDir == "" or tilePixels == null or upperPixels == null {
+        return Finish2D(
+            null, null, tempDir, "2D temporary image allocation");
+    }
+    var authoredColor = Color.RGB(196, 38, 32);
+    var upperColor = Color.RGB(30, 76, 214);
+    tilePixels.FillColor(authoredColor);
+    upperPixels.FillColor(upperColor);
+    if Pixels.SavePng(tilePixels, tilePath) != 1
+       or Pixels.SavePng(upperPixels, upperPath) != 1 {
+        return Finish2D(
+            null, null, tempDir, "2D temporary image write");
+    }
+
+    var fixture = SceneDocument.New(4, 3, 16, 16);
+    if fixture == null {
+        return Finish2D(
+            null, null, tempDir, "2D scene fixture");
+    }
+    fixture.SetLayerAsset(0, "tile.png");
+    fixture.SetTile(0, 1, 1, 1);
+    var upperLayer = fixture.AddLayer("Upper");
+    fixture.SetLayerAsset(upperLayer, "upper.png");
+    fixture.SetTile(upperLayer, 2, 1, 1);
+    var marker = fixture.AddObject("marker", "selected-marker", 16, 16);
+    if upperLayer != 1 or marker != 0 {
+        return Finish2D(
+            null, null, tempDir, "2D object fixture");
+    }
+
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio 2D Game View Probe", 1180, 780);
+    shell.SetSceneWorkspaceMode(true);
+    var editor = new scene_editor_2d.SceneEditor2D();
+    scene_panels_2d.Build(
+        editor, shell.workbench.scene2DHost, shell.app);
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene2DDocument();
+    sceneDoc.fileName = "game-view.scene2d";
+    sceneDoc.filePath = Path.Join(tempDir, sceneDoc.fileName);
+    sceneDoc.content = fixture.ToJson();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_2D);
+    editor.Activate(sceneDoc);
+    Pump2D(editor, sceneDoc, shell);
+    shell.Poll();
+    Pump2D(editor, sceneDoc, shell);
+    editor.SelectSceneObjects([marker], marker);
+    editor.SetSoloLayer(0);
+    Pump2D(editor, sceneDoc, shell);
+
+    if editor.scene == null or editor.framePixels == null
+       or editor.showGrid == false or editor.showRulers == false
+       or editor.rulerTopRow.IsVisible() == false {
+        return Finish2D(
+            shell, null, tempDir, "2D authoring canvas setup");
+    }
+    var sampleX = editor.displayCellSize
+        - editor.viewOriginX + editor.displayCellSize / 2;
+    var sampleY = editor.displayCellSize
+        - editor.viewOriginY + editor.displayCellSize / 2;
+    var normalPixel =
+        editor.framePixels.GetColor(sampleX, sampleY) % 16777216;
+    var upperSampleX = 2 * editor.displayCellSize
+        - editor.viewOriginX + editor.displayCellSize / 2;
+    var upperSampleY = editor.displayCellSize
+        - editor.viewOriginY + editor.displayCellSize / 2;
+    var normalUpperPixel =
+        editor.framePixels.GetColor(
+            upperSampleX, upperSampleY) % 16777216;
+    var authoredPixel = authoredColor % 16777216;
+    var upperAuthoredPixel = upperColor % 16777216;
+    if normalPixel == authoredPixel
+       or normalUpperPixel == upperAuthoredPixel {
+        return Finish2D(
+            shell, null, tempDir,
+            "2D editor marker or Solo fixture was not visible");
+    }
+
+    var baseline = sceneDoc.content;
+    var baselineSerialized = editor.currentSerialized;
+    var baselineRevision = editor.GetRevision();
+    var baselineUndo = editor.undoStack.count();
+    var baselineRedo = editor.redoStack.count();
+    var baselineDirty = sceneDoc.isModified;
+    editor.SetGameViewActive(true);
+    Pump2D(editor, sceneDoc, shell);
+    Pump2D(editor, sceneDoc, shell);
+    var gamePixel =
+        editor.framePixels.GetColor(sampleX, sampleY) % 16777216;
+    var gameUpperPixel =
+        editor.framePixels.GetColor(
+            upperSampleX, upperSampleY) % 16777216;
+    if editor.GameViewActive() == false
+       or gamePixel != authoredPixel
+       or gameUpperPixel != upperAuthoredPixel
+       or editor.selectedObject != marker
+       or editor.selectedObjects.count() != 1
+       or editor.showGrid == false or editor.showRulers == false
+       or editor.soloLayer != 0
+       or editor.rulerTopRow.IsVisible()
+       or editor.verticalRulerImage.IsVisible()
+       or editor.selectButton.IsEnabled()
+       or editor.paintButton.IsEnabled()
+       or editor.gridButton.IsEnabled()
+       or editor.rulersButton.IsEnabled()
+       or editor.previewButton.IsEnabled()
+       or editor.gameViewButton.IsEnabled() == false
+       or sceneDoc.content != baseline
+       or editor.currentSerialized != baselineSerialized
+       or editor.GetRevision() != baselineRevision
+       or editor.undoStack.count() != baselineUndo
+       or editor.redoStack.count() != baselineRedo
+       or sceneDoc.isModified != baselineDirty {
+        return Finish2D(
+            shell, null, tempDir,
+            "2D clean pixels, controls, selection, or canonical state"
+            + " active=" + editor.GameViewActive()
+            + " pixel=" + gamePixel + "/" + authoredPixel
+            + " upper=" + gameUpperPixel + "/" + upperAuthoredPixel
+            + " selected=" + editor.selectedObject
+            + "/" + editor.selectedObjects.count()
+            + " prefs=" + editor.showGrid + "/" + editor.showRulers
+            + " rulers=" + editor.rulerTopRow.IsVisible()
+            + "/" + editor.verticalRulerImage.IsVisible()
+            + " tools=" + editor.selectButton.IsEnabled()
+            + "/" + editor.paintButton.IsEnabled()
+            + "/" + editor.gridButton.IsEnabled()
+            + "/" + editor.rulersButton.IsEnabled()
+            + "/" + editor.previewButton.IsEnabled()
+            + "/" + editor.gameViewButton.IsEnabled()
+            + " bytes=" + (sceneDoc.content == baseline)
+            + "/" + (editor.currentSerialized == baselineSerialized)
+            + " revision=" + editor.GetRevision()
+            + "/" + baselineRevision
+            + " history=" + editor.undoStack.count()
+            + "/" + baselineUndo + "/" + editor.redoStack.count()
+            + "/" + baselineRedo
+            + " dirty=" + sceneDoc.isModified + "/" + baselineDirty);
+    }
+
+    var harness = GUI.TestHarness.New();
+    if harness.BindApp(shell.app) == false {
+        return Finish2D(
+            shell, harness, tempDir, "2D automation app binding");
+    }
+    Click2DCell(shell, harness, editor, 3, 2);
+    Pump2D(editor, sceneDoc, shell);
+    shell.Poll();
+    Pump2D(editor, sceneDoc, shell);
+    if editor.selectedObject != marker
+       or editor.selectedObjects.count() != 1
+       or sceneDoc.content != baseline
+       or editor.GetRevision() != baselineRevision {
+        return Finish2D(
+            shell, harness, tempDir,
+            "2D Game View accepted a selection/edit click");
+    }
+
+    var otherDoc = documents.NewScene2DDocument();
+    Pump2D(editor, otherDoc, shell);
+    Pump2D(editor, otherDoc, shell);
+    if editor.GameViewActive() {
+        return Finish2D(
+            shell, harness, tempDir,
+            "2D Game View leaked into another document");
+    }
+    Pump2D(editor, sceneDoc, shell);
+    Pump2D(editor, sceneDoc, shell);
+    if editor.GameViewActive() == false
+       or editor.selectedObject != marker {
+        return Finish2D(
+            shell, harness, tempDir,
+            "2D Game View did not follow its owning document");
+    }
+
+    editor.SetGameViewActive(false);
+    Pump2D(editor, sceneDoc, shell);
+    var restoredPixel =
+        editor.framePixels.GetColor(sampleX, sampleY) % 16777216;
+    var restoredUpperPixel =
+        editor.framePixels.GetColor(
+            upperSampleX, upperSampleY) % 16777216;
+    if editor.GameViewActive()
+       or restoredPixel != normalPixel
+       or restoredUpperPixel != normalUpperPixel
+       or editor.soloLayer != 0
+       or editor.rulerTopRow.IsVisible() == false
+       or editor.verticalRulerImage.IsVisible() == false
+       or editor.selectButton.IsEnabled() == false
+       or editor.gridButton.IsEnabled() == false
+       or sceneDoc.content != baseline
+       or editor.currentSerialized != baselineSerialized
+       or editor.GetRevision() != baselineRevision
+       or editor.undoStack.count() != baselineUndo
+       or editor.redoStack.count() != baselineRedo
+       or sceneDoc.isModified != baselineDirty {
+        return Finish2D(
+            shell, harness, tempDir,
+            "2D editor presentation did not restore exactly");
+    }
+    return Finish2D(shell, harness, tempDir, "");
+}
+
+func Test3DGameView() -> String {
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio 3D Game View Probe", 1180, 780);
+    shell.SetSceneWorkspaceMode(true);
+    var editor = new scene_editor_3d.SceneEditor3D();
+    scene_panels_3d.Build(
+        editor, shell.workbench.scene3DHost, shell.app);
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene3DDocument();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_3D);
+    editor.Activate(sceneDoc);
+    Pump3D(editor, sceneDoc, shell);
+    shell.Poll();
+    Pump3D(editor, sceneDoc, shell);
+    if editor.AddPrimitive(
+           scene_editor_3d.PRIMITIVE_BOX, false) == false {
+        return Finish3D(shell, null, "3D box fixture");
+    }
+    editor.SetViewportMode(
+        scene_editor_3d.VIEWPORT_MODE_WIREFRAME);
+    editor.SetViewOptionsVisible(true);
+    Pump3D(editor, sceneDoc, shell);
+    Pump3D(editor, sceneDoc, shell);
+
+    if editor.scene == null or editor.viewportPixels == null
+       or editor.selectedIndex < 0
+       or editor.OrientationNavigatorVisible() == false
+       or editor.viewOptionsRow.IsVisible() == false {
+        return Finish3D(shell, null, "3D authoring viewport setup");
+    }
+    var selected = editor.selectedIndex;
+    var panelLeft = editor.renderedViewportWidth
+        - scene_editor_3d.ORIENTATION_PANEL_MARGIN
+        - scene_editor_3d.ORIENTATION_PANEL_WIDTH;
+    var panelTop = scene_editor_3d.ORIENTATION_PANEL_MARGIN;
+    var navigatorBorder =
+        Color.RGB(84, 95, 112) % 16777216;
+    var normalNavigatorPixel =
+        editor.viewportPixels.GetColor(panelLeft, panelTop) % 16777216;
+    if normalNavigatorPixel != navigatorBorder {
+        return Finish3D(
+            shell, null, "3D navigator pixel fixture");
+    }
+
+    var baseline = sceneDoc.content;
+    var baselineSerialized = editor.currentSerialized;
+    var baselineRevision = editor.GetRevision();
+    var baselineUndo = editor.undoStack.count();
+    var baselineRedo = editor.redoStack.count();
+    var baselineDirty = sceneDoc.isModified;
+    editor.SetGameViewActive(true);
+    Pump3D(editor, sceneDoc, shell);
+    Pump3D(editor, sceneDoc, shell);
+    var gameNavigatorPixel =
+        editor.viewportPixels.GetColor(panelLeft, panelTop) % 16777216;
+    var projected = editor.ProjectWorldPoint(0.0, 0.0, 0.0);
+    if editor.GameViewActive() == false
+       or editor.OrientationNavigatorVisible()
+       or editor.OrientationFaceAt(panelLeft + 8, panelTop + 32)
+          != scene_editor_3d.ORIENTATION_FACE_NONE
+       or gameNavigatorPixel == navigatorBorder
+       or editor.selectedIndex != selected
+       or editor.selectedIndices.count() != 1
+       or editor.viewportMode
+          != scene_editor_3d.VIEWPORT_MODE_WIREFRAME
+       or editor.viewportModeButton.GetAccessibleName()
+          != "3D viewport mode: Shaded"
+       or editor.showGrid == false or editor.showMarkers == false
+       or editor.showLightOverlays == false
+       or editor.showCameraOverlays == false
+       or editor.showColliderOverlays == false
+       or editor.showRouteOverlays == false
+       or editor.editorLightAssist == false
+       or editor.viewOptionsRow.IsVisible()
+       or editor.moveToolButton.IsEnabled()
+       or editor.rotateToolButton.IsEnabled()
+       or editor.scaleToolButton.IsEnabled()
+       or editor.viewOptionsButton.IsEnabled()
+       or editor.gameViewButton.IsEnabled() == false
+       or projected.visible == false
+       or editor.GizmoHandleAtViewportPoint(
+              projected.x, projected.y)
+          != scene_editor_3d.GIZMO_AXIS_NONE
+       or sceneDoc.content != baseline
+       or editor.currentSerialized != baselineSerialized
+       or editor.GetRevision() != baselineRevision
+       or editor.undoStack.count() != baselineUndo
+       or editor.redoStack.count() != baselineRedo
+       or sceneDoc.isModified != baselineDirty {
+        return Finish3D(
+            shell, null,
+            "3D clean pixels, controls, selection, or canonical state");
+    }
+
+    var harness = GUI.TestHarness.New();
+    if harness.BindApp(shell.app) == false {
+        return Finish3D(shell, harness, "3D automation app binding");
+    }
+    Click3DPoint(
+        shell, harness, editor,
+        4, editor.renderedViewportHeight - 4);
+    Pump3D(editor, sceneDoc, shell);
+    shell.Poll();
+    Pump3D(editor, sceneDoc, shell);
+    if editor.selectedIndex != selected
+       or editor.selectedIndices.count() != 1
+       or sceneDoc.content != baseline
+       or editor.GetRevision() != baselineRevision {
+        return Finish3D(
+            shell, harness,
+            "3D Game View accepted a selection/edit click");
+    }
+
+    var otherDoc = documents.NewScene3DDocument();
+    Pump3D(editor, otherDoc, shell);
+    Pump3D(editor, otherDoc, shell);
+    if editor.GameViewActive() {
+        return Finish3D(
+            shell, harness,
+            "3D Game View leaked into another document");
+    }
+    Pump3D(editor, sceneDoc, shell);
+    Pump3D(editor, sceneDoc, shell);
+    if editor.GameViewActive() == false
+       or editor.selectedIndex != selected {
+        return Finish3D(
+            shell, harness,
+            "3D Game View did not follow its owning document");
+    }
+
+    editor.SetGameViewActive(false);
+    Pump3D(editor, sceneDoc, shell);
+    var restoredNavigatorPixel =
+        editor.viewportPixels.GetColor(panelLeft, panelTop) % 16777216;
+    if editor.GameViewActive()
+       or editor.OrientationNavigatorVisible() == false
+       or restoredNavigatorPixel != normalNavigatorPixel
+       or editor.viewportMode
+          != scene_editor_3d.VIEWPORT_MODE_WIREFRAME
+       or editor.viewportModeButton.GetAccessibleName()
+          != "3D viewport mode: Wireframe"
+       or editor.viewOptionsRow.IsVisible() == false
+       or editor.moveToolButton.IsEnabled() == false
+       or editor.viewOptionsButton.IsEnabled() == false
+       or sceneDoc.content != baseline
+       or editor.currentSerialized != baselineSerialized
+       or editor.GetRevision() != baselineRevision
+       or editor.undoStack.count() != baselineUndo
+       or editor.redoStack.count() != baselineRedo
+       or sceneDoc.isModified != baselineDirty {
+        return Finish3D(
+            shell, harness,
+            "3D editor presentation did not restore exactly"
+            + " active=" + editor.GameViewActive()
+            + " navigator=" + editor.OrientationNavigatorVisible()
+            + " pixel=" + restoredNavigatorPixel
+            + "/" + normalNavigatorPixel
+            + " mode=" + editor.viewportMode
+            + " name="
+            + editor.viewportModeButton.GetAccessibleName()
+            + " options=" + editor.viewOptionsRow.IsVisible()
+            + " controls=" + editor.moveToolButton.IsEnabled()
+            + "/" + editor.viewOptionsButton.IsEnabled()
+            + " selected=" + editor.selectedIndex
+            + "/" + editor.selectedIndices.count()
+            + " bytes=" + (sceneDoc.content == baseline)
+            + "/" + (editor.currentSerialized == baselineSerialized)
+            + " revision=" + editor.GetRevision()
+            + "/" + baselineRevision
+            + " history=" + editor.undoStack.count()
+            + "/" + baselineUndo + "/" + editor.redoStack.count()
+            + "/" + baselineRedo
+            + " dirty=" + sceneDoc.isModified + "/" + baselineDirty);
+    }
+    return Finish3D(shell, harness, "");
+}
+
+func main() {
+    var reason2D = Test2DGameView();
+    if reason2D != "" {
+        Terminal.Say("RESULT: fail " + reason2D);
+        return;
+    }
+    var reason3D = Test3DGameView();
+    if reason3D != "" {
+        Terminal.Say("RESULT: fail " + reason3D);
+        return;
+    }
+    Terminal.Say("RESULT: ok");
+}

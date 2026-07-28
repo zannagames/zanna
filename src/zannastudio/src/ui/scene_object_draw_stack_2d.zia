@@ -1,0 +1,166 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_object_draw_stack_2d.zia
+// Purpose: Resolve and stably bucket 2D object preview draw-stack policy.
+// Key invariants:
+//   - Canonical object array order remains the stable tie-breaker.
+//   - Ordinary editor.drawOrder/editor.afterLayer integer properties override
+//     matching project preview defaults without becoming runtime requirements.
+//   - Invalid overrides fall back to the validated project/default policy.
+//   - Construction is O(objects + bounded buckets), never quadratic.
+// Ownership/Lifetime: Returned lists own integer identities only; scene and
+//                     schema objects are borrowed for the duration of a call.
+// Links: zannastudio/src/ui/scene_component_schema.zia,
+//        zannastudio/src/ui/scene_editor_2d.zia,
+//        docs/adr/0206-project-owned-2d-object-preview-draw-stacks.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_object_draw_stack_2d;
+
+bind "scene_component_schema";
+
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+
+final EXPLICIT_DRAW_ORDER_KEY: String = "editor.drawOrder";
+final EXPLICIT_AFTER_LAYER_KEY: String = "editor.afterLayer";
+final DRAW_ORDER_BUCKETS: Integer =
+    scene_component_schema.MAX_PREVIEW_DRAW_ORDER
+    - scene_component_schema.MIN_PREVIEW_DRAW_ORDER + 1;
+
+/// @brief Return one object's effective bounded within-layer priority.
+/// @details An exact-kind valid object override wins, then its type's project
+///          rule, then zero. Smaller values paint first.
+expose func EffectiveDrawOrder(
+    scene: SceneDocument,
+    schema: scene_component_schema.SceneComponentSchema,
+    objectIndex: Integer) -> Integer {
+    if scene == null or objectIndex < 0
+       or objectIndex >= scene.ObjectCount() {
+        return 0;
+    }
+    if scene.ObjectPropertyKind(
+           objectIndex, EXPLICIT_DRAW_ORDER_KEY) == "int" {
+        var explicit = scene.ObjectGetInt(
+            objectIndex, EXPLICIT_DRAW_ORDER_KEY, 0);
+        if explicit >= scene_component_schema.MIN_PREVIEW_DRAW_ORDER
+           and explicit <= scene_component_schema.MAX_PREVIEW_DRAW_ORDER {
+            return explicit;
+        }
+    }
+    if schema != null and schema.valid {
+        var preview = schema.PreviewForObjectType(
+            scene.ObjectType(objectIndex));
+        if preview != null { return preview.drawOrder; }
+    }
+    return 0;
+}
+
+/// @brief Return the tile-layer index after which an object preview paints.
+/// @details `-1` means before layer zero. Fifteen is the validated default and
+///          naturally clamps to after the final layer of every smaller scene.
+expose func EffectiveAfterLayer(
+    scene: SceneDocument,
+    schema: scene_component_schema.SceneComponentSchema,
+    objectIndex: Integer) -> Integer {
+    if scene == null or objectIndex < 0
+       or objectIndex >= scene.ObjectCount() {
+        return scene_component_schema.MAX_PREVIEW_AFTER_LAYER;
+    }
+    if scene.ObjectPropertyKind(
+           objectIndex, EXPLICIT_AFTER_LAYER_KEY) == "int" {
+        var explicit = scene.ObjectGetInt(
+            objectIndex, EXPLICIT_AFTER_LAYER_KEY,
+            scene_component_schema.MAX_PREVIEW_AFTER_LAYER);
+        if explicit >= scene_component_schema.MIN_PREVIEW_AFTER_LAYER
+           and explicit <= scene_component_schema.MAX_PREVIEW_AFTER_LAYER {
+            return explicit;
+        }
+    }
+    if schema != null and schema.valid {
+        var preview = schema.PreviewForObjectType(
+            scene.ObjectType(objectIndex));
+        if preview != null { return preview.afterLayer; }
+    }
+    return scene_component_schema.MAX_PREVIEW_AFTER_LAYER;
+}
+
+/// @brief Convert an authored after-layer value into a render boundary.
+/// @return Zero before layer zero; `LayerCount()` after the final layer.
+expose func LayerBoundary(
+    scene: SceneDocument,
+    schema: scene_component_schema.SceneComponentSchema,
+    objectIndex: Integer) -> Integer {
+    if scene == null or scene.LayerCount() <= 0 { return 0; }
+    var afterLayer = EffectiveAfterLayer(scene, schema, objectIndex);
+    if afterLayer < 0 { return 0; }
+    if afterLayer >= scene.LayerCount() - 1 {
+        return scene.LayerCount();
+    }
+    return afterLayer + 1;
+}
+
+/// @brief Build bottom-to-top visual object order in bounded linear work.
+/// @details Objects bucket first by tile-layer boundary and then by signed
+///          draw priority. Appending canonical indices to each bucket keeps
+///          document order as the deterministic final tie-breaker.
+expose func Build(
+    scene: SceneDocument,
+    schema: scene_component_schema.SceneComponentSchema)
+    -> List[Integer] {
+    var ordered: List[Integer] = [];
+    if scene == null or scene.ObjectCount() <= 0 { return ordered; }
+
+    var boundaryCount = scene.LayerCount() + 1;
+    if boundaryCount < 1 { boundaryCount = 1; }
+    var bucketCount = boundaryCount * DRAW_ORDER_BUCKETS;
+    var heads: List[Integer] = [];
+    var tails: List[Integer] = [];
+    var bucket = 0;
+    while bucket < bucketCount {
+        heads.add(-1);
+        tails.add(-1);
+        bucket = bucket + 1;
+    }
+    var next: List[Integer] = [];
+    var objectIndex = 0;
+    while objectIndex < scene.ObjectCount() {
+        next.add(-1);
+        objectIndex = objectIndex + 1;
+    }
+
+    objectIndex = 0;
+    while objectIndex < scene.ObjectCount() {
+        var boundary = LayerBoundary(scene, schema, objectIndex);
+        if boundary < 0 { boundary = 0; }
+        if boundary >= boundaryCount { boundary = boundaryCount - 1; }
+        var priority = EffectiveDrawOrder(scene, schema, objectIndex);
+        var priorityIndex =
+            priority - scene_component_schema.MIN_PREVIEW_DRAW_ORDER;
+        bucket = boundary * DRAW_ORDER_BUCKETS + priorityIndex;
+        var tail = tails.get(bucket);
+        if tail < 0 {
+            heads.set(bucket, objectIndex);
+        } else {
+            next.set(tail, objectIndex);
+        }
+        tails.set(bucket, objectIndex);
+        objectIndex = objectIndex + 1;
+    }
+
+    bucket = 0;
+    while bucket < bucketCount {
+        objectIndex = heads.get(bucket);
+        while objectIndex >= 0 {
+            ordered.add(objectIndex);
+            objectIndex = next.get(objectIndex);
+        }
+        bucket = bucket + 1;
+    }
+    return ordered;
+}

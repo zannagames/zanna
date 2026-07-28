@@ -29,6 +29,8 @@
 //     explicit blank lines, and never splits a valid UTF-8 code point.
 //   - Changing the currently hovered widget's tooltip refreshes the shared
 //     popup immediately; stateful controls never display stale guidance.
+//   - Widget-backed anchored and follow-cursor tooltips wrap and clamp to the
+//     containing root viewport.
 //   - pending_show == true means we are counting down show_delay_ms before
 //     calling vg_tooltip_show_at; the manager drives this in its update tick.
 //   - active_tooltip is lazy-allocated on first hover and reused thereafter
@@ -177,11 +179,16 @@ static bool tooltip_append_line(
 ///          string are heap allocated for the caller. A measurement-only call
 ///          avoids retaining line allocations.
 /// @param tooltip Tooltip supplying text, font, padding, and maximum width.
+/// @param available_width Optional outer-width constraint supplied by the
+///        containing window. Zero keeps the tooltip's configured maximum.
 /// @param out_lines Optional destination for the allocated line array.
 /// @param out_max_width Optional destination for the widest measured line.
 /// @return Number of logical display lines; returns at least one after valid
 ///         tooltip/font input and zero when required input is absent.
-static int tooltip_wrap_text(vg_tooltip_t *tooltip, char ***out_lines, float *out_max_width) {
+static int tooltip_wrap_text(vg_tooltip_t *tooltip,
+                             float available_width,
+                             char ***out_lines,
+                             float *out_max_width) {
     if (out_lines)
         *out_lines = NULL;
     if (out_max_width)
@@ -189,9 +196,16 @@ static int tooltip_wrap_text(vg_tooltip_t *tooltip, char ***out_lines, float *ou
     if (!tooltip || !tooltip->text || !tooltip->font)
         return 0;
 
+    float effective_outer_width = (float)tooltip->max_width;
+    if (available_width > 0.0f &&
+        (effective_outer_width <= 0.0f || available_width < effective_outer_width)) {
+        effective_outer_width = available_width;
+    }
     float max_text_width = 0.0f;
-    if (tooltip->max_width > tooltip->padding * 2) {
-        max_text_width = (float)tooltip->max_width - (float)tooltip->padding * 2.0f;
+    if (effective_outer_width > 0.0f) {
+        max_text_width = effective_outer_width - (float)tooltip->padding * 2.0f;
+        if (max_text_width < 1.0f)
+            max_text_width = 1.0f;
     }
 
     int capacity = 4;
@@ -463,11 +477,11 @@ void vg_tooltip_destroy(vg_tooltip_t *tooltip) {
 }
 
 /// @brief Measure the tooltip from wrapped text, font metrics, and padding.
-/// @details The external available-size constraints are intentionally ignored;
-///          `max_width` supplies the text constraint. Missing text or font
-///          produces a zero-sized tooltip.
+/// @details `max_width` supplies the preferred text constraint and a positive
+///          external width further bounds it. Missing text or font produces a
+///          zero-sized tooltip.
 /// @param widget Tooltip base widget receiving measured dimensions.
-/// @param available_width Parent width constraint; unused.
+/// @param available_width Optional parent/root width constraint.
 /// @param available_height Parent height constraint; unused.
 static void tooltip_measure(vg_widget_t *widget, float available_width, float available_height) {
     vg_tooltip_t *tooltip = (vg_tooltip_t *)widget;
@@ -481,15 +495,20 @@ static void tooltip_measure(vg_widget_t *widget, float available_width, float av
     }
 
     float max_line_width = 0.0f;
-    int line_count = tooltip_wrap_text(tooltip, NULL, &max_line_width);
+    int line_count = tooltip_wrap_text(tooltip, available_width, NULL, &max_line_width);
     vg_font_metrics_t font_metrics = {0};
     vg_font_get_metrics(tooltip->font, tooltip->font_size, &font_metrics);
     float line_height =
         font_metrics.line_height > 0 ? (float)font_metrics.line_height : tooltip->font_size;
 
     widget->measured_width = max_line_width + (float)tooltip->padding * 2.0f;
-    if (tooltip->max_width > 0 && widget->measured_width > (float)tooltip->max_width) {
-        widget->measured_width = (float)tooltip->max_width;
+    float effective_outer_width = (float)tooltip->max_width;
+    if (available_width > 0.0f &&
+        (effective_outer_width <= 0.0f || available_width < effective_outer_width)) {
+        effective_outer_width = available_width;
+    }
+    if (effective_outer_width > 0.0f && widget->measured_width > effective_outer_width) {
+        widget->measured_width = effective_outer_width;
     }
     widget->measured_height = line_height * (float)line_count + (float)tooltip->padding * 2.0f;
 }
@@ -541,7 +560,7 @@ static void tooltip_paint(vg_widget_t *widget, void *canvas) {
 
     char **lines = NULL;
     float ignored_width = 0.0f;
-    int line_count = tooltip_wrap_text(tooltip, &lines, &ignored_width);
+    int line_count = tooltip_wrap_text(tooltip, widget->measured_width, &lines, &ignored_width);
     vg_font_metrics_t font_metrics = {0};
     vg_font_get_metrics(tooltip->font, tooltip->font_size, &font_metrics);
     float line_height =
@@ -600,12 +619,49 @@ void vg_tooltip_set_text(vg_tooltip_t *tooltip, const char *text) {
     tooltip->base.needs_paint = true;
 }
 
+/// @brief Resolve the root viewport containing a tooltip's borrowed widget.
+/// @details Follow-cursor tooltips retain the hovered widget as a bounds
+///          reference even though their position still follows the pointer.
+///          Manual tooltips without a widget retain their historical
+///          unconstrained behavior.
+/// @param tooltip Tooltip whose anchor/hover widget identifies the root.
+/// @param out_x Optional root screen X.
+/// @param out_y Optional root screen Y.
+/// @param out_width Optional root screen width.
+/// @param out_height Optional root screen height.
+/// @return `true` when a positive root viewport was resolved.
+static bool tooltip_root_viewport(
+    const vg_tooltip_t *tooltip, float *out_x, float *out_y, float *out_width, float *out_height) {
+    if (!tooltip || !tooltip->anchor_widget)
+        return false;
+
+    vg_widget_t *root = tooltip->anchor_widget;
+    while (root->parent)
+        root = root->parent;
+
+    float x = 0.0f, y = 0.0f, width = 0.0f, height = 0.0f;
+    vg_widget_get_screen_bounds(root, &x, &y, &width, &height);
+    if (width <= 0.0f || height <= 0.0f)
+        return false;
+    if (out_x)
+        *out_x = x;
+    if (out_y)
+        *out_y = y;
+    if (out_width)
+        *out_width = width;
+    if (out_height)
+        *out_height = height;
+    return true;
+}
+
 /// @brief Show the tooltip, positioning it at (x, y) plus offset or anchored to anchor_widget.
 ///
-/// @details Runs a measure pass, computes screen position (clamped to the root widget's bounds
-///          in anchor mode), marks the tooltip visible, and stamps `show_timer`
-///          on the transition from hidden to visible. Anchored tooltips move
-///          above their anchor when they would extend below the root.
+/// @details Runs a measure pass bounded by the containing root when one is
+///          known, computes screen position, clamps both anchored and
+///          follow-cursor tooltips to that root, marks the tooltip visible,
+///          and stamps `show_timer` on the transition from hidden to visible.
+///          Tooltips move above their anchor/pointer when they would extend
+///          below the root.
 ///
 /// @param tooltip Tooltip to show; may be NULL (no-op).
 /// @param x       Cursor or anchor X in screen coordinates (used in follow-cursor mode).
@@ -615,32 +671,40 @@ void vg_tooltip_show_at(vg_tooltip_t *tooltip, int x, int y) {
         return;
 
     bool was_visible = tooltip->is_visible;
-    vg_widget_measure(&tooltip->base, 0.0f, 0.0f);
+    float vx = 0.0f, vy = 0.0f, vw = 0.0f, vh = 0.0f;
+    bool has_viewport = tooltip_root_viewport(tooltip, &vx, &vy, &vw, &vh);
+    float available_width = has_viewport && vw > 4.0f ? vw - 4.0f : 0.0f;
+    // The generic measure entry point intentionally skips hidden widgets.
+    // This tooltip is becoming visible, so publish that transition before
+    // measuring; positioning below depends on the resulting dimensions.
+    tooltip->is_visible = true;
+    tooltip->base.visible = true;
+    vg_widget_measure(&tooltip->base, available_width, 0.0f);
     if (tooltip->position_mode == VG_TOOLTIP_ANCHOR_WIDGET && tooltip->anchor_widget) {
         float ax = 0.0f, ay = 0.0f, aw = 0.0f, ah = 0.0f;
         vg_widget_get_screen_bounds(tooltip->anchor_widget, &ax, &ay, &aw, &ah);
         tooltip->base.x = ax + (float)tooltip->offset_x;
         tooltip->base.y = ay + ah + (float)tooltip->offset_y;
-
-        vg_widget_t *root = tooltip->anchor_widget;
-        while (root->parent)
-            root = root->parent;
-        float vx = 0.0f, vy = 0.0f, vw = 0.0f, vh = 0.0f;
-        vg_widget_get_screen_bounds(root, &vx, &vy, &vw, &vh);
-        if (vw > 0.0f && tooltip->base.x + tooltip->base.measured_width > vx + vw)
-            tooltip->base.x = vx + vw - tooltip->base.measured_width - 2.0f;
-        if (vh > 0.0f && tooltip->base.y + tooltip->base.measured_height > vy + vh)
+        if (has_viewport && tooltip->base.y + tooltip->base.measured_height > vy + vh) {
             tooltip->base.y = ay - tooltip->base.measured_height - (float)tooltip->offset_y;
+        }
+    } else {
+        tooltip->base.x = (float)x + (float)tooltip->offset_x;
+        tooltip->base.y = (float)y + (float)tooltip->offset_y;
+        if (has_viewport && tooltip->base.y + tooltip->base.measured_height > vy + vh) {
+            tooltip->base.y = (float)y - tooltip->base.measured_height - (float)tooltip->offset_y;
+        }
+    }
+    if (has_viewport) {
+        if (tooltip->base.x + tooltip->base.measured_width > vx + vw)
+            tooltip->base.x = vx + vw - tooltip->base.measured_width - 2.0f;
+        if (tooltip->base.y + tooltip->base.measured_height > vy + vh)
+            tooltip->base.y = vy + vh - tooltip->base.measured_height - 2.0f;
         if (tooltip->base.x < vx)
             tooltip->base.x = vx;
         if (tooltip->base.y < vy)
             tooltip->base.y = vy;
-    } else {
-        tooltip->base.x = (float)x + (float)tooltip->offset_x;
-        tooltip->base.y = (float)y + (float)tooltip->offset_y;
     }
-    tooltip->is_visible = true;
-    tooltip->base.visible = true;
     if (!was_visible)
         tooltip->show_timer = tooltip_now_ms();
     tooltip->hide_timer = 0;
@@ -821,7 +885,9 @@ void vg_tooltip_manager_on_hover(vg_tooltip_manager_t *mgr, vg_widget_t *widget,
             if (mgr->active_tooltip) {
                 vg_tooltip_set_text(mgr->active_tooltip, widget->tooltip_text);
                 mgr->active_tooltip->position_mode = VG_TOOLTIP_FOLLOW_CURSOR;
-                mgr->active_tooltip->anchor_widget = NULL;
+                // Follow the pointer, but retain the hovered widget as the
+                // lifetime-safe source of root-window bounds.
+                mgr->active_tooltip->anchor_widget = widget;
                 mgr->active_tooltip->hide_timer = 0;
                 mgr->pending_show = true;
             } else {
@@ -990,7 +1056,7 @@ void vg_widget_set_tooltip_text(vg_widget_t *widget, const char *text) {
 
     vg_tooltip_set_text(mgr->active_tooltip, copy);
     mgr->active_tooltip->position_mode = VG_TOOLTIP_FOLLOW_CURSOR;
-    mgr->active_tooltip->anchor_widget = NULL;
+    mgr->active_tooltip->anchor_widget = widget;
     mgr->active_tooltip->hide_timer = 0;
     if (mgr->active_tooltip->is_visible) {
         vg_tooltip_show_at(mgr->active_tooltip, mgr->cursor_x, mgr->cursor_y);

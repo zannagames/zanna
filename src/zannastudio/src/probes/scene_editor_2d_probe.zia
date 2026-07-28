@@ -313,8 +313,8 @@ func main() {
         return;
     }
 
-    // A common medium window must grow the wrapped row for the longest
-    // stateful workspace label instead of clipping its arranged geometry.
+    // A common medium lane exposes complete secondary commands through one
+    // bounded View surface instead of growing around the longest state label.
     shell.app.SetMinimumSize(1, 1);
     shell.app.SetWindowSize(1000, 700);
     editor.SetWorkspaceModeActive(true);
@@ -324,16 +324,19 @@ func main() {
     shell.Render();
     editor.Pump(sceneDoc);
     shell.Render();
-    if editor.workspaceButton.GetScreenX()
-          + editor.workspaceButton.GetScreenWidth()
+    if editor.viewMenuButton.IsVisible() == false
+       or editor.workspaceButton.IsVisible()
+       or editor.viewWorkspaceItem.IsCheckable() == false
+       or editor.viewMenuButton.GetScreenX()
+          + editor.viewMenuButton.GetScreenWidth()
           > editor.viewToolbar.GetScreenX()
               + editor.viewToolbar.GetScreenWidth() + 1.0
-       or editor.workspaceButton.GetScreenY()
-            + editor.workspaceButton.GetScreenHeight()
+       or editor.viewMenuButton.GetScreenY()
+            + editor.viewMenuButton.GetScreenHeight()
           > editor.viewToolbar.GetScreenY()
               + editor.viewToolbar.GetScreenHeight() + 1.0 {
         fail(shell,
-             "medium 2D Exit Layout action was clipped by wrapped toolbar");
+             "medium 2D View overflow was missing or clipped");
         return;
     }
     editor.SetWorkspaceModeActive(false);
@@ -362,11 +365,13 @@ func main() {
        or editor.canvasScroll.GetScreenWidth()
             < compactBodyWidth
                 - scene_editor_2d.CANVAS_RULER_LEFT_WIDTH - 8.0
-       or editor.objectButton.GetScreenX()
-              + editor.objectButton.GetScreenWidth()
+       or editor.toolMenuButton.IsVisible() == false
+       or editor.objectButton.IsVisible()
+       or editor.toolMenuButton.GetScreenX()
+              + editor.toolMenuButton.GetScreenWidth()
           > editor.toolbar.GetScreenX() + editor.toolbar.GetScreenWidth() + 1.0
-       or editor.objectButton.GetScreenY()
-              + editor.objectButton.GetScreenHeight()
+       or editor.toolMenuButton.GetScreenY()
+              + editor.toolMenuButton.GetScreenHeight()
           > editor.toolbar.GetScreenY() + editor.toolbar.GetScreenHeight() + 1.0
        or editor.inspectorButton.GetScreenX()
               + editor.inspectorButton.GetScreenWidth()
@@ -383,10 +388,10 @@ func main() {
              + " compact=" + editor.compactLayout
              + " status=" + editor.toolbarStatus.IsVisible()
              + "/" + editor.viewStatusLabel.IsVisible()
-             + " object=" + editor.objectButton.GetScreenX() + ","
-             + editor.objectButton.GetScreenY() + " "
-             + editor.objectButton.GetScreenWidth() + "x"
-             + editor.objectButton.GetScreenHeight()
+             + " tools=" + editor.toolMenuButton.GetScreenX() + ","
+             + editor.toolMenuButton.GetScreenY() + " "
+             + editor.toolMenuButton.GetScreenWidth() + "x"
+             + editor.toolMenuButton.GetScreenHeight()
              + " toolbar=" + editor.toolbar.GetScreenX() + ","
              + editor.toolbar.GetScreenY() + " "
              + editor.toolbar.GetScreenWidth() + "x"
@@ -442,16 +447,18 @@ func main() {
             + editor.hierarchyButton.GetScreenHeight()
           > editor.viewToolbar.GetScreenY()
             + editor.viewToolbar.GetScreenHeight() + 1.0
-       or editor.workspaceButton.GetScreenX()
-            + editor.workspaceButton.GetScreenWidth()
+       or editor.viewMenuButton.IsVisible() == false
+       or editor.workspaceButton.IsVisible()
+       or editor.viewMenuButton.GetScreenX()
+            + editor.viewMenuButton.GetScreenWidth()
           > editor.viewToolbar.GetScreenX()
             + editor.viewToolbar.GetScreenWidth() + 1.0
-       or editor.workspaceButton.GetScreenY()
-            + editor.workspaceButton.GetScreenHeight()
+       or editor.viewMenuButton.GetScreenY()
+            + editor.viewMenuButton.GetScreenHeight()
           > editor.viewToolbar.GetScreenY()
             + editor.viewToolbar.GetScreenHeight() + 1.0 {
         fail(shell,
-             "compact 2D palette, hierarchy, or workspace action was clipped");
+             "compact 2D palette, hierarchy, or View action was clipped");
         return;
     }
 
@@ -561,19 +568,22 @@ func main() {
         return;
     }
 
-    // The production dock-heavy lane should remain one purposeful tool row;
-    // a lone wrapped action is both hard to scan and wastes canvas height.
+    // The production dock-heavy lane keeps its primary set on one purposeful
+    // row while complete secondary tools live in the adjacent overflow.
     shell.app.SetWindowSize(1200, 900);
     shell.Poll();
     shell.Render();
     editor.Pump(sceneDoc);
     shell.Render();
     var toolRowDelta =
-        editor.objectButton.GetScreenY() - editor.newSceneButton.GetScreenY();
-    if toolRowDelta < -1.0 or toolRowDelta > 1.0 {
-        fail(shell, "medium-width 2D tools left an orphaned wrapped action: "
+        editor.toolMenuButton.GetScreenY()
+        - editor.newSceneButton.GetScreenY();
+    if editor.toolMenuButton.IsVisible() == false
+       or editor.objectButton.IsVisible()
+       or toolRowDelta < -1.0 or toolRowDelta > 1.0 {
+        fail(shell, "medium-width 2D primary tools did not remain one row: "
              + editor.newSceneButton.GetScreenY() + "/"
-             + editor.objectButton.GetScreenY()
+             + editor.toolMenuButton.GetScreenY()
              + " root=" + editor.root.GetScreenWidth());
         return;
     }

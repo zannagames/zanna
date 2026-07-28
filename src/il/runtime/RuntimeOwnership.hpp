@@ -11,7 +11,8 @@
 //                 ownership facts. Bitmasks refer to explicit IL-visible
 //                 arguments, not hidden bridge parameters.
 // Ownership/Lifetime: Header-only table; no dynamic storage.
-// Links: docs/il/il-passes.md
+// Links: docs/il/il-passes.md,
+//        docs/adr/0210-read-only-mesh-vertex-positions.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -355,6 +356,7 @@ template <std::size_t N>
            name == "Zanna.Graphics3D.Camera3D.get_Position" ||
            name == "Zanna.Graphics3D.Camera3D.get_Forward" ||
            name == "Zanna.Graphics3D.Camera3D.get_Right" ||
+           name == "Zanna.Graphics3D.Mesh3D.VertexPosition" ||
            name == "Zanna.Graphics3D.Material3D.get_Color" ||
            name == "Zanna.Graphics3D.Transform3D.get_Position" ||
            name == "Zanna.Graphics3D.Transform3D.get_Scale" ||
@@ -395,9 +397,10 @@ template <std::size_t N>
            name == "rt_body3d_get_velocity" || name == "rt_body3d_get_angular_velocity" ||
            name == "rt_body3d_get_ground_normal" || name == "rt_character3d_get_position" ||
            name == "rt_camera3d_get_position" || name == "rt_camera3d_get_forward" ||
-           name == "rt_camera3d_get_right" || name == "rt_material3d_get_color" ||
-           name == "rt_transform3d_get_position" || name == "rt_transform3d_get_scale" ||
-           name == "rt_lightprobegrid3d_sample" || name == "rt_timeofday3d_get_sun_direction" ||
+           name == "rt_camera3d_get_right" || name == "rt_mesh3d_get_vertex_position" ||
+           name == "rt_material3d_get_color" || name == "rt_transform3d_get_position" ||
+           name == "rt_transform3d_get_scale" || name == "rt_lightprobegrid3d_sample" ||
+           name == "rt_timeofday3d_get_sun_direction" ||
            name == "rt_reflectionprobe3d_get_position" || name == "rt_navagent3d_get_position" ||
            name == "rt_navagent3d_get_velocity" || name == "rt_navagent3d_get_desired_velocity" ||
            name == "rt_anim_controller3d_get_root_motion_delta" ||

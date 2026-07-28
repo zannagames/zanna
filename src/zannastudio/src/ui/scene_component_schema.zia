@@ -14,8 +14,9 @@
 //   - Every default is validated against its declared scalar kind before use.
 //   - Version-3 object, version-4 scene, version-5 node, version-6 sky/light,
 //     version-7 lens/atmosphere, version-8 2D backdrops, version-9 scene
-//     environment prefabs, and version-10 post-FX chains are bounded and fail
-//     closed.
+//     environment prefabs, version-10 post-FX chains, version-11 2D object
+//     draw stacks, version-12 game-output frames, and version-13 direct
+//     component creation recipes are bounded and fail closed.
 //   - Limits are below the backing 2D/3D scene metadata limits.
 // Ownership/Lifetime: Returned schemas own value-only component/field records.
 // Links: zannastudio/src/ui/scene_component_authoring.zia,
@@ -30,7 +31,10 @@
 //        docs/adr/0201-project-owned-3d-lens-and-atmosphere-previews.md,
 //        docs/adr/0202-project-owned-2d-scene-background-previews.md,
 //        docs/adr/0203-project-owned-3d-scene-environment-previews.md,
-//        docs/adr/0204-project-owned-3d-post-processing-previews.md
+//        docs/adr/0204-project-owned-3d-post-processing-previews.md,
+//        docs/adr/0206-project-owned-2d-object-preview-draw-stacks.md,
+//        docs/adr/0208-project-authored-game-output-frames.md,
+//        docs/adr/0209-project-component-creation-recipes.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -49,7 +53,7 @@ bind Fmt = Zanna.Text.Fmt;
 
 final SCHEMA_FILE_NAME: String = "scene-components.json";
 final SCHEMA_VERSION: Integer = 1;
-final SCHEMA_VERSION_MAX: Integer = 10;
+final SCHEMA_VERSION_MAX: Integer = 13;
 final OBJECT_PREVIEW_SCHEMA_VERSION: Integer = 3;
 final SCENE_PREVIEW_3D_SCHEMA_VERSION: Integer = 4;
 final NODE_PREVIEW_3D_SCHEMA_VERSION: Integer = 5;
@@ -58,6 +62,9 @@ final LENS_ATMOSPHERE_PREVIEW_3D_SCHEMA_VERSION: Integer = 7;
 final SCENE_PREVIEW_2D_SCHEMA_VERSION: Integer = 8;
 final SCENE_ENVIRONMENT_PREVIEW_3D_SCHEMA_VERSION: Integer = 9;
 final SCENE_POSTFX_PREVIEW_3D_SCHEMA_VERSION: Integer = 10;
+final OBJECT_PREVIEW_DRAW_STACK_SCHEMA_VERSION: Integer = 11;
+final GAME_VIEW_OUTPUT_SCHEMA_VERSION: Integer = 12;
+final COMPONENT_CREATION_SCHEMA_VERSION: Integer = 13;
 final MAX_ENUM_CHOICES: Integer = 64;
 final MAX_ENUM_CHOICE_CHARS: Integer = 64;
 final MAX_ASSET_KINDS: Integer = 4;
@@ -70,6 +77,8 @@ final MAX_FIELDS_PER_COMPONENT: Integer = 64;
 final MAX_TOTAL_FIELDS: Integer = 2048;
 final MAX_COMPONENT_NAME_CHARS: Integer = 64;
 final MAX_LABEL_CHARS: Integer = 128;
+final MAX_CREATE_OBJECT_TYPE_CHARS: Integer = 128;
+final MAX_CREATE_NODE_NAME_CHARS: Integer = 128;
 final MAX_DESCRIPTION_CHARS: Integer = 1024;
 final MAX_FIELD_KEY_CHARS: Integer = 128;
 final MAX_DEFAULT_STRING_CHARS: Integer = 16384;
@@ -79,6 +88,10 @@ final MAX_PREVIEW_FRAME_MAP: Integer = 256;
 final MAX_PREVIEW_FRAME: Integer = 1000000;
 final MIN_PREVIEW_FRAME_OFFSET: Integer = -1000000;
 final MAX_PREVIEW_FRAME_OFFSET: Integer = 1000000;
+final MIN_PREVIEW_DRAW_ORDER: Integer = -128;
+final MAX_PREVIEW_DRAW_ORDER: Integer = 127;
+final MIN_PREVIEW_AFTER_LAYER: Integer = -1;
+final MAX_PREVIEW_AFTER_LAYER: Integer = 15;
 final MAX_NODE_PREVIEWS_3D: Integer = 128;
 final MAX_NODE_PREVIEW_VARIANTS: Integer = 256;
 final MAX_NODE_PREVIEW_PREFAB_CHARS: Integer = 1024;
@@ -87,6 +100,8 @@ final MAX_SCENE_PREVIEW_2D_IMAGE_CHARS: Integer = 1024;
 final MIN_SCENE_PREVIEW_2D_OFFSET: Integer = -1000000;
 final MAX_SCENE_PREVIEW_2D_OFFSET: Integer = 1000000;
 final MAX_SCENE_ENVIRONMENT_PREVIEW_VARIANTS: Integer = 64;
+final MIN_GAME_VIEW_OUTPUT_DIMENSION: Integer = 64;
+final MAX_GAME_VIEW_OUTPUT_DIMENSION: Integer = 8192;
 final MIN_SCENE_ENVIRONMENT_PREVIEW_OFFSET: Integer = -1000000;
 final MAX_SCENE_ENVIRONMENT_PREVIEW_OFFSET: Integer = 1000000;
 final BACKGROUND_FIT_COVER: String = "cover";
@@ -130,6 +145,8 @@ class SceneComponentDefinition {
     expose String label;
     expose String target;
     expose String description;
+    expose String createObjectType;
+    expose String createNodeName;
     expose List[SceneComponentField] fields;
 
     expose func init() {
@@ -137,12 +154,26 @@ class SceneComponentDefinition {
         label = "";
         target = "";
         description = "";
+        createObjectType = "";
+        createNodeName = "";
         fields = [];
     }
 
     /// @brief Return whether this definition may be applied to one editor target.
     expose func SupportsTarget(requested: String) -> Boolean {
         return target == TARGET_BOTH or target == requested;
+    }
+
+    /// @brief Return whether this template can create content in one editor.
+    expose func CanCreateFor(requested: String) -> Boolean {
+        if SupportsTarget(requested) == false { return false; }
+        if requested == TARGET_2D_OBJECT {
+            return createObjectType != "";
+        }
+        if requested == TARGET_3D_NODE {
+            return createNodeName != "";
+        }
+        return false;
     }
 
     /// @brief Find one exact field key, or null when absent.
@@ -165,6 +196,8 @@ class SceneObjectPreviewDefinition {
     expose String frameProperty;
     expose Integer frameOffset;
     expose List[Integer] frameMap;
+    expose Integer drawOrder;
+    expose Integer afterLayer;
 
     expose func init() {
         objectType = "";
@@ -173,6 +206,10 @@ class SceneObjectPreviewDefinition {
         frameProperty = "";
         frameOffset = 0;
         frameMap = [];
+        drawOrder = 0;
+        // SceneDocument supports at most sixteen layers. Fifteen therefore
+        // means "after the final layer" for every smaller scene as well.
+        afterLayer = MAX_PREVIEW_AFTER_LAYER;
     }
 
     /// @brief Resolve one property value to a bounded atlas frame.
@@ -197,6 +234,9 @@ class SceneObjectPreviewDefinition {
 ///          Integer variants are read-only editor presentation conventions.
 class ScenePreview2DDefinition {
     expose Boolean present;
+    expose Boolean hasOutputSize;
+    expose Integer outputWidth;
+    expose Integer outputHeight;
     expose String background;
     expose String variantProperty;
     expose Integer variantOffset;
@@ -207,6 +247,9 @@ class ScenePreview2DDefinition {
 
     expose func init() {
         present = false;
+        hasOutputSize = false;
+        outputWidth = 0;
+        outputHeight = 0;
         background = "";
         variantProperty = "";
         variantOffset = 0;
@@ -214,6 +257,11 @@ class ScenePreview2DDefinition {
         fit = BACKGROUND_FIT_COVER;
         hasShowGrid = false;
         showGrid = false;
+    }
+
+    /// @brief Return whether Game View owns an exact project output frame.
+    expose func HasOutputSize() -> Boolean {
+        return hasOutputSize and outputWidth > 0 and outputHeight > 0;
     }
 
     /// @brief Resolve one integer variant or the optional fallback image.
@@ -231,6 +279,9 @@ class ScenePreview2DDefinition {
 ///          only typed scalar metadata and never executes project code.
 class ScenePreview3DDefinition {
     expose Boolean present;
+    expose Boolean hasOutputSize;
+    expose Integer outputWidth;
+    expose Integer outputHeight;
     expose String startXProperty;
     expose String startYProperty;
     expose String startZProperty;
@@ -318,6 +369,9 @@ class ScenePreview3DDefinition {
 
     expose func init() {
         present = false;
+        hasOutputSize = false;
+        outputWidth = 0;
+        outputHeight = 0;
         startXProperty = "";
         startYProperty = "";
         startZProperty = "";
@@ -402,6 +456,11 @@ class ScenePreview3DDefinition {
         vignetteSoftness = 0.3;
         hasFxaa = false;
         fxaa = false;
+    }
+
+    /// @brief Return whether Game View owns an exact project output frame.
+    expose func HasOutputSize() -> Boolean {
+        return hasOutputSize and outputWidth > 0 and outputHeight > 0;
     }
 
     expose func HasStart() -> Boolean {
@@ -1064,6 +1123,14 @@ func ParseScenePreview3D(root: Any,
     }
 
     var profile = new ScenePreview3DDefinition();
+    var outputSize =
+        ParseGameViewOutputSize(raw, "scenePreview3D", schema);
+    if schema.valid == false { return false; }
+    if outputSize.count() == 2 {
+        profile.hasOutputSize = true;
+        profile.outputWidth = outputSize.get(0);
+        profile.outputHeight = outputSize.get(1);
+    }
     if ParseSceneEnvironmentPreview3D(
            raw, profile, schema) == false {
         return false;
@@ -1781,6 +1848,66 @@ func ParsePreview3DBoolean(
     return true;
 }
 
+/// @brief Parse one paired schema-v12 project game-output size.
+/// @details Dimensions are deliberately bounded so malformed project metadata
+///          cannot request an unbounded editor render target.
+func ParseGameViewOutputSize(
+    raw: Any,
+    profileName: String,
+    schema: SceneComponentSchema) -> List[Integer] {
+    var output: List[Integer] = [];
+    var hasWidth = Map.Has(raw, "outputWidth");
+    var hasHeight = Map.Has(raw, "outputHeight");
+    if hasWidth == false and hasHeight == false { return output; }
+    if schema.version < GAME_VIEW_OUTPUT_SCHEMA_VERSION {
+        Reject(
+            schema,
+            "Project game-output frames require schema version 12.");
+        return output;
+    }
+    if hasWidth != hasHeight {
+        Reject(
+            schema,
+            profileName
+                + " outputWidth and outputHeight must be supplied together.");
+        return output;
+    }
+    if Json.TypeOf(Map.Get(raw, "outputWidth")) != "number"
+       or Json.TypeOf(Map.Get(raw, "outputHeight")) != "number" {
+        Reject(
+            schema,
+            profileName
+                + " outputWidth and outputHeight must be integers.");
+        return output;
+    }
+    var parsedWidth =
+        Parse.TryInt(Json.Format(Map.Get(raw, "outputWidth")));
+    var parsedHeight =
+        Parse.TryInt(Json.Format(Map.Get(raw, "outputHeight")));
+    if parsedWidth.IsNone or parsedHeight.IsNone {
+        Reject(
+            schema,
+            profileName
+                + " outputWidth and outputHeight must be integers.");
+        return output;
+    }
+    var width = parsedWidth.UnwrapI64();
+    var height = parsedHeight.UnwrapI64();
+    if width < MIN_GAME_VIEW_OUTPUT_DIMENSION
+       or width > MAX_GAME_VIEW_OUTPUT_DIMENSION
+       or height < MIN_GAME_VIEW_OUTPUT_DIMENSION
+       or height > MAX_GAME_VIEW_OUTPUT_DIMENSION {
+        Reject(
+            schema,
+            profileName
+                + " output dimensions must be between 64 and 8,192.");
+        return output;
+    }
+    output.add(width);
+    output.add(height);
+    return output;
+}
+
 /// @brief Parse the optional schema-v8 project 2D scene backdrop profile.
 func ParseScenePreview2D(root: Any,
                          schema: SceneComponentSchema) -> Boolean {
@@ -1796,6 +1923,14 @@ func ParseScenePreview2D(root: Any,
     }
 
     var profile = new ScenePreview2DDefinition();
+    var outputSize =
+        ParseGameViewOutputSize(raw, "scenePreview2D", schema);
+    if schema.valid == false { return false; }
+    if outputSize.count() == 2 {
+        profile.hasOutputSize = true;
+        profile.outputWidth = outputSize.get(0);
+        profile.outputHeight = outputSize.get(1);
+    }
     if Map.Has(raw, "background") {
         if Json.TypeOf(Map.Get(raw, "background")) != "string" {
             Reject(schema, "scenePreview2D background must be a string.");
@@ -1925,10 +2060,12 @@ func ParseScenePreview2D(root: Any,
         profile.showGrid = Map.GetBool(raw, "showGrid");
     }
     if profile.background == "" and profile.variantImages.count() == 0
-       and profile.hasShowGrid == false {
+       and profile.hasShowGrid == false
+       and profile.hasOutputSize == false {
         Reject(
             schema,
-            "scenePreview2D requires a background mapping or showGrid.");
+            "scenePreview2D requires a background mapping, showGrid, "
+                + "or game-output size.");
         return false;
     }
     profile.present = true;
@@ -2084,6 +2221,49 @@ func ParseObjectPreview(raw: Any,
     if hasMap and ParsePreviewFrameMap(raw, preview, schema) == false {
         return null;
     }
+    var hasDrawOrder = Map.Has(raw, "drawOrder");
+    var hasAfterLayer = Map.Has(raw, "afterLayer");
+    if (hasDrawOrder or hasAfterLayer)
+       and schema.version < OBJECT_PREVIEW_DRAW_STACK_SCHEMA_VERSION {
+        Reject(
+            schema,
+            "Object preview drawOrder/afterLayer requires schema version 11.");
+        return null;
+    }
+    if hasDrawOrder {
+        var rawDrawOrder = Map.Get(raw, "drawOrder");
+        if Json.TypeOf(rawDrawOrder) != "number" {
+            Reject(schema, "Object preview drawOrder must be an integer.");
+            return null;
+        }
+        var parsedDrawOrder = Parse.TryInt(Json.Format(rawDrawOrder));
+        if parsedDrawOrder.IsNone
+           or parsedDrawOrder.UnwrapI64() < MIN_PREVIEW_DRAW_ORDER
+           or parsedDrawOrder.UnwrapI64() > MAX_PREVIEW_DRAW_ORDER {
+            Reject(
+                schema,
+                "Object preview drawOrder must be between -128 and 127.");
+            return null;
+        }
+        preview.drawOrder = parsedDrawOrder.UnwrapI64();
+    }
+    if hasAfterLayer {
+        var rawAfterLayer = Map.Get(raw, "afterLayer");
+        if Json.TypeOf(rawAfterLayer) != "number" {
+            Reject(schema, "Object preview afterLayer must be an integer.");
+            return null;
+        }
+        var parsedAfterLayer = Parse.TryInt(Json.Format(rawAfterLayer));
+        if parsedAfterLayer.IsNone
+           or parsedAfterLayer.UnwrapI64() < MIN_PREVIEW_AFTER_LAYER
+           or parsedAfterLayer.UnwrapI64() > MAX_PREVIEW_AFTER_LAYER {
+            Reject(
+                schema,
+                "Object preview afterLayer must be between -1 and 15.");
+            return null;
+        }
+        preview.afterLayer = parsedAfterLayer.UnwrapI64();
+    }
     return preview;
 }
 
@@ -2197,6 +2377,61 @@ func ParseComponent(raw: Any,
                 schema,
                 "Component \"" + component.name
                     + "\" description exceeds 1,024 characters.");
+            return null;
+        }
+    }
+
+    var hasCreateObjectType = Map.Has(raw, "createObjectType");
+    var hasCreateNodeName = Map.Has(raw, "createNodeName");
+    if hasCreateObjectType or hasCreateNodeName {
+        if schema.version < COMPONENT_CREATION_SCHEMA_VERSION {
+            Reject(
+                schema,
+                "Component creation recipes require schema version 13.");
+            return null;
+        }
+    }
+    if hasCreateObjectType {
+        if Json.TypeOf(Map.Get(raw, "createObjectType")) != "string" {
+            Reject(
+                schema,
+                "Component \"" + component.name
+                    + "\" createObjectType must be a string.");
+            return null;
+        }
+        component.createObjectType =
+            Str.Trim(Map.GetStr(raw, "createObjectType"));
+        if component.SupportsTarget(TARGET_2D_OBJECT) == false
+           or PortableIdentifier(
+               component.createObjectType,
+               MAX_CREATE_OBJECT_TYPE_CHARS) == false {
+            Reject(
+                schema,
+                "Component \"" + component.name
+                    + "\" createObjectType requires a 2D-compatible "
+                    + "target and portable type of at most 128 characters.");
+            return null;
+        }
+    }
+    if hasCreateNodeName {
+        if Json.TypeOf(Map.Get(raw, "createNodeName")) != "string" {
+            Reject(
+                schema,
+                "Component \"" + component.name
+                    + "\" createNodeName must be a string.");
+            return null;
+        }
+        component.createNodeName =
+            Str.Trim(Map.GetStr(raw, "createNodeName"));
+        if component.SupportsTarget(TARGET_3D_NODE) == false
+           or component.createNodeName == ""
+           or Str.get_Length(component.createNodeName)
+              > MAX_CREATE_NODE_NAME_CHARS {
+            Reject(
+                schema,
+                "Component \"" + component.name
+                    + "\" createNodeName requires a 3D-compatible "
+                    + "target and name of at most 128 characters.");
             return null;
         }
     }

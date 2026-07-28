@@ -47,6 +47,16 @@ The schema also carries the balanced runtime tonemap, bloom, color-grade,
 vignette, and FXAA values. Studio finalizes that retained chain before viewport
 readback, giving the mission the same pale high-key atmosphere as the running
 game while leaving selection and transform overlays ungraded.
+Its schema-v12 1600-by-900 output frame renders that finalized scene at the
+project aspect ratio, locks the gameplay camera while Game View is open, and
+restores the exact authoring camera when Game View closes.
+Schema-v13 creation recipes also make the gameplay templates direct authoring
+actions: Enemy Spawn, Pickup, Prop, AI Cover Hint, Flank Pocket, Route Marker,
+Landmark, Encounter Beat, and Objective Gate create a uniquely named node at
+the viewport target with `af.kind` and every typed runtime default already
+present. The project prefab preview appears in the same single undoable edit.
+Box Collider intentionally remains an Add Missing-only component because it
+augments existing geometry instead of creating an empty node.
 `materials.scene3d` seeds the project material library with the campaign's
 surface-class palette. The generic contracts are documented by
 [ADR 0198](../../../docs/adr/0198-project-owned-3d-scene-preview-profiles.md),
@@ -54,7 +64,9 @@ surface-class palette. The generic contracts are documented by
 [ADR 0200](../../../docs/adr/0200-project-owned-3d-sky-and-light-preview-rigs.md),
 [ADR 0201](../../../docs/adr/0201-project-owned-3d-lens-and-atmosphere-previews.md),
 [ADR 0203](../../../docs/adr/0203-project-owned-3d-scene-environment-previews.md),
-and [ADR 0204](../../../docs/adr/0204-project-owned-3d-post-processing-previews.md).
+[ADR 0204](../../../docs/adr/0204-project-owned-3d-post-processing-previews.md),
+[ADR 0208](../../../docs/adr/0208-project-authored-game-output-frames.md),
+and [ADR 0209](../../../docs/adr/0209-project-component-creation-recipes.md).
 
 Regenerate the preview prefabs deterministically after changing production
 prop, enemy, pickup, or terrain presentation:

@@ -72,6 +72,20 @@ func Click(shell: app_shell.AppShell,
     harness.DispatchPending();
 }
 
+func ClickCommandMenuOffset(shell: app_shell.AppShell,
+                            harness: GUI.TestHarness,
+                            button: GUI.Button,
+                            offsetY: Number) {
+    var x = HarnessCoordinate(shell, button.GetScreenX() + 20.0);
+    var y = HarnessCoordinate(
+        shell,
+        button.GetScreenY() + button.GetScreenHeight() + offsetY);
+    harness.SendMouse("move", x, y, 0);
+    harness.SendMouse("down", x, y, 0);
+    harness.SendMouse("up", x, y, 0);
+    harness.DispatchPending();
+}
+
 func PixelDifference(first: Zanna.Graphics.Pixels,
                      second: Zanna.Graphics.Pixels,
                      centerX: Integer,
@@ -136,7 +150,20 @@ func main() {
         return;
     }
 
-    Click(shell, harness, editor.addBoxButton);
+    if editor.addBoxButton.IsVisible() {
+        Click(shell, harness, editor.addBoxButton);
+    } else {
+        Click(shell, harness, editor.createMenuButton);
+        editor.Pump(sceneDoc);
+        shell.Render();
+        if editor.createMenu.IsVisible() == false {
+            Fail(shell, harness, "compact Create menu did not open");
+            return;
+        }
+        // Two 28px rows, one 9px separator, then the Box row.
+        ClickCommandMenuOffset(
+            shell, harness, editor.createMenuButton, 83.0);
+    }
     if editor.Pump(sceneDoc) == false {
         Fail(shell, harness, "the production Add Box action was not accepted");
         return;

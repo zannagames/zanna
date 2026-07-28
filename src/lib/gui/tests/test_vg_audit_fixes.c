@@ -1138,6 +1138,56 @@ TEST(tooltip_wrap_honors_single_newline_once) {
     vg_font_destroy(font);
 }
 
+/// @brief A5 — the exact long scene-hierarchy hint wraps inside a compact
+/// root and a follow-cursor popup near the lower-right corner remains wholly
+/// on screen.
+TEST(tooltip_scene_hint_wraps_and_clamps_to_root) {
+    vg_tooltip_manager_t *mgr = vg_tooltip_manager_get();
+    ASSERT_NOT_NULL(mgr);
+    vg_tooltip_manager_on_leave(mgr);
+
+    vg_widget_t *root = vg_widget_create(VG_WIDGET_CONTAINER);
+    vg_widget_t *button = vg_widget_create(VG_WIDGET_BUTTON);
+    ASSERT_NOT_NULL(root);
+    ASSERT_NOT_NULL(button);
+    root->visible = true;
+    root->enabled = true;
+    button->visible = true;
+    button->enabled = true;
+    vg_widget_add_child(root, button);
+    vg_widget_arrange(root, 0.0f, 0.0f, 96.0f, 160.0f);
+    vg_widget_arrange(button, 40.0f, 110.0f, 50.0f, 24.0f);
+
+    vg_widget_set_tooltip_text(button, "Open the scene hierarchy at the full editor width");
+    vg_tooltip_manager_on_hover(mgr, button, 92, 156);
+    ASSERT_NOT_NULL(mgr->active_tooltip);
+    ASSERT(mgr->active_tooltip->anchor_widget == button);
+
+    vg_font_t *font = vg_font_load_file(ZANNA_TEST_FONT_PATH);
+    ASSERT_NOT_NULL(font);
+    mgr->active_tooltip->font = font;
+    vg_tooltip_show_at(mgr->active_tooltip, 92, 156);
+
+    vg_font_metrics_t metrics = {0};
+    vg_font_get_metrics(font, mgr->active_tooltip->font_size, &metrics);
+    float line_height =
+        metrics.line_height > 0 ? (float)metrics.line_height : mgr->active_tooltip->font_size;
+    ASSERT(mgr->active_tooltip->base.measured_height >
+           line_height + (float)mgr->active_tooltip->padding * 2.0f);
+    ASSERT(mgr->active_tooltip->base.measured_width <= 92.0f);
+    ASSERT(mgr->active_tooltip->base.x >= 0.0f);
+    ASSERT(mgr->active_tooltip->base.y >= 0.0f);
+    ASSERT(mgr->active_tooltip->base.x + mgr->active_tooltip->base.measured_width <= 96.0f);
+    ASSERT(mgr->active_tooltip->base.y + mgr->active_tooltip->base.measured_height <= 160.0f);
+    ASSERT(mgr->active_tooltip->base.y < 156.0f);
+
+    vg_tooltip_hide(mgr->active_tooltip);
+    mgr->active_tooltip->font = vg_theme_get_current()->typography.font_regular;
+    vg_widget_destroy(root);
+    vg_font_destroy(font);
+    ASSERT_NULL(mgr->hovered_widget);
+}
+
 // A6: TreeView scroll_y is re-clamped when a node collapses.
 /// @brief A6 — collapsing a node re-clamps scroll_y so the viewport doesn't show a blank area.
 TEST(treeview_collapse_reclamps_scroll) {
@@ -5375,6 +5425,7 @@ int main(void) {
     RUN(tooltip_wrap_terminates_on_whitespace_only_text);
     RUN(tooltip_wrap_prefers_complete_words);
     RUN(tooltip_wrap_honors_single_newline_once);
+    RUN(tooltip_scene_hint_wraps_and_clamps_to_root);
     RUN(tooltip_manager_honors_duration_and_hide_delay);
     RUN(treeview_collapse_reclamps_scroll);
     RUN(notification_manual_dismiss_respects_exit_animation);

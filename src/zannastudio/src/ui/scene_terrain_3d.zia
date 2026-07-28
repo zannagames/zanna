@@ -1,0 +1,445 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_terrain_3d.zia
+// Purpose: Canonical mesh-heightfield terrain contract and sculpt brush math.
+// Key invariants:
+//   - Terrain is ordinary VSCN mesh geometry; Studio and games consume the
+//     exact same vertices, triangles, material, transform, and metadata.
+//   - The typed terrain.* convention is accepted only when dimensions and
+//     mesh topology agree exactly, so unrelated imported meshes never become
+//     destructively editable terrain by accident.
+//   - Grids are centered in node-local XZ space, row-major, upward-wound, and
+//     bounded to 65x65 samples for predictable interactive rebuild cost.
+//   - Brush functions are pure, finite, deterministic, and order-independent;
+//     callers own scene mutation, pointer capture, history, and cancellation.
+// Ownership/Lifetime:
+//   - Returned lists and meshes are fresh values; the caller assigns them.
+// Links: zannastudio/src/ui/scene_editor_3d.zia,
+//        zannastudio/src/ui/scene_terrain_inspector_3d.zia,
+//        docs/adr/0211-canonical-mesh-terrain-sculpting.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_terrain_3d;
+
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind Vec3 = Zanna.Math.Vec3;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+
+// ============================================================================
+// MODULE: scene_terrain_3d
+// PURPOSE: Keep the persisted terrain vocabulary, topology, and brush math
+//          independent from the large 3D editor controller.
+//
+// WHERE-THIS-FITS: SceneEditor3D creates and commits terrain nodes, while this
+//          module builds canonical geometry and calculates immutable drafts.
+//
+// TEACHING-NOTE: The mesh is the source of truth. Metadata describes how to
+//          safely interpret it as a heightfield; it never points at a second,
+//          potentially divergent preview representation.
+// ============================================================================
+
+final KEY_KIND: String = "terrain.kind";
+final KEY_VERSION: String = "terrain.version";
+final KEY_COLUMNS: String = "terrain.columns";
+final KEY_ROWS: String = "terrain.rows";
+final KEY_SPACING: String = "terrain.spacing";
+final KIND_HEIGHTFIELD_MESH: String = "heightfield-mesh";
+final FORMAT_VERSION: Integer = 1;
+
+final MIN_SAMPLES: Integer = 9;
+final MAX_SAMPLES: Integer = 65;
+final DEFAULT_COLUMNS: Integer = 33;
+final DEFAULT_ROWS: Integer = 33;
+final MIN_SPACING: Number = 0.05;
+final MAX_SPACING: Number = 128.0;
+final DEFAULT_SPACING: Number = 1.0;
+final MIN_HEIGHT: Number = -1024.0;
+final MAX_HEIGHT: Number = 1024.0;
+
+final BRUSH_RAISE: Integer = 0;
+final BRUSH_LOWER: Integer = 1;
+final BRUSH_SMOOTH: Integer = 2;
+final BRUSH_FLATTEN: Integer = 3;
+final MIN_BRUSH_RADIUS: Number = 0.1;
+final MAX_BRUSH_RADIUS: Number = 512.0;
+final DEFAULT_BRUSH_RADIUS: Number = 3.0;
+final MIN_BRUSH_STRENGTH: Number = 0.01;
+final MAX_BRUSH_STRENGTH: Number = 8.0;
+final DEFAULT_BRUSH_STRENGTH: Number = 0.35;
+
+/// @brief Validated interpretation of one canonical terrain node.
+class TerrainState3D {
+    expose Boolean present;
+    expose Integer columns;
+    expose Integer rows;
+    expose Number spacing;
+
+    expose func init() {
+        present = false;
+        columns = DEFAULT_COLUMNS;
+        rows = DEFAULT_ROWS;
+        spacing = DEFAULT_SPACING;
+    }
+}
+
+/// @brief Clamp one finite-looking scalar, replacing NaN with the fallback.
+hide func BoundNumber(value: Number,
+                      minimum: Number,
+                      maximum: Number,
+                      fallback: Number) -> Number {
+    if (value >= minimum) == false { return fallback; }
+    if value > maximum { return maximum; }
+    return value;
+}
+
+/// @brief Normalize a requested sample count into the interactive budget.
+expose func BoundSamples(value: Integer) -> Integer {
+    if value < MIN_SAMPLES { return MIN_SAMPLES; }
+    if value > MAX_SAMPLES { return MAX_SAMPLES; }
+    return value;
+}
+
+/// @brief Normalize grid spacing into the portable terrain contract.
+expose func BoundSpacing(value: Number) -> Number {
+    return BoundNumber(
+        value, MIN_SPACING, MAX_SPACING, DEFAULT_SPACING);
+}
+
+/// @brief Normalize an authored height into the serialization budget.
+expose func BoundHeight(value: Number) -> Number {
+    return BoundNumber(value, MIN_HEIGHT, MAX_HEIGHT, 0.0);
+}
+
+/// @brief Return whether one sculpt mode belongs to the public vocabulary.
+expose func IsBrushMode(mode: Integer) -> Boolean {
+    return mode >= BRUSH_RAISE and mode <= BRUSH_FLATTEN;
+}
+
+/// @brief Human-readable brush mode for status and accessibility text.
+expose func BrushModeName(mode: Integer) -> String {
+    if mode == BRUSH_LOWER { return "Lower"; }
+    if mode == BRUSH_SMOOTH { return "Smooth"; }
+    if mode == BRUSH_FLATTEN { return "Flatten"; }
+    return "Raise";
+}
+
+/// @brief Expected triangle count for one bounded rectangular grid.
+expose func TriangleCount(columns: Integer,
+                          rows: Integer) -> Integer {
+    var boundedColumns = BoundSamples(columns);
+    var boundedRows = BoundSamples(rows);
+    return (boundedColumns - 1) * (boundedRows - 1) * 2;
+}
+
+/// @brief Produce a flat row-major height list for one bounded grid.
+expose func FlatHeights(columns: Integer,
+                        rows: Integer,
+                        height: Number) -> List[Number] {
+    var boundedColumns = BoundSamples(columns);
+    var boundedRows = BoundSamples(rows);
+    var boundedHeight = BoundHeight(height);
+    var heights: List[Number] = [];
+    var index = 0;
+    while index < boundedColumns * boundedRows {
+        heights.add(boundedHeight);
+        index = index + 1;
+    }
+    return heights;
+}
+
+/// @brief Build one centered, upward-wound canonical heightfield mesh.
+/// @details Vertex order is row-major. Each cell uses (a,d,b) and (a,c,d),
+///          whose normals point +Y for increasing local X and Z.
+expose func BuildMesh(heights: List[Number],
+                      columns: Integer,
+                      rows: Integer,
+                      spacing: Number) -> Mesh3D {
+    var boundedColumns = BoundSamples(columns);
+    var boundedRows = BoundSamples(rows);
+    var boundedSpacing = BoundSpacing(spacing);
+    var vertexCount = boundedColumns * boundedRows;
+    if heights.count() != vertexCount {
+        return null;
+    }
+    var mesh = Mesh3D.New();
+    if mesh == null { return null; }
+    mesh.Reserve(
+        vertexCount,
+        (boundedColumns - 1) * (boundedRows - 1) * 2);
+    var halfX = (boundedColumns - 1) * boundedSpacing * 0.5;
+    var halfZ = (boundedRows - 1) * boundedSpacing * 0.5;
+    var row = 0;
+    while row < boundedRows {
+        var column = 0;
+        while column < boundedColumns {
+            var index = row * boundedColumns + column;
+            var u = column / ((boundedColumns - 1) / 1.0);
+            var v = row / ((boundedRows - 1) / 1.0);
+            mesh.AddVertex(
+                column * boundedSpacing - halfX,
+                BoundHeight(heights.get(index)),
+                row * boundedSpacing - halfZ,
+                0.0, 1.0, 0.0,
+                u, v);
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+    row = 0;
+    while row < boundedRows - 1 {
+        var column = 0;
+        while column < boundedColumns - 1 {
+            var a = row * boundedColumns + column;
+            var b = a + 1;
+            var c = a + boundedColumns;
+            var d = c + 1;
+            mesh.AddTriangle(a, d, b);
+            mesh.AddTriangle(a, c, d);
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+    mesh.RecalculateNormals();
+    return mesh;
+}
+
+/// @brief Persist the canonical terrain interpretation onto one node.
+/// @details The caller assigns a matching mesh before committing history.
+expose func WriteConvention(node: SceneNode,
+                            columns: Integer,
+                            rows: Integer,
+                            spacing: Number) -> Boolean {
+    if node == null { return false; }
+    var boundedColumns = BoundSamples(columns);
+    var boundedRows = BoundSamples(rows);
+    var boundedSpacing = BoundSpacing(spacing);
+    return node.MetadataSetString(KEY_KIND, KIND_HEIGHTFIELD_MESH)
+        and node.MetadataSetInt(KEY_VERSION, FORMAT_VERSION)
+        and node.MetadataSetInt(KEY_COLUMNS, boundedColumns)
+        and node.MetadataSetInt(KEY_ROWS, boundedRows)
+        and node.MetadataSetFloat(KEY_SPACING, boundedSpacing);
+}
+
+/// @brief Validate one node as exact canonical mesh-heightfield terrain.
+expose func FromNode(node: SceneNode) -> TerrainState3D {
+    var state = new TerrainState3D();
+    if node == null or node.Mesh == null
+       or node.MetadataKind(KEY_KIND) != "string"
+       or node.MetadataGetString(KEY_KIND, "")
+          != KIND_HEIGHTFIELD_MESH
+       or node.MetadataKind(KEY_VERSION) != "int"
+       or node.MetadataGetInt(KEY_VERSION, 0) != FORMAT_VERSION
+       or node.MetadataKind(KEY_COLUMNS) != "int"
+       or node.MetadataKind(KEY_ROWS) != "int"
+       or node.MetadataKind(KEY_SPACING) != "float" {
+        return state;
+    }
+    var columns = node.MetadataGetInt(
+        KEY_COLUMNS, DEFAULT_COLUMNS);
+    var rows = node.MetadataGetInt(KEY_ROWS, DEFAULT_ROWS);
+    var spacing = node.MetadataGetFloat(
+        KEY_SPACING, DEFAULT_SPACING);
+    if columns < MIN_SAMPLES or columns > MAX_SAMPLES
+       or rows < MIN_SAMPLES or rows > MAX_SAMPLES
+       or spacing < MIN_SPACING or spacing > MAX_SPACING
+       or node.Mesh.VertexCount != columns * rows
+       or node.Mesh.TriangleCount
+          != (columns - 1) * (rows - 1) * 2 {
+        return state;
+    }
+    state.present = true;
+    state.columns = columns;
+    state.rows = rows;
+    state.spacing = spacing;
+    return state;
+}
+
+/// @brief Return whether one node is safely sculptable terrain.
+expose func IsTerrainNode(node: SceneNode) -> Boolean {
+    return FromNode(node).present;
+}
+
+/// @brief Extract the row-major canonical heights from one terrain node.
+expose func HeightsFromNode(node: SceneNode) -> List[Number] {
+    var heights: List[Number] = [];
+    var state = FromNode(node);
+    if state.present == false { return heights; }
+    var index = 0;
+    while index < state.columns * state.rows {
+        var position = node.Mesh.VertexPosition(index) as Vec3;
+        if position == null {
+            var invalid: List[Number] = [];
+            return invalid;
+        }
+        heights.add(BoundHeight(position.Y));
+        index = index + 1;
+    }
+    return heights;
+}
+
+/// @brief Immutable bounded copy used by every brush result.
+hide func CopyHeights(source: List[Number]) -> List[Number] {
+    var result: List[Number] = [];
+    var index = 0;
+    while index < source.count() {
+        result.add(BoundHeight(source.get(index)));
+        index = index + 1;
+    }
+    return result;
+}
+
+/// @brief Average one sample and its available 8-neighborhood.
+hide func NeighborAverage(source: List[Number],
+                          columns: Integer,
+                          rows: Integer,
+                          column: Integer,
+                          row: Integer) -> Number {
+    var total = 0.0;
+    var count = 0;
+    var dz = -1;
+    while dz <= 1 {
+        var sampleRow = row + dz;
+        if sampleRow >= 0 and sampleRow < rows {
+            var dx = -1;
+            while dx <= 1 {
+                var sampleColumn = column + dx;
+                if sampleColumn >= 0 and sampleColumn < columns {
+                    total = total + source.get(
+                        sampleRow * columns + sampleColumn);
+                    count = count + 1;
+                }
+                dx = dx + 1;
+            }
+        }
+        dz = dz + 1;
+    }
+    if count <= 0 { return source.get(row * columns + column); }
+    return total / count;
+}
+
+/// @brief Apply one deterministic radial dab to an immutable height list.
+/// @details Smooth reads every neighbor from @p source rather than partially
+///          updated output, so traversal direction cannot change the result.
+expose func ApplyBrush(source: List[Number],
+                       columns: Integer,
+                       rows: Integer,
+                       spacing: Number,
+                       centerX: Number,
+                       centerZ: Number,
+                       radius: Number,
+                       strength: Number,
+                       mode: Integer,
+                       flattenHeight: Number) -> List[Number] {
+    var boundedColumns = BoundSamples(columns);
+    var boundedRows = BoundSamples(rows);
+    var expected = boundedColumns * boundedRows;
+    var output = CopyHeights(source);
+    if source.count() != expected or IsBrushMode(mode) == false {
+        return output;
+    }
+    var boundedSpacing = BoundSpacing(spacing);
+    var boundedRadius = BoundNumber(
+        radius,
+        MIN_BRUSH_RADIUS,
+        MAX_BRUSH_RADIUS,
+        DEFAULT_BRUSH_RADIUS);
+    var boundedStrength = BoundNumber(
+        strength,
+        MIN_BRUSH_STRENGTH,
+        MAX_BRUSH_STRENGTH,
+        DEFAULT_BRUSH_STRENGTH);
+    var targetHeight = BoundHeight(flattenHeight);
+    var halfX = (boundedColumns - 1) * boundedSpacing * 0.5;
+    var halfZ = (boundedRows - 1) * boundedSpacing * 0.5;
+    var row = 0;
+    while row < boundedRows {
+        var z = row * boundedSpacing - halfZ;
+        var column = 0;
+        while column < boundedColumns {
+            var x = column * boundedSpacing - halfX;
+            var dx = x - centerX;
+            var dz = z - centerZ;
+            var distanceSquared = dx * dx + dz * dz;
+            if distanceSquared <= boundedRadius * boundedRadius {
+                var distance = Math.Sqrt(distanceSquared);
+                var falloff = 1.0 - distance / boundedRadius;
+                // Smoothstep keeps the brush center decisive without a hard
+                // edge at the radius boundary.
+                falloff = falloff * falloff * (3.0 - 2.0 * falloff);
+                var index = row * boundedColumns + column;
+                var current = source.get(index);
+                var next = current;
+                if mode == BRUSH_RAISE {
+                    next = current + boundedStrength * falloff;
+                } else if mode == BRUSH_LOWER {
+                    next = current - boundedStrength * falloff;
+                } else {
+                    var mix = boundedStrength * falloff;
+                    if mix > 1.0 { mix = 1.0; }
+                    var target = targetHeight;
+                    if mode == BRUSH_SMOOTH {
+                        target = NeighborAverage(
+                            source,
+                            boundedColumns,
+                            boundedRows,
+                            column,
+                            row);
+                    }
+                    next = current + (target - current) * mix;
+                }
+                output.set(index, BoundHeight(next));
+            }
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+    return output;
+}
+
+/// @brief Bilinearly sample one row-major heightfield in centered local space.
+expose func SampleHeight(heights: List[Number],
+                         columns: Integer,
+                         rows: Integer,
+                         spacing: Number,
+                         localX: Number,
+                         localZ: Number) -> Number {
+    var boundedColumns = BoundSamples(columns);
+    var boundedRows = BoundSamples(rows);
+    if heights.count() != boundedColumns * boundedRows {
+        return 0.0;
+    }
+    var boundedSpacing = BoundSpacing(spacing);
+    var halfX = (boundedColumns - 1) * boundedSpacing * 0.5;
+    var halfZ = (boundedRows - 1) * boundedSpacing * 0.5;
+    var gridX = (localX + halfX) / boundedSpacing;
+    var gridZ = (localZ + halfZ) / boundedSpacing;
+    if gridX < 0.0 { gridX = 0.0; }
+    if gridZ < 0.0 { gridZ = 0.0; }
+    if gridX > boundedColumns - 1 {
+        gridX = boundedColumns - 1;
+    }
+    if gridZ > boundedRows - 1 { gridZ = boundedRows - 1; }
+    var x0 = Convert.NumToInt(gridX);
+    var z0 = Convert.NumToInt(gridZ);
+    var x1 = x0 + 1;
+    var z1 = z0 + 1;
+    if x1 >= boundedColumns { x1 = boundedColumns - 1; }
+    if z1 >= boundedRows { z1 = boundedRows - 1; }
+    var tx = gridX - x0;
+    var tz = gridZ - z0;
+    var h00 = heights.get(z0 * boundedColumns + x0);
+    var h10 = heights.get(z0 * boundedColumns + x1);
+    var h01 = heights.get(z1 * boundedColumns + x0);
+    var h11 = heights.get(z1 * boundedColumns + x1);
+    var top = h00 + (h10 - h00) * tx;
+    var bottom = h01 + (h11 - h01) * tx;
+    return BoundHeight(top + (bottom - top) * tz);
+}

@@ -1,0 +1,274 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_terrain_inspector_3d.zia
+// Purpose: Responsive presentation-only controls for canonical 3D terrain.
+// Key invariants:
+//   - Widgets never mutate SceneNode, Mesh3D, VSCN, history, or dirty state.
+//   - Destructive rebuild and flatten requests remain explicit buttons.
+//   - Wrapping rows stay usable in narrow inspector panes.
+//   - Tool state and action enablement truthfully follow one valid terrain.
+// Ownership/Lifetime:
+//   - SceneEditor3D owns one inspector; GUI owns the constructed widgets.
+// Links: zannastudio/src/ui/scene_editor_3d.zia,
+//        zannastudio/src/ui/scene_terrain_3d.zia,
+//        docs/adr/0211-canonical-mesh-terrain-sculpting.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_terrain_inspector_3d;
+
+bind "inspector_rows";
+bind "scene_terrain_3d";
+
+bind GUI = Zanna.GUI;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind Convert = Zanna.Core.Convert;
+
+// ============================================================================
+// MODULE: scene_terrain_inspector_3d
+// PURPOSE: Keep terrain labels, controls, and responsive rows outside the
+//          transactional SceneEditor3D controller.
+//
+// WHERE-THIS-FITS: The editor refreshes these widgets from canonical terrain
+//          and consumes button/dropdown/spinner intent in its normal pump.
+//
+// TEACHING-NOTE: Like the material and collider inspectors, this object is a
+//          draft surface. Only SceneEditor3D may turn a draft into history.
+// ============================================================================
+
+/// @brief Presentation-only terrain sculpt and grid inspector.
+class SceneTerrainInspector3D {
+    expose GUI.GroupBox group;
+    expose GUI.Label summary;
+    expose GUI.Button sculptButton;
+    expose GUI.Dropdown modeDropdown;
+    expose GUI.Spinner radiusSpinner;
+    expose GUI.Spinner strengthSpinner;
+    expose GUI.Spinner flattenHeightSpinner;
+    expose GUI.Spinner columnsSpinner;
+    expose GUI.Spinner rowsSpinner;
+    expose GUI.Spinner spacingSpinner;
+    expose GUI.Button regenerateButton;
+    expose GUI.Button flattenAllButton;
+
+    expose func init() {
+        group = null;
+        summary = null;
+        sculptButton = null;
+        modeDropdown = null;
+        radiusSpinner = null;
+        strengthSpinner = null;
+        flattenHeightSpinner = null;
+        columnsSpinner = null;
+        rowsSpinner = null;
+        spacingSpinner = null;
+        regenerateButton = null;
+        flattenAllButton = null;
+    }
+
+    /// @brief Build the complete responsive terrain authoring surface.
+    expose func Setup(parent: GUI.VBox) {
+        group = GUI.GroupBox.New(parent, "Terrain");
+        summary = GUI.Label.New(
+            group,
+            "Select canonical terrain to sculpt its exact game mesh.");
+        summary.SetWordWrap(true);
+
+        var toolRow = inspector_rows.NewWrapRow();
+        group.AddChild(toolRow);
+        sculptButton = GUI.Button.New(toolRow, "Sculpt Terrain");
+        sculptButton.SetAccessibleName(
+            "Toggle terrain sculpting in the 3D viewport");
+        sculptButton.SetTooltip(
+            "Paint the selected terrain directly in the viewport; one press "
+            + "and drag becomes one undoable edit, Escape cancels");
+        modeDropdown = GUI.Dropdown.New(toolRow);
+        modeDropdown.SetAccessibleName("Terrain sculpt brush mode");
+        modeDropdown.AddItem("Raise");
+        modeDropdown.AddItem("Lower");
+        modeDropdown.AddItem("Smooth");
+        modeDropdown.AddItem("Flatten");
+        modeDropdown.SetSelected(scene_terrain_3d.BRUSH_RAISE);
+
+        var brushRow = inspector_rows.NewWrapRow();
+        group.AddChild(brushRow);
+        radiusSpinner = AddSpinner(
+            brushRow,
+            "Radius",
+            scene_terrain_3d.MIN_BRUSH_RADIUS,
+            scene_terrain_3d.MAX_BRUSH_RADIUS,
+            scene_terrain_3d.DEFAULT_BRUSH_RADIUS,
+            0.25,
+            2);
+        strengthSpinner = AddSpinner(
+            brushRow,
+            "Strength",
+            scene_terrain_3d.MIN_BRUSH_STRENGTH,
+            scene_terrain_3d.MAX_BRUSH_STRENGTH,
+            scene_terrain_3d.DEFAULT_BRUSH_STRENGTH,
+            0.05,
+            2);
+        flattenHeightSpinner = AddSpinner(
+            brushRow,
+            "Level",
+            scene_terrain_3d.MIN_HEIGHT,
+            scene_terrain_3d.MAX_HEIGHT,
+            0.0,
+            0.25,
+            2);
+        radiusSpinner.SetTooltip(
+            "Node-local radius of the projected terrain brush");
+        strengthSpinner.SetTooltip(
+            "Height per Raise/Lower dab; blend amount for Smooth/Flatten");
+        flattenHeightSpinner.SetTooltip(
+            "Node-local target height for the Flatten brush and Flatten All");
+
+        var gridRow = inspector_rows.NewWrapRow();
+        group.AddChild(gridRow);
+        columnsSpinner = AddSpinner(
+            gridRow,
+            "X samples",
+            scene_terrain_3d.MIN_SAMPLES,
+            scene_terrain_3d.MAX_SAMPLES,
+            scene_terrain_3d.DEFAULT_COLUMNS,
+            2.0,
+            0);
+        rowsSpinner = AddSpinner(
+            gridRow,
+            "Z samples",
+            scene_terrain_3d.MIN_SAMPLES,
+            scene_terrain_3d.MAX_SAMPLES,
+            scene_terrain_3d.DEFAULT_ROWS,
+            2.0,
+            0);
+        spacingSpinner = AddSpinner(
+            gridRow,
+            "Spacing",
+            scene_terrain_3d.MIN_SPACING,
+            scene_terrain_3d.MAX_SPACING,
+            scene_terrain_3d.DEFAULT_SPACING,
+            0.25,
+            2);
+
+        var actionRow = inspector_rows.NewWrapRow();
+        group.AddChild(actionRow);
+        regenerateButton =
+            GUI.Button.New(actionRow, "Regenerate Flat");
+        regenerateButton.SetTooltip(
+            "Replace this terrain with a flat grid using the sample and "
+            + "spacing draft as one undoable edit");
+        flattenAllButton = GUI.Button.New(actionRow, "Flatten All");
+        flattenAllButton.SetTooltip(
+            "Set every existing sample to Level as one undoable edit");
+
+        UpdateControls(false, false, false);
+    }
+
+    /// @brief Refresh grid identity and active-tool presentation.
+    expose func Refresh(node: SceneNode,
+                        selectionCount: Integer,
+                        editorEnabled: Boolean,
+                        sculptActive: Boolean) {
+        var state = scene_terrain_3d.FromNode(node);
+        if state.present {
+            columnsSpinner.SetValue(state.columns);
+            rowsSpinner.SetValue(state.rows);
+            spacingSpinner.SetValue(state.spacing);
+            var width = (state.columns - 1) * state.spacing;
+            var depth = (state.rows - 1) * state.spacing;
+            summary.SetText(
+                state.columns + " x " + state.rows + " samples  •  "
+                + width + " x " + depth
+                + " local units  •  exact VSCN game mesh");
+        } else if selectionCount == 0 {
+            summary.SetText(
+                "Select canonical terrain to sculpt its exact game mesh.");
+        } else if selectionCount > 1 {
+            summary.SetText(
+                "Terrain sculpting requires one unambiguous terrain node.");
+        } else {
+            summary.SetText(
+                "This mesh is not canonical Studio terrain and remains "
+                + "protected from heightfield editing.");
+        }
+        SetSculptActive(sculptActive and state.present);
+        UpdateControls(editorEnabled, state.present, sculptActive);
+    }
+
+    /// @brief Reflect tool ownership without generating a click edge.
+    expose func SetSculptActive(active: Boolean) {
+        if sculptButton == null { return; }
+        sculptButton.SetText(
+            active ? "Stop Sculpting" : "Sculpt Terrain");
+        sculptButton.SetStyle(active ? 1 : 0);
+        sculptButton.SetAccessibleDescription(
+            active
+            ? "Terrain sculpt tool active. Drag the viewport to paint; "
+              + "Escape cancels an active stroke."
+            : "Terrain sculpt tool inactive.");
+    }
+
+    /// @brief Current normalized terrain-grid draft.
+    expose func BuildGridState() -> scene_terrain_3d.TerrainState3D {
+        var state = new scene_terrain_3d.TerrainState3D();
+        state.present = true;
+        state.columns = scene_terrain_3d.BoundSamples(
+            Convert.NumToInt(columnsSpinner.Value));
+        state.rows = scene_terrain_3d.BoundSamples(
+            Convert.NumToInt(rowsSpinner.Value));
+        state.spacing =
+            scene_terrain_3d.BoundSpacing(spacingSpinner.Value);
+        return state;
+    }
+
+    /// @brief Selected valid brush mode, falling back to Raise.
+    expose func BrushMode() -> Integer {
+        if scene_terrain_3d.IsBrushMode(modeDropdown.Selected) {
+            return modeDropdown.Selected;
+        }
+        return scene_terrain_3d.BRUSH_RAISE;
+    }
+
+    /// @brief Keep every action truthful for selection and tool state.
+    expose func UpdateControls(editorEnabled: Boolean,
+                               hasTerrain: Boolean,
+                               sculptActive: Boolean) {
+        if group == null { return; }
+        var usable = editorEnabled and hasTerrain;
+        group.SetEnabled(editorEnabled);
+        sculptButton.SetEnabled(usable);
+        modeDropdown.SetEnabled(usable);
+        radiusSpinner.SetEnabled(usable);
+        strengthSpinner.SetEnabled(usable);
+        flattenHeightSpinner.SetEnabled(usable);
+        columnsSpinner.SetEnabled(usable and sculptActive == false);
+        rowsSpinner.SetEnabled(usable and sculptActive == false);
+        spacingSpinner.SetEnabled(usable and sculptActive == false);
+        regenerateButton.SetEnabled(usable and sculptActive == false);
+        flattenAllButton.SetEnabled(usable and sculptActive == false);
+    }
+
+    /// @brief Build one labeled responsive spinner with stable geometry.
+    hide func AddSpinner(parent: GUI.Flex,
+                         label: String,
+                         minimum: Number,
+                         maximum: Number,
+                         value: Number,
+                         step: Number,
+                         decimals: Integer) -> GUI.Spinner {
+        GUI.Label.New(parent, label);
+        var spinner = GUI.Spinner.New(parent);
+        spinner.SetRange(minimum, maximum);
+        spinner.SetStep(step);
+        spinner.SetDecimals(decimals);
+        spinner.SetValue(value);
+        spinner.SetPreferredSize(78.0, 0.0);
+        spinner.SetAccessibleName(label + " terrain value");
+        return spinner;
+    }
+}

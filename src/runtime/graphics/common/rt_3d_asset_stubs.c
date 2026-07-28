@@ -195,6 +195,16 @@ int64_t rt_mesh3d_get_vertex_count(void *o) {
     return 0;
 }
 
+/// @brief Graphics-disabled fallback for `Mesh3D.VertexPosition`.
+/// @param o Mesh3D handle (ignored).
+/// @param index Zero-based vertex index (ignored).
+/// @return NULL because no mesh geometry exists without Graphics3D.
+void *rt_mesh3d_get_vertex_position(void *o, int64_t index) {
+    (void)o;
+    (void)index;
+    return NULL;
+}
+
 /// @brief Stub for `Mesh3D.TriangleCount` — would normally return the
 ///        number of triangles currently stored in the mesh (== `IndexCount / 3`).
 ///

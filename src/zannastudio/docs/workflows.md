@@ -509,8 +509,47 @@ timeline and its labels follow the owning document when tabs change; snapshot
 count and aggregate bytes remain bounded, and presentation labels never become
 part of the scene format.
 
-The 2D toolbar switches among Select, Paint, Erase, Rectangle, Line, Ellipse,
-Fill, Pick, and Object modes. Paint, Fill, and the shape tools composite the
+Use **Game View** in either view toolbar when judging the scene as a game frame.
+It is independent of 2D **Preview**, 3D **Gameplay**, **Scene Layout**, and
+**Focus**. The action belongs to the open scene tab and masks editor-only
+viewport pixels without changing selection, tools, overlay preferences,
+camera/scroll/zoom, scene bytes, dirty state, or history. Exit Game View to
+restore the authoring presentation exactly.
+
+In 2D, Game View keeps the project background, every authored-visible tile
+layer, the shared sprite draw stack, and effective animation playback. It
+temporarily ignores editor-only layer Solo without changing that choice. It
+removes grid, rulers, guides, fallback markers, every object outline, routes,
+light/camera bounds, selection/transform handles, and tool ghosts.
+Canvas edits and drops are disabled. Without a schema-v12 output size,
+middle-drag pan, wheel zoom, Fit/1:1, and `F` to fit remain available.
+With `outputWidth` and `outputHeight`, Studio instead fits that exact project
+frame around the authored player start, mats unused viewport space, and locks
+navigation until exit. The previous scroll and zoom then return exactly.
+
+In 3D, Game View keeps authored/project geometry, materials, lights,
+environment, atmosphere, and finalized post-FX in a temporary shaded pass. It
+removes grid, hierarchy/role markers, gizmos, selection, light/camera/collider
+and route overlays, camera inset, orientation navigator, and editor-light
+assist. Viewport edits and drops are disabled. Without a schema-v12 output
+size, orbit, pan, dolly, fly, projection, framing, quick views, and the project
+**Gameplay** camera reset remain available. With the output pair, the retained
+renderer uses that exact aspect, reapplies and locks the gameplay camera, and
+composites any unused editor space as matte. The prior camera,
+Wireframe/Shaded+Wire choice, and complete View-options state return on exit.
+
+Scene command bars preserve canvas/viewport height instead of growing into
+large stacks. Below 1,180 logical pixels, the 2D bar keeps Select, Paint, and
+Erase direct; **Tools** exposes the complete checked tool set, while **View**
+contains Fit, 1:1, grid, rulers, pane, Focus, and Scene Layout actions. The 3D
+bar uses **Create** for nodes/primitives/lights/cameras, **Placement** for Drop,
+Surface, Align, and Vertex state, and **View** for camera navigation, framing,
+projection, options, Focus, and Scene Layout. Checked menu items mirror the
+active tool and workspace state. Wider lanes restore the corresponding direct
+controls without changing shortcuts or transactions.
+
+The 2D command set switches among Select, Paint, Erase, Rectangle, Line,
+Ellipse, Fill, Pick, and Object modes. Paint, Fill, and the shape tools composite the
 selected active-layer atlas frame under the pointer before anything is written.
 Captured Rectangle, Line, and Ellipse gestures show image-true translucent
 frames on every cell their release will commit; a multi-cell region stamp shows
@@ -707,6 +746,34 @@ for the exact fail-closed schema. The scene test gate opens Xenoscape's real
 canonical bytes, and captures the production canvas so game/editor visual
 parity cannot regress behind synthetic fixtures alone.
 
+Schema version 12 can add paired integer `outputWidth` and `outputHeight`
+members to `scenePreview2D`. In Game View, Studio scales authored pixels into
+the largest centered rectangle with that project aspect, centers the
+conventional player start, scales the background inside the rectangle rather
+than the matte, and disables camera navigation. Xenoscape declares 1280x720.
+See
+[scene-components.md](scene-components.md#version-12-game-output-frames)
+for the bounds and legacy fallback.
+
+Schema version 11 can also reproduce the game's 2D object paint categories and
+foreground overdraw. Add exact integer `drawOrder` (-128 through 127) and
+`afterLayer` (-1 through 15) members to an `objectPreviews` rule. Smaller
+priorities paint first, equal priorities keep canonical object order, and
+`afterLayer: -1` paints before all tiles while `0` paints after the first tile
+layer. Values beyond the scene's last layer resolve after all layers. Studio
+uses the same stable stack for sprite pixels and topmost canvas picking, while
+the grid, guides, selections, handles, route lines, and light halos stay above
+the game-like composite as editor overlays.
+
+Select one object to inspect its effective **Preview draw stack**. Choose a
+tile-layer boundary and priority, then **Apply** to store the pair as the
+ordinary integer properties `editor.afterLayer` and `editor.drawOrder` in one
+undoable scene edit. **Use Project** removes both in one edit. A missing,
+wrong-kind, or out-of-range property inherits the project rule; project
+defaults themselves never dirty the scene. See
+[scene-components.md](scene-components.md#version-11-2d-object-draw-stacks)
+for the exact version gate, bounds, and fallback contract.
+
 The 3D viewport starts in **Shaded** mode. It renders the live scene hierarchy,
 visibility, meshes, PBR materials, assigned maps, and scene lights through the
 runtime's windowless software renderer inside the Studio window. Choose
@@ -747,6 +814,14 @@ See
 [scene-components.md](scene-components.md#version-10-3d-post-processing)
 for the fields, ranges, and portable-effect boundary.
 
+Schema version 12 can also add the paired output dimensions to
+`scenePreview3D`. Game View renders the offscreen `Canvas3D` at the resulting
+on-screen frame aspect before post-processing and matte composition, so dock
+layout cannot distort the gameplay camera. Ashfall declares 1600x900. The
+project camera stays locked until exit, when the previous editor camera returns
+exactly. See
+[scene-components.md](scene-components.md#version-12-game-output-frames).
+
 Click anywhere inside a visible mesh's transformed bounds to select the nearest
 depth hit; if no mesh is hit, bounded node-origin markers keep empty
 organizational nodes selectable. A plain click replaces the selection,
@@ -762,16 +837,74 @@ scales around its own local origin. The optional Snap toggle quantizes the
 resulting primary value—not each pointer frame—to 0.5 units, 15 degrees, or 0.1
 scale for the active tool. A drag captures the pointer, updates the inspector
 live, commits one VSCN history snapshot on release, and restores every origin
-when Escape cancels it. Tool and snap selection belong to the scene tab and
-survive session restore. With the viewport or one of its transform-tool buttons
-focused, W selects Move, E selects Rotate, and R selects Scale. Those keys
-remain ordinary input while an inspector, editor, terminal, or other workbench
-control owns focus. Middle-drag orbits and Shift+middle-drag pans in the current
-camera plane. Holding right-mouse enters fly navigation: mouse movement looks,
-WASD moves in the camera basis, Q/E moves vertically, Shift accelerates, and
-the wheel adjusts fly speed until release or Escape. Outside fly mode the wheel
-zooms, and Frame All/Frame Selected reposition the view around the complete
-scene or selection.
+when Escape cancels it. Tool, grid snap, and Surface Move selection belong to
+the scene tab and survive session restore. With the viewport or one of its
+transform controls focused, W selects Move, E selects Rotate, and R selects
+Scale. Those keys remain ordinary input while an inspector, editor, terminal,
+or other workbench control owns focus. Middle-drag orbits and
+Shift+middle-drag pans in the current camera plane. Holding right-mouse enters
+fly navigation: mouse movement looks, WASD moves in the camera basis, Q/E moves
+vertically, Shift accelerates, and the wheel adjusts fly speed until release
+or Escape. Outside fly mode the wheel zooms, and Frame All/Frame Selected
+reposition the view around the complete scene or selection.
+
+Use **Drop** in the wide Transform row, **Placement > Drop Selection to
+Surface** on a constrained command bar, or press End while the viewport or a
+transform control owns focus, to place selected hierarchy roots on visible
+geometry below them. Studio casts independently from the world-space bottom
+center of each selected top-level subtree, so a multi-selection conforms to
+uneven surfaces instead of moving as one rigid block. Selected authored meshes
+and their transient project prefab previews are excluded from the query; they
+cannot catch their own rays. Unselected scene meshes and schema-v9 project
+environment previews are both eligible, which lets runtime-terrain stand-ins
+participate in placement without entering the VSCN. The complete changed group
+commits once and keeps its selection. A lossy parent-relative conversion rolls
+the group back, while already-grounded roots and roots with no surface below
+create no history.
+
+Enable **Surface** beside Snap on a wide bar, or **Surface Move** in
+**Placement** on a constrained bar, to keep X, Z, and XZ Move-handle drags
+grounded while they are in progress. Every selected top-level hierarchy root queries
+independently after the horizontal target is applied, so props follow uneven
+authored geometry and schema-v9 environment previews instead of floating at
+their starting elevation. The live ray begins four scene units above the
+current visual bottom, allowing ordinary terrain rises and steps without
+mistaking arbitrarily high floors for the active surface. Selected canonical
+meshes and their project prefab art are excluded from the query; prefab bounds
+participate in placement and those previews follow their source nodes live
+during every transform gesture. A root with no reachable surface keeps its
+horizontal move at the current height.
+
+Enable **Align** directly or choose **Placement > Align to Surface Normal** to
+preserve each root's existing twist while rotating its world up axis to the
+precise upward-facing hit normal. Alignment applies to
+both Surface Move and explicit **Drop**, then recomputes the complete
+canonical-plus-prefab visual bound before placing its bottom on the hit point.
+A lossy parent-relative TRS conversion restores the complete group. One
+release still creates exactly one history entry, Escape restores every
+captured local transform, and any failed query or conversion remains
+uncommitted. For predictable interactive cost, Surface Move refuses gestures
+containing more than 256 selected hierarchy roots.
+
+Hold **V** while the viewport or a transform control owns focus to enter
+transient vertex-snap mode, or use **Shift+V** / the persistent **Vertex**
+toggle (direct on wide bars, under **Placement** when constrained) for repeated
+placement. Point at an exact mesh vertex on the primary
+selection (or its pivot), press and drag, then point at an exact vertex on
+unselected geometry. When no target vertex is within the screen-space pick
+radius, Studio falls back to the precise visible surface below the pointer.
+Canonical meshes and project-prefab previews can provide source vertices;
+canonical meshes, project-prefab previews, and project-environment previews
+can provide targets. Only selected top-level hierarchy roots move, preserving
+the selected subtrees as rigid world-space groups.
+
+The viewport labels the chosen source and target and previews the complete
+transform live. Release serializes the group once; Escape restores every
+captured local transform without changing canonical content, revision, or
+history. Studio scans at most 32,768 resident vertices and accepts at most 256
+selected roots per gesture. If a dense target reaches the scan ceiling, it
+fails closed to precise surface placement rather than using a partial vertex
+answer. If a dense source reaches the ceiling, its pivot remains available.
 
 The top-right **VIEW** navigator snaps to Top, Front, Right, Bottom, Back, or
 Left without moving the view target. Its projection chip switches between
@@ -891,6 +1024,17 @@ wrong-type value rejects the complete action before mutation. Successful
 application serializes once and creates one undo entry; a complete component is
 a no-op and a failed write or serialization restores the prior scene.
 
+Schema-version-13 components may also declare a direct creation recipe. With
+the Object inspector tab open, choose the component and use **Create Object**
+or **Create Node** without first selecting or adding a generic placeholder. A
+2D object uses the selected cell, or the visible canvas center, and its
+project-declared runtime type. A 3D node uses the viewport target and a
+scene-unique form of its project-declared name. Every typed default is present
+before one canonical commit, the created item becomes the selection, and
+existing project sprite/prefab previews resolve immediately. Undo removes the
+complete item in one step. Components without a relevant recipe remain honest
+Add Missing-only templates.
+
 Edit Field copies the selected template field into the ordinary raw property or
 metadata controls. The 2D batch property controls can use that draft for a
 selection. The 3D raw editor still requires one node, so Edit Field is disabled
@@ -901,7 +1045,9 @@ dropdown is intentionally unfiltered: either editor can maintain 2D-only,
 3D-only, and shared definitions even though the Add Missing picker shows only
 compatible components. New/Save/Delete and Earlier/Later controls maintain
 component and field identity, labels, descriptions, targets, scalar kinds, and
-typed defaults. New Component creates a missing file with a valid starter field.
+typed defaults plus target-compatible 2D creation types and 3D creation names.
+New Component creates a missing file with a valid starter field and immediately
+usable recipe.
 
 Each accepted form action reparses and atomically replaces one complete schema
 state. Unknown version-1 members on retained JSON objects survive, invalid
@@ -959,6 +1105,38 @@ dimensions. The preview is derived from the live material's decoded pixels, not
 the picker path, so it follows VSCN load, undo/redo, import, clone, and
 cross-document scene operations. Switching slots reuses the thumbnail while the
 material and decoded source identity are unchanged.
+
+### 3D Terrain Authoring
+
+Use **+ Terrain** on a wide Create row, **Create > Terrain** on a constrained
+row, or the hierarchy/viewport context menu to add a centered 33-by-33 terrain.
+Studio selects the new node and activates **Sculpt Terrain** immediately. The
+visible surface is the ordinary mesh saved in the VSCN, not a project-only
+preview: games that load the scene receive the same vertices, triangles,
+material, transform, and typed `terrain.*` metadata shown in the editor.
+
+With one canonical terrain selected, its Terrain inspector appears before the
+generic metadata sections. Choose Raise, Lower, Smooth, or Flatten, then drag
+the shaded surface. The conforming ring previews the node-local Radius; Strength
+controls each dab and Level is the Flatten target. Hold Shift to invert Raise
+and Lower temporarily. A drag updates the shaded mesh live, commits exactly one
+history entry on release, and restores the complete original mesh when Escape
+cancels it. Ordinary selection, transform gizmos, and Game View cannot
+accidentally share a sculpt gesture.
+
+**Flatten All** sets every existing sample to Level without changing the grid.
+**Regenerate Flat** applies the X/Z sample and Spacing drafts as a replacement
+grid. Both actions are one-step undoable edits. Each axis accepts 9 through 65
+samples; new terrain uses spacing 1.0, and grids remain centered in node-local
+XZ space. Studio exposes these controls only when the exact typed convention,
+version, dimensions, and mesh counts agree, so imported meshes remain protected
+from destructive heightfield editing.
+
+Studio-authored terrain is intentionally distinct from the standalone runtime
+`Terrain3D` object. The scene mesh is immediately usable through `SceneGraph`
+and precise raycasts. Runtime splat layers, holes, chunk LOD, and streaming are
+not yet visually authored; any game-side conversion to those facilities should
+be explicit so it cannot silently diverge from the saved scene.
 
 ### 3D Light Authoring
 

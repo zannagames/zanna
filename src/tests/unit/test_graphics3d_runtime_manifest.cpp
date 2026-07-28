@@ -20,7 +20,8 @@
 //        docs/adr/0162-exact-preserve-world-scenenode-reparenting.md,
 //        docs/adr/0166-exact-scenenode-world-matrix-assignment.md,
 //        docs/adr/0168-windowless-canvas3d-rendering.md,
-//        docs/adr/0172-public-scenenode-light-authoring-and-studio-light-inspector.md
+//        docs/adr/0172-public-scenenode-light-authoring-and-studio-light-inspector.md,
+//        docs/adr/0210-read-only-mesh-vertex-positions.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -34,10 +35,10 @@
 
 namespace {
 
-constexpr std::size_t kExpectedFunctionCount = 2042;
+constexpr std::size_t kExpectedFunctionCount = 2043;
 constexpr std::size_t kExpectedClassCount = 125;
 constexpr std::size_t kExpectedPropertyCount = 681;
-constexpr std::size_t kExpectedMethodCount = 1137;
+constexpr std::size_t kExpectedMethodCount = 1138;
 
 bool is3DName(std::string_view name) {
     return name.starts_with("Zanna.Graphics3D.") || name.starts_with("Zanna.Game3D.");
@@ -149,6 +150,9 @@ int main() {
     ok = require(functionNames.contains("Zanna.Graphics3D.Canvas3D.NewOffscreenAccelerated"),
                  "reviewed accelerated offscreen constructor (ADR 0191) is missing") &&
          ok;
+    ok = require(functionNames.contains("Zanna.Graphics3D.Mesh3D.VertexPosition"),
+                 "reviewed read-only mesh vertex query (ADR 0210) is missing") &&
+         ok;
 
     std::size_t classCount = 0;
     std::size_t propertyCount = 0;
@@ -213,7 +217,7 @@ int main() {
 
     // Filled from the canonical registry after deliberate ABI review. This one value
     // covers every function name/signature/C symbol and every class member binding.
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0xee419c5eecc2b423);
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x32fa0ea9151aa9eb);
     if (hash.value() != kExpectedManifestHash) {
         std::cerr << "FAIL: 3D ABI manifest changed; reviewed hash is 0x" << std::hex
                   << hash.value() << '\n';

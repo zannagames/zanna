@@ -617,6 +617,9 @@ bool check_runtime_surface_names() {
     ok = require(contains(runtime_def, "\"Zanna.Graphics3D.Mesh3D.get_RetainedBytes\""),
                  "Mesh3D.RetainedBytes getter must use Graphics3D PascalCase naming") &&
          ok;
+    ok = require(contains(runtime_def, "\"Zanna.Graphics3D.Mesh3D.VertexPosition\""),
+                 "Mesh3D.VertexPosition must use Graphics3D PascalCase naming") &&
+         ok;
     ok =
         require(contains(runtime_def, "\"Zanna.Graphics3D.Mesh3D.get_SimplifyRequestedTriangles\""),
                 "Mesh3D.SimplifyRequestedTriangles getter must use Graphics3D PascalCase naming") &&
@@ -644,6 +647,9 @@ bool check_runtime_surface_names() {
          ok;
     ok = require(contains(runtime_def, "RT_PROP(\"RetainedBytes\""),
                  "Mesh3D.RetainedBytes property missing") &&
+         ok;
+    ok = require(contains(runtime_def, "RT_METHOD(\"VertexPosition\""),
+                 "Mesh3D.VertexPosition method missing") &&
          ok;
     ok = require(contains(runtime_def, "RT_PROP(\"SimplifyRequestedTriangles\""),
                  "Mesh3D.SimplifyRequestedTriangles property missing") &&

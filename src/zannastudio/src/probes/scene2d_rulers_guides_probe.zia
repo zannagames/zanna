@@ -101,6 +101,38 @@ func ClickButton(shell: app_shell.AppShell,
     shell.Render();
 }
 
+func ClickMenuOffset(shell: app_shell.AppShell,
+                     harness: GUI.TestHarness,
+                     button: GUI.Button,
+                     offsetY: Number) {
+    var x = HarnessCoordinate(shell, button.GetScreenX() + 20.0);
+    var y = HarnessCoordinate(
+        shell,
+        button.GetScreenY() + button.GetScreenHeight() + offsetY);
+    harness.SendMouse("move", x, y, 0);
+    harness.SendMouse("down", x, y, 0);
+    harness.SendMouse("up", x, y, 0);
+    harness.DispatchPending();
+}
+
+func ClickRulersControl(shell: app_shell.AppShell,
+                        harness: GUI.TestHarness,
+                        editor: scene_editor_2d.SceneEditor2D,
+                        sceneDoc: document.Document) -> Boolean {
+    if editor.rulersButton.IsVisible() {
+        ClickButton(
+            shell, harness, editor.rulersButton, editor, sceneDoc);
+        return true;
+    }
+    ClickButton(
+        shell, harness, editor.viewMenuButton, editor, sceneDoc);
+    if editor.viewMenu.IsVisible() == false { return false; }
+    // Fit, Actual Size, separator, Grid, then Rulers.
+    ClickMenuOffset(
+        shell, harness, editor.viewMenuButton, 111.0);
+    return true;
+}
+
 func main() {
     if scene_editor_2d.CanvasRulerMajorStride(32) != 2
        or scene_editor_2d.CanvasRulerMajorStride(8) != 8
@@ -490,8 +522,11 @@ func main() {
     }
 
     // Visibility is a real layout action and follows the owning tab.
-    ClickButton(
-        shell, harness, editor.rulersButton, editor, sceneDoc);
+    if ClickRulersControl(
+           shell, harness, editor, sceneDoc) == false {
+        Fail(shell, harness, "compact View menu did not open");
+        return;
+    }
     PumpTwice(shell, editor, sceneDoc);
     if editor.showRulers
        or editor.rulerTopRow.IsVisible()
@@ -553,8 +588,11 @@ func main() {
         return;
     }
 
-    ClickButton(
-        shell, harness, editor.rulersButton, editor, sceneDoc);
+    if ClickRulersControl(
+           shell, harness, editor, sceneDoc) == false {
+        Fail(shell, harness, "compact View menu did not reopen");
+        return;
+    }
     PumpTwice(shell, editor, sceneDoc);
     var rulerCapture = TempFile.Dir()
         + "/zannastudio_2d_horizontal_ruler.png";

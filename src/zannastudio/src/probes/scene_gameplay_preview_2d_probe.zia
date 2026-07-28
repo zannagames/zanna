@@ -10,6 +10,10 @@
 // Key invariants:
 //   - Xenoscape region 01 opens at native art scale around the player start.
 //   - Project-owned biome and object art decode through the retained canvas.
+//   - Project preview priorities reproduce Xenoscape's gameplay paint order.
+//   - Project recipes can create correctly typed gameplay objects directly.
+//   - Game View removes every editor marker, outline, grid, ruler, and guide.
+//   - Game View fits and locks the project's exact 1280x720 output frame.
 //   - The canonical 150x17 world, terrain, and 82 objects remain unchanged.
 //   - The actual canvas remains capturable for editor/game visual comparison.
 // Ownership/Lifetime:
@@ -18,7 +22,11 @@
 // Links: zannastudio/src/ui/scene_editor_2d.zia,
 //        examples/games/xenoscape-scenes/scene-components.json,
 //        examples/games/xenoscape-scenes/assets/scenes/region-01.scene2d,
-//        docs/adr/0202-project-owned-2d-scene-background-previews.md
+//        docs/adr/0202-project-owned-2d-scene-background-previews.md,
+//        docs/adr/0206-project-owned-2d-object-preview-draw-stacks.md,
+//        docs/adr/0207-non-destructive-scene-game-view.md,
+//        docs/adr/0208-project-authored-game-output-frames.md,
+//        docs/adr/0209-project-component-creation-recipes.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,6 +36,7 @@ bind "../core/document";
 bind "../core/project_manager";
 bind "../services/file_utils";
 bind "../ui/app_shell";
+bind "../ui/scene_component_schema";
 bind "../ui/scene_editor_2d";
 bind "../ui/scene_panels_2d";
 
@@ -35,11 +44,18 @@ bind File = Zanna.IO.File;
 bind Path = Zanna.IO.Path;
 bind TempFile = Zanna.IO.TempFile;
 bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
 bind Terminal = Zanna.Terminal;
 bind Env = Zanna.System.Environment;
 
 final EXPECTED_TILE_SOURCE_PIXELS: Integer = 512 * 448;
 final EXPECTED_BACKGROUND_SOURCE_PIXELS: Integer = 1280 * 720;
+
+func near(actual: Number, expected: Number) -> Boolean {
+    var difference = actual - expected;
+    if difference < 0.0 { difference = 0.0 - difference; }
+    return difference < 0.000001;
+}
 
 func HasArg(name: String) -> Boolean {
     // VM `zanna run -- ...` arguments begin at zero; native probe binaries may
@@ -160,10 +176,23 @@ func main() {
         return;
     }
 
+    var enemyRecipe:
+        scene_component_schema.SceneComponentDefinition = null;
+    if editor.componentSchema != null {
+        enemyRecipe = editor.componentSchema.Find(
+            "enemy-spawn", scene_component_schema.TARGET_2D_OBJECT);
+    }
     if editor.componentSchema == null
        or editor.componentSchema.valid == false
-       or editor.componentSchema.version != 8
+       or editor.componentSchema.version != 13
+       or enemyRecipe == null
+       or enemyRecipe.createObjectType != "enemy"
+       or enemyRecipe.CanCreateFor(
+              scene_component_schema.TARGET_2D_OBJECT) == false
        or editor.componentSchema.scenePreview2D == null
+       or editor.componentSchema.scenePreview2D.HasOutputSize() == false
+       or editor.componentSchema.scenePreview2D.outputWidth != 1280
+       or editor.componentSchema.scenePreview2D.outputHeight != 720
        or editor.componentSchema.scenePreview2D
               .BackgroundForVariant(1)
           != "assets/backgrounds/scene-region-01.png"
@@ -175,6 +204,106 @@ func main() {
         fail(shell, project,
              "the project-owned biome, tile, or grid profile "
              + "did not reach the production canvas");
+        return;
+    }
+
+    // The project palette must create a runtime-valid Xenoscape record
+    // directly, without first inserting a generic object or making the user
+    // run Add Missing. The complete recipe is one canonical history entry.
+    editor.SelectSceneObjects([], -1);
+    editor.SetInspectorSceneTab(false);
+    editor.componentPalette.SelectComponent("enemy-spawn");
+    editor.selectedCellX = 4;
+    editor.selectedCellY = 5;
+    pump(editor, sceneDoc, shell);
+    var recipeBaselineRevision = editor.GetRevision();
+    var recipeBaselineUndo = editor.undoStack.count();
+    var recipeBaselinePreviewCount = editor.ObjectPreviewStack().count();
+    if editor.componentPalette.group.IsVisible() == false
+       or editor.componentPalette.createButton.IsEnabled() == false
+       or editor.componentPalette.applyButton.IsEnabled() {
+        fail(shell, project,
+             "the selection-free Xenoscape creation action was not truthful");
+        return;
+    }
+    var createdEnemy = editor.CreateObjectFromComponent(enemyRecipe);
+    var createdContent = sceneDoc.content;
+    var createdPreviewStack = editor.ObjectPreviewStack();
+    if createdEnemy != 82
+       or editor.scene.ObjectCount() != 83
+       or editor.scene.ObjectType(createdEnemy) != "enemy"
+       or editor.scene.ObjectX(createdEnemy) != 4 * 64
+       or editor.scene.ObjectY(createdEnemy) != 5 * 64
+       or editor.scene.ObjectGetInt(
+              createdEnemy, "enemy.type", -1) != 0
+       or editor.selectedObject != createdEnemy
+       or editor.selectedObjects.count() != 1
+       or editor.selectedObjects.get(0) != createdEnemy
+       or editor.GetRevision() != recipeBaselineRevision + 1
+       or editor.undoStack.count() != recipeBaselineUndo + 1
+       or editor.redoStack.count() != 0
+       or createdContent == baseline
+       or createdPreviewStack.count()
+          != recipeBaselinePreviewCount + 1
+       or editor.ObjectPreviewDrawOrder(createdEnemy) != 30 {
+        fail(shell, project,
+             "direct Xenoscape object creation was not one exact "
+             + "gameplay-ready transaction");
+        return;
+    }
+    if editor.Undo() == false
+       or sceneDoc.content != baseline
+       or editor.scene.ObjectCount() != 82
+       or editor.undoStack.count() != recipeBaselineUndo
+       or editor.redoStack.count() != 1
+       or editor.Redo() == false
+       or sceneDoc.content != createdContent
+       or editor.scene.ObjectCount() != 83
+       or editor.scene.ObjectType(82) != "enemy"
+       or editor.scene.ObjectGetInt(82, "enemy.type", -1) != 0
+       or editor.undoStack.count() != recipeBaselineUndo + 1
+       or editor.redoStack.count() != 0
+       or editor.Undo() == false
+       or sceneDoc.content != baseline
+       or editor.scene.ObjectCount() != 82
+       or editor.undoStack.count() != recipeBaselineUndo
+       or editor.redoStack.count() != 1
+       or editor.GetRevision() != recipeBaselineRevision + 4
+       or sceneDoc.isModified {
+        fail(shell, project,
+             "Xenoscape recipe undo/redo did not restore exact scene bytes");
+        return;
+    }
+    pump(editor, sceneDoc, shell);
+    if editor.ObjectPreviewStack().count() != recipeBaselinePreviewCount {
+        fail(shell, project,
+             "undoing the Xenoscape recipe left transient preview content");
+        return;
+    }
+
+    // Xenoscape paints pickups, the player, enemies/bosses, interactions, then
+    // editor markers. The source scene is grouped differently (enemies first),
+    // so this exact stack proves the project profile, not canonical array order.
+    var previewStack = editor.ObjectPreviewStack();
+    if previewStack.count() != 82
+       or previewStack.get(0) != 20
+       or previewStack.get(39) != 59
+       or previewStack.get(40) != 74
+       or previewStack.get(41) != 0
+       or previewStack.get(60) != 19
+       or previewStack.get(61) != 73
+       or previewStack.get(62) != 60
+       or previewStack.get(74) != 72
+       or previewStack.get(75) != 75
+       or previewStack.get(76) != 76
+       or previewStack.get(81) != 81
+       or editor.ObjectPreviewDrawOrder(20) != 10
+       or editor.ObjectPreviewDrawOrder(74) != 20
+       or editor.ObjectPreviewDrawOrder(0) != 30
+       or editor.ObjectPreviewDrawOrder(60) != 40
+       or editor.ObjectPreviewDrawOrder(75) != 50 {
+        fail(shell, project,
+             "project preview stack diverged from gameplay paint order");
         return;
     }
 
@@ -210,6 +339,80 @@ func main() {
         return;
     }
 
+    // The comparison artifact must contain gameplay pixels, not the object
+    // rectangles that make the ordinary authoring canvas actionable.
+    var baselineRevision = editor.GetRevision();
+    var baselineUndo = editor.undoStack.count();
+    var baselineZoom = editor.zoomPercent;
+    var baselineScrollX = editor.canvasScroll.GetScrollX();
+    var baselineScrollY = editor.canvasScroll.GetScrollY();
+    editor.SetGameViewActive(true);
+    pump(editor, sceneDoc, shell);
+    pump(editor, sceneDoc, shell);
+    var gameFrameWidth = editor.GameOutputFrameWidthFor(
+        editor.framePixels.Width, editor.framePixels.Height);
+    var gameFrameHeight = editor.GameOutputFrameHeightFor(
+        editor.framePixels.Width, editor.framePixels.Height);
+    var gameFrameX = editor.GameOutputFrameXFor(
+        editor.framePixels.Width, editor.framePixels.Height);
+    var gameFrameY = editor.GameOutputFrameYFor(
+        editor.framePixels.Width, editor.framePixels.Height);
+    var aspectError =
+        gameFrameWidth * 720 - gameFrameHeight * 1280;
+    if aspectError < 0 { aspectError = 0 - aspectError; }
+    var mattePixel =
+        editor.framePixels.GetColor(0, 0) % 16777216;
+    var expectedMatte = Color.RGB(8, 10, 14) % 16777216;
+    if editor.GameViewActive() == false
+       or editor.gameViewOutputFramed == false
+       or editor.GameOutputWidth() != 1280
+       or editor.GameOutputHeight() != 720
+       or aspectError >= 1280
+       or ((gameFrameX > 0 or gameFrameY > 0)
+           and mattePixel != expectedMatte)
+       or editor.selectButton.IsEnabled()
+       or editor.gridButton.IsEnabled()
+       or editor.zoomOutButton.IsEnabled()
+       or editor.zoomInButton.IsEnabled()
+       or editor.fitButton.IsEnabled()
+       or editor.actualSizeButton.IsEnabled()
+       or editor.rulerTopRow.IsVisible()
+       or editor.verticalRulerImage.IsVisible()
+       or sceneDoc.content != baseline
+       or sceneDoc.isModified
+       or editor.currentSerialized != baseline
+       or editor.GetRevision() != baselineRevision
+       or editor.undoStack.count() != baselineUndo {
+        fail(shell, project,
+             "clean Game View changed state or retained editor canvas chrome"
+             + " active=" + editor.GameViewActive()
+             + " framed=" + editor.gameViewOutputFramed
+             + " output=" + editor.GameOutputWidth()
+             + "x" + editor.GameOutputHeight()
+             + " frame=" + gameFrameX + "," + gameFrameY
+             + " " + gameFrameWidth + "x" + gameFrameHeight
+             + " aspectError=" + aspectError
+             + " matte=" + mattePixel + "/" + expectedMatte
+             + " controls=" + editor.selectButton.IsEnabled()
+             + "/" + editor.gridButton.IsEnabled()
+             + "/" + editor.zoomOutButton.IsEnabled()
+             + "/" + editor.zoomInButton.IsEnabled()
+             + "/" + editor.fitButton.IsEnabled()
+             + "/" + editor.actualSizeButton.IsEnabled()
+             + " rulers=" + editor.rulerTopRow.IsVisible()
+             + "/" + editor.verticalRulerImage.IsVisible()
+             + " bytes=" + (sceneDoc.content == baseline)
+             + "/" + (editor.currentSerialized == baseline)
+             + " revision=" + editor.GetRevision()
+             + "/" + baselineRevision
+             + " history=" + editor.undoStack.count()
+             + "/" + baselineUndo);
+        return;
+    }
+    var gameZoom = editor.zoomPercent;
+    var gameOriginX = editor.viewOriginX;
+    var gameOriginY = editor.viewOriginY;
+
     var screenshotPath =
         Path.Join(TempFile.Dir(),
                   "zannastudio_xenoscape_gameplay_preview.png");
@@ -221,10 +424,12 @@ func main() {
 
     Terminal.Say(
         "METRIC: scene=150x17 tiles=530 objects=82"
-        + " zoom=" + editor.zoomPercent
-        + "% origin=" + editor.viewOriginX + "," + editor.viewOriginY
+        + " zoom=" + gameZoom
+        + "% origin=" + gameOriginX + "," + gameOriginY
         + " viewport=" + editor.framePixels.Width
         + "x" + editor.framePixels.Height
+        + " output=1280x720"
+        + " frame=" + gameFrameWidth + "x" + gameFrameHeight
         + " decodedPixels=" + editor.tilesets.sourcePixelCount
         + " screenshot=" + screenshotPath);
 
@@ -236,6 +441,32 @@ func main() {
             if shell.WasCloseRequested() { break; }
             editor.Pump(sceneDoc);
             shell.Render();
+        }
+    } else {
+        editor.SetGameViewActive(false);
+        pump(editor, sceneDoc, shell);
+        pump(editor, sceneDoc, shell);
+        if editor.GameViewActive()
+           or editor.gameViewOutputFramed
+           or editor.zoomPercent != baselineZoom
+           or near(
+                  editor.canvasScroll.GetScrollX(),
+                  baselineScrollX) == false
+           or near(
+                  editor.canvasScroll.GetScrollY(),
+                  baselineScrollY) == false
+           or sceneDoc.content != baseline
+           or sceneDoc.isModified
+           or editor.GetRevision() != baselineRevision
+           or editor.undoStack.count() != baselineUndo {
+            fail(shell, project,
+                 "leaving output-framed Game View did not restore "
+                 + "the exact editor camera and canonical state"
+                 + " zoom=" + editor.zoomPercent + "/" + baselineZoom
+                 + " scroll=" + editor.canvasScroll.GetScrollX()
+                 + "," + editor.canvasScroll.GetScrollY()
+                 + "/" + baselineScrollX + "," + baselineScrollY);
+            return;
         }
     }
 

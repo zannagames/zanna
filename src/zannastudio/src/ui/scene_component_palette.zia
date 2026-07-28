@@ -11,13 +11,15 @@
 //   - This presentation object never mutates scene or document state.
 //   - The application picker is target-filtered; schema authoring remains
 //     unfiltered so either scene editor can maintain the complete project file.
-//   - All apply, field-edit, reload, and authoring events are controller intent.
+//   - All create, apply, field-edit, reload, and authoring events are
+//     controller intent.
 // Ownership/Lifetime: A scene editor owns one palette; GUI owns its widgets.
 // Links: zannastudio/src/ui/scene_component_schema.zia,
 //        zannastudio/src/ui/scene_component_authoring.zia,
 //        zannastudio/src/ui/scene_component_authoring_controller.zia,
 //        zannastudio/src/ui/scene_editor_2d.zia,
-//        zannastudio/src/ui/scene_editor_3d.zia
+//        zannastudio/src/ui/scene_editor_3d.zia,
+//        docs/adr/0209-project-component-creation-recipes.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -45,6 +47,7 @@ class SceneComponentPalette {
     expose GUI.Label status;
     expose GUI.Dropdown componentDropdown;
     expose GUI.ListBox fieldList;
+    expose GUI.Button createButton;
     expose GUI.Button applyButton;
     expose GUI.Button editFieldButton;
     expose GUI.Button reloadButton;
@@ -62,6 +65,8 @@ class SceneComponentPalette {
     expose GUI.TextInput componentNameInput;
     expose GUI.TextInput componentLabelInput;
     expose GUI.Dropdown componentTargetDropdown;
+    expose GUI.TextInput componentCreateObjectTypeInput;
+    expose GUI.TextInput componentCreateNodeNameInput;
     expose GUI.TextInput componentDescriptionInput;
     expose GUI.Button saveComponentButton;
     expose GUI.Button deleteComponentButton;
@@ -84,6 +89,7 @@ class SceneComponentPalette {
     expose String target;
     expose Boolean schemaEditorVisible;
     hide Boolean contextEnabled;
+    hide Boolean creationContextEnabled;
     hide Boolean authoringCanUndo;
     hide Boolean authoringCanRedo;
     hide String authoringMessage;
@@ -93,6 +99,7 @@ class SceneComponentPalette {
         status = null;
         componentDropdown = null;
         fieldList = null;
+        createButton = null;
         applyButton = null;
         editFieldButton = null;
         reloadButton = null;
@@ -110,6 +117,8 @@ class SceneComponentPalette {
         componentNameInput = null;
         componentLabelInput = null;
         componentTargetDropdown = null;
+        componentCreateObjectTypeInput = null;
+        componentCreateNodeNameInput = null;
         componentDescriptionInput = null;
         saveComponentButton = null;
         deleteComponentButton = null;
@@ -132,6 +141,7 @@ class SceneComponentPalette {
         target = "";
         schemaEditorVisible = false;
         contextEnabled = false;
+        creationContextEnabled = false;
         authoringCanUndo = false;
         authoringCanRedo = false;
         authoringMessage = "";
@@ -157,6 +167,9 @@ class SceneComponentPalette {
 
         var actions = inspector_rows.NewWrapRow();
         group.AddChild(actions);
+        createButton = GUI.Button.New(actions, "Create");
+        createButton.SetTooltip(
+            "Create one gameplay-ready scene item from this project recipe");
         applyButton = GUI.Button.New(actions, "Add Missing");
         applyButton.SetTooltip(
             "Add missing typed defaults without overwriting existing values");
@@ -227,6 +240,18 @@ class SceneComponentPalette {
         componentTargetDropdown.AddItem("3D node");
         componentTargetDropdown.AddItem("Both editors");
         componentTargetDropdown.SetSelected(AUTHOR_TARGET_BOTH);
+        componentCreateObjectTypeInput =
+            GUI.TextInput.New(schemaEditorGroup);
+        componentCreateObjectTypeInput.SetAccessibleName(
+            "Created 2D object type");
+        componentCreateObjectTypeInput.SetPlaceholder(
+            "Created 2D object type (optional)");
+        componentCreateNodeNameInput =
+            GUI.TextInput.New(schemaEditorGroup);
+        componentCreateNodeNameInput.SetAccessibleName(
+            "Created 3D node name");
+        componentCreateNodeNameInput.SetPlaceholder(
+            "Created 3D node name (optional)");
         componentDescriptionInput =
             GUI.TextInput.New(schemaEditorGroup);
         componentDescriptionInput.SetPlaceholder(
@@ -394,6 +419,9 @@ class SceneComponentPalette {
         reloadButton.SetEnabled(schema != null and schema.sourcePath != "");
         schemaToggleButton.SetEnabled(
             schema != null and schema.sourcePath != "");
+        createButton.SetEnabled(
+            creationContextEnabled and component != null
+            and component.CanCreateFor(target));
         applyButton.SetEnabled(enabled and component != null);
         editFieldButton.SetEnabled(enabled and SelectedField() != null);
         RefreshAuthoringAvailability();
@@ -418,8 +446,16 @@ class SceneComponentPalette {
             return;
         }
         if enabled == false {
-            status.SetText(
-                component.label + " · select scene content to inspect or add");
+            if creationContextEnabled and component.CanCreateFor(target) {
+                status.SetText(
+                    component.label
+                    + " · create a new scene item or select existing "
+                    + "content to inspect");
+            } else {
+                status.SetText(
+                    component.label
+                    + " · select scene content to inspect or add");
+            }
             return;
         }
 
@@ -432,6 +468,34 @@ class SceneComponentPalette {
             summary = summary + "\n" + component.description;
         }
         status.SetText(summary);
+    }
+
+    /// @brief Publish whether a loaded scene can accept recipe creation.
+    /// @details Recipe presence remains component-specific and target-filtered;
+    ///          editors own placement and canonical transactions.
+    expose func SetCreationContext(enabled: Boolean,
+                                   buttonText: String) {
+        creationContextEnabled = enabled;
+        var component = SelectedComponent();
+        createButton.SetText(buttonText);
+        createButton.SetEnabled(
+            enabled and component != null
+            and component.CanCreateFor(target));
+        if target == scene_component_schema.TARGET_2D_OBJECT {
+            createButton.SetTooltip(
+                "Create one " + (component == null
+                    ? "project object"
+                    : component.label)
+                + " at the selected or visible canvas cell, with all "
+                + "typed defaults in one undoable edit");
+        } else {
+            createButton.SetTooltip(
+                "Create one " + (component == null
+                    ? "project node"
+                    : component.label)
+                + " at the viewport target, with all typed defaults "
+                + "in one undoable edit");
+        }
     }
 
     /// @brief Further constrain raw-field editing without changing apply state.
@@ -470,6 +534,10 @@ class SceneComponentPalette {
         }
         if fieldTypeDropdown.WasChanged() {
             UpdateAuthoringDefaultControl();
+            changed = true;
+        }
+        if componentTargetDropdown.WasChanged() {
+            RefreshAuthoringAvailability();
             changed = true;
         }
         return changed;
@@ -592,6 +660,10 @@ class SceneComponentPalette {
         return applyButton.WasClicked();
     }
 
+    expose func TakeCreateRequested() -> Boolean {
+        return createButton.WasClicked();
+    }
+
     expose func TakeEditFieldRequested() -> Boolean {
         return editFieldButton.WasClicked();
     }
@@ -616,6 +688,8 @@ class SceneComponentPalette {
         return saveComponentButton.WasClicked()
             or componentNameInput.WasSubmitted()
             or componentLabelInput.WasSubmitted()
+            or componentCreateObjectTypeInput.WasSubmitted()
+            or componentCreateNodeNameInput.WasSubmitted()
             or componentDescriptionInput.WasSubmitted();
     }
 
@@ -663,6 +737,14 @@ class SceneComponentPalette {
             return scene_component_schema.TARGET_3D_NODE;
         }
         return scene_component_schema.TARGET_BOTH;
+    }
+
+    expose func DraftCreateObjectType() -> String {
+        return componentCreateObjectTypeInput.Text;
+    }
+
+    expose func DraftCreateNodeName() -> String {
+        return componentCreateNodeNameInput.Text;
     }
 
     expose func DraftFieldKind() -> String {
@@ -741,11 +823,17 @@ class SceneComponentPalette {
             componentNameInput.SetText("");
             componentLabelInput.SetText("");
             componentTargetDropdown.SetSelected(AUTHOR_TARGET_BOTH);
+            componentCreateObjectTypeInput.SetText("");
+            componentCreateNodeNameInput.SetText("");
             componentDescriptionInput.SetText("");
         } else {
             componentNameInput.SetText(component.name);
             componentLabelInput.SetText(component.label);
             SelectAuthoringTarget(component.target);
+            componentCreateObjectTypeInput.SetText(
+                component.createObjectType);
+            componentCreateNodeNameInput.SetText(
+                component.createNodeName);
             componentDescriptionInput.SetText(component.description);
         }
         RefreshFieldDraft();
@@ -869,6 +957,14 @@ class SceneComponentPalette {
         componentNameInput.SetEnabled(canEdit and component != null);
         componentLabelInput.SetEnabled(canEdit and component != null);
         componentTargetDropdown.SetEnabled(canEdit and component != null);
+        var supports2D =
+            componentTargetDropdown.Selected != AUTHOR_TARGET_3D;
+        var supports3D =
+            componentTargetDropdown.Selected != AUTHOR_TARGET_2D;
+        componentCreateObjectTypeInput.SetEnabled(
+            canEdit and component != null and supports2D);
+        componentCreateNodeNameInput.SetEnabled(
+            canEdit and component != null and supports3D);
         componentDescriptionInput.SetEnabled(canEdit and component != null);
         saveComponentButton.SetEnabled(canEdit and component != null);
         deleteComponentButton.SetEnabled(canEdit and component != null);

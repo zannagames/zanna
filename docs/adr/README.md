@@ -236,3 +236,9 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0202](0202-project-owned-2d-scene-background-previews.md) — Add Project-Owned 2D Scene Background Previews
 - [ADR 0203](0203-project-owned-3d-scene-environment-previews.md) — Add Project-Owned 3D Scene Environment Previews
 - [ADR 0204](0204-project-owned-3d-post-processing-previews.md) — Add Project-Owned 3D Post-Processing Previews
+- [ADR 0206](0206-project-owned-2d-object-preview-draw-stacks.md) — Add Project-Owned 2D Object Preview Draw Stacks
+- [ADR 0207](0207-non-destructive-scene-game-view.md) — Add a Non-Destructive Scene Game View
+- [ADR 0208](0208-project-authored-game-output-frames.md) — Add Project-Authored Game Output Frames
+- [ADR 0209](0209-project-component-creation-recipes.md) — Add Project Component Creation Recipes
+- [ADR 0210](0210-read-only-mesh-vertex-positions.md) — Expose Read-Only Mesh Vertex Positions for Authoring Tools
+- [ADR 0211](0211-canonical-mesh-terrain-sculpting.md) — Author Terrain as a Canonical Scene Mesh

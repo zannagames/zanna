@@ -22,8 +22,10 @@ directly.
   stations, shrines, teleporters, lore terminals, region gates), the boss,
   the player start, the checkpoint, and structural `marker` anchors
   (landmark/tutorial/mastery/setpiece/secret) with typed properties defined
-  by `scene-components.json` (schema v8 with an enum marker kind and
-  project-owned object/background preview profiles).
+  by `scene-components.json` (schema v13 with an enum marker kind,
+  project-owned object/background/draw-stack preview profiles, a
+  1280-by-720 gameplay output frame, and direct runtime-typed creation
+  recipes).
 - **Scene properties**: one-based campaign region, gameplay theme, and
   player-start coordinates.
 
@@ -57,10 +59,20 @@ source of truth — edit them in Zanna Studio, not in code.
 Open `examples/games/xenoscape-scenes` as a workspace folder in Zanna Studio
 and open any `assets/scenes/region-NN.scene2d` to edit tiles, tile behavior,
 spawns, and markers visually. Studio uses the scene's `region` property and the
-project's version-8 preview profile to composite a fixed-time capture from the
-same runtime biome renderer behind the exact tiles and objects; the first-open
-grid default is off, but the normal Grid control remains available. The
-**Run Scene** toolbar button launches the game at that region.
+project's preview profile to composite a fixed-time capture from the same
+runtime biome renderer behind the exact tiles and objects. Its version-11
+draw priorities reproduce the game's category order — pickups, player,
+enemies/bosses, interactions, then editor markers — even though the canonical
+scene array is grouped differently for authoring. The first-open grid default
+is off, but the normal Grid control remains available. Game View fits the
+authored player start inside the project's centered 1280-by-720 output frame,
+locks accidental canvas navigation, and restores the exact authoring view when
+closed. The **Run Scene** toolbar button launches the game at that region.
+On the Object inspector tab, choose Enemy Spawn, Pickup, Interaction, Boss
+Spawn, or Structural Marker and use **Create Object**. Studio creates the
+correct runtime object type at the selected cell (or visible center), applies
+the typed game defaults, selects it, and shows its project sprite in one
+undoable edit—there is no generic placeholder or separate Add Missing step.
 
 ## Validation
 

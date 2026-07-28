@@ -56,6 +56,7 @@ class SceneContextMenus3D {
     expose GUI.MenuItem hierarchyCreateSphere;
     expose GUI.MenuItem hierarchyCreatePlane;
     expose GUI.MenuItem hierarchyCreateCylinder;
+    expose GUI.MenuItem hierarchyCreateTerrain;
     expose GUI.MenuItem hierarchyCreateLight;
     expose GUI.MenuItem hierarchyCreateCamera;
     expose GUI.MenuItem hierarchyRename;
@@ -70,6 +71,7 @@ class SceneContextMenus3D {
     expose GUI.MenuItem viewportCreateSphere;
     expose GUI.MenuItem viewportCreatePlane;
     expose GUI.MenuItem viewportCreateCylinder;
+    expose GUI.MenuItem viewportCreateTerrain;
     expose GUI.MenuItem viewportCreateLight;
     expose GUI.MenuItem viewportCreateCamera;
     expose GUI.MenuItem viewportFrameSelected;
@@ -86,6 +88,7 @@ class SceneContextMenus3D {
         hierarchyCreateSphere = null;
         hierarchyCreatePlane = null;
         hierarchyCreateCylinder = null;
+        hierarchyCreateTerrain = null;
         hierarchyCreateLight = null;
         hierarchyCreateCamera = null;
         hierarchyRename = null;
@@ -100,6 +103,7 @@ class SceneContextMenus3D {
         viewportCreateSphere = null;
         viewportCreatePlane = null;
         viewportCreateCylinder = null;
+        viewportCreateTerrain = null;
         viewportCreateLight = null;
         viewportCreateCamera = null;
         viewportFrameSelected = null;
@@ -117,6 +121,7 @@ class SceneContextMenus3D {
         hierarchyCreateSphere = hierarchyMenu.AddItem("Create Sphere");
         hierarchyCreatePlane = hierarchyMenu.AddItem("Create Plane");
         hierarchyCreateCylinder = hierarchyMenu.AddItem("Create Cylinder");
+        hierarchyCreateTerrain = hierarchyMenu.AddItem("Create Terrain");
         hierarchyCreateLight = hierarchyMenu.AddItem("Create Light");
         hierarchyCreateCamera = hierarchyMenu.AddItem("Create Camera");
         hierarchyMenu.AddSeparator();
@@ -135,6 +140,7 @@ class SceneContextMenus3D {
         viewportCreateSphere = viewportMenu.AddItem("Create Sphere");
         viewportCreatePlane = viewportMenu.AddItem("Create Plane");
         viewportCreateCylinder = viewportMenu.AddItem("Create Cylinder");
+        viewportCreateTerrain = viewportMenu.AddItem("Create Terrain");
         viewportCreateLight = viewportMenu.AddItem("Create Light");
         viewportCreateCamera = viewportMenu.AddItem("Create Camera");
         viewportMenu.AddSeparator();
@@ -260,6 +266,13 @@ class SceneContextMenus3D {
         if viewportCreateCylinder.WasClicked() {
             changed = editor.AddPrimitiveAtPointer(
                 scene_editor_3d.PRIMITIVE_CYLINDER,
+                rightDownX, rightDownY) or changed;
+        }
+        if hierarchyCreateTerrain.WasClicked() {
+            changed = editor.AddTerrainFromMenu() or changed;
+        }
+        if viewportCreateTerrain.WasClicked() {
+            changed = editor.AddTerrainAtPointer(
                 rightDownX, rightDownY) or changed;
         }
         if hierarchyCreateLight.WasClicked()

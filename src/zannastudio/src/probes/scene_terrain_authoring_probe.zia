@@ -1,0 +1,401 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_terrain_authoring_probe.zia
+// Purpose: Verify canonical terrain creation, sculpting, rollback, and reload.
+// Key invariants:
+//   - Grid topology and metadata identify the exact ordinary game mesh.
+//   - Pure radial brushes are bounded, deterministic, and center-weighted.
+//   - Real pointer strokes mutate live without history, then commit once.
+//   - Escape restores the original mesh and exact canonical document bytes.
+//   - Flatten/regenerate are explicit one-step transactions with exact undo.
+// Ownership/Lifetime:
+//   - The probe owns one AppShell, editor, document, and input harness.
+// Links: zannastudio/src/ui/scene_terrain_3d.zia,
+//        zannastudio/src/ui/scene_terrain_inspector_3d.zia,
+//        zannastudio/src/ui/scene_editor_3d.zia,
+//        docs/adr/0211-canonical-mesh-terrain-sculpting.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_terrain_authoring_probe;
+
+// ============================================================================
+// MODULE: scene_terrain_authoring_probe
+// PURPOSE: Pin the first-class terrain workflow from pure mesh topology through
+//          real GUI pointer capture and canonical VSCN history/reload.
+//
+// WHERE-THIS-FITS: Runtime terrain rendering tests own Terrain3D internals;
+//          this display probe owns Studio's scene-native authoring contract.
+//
+// TEACHING-NOTE: The real viewport ray resolver chooses the stroke location.
+//          The probe does not duplicate camera or ray/mesh intersection math.
+// ============================================================================
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_3d";
+bind "../ui/scene_panels_3d";
+bind "../ui/scene_terrain_3d";
+
+bind Convert = Zanna.Core.Convert;
+bind GUI = Zanna.GUI;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind Terminal = Zanna.Terminal;
+bind Vec3 = Zanna.Math.Vec3;
+
+func near(actual: Number,
+          expected: Number) -> Boolean {
+    var difference = actual - expected;
+    if difference < 0.0 { difference = 0.0 - difference; }
+    return difference < 0.00001;
+}
+
+func fail(shell: app_shell.AppShell,
+          harness: GUI.TestHarness,
+          reason: String) {
+    if harness != null { harness.UnbindApp(); }
+    if shell != null { shell.Destroy(); }
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func pump(editor: scene_editor_3d.SceneEditor3D,
+          sceneDoc: document.Document,
+          shell: app_shell.AppShell) {
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+}
+
+func harnessCoordinate(shell: app_shell.AppShell,
+                       logical: Number) -> Integer {
+    var scale = shell.app.GetEffectiveScale();
+    if scale <= 0.0 { scale = 1.0; }
+    return Convert.NumToInt(logical * scale + 0.999999);
+}
+
+func clickWidget(shell: app_shell.AppShell,
+                 harness: GUI.TestHarness,
+                 widget: GUI.Widget) {
+    var x = harnessCoordinate(
+        shell,
+        widget.GetScreenX() + widget.GetScreenWidth() * 0.5);
+    var y = harnessCoordinate(
+        shell,
+        widget.GetScreenY() + widget.GetScreenHeight() * 0.5);
+    harness.SendMouse("move", x, y, 0);
+    harness.SendMouse("down", x, y, 0);
+    harness.SendMouse("up", x, y, 0);
+    harness.DispatchPending();
+}
+
+func viewportPhysicalX(shell: app_shell.AppShell,
+                       editor: scene_editor_3d.SceneEditor3D,
+                       localX: Integer) -> Integer {
+    return harnessCoordinate(
+        shell, editor.viewportImage.GetScreenX() + localX);
+}
+
+func viewportPhysicalY(shell: app_shell.AppShell,
+                       editor: scene_editor_3d.SceneEditor3D,
+                       localY: Integer) -> Integer {
+    return harnessCoordinate(
+        shell, editor.viewportImage.GetScreenY() + localY);
+}
+
+func centerHeight(node: SceneNode,
+                  columns: Integer,
+                  rows: Integer) -> Number {
+    if node == null or node.Mesh == null { return -1000000.0; }
+    var center = (rows / 2) * columns + columns / 2;
+    var point = node.Mesh.VertexPosition(center) as Vec3;
+    if point == null { return -1000000.0; }
+    return point.Y;
+}
+
+func main() {
+    // ------------------------------------------------------------------
+    // Pure canonical topology and brush math.
+    // ------------------------------------------------------------------
+    var flat = scene_terrain_3d.FlatHeights(9, 9, 0.0);
+    var mesh = scene_terrain_3d.BuildMesh(flat, 9, 9, 1.0);
+    var first = mesh.VertexPosition(0) as Vec3;
+    var last = mesh.VertexPosition(80) as Vec3;
+    if flat.count() != 81 or mesh == null
+       or mesh.VertexCount != 81
+       or mesh.TriangleCount != 128
+       or first == null or last == null
+       or near(first.X, -4.0) == false
+       or near(first.Y, 0.0) == false
+       or near(first.Z, -4.0) == false
+       or near(last.X, 4.0) == false
+       or near(last.Z, 4.0) == false {
+        Terminal.Say("RESULT: fail canonical terrain topology");
+        return;
+    }
+    var raised = scene_terrain_3d.ApplyBrush(
+        flat,
+        9, 9, 1.0,
+        0.0, 0.0,
+        3.0, 1.0,
+        scene_terrain_3d.BRUSH_RAISE,
+        0.0);
+    var smoothed = scene_terrain_3d.ApplyBrush(
+        raised,
+        9, 9, 1.0,
+        0.0, 0.0,
+        2.0, 1.0,
+        scene_terrain_3d.BRUSH_SMOOTH,
+        0.0);
+    if raised.count() != 81
+       or near(flat.get(40), 0.0) == false
+       or raised.get(40) <= raised.get(39)
+       or raised.get(40) <= 0.9
+       or near(raised.get(0), 0.0) == false
+       or smoothed.get(40) >= raised.get(40)
+       or scene_terrain_3d.SampleHeight(
+              raised, 9, 9, 1.0, 0.0, 0.0) <= 0.9 {
+        Terminal.Say("RESULT: fail deterministic terrain brush math");
+        return;
+    }
+    var protectedMesh = SceneNode.New();
+    protectedMesh.Mesh = mesh;
+    protectedMesh.MetadataSetString(
+        scene_terrain_3d.KEY_KIND,
+        scene_terrain_3d.KIND_HEIGHTFIELD_MESH);
+    if scene_terrain_3d.IsTerrainNode(protectedMesh) {
+        Terminal.Say("RESULT: fail incomplete terrain convention was accepted");
+        return;
+    }
+
+    // ------------------------------------------------------------------
+    // Real creation control and viewport stroke.
+    // ------------------------------------------------------------------
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Terrain Authoring Probe", 1500, 900);
+    shell.SetSceneWorkspaceMode(true);
+    var editor = new scene_editor_3d.SceneEditor3D();
+    scene_panels_3d.Build(
+        editor, shell.workbench.scene3DHost, shell.app);
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene3DDocument();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_3D);
+    editor.Activate(sceneDoc);
+    pump(editor, sceneDoc, shell);
+    pump(editor, sceneDoc, shell);
+
+    var harness = GUI.TestHarness.New();
+    if harness.BindApp(shell.app) == false {
+        fail(shell, harness, "input harness binding");
+        return;
+    }
+    if editor.addTerrainButton.IsVisible() == false
+       or editor.addTerrainButton.IsEnabled() == false {
+        fail(shell, harness, "wide Create Terrain control missing");
+        return;
+    }
+    var createBaseline = sceneDoc.content;
+    var createRevision = editor.GetRevision();
+    clickWidget(shell, harness, editor.addTerrainButton);
+    pump(editor, sceneDoc, shell);
+    if editor.GetRevision() != createRevision + 1
+       or sceneDoc.content == createBaseline
+       or editor.flatNodes.count() != 1
+       or editor.selectedIndex != 0
+       or editor.IsTerrainSculptEnabled() == false
+       or editor.terrainInspector.group.IsVisible() == false {
+        fail(shell, harness, "Create Terrain was not one ready-to-sculpt edit");
+        return;
+    }
+
+    var node = editor.flatNodes.get(0);
+    var state = scene_terrain_3d.FromNode(node);
+    if state.present == false
+       or state.columns != scene_terrain_3d.DEFAULT_COLUMNS
+       or state.rows != scene_terrain_3d.DEFAULT_ROWS
+       or near(state.spacing, scene_terrain_3d.DEFAULT_SPACING) == false
+       or node.Mesh.VertexCount
+          != state.columns * state.rows
+       or node.Mesh.TriangleCount
+          != scene_terrain_3d.TriangleCount(
+              state.columns, state.rows)
+       or node.Material == null
+       or node.MetadataKind(scene_terrain_3d.KEY_SPACING) != "float"
+       or editor.terrainInspector.sculptButton.GetScreenX()
+              + editor.terrainInspector.sculptButton.GetScreenWidth()
+          > editor.inspectorScroll.GetScreenX()
+              + editor.inspectorScroll.GetScreenWidth() + 1.0 {
+        fail(shell, harness, "terrain contract or inspector layout");
+        return;
+    }
+
+    var centerScreen = editor.ProjectWorldPoint(
+        node.WorldPosition.X,
+        node.WorldPosition.Y,
+        node.WorldPosition.Z);
+    var hit = editor.TerrainPointAtViewport(
+        centerScreen.x, centerScreen.y);
+    if hit.valid == false
+       or hit.localX < -0.1 or hit.localX > 0.1
+       or hit.localZ < -0.1 or hit.localZ > 0.1 {
+        fail(
+            shell, harness,
+            "viewport center did not resolve selected terrain valid="
+            + hit.valid + " local=" + hit.localX + ","
+            + hit.localY + "," + hit.localZ
+            + " node=" + editor.ViewportNodeAt(
+                centerScreen.x, centerScreen.y)
+            + " screen=" + centerScreen.x + "," + centerScreen.y);
+        return;
+    }
+    var pointerX = viewportPhysicalX(
+        shell, editor, centerScreen.x);
+    var pointerY = viewportPhysicalY(
+        shell, editor, centerScreen.y);
+    var strokeBaseline = sceneDoc.content;
+    var strokeRevision = editor.GetRevision();
+    var strokeUndo = editor.undoStack.count();
+    harness.SendMouse("move", pointerX, pointerY, 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    harness.SendMouse("down", pointerX, pointerY, 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    node = editor.flatNodes.get(0);
+    if editor.IsTerrainSculpting() == false
+       or centerHeight(node, state.columns, state.rows) <= 0.0
+       or sceneDoc.content != strokeBaseline
+       or editor.GetRevision() != strokeRevision
+       or editor.undoStack.count() != strokeUndo {
+        fail(shell, harness, "live terrain stroke changed history or missed");
+        return;
+    }
+    harness.SendMouse("up", pointerX, pointerY, 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    if editor.IsTerrainSculpting()
+       or editor.GetRevision() != strokeRevision + 1
+       or editor.undoStack.count() != strokeUndo + 1
+       or sceneDoc.content == strokeBaseline {
+        fail(shell, harness, "terrain release was not one transaction");
+        return;
+    }
+    var sculptedContent = sceneDoc.content;
+    var sculptedHeight = centerHeight(
+        editor.flatNodes.get(0), state.columns, state.rows);
+    if sculptedHeight <= 0.0
+       or editor.Undo() == false
+       or sceneDoc.content != strokeBaseline
+       or near(
+           centerHeight(
+               editor.flatNodes.get(0), state.columns, state.rows),
+           0.0) == false
+       or editor.Redo() == false
+       or sceneDoc.content != sculptedContent
+       or near(
+           centerHeight(
+               editor.flatNodes.get(0), state.columns, state.rows),
+           sculptedHeight) == false {
+        fail(shell, harness, "terrain stroke did not round-trip undo/redo");
+        return;
+    }
+    pump(editor, sceneDoc, shell);
+
+    // ------------------------------------------------------------------
+    // Escape rollback and explicit mesh-wide transactions.
+    // ------------------------------------------------------------------
+    editor.SelectSceneNodes([0], 0);
+    editor.SetTerrainSculptEnabled(true);
+    pump(editor, sceneDoc, shell);
+    node = editor.flatNodes.get(0);
+    centerScreen = editor.ProjectWorldPoint(
+        node.WorldPosition.X,
+        node.WorldPosition.Y + sculptedHeight,
+        node.WorldPosition.Z);
+    pointerX = viewportPhysicalX(
+        shell, editor, centerScreen.x);
+    pointerY = viewportPhysicalY(
+        shell, editor, centerScreen.y);
+    var cancelContent = sceneDoc.content;
+    var cancelRevision = editor.GetRevision();
+    var cancelHeight = centerHeight(
+        node, state.columns, state.rows);
+    harness.SendMouse("move", pointerX, pointerY, 0);
+    harness.SendMouse("down", pointerX, pointerY, 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    harness.SendKey("escape", 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    harness.SendMouse("up", pointerX, pointerY, 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    if editor.IsTerrainSculpting()
+       or sceneDoc.content != cancelContent
+       or editor.GetRevision() != cancelRevision
+       or near(
+           centerHeight(
+               editor.flatNodes.get(0), state.columns, state.rows),
+           cancelHeight) == false {
+        fail(shell, harness, "Escape did not restore exact terrain mesh");
+        return;
+    }
+
+    editor.SetTerrainSculptEnabled(false);
+    editor.terrainInspector.flattenHeightSpinner.SetValue(0.0);
+    var flattenRevision = editor.GetRevision();
+    if editor.FlattenSelectedTerrain() == false
+       or editor.GetRevision() != flattenRevision + 1
+       or near(
+           centerHeight(
+               editor.flatNodes.get(0), state.columns, state.rows),
+           0.0) == false
+       or editor.FlattenSelectedTerrain() {
+        fail(shell, harness, "Flatten All transaction or no-op handling");
+        return;
+    }
+    var flatContent = sceneDoc.content;
+    editor.terrainInspector.columnsSpinner.SetValue(17.0);
+    editor.terrainInspector.rowsSpinner.SetValue(19.0);
+    editor.terrainInspector.spacingSpinner.SetValue(2.0);
+    var regenerateRevision = editor.GetRevision();
+    if editor.RegenerateSelectedTerrain() == false
+       or editor.GetRevision() != regenerateRevision + 1 {
+        fail(shell, harness, "Regenerate Flat did not commit once");
+        return;
+    }
+    node = editor.flatNodes.get(0);
+    state = scene_terrain_3d.FromNode(node);
+    var regeneratedContent = sceneDoc.content;
+    if state.present == false
+       or state.columns != 17 or state.rows != 19
+       or near(state.spacing, 2.0) == false
+       or node.Mesh.VertexCount != 323
+       or node.Mesh.TriangleCount != 576
+       or editor.Undo() == false
+       or sceneDoc.content != flatContent
+       or editor.Redo() == false
+       or sceneDoc.content != regeneratedContent {
+        fail(shell, harness, "terrain regeneration contract or reload");
+        return;
+    }
+    node = editor.flatNodes.get(0);
+    state = scene_terrain_3d.FromNode(node);
+    if state.present == false
+       or state.columns != 17 or state.rows != 19
+       or node.Mesh.VertexCount != 323
+       or node.Mesh.TriangleCount != 576 {
+        fail(shell, harness, "reloaded terrain lost canonical geometry");
+        return;
+    }
+
+    harness.UnbindApp();
+    shell.Destroy();
+    Terminal.Say("RESULT: ok");
+}

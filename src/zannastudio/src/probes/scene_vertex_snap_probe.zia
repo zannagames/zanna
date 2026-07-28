@@ -1,0 +1,359 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_vertex_snap_probe.zia
+// Purpose: Verify bounded mesh-vertex snapping and transactional pointer input.
+// Key invariants:
+//   - Source and target candidates use exact Mesh3D vertex positions.
+//   - Vertex-to-vertex and vertex-to-surface drags mutate live then commit once.
+//   - A selected pivot can drive the same gesture.
+//   - Escape restores exact canonical bytes and releases pointer capture.
+//   - The persistent Vertex control fits its toolbar and follows document state.
+// Ownership/Lifetime:
+//   - The probe owns one hidden AppShell, editor, document, and input harness.
+// Links: zannastudio/src/ui/scene_editor_3d.zia,
+//        docs/adr/0210-read-only-mesh-vertex-positions.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_vertex_snap_probe;
+
+// ============================================================================
+// MODULE: scene_vertex_snap_probe
+// PURPOSE: Pin the production vertex readback, screen candidate, live root
+//          translation, cancel, release, history, and layout boundaries.
+//
+// WHERE-THIS-FITS: Surface Drop owns vertical grounding and normal alignment;
+//          this probe owns free 3D point-to-point transform authoring.
+//
+// TEACHING-NOTE: Pointer coordinates come from production projection and
+//          candidate APIs. Reimplementing camera or vertex math here would
+//          test a second model instead of the editor interaction.
+// ============================================================================
+
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_3d";
+bind "../ui/scene_panels_3d";
+
+bind Convert = Zanna.Core.Convert;
+bind GUI = Zanna.GUI;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind Terminal = Zanna.Terminal;
+bind Vec3 = Zanna.Math.Vec3;
+
+func near(actual: Number,
+          expected: Number) -> Boolean {
+    var difference = actual - expected;
+    if difference < 0.0 { difference = 0.0 - difference; }
+    return difference < 0.00001;
+}
+
+func samePoint(actual: Vec3,
+               expected: Vec3) -> Boolean {
+    return actual != null and expected != null
+        and near(actual.X, expected.X)
+        and near(actual.Y, expected.Y)
+        and near(actual.Z, expected.Z);
+}
+
+func fail(shell: app_shell.AppShell,
+          harness: GUI.TestHarness,
+          reason: String) {
+    if harness != null { harness.UnbindApp(); }
+    if shell != null { shell.Destroy(); }
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func pump(editor: scene_editor_3d.SceneEditor3D,
+          sceneDoc: document.Document,
+          shell: app_shell.AppShell) {
+    editor.Pump(sceneDoc);
+    shell.Render();
+}
+
+func physicalX(editor: scene_editor_3d.SceneEditor3D,
+               localX: Integer,
+               scale: Number) -> Integer {
+    return Convert.NumToInt(
+        (editor.viewportImage.GetScreenX() + localX)
+        * scale + 0.999999);
+}
+
+func physicalY(editor: scene_editor_3d.SceneEditor3D,
+               localY: Integer,
+               scale: Number) -> Integer {
+    return Convert.NumToInt(
+        (editor.viewportImage.GetScreenY() + localY)
+        * scale + 0.999999);
+}
+
+func main() {
+    var authored = SceneGraph.New();
+    var source = SceneNode.New();
+    source.Name = "Source crate";
+    source.Mesh = Mesh3D.Box(2.0, 2.0, 2.0);
+    source.SetPosition(-3.0, 1.0, 0.0);
+    authored.Add(source);
+
+    var target = SceneNode.New();
+    target.Name = "Target crate";
+    target.Mesh = Mesh3D.Box(2.0, 2.0, 2.0);
+    target.SetPosition(3.0, 1.0, 0.0);
+    authored.Add(target);
+
+    var floor = SceneNode.New();
+    floor.Name = "Snap floor";
+    floor.Mesh = Mesh3D.Plane(20.0, 20.0);
+    floor.SetPosition(0.0, -2.0, 0.0);
+    authored.Add(floor);
+
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Vertex Snap Probe", 1280, 820);
+    shell.SetSceneWorkspaceMode(true);
+    var editor = new scene_editor_3d.SceneEditor3D();
+    scene_panels_3d.Build(
+        editor, shell.workbench.scene3DHost, shell.app);
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene3DDocument();
+    sceneDoc.content = authored.SaveToText();
+    sceneDoc.isModified = false;
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_3D);
+    editor.Activate(sceneDoc);
+    pump(editor, sceneDoc, shell);
+    shell.Poll();
+    pump(editor, sceneDoc, shell);
+
+    if editor.flatNodes.count() != 3
+       or editor.SelectSceneNodes([0], 0) == false {
+        fail(shell, null, "fixture hierarchy or source selection");
+        return;
+    }
+    editor.SetVertexSnapEnabled(true);
+    pump(editor, sceneDoc, shell);
+    if editor.vertexSnapCheck == null
+       or editor.vertexSnapCheck.IsChecked() == false
+       or editor.vertexSnapEnabled == false
+       or sceneDoc.scene3DWorkspace.transformVertexSnapEnabled == false
+       or editor.vertexSnapCheck.GetScreenX()
+              + editor.vertexSnapCheck.GetScreenWidth()
+          > editor.viewToolbar.GetScreenX()
+              + editor.viewToolbar.GetScreenWidth() + 1.0
+       or editor.vertexSnapCheck.GetScreenY()
+              + editor.vertexSnapCheck.GetScreenHeight()
+          > editor.viewToolbar.GetScreenY()
+              + editor.viewToolbar.GetScreenHeight() + 1.0 {
+        fail(shell, null, "Vertex control layout or document state");
+        return;
+    }
+
+    var sourceNode = editor.flatNodes.get(0);
+    var targetNode = editor.flatNodes.get(1);
+    var sourceLocal = sourceNode.Mesh.VertexPosition(0) as Vec3;
+    var targetLocal = targetNode.Mesh.VertexPosition(0) as Vec3;
+    var sourceWorld =
+        sourceNode.WorldMatrix.TransformPoint(sourceLocal) as Vec3;
+    var targetWorld =
+        targetNode.WorldMatrix.TransformPoint(targetLocal) as Vec3;
+    var sourceScreen = editor.ProjectWorldPoint(
+        sourceWorld.X, sourceWorld.Y, sourceWorld.Z);
+    var targetScreen = editor.ProjectWorldPoint(
+        targetWorld.X, targetWorld.Y, targetWorld.Z);
+    var sourceCandidate = editor.VertexSnapSourceAtViewportPoint(
+        sourceScreen.x, sourceScreen.y);
+    var targetCandidate = editor.VertexSnapTargetAtViewportPoint(
+        targetScreen.x, targetScreen.y);
+    if sourceCandidate.valid == false
+       or sourceCandidate.kind
+          != scene_editor_3d.VERTEX_SNAP_KIND_VERTEX
+       or targetCandidate.valid == false
+       or targetCandidate.kind
+          != scene_editor_3d.VERTEX_SNAP_KIND_VERTEX
+       or samePoint(sourceCandidate.world, sourceWorld) == false
+       or samePoint(targetCandidate.world, targetWorld) == false {
+        fail(
+            shell, null,
+            "exact vertex source/target resolution kinds="
+            + sourceCandidate.kind + "/" + targetCandidate.kind);
+        return;
+    }
+
+    var harness = GUI.TestHarness.New();
+    if harness.BindApp(shell.app) == false {
+        fail(shell, null, "input harness did not bind");
+        return;
+    }
+    var uiScale = shell.app.GetEffectiveScale();
+    if uiScale <= 0.0 { uiScale = 1.0; }
+    var sourceX = physicalX(editor, sourceScreen.x, uiScale);
+    var sourceY = physicalY(editor, sourceScreen.y, uiScale);
+    var targetX = physicalX(editor, targetScreen.x, uiScale);
+    var targetY = physicalY(editor, targetScreen.y, uiScale);
+    var baseline = sceneDoc.content;
+    var baselineRevision = editor.GetRevision();
+    var baselineUndo = editor.undoStack.count();
+    var sourcePivotBefore = sourceNode.WorldPosition;
+    var expectedPivot = Vec3.New(
+        sourcePivotBefore.X + targetWorld.X - sourceWorld.X,
+        sourcePivotBefore.Y + targetWorld.Y - sourceWorld.Y,
+        sourcePivotBefore.Z + targetWorld.Z - sourceWorld.Z);
+
+    harness.SendMouse("move", sourceX, sourceY, 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    harness.SendMouse("down", sourceX, sourceY, 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    if editor.IsVertexSnapDragging() == false {
+        fail(shell, harness, "vertex-to-vertex drag did not begin");
+        return;
+    }
+    harness.SendMouse("move", targetX, targetY, 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    if samePoint(sourceNode.WorldPosition, expectedPivot) == false
+       or sceneDoc.content != baseline
+       or editor.GetRevision() != baselineRevision
+       or editor.undoStack.count() != baselineUndo {
+        fail(
+            shell, harness,
+            "vertex-to-vertex live move changed history or missed target");
+        return;
+    }
+    harness.SendMouse("up", targetX, targetY, 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    if editor.IsVertexSnapDragging()
+       or editor.GetRevision() != baselineRevision + 1
+       or editor.undoStack.count() != baselineUndo + 1
+       or sceneDoc.content == baseline {
+        fail(shell, harness, "vertex-to-vertex release was not one edit");
+        return;
+    }
+    if editor.Undo() == false or sceneDoc.content != baseline {
+        fail(shell, harness, "vertex-to-vertex undo was not exact");
+        return;
+    }
+
+    // The larger box keeps its pivot farther than the 11-pixel vertex radius.
+    editor.SelectSceneNodes([0], 0);
+    pump(editor, sceneDoc, shell);
+    sourceNode = editor.flatNodes.get(0);
+    targetNode = editor.flatNodes.get(1);
+    var pivot = sourceNode.WorldPosition;
+    var pivotScreen =
+        editor.ProjectWorldPoint(pivot.X, pivot.Y, pivot.Z);
+    targetLocal = targetNode.Mesh.VertexPosition(0) as Vec3;
+    targetWorld =
+        targetNode.WorldMatrix.TransformPoint(targetLocal) as Vec3;
+    targetScreen = editor.ProjectWorldPoint(
+        targetWorld.X, targetWorld.Y, targetWorld.Z);
+    var pivotCandidate = editor.VertexSnapSourceAtViewportPoint(
+        pivotScreen.x, pivotScreen.y);
+    if pivotCandidate.valid == false
+       or pivotCandidate.kind
+          != scene_editor_3d.VERTEX_SNAP_KIND_PIVOT {
+        fail(
+            shell, harness,
+            "selected pivot did not resolve kind=" + pivotCandidate.kind);
+        return;
+    }
+    sourceX = physicalX(editor, pivotScreen.x, uiScale);
+    sourceY = physicalY(editor, pivotScreen.y, uiScale);
+    targetX = physicalX(editor, targetScreen.x, uiScale);
+    targetY = physicalY(editor, targetScreen.y, uiScale);
+    var cancelBaseline = sceneDoc.content;
+    var cancelRevision = editor.GetRevision();
+    harness.SendMouse("move", sourceX, sourceY, 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    harness.SendMouse("down", sourceX, sourceY, 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    harness.SendMouse("move", targetX, targetY, 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    harness.SendKey("escape", 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    harness.SendMouse("up", targetX, targetY, 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    if editor.IsVertexSnapDragging()
+       or samePoint(editor.flatNodes.get(0).WorldPosition, pivot) == false
+       or sceneDoc.content != cancelBaseline
+       or editor.GetRevision() != cancelRevision {
+        fail(shell, harness, "pivot-to-vertex Escape did not restore");
+        return;
+    }
+
+    // A point well inside the large plane but away from its four corners must
+    // resolve through the precise surface fallback, not a guessed bound point.
+    editor.SelectSceneNodes([0], 0);
+    pump(editor, sceneDoc, shell);
+    sourceNode = editor.flatNodes.get(0);
+    sourceLocal = sourceNode.Mesh.VertexPosition(0) as Vec3;
+    sourceWorld =
+        sourceNode.WorldMatrix.TransformPoint(sourceLocal) as Vec3;
+    sourceScreen = editor.ProjectWorldPoint(
+        sourceWorld.X, sourceWorld.Y, sourceWorld.Z);
+    var surfaceScreen = editor.ProjectWorldPoint(0.0, -2.0, 6.0);
+    var surfaceTarget = editor.VertexSnapTargetAtViewportPoint(
+        surfaceScreen.x, surfaceScreen.y);
+    if surfaceTarget.valid == false
+       or surfaceTarget.kind
+          != scene_editor_3d.VERTEX_SNAP_KIND_SURFACE {
+        fail(
+            shell, harness,
+            "interior plane target was not a precise surface kind="
+            + surfaceTarget.kind);
+        return;
+    }
+    sourceX = physicalX(editor, sourceScreen.x, uiScale);
+    sourceY = physicalY(editor, sourceScreen.y, uiScale);
+    targetX = physicalX(editor, surfaceScreen.x, uiScale);
+    targetY = physicalY(editor, surfaceScreen.y, uiScale);
+    var surfaceBaseline = sceneDoc.content;
+    var surfaceRevision = editor.GetRevision();
+    var surfaceUndo = editor.undoStack.count();
+    harness.SendMouse("move", sourceX, sourceY, 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    harness.SendMouse("down", sourceX, sourceY, 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    harness.SendMouse("move", targetX, targetY, 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    var movedNode = editor.flatNodes.get(0);
+    var movedVertex = movedNode.WorldMatrix.TransformPoint(
+        movedNode.Mesh.VertexPosition(0)) as Vec3;
+    if samePoint(movedVertex, surfaceTarget.world) == false
+       or sceneDoc.content != surfaceBaseline
+       or editor.GetRevision() != surfaceRevision {
+        fail(shell, harness, "vertex-to-surface live target or history");
+        return;
+    }
+    harness.SendMouse("up", targetX, targetY, 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    harness.UnbindApp();
+    if editor.GetRevision() != surfaceRevision + 1
+       or editor.undoStack.count() != surfaceUndo + 1
+       or sceneDoc.content == surfaceBaseline
+       or editor.Undo() == false
+       or sceneDoc.content != surfaceBaseline {
+        fail(shell, null, "vertex-to-surface release or exact undo");
+        return;
+    }
+
+    shell.Destroy();
+    Terminal.Say("RESULT: ok");
+}

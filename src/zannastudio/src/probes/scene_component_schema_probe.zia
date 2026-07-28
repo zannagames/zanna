@@ -21,6 +21,9 @@
 //   - Version-8 2D scene backdrops are variant-safe and project-relative.
 //   - Version-9 3D scene environment prefabs are variant-safe and transient.
 //   - Version-10 portable post-FX groups are complete, bounded, and ordered.
+//   - Version-11 object preview draw stacks are bounded and layer-aware.
+//   - Version-12 game-output dimensions are paired, integral, and bounded.
+//   - Version-13 component creation recipes are target-safe and bounded.
 //   - Explicitly opened nested scenes discover their nearest project manifest.
 // Ownership/Lifetime: The probe owns only in-memory schema fixtures.
 // Links: zannastudio/src/ui/scene_component_schema.zia,
@@ -32,7 +35,10 @@
 //        docs/adr/0201-project-owned-3d-lens-and-atmosphere-previews.md,
 //        docs/adr/0202-project-owned-2d-scene-background-previews.md,
 //        docs/adr/0203-project-owned-3d-scene-environment-previews.md,
-//        docs/adr/0204-project-owned-3d-post-processing-previews.md
+//        docs/adr/0204-project-owned-3d-post-processing-previews.md,
+//        docs/adr/0206-project-owned-2d-object-preview-draw-stacks.md,
+//        docs/adr/0208-project-authored-game-output-frames.md,
+//        docs/adr/0209-project-component-creation-recipes.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -162,7 +168,7 @@ func main() {
         + "]}",
         "bad-default");
     var badVersion = scene_component_schema.ParseText(
-        "{\"version\":11,\"components\":[]}", "bad-version");
+        "{\"version\":14,\"components\":[]}", "bad-version");
     if duplicateName.valid or duplicateName.components.count() != 0
        or duplicateKey.valid or duplicateKey.components.count() != 0
        or badDefault.valid or badDefault.components.count() != 0
@@ -746,6 +752,175 @@ func main() {
        or invalidFxaa.valid
        or invalidFxaa.scenePreview3D.present {
         fail("invalid version-10 3D post-FX previews were not fail-closed");
+        return;
+    }
+
+    // ADR 0206: project rules can reproduce game category order and place
+    // object art on either side of authored foreground tile layers.
+    var v11Text =
+        "{\"version\":11,\"components\":[],\"objectPreviews\":["
+        + "{\"objectType\":\"enemy\",\"sprite\":\"art/actors.png\","
+        + "\"drawOrder\":30,\"afterLayer\":0},"
+        + "{\"objectType\":\"pickup\",\"sprite\":\"art/items.png\","
+        + "\"drawOrder\":-128,\"afterLayer\":-1},"
+        + "{\"objectType\":\"default\",\"sprite\":\"art/default.png\"}"
+        + "]}";
+    var v11 = scene_component_schema.ParseText(
+        v11Text, "v11-object-stack");
+    var enemyStack = v11.PreviewForObjectType("ENEMY");
+    var pickupStack = v11.PreviewForObjectType("pickup");
+    var defaultStack = v11.PreviewForObjectType("default");
+    if v11.valid == false or v11.version != 11
+       or enemyStack == null or enemyStack.drawOrder != 30
+       or enemyStack.afterLayer != 0
+       or pickupStack == null or pickupStack.drawOrder != -128
+       or pickupStack.afterLayer != -1
+       or defaultStack == null or defaultStack.drawOrder != 0
+       or defaultStack.afterLayer != 15 {
+        fail("valid version-11 object preview stack did not round trip");
+        return;
+    }
+    var v10DrawStack = scene_component_schema.ParseText(
+        "{\"version\":10,\"components\":[],\"objectPreviews\":["
+        + "{\"objectType\":\"enemy\",\"sprite\":\"art/a.png\","
+        + "\"drawOrder\":1}]}",
+        "v10-object-stack");
+    var lowDrawOrder = scene_component_schema.ParseText(
+        "{\"version\":11,\"components\":[],\"objectPreviews\":["
+        + "{\"objectType\":\"enemy\",\"sprite\":\"art/a.png\","
+        + "\"drawOrder\":-129}]}",
+        "low-draw-order");
+    var highDrawOrder = scene_component_schema.ParseText(
+        "{\"version\":11,\"components\":[],\"objectPreviews\":["
+        + "{\"objectType\":\"enemy\",\"sprite\":\"art/a.png\","
+        + "\"drawOrder\":128}]}",
+        "high-draw-order");
+    var lowAfterLayer = scene_component_schema.ParseText(
+        "{\"version\":11,\"components\":[],\"objectPreviews\":["
+        + "{\"objectType\":\"enemy\",\"sprite\":\"art/a.png\","
+        + "\"afterLayer\":-2}]}",
+        "low-after-layer");
+    var highAfterLayer = scene_component_schema.ParseText(
+        "{\"version\":11,\"components\":[],\"objectPreviews\":["
+        + "{\"objectType\":\"enemy\",\"sprite\":\"art/a.png\","
+        + "\"afterLayer\":16}]}",
+        "high-after-layer");
+    if v10DrawStack.valid or lowDrawOrder.valid or highDrawOrder.valid
+       or lowAfterLayer.valid or highAfterLayer.valid
+       or v10DrawStack.objectPreviews.count() != 0 {
+        fail("invalid version-11 object preview stacks were not fail-closed");
+        return;
+    }
+
+    // ADR 0208: Game View owns a bounded project output frame in either scene
+    // profile, while ordinary editor view state remains outside the schema.
+    var v12 = scene_component_schema.ParseText(
+        "{\"version\":12,\"components\":[],"
+        + "\"scenePreview2D\":{"
+        + "\"outputWidth\":1280,\"outputHeight\":720},"
+        + "\"scenePreview3D\":{"
+        + "\"outputWidth\":1600,\"outputHeight\":900}}",
+        "v12-game-output");
+    if v12.valid == false or v12.version != 12
+       or v12.scenePreview2D == null
+       or v12.scenePreview2D.present == false
+       or v12.scenePreview2D.HasOutputSize() == false
+       or v12.scenePreview2D.outputWidth != 1280
+       or v12.scenePreview2D.outputHeight != 720
+       or v12.scenePreview3D == null
+       or v12.scenePreview3D.present == false
+       or v12.scenePreview3D.HasOutputSize() == false
+       or v12.scenePreview3D.outputWidth != 1600
+       or v12.scenePreview3D.outputHeight != 900 {
+        fail("valid version-12 game-output frames did not round trip");
+        return;
+    }
+    var v11Output = scene_component_schema.ParseText(
+        "{\"version\":11,\"components\":[],\"scenePreview2D\":{"
+        + "\"outputWidth\":1280,\"outputHeight\":720}}",
+        "v11-game-output");
+    var incompleteOutput = scene_component_schema.ParseText(
+        "{\"version\":12,\"components\":[],\"scenePreview3D\":{"
+        + "\"outputWidth\":1600}}",
+        "incomplete-game-output");
+    var fractionalOutput = scene_component_schema.ParseText(
+        "{\"version\":12,\"components\":[],\"scenePreview2D\":{"
+        + "\"outputWidth\":1280.5,\"outputHeight\":720}}",
+        "fractional-game-output");
+    var smallOutput = scene_component_schema.ParseText(
+        "{\"version\":12,\"components\":[],\"scenePreview3D\":{"
+        + "\"outputWidth\":63,\"outputHeight\":64}}",
+        "small-game-output");
+    var largeOutput = scene_component_schema.ParseText(
+        "{\"version\":12,\"components\":[],\"scenePreview2D\":{"
+        + "\"outputWidth\":8192,\"outputHeight\":8193}}",
+        "large-game-output");
+    if v11Output.valid or incompleteOutput.valid
+       or fractionalOutput.valid or smallOutput.valid or largeOutput.valid
+       or incompleteOutput.scenePreview3D.present
+       or fractionalOutput.scenePreview2D.present {
+        fail("invalid version-12 game-output frames were not fail-closed");
+        return;
+    }
+
+    // ADR 0209: project components may opt into direct creation without
+    // conflating stable schema identity with runtime object type/node name.
+    var v13 = scene_component_schema.ParseText(
+        "{\"version\":13,\"components\":["
+        + "{\"name\":\"enemy-spawn\",\"target\":\"both\","
+        + "\"createObjectType\":\"enemy\","
+        + "\"createNodeName\":\"Enemy Spawn\","
+        + "\"fields\":[{\"key\":\"spawn.kind\",\"type\":\"string\","
+        + "\"default\":\"grunt\"}]}]}",
+        "v13-component-creation");
+    var creation = v13.Find(
+        "enemy-spawn", scene_component_schema.TARGET_2D_OBJECT);
+    if v13.valid == false or v13.version != 13
+       or creation == null
+       or creation.createObjectType != "enemy"
+       or creation.createNodeName != "Enemy Spawn"
+       or creation.CanCreateFor(
+              scene_component_schema.TARGET_2D_OBJECT) == false
+       or creation.CanCreateFor(
+              scene_component_schema.TARGET_3D_NODE) == false {
+        fail("valid version-13 component creation recipe did not round trip");
+        return;
+    }
+    var v12Creation = scene_component_schema.ParseText(
+        "{\"version\":12,\"components\":["
+        + "{\"name\":\"enemy\",\"target\":\"2d-object\","
+        + "\"createObjectType\":\"enemy\",\"fields\":["
+        + "{\"key\":\"enemy.type\",\"type\":\"int\"}]}]}",
+        "v12-component-creation");
+    var wrongCreateType = scene_component_schema.ParseText(
+        "{\"version\":13,\"components\":["
+        + "{\"name\":\"enemy\",\"target\":\"2d-object\","
+        + "\"createObjectType\":42,\"fields\":["
+        + "{\"key\":\"enemy.type\",\"type\":\"int\"}]}]}",
+        "wrong-component-create-type");
+    var crossTargetObject = scene_component_schema.ParseText(
+        "{\"version\":13,\"components\":["
+        + "{\"name\":\"enemy\",\"target\":\"3d-node\","
+        + "\"createObjectType\":\"enemy\",\"fields\":["
+        + "{\"key\":\"enemy.type\",\"type\":\"int\"}]}]}",
+        "cross-target-object-creation");
+    var crossTargetNode = scene_component_schema.ParseText(
+        "{\"version\":13,\"components\":["
+        + "{\"name\":\"enemy\",\"target\":\"2d-object\","
+        + "\"createNodeName\":\"Enemy\",\"fields\":["
+        + "{\"key\":\"enemy.type\",\"type\":\"int\"}]}]}",
+        "cross-target-node-creation");
+    var emptyNodeName = scene_component_schema.ParseText(
+        "{\"version\":13,\"components\":["
+        + "{\"name\":\"enemy\",\"target\":\"3d-node\","
+        + "\"createNodeName\":\"  \",\"fields\":["
+        + "{\"key\":\"enemy.type\",\"type\":\"int\"}]}]}",
+        "empty-node-creation");
+    if v12Creation.valid or wrongCreateType.valid
+       or crossTargetObject.valid or crossTargetNode.valid
+       or emptyNodeName.valid
+       or v12Creation.components.count() != 0 {
+        fail("invalid version-13 component creation recipe was not fail-closed");
         return;
     }
 

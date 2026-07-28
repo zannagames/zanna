@@ -44,6 +44,7 @@
 #include "rt_platform.h"
 #include "rt_string.h"
 #include "rt_untrusted_count.h"
+#include "rt_vec3.h"
 #include "vgfx3d_backend_utils.h"
 
 #include <math.h>
@@ -270,7 +271,8 @@ static int mesh3d_sanitize_triangle_indices(rt_mesh3d *m, const char *op) {
 /// @param vertex_count Planned vertex count.
 /// @param index_count Planned scalar index count.
 /// @param trap_name Optional trap message used when arithmetic or budget validation fails.
-/// @return One when counts and their worst-case storage fit the limit; otherwise zero after trapping.
+/// @return One when counts and their worst-case storage fit the limit; otherwise zero after
+/// trapping.
 static int mesh3d_check_planned_payload(uint64_t vertex_count,
                                         uint64_t index_count,
                                         const char *trap_name) {
@@ -1359,6 +1361,23 @@ void rt_mesh3d_add_triangle(void *obj, int64_t v0, int64_t v1, int64_t v2) {
 int64_t rt_mesh3d_get_vertex_count(void *obj) {
     rt_mesh3d *m = mesh3d_checked(obj);
     return m ? (int64_t)rt_mesh3d_safe_vertex_count(m) : 0;
+}
+
+/// @brief Return one mesh-local vertex position as a managed Vec3.
+/// @details Reads the authoritative double-precision position sidecar when present, otherwise
+///          widens the drawable float position. This read-only accessor never exposes mutable
+///          vertex storage.
+/// @param obj Mesh3D receiver.
+/// @param index Zero-based vertex index.
+/// @return Fresh GC-managed Vec3 for a valid live vertex, or NULL for an invalid mesh or index.
+void *rt_mesh3d_get_vertex_position(void *obj, int64_t index) {
+    rt_mesh3d *m = mesh3d_checked(obj);
+    uint32_t vertex_count = m ? rt_mesh3d_safe_vertex_count(m) : 0;
+    double position[3];
+    if (!m || index < 0 || (uint64_t)index >= (uint64_t)vertex_count)
+        return NULL;
+    mesh_position_f64_at(m, (uint32_t)index, position);
+    return rt_vec3_new(position[0], position[1], position[2]);
 }
 
 /// @brief Get the number of triangles in the mesh (index_count / 3).

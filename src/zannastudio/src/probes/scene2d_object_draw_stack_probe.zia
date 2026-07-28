@@ -1,0 +1,409 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene2d_object_draw_stack_probe.zia
+// Purpose: Verify gameplay-like 2D object preview compositing and picking.
+// Key invariants:
+//   - Project rules interleave object sprites at exact tile-layer boundaries.
+//   - Bounded priorities sort stably and topmost pixels win canvas picking.
+//   - Wrong-kind per-object overrides fall back to the project rule.
+//   - Direct inspector Apply/Use Project actions are atomic and undoable.
+//   - Rendering project rules never changes canonical scene bytes or history.
+// Ownership/Lifetime:
+//   - The probe owns one hidden AppShell, harness, document, and temp directory.
+// Links: zannastudio/src/ui/scene_editor_2d.zia,
+//        zannastudio/src/ui/scene_object_draw_stack_2d.zia,
+//        docs/adr/0206-project-owned-2d-object-preview-draw-stacks.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene2d_object_draw_stack_probe;
+
+// ============================================================================
+// MODULE: scene2d_object_draw_stack_probe
+// PURPOSE: Pin render/pick parity for project and per-object draw stacks.
+//
+// WHERE-THIS-FITS: Schema probes own fail-closed JSON parsing. This display
+//          probe owns production pixels, pointer picking, and inspector input.
+//
+// TEACHING-NOTE: The fixture's object array is intentionally not its visual
+//          order. Passing therefore proves bounded stack construction rather
+//          than accidentally retaining canonical document order.
+// ============================================================================
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_component_schema";
+bind "../ui/scene_editor_2d";
+bind "../ui/scene_panels_2d";
+
+bind Color = Zanna.Graphics.Color;
+bind Convert = Zanna.Core.Convert;
+bind Dir = Zanna.IO.Dir;
+bind GUI = Zanna.GUI;
+bind Path = Zanna.IO.Path;
+bind Pixels = Zanna.Graphics.Pixels;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind TempFile = Zanna.IO.TempFile;
+bind Terminal = Zanna.Terminal;
+
+func HarnessCoordinate(shell: app_shell.AppShell,
+                       logical: Number) -> Integer {
+    var scale = shell.app.GetEffectiveScale();
+    if scale <= 0.0 { scale = 1.0; }
+    return Convert.NumToInt(logical * scale + 0.999999);
+}
+
+func PumpTwice(shell: app_shell.AppShell,
+               editor: scene_editor_2d.SceneEditor2D,
+               sceneDoc: document.Document) {
+    editor.Pump(sceneDoc);
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+}
+
+func ActivateWidget(shell: app_shell.AppShell,
+                    harness: GUI.TestHarness,
+                    widget: GUI.Widget) -> Boolean {
+    var x = HarnessCoordinate(
+        shell, widget.GetScreenX() + widget.GetScreenWidth() / 2.0);
+    var y = HarnessCoordinate(
+        shell, widget.GetScreenY() + widget.GetScreenHeight() / 2.0);
+    harness.SendMouse("move", x, y, 0);
+    harness.DispatchPending();
+    var hovered = widget.IsHovered();
+    harness.SendMouse("down", x, y, 0);
+    harness.DispatchPending();
+    harness.SendMouse("up", x, y, 0);
+    harness.DispatchPending();
+    return hovered;
+}
+
+func ClickCanvasCell(shell: app_shell.AppShell,
+                     harness: GUI.TestHarness,
+                     editor: scene_editor_2d.SceneEditor2D,
+                     cellX: Integer,
+                     cellY: Integer) {
+    var localX = cellX * editor.displayCellSize
+        - editor.viewOriginX + editor.displayCellSize / 2;
+    var localY = cellY * editor.displayCellSize
+        - editor.viewOriginY + editor.displayCellSize / 2;
+    var x = HarnessCoordinate(
+        shell, editor.canvasImage.GetScreenX() + localX);
+    var y = HarnessCoordinate(
+        shell, editor.canvasImage.GetScreenY() + localY);
+    harness.SendMouse("move", x, y, 0);
+    harness.SendMouse("down", x, y, 0);
+    harness.SendMouse("up", x, y, 0);
+    harness.DispatchPending();
+}
+
+func SampleCell(editor: scene_editor_2d.SceneEditor2D,
+                cellX: Integer,
+                cellY: Integer) -> Integer {
+    var x = cellX * editor.displayCellSize
+        - editor.viewOriginX + editor.displayCellSize / 2;
+    var y = cellY * editor.displayCellSize
+        - editor.viewOriginY + editor.displayCellSize / 2;
+    return editor.framePixels.GetColor(x, y) % 16777216;
+}
+
+func Cleanup(shell: app_shell.AppShell,
+             harness: GUI.TestHarness,
+             tempDir: String) {
+    if harness != null { harness.UnbindApp(); }
+    if shell != null { shell.Destroy(); }
+    if tempDir != "" { Dir.RemoveAll(tempDir); }
+}
+
+func Fail(shell: app_shell.AppShell,
+          harness: GUI.TestHarness,
+          tempDir: String,
+          reason: String) {
+    Cleanup(shell, harness, tempDir);
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func main() {
+    var tempDir =
+        TempFile.CreateDirWithPrefix("zannastudio_object_stack_");
+    var basePath = Path.Join(tempDir, "base.png");
+    var foregroundPath = Path.Join(tempDir, "foreground.png");
+    var spritePath = Path.Join(tempDir, "sprites.png");
+    var base = Pixels.New(16, 16);
+    var foreground = Pixels.New(16, 16);
+    var sprites = Pixels.New(48, 16);
+    if tempDir == "" or base == null or foreground == null
+       or sprites == null {
+        Fail(null, null, tempDir, "temporary image allocation");
+        return;
+    }
+    base.FillColor(Color.RGB(210, 42, 36));
+    foreground.FillColor(Color.RGB(30, 72, 220));
+    sprites.DrawBox(0, 0, 16, 16, Color.RGB(38, 214, 72));
+    sprites.DrawBox(16, 0, 16, 16, Color.RGB(236, 208, 34));
+    sprites.DrawBox(32, 0, 16, 16, Color.RGB(220, 42, 196));
+    if Pixels.SavePng(base, basePath) != 1
+       or Pixels.SavePng(foreground, foregroundPath) != 1
+       or Pixels.SavePng(sprites, spritePath) != 1 {
+        Fail(null, null, tempDir, "temporary image write");
+        return;
+    }
+
+    var fixture = SceneDocument.New(6, 4, 16, 16);
+    if fixture == null {
+        Fail(null, null, tempDir, "scene fixture");
+        return;
+    }
+    fixture.SetLayerName(0, "Ground");
+    fixture.SetLayerAsset(0, "base.png");
+    fixture.SetTile(0, 1, 1, 1);
+    fixture.SetTile(0, 2, 1, 1);
+    var foregroundLayer = fixture.AddLayer("Foreground");
+    if foregroundLayer != 1 {
+        Fail(null, null, tempDir, "foreground layer fixture");
+        return;
+    }
+    fixture.SetLayerAsset(foregroundLayer, "foreground.png");
+    fixture.SetTile(foregroundLayer, 1, 1, 1);
+
+    var underForeground =
+        fixture.AddObject("under", "under-foreground", 16, 16);
+    var low = fixture.AddObject("low", "low", 32, 16);
+    var high = fixture.AddObject("high", "high", 32, 16);
+    var invalidOverride =
+        fixture.AddObject("low", "invalid-override", 48, 16);
+    if underForeground != 0 or low != 1 or high != 2
+       or invalidOverride != 3 {
+        Fail(null, null, tempDir, "object fixture");
+        return;
+    }
+    fixture.ObjectSetStr(
+        invalidOverride, "editor.drawOrder", "not-an-integer");
+    fixture.ObjectSetStr(
+        invalidOverride, "editor.afterLayer", "not-an-integer");
+
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio 2D Object Draw Stack Probe", 1220, 820);
+    shell.SetSceneWorkspaceMode(true);
+    var editor = new scene_editor_2d.SceneEditor2D();
+    scene_panels_2d.Build(
+        editor, shell.workbench.scene2DHost, shell.app);
+    editor.componentSchema = scene_component_schema.ParseText(
+        "{\"version\":11,\"components\":[],\"objectPreviews\":["
+        + "{\"objectType\":\"under\",\"sprite\":\"sprites.png\","
+        + "\"frame\":0,\"drawOrder\":100,\"afterLayer\":0},"
+        + "{\"objectType\":\"low\",\"sprite\":\"sprites.png\","
+        + "\"frame\":1,\"drawOrder\":10},"
+        + "{\"objectType\":\"high\",\"sprite\":\"sprites.png\","
+        + "\"frame\":2,\"drawOrder\":30}]}",
+        Path.Join(tempDir, "scene-components.json"));
+    if editor.componentSchema.valid == false {
+        Fail(shell, null, tempDir, "project draw-stack schema");
+        return;
+    }
+
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene2DDocument();
+    sceneDoc.fileName = "object-stack.scene2d";
+    sceneDoc.filePath = Path.Join(tempDir, sceneDoc.fileName);
+    sceneDoc.content = fixture.ToJson();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_2D);
+    editor.Activate(sceneDoc);
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    PumpTwice(shell, editor, sceneDoc);
+    if editor.loadError != "" or editor.framePixels == null {
+        Fail(shell, null, tempDir, "production canvas");
+        return;
+    }
+
+    var baseline = sceneDoc.content;
+    var baselineRevision = editor.GetRevision();
+    var baselineUndo = editor.undoStack.count();
+    var baselineDirty = sceneDoc.isModified;
+    var stack = editor.ObjectPreviewStack();
+    if stack.count() != 4
+       or stack.get(0) != underForeground
+       or stack.get(1) != low
+       or stack.get(2) != invalidOverride
+       or stack.get(3) != high
+       or editor.ObjectPreviewAfterLayer(underForeground) != 0
+       or editor.ObjectPreviewDrawOrder(underForeground) != 100
+       or editor.ObjectPreviewAfterLayer(invalidOverride) != 15
+       or editor.ObjectPreviewDrawOrder(invalidOverride) != 10 {
+        Fail(shell, null, tempDir, "stable project/fallback stack");
+        return;
+    }
+
+    // Green paints between Ground and Foreground and is therefore covered by
+    // blue. Magenta has the highest final-layer priority over yellow.
+    var coveredPixel = SampleCell(editor, 1, 1);
+    var overlapPixel = SampleCell(editor, 2, 1);
+    if coveredPixel != Color.RGB(30, 72, 220) % 16777216
+       or overlapPixel != Color.RGB(220, 42, 196) % 16777216 {
+        Fail(shell, null, tempDir,
+             "layer/prioritized pixels " + coveredPixel
+             + "/" + overlapPixel);
+        return;
+    }
+    if sceneDoc.content != baseline
+       or editor.GetRevision() != baselineRevision
+       or editor.undoStack.count() != baselineUndo
+       or sceneDoc.isModified != baselineDirty {
+        Fail(shell, null, tempDir, "presentation changed canonical state");
+        return;
+    }
+
+    var harness = GUI.TestHarness.New();
+    if harness.BindApp(shell.app) == false {
+        Fail(shell, harness, tempDir, "automation app binding");
+        return;
+    }
+    ClickCanvasCell(shell, harness, editor, 2, 1);
+    PumpTwice(shell, editor, sceneDoc);
+    if editor.selectedObject != high
+       or editor.objectDrawStackGroup.IsVisible() == false
+       or editor.objectAfterLayerDropdown.Selected != 2
+       or Convert.NumToInt(editor.objectDrawOrderSpinner.Value) != 30 {
+        Fail(shell, harness, tempDir,
+             "topmost project pick or direct inspector state");
+        return;
+    }
+
+    editor.objectAfterLayerDropdown.SetSelected(0);
+    editor.objectDrawOrderSpinner.SetValue(-128.0);
+    editor.inspectorScroll.ScrollTo(editor.objectDrawStackApplyButton);
+    shell.Render();
+    var applyWidgetRevision =
+        editor.objectDrawStackApplyButton.GetRevision();
+    var applyHovered =
+        ActivateWidget(
+            shell, harness, editor.objectDrawStackApplyButton);
+    var applyWidgetRevisionAfter =
+        editor.objectDrawStackApplyButton.GetRevision();
+    var applyChanged = editor.Pump(sceneDoc);
+    shell.Render();
+    PumpTwice(shell, editor, sceneDoc);
+    stack = editor.ObjectPreviewStack();
+    if applyChanged == false
+       or editor.GetRevision() != baselineRevision + 1
+       or editor.undoStack.count() != baselineUndo + 1
+       or editor.scene.ObjectPropertyKind(
+              high, "editor.afterLayer") != "int"
+       or editor.scene.ObjectGetInt(
+              high, "editor.afterLayer", 99) != -1
+       or editor.scene.ObjectPropertyKind(
+              high, "editor.drawOrder") != "int"
+       or editor.scene.ObjectGetInt(
+              high, "editor.drawOrder", 99) != -128
+       or stack.count() != 4
+       or stack.get(0) != high
+       or stack.get(1) != underForeground
+       or stack.get(2) != low
+       or stack.get(3) != invalidOverride
+       or SampleCell(editor, 2, 1)
+          != Color.RGB(236, 208, 34) % 16777216 {
+        Fail(shell, harness, tempDir,
+             "inspector Apply transaction or rendered override"
+             + " changed=" + applyChanged
+             + " revision=" + editor.GetRevision()
+             + " undo=" + editor.undoStack.count()
+             + " layerKind=" + editor.scene.ObjectPropertyKind(
+                   high, "editor.afterLayer")
+             + " layer=" + editor.scene.ObjectGetInt(
+                   high, "editor.afterLayer", 99)
+             + " orderKind=" + editor.scene.ObjectPropertyKind(
+                   high, "editor.drawOrder")
+             + " order=" + editor.scene.ObjectGetInt(
+                   high, "editor.drawOrder", 99)
+             + " stack=" + stack.count()
+             + " pixel=" + SampleCell(editor, 2, 1)
+             + " button="
+             + editor.objectDrawStackApplyButton.GetScreenX() + ","
+             + editor.objectDrawStackApplyButton.GetScreenY() + " "
+             + editor.objectDrawStackApplyButton.GetScreenWidth() + "x"
+             + editor.objectDrawStackApplyButton.GetScreenHeight()
+             + " visible="
+             + editor.objectDrawStackApplyButton.IsVisible()
+             + " enabled="
+             + editor.objectDrawStackApplyButton.IsEnabled()
+             + " hovered=" + applyHovered
+             + " widgetRevision=" + applyWidgetRevision
+             + "->" + applyWidgetRevisionAfter
+             + " scroll=" + editor.inspectorScroll.GetScrollY());
+        return;
+    }
+
+    // Reapplying the same pair is an explicit no-op.
+    var overrideContent = sceneDoc.content;
+    editor.inspectorScroll.ScrollTo(editor.objectDrawStackApplyButton);
+    shell.Render();
+    ActivateWidget(shell, harness, editor.objectDrawStackApplyButton);
+    if editor.Pump(sceneDoc)
+       or sceneDoc.content != overrideContent
+       or editor.GetRevision() != baselineRevision + 1
+       or editor.undoStack.count() != baselineUndo + 1 {
+        Fail(shell, harness, tempDir, "duplicate Apply was not a no-op");
+        return;
+    }
+
+    // The visible yellow sprite now wins the same real canvas click.
+    ClickCanvasCell(shell, harness, editor, 2, 1);
+    editor.Pump(sceneDoc);
+    if editor.selectedObject != low {
+        Fail(shell, harness, tempDir,
+             "picking diverged from overridden visual stack");
+        return;
+    }
+
+    editor.SelectSceneObjects([high], high);
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.objectDrawStackResetButton.IsEnabled() == false {
+        Fail(shell, harness, tempDir, "Use Project action unavailable");
+        return;
+    }
+    editor.inspectorScroll.ScrollTo(editor.objectDrawStackResetButton);
+    shell.Render();
+    ActivateWidget(shell, harness, editor.objectDrawStackResetButton);
+    var resetChanged = editor.Pump(sceneDoc);
+    shell.Render();
+    PumpTwice(shell, editor, sceneDoc);
+    stack = editor.ObjectPreviewStack();
+    if resetChanged == false
+       or editor.GetRevision() != baselineRevision + 2
+       or editor.undoStack.count() != baselineUndo + 2
+       or editor.scene.ObjectPropertyKind(
+              high, "editor.afterLayer") != ""
+       or editor.scene.ObjectPropertyKind(
+              high, "editor.drawOrder") != ""
+       or sceneDoc.content != baseline
+       or stack.count() != 4
+       or stack.get(3) != high
+       or SampleCell(editor, 2, 1)
+          != Color.RGB(220, 42, 196) % 16777216 {
+        Fail(shell, harness, tempDir,
+             "Use Project reset or exact byte restoration");
+        return;
+    }
+
+    ClickCanvasCell(shell, harness, editor, 2, 1);
+    editor.Pump(sceneDoc);
+    if editor.selectedObject != high {
+        Fail(shell, harness, tempDir,
+             "restored project stack did not restore topmost picking");
+        return;
+    }
+
+    Cleanup(shell, harness, tempDir);
+    Terminal.Say("RESULT: ok");
+}

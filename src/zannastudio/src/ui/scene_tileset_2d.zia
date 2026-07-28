@@ -13,6 +13,8 @@
 //   - Image source, decoded-pixel, palette, scaled-tile, and scene-background
 //     caches are bounded.
 //   - Translucent frames composite source-over; opaque frames use a fast copy.
+//   - Project backgrounds can target a bounded output region without painting
+//     across the surrounding Game View matte.
 //   - Zero-rotation sprite fast paths use an epsilon-safe degree comparison.
 //   - Invalid or missing assets produce ordinary inline state, never traps.
 //   - Tile IDs remain SceneDocument's one-based tileset frame indexes.
@@ -21,6 +23,7 @@
 // Links: zannastudio/src/ui/scene_editor_2d.zia,
 //        zannastudio/src/probes/scene_editor_2d_probe.zia,
 //        docs/adr/0202-project-owned-2d-scene-background-previews.md,
+//        docs/adr/0208-project-authored-game-output-frames.md,
 //        docs/zannalib/game/scene.md
 //
 //===----------------------------------------------------------------------===//
@@ -454,6 +457,31 @@ class SceneTilesetLibrary2D {
            or destination.Height <= 0 {
             return false;
         }
+        return DrawSceneBackgroundRegion(
+            destination, authoredPath, referencePath, fit,
+            0, 0, destination.Width, destination.Height);
+    }
+
+    /// @brief Composite one project backdrop inside a bounded screen region.
+    /// @details Scaling and clipping use the project output frame rather than
+    ///          any surrounding Game View matte. The full-destination helper
+    ///          above remains the compatibility path for editor previews.
+    expose func DrawSceneBackgroundRegion(
+        destination: Pixels,
+        authoredPath: String,
+        referencePath: String,
+        fit: String,
+        regionX: Integer,
+        regionY: Integer,
+        regionWidth: Integer,
+        regionHeight: Integer) -> Boolean {
+        if destination == null or destination.Width <= 0
+           or destination.Height <= 0 or regionX < 0 or regionY < 0
+           or regionWidth <= 0 or regionHeight <= 0
+           or regionX + regionWidth > destination.Width
+           or regionY + regionHeight > destination.Height {
+            return false;
+        }
         var entry = EnsureSceneBackground(
             authoredPath, referencePath);
         if entry == null or entry.pixels == null
@@ -464,8 +492,8 @@ class SceneTilesetLibrary2D {
         if mode != "contain" and mode != "stretch" {
             mode = "cover";
         }
-        var viewportWidth = destination.Width;
-        var viewportHeight = destination.Height;
+        var viewportWidth = regionWidth;
+        var viewportHeight = regionHeight;
         if scaledBackground == null
            or scaledBackgroundFit != mode
            or scaledBackgroundViewportWidth != viewportWidth
@@ -479,25 +507,25 @@ class SceneTilesetLibrary2D {
 
         var sourceX = 0;
         var sourceY = 0;
-        var destinationX = scaledBackgroundX;
-        var destinationY = scaledBackgroundY;
+        var destinationX = regionX + scaledBackgroundX;
+        var destinationY = regionY + scaledBackgroundY;
         var width = scaledBackground.Width;
         var height = scaledBackground.Height;
-        if destinationX < 0 {
-            sourceX = 0 - destinationX;
+        if destinationX < regionX {
+            sourceX = regionX - destinationX;
             width = width - sourceX;
-            destinationX = 0;
+            destinationX = regionX;
         }
-        if destinationY < 0 {
-            sourceY = 0 - destinationY;
+        if destinationY < regionY {
+            sourceY = regionY - destinationY;
             height = height - sourceY;
-            destinationY = 0;
+            destinationY = regionY;
         }
-        if destinationX + width > viewportWidth {
-            width = viewportWidth - destinationX;
+        if destinationX + width > regionX + regionWidth {
+            width = regionX + regionWidth - destinationX;
         }
-        if destinationY + height > viewportHeight {
-            height = viewportHeight - destinationY;
+        if destinationY + height > regionY + regionHeight {
+            height = regionY + regionHeight - destinationY;
         }
         if width <= 0 or height <= 0 { return false; }
         if scaledBackgroundHasTransparency {

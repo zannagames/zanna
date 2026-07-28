@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-07-27
 ---
 
 # Zanna.Graphics3D — User Guide
@@ -95,6 +95,15 @@ paste with unique root names, a one-unit local-X offset, restored hierarchy
 selection, one-step undo, and exact rejection rollback. Studio serializes
 accepted edits back to VSCN immediately, so ordinary
 Save, Save As, session restore, and recovery remain authoritative.
+
+Studio terrain uses a versioned, centered `Mesh3D` heightfield attached to an
+ordinary `SceneNode`. The persisted mesh is the exact surface shown, raycast,
+saved, and loaded by a game; typed `terrain.*` metadata only validates its
+bounded grid interpretation for safe sculpting. This is distinct from the
+standalone runtime `Terrain3D` object described below, which is not a
+serializable `SceneNode` attachment. Runtime splatting, holes, chunk LOD, or
+streaming therefore require an explicit game-side conversion until a future
+scene attachment defines synchronization.
 
 ---
 
@@ -574,6 +583,7 @@ compatibility aliases for the shape factories.
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `Reserve(vertexCount, triangleCount)` | `void(i64, i64)` | Pre-size backing arrays for bulk mesh construction |
+| `VertexPosition(index)` | `obj<Zanna.Math.Vec3>(i64)` | Return a fresh read-only snapshot of one mesh-local vertex position, or `null` when the index is invalid |
 | `AddVertex(x, y, z, nx, ny, nz, u, v)` | `void(f64 x8)` | Add vertex with position, normal, and UV |
 | `AddTriangle(i0, i1, i2)` | `void(i64, i64, i64)` | Add triangle from vertex indices (CCW winding) |
 | `Clear()` | `void()` | Reset vertex/index counts to zero (reuse backing arrays) |
@@ -625,6 +635,7 @@ func start() {
     Mesh3D.AddVertex(mesh,  0.5, -0.5, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0);
     Mesh3D.AddVertex(mesh,  0.0,  0.5, 0.0, 0.0, 0.0, 1.0, 0.5, 1.0);
     Mesh3D.AddTriangle(mesh, 0, 1, 2);
+    var first = mesh.VertexPosition(0);
 
     // Primitives
     var box = Mesh3D.Box(1.0, 1.0, 1.0);
@@ -645,6 +656,11 @@ func start() {
 All mesh generators and the OBJ loader produce **counter-clockwise (CCW)** winding for front faces. When constructing meshes programmatically, vertices must be ordered CCW when viewed from the front.
 
 **Mesh validation:** Procedural generators reject non-finite and non-positive dimensions. `Box` takes full extents, while collider boxes use half-extents. `Plane` emits +Y-facing triangles, matching its vertex normals and backface-culling expectations. Sphere and cylinder segment counts are clamped to production-safe maxima to avoid accidental unbounded allocation. `Reserve()` can be called before many `AddVertex`/`AddTriangle` calls to avoid repeated reallocations; it changes capacity only, not counts or geometry revision. `AddVertex` traps on non-finite or out-of-float-range vertex data. `AddTriangle` traps on negative, out-of-range, duplicate-index, collinear, or otherwise degenerate triangles. These public append validation traps do not poison the mesh; valid later appends can continue without `Clear()`. Allocation failures and importer failures still mark the build failed until `Clear()` resets it. `RecalcNormals` accumulates in double precision before normalizing back to renderer floats. `CalcTangents` skips degenerate or overflowing face contributions instead of narrowing invalid double intermediates into renderer floats. Deferred heap draws retain an immutable geometry revision, so a source mutation after `DrawMesh` cannot change the queued bytes; unchanged later frames reuse that revision without another vertex/index copy. Camera-relative rebase and other dynamic geometry retain their explicit frame snapshots.
+
+`VertexPosition(index)` is a bounded, read-only geometry query. It returns a
+fresh mesh-local `Vec3`, preserving the authoritative double-precision position
+sidecar when present, and returns `null` for negative or out-of-range indices.
+Interactive tools should cap the number of vertices they scan per operation.
 
 **Tangents:** `CalcTangents()` uses position/UV derivatives with Gram-Schmidt orthogonalization and `tangent.w` handedness for mirrored UVs. Degenerate UV islands get a normalized fallback tangent orthogonal to the vertex normal so normal maps never receive a tangent parallel to the normal. When a normal-mapped heap mesh has missing or degenerate tangents, Canvas3D generates a separate immutable tangent variant keyed by the mesh geometry revision. It is reused across frames and hardware backends without mutating the authored mesh; any position, normal, UV, or topology mutation forks a new raw/tangent revision.
 
@@ -3041,6 +3057,12 @@ See `examples/apiaudit/graphics3d/water_demo.zia` for a complete example.
 ## Terrain3D
 
 Heightmap-based terrain with chunked rendering, LOD, and texture splatting.
+
+This runtime object is drawn explicitly with `Canvas3D.DrawTerrain` and is not
+currently persisted as a VSCN `SceneNode` attachment. Zanna Studio's visual
+terrain tool instead sculpts the ordinary canonical scene mesh documented by
+[ADR 0211](adr/0211-canonical-mesh-terrain-sculpting.md), ensuring that
+authoring and normal scene loading use one exact surface.
 
 ### Constructor
 

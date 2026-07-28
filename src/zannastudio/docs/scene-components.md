@@ -12,12 +12,14 @@ root of a Studio workspace:
 
 ```json
 {
-  "version": 1,
+  "version": 13,
   "components": [
     {
       "name": "enemy-spawn",
       "label": "Enemy Spawn",
       "target": "both",
+      "createObjectType": "enemy",
+      "createNodeName": "Enemy Spawn",
       "description": "Common enemy placement fields.",
       "fields": [
         {
@@ -36,6 +38,7 @@ root of a Studio workspace:
       "name": "checkpoint",
       "label": "Checkpoint",
       "target": "3d-node",
+      "createNodeName": "Checkpoint",
       "fields": [
         {"key": "checkpoint.id", "type": "string", "default": "start"},
         {"key": "checkpoint.enabled", "type": "bool", "default": true}
@@ -60,17 +63,19 @@ components while a 3D scene is active and vice versa.
 The form supports:
 
 - **New Component**, component **Earlier**/**Later**, stable name, label,
-  `target`, description, **Save Component**, and **Delete Component**.
+  `target`, 2D creation type, 3D creation name, description,
+  **Save Component**, and **Delete Component**.
 - **New Field**, field **Earlier**/**Later**, stable key, label, scalar type,
   typed default, description, **Save Field**, and **Delete Field**.
 - **Undo Schema** and **Redo Schema** for the last 20 accepted project-file
   transitions.
 
 When the file is absent, **New Component** creates a complete valid
-`scene-components.json` with a starter Boolean field. Each later action writes
-one complete, parser-validated file state. Invalid identifiers, duplicate
-names/keys, wrong typed defaults, non-finite numbers, the last-field deletion,
-and format limits are rejected without changing disk.
+`scene-components.json` with a starter Boolean field and a compatible creation
+recipe. Each later action writes one complete, parser-validated file state.
+Invalid identifiers, duplicate names/keys, wrong typed defaults, non-finite
+numbers, incompatible recipes, the last-field deletion, and format limits are
+rejected without changing disk.
 
 Schema edits are separate from scene edits: they do not change scene bytes,
 scene revision, dirty state, or scene undo/redo. Removing or renaming a
@@ -106,16 +111,38 @@ Use **Reload** to accept an external edit immediately. Studio also checks for
 external changes periodically and automatically changes schema ownership when a
 scene moves to another workspace root.
 
+## Creating From A Component
+
+Schema version 13 can make a component a direct creation action. Open the
+Object inspector tab, choose a component, and press **Create Object** or
+**Create Node**. No existing selection is required.
+
+- A 2D recipe creates the declared `createObjectType` at the selected cell, or
+  at the center visible cell when no valid cell is selected.
+- A 3D recipe creates a uniquely named top-level node from `createNodeName` at
+  the current viewport target.
+- Every declared field is written with its exact type before the item is
+  committed and selected.
+- The entire result is one scene-history entry. Undo never exposes a generic
+  placeholder or a partially configured item.
+
+Omit the relevant recipe member when a component should only augment existing
+content. For example, a collider component can remain **Add Missing**-only
+instead of creating an empty 3D node. Studio never guesses a runtime object
+type or node discriminator from the component label.
+
 ## Format Reference
 
 | Member | Required | Contract |
 | --- | --- | --- |
-| Root `version` | Yes | Numeric integer `1` through `10`; use the lowest version required by the optional members below. |
+| Root `version` | Yes | Numeric integer `1` through `13`; use the lowest version required by the optional members below. |
 | Root `components` | Yes | Array with at most 128 entries. |
 | Component `name` | Yes | Stable portable identifier, at most 64 characters; unique without regard to case. |
 | Component `target` | Yes | `2d-object`, `3d-node`, or `both`. |
 | Component `label` | No | Non-empty display text, at most 128 characters; defaults to `name`. |
 | Component `description` | No | Display text, at most 1,024 characters. |
+| Component `createObjectType` | No (version 13) | Portable 2D runtime object type, at most 128 characters; allowed only for `2d-object` or `both`. |
+| Component `createNodeName` | No (version 13) | Non-empty initial 3D node name, at most 128 characters; allowed only for `3d-node` or `both`. |
 | Component `fields` | Yes | Between 1 and 64 fields. |
 | Field `key` | Yes | Portable scene-data key, at most 128 characters; unique within the component. |
 | Field `type` | Yes | `string`, `int`, `float`, `bool`, or `null`; version 2 adds `enum` and `asset`. |
@@ -151,7 +178,7 @@ always writes the lowest version its content requires, so a file that stops
 using version-2 kinds returns to `"version": 1`. A version-2 file presented to
 an older Studio is rejected wholesale, exactly like any unknown version.
 
-## Versions 3–10: Project Preview Profiles
+## Versions 3–13: Preview And Creation Extensions
 
 Later versions add declarative, editor-only visualization conventions while
 keeping component fields and canonical scene formats unchanged:
@@ -166,6 +193,9 @@ keeping component fields and canonical scene formats unchanged:
 | 8 | `scenePreview2D` | Map scene properties to screen-space background images and a first-open grid default. |
 | 9 | extended `scenePreview3D` | Map root metadata to a transient scene-level environment prefab. |
 | 10 | extended `scenePreview3D` | Reproduce a portable runtime post-processing chain in the shaded viewport. |
+| 11 | extended `objectPreviews` | Interleave 2D object sprites with tile layers and reproduce game draw priorities. |
+| 12 | extended `scenePreview2D` / `scenePreview3D` | Declare the exact project output size used by locked Game View framing. |
+| 13 | component `createObjectType` / `createNodeName` | Create gameplay-ready objects or nodes directly from a component recipe. |
 
 Studio never executes project code to apply these profiles, and preview
 resolution never writes scene bytes, dirty state, revision, or history. The
@@ -286,9 +316,137 @@ and motion blur are intentionally not schema members because their depth,
 history, or backend requirements cannot yet promise a consistent portable
 preview.
 
+### Version 11 2D Object Draw Stacks
+
+Version 11 can make overlapping object sprites and foreground tile layers
+match the order used by the game:
+
+```json
+{
+  "version": 11,
+  "components": [],
+  "objectPreviews": [
+    {
+      "objectType": "pickup",
+      "sprite": "assets/sprites/gameplay.png",
+      "frame": 12,
+      "drawOrder": 10
+    },
+    {
+      "objectType": "player-start",
+      "sprite": "assets/sprites/gameplay.png",
+      "frame": 20,
+      "drawOrder": 20,
+      "afterLayer": 0
+    },
+    {
+      "objectType": "enemy",
+      "sprite": "assets/sprites/gameplay.png",
+      "frame": 30,
+      "drawOrder": 30
+    }
+  ]
+}
+```
+
+`drawOrder` is an exact integer from -128 through 127 and defaults to `0`.
+Smaller values paint first; higher values paint and pick later. Equal values
+retain canonical object-array order. `afterLayer` is an exact integer from
+-1 through 15 and defaults to `15`: -1 paints before every tile layer, 0
+paints after the first layer, and a value beyond the current final layer paints
+after all layers. A layer boundary takes precedence over `drawOrder`, so an
+object cannot jump across a foreground layer merely by raising its priority.
+
+The single-object inspector exposes the effective boundary and priority.
+**Apply** stores an exception as the ordinary integer properties
+`editor.afterLayer` and `editor.drawOrder`; **Use Project** removes both.
+Those edits are one undo transaction. Missing, wrong-kind, or out-of-range
+properties fall back to the project rule, and project defaults never add
+properties or change scene bytes. The grid, guides, selections, gizmos, route
+lines, light halos, and marker fallback remain editor overlays above the
+game-like sprite/tile composite.
+
+### Version 12 Game Output Frames
+
+Version 12 lets Game View use the same output shape as the running game rather
+than whichever shape the editor lane happens to have:
+
+```json
+{
+  "version": 12,
+  "components": [],
+  "scenePreview2D": {
+    "outputWidth": 1280,
+    "outputHeight": 720
+  },
+  "scenePreview3D": {
+    "outputWidth": 1600,
+    "outputHeight": 900
+  }
+}
+```
+
+Each profile is independent; a project need declare only the scene kind it
+uses. `outputWidth` and `outputHeight` must appear together as exact integers
+from 64 through 8,192. Either member in an older schema, a missing partner, a
+fractional value, or an out-of-range dimension rejects the whole schema. A 2D
+profile may contain only this pair.
+
+With the pair present, Game View renders the largest centered project-aspect
+rectangle inside the viewport and fills unused space with neutral matte. The
+2D editor fits authored pixels to that frame and centers the conventional
+player start. The 3D editor creates its offscreen render target at the frame
+aspect and reapplies the project gameplay camera. Camera navigation is locked
+until exit; the exact prior 2D scroll/zoom or 3D editor camera returns
+afterward. Profiles without the pair retain freely navigable Game View.
+
+The dimensions remain project-owned preview data. They never enter scene JSON,
+VSCN, dirty state, revision, history, or runtime configuration.
+
+### Version 13 Component Creation Recipes
+
+Version 13 makes runtime identity explicit on the component itself:
+
+```json
+{
+  "version": 13,
+  "components": [
+    {
+      "name": "enemy-spawn",
+      "target": "2d-object",
+      "createObjectType": "enemy",
+      "fields": [
+        {"key": "enemy.type", "type": "int", "default": 0}
+      ]
+    },
+    {
+      "name": "encounter",
+      "target": "3d-node",
+      "createNodeName": "Encounter",
+      "fields": [
+        {"key": "game.kind", "type": "string", "default": "encounter"}
+      ]
+    }
+  ]
+}
+```
+
+`createObjectType` uses the same portable character set as scene-data keys and
+is limited to 128 characters. `createNodeName` is trimmed, must not be empty,
+and is limited to 128 characters. A wrong JSON kind, incompatible target,
+empty value, overlong value, or either member in versions 1 through 12 rejects
+the complete schema.
+
+A `both` component may provide either recipe or both. Recipe absence is
+meaningful: the component remains available for **Add Missing**, but its Create
+action stays disabled. Creating applies every typed default atomically, selects
+the result, and lets existing project object/node preview rules render it
+immediately. Recipe data never enters the canonical scene; only the created
+object or node and its ordinary typed fields do.
+
 See [ADR 0197](../../../docs/adr/0197-project-owned-2d-object-preview-profiles.md)
 through
-[ADR 0204](../../../docs/adr/0204-project-owned-3d-post-processing-previews.md)
+[ADR 0209](../../../docs/adr/0209-project-component-creation-recipes.md)
 for the complete bounds, precedence, and 3D profile contracts.
 
 ## Migration Assistant

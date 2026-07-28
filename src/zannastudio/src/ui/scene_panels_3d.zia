@@ -12,6 +12,10 @@
 //     body: identical widgets, order, properties, and defaults.
 //   - Every widget lands on the editor's own fields; this module retains
 //     no state and is safe to call exactly once per editor instance.
+//   - Game View is a first-class view action, separate from the project camera
+//     reset and reversible Focus/layout presentation.
+//   - Compact overflow menus are built once with stable item handles; the
+//     editor owns their state and routes every action through existing commands.
 // Ownership/Lifetime:
 //   - The editor owns every constructed widget; this module owns nothing.
 // Links: zannastudio/src/ui/scene_editor_3d.zia
@@ -72,12 +76,46 @@ expose func Build(editor: scene_editor_3d.SceneEditor3D,
         editor.importInstanceButton.SetTooltip(
             "Place a scene by reference (VSCN v7 prefab): the file stores "
             + "only the reference plus this node's overrides");
+        editor.createMenuButton =
+            GUI.Button.New(editor.toolbar, "Create...");
+        editor.createMenuButton.SetAccessibleName(
+            "Open 3D scene creation commands");
+        editor.createMenuButton.SetTooltip(
+            "Create nodes and primitives without expanding the command bar");
+        editor.createMenuButton.SetVisible(false);
+        editor.createMenu = GUI.ContextMenu.New();
+        editor.createEmptyItem =
+            editor.createMenu.AddItem("Create Empty Node");
+        editor.createChildItem =
+            editor.createMenu.AddItem("Create Child Node");
+        editor.createMenu.AddSeparator();
+        editor.createBoxItem = editor.createMenu.AddItem("Create Box");
+        editor.createSphereItem =
+            editor.createMenu.AddItem("Create Sphere");
+        editor.createPlaneItem =
+            editor.createMenu.AddItem("Create Plane");
+        editor.createCylinderItem =
+            editor.createMenu.AddItem("Create Cylinder");
+        editor.createTerrainItem =
+            editor.createMenu.AddItem("Create Terrain");
+        editor.createLightItem =
+            editor.createMenu.AddItem("Create Point Light");
+        editor.createCameraItem =
+            editor.createMenu.AddItem("Create Camera");
+        editor.createMenu.AddSeparator();
+        editor.createDuplicateItem =
+            editor.createMenu.AddItemWithShortcut("Duplicate Selection", "Ctrl+D");
+        editor.createDeleteItem =
+            editor.createMenu.AddItemWithShortcut("Delete Selection", "Delete");
         editor.addEmptyButton = GUI.Button.New(editor.toolbar, "+ Empty");
         editor.addChildButton = GUI.Button.New(editor.toolbar, "+ Child");
         editor.addBoxButton = GUI.Button.New(editor.toolbar, "+ Box");
         editor.addSphereButton = GUI.Button.New(editor.toolbar, "+ Sphere");
         editor.addPlaneButton = GUI.Button.New(editor.toolbar, "+ Plane");
         editor.addCylinderButton = GUI.Button.New(editor.toolbar, "+ Cylinder");
+        editor.addTerrainButton = GUI.Button.New(editor.toolbar, "+ Terrain");
+        editor.addTerrainButton.SetTooltip(
+            "Create a centered canonical terrain mesh ready for viewport sculpting");
         editor.addLightButton = GUI.Button.New(editor.toolbar, "+ Light");
         editor.addLightButton.SetTooltip(
             "Create a top-level Point light node in one undoable edit");
@@ -88,6 +126,9 @@ expose func Build(editor: scene_editor_3d.SceneEditor3D,
         editor.duplicateNodeButton.SetTooltip(
             "Duplicate selected hierarchy roots with their complete subtrees");
         editor.deleteNodeButton = GUI.Button.New(editor.toolbar, "Delete");
+        editor.runSceneButton = GUI.Button.New(editor.toolbar, "Run Scene");
+        editor.runSceneButton.SetTooltip(
+            "Save and run the owning project with this scene (Ctrl+R)");
         editor.toolbarStatus = GUI.Label.New(editor.toolbar, "Open or create a 3D scene");
         editor.toolbarStatus.SetFlex(1.0);
         editor.toolbarStatus.SetPreferredSize(180.0, 0.0);
@@ -128,6 +169,32 @@ expose func Build(editor: scene_editor_3d.SceneEditor3D,
         editor.scaleToolButton = GUI.Button.New(editor.viewToolbar, "Scale");
         editor.scaleToolButton.SetTooltip(
             "Scale the selected node along one axis (R in viewport)");
+        editor.dropToSurfaceButton =
+            GUI.Button.New(editor.viewToolbar, "Drop");
+        editor.dropToSurfaceButton.SetTooltip(
+            "Drop selected hierarchy roots onto the nearest visible surface; "
+            + "Align can also orient them to its normal (End in viewport)");
+        editor.placementMenuButton =
+            GUI.Button.New(editor.viewToolbar, "Placement...");
+        editor.placementMenuButton.SetAccessibleName(
+            "Open precise 3D placement commands");
+        editor.placementMenuButton.SetTooltip(
+            "Drop, surface-follow, normal-align, and vertex-snap controls");
+        editor.placementMenuButton.SetVisible(false);
+        editor.placementMenu = GUI.ContextMenu.New();
+        editor.placementDropItem =
+            editor.placementMenu.AddItemWithShortcut(
+                "Drop Selection to Surface", "End");
+        editor.placementMenu.AddSeparator();
+        editor.placementSurfaceItem =
+            editor.placementMenu.AddItem("Surface Move");
+        editor.placementSurfaceItem.SetCheckable(true);
+        editor.placementAlignItem =
+            editor.placementMenu.AddItem("Align to Surface Normal");
+        editor.placementAlignItem.SetCheckable(true);
+        editor.placementVertexItem =
+            editor.placementMenu.AddItemWithShortcut("Vertex Move", "Shift+V");
+        editor.placementVertexItem.SetCheckable(true);
         editor.transformSpaceButton = GUI.Button.New(editor.viewToolbar, "Local");
         editor.transformSpaceButton.SetTooltip(
             "Use parent-relative local axes; choose World for global axes");
@@ -136,6 +203,31 @@ expose func Build(editor: scene_editor_3d.SceneEditor3D,
             "Quantize the resulting transform using the current tool's step");
         editor.snapTransformCheck.SetChecked(false);
         editor.snapTransformRevision = editor.snapTransformCheck.GetRevision();
+        editor.surfaceSnapCheck =
+            GUI.Checkbox.New(editor.viewToolbar, "Surface");
+        editor.surfaceSnapCheck.SetTooltip(
+            "Keep X, Z, and XZ Move drags grounded on authored or project "
+            + "preview surfaces");
+        editor.surfaceSnapCheck.SetChecked(false);
+        editor.surfaceSnapRevision =
+            editor.surfaceSnapCheck.GetRevision();
+        editor.surfaceAlignCheck =
+            GUI.Checkbox.New(editor.viewToolbar, "Align");
+        editor.surfaceAlignCheck.SetTooltip(
+            "Preserve twist while aligning each dropped or Surface-moved "
+            + "hierarchy root's up axis to the precise terrain normal");
+        editor.surfaceAlignCheck.SetChecked(false);
+        editor.surfaceAlignRevision =
+            editor.surfaceAlignCheck.GetRevision();
+        editor.vertexSnapCheck =
+            GUI.Checkbox.New(editor.viewToolbar, "Vertex");
+        editor.vertexSnapCheck.SetTooltip(
+            "Hold V for transient vertex snapping or use Shift+V to toggle. "
+            + "Drag a selected mesh vertex or pivot onto another vertex "
+            + "or visible surface.");
+        editor.vertexSnapCheck.SetChecked(false);
+        editor.vertexSnapRevision =
+            editor.vertexSnapCheck.GetRevision();
         editor.UpdateGizmoModeControls();
         editor.orbitLeftButton = GUI.Button.New(editor.viewToolbar, "Yaw -");
         editor.orbitLeftButton.SetTooltip("Orbit the view left");
@@ -145,9 +237,6 @@ expose func Build(editor: scene_editor_3d.SceneEditor3D,
         editor.orbitUpButton.SetTooltip("Orbit the view upward");
         editor.orbitDownButton = GUI.Button.New(editor.viewToolbar, "Pitch -");
         editor.orbitDownButton.SetTooltip("Orbit the view downward");
-        editor.runSceneButton = GUI.Button.New(editor.viewToolbar, "Run Scene");
-        editor.runSceneButton.SetTooltip(
-            "Save and run the owning project with this scene (Ctrl+R)");
         editor.topViewButton = GUI.Button.New(editor.viewToolbar, "Top");
         editor.topViewButton.SetTooltip("Look down from above the view target");
         editor.frontViewButton = GUI.Button.New(editor.viewToolbar, "Front");
@@ -169,9 +258,66 @@ expose func Build(editor: scene_editor_3d.SceneEditor3D,
         editor.projectionButton = GUI.Button.New(editor.viewToolbar, "Persp");
         editor.projectionButton.SetTooltip(
             "Toggle between perspective and orthographic projection");
+        editor.gameViewButton =
+            GUI.Button.New(editor.viewToolbar, "Game View");
+        editor.gameViewButton.SetStyle(2);
+        editor.gameViewButton.SetTooltip(
+            "Show authored gameplay rendering without grids, gizmos, markers, "
+            + "selection, camera inset, navigator, or editor light");
         editor.viewOptionsButton = GUI.Button.New(editor.viewToolbar, "View...");
         editor.viewOptionsButton.SetTooltip(
             "Show grid/marker/light/stats toggles and snap increments");
+        editor.viewMenuButton =
+            GUI.Button.New(editor.viewToolbar, "View...");
+        editor.viewMenuButton.SetAccessibleName(
+            "Open 3D viewport navigation and layout commands");
+        editor.viewMenuButton.SetTooltip(
+            "Camera views, framing, projection, overlays, and scene layout");
+        editor.viewMenuButton.SetVisible(false);
+        editor.viewMenu = GUI.ContextMenu.New();
+        editor.viewCameraMenu =
+            editor.viewMenu.AddSubmenu("Camera Navigation");
+        editor.viewTopItem =
+            editor.viewCameraMenu.AddItem("Top View");
+        editor.viewFrontItem =
+            editor.viewCameraMenu.AddItem("Front View");
+        editor.viewRightItem =
+            editor.viewCameraMenu.AddItem("Right View");
+        editor.viewGameplayItem =
+            editor.viewCameraMenu.AddItem("Restore Gameplay View");
+        editor.viewCameraMenu.AddSeparator();
+        editor.viewOrbitLeftItem =
+            editor.viewCameraMenu.AddItem("Orbit Left");
+        editor.viewOrbitRightItem =
+            editor.viewCameraMenu.AddItem("Orbit Right");
+        editor.viewOrbitUpItem =
+            editor.viewCameraMenu.AddItem("Orbit Up");
+        editor.viewOrbitDownItem =
+            editor.viewCameraMenu.AddItem("Orbit Down");
+        editor.viewZoomOutItem =
+            editor.viewCameraMenu.AddItem("Zoom Out");
+        editor.viewZoomInItem =
+            editor.viewCameraMenu.AddItem("Zoom In");
+        editor.viewFrameSelectedItem =
+            editor.viewMenu.AddItemWithShortcut("Frame Selected", "F");
+        editor.viewFrameAllItem = editor.viewMenu.AddItem("Frame All");
+        editor.viewProjectionItem =
+            editor.viewMenu.AddItem("Perspective Projection");
+        editor.viewProjectionItem.SetCheckable(true);
+        editor.viewOptionsItem =
+            editor.viewMenu.AddItem("Viewport Options");
+        editor.viewOptionsItem.SetCheckable(true);
+        editor.viewMenu.AddSeparator();
+        editor.viewHierarchyItem =
+            editor.viewMenu.AddItem("Open Hierarchy");
+        editor.viewInspectorItem =
+            editor.viewMenu.AddItem("Toggle Inspector");
+        editor.viewFocusItem =
+            editor.viewMenu.AddItemWithShortcut("Focus Viewport", "Shift+Space");
+        editor.viewFocusItem.SetCheckable(true);
+        editor.viewWorkspaceItem =
+            editor.viewMenu.AddItem("Scene Layout");
+        editor.viewWorkspaceItem.SetCheckable(true);
         editor.frameButton = GUI.Button.New(editor.viewToolbar, "Frame all");
         editor.frameButton.SetTooltip("Frame every scene node in the viewport");
         editor.frameSelectedButton = GUI.Button.New(editor.viewToolbar, "Frame selected");
@@ -472,6 +618,10 @@ expose func Build(editor: scene_editor_3d.SceneEditor3D,
             "Create the chosen component with defaults on the selection as "
             + "one undoable edit");
 
+        // Terrain is a primary world-authoring surface, so it stays directly
+        // below transforms/components instead of hiding beneath generic
+        // metadata and secondary component inspectors.
+        editor.terrainInspector.Setup(inspector);
         editor.metadataInspector.Setup(inspector);
         editor.componentPalette.Setup(
             inspector,

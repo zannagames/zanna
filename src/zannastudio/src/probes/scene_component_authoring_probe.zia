@@ -12,8 +12,9 @@
 //   - Unknown supported-version JSON members survive edits to known fields.
 //   - Editing fields preserves version-3 object, version-4 scene, version-5
 //     node prefab, version-6 sky/light, version-7 lens/atmosphere, and
-//     version-8 2D backdrop, version-9 3D environment, and version-10 post-FX
-//     previews.
+//     version-8 2D backdrop, version-9 3D environment, version-10 post-FX,
+//     version-11 2D object draw stacks, version-12 game-output frames, and
+//     version-13 component creation recipes.
 //   - File writes are atomic, conflict-aware, and exactly undoable/redoable.
 // Ownership/Lifetime: The probe owns only temporary schema files and records.
 // Links: zannastudio/src/ui/scene_component_authoring.zia,
@@ -26,7 +27,10 @@
 //        docs/adr/0201-project-owned-3d-lens-and-atmosphere-previews.md,
 //        docs/adr/0202-project-owned-2d-scene-background-previews.md,
 //        docs/adr/0203-project-owned-3d-scene-environment-previews.md,
-//        docs/adr/0204-project-owned-3d-post-processing-previews.md
+//        docs/adr/0204-project-owned-3d-post-processing-previews.md,
+//        docs/adr/0206-project-owned-2d-object-preview-draw-stacks.md,
+//        docs/adr/0208-project-authored-game-output-frames.md,
+//        docs/adr/0209-project-component-creation-recipes.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -70,6 +74,8 @@ func main() {
     if added.ok == false or added.changed == false
        or added.componentName != "component"
        or addedSchema.valid == false
+       or addedSchema.version
+          != scene_component_schema.COMPONENT_CREATION_SCHEMA_VERSION
        or addedSchema.components.count() != 1
        or addedSchema.components.get(0).target
           != scene_component_schema.TARGET_2D_OBJECT
@@ -77,7 +83,9 @@ func main() {
        or addedSchema.components.get(0).fields.get(0).key
           != "component.enabled"
        or addedSchema.components.get(0).fields.get(0).kind != "bool"
-       or addedSchema.components.get(0).fields.get(0).defaultText != "true" {
+       or addedSchema.components.get(0).fields.get(0).defaultText != "true"
+       or addedSchema.components.get(0).createObjectType != "component"
+       or addedSchema.components.get(0).createNodeName != "" {
         fail("", "starter component was not complete and deterministic");
         return;
     }
@@ -88,7 +96,9 @@ func main() {
         "enemy",
         "Enemy",
         scene_component_schema.TARGET_BOTH,
-        "Reusable enemy data.");
+        "Reusable enemy data.",
+        "enemy",
+        "Enemy");
     var enemySchema =
         scene_component_schema.ParseText(renamed.content, "memory");
     var enemy = enemySchema.Find(
@@ -98,6 +108,8 @@ func main() {
        or enemy == null or enemy.label != "Enemy"
        or enemy.target != scene_component_schema.TARGET_BOTH
        or enemy.description != "Reusable enemy data."
+       or enemy.createObjectType != "enemy"
+       or enemy.createNodeName != "Enemy"
        or enemy.fields.get(0).key != "component.enabled" {
         fail("", "component update changed unrelated stable field keys");
         return;
@@ -129,7 +141,11 @@ func main() {
        or enemy.FieldNamed("enemy.hp") == null
        or enemy.FieldNamed("enemy.hp").kind != "int"
        or enemy.FieldNamed("enemy.hp").defaultText != "25"
-       or enemy.FieldNamed("enemy.hp").description != "Starting health." {
+       or enemy.FieldNamed("enemy.hp").description != "Starting health."
+       or enemy.createObjectType != "enemy"
+       or enemy.createNodeName != "Enemy"
+       or fieldSchema.version
+          != scene_component_schema.COMPONENT_CREATION_SCHEMA_VERSION {
         fail("", "typed field update did not round-trip exactly");
         return;
     }
@@ -245,6 +261,43 @@ func main() {
        or previewRule.frameMap.get(1) != 9
        or Str.Contains(previewEdit.content, "\"vendor\"") == false {
         fail("", "component edit discarded a version-3 preview profile");
+        return;
+    }
+
+    var drawStackPreviewText =
+        "{\"version\":11,\"components\":["
+        + "{\"name\":\"enemy\",\"target\":\"2d-object\",\"fields\":["
+        + "{\"key\":\"enemy.hp\",\"type\":\"int\",\"default\":10}]}],"
+        + "\"objectPreviews\":[{\"objectType\":\"enemy\","
+        + "\"sprite\":\"assets/enemies.png\",\"frame\":7,"
+        + "\"drawOrder\":30,\"afterLayer\":0}]}";
+    var drawStackPreviewEdit = scene_component_authoring.UpdateField(
+        drawStackPreviewText,
+        "enemy",
+        "enemy.hp",
+        "enemy.hp",
+        "Hit points",
+        "int",
+        "12",
+        "",
+        "");
+    var drawStackPreviewSchema =
+        scene_component_schema.ParseText(
+            drawStackPreviewEdit.content, "memory");
+    var drawStackPreviewRule =
+        drawStackPreviewSchema.PreviewForObjectType("enemy");
+    if drawStackPreviewEdit.ok == false
+       or drawStackPreviewEdit.changed == false
+       or drawStackPreviewSchema.valid == false
+       or drawStackPreviewSchema.version
+          != scene_component_schema
+              .OBJECT_PREVIEW_DRAW_STACK_SCHEMA_VERSION
+       or drawStackPreviewRule == null
+       or drawStackPreviewRule.drawOrder != 30
+       or drawStackPreviewRule.afterLayer != 0 {
+        fail(
+            "",
+            "component edit discarded a version-11 draw-stack profile");
         return;
     }
 
@@ -559,6 +612,45 @@ func main() {
         return;
     }
 
+    var outputFrameText =
+        "{\"version\":12,\"components\":["
+        + "{\"name\":\"camera\",\"target\":\"both\",\"fields\":["
+        + "{\"key\":\"camera.active\",\"type\":\"bool\","
+        + "\"default\":true}]}],"
+        + "\"scenePreview2D\":{"
+        + "\"outputWidth\":1280,\"outputHeight\":720},"
+        + "\"scenePreview3D\":{"
+        + "\"outputWidth\":1600,\"outputHeight\":900}}";
+    var outputFrameEdit = scene_component_authoring.UpdateField(
+        outputFrameText,
+        "camera",
+        "camera.active",
+        "camera.active",
+        "Active camera",
+        "bool",
+        "false",
+        "",
+        "");
+    var outputFrameSchema =
+        scene_component_schema.ParseText(
+            outputFrameEdit.content, "memory");
+    if outputFrameEdit.ok == false
+       or outputFrameEdit.changed == false
+       or outputFrameSchema.valid == false
+       or outputFrameSchema.version
+          != scene_component_schema.GAME_VIEW_OUTPUT_SCHEMA_VERSION
+       or outputFrameSchema.scenePreview2D.HasOutputSize() == false
+       or outputFrameSchema.scenePreview2D.outputWidth != 1280
+       or outputFrameSchema.scenePreview2D.outputHeight != 720
+       or outputFrameSchema.scenePreview3D.HasOutputSize() == false
+       or outputFrameSchema.scenePreview3D.outputWidth != 1600
+       or outputFrameSchema.scenePreview3D.outputHeight != 900 {
+        fail(
+            "",
+            "component edit discarded a version-12 game-output frame");
+        return;
+    }
+
     var omittedDefaultText =
         "{\"version\":1,\"components\":["
         + "{\"name\":\"counter\",\"target\":\"both\",\"fields\":["
@@ -604,7 +696,9 @@ func main() {
             "counter",
             "counter",
             scene_component_schema.TARGET_BOTH,
-            "Shared counter data.");
+            "Shared counter data.",
+            "",
+            "");
     if componentDescriptionOnly.ok == false
        or Str.Contains(componentDescriptionOnly.content, "\"description\"")
           == false
@@ -657,7 +751,9 @@ func main() {
         "enemy",
         "Enemy changed locally",
         scene_component_schema.TARGET_BOTH,
-        "");
+        "",
+        "enemy",
+        "Enemy");
     if localEdit.ok == false or session.Apply(localEdit.content)
        or File.ReadAllText(schemaPath) != external
        or session.error == ""

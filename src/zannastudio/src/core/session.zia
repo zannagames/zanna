@@ -1004,6 +1004,12 @@ class SessionManager {
                     "" + ClampSessionInt(state3D.transformSpace, 0, 1));
             Ini.Set(ini, section, "scene3dTransformSnap",
                     SessionBool(state3D.transformSnapEnabled));
+            Ini.Set(ini, section, "scene3dSurfaceSnap",
+                    SessionBool(state3D.transformSurfaceSnapEnabled));
+            Ini.Set(ini, section, "scene3dSurfaceAlign",
+                    SessionBool(state3D.transformSurfaceAlignEnabled));
+            Ini.Set(ini, section, "scene3dVertexSnap",
+                    SessionBool(state3D.transformVertexSnapEnabled));
             Ini.Set(ini, section, "scene3dYaw",
                     "" + ClampSessionInt(
                         state3D.viewYawDegrees, -180, 180));
@@ -1106,6 +1112,12 @@ class SessionManager {
                 ini, section, "scene3dTransformSpace", 0, 0, 1);
             state3D.transformSnapEnabled = ReadSessionInt(
                 ini, section, "scene3dTransformSnap", 0, 0, 1) != 0;
+            state3D.transformSurfaceSnapEnabled = ReadSessionInt(
+                ini, section, "scene3dSurfaceSnap", 0, 0, 1) != 0;
+            state3D.transformSurfaceAlignEnabled = ReadSessionInt(
+                ini, section, "scene3dSurfaceAlign", 0, 0, 1) != 0;
+            state3D.transformVertexSnapEnabled = ReadSessionInt(
+                ini, section, "scene3dVertexSnap", 0, 0, 1) != 0;
             state3D.viewYawDegrees = ReadSessionInt(
                 ini, section, "scene3dYaw", 35, -180, 180);
             state3D.viewPitchDegrees = ReadSessionInt(

@@ -15,7 +15,8 @@
 // Ownership/Lifetime: Each scene editor owns one controller and one session.
 // Links: zannastudio/src/ui/scene_component_authoring.zia,
 //        zannastudio/src/ui/scene_component_palette.zia,
-//        zannastudio/src/ui/scene_component_schema.zia
+//        zannastudio/src/ui/scene_component_schema.zia,
+//        docs/adr/0209-project-component-creation-recipes.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -177,7 +178,9 @@ class SceneComponentAuthoringController {
                     palette.componentNameInput.Text,
                     palette.componentLabelInput.Text,
                     palette.DraftComponentTarget(),
-                    palette.componentDescriptionInput.Text),
+                    palette.componentDescriptionInput.Text,
+                    palette.DraftCreateObjectType(),
+                    palette.DraftCreateNodeName()),
                 palette,
                 "Updated project component " + component.name + ".");
         }

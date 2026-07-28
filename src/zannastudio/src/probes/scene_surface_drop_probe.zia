@@ -1,0 +1,784 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_surface_drop_probe.zia
+// Purpose: Verify transactional 3D Drop and live Surface Move placement.
+// Key invariants:
+//   - End in the viewport drops multiple selected hierarchy roots once.
+//   - Selected meshes cannot catch their own placement rays.
+//   - Canonical geometry and project environment previews are both surfaces.
+//   - X-axis pointer drags conform live, including transient prefab previews.
+//   - Live queries climb bounded rises and preserve twist while aligning up.
+//   - Undo/redo restore exact canonical bytes and selection stays intact.
+//   - Already-grounded and missing-surface drops do not create history.
+// Ownership/Lifetime:
+//   - The probe owns one hidden AppShell, project, document, and temp folder.
+// Links: zannastudio/src/ui/scene_editor_3d.zia,
+//        zannastudio/src/ui/scene_panels_3d.zia,
+//        zannastudio/src/probes/scene_gameplay_preview_probe.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_surface_drop_probe;
+
+// ============================================================================
+// MODULE: scene_surface_drop_probe
+// PURPOSE: Pin production surface-placement queries, focus routing, canonical
+//          history, and project preview participation in one compact fixture.
+//
+// WHERE-THIS-FITS: Broad editor probes cover numeric transforms and gizmos;
+//          this probe owns geometry-aware vertical and horizontal placement.
+//
+// TEACHING-NOTE: The preview floor is intentionally absent from canonical
+//          bytes. Landing on it proves Studio queries the same project-owned
+//          presentation geometry that makes authored scenes resemble games.
+// ============================================================================
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_3d";
+bind "../ui/scene_panels_3d";
+bind "../ui/scene_transform_3d";
+
+bind Dir = Zanna.IO.Dir;
+bind File = Zanna.IO.File;
+bind GUI = Zanna.GUI;
+bind Convert = Zanna.Core.Convert;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Path = Zanna.IO.Path;
+bind Quat = Zanna.Math.Quat;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind TempFile = Zanna.IO.TempFile;
+bind Terminal = Zanna.Terminal;
+bind Vec3 = Zanna.Math.Vec3;
+
+func near(actual: Number,
+          expected: Number) -> Boolean {
+    var difference = actual - expected;
+    if difference < 0.0 { difference = 0.0 - difference; }
+    return difference < 0.000001;
+}
+
+func nearPointer(actual: Number,
+                 expected: Number) -> Boolean {
+    var difference = actual - expected;
+    if difference < 0.0 { difference = 0.0 - difference; }
+    return difference < 0.1;
+}
+
+func finish(shell: app_shell.AppShell,
+            project: project_manager.ProjectManager,
+            harness: GUI.TestHarness,
+            workDir: String,
+            reason: String) {
+    if harness != null { harness.UnbindApp(); }
+    if project != null { project.CloseProject(); }
+    if shell != null { shell.Destroy(); }
+    if workDir != "" { Dir.RemoveAll(workDir); }
+    if reason == "" {
+        Terminal.Say("RESULT: ok");
+    } else {
+        Terminal.Say("RESULT: fail " + reason);
+    }
+}
+
+func pump(editor: scene_editor_3d.SceneEditor3D,
+          sceneDoc: document.Document,
+          shell: app_shell.AppShell) {
+    editor.Pump(sceneDoc);
+    shell.Render();
+}
+
+func main() {
+    var workDir =
+        TempFile.CreateDirWithPrefix("zannastudio_surface_drop_");
+    if workDir == "" {
+        finish(null, null, null, "", "temporary project allocation");
+        return;
+    }
+
+    // A project-owned environment floor covers x=[-12,12] at world y=0.
+    var environment = SceneGraph.New();
+    var environmentFloor = SceneNode.New();
+    environmentFloor.Name = "Runtime terrain preview";
+    environmentFloor.Mesh = Mesh3D.Box(24.0, 0.5, 24.0);
+    environmentFloor.Material = Material3D.PBR(0.22, 0.36, 0.18);
+    environmentFloor.SetPosition(0.0, -0.25, 0.0);
+    environment.Add(environmentFloor);
+    var environmentPath = Path.Join(workDir, "environment.scene3d");
+    var cratePreview = SceneGraph.New();
+    var cratePreviewMesh = SceneNode.New();
+    cratePreviewMesh.Name = "Project crate artwork";
+    cratePreviewMesh.Mesh = Mesh3D.Box(0.8, 0.8, 0.8);
+    cratePreviewMesh.Material = Material3D.PBR(0.88, 0.58, 0.16);
+    cratePreview.Add(cratePreviewMesh);
+    var cratePreviewPath = Path.Join(workDir, "crate-preview.scene3d");
+    var schemaPath = Path.Join(workDir, "scene-components.json");
+    File.WriteAllText(environmentPath, environment.SaveToText());
+    File.WriteAllText(cratePreviewPath, cratePreview.SaveToText());
+    File.WriteAllText(
+        schemaPath,
+        "{\"version\":9,\"components\":[],\"nodePreviews3D\":[{"
+        + "\"matchProperty\":\"preview.kind\","
+        + "\"matchValue\":\"crate\","
+        + "\"prefab\":\"crate-preview.scene3d\"}],"
+        + "\"scenePreview3D\":{"
+        + "\"environmentPrefab\":\"environment.scene3d\"}}");
+    if File.Exists(environmentPath) == false
+       or File.Exists(cratePreviewPath) == false
+       or File.Exists(schemaPath) == false {
+        finish(
+            null, null, null, workDir,
+            "project preview fixture write");
+        return;
+    }
+
+    // A raised canonical platform under the left cube wins over the lower
+    // environment floor; the right cube can land only on preview geometry.
+    var authored = SceneGraph.New();
+    var platform = SceneNode.New();
+    platform.Name = "Authored platform";
+    platform.Mesh = Mesh3D.Box(3.0, 0.5, 3.0);
+    platform.Material = Material3D.PBR(0.32, 0.34, 0.38);
+    platform.SetPosition(-3.0, 1.75, 0.0);
+    authored.Add(platform);
+
+    var left = SceneNode.New();
+    left.Name = "Left crate";
+    left.Mesh = Mesh3D.Box(1.0, 1.0, 1.0);
+    left.Material = Material3D.PBR(0.74, 0.28, 0.18);
+    left.SetPosition(-3.0, 6.0, 0.0);
+    left.MetadataSetString("preview.kind", "crate");
+    authored.Add(left);
+
+    var right = SceneNode.New();
+    right.Name = "Right crate";
+    right.Mesh = Mesh3D.Box(1.0, 1.0, 1.0);
+    right.Material = Material3D.PBR(0.18, 0.42, 0.76);
+    right.SetPosition(3.0, 7.0, 0.0);
+    authored.Add(right);
+
+    var outside = SceneNode.New();
+    outside.Name = "No surface";
+    outside.Mesh = Mesh3D.Box(1.0, 1.0, 1.0);
+    outside.SetPosition(50.0, 4.0, 0.0);
+    authored.Add(outside);
+
+    // A raised 30-degree plane exercises live upward probing and normal
+    // alignment after the crate has already landed on the flat environment.
+    var ramp = SceneNode.New();
+    ramp.Name = "Authored ramp";
+    ramp.Mesh = Mesh3D.Plane(4.0, 4.0);
+    ramp.Material = Material3D.PBR(0.48, 0.36, 0.24);
+    ramp.SetPosition(8.0, 0.15, 0.0);
+    ramp.Rotation =
+        Quat.FromEuler(0.0, 0.0, 30.0 * 0.017453292519943295)
+            .Normalize();
+    authored.Add(ramp);
+
+    var project = new project_manager.ProjectManager();
+    project.Setup(null);
+    if project.OpenFolder(workDir) == false {
+        finish(
+            null, project, null, workDir,
+            "temporary project open");
+        return;
+    }
+
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Surface Drop Probe", 1180, 780);
+    shell.SetSceneWorkspaceMode(true);
+    var editor = new scene_editor_3d.SceneEditor3D();
+    scene_panels_3d.Build(
+        editor, shell.workbench.scene3DHost, shell.app);
+    editor.SetWorkspaceContext(project);
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_3D);
+
+    var sceneDoc = new document.Document();
+    sceneDoc.fileName = "placement.scene3d";
+    sceneDoc.filePath = Path.Join(workDir, sceneDoc.fileName);
+    sceneDoc.language = "scene3d";
+    sceneDoc.kind = file_utils.DOC_KIND_SCENE_3D;
+    sceneDoc.content = authored.SaveToText();
+    editor.Activate(sceneDoc);
+    pump(editor, sceneDoc, shell);
+    shell.Poll();
+    pump(editor, sceneDoc, shell);
+
+    if editor.scene == null
+       or editor.flatNodes.count() != 5
+       or editor.projectPreviewScene == null
+       or editor.projectPreviewInstanceCount != 2
+       or editor.projectPreviewMissingCount != 0 {
+        finish(
+            shell, project, null, workDir,
+            "canonical or preview scene activation");
+        return;
+    }
+
+    editor.SelectSceneNodes([1, 2], 2);
+    pump(editor, sceneDoc, shell);
+    var baseline = sceneDoc.content;
+    var baselineRevision = editor.GetRevision();
+    var baselineUndo = editor.undoStack.count();
+    if editor.dropToSurfaceButton == null
+       or editor.dropToSurfaceButton.IsEnabled() == false {
+        finish(
+            shell, project, null, workDir,
+            "Drop toolbar action availability");
+        return;
+    }
+
+    // Exercise the production End shortcut and its viewport-focus boundary.
+    var harness = GUI.TestHarness.New();
+    if harness.BindApp(shell.app) == false {
+        finish(
+            shell, project, harness, workDir,
+            "keyboard harness bind");
+        return;
+    }
+    editor.viewportImage.Focus();
+    harness.SendKey("end", 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+
+    var dropped = sceneDoc.content;
+    if dropped == baseline
+       or editor.GetRevision() != baselineRevision + 1
+       or editor.undoStack.count() != baselineUndo + 1
+       or editor.selectedIndices.count() != 2
+       or editor.selectedIndex != 2
+       or near(editor.flatNodes.get(1).WorldPosition.Y, 2.5) == false
+       or near(editor.flatNodes.get(2).WorldPosition.Y, 0.5) == false
+       or editor.projectPreviewInstanceCount != 2 {
+        finish(
+            shell, project, harness, workDir,
+            "multi-root End placement was not one canonical/preview "
+            + "surface transaction");
+        return;
+    }
+
+    // A second drop is a byte/history no-op because both bottoms already
+    // coincide with their respective nearest surfaces.
+    var groundedRevision = editor.GetRevision();
+    var groundedUndo = editor.undoStack.count();
+    if editor.DropSelectedToSurface()
+       or sceneDoc.content != dropped
+       or editor.GetRevision() != groundedRevision
+       or editor.undoStack.count() != groundedUndo {
+        finish(
+            shell, project, harness, workDir,
+            "already-grounded placement created history");
+        return;
+    }
+
+    if editor.Undo() == false
+       or sceneDoc.content != baseline
+       or near(editor.flatNodes.get(1).WorldPosition.Y, 6.0) == false
+       or near(editor.flatNodes.get(2).WorldPosition.Y, 7.0) == false
+       or editor.Redo() == false
+       or sceneDoc.content != dropped
+       or near(editor.flatNodes.get(1).WorldPosition.Y, 2.5) == false
+       or near(editor.flatNodes.get(2).WorldPosition.Y, 0.5) == false {
+        finish(
+            shell, project, harness, workDir,
+            "surface placement undo/redo was not exact");
+        return;
+    }
+
+    // Surface Move stays live during the pointer gesture: canonical bytes and
+    // history wait for release, while both the authored cube and its project
+    // prefab presentation leave the raised platform and land on the floor.
+    editor.SelectSceneNodes([1], 1);
+    editor.SetGizmoMode(scene_editor_3d.GIZMO_MODE_MOVE);
+    editor.SetGizmoTransformSpace(
+        scene_transform_3d.TRANSFORM_SPACE_WORLD);
+    editor.SetGizmoSnapEnabled(false);
+    editor.SetSurfaceSnapEnabled(true);
+    pump(editor, sceneDoc, shell);
+    if editor.surfaceSnapCheck == null
+       or editor.surfaceSnapCheck.IsChecked() == false
+       or editor.surfaceSnapEnabled == false
+       or sceneDoc.scene3DWorkspace.transformSurfaceSnapEnabled == false {
+        finish(
+            shell, project, harness, workDir,
+            "Surface Move control or document workspace state");
+        return;
+    }
+
+    var moveBaseline = sceneDoc.content;
+    var moveRevision = editor.GetRevision();
+    var moveUndo = editor.undoStack.count();
+    var uiScale = shell.app.GetEffectiveScale();
+    if uiScale <= 0.0 { uiScale = 1.0; }
+    var originX = editor.projectedX.get(1);
+    var originY = editor.projectedY.get(1);
+    var xEnd = editor.SelectedGizmoAxisEndpoint(
+        scene_editor_3d.GIZMO_AXIS_X);
+    var axisX = xEnd.x - originX;
+    var axisY = xEnd.y - originY;
+    var startLocalX = originX + Convert.NumToInt(axisX * 0.75);
+    var startLocalY = originY + Convert.NumToInt(axisY * 0.75);
+    var startX = Convert.NumToInt(
+        (editor.viewportImage.GetScreenX() + startLocalX)
+        * uiScale + 0.999999);
+    var startY = Convert.NumToInt(
+        (editor.viewportImage.GetScreenY() + startLocalY)
+        * uiScale + 0.999999);
+    var worldHandleLength =
+        scene_editor_3d.GIZMO_PIXEL_LENGTH / editor.viewScale;
+    var moveFraction = 8.0 / worldHandleLength;
+    var targetX = Convert.NumToInt(
+        startX + axisX * moveFraction * uiScale);
+    var targetY = Convert.NumToInt(
+        startY + axisY * moveFraction * uiScale);
+    if editor.GizmoHandleAtViewportPoint(startLocalX, startLocalY)
+          != scene_editor_3d.GIZMO_AXIS_X {
+        finish(
+            shell, project, harness, workDir,
+            "Surface Move X handle geometry");
+        return;
+    }
+
+    harness.SendMouse("move", startX, startY, 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    harness.SendMouse("down", startX, startY, 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    harness.SendMouse("move", targetX, targetY, 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    var livePreviewOption =
+        editor.projectPreviewScene.Find("Preview 1");
+    var livePreview: SceneNode = null;
+    if livePreviewOption.IsNone == false {
+        livePreview = livePreviewOption.Unwrap() as SceneNode;
+    }
+    var liveX = editor.flatNodes.get(1).WorldPosition.X;
+    var liveY = editor.flatNodes.get(1).WorldPosition.Y;
+    if livePreview == null
+       or nearPointer(liveX, 5.0) == false
+       or near(liveY, 0.5) == false
+       or near(livePreview.WorldPosition.X, liveX) == false
+       or near(livePreview.WorldPosition.Y, liveY) == false
+       or sceneDoc.content != moveBaseline
+       or editor.GetRevision() != moveRevision
+       or editor.undoStack.count() != moveUndo {
+        finish(
+            shell, project, harness, workDir,
+            "live Surface Move did not ground canonical/prefab geometry "
+            + "without early history");
+        return;
+    }
+
+    harness.SendMouse("up", targetX, targetY, 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    var surfaceMoved = sceneDoc.content;
+    if surfaceMoved == moveBaseline
+       or editor.GetRevision() != moveRevision + 1
+       or editor.undoStack.count() != moveUndo + 1
+       or nearPointer(
+              editor.flatNodes.get(1).WorldPosition.X, 5.0) == false
+       or near(editor.flatNodes.get(1).WorldPosition.Y, 0.5) == false
+       or editor.projectPreviewInstanceCount != 2 {
+        finish(
+            shell, project, harness, workDir,
+            "Surface Move release was not one canonical transaction");
+        return;
+    }
+    if editor.Undo() == false
+       or sceneDoc.content != moveBaseline
+       or near(editor.flatNodes.get(1).WorldPosition.X, -3.0) == false
+       or near(editor.flatNodes.get(1).WorldPosition.Y, 2.5) == false
+       or editor.Redo() == false
+       or sceneDoc.content != surfaceMoved
+       or nearPointer(
+              editor.flatNodes.get(1).WorldPosition.X, 5.0) == false
+       or near(editor.flatNodes.get(1).WorldPosition.Y, 0.5) == false {
+        finish(
+            shell, project, harness, workDir,
+            "Surface Move undo/redo was not exact");
+        return;
+    }
+
+    // Align adds exact terrain-normal orientation without an early commit.
+    // The live query begins high enough to climb from the floor onto this
+    // slightly raised ramp, while the preview wrapper follows rotation too.
+    pump(editor, sceneDoc, shell);
+    shell.Poll();
+    if editor.SelectSceneNodes([1], 1) == false
+       or editor.selectedIndex != 1 {
+        finish(
+            shell, project, harness, workDir,
+            "could not reselect the aligned Surface Move fixture");
+        return;
+    }
+    editor.SetSurfaceAlignEnabled(true);
+    if editor.selectedIndex != 1 {
+        finish(
+            shell, project, harness, workDir,
+            "Align toggle unexpectedly cleared the selection");
+        return;
+    }
+    pump(editor, sceneDoc, shell);
+    if editor.selectedIndex != 1 {
+        finish(
+            shell, project, harness, workDir,
+            "Align pump unexpectedly cleared the selection");
+        return;
+    }
+    if editor.surfaceAlignCheck == null
+       or editor.surfaceAlignCheck.IsChecked() == false
+       or editor.surfaceAlignEnabled == false
+       or sceneDoc.scene3DWorkspace.transformSurfaceAlignEnabled == false
+       or editor.surfaceAlignCheck.GetScreenX()
+              + editor.surfaceAlignCheck.GetScreenWidth()
+          > editor.viewToolbar.GetScreenX()
+              + editor.viewToolbar.GetScreenWidth() + 1.0
+       or editor.surfaceAlignCheck.GetScreenY()
+              + editor.surfaceAlignCheck.GetScreenHeight()
+          > editor.viewToolbar.GetScreenY()
+              + editor.viewToolbar.GetScreenHeight() + 1.0 {
+        finish(
+            shell, project, harness, workDir,
+            "surface-normal Align control or document workspace state");
+        return;
+    }
+    var alignBaseline = sceneDoc.content;
+    var alignRevision = editor.GetRevision();
+    var alignUndo = editor.undoStack.count();
+    var currentX = editor.flatNodes.get(1).WorldPosition.X;
+    var alignOriginX = editor.projectedX.get(1);
+    var alignOriginY = editor.projectedY.get(1);
+    var alignXEnd = editor.SelectedGizmoAxisEndpoint(
+        scene_editor_3d.GIZMO_AXIS_X);
+    var alignAxisX = alignXEnd.x - alignOriginX;
+    var alignAxisY = alignXEnd.y - alignOriginY;
+    var alignStartLocalX =
+        alignOriginX + Convert.NumToInt(alignAxisX * 0.75);
+    var alignStartLocalY =
+        alignOriginY + Convert.NumToInt(alignAxisY * 0.75);
+    var alignStartX = Convert.NumToInt(
+        (editor.viewportImage.GetScreenX() + alignStartLocalX)
+        * uiScale + 0.999999);
+    var alignStartY = Convert.NumToInt(
+        (editor.viewportImage.GetScreenY() + alignStartLocalY)
+        * uiScale + 0.999999);
+    var alignFraction =
+        (8.0 - currentX) / worldHandleLength;
+    var alignTargetX = Convert.NumToInt(
+        alignStartX + alignAxisX * alignFraction * uiScale);
+    var alignTargetY = Convert.NumToInt(
+        alignStartY + alignAxisY * alignFraction * uiScale);
+    var alignHandle = editor.GizmoHandleAtViewportPoint(
+        alignStartLocalX, alignStartLocalY);
+    if alignHandle != scene_editor_3d.GIZMO_AXIS_X {
+        finish(
+            shell, project, harness, workDir,
+            "Align X handle geometry handle=" + alignHandle
+            + " origin=" + alignOriginX + "," + alignOriginY
+            + " end=" + alignXEnd.x + "," + alignXEnd.y
+            + " start=" + alignStartLocalX + ","
+            + alignStartLocalY
+            + " selected=" + editor.selectedIndex + "/"
+            + editor.selectedIndices.count()
+            + " mode=" + editor.gizmoMode
+            + " visible=" + alignXEnd.visible);
+        return;
+    }
+
+    harness.SendMouse("move", alignStartX, alignStartY, 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    harness.SendMouse("down", alignStartX, alignStartY, 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    harness.SendMouse("move", alignTargetX, alignTargetY, 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    var alignedPreviewOption =
+        editor.projectPreviewScene.Find("Preview 1");
+    var alignedPreview: SceneNode = null;
+    if alignedPreviewOption.IsNone == false {
+        alignedPreview = alignedPreviewOption.Unwrap() as SceneNode;
+    }
+    var alignedNode = editor.flatNodes.get(1);
+    var alignedUp = Quat.RotateVec3(
+        alignedNode.WorldRotation,
+        Vec3.New(0.0, 1.0, 0.0)) as Vec3;
+    var rampUp = Quat.RotateVec3(
+        editor.flatNodes.get(4).WorldRotation,
+        Vec3.New(0.0, 1.0, 0.0)) as Vec3;
+    var previewUp: Vec3 = null;
+    if alignedPreview != null {
+        previewUp = Quat.RotateVec3(
+            alignedPreview.WorldRotation,
+            Vec3.New(0.0, 1.0, 0.0)) as Vec3;
+    }
+    if alignedPreview == null or previewUp == null
+       or nearPointer(alignedNode.WorldPosition.X, 8.0) == false
+       or alignedNode.WorldPosition.Y < 0.70
+       or alignedNode.WorldPosition.Y > 1.05
+       or Vec3.Dot(alignedUp, rampUp) < 0.999999
+       or Vec3.Dot(previewUp, alignedUp) < 0.999999
+       or sceneDoc.content != alignBaseline
+       or editor.GetRevision() != alignRevision
+       or editor.undoStack.count() != alignUndo {
+        finish(
+            shell, project, harness, workDir,
+            "live rising-terrain Align lost normal, prefab, or history");
+        return;
+    }
+
+    harness.SendMouse("up", alignTargetX, alignTargetY, 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    var alignedContent = sceneDoc.content;
+    if alignedContent == alignBaseline
+       or editor.GetRevision() != alignRevision + 1
+       or editor.undoStack.count() != alignUndo + 1
+       or Vec3.Dot(alignedUp, rampUp) < 0.999999 {
+        finish(
+            shell, project, harness, workDir,
+            "normal-aligned release was not one transaction");
+        return;
+    }
+    if editor.Undo() == false
+       or sceneDoc.content != alignBaseline
+       or nearPointer(
+              editor.flatNodes.get(1).WorldPosition.X, currentX) == false
+       or near(editor.flatNodes.get(1).WorldRotation.X, 0.0) == false
+       or near(editor.flatNodes.get(1).WorldRotation.Y, 0.0) == false
+       or near(editor.flatNodes.get(1).WorldRotation.Z, 0.0) == false
+       or editor.Redo() == false
+       or sceneDoc.content != alignedContent {
+        finish(
+            shell, project, harness, workDir,
+            "normal-aligned Surface Move undo/redo was not exact");
+        return;
+    }
+    var redoneUp = Quat.RotateVec3(
+        editor.flatNodes.get(1).WorldRotation,
+        Vec3.New(0.0, 1.0, 0.0)) as Vec3;
+    if Vec3.Dot(redoneUp, rampUp) < 0.999999 {
+        finish(
+            shell, project, harness, workDir,
+            "normal alignment did not survive redo");
+        return;
+    }
+
+    // The explicit Drop action shares the same normal-aware exact transaction.
+    if editor.Undo() == false
+       or editor.SetNodeTransform(
+              1, 8.0, 5.0, 0.0, 1.0, 1.0, 1.0) == false {
+        finish(
+            shell, project, harness, workDir,
+            "could not configure normal-aligned Drop");
+        return;
+    }
+    var alignDropBaseline = sceneDoc.content;
+    var alignDropRevision = editor.GetRevision();
+    var alignDropUndo = editor.undoStack.count();
+    if editor.DropSelectedToSurface() == false {
+        finish(
+            shell, project, harness, workDir,
+            "normal-aligned Drop was rejected");
+        return;
+    }
+    var dropAlignedUp = Quat.RotateVec3(
+        editor.flatNodes.get(1).WorldRotation,
+        Vec3.New(0.0, 1.0, 0.0)) as Vec3;
+    var alignDropContent = sceneDoc.content;
+    if alignDropContent == alignDropBaseline
+       or editor.GetRevision() != alignDropRevision + 1
+       or editor.undoStack.count() != alignDropUndo + 1
+       or Vec3.Dot(dropAlignedUp, rampUp) < 0.999999
+       or editor.flatNodes.get(1).WorldPosition.Y < 0.70
+       or editor.flatNodes.get(1).WorldPosition.Y > 1.05
+       or editor.projectPreviewInstanceCount != 2
+       or editor.Undo() == false
+       or sceneDoc.content != alignDropBaseline
+       or near(editor.flatNodes.get(1).WorldPosition.Y, 5.0) == false
+       or editor.Redo() == false
+       or sceneDoc.content != alignDropContent {
+        finish(
+            shell, project, harness, workDir,
+            "normal-aligned Drop history or prefab result was not exact");
+        return;
+    }
+
+    // The isolated cube has neither canonical nor preview geometry below it.
+    editor.SelectSceneNodes([3], 3);
+    var missingBaseline = sceneDoc.content;
+    var missingRevision = editor.GetRevision();
+    var missingUndo = editor.undoStack.count();
+    if editor.DropSelectedToSurface()
+       or sceneDoc.content != missingBaseline
+       or editor.GetRevision() != missingRevision
+       or editor.undoStack.count() != missingUndo
+       or near(editor.flatNodes.get(3).WorldPosition.Y, 4.0) == false {
+        finish(
+            shell, project, harness, workDir,
+            "missing-surface placement was not a no-op");
+        return;
+    }
+
+    // Precise placement and layout commands share bounded overflow surfaces
+    // in the medium lane instead of forcing several wrapped toolbar rows.
+    shell.SetSceneWorkspaceMode(false);
+    shell.app.SetMinimumSize(1, 1);
+    shell.app.SetWindowSize(1000, 700);
+    editor.SetWorkspaceModeActive(true);
+    shell.Poll();
+    shell.Render();
+    pump(editor, sceneDoc, shell);
+    pump(editor, sceneDoc, shell);
+    if editor.viewMenuButton.IsVisible() == false
+       or editor.placementMenuButton.IsVisible() == false
+       or editor.workspaceButton.IsVisible()
+       or editor.vertexSnapCheck.IsVisible()
+       or editor.viewMenuButton.GetScreenX()
+              + editor.viewMenuButton.GetScreenWidth()
+          > editor.viewToolbar.GetScreenX()
+              + editor.viewToolbar.GetScreenWidth() + 1.0
+       or editor.viewMenuButton.GetScreenY()
+              + editor.viewMenuButton.GetScreenHeight()
+          > editor.viewToolbar.GetScreenY()
+              + editor.viewToolbar.GetScreenHeight() + 1.0
+       or editor.placementMenuButton.GetScreenX()
+              + editor.placementMenuButton.GetScreenWidth()
+          > editor.viewToolbar.GetScreenX()
+              + editor.viewToolbar.GetScreenWidth() + 1.0
+       or editor.placementMenuButton.GetScreenY()
+              + editor.placementMenuButton.GetScreenHeight()
+          > editor.viewToolbar.GetScreenY()
+              + editor.viewToolbar.GetScreenHeight() + 1.0 {
+        finish(
+            shell, project, harness, workDir,
+            "terrain command overflow was missing or clipped "
+            + "view=" + editor.viewMenuButton.GetScreenX() + ","
+            + editor.viewMenuButton.GetScreenY() + " "
+            + editor.viewMenuButton.GetScreenWidth() + "x"
+            + editor.viewMenuButton.GetScreenHeight()
+            + " placement=" + editor.placementMenuButton.GetScreenX() + ","
+            + editor.placementMenuButton.GetScreenY() + " "
+            + editor.placementMenuButton.GetScreenWidth() + "x"
+            + editor.placementMenuButton.GetScreenHeight()
+            + " toolbar=" + editor.viewToolbar.GetScreenX() + ","
+            + editor.viewToolbar.GetScreenY() + " "
+            + editor.viewToolbar.GetScreenWidth() + "x"
+            + editor.viewToolbar.GetScreenHeight()
+            + " root=" + editor.root.GetLogicalWidth());
+        return;
+    }
+
+    editor.SetWorkspaceModeActive(false);
+    shell.app.SetWindowSize(1320, 760);
+    shell.SetSceneWorkspaceMode(true);
+    shell.Poll();
+    shell.Render();
+    pump(editor, sceneDoc, shell);
+    pump(editor, sceneDoc, shell);
+    var laptopToolbarRight = editor.viewToolbar.GetScreenX()
+        + editor.viewToolbar.GetScreenWidth() + 1.0;
+    var laptopToolbarBottom = editor.viewToolbar.GetScreenY()
+        + editor.viewToolbar.GetScreenHeight() + 1.0;
+    var laptopFrameRight = editor.frameSelectedButton.GetScreenX()
+        + editor.frameSelectedButton.GetScreenWidth();
+    var laptopFrameBottom = editor.frameSelectedButton.GetScreenY()
+        + editor.frameSelectedButton.GetScreenHeight();
+    var laptopHierarchyRight = editor.hierarchyButton.GetScreenX()
+        + editor.hierarchyButton.GetScreenWidth();
+    var laptopHierarchyBottom = editor.hierarchyButton.GetScreenY()
+        + editor.hierarchyButton.GetScreenHeight();
+    var laptopWorkspaceRight = editor.workspaceButton.GetScreenX()
+        + editor.workspaceButton.GetScreenWidth();
+    var laptopWorkspaceBottom = editor.workspaceButton.GetScreenY()
+        + editor.workspaceButton.GetScreenHeight();
+    var laptopVertexRight = editor.vertexSnapCheck.GetScreenX()
+        + editor.vertexSnapCheck.GetScreenWidth();
+    var laptopVertexBottom = editor.vertexSnapCheck.GetScreenY()
+        + editor.vertexSnapCheck.GetScreenHeight();
+    if laptopFrameRight > laptopToolbarRight
+       or laptopFrameBottom > laptopToolbarBottom
+       or laptopHierarchyRight > laptopToolbarRight
+       or laptopHierarchyBottom > laptopToolbarBottom
+       or laptopWorkspaceRight > laptopToolbarRight
+       or laptopWorkspaceBottom > laptopToolbarBottom
+       or laptopVertexRight > laptopToolbarRight
+       or laptopVertexBottom > laptopToolbarBottom {
+        finish(
+            shell, project, harness, workDir,
+            "terrain controls clipped laptop view actions frame="
+            + laptopFrameRight + "," + laptopFrameBottom
+            + " hierarchy=" + laptopHierarchyRight + ","
+            + laptopHierarchyBottom
+            + " workspace=" + laptopWorkspaceRight + ","
+            + laptopWorkspaceBottom
+            + " vertex=" + laptopVertexRight + ","
+            + laptopVertexBottom
+            + " toolbar=" + laptopToolbarRight + ","
+            + laptopToolbarBottom
+            + " root=" + editor.root.GetLogicalWidth());
+        return;
+    }
+
+    shell.SetSceneWorkspaceMode(false);
+    shell.app.SetWindowSize(560, 420);
+    shell.Poll();
+    shell.Render();
+    pump(editor, sceneDoc, shell);
+    pump(editor, sceneDoc, shell);
+    var compactToolbarRight = editor.viewToolbar.GetScreenX()
+        + editor.viewToolbar.GetScreenWidth() + 1.0;
+    var compactToolbarBottom = editor.viewToolbar.GetScreenY()
+        + editor.viewToolbar.GetScreenHeight() + 1.0;
+    var compactViewRight = editor.viewMenuButton.GetScreenX()
+        + editor.viewMenuButton.GetScreenWidth();
+    var compactViewBottom = editor.viewMenuButton.GetScreenY()
+        + editor.viewMenuButton.GetScreenHeight();
+    var compactHierarchyRight = editor.hierarchyButton.GetScreenX()
+        + editor.hierarchyButton.GetScreenWidth();
+    var compactHierarchyBottom = editor.hierarchyButton.GetScreenY()
+        + editor.hierarchyButton.GetScreenHeight();
+    var compactPlacementRight = editor.placementMenuButton.GetScreenX()
+        + editor.placementMenuButton.GetScreenWidth();
+    var compactPlacementBottom = editor.placementMenuButton.GetScreenY()
+        + editor.placementMenuButton.GetScreenHeight();
+    if editor.viewMenuButton.IsVisible() == false
+       or editor.placementMenuButton.IsVisible() == false
+       or editor.frameSelectedButton.IsVisible()
+       or editor.workspaceButton.IsVisible()
+       or editor.vertexSnapCheck.IsVisible()
+       or compactViewRight > compactToolbarRight
+       or compactViewBottom > compactToolbarBottom
+       or compactHierarchyRight > compactToolbarRight
+       or compactHierarchyBottom > compactToolbarBottom
+       or compactPlacementRight > compactToolbarRight
+       or compactPlacementBottom > compactToolbarBottom {
+        finish(
+            shell, project, harness, workDir,
+            "terrain overflow clipped compact view actions view="
+            + compactViewRight + "," + compactViewBottom
+            + " hierarchy=" + compactHierarchyRight + ","
+            + compactHierarchyBottom
+            + " placement=" + compactPlacementRight + ","
+            + compactPlacementBottom
+            + " toolbar=" + compactToolbarRight + ","
+            + compactToolbarBottom
+            + " root=" + editor.root.GetLogicalWidth());
+        return;
+    }
+
+    finish(shell, project, harness, workDir, "");
+}

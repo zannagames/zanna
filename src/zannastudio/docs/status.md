@@ -158,6 +158,36 @@ mutate the live node immediately and serialize exactly once when the
 spinners lose focus, with Escape restoring the captured values — while
 multi-selections keep explicit relative position/rotation/scale batches
 behind the Apply button.
+The Transform row also exposes **Drop** (End while the viewport owns focus):
+each selected top-level subtree lands from its world-bottom center on the
+nearest authored or project-environment surface below it. Selected authored
+and transient prefab meshes cannot catch their own rays; all moved roots share
+one exact-or-rollback history transaction, while grounded and unsupported
+selections are no-ops. Its persistent **Surface** toggle extends that behavior
+to live X, Z, and XZ Move drags: each selected hierarchy root conforms
+independently after the horizontal target, bounded four-unit upward probing
+climbs ordinary terrain rises, and project prefab presentation and bounds
+follow the source transform before release. The persistent **Align** toggle
+also preserves each root's twist while rotating its up axis to the precise
+surface normal for both Drop and Surface Move. Unsupported roots retain their
+current height/orientation, and groups above 256 roots are refused before
+pointer capture.
+The persistent **Vertex** toggle (or transient V hold) adds exact
+vertex/pivot-to-vertex placement with precise visible-surface fallback.
+Runtime-backed mesh-position readback covers canonical and project-prefab
+sources plus canonical, prefab, and project-environment targets. The selected
+top-level hierarchy roots preview as rigid groups, commit once on release, and
+restore exactly on Escape. A 32,768-resident-vertex scan ceiling fails closed
+instead of accepting a partial target; a 256-root ceiling prevents an
+unbounded gesture.
+The Create row and hierarchy/viewport context menus also add canonical
+33-by-33 terrain meshes. A high-priority Terrain inspector exposes responsive
+Raise, Lower, Smooth, and Flatten brushes plus bounded 9-through-65 X/Z sample
+regeneration, spacing, and whole-grid flattening. Sculpt drags rebuild the exact
+VSCN game mesh live, use a terrain-conforming brush ring, defer one history
+transaction until release, and restore the original mesh on Escape. Exact
+typed `terrain.*` metadata, version, dimensions, and topology protect unrelated
+imported meshes from destructive heightfield editing.
 The 2D Select tool also owns
 focus-safe one-pixel or one-tile keyboard nudging plus primary-axis alignment
 and stable distribution commands. The 3D Parent chooser reparents selected
@@ -172,26 +202,35 @@ and roll back the whole group on failure. Its Gameplay metadata group
 edits bounded null, Boolean, integer, float, and string values on one node
 through the same always-editable rows: renaming a key, changing a kind, or
 editing a value commits as one history transaction, a row's × removes its
-value, and exact scalar kinds round-trip through VSCN v6. Both editors load bounded project-root
-`scene-components.json` templates and atomically add missing typed fields
-across a selection without overwriting authored same-kind values. Their shared
-structured schema form maintains every cross-target definition with validated
-atomic writes, unknown-member preservation, external-conflict detection, and
-independent 20-step file undo/redo without dirtying a scene. Project component
-schemas accept versions 1 through 10. Validated enum-choice and asset-reference
-fields are authored as ordinary string values; later versions add asset
-libraries, object/node previews, 3D gameplay-view profiles, and project-owned
-2D backgrounds, 3D scene environments, and portable post-processing
-previews. The structured schema form authors component fields, preserves
-supported preview profiles, writes the lowest required file version, and a saved
-field rename/retype offers an explicit scan-review-confirm migration across
-the workspace root's 2D and 3D scenes with per-file transactional refusals:
+value, and exact scalar kinds round-trip through VSCN v6.
+
+Both editors load bounded project-root `scene-components.json` templates and
+atomically add missing typed fields across a selection without overwriting
+authored same-kind values. Their shared structured schema form maintains every
+cross-target definition with validated atomic writes, unknown-member
+preservation, external-conflict detection, and independent 20-step file
+undo/redo without dirtying a scene. Project component schemas accept versions
+1 through 13. Validated enum-choice and asset-reference fields are authored as
+ordinary string values; later versions add asset libraries, object/node
+previews, 3D gameplay-view profiles, project-owned 2D backgrounds, 3D scene
+environments, portable post-processing previews, 2D object draw stacks, exact
+Game View output frames, and direct component creation recipes. On the
+selection-free Object tab, a compatible schema-v13 recipe creates a correctly
+typed 2D object at the selected/visible cell or a uniquely named 3D node at the
+viewport target, applies all typed defaults before one canonical commit,
+selects it, and resolves its project preview immediately. Components without
+recipes remain apply-only. The structured schema form authors component fields
+and creation identities, preserves supported preview profiles, writes the
+lowest required file version, and a saved field rename/retype offers an
+explicit scan-review-confirm migration across the workspace root's 2D and 3D
+scenes with per-file transactional refusals:
 2D scenes convert through SceneDocument and 3D scenes through the canonical
 VSCN loader (load, convert with the same representation-preserving rules,
 save), each guarded by the scanned mtime and an exact match-count recheck;
 grafted prefab instance content is excluded from counts and conversion since
-it never serializes back. The 2D tile
-palette owns a per-tile behavior inspector: collision kind (solid or
+it never serializes back.
+
+The 2D tile palette owns a per-tile behavior inspector: collision kind (solid or
 one-way-up), typed int/bool tile properties, per-frame tile animations, and
 16-variant autotile rules author through the typed SceneDocument sections of
 ADR 0176, each accepted edit is one canonical history transaction, and palette
@@ -202,6 +241,11 @@ variants affected by single-cell Paint/Erase hover, and composes optional tile
 animation after autotile substitution. Objects with an `editor.sprite`
 or loadable `sprite` string property render their authored atlas frame in the
 canvas under the shared image budgets, falling back to the existing marker;
+schema-v11 project rules can place those sprite pixels before all tiles or
+after a specific tile layer and give object categories a bounded stable
+priority. The same bottom-to-top stack governs overlapping canvas picking,
+while exact integer `editor.afterLayer`/`editor.drawOrder` properties provide
+one undoable per-object exception through the inspector;
 `route`-typed objects draw an ordered child-waypoint polyline and
 `light`-component objects draw a halo ring, all workspace-only. Camera and
 Lighting inspector groups author the complete scene-global sections of
@@ -249,7 +293,7 @@ scene authoring, and panel virtualization for very large result sets.
 | Zia IntelliSense | Implemented with limits | Completion, diagnostics, hover, signature help, symbols, definition, references, rename, workspace symbols. |
 | BASIC IntelliSense | Implemented with limits | Completion, diagnostics, hover, document symbols, scanner-backed definition, references, rename, workspace symbols, call hierarchy, and signature help. |
 | Plain text | Implemented | Opens unknown/text-like files as text without semantic features. |
-| Scene files | Implemented with limits | `.scene2d` mounts the 2D editor and `.scene3d` mounts the 3D editor (legacy `.scene`/`.level`/`.vscn` remain accepted). Both retain per-document workspace/history state and provide real expandable multi-select hierarchies, transactional before/into/after row drops, group edits, typed gameplay data, searchable project assets, hierarchy-preserving clipboard transfer, undo/redo, and safe save/import flows. The 2D surface includes a runtime-backed organizational hierarchy with absolute positions, one-step root/child creation, explicit cycle-safe multi-root reparenting, stable subtree/sibling ordering, real bounded atlas rendering/palettes, viewport-windowed canvas rasterization (only visible cells render, so large maps stay fully scroll-reachable; 100% zoom equals the authored tile resolution, the wheel zooms around the pointer, and Fit/1:1/grid-toggle controls join the view toolbar), captured gap-free paint/erase with exact cancellation, inclusive rectangle paint, four-connected fill, active-layer tile picking, modifier-aware point and inclusive authored-cell marquee selection, object dragging, scene/object properties, nudging, alignment, and distribution. The 3D surface includes a runtime-backed shaded/triangle-wireframe viewport with exact editor-overlay alignment, exact preserve-world chooser/direct reparenting with preserve-local opt-out, stable sibling ordering, mixed-state batch visibility, switchable Local/World Move/Rotate/Scale with snapping and atomic exact-or-reject world conversion, filled Move-plane and crossed Scale-plane XY/XZ/YZ handles, projected X/Y/Z rotation rings with wrap-safe angular dragging, truthful mixed-value batch PBR materials, batch embedded texture maps, mixed-value batch authoring for every runtime light type with hierarchy/viewport feedback, authored camera nodes with look-through and a bounded preview inset, collider-convention authoring with wireframe overlays, and route polylines/badges for project gameplay components. Both load compatible definitions from bounded root-local `scene-components.json`; Add Missing preserves same-kind values, rejects any type conflict before mutation, and commits the complete selection once. A shared structured form maintains the complete cross-target schema through parser-validated atomic writes, external-conflict detection, and separate bounded file undo/redo. The 2D tile palette authors per-tile collision, typed int/bool properties, per-frame animations, and 16-variant autotile rules as one-transaction typed-section edits with palette behavior badges. Schema v2 enum/asset fields, the explicit 2D/3D migration assistant, the per-root asset library with tag filtering and import-grid surfacing, and the project material library are present; automatic unattended migration and generalized runtime components are not. |
+| Scene files | Implemented with limits | `.scene2d` mounts the 2D editor and `.scene3d` mounts the 3D editor (legacy `.scene`/`.level`/`.vscn` remain accepted). Both retain per-document workspace/history state and provide real expandable multi-select hierarchies, transactional before/into/after row drops, group edits, typed gameplay data, searchable project assets, hierarchy-preserving clipboard transfer, undo/redo, and safe save/import flows. Below 1,180 logical pixels, complete stateful 2D Tools/View and 3D Create/Placement/View menus replace dense secondary button sets so the authored canvas/viewport remains useful; wide lanes restore every direct control. The 2D surface includes a runtime-backed organizational hierarchy with absolute positions, one-step root/child creation, explicit cycle-safe multi-root reparenting, stable subtree/sibling ordering, real bounded atlas rendering/palettes, viewport-windowed canvas rasterization (only visible cells render, so large maps stay fully scroll-reachable; 100% zoom equals the authored tile resolution, the wheel zooms around the pointer, and Fit/1:1/grid-toggle controls remain reachable through direct or View actions), captured gap-free paint/erase with exact cancellation, inclusive rectangle paint, four-connected fill, active-layer tile picking, modifier-aware point and inclusive authored-cell marquee selection, object dragging, scene/object properties, nudging, alignment, and distribution. The 3D surface includes a runtime-backed shaded/triangle-wireframe viewport with exact editor-overlay alignment, exact preserve-world chooser/direct reparenting with preserve-local opt-out, stable sibling ordering, mixed-state batch visibility, switchable Local/World Move/Rotate/Scale with snapping and atomic exact-or-reject world conversion, filled Move-plane and crossed Scale-plane XY/XZ/YZ handles, projected X/Y/Z rotation rings with wrap-safe angular dragging, truthful mixed-value batch PBR materials, batch embedded texture maps, mixed-value batch authoring for every runtime light type with hierarchy/viewport feedback, authored camera nodes with look-through and a bounded preview inset, collider-convention authoring with wireframe overlays, exact canonical-mesh terrain creation and four-mode viewport sculpting, and route polylines/badges for project gameplay components. Both load compatible definitions from bounded root-local `scene-components.json`; Add Missing preserves same-kind values, rejects any type conflict before mutation, and commits the complete selection once. A shared structured form maintains the complete cross-target schema through parser-validated atomic writes, external-conflict detection, and separate bounded file undo/redo. The 2D tile palette authors per-tile collision, typed int/bool properties, per-frame animations, and 16-variant autotile rules as one-transaction typed-section edits with palette behavior badges. Schema v2 enum/asset fields, the explicit 2D/3D migration assistant, the per-root asset library with tag filtering and import-grid surfacing, and the project material library are present; automatic unattended migration and generalized runtime components are not. |
 | 3D node gameplay metadata | Implemented with limits | One selected `SceneNode` exposes deterministically ordered null, Boolean, integer, float, and string values for roles, IDs, spawn/trigger data, and component parameters. Create, rename, update, and remove validate bounds/no-ops before one canonical VSCN history transaction; values round-trip through VSCN v6 and row selection stays with its tab/session. Project schemas can batch-add missing metadata to multiple nodes, while arbitrary raw metadata editing remains single-node. |
 | Scene clipboard | Implemented with limits | Standard Cut/Copy/Paste/Select All commands follow the active visual editor. A versioned, typed text envelope supports same-kind cross-tab transfer of up to 1,024 selected identities and 64 MB total, preserving typed 2D properties and internal parent links or serializable 3D subtrees. Cut and paste are one-step history transactions with exact rollback. Mixed 2D/3D paste and interchange with other editors are intentionally rejected. |
 | Project explorer | Implemented with limits | Demand-loaded, scrollable tree; multi-root support; Quick Open cache; file actions; ignores. Rename/move preserve live editor buffers and undo state, while delete releases any removed split-pane owner. |
@@ -262,7 +306,7 @@ scene authoring, and panel virtualization for very large result sets.
 | Settings | Implemented | Platform config path, theme, editor behavior, auto-save, save-before-build, session options, settings search, rebindable keyboard shortcuts, and debounced primary-sidebar/tool-dock position and split sizing. The body is vertically scrollable with a fixed action footer; compact windows give Preferences the full workbench lane and stack descriptions above controls without horizontal overflow. |
 | Session restore | Implemented | Project, tabs, cursor/scroll, recent files/projects, bounded recovery text, and painted caller-budgeted startup restoration. |
 | File watching | Implemented with limits | Active file watcher, inactive document polling, missing/deleted/moved-file conflict state, capped recursive workspace watcher set with fallback scans, and quiet metadata-polled refresh of external 2D layer images. |
-| Visual polish | Implemented with limits | Zanna-brand palettes (WCAG-gated), scalable vector icons across toolbar/tree/tabs/status, smooth scrolling, gamma-correct text with ligatures, and viewport-bounded welcome/About/Preferences/diff, command, and semantic popup surfaces. Focus-taking Settings, About, explorer, breakpoint, command-input, and diff surfaces are mutually exclusive with popup menus, preventing stacked panels and ambiguous Enter/Escape routing. Build/Search notifications follow a contextual policy: their durable background results stay quiet, while immediate failures may warn; routine success remains status text. Chrome text, floating overlays, wrapped output, and responsive tool tabs share one effective-scale coordinate space without applying user zoom twice. Long list rows—including compact Recent paths—use explicit ellipsis and expose their complete unmodified text on hover instead of ending at a hard clip. The native workbench minimum starts at 720 by 520 and grows with whole-UI zoom, contracting against a desktop-chrome safety margin when the display cannot fit that floor. A requested minimap is temporarily suppressed below a useful editor-lane width and restored automatically when the lane expands, without overwriting the user's preference. Remaining density work is tracked per panel. |
+| Visual polish | Implemented with limits | Zanna-brand palettes (WCAG-gated), scalable vector icons across toolbar/tree/tabs/status, smooth scrolling, gamma-correct text with ligatures, and viewport-bounded welcome/About/Preferences/diff, command, and semantic popup surfaces. Follow-cursor and anchored tooltips now measure while becoming visible, wrap to their containing root, move above a lower-edge pointer, and clamp completely inside that viewport. Focus-taking Settings, About, explorer, breakpoint, command-input, and diff surfaces are mutually exclusive with popup menus, preventing stacked panels and ambiguous Enter/Escape routing. Build/Search notifications follow a contextual policy: their durable background results stay quiet, while immediate failures may warn; routine success remains status text. Chrome text, floating overlays, wrapped output, and responsive tool tabs share one effective-scale coordinate space without applying user zoom twice. Long list rows—including compact Recent paths—use explicit ellipsis and expose their complete unmodified text on hover instead of ending at a hard clip. The native workbench minimum starts at 720 by 520 and grows with whole-UI zoom, contracting against a desktop-chrome safety margin when the display cannot fit that floor. A requested minimap is temporarily suppressed below a useful editor-lane width and restored automatically when the lane expands, without overwriting the user's preference. Remaining density work is tracked per panel. |
 | Cross-platform | Intended | Runtime adapters exist for process, PTY, GUI; display/runtime behavior still needs regular platform smoke. |
 
 ## Language Support
@@ -358,6 +402,28 @@ camera controls, property editing, object creation/deletion/duplication,
 history, and import/export-oriented file workflows. A 2D object drag and a 3D
 transform drag each become one undo entry.
 
+Below 1,180 logical pixels, dense secondary commands move into stable,
+state-synchronized overflow surfaces instead of consuming several scene rows.
+2D keeps Select/Paint/Erase direct and exposes complete **Tools** and **View**
+menus. 3D exposes complete **Create**, **Placement**, and **View** menus while
+keeping file, selection, transform, Game View, hierarchy, and inspector actions
+direct. Wide lanes restore every corresponding button. The compact bars keep a
+useful full-width canvas/viewport and all menu actions call the same validated,
+undo-aware editor paths as their wide controls.
+
+Both editors expose a per-document **Game View** that removes editor-only
+viewport chrome in one reversible action while preserving every underlying
+selection, tool, grid/overlay, camera, shading, and layout choice. The 2D mode
+keeps authored/project background, tile, sprite, draw-stack, and animation
+pixels while disabling canvas edits. The 3D mode keeps authored/project
+geometry, lighting, atmosphere, and post-FX in a temporary shaded pass while
+removing grid, gizmos, markers, selection, camera inset, navigator, and
+editor-light assist. Legacy profiles retain camera navigation. A schema-v12
+output pair instead locks the project gameplay camera and exact aspect inside
+neutral matte, then restores the prior 2D scroll/zoom or 3D camera on exit.
+Neither mode changes scene bytes, dirty state, revision, or history, and each
+follows its owning open tab.
+
 Inspector and hierarchy panes lay out truthfully at narrow widths: labeled
 control rows wrap instead of forcing panes wider than their scroll viewport,
 single-line text inputs report a bounded natural width so "label + input +
@@ -387,8 +453,9 @@ identical.
 Both scene editors' widget construction now lives in dedicated builder
 modules (scene_panels_2d, scene_panels_3d): callers construct the editor
 and delegate the build, the editor file keeps behavior only, and every
-widget still lands on the editor's own fields — a verbatim relocation
-with no behavior change.
+widget and persistent overflow-menu item still lands on the editor's own
+fields. Builders own construction; controllers own responsive visibility,
+state synchronization, and command dispatch.
 
 Scene panes float: the Objects/Hierarchy pane, the Inspector, and the 2D
 Palette strip each carry a Float button that moves the pane's content —
@@ -487,8 +554,10 @@ Gizmo snapping inverts on hold: keeping Ctrl pressed during a transform
 drag temporarily flips the Snap checkbox's effect (snapped drags run free,
 free drags snap) without touching workspace state, and rotate drags show a
 live signed tenth-degree readout of the swept angle in the status line.
-Vertex/surface snapping, a pivot-versus-center toggle, and cone/cube
-handle art remain unimplemented (handles already differ by tool mode).
+Live bounded-rise surface conformance and optional normal alignment are
+available for X, Z, and XZ Move drags and explicit Drop. Vertex snapping, a
+pivot-versus-center toggle, and cone/cube handle art remain unimplemented
+(handles already differ by tool mode).
 
 The layers panel understands opacity, lock, and solo: each layer carries
 an optional authored opacity (ADR 0195, serialized only away from fully
@@ -551,7 +620,12 @@ native frame at the current zoom with the full transform applied, with the
 legacy one-cell draw as the bounded fallback; selection outlines follow the
 transformed footprint, and canvas picking tests the exact rotated sprite
 rectangle top-down instead of the origin cell alone. The single-object
-inspector edits rotation and scale through the same live-commit gesture as
+**Preview draw stack** group shows the effective tile-layer boundary and
+signed priority, applies `editor.afterLayer` plus `editor.drawOrder` atomically,
+and removes both with **Use Project**. Project rules and invalid overrides
+fall back without changing scene bytes; equal priorities retain canonical
+object order. The single-object inspector edits rotation and scale through
+the same live-commit gesture as
 X/Y (one undoable transaction on unfocus or scrub release, Escape
 restores), flip toggles commit immediately, pivot components share the
 live-commit gesture, and the tint edits as RRGGBBAA hex committing on
@@ -570,9 +644,9 @@ complete affordance without forcing horizontal scrolling.
 Creation is cursor-aware: the 3D viewport context menu's create items spawn
 at the precise triangle hit under the right-click point, at the ground-plane
 intersection when the ray misses geometry, or at the view target when it
-misses both; toolbar primitive buttons spawn at the view target rather than
-the world origin, and Cylinder joins Box/Sphere/Plane in the toolbar and
-both create menus. Context-menu creates arm the inline hierarchy rename so
+misses both; wide toolbar primitive buttons and constrained **Create** items
+spawn at the view target rather than the world origin, and Cylinder joins
+Box/Sphere/Plane in every creation surface. Context-menu creates arm the inline hierarchy rename so
 the name is typed immediately; when the hierarchy is collapsed, the action
 opens its full-width master before editing. The 2D canvas menu gains "Add
 Object Here", which creates one selected, rename-armed entity at the
@@ -709,6 +783,12 @@ preview atlas through the production canvas. Missing, invalid, over-budget, or
 out-of-range frames retain a deterministic placeholder and contextual
 inspector status.
 
+Schema-v12 `scenePreview2D` profiles may declare paired 64–8,192
+`outputWidth`/`outputHeight` values. Game View fits the project output around
+the authored player start, scales screen-space backgrounds inside that content
+frame, mats unused editor space, and locks zoom/pan until exit. Xenoscape's
+real-project gate pins its 1280x720 frame and exact editor-camera restoration.
+
 On sufficiently wide scene lanes, the 3D editor is a three-pane workbench: a
 persistent left Hierarchy pane
 (search, full-height tree, parent/sibling controls), the center viewport, and
@@ -724,9 +804,12 @@ checkboxes both present truthful native mixed states for group selections. A man
 change. Both split positions persist per document. Below 1,400 logical pixels
 the Hierarchy pane collapses before it can starve the viewport and inspector;
 an explicit Hierarchy action and standard Find open the same full-width master.
-At laptop widths the concise creation and view toolbars use their measured
-wrapped height, avoiding reserved empty rows while retaining defensive floors
-on genuinely narrow lanes.
+Below 1,180 logical pixels, complete Create, Placement, and View overflow menus
+replace the dense secondary button sets; primary file, selection, transform,
+Game View, hierarchy, and inspector actions stay direct. This caps defensive
+command-bar height and gives the authored viewport substantially more vertical
+space. Wider lanes restore every direct creation, placement, and navigation
+control.
 
 The 3D viewport is projection-switchable through one retained camera:
 perspective is the default and orthographic is one toggle away. Every overlay
@@ -741,9 +824,10 @@ camera basis with Q/E world down/up, Shift is a fast multiplier, and the wheel
 retunes a bounded speed while flying; release or Escape ends the capture, and
 the W/E/R tool shortcuts stay suppressed during it. Otherwise the wheel
 dollies about the pointer, middle-drag orbits, Shift+drag pans, and F frames
-the selection or the whole scene. A Persp/Ortho toggle and a View... options
-row (grid, marker, and light-overlay visibility, a live visible/culled stats
-readout, and the three snap increments) live in the view toolbar; the
+the selection or the whole scene. A Persp/Ortho toggle and a View-options row
+(grid, marker, and light-overlay visibility, a live visible/culled stats
+readout, and the three snap increments) are direct on wide command bars and
+reachable through the checked **View** menu when constrained; the
 perspective grid distance-fades while the ortho grid is unchanged. All of this
 state — projection, overlay toggles, stats, and snap increments — is
 per-scene workspace state that follows the owning tab and session and never
@@ -765,6 +849,13 @@ draws editor overlays afterward; pure wireframe and the camera inset remain
 unprocessed. Ashfall's project profile uses this path to keep its pale,
 high-key gameplay atmosphere in the editor without executing game code or
 changing canonical scene state (ADR 0204).
+
+Schema-v12 `scenePreview3D` profiles may declare the same bounded output pair.
+Game View then sizes the retained render target to the centered project-aspect
+content frame before finalization and post-FX, copies it into neutral matte,
+and locks navigation. Ashfall's real-project gate pins a 1600x900 content
+target, pale-scene luminance inside the frame, and exact prior-camera
+restoration (ADR 0208).
 
 Camera nodes are first-class authored components (ADR 0184). **+ Camera**
 creates a node carrying an independent `Camera3D`; the Camera component
@@ -872,11 +963,21 @@ write still flows through the normal one-transaction path (closing the ADR
 The 3D editor has distinct Move, Rotate, and Scale handles, mode-aware snapping,
 pointer capture, Escape cancelation, per-scene tool persistence, group framing,
 and W/E/R tool shortcuts that only activate while the viewport/tool owns
-keyboard focus. Its Local/World control also follows the owning scene tab and
-bounded session state. Local mode projects the parent-relative basis used by
-the local TRS fields; World mode aligns the handles to the absolute axes and
-applies the resulting delta around each selected node's own pivot. The runtime
-must reproduce each
+keyboard focus. Its Local/World, Surface Move, Align, and Vertex controls also
+follow the owning scene tab and bounded session state. Surface Move grounds X,
+Z, and XZ Move drags against authored or project-preview geometry in real
+time, excludes the selected canonical/prefab subtrees from their own queries,
+climbs bounded terrain rises, synchronizes transient prefab art before
+release, and caps live work at 256 selected roots. Align preserves object
+twist while rotating each root's up axis to the upward-facing hit normal, then
+places the combined canonical/prefab visual bottom exactly on the surface for
+both live movement and Drop. Vertex mode reads authoritative runtime mesh
+positions to snap a selected vertex or pivot to an unselected vertex, with
+precise visible-surface fallback, live group preview, one release transaction,
+exact Escape rollback, and bounded 32,768-vertex / 256-root work.
+Local mode projects the parent-relative basis used by the local TRS fields;
+World mode aligns the handles to the absolute axes and applies the resulting
+delta around each selected node's own pivot. The runtime must reproduce each
 requested world matrix as exact parent-relative TRS. A singular, degenerate, or
 shear-producing conversion restores every captured local transform and creates
 no history entry. Accepted command or pointer edits serialize the group once,
@@ -983,7 +1084,7 @@ The scene editors are intentionally v1: a full tagged asset
 library/import-settings workflow,
 automatic component-schema/scene-data migration, generalized runtime component
 composition, advanced Tiled atlas
-metadata/image-collection editing, batch light editing, and
+metadata/image-collection editing, and
 cubemap/lightmap authoring still need depth.
 
 ## Workbench Status
@@ -1260,8 +1361,9 @@ These gaps are current documentation, not a plan commitment:
   descendant overrides (VSCN v7 instances override transform, name,
   visibility, and metadata only), multiple simultaneous 3D viewports,
   GPU-accelerated lightmap baking (the CPU path tracer is the only baker),
-  visual terrain/water/navmesh authoring (these stay metadata-driven
-  conventions games consume), automatic unattended schema migration (the
+  visual water/navmesh authoring and advanced terrain splat/LOD/hole tools
+  (these stay runtime or metadata-driven conventions games consume), automatic
+  unattended schema migration (the
   assistant remains explicitly confirmed per run), and generalized runtime
   components beyond the typed-metadata conventions.
 - The Ashfall recreation's test arena intentionally stays code-built
