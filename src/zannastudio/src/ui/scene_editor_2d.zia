@@ -17,6 +17,8 @@
 //     jumping rows runs ordinary undo operations and keeps redo available.
 //   - Compact windows cycle objects, canvas/palette, and inspector at full
 //     width; no authoring surface becomes an inaccessible sliver.
+//   - Standard desktop lanes keep Objects docked beside a canvas-first split;
+//     smaller lanes collapse hierarchy context before starving the canvas.
 //   - Progressive command bars keep Select/Paint/Erase, the active canvas
 //     context, and Game View direct; complete document, shape, sampling,
 //     object, overlay, and layout commands remain reachable through truthful
@@ -203,7 +205,7 @@ final COMPACT_SCENE_2D_PALETTE_HEIGHT: Number = 520.0;
 // Three persistent columns need enough room for readable object names, a
 // useful canvas, and an inspector that does not collapse every field. Below
 // this width the hierarchy remains one click away as a full-width master.
-final HIERARCHY_PANE_MIN_WIDTH_2D: Number = 1400.0;
+final HIERARCHY_PANE_MIN_WIDTH_2D: Number = 1200.0;
 final CANVAS_MARQUEE_COLOR: Integer = 0x70BEFF;
 final TILE_RECTANGLE_COLOR: Integer = 0xFFC86B;
 final TILE_GHOST_OPACITY: Number = 0.58;
@@ -1588,8 +1590,8 @@ class SceneEditor2D {
             selectedCellX = -1;
             selectedCellY = -1;
             if tileSpinner != null { tileSpinner.SetValue(1.0); }
-            if bodySplit != null { bodySplit.SetPosition(0.66); }
-            if hierarchySplit != null { hierarchySplit.SetPosition(0.20); }
+            if bodySplit != null { bodySplit.SetPosition(0.72); }
+            if hierarchySplit != null { hierarchySplit.SetPosition(0.18); }
             if canvasSplit != null { canvasSplit.SetPosition(0.72); }
             pendingCanvasScrollX = 0.0;
             pendingCanvasScrollY = 0.0;

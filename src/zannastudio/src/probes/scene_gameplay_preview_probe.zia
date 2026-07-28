@@ -15,11 +15,15 @@
 //     runtime path with production images, waves, and one-frame depth state.
 //   - Project recipes can create runtime-discriminated gameplay nodes directly.
 //   - The real project's portable post-FX chain is retained on the viewport.
-//   - Finalized pixels retain Ashfall's pale high-key visual envelope.
+//   - Runtime-selected Ashfall surface maps/PBR/emissive state replace pale
+//     placeholders during draw while canonical materials remain untouched.
+//   - Typed spawn archetypes instantiate the same project glTF enemy rigs and
+//     fixed presentation transforms used by the game, with ordered fallback.
 //   - Applying Gameplay View is read-only and survives prior navigation.
 //   - Game View removes navigator, gizmo, selection, and editor-light chrome.
 //   - Game View renders the exact 1600x900 project output inside neutral matte.
 //   - The actual shaded viewport remains capturable for visual comparison.
+//   - Center projection tolerates the one-pixel raster choice of odd viewports.
 // Ownership/Lifetime:
 //   - The probe owns one AppShell and ProjectManager until process exit.
 //   - It reads repository fixtures and writes only one temporary screenshot.
@@ -32,7 +36,9 @@
 //        docs/adr/0208-project-authored-game-output-frames.md,
 //        docs/adr/0209-project-component-creation-recipes.md,
 //        docs/adr/0212-additive-3d-environment-preview-layers.md,
-//        docs/adr/0213-runtime-backed-water-preview-layers.md
+//        docs/adr/0213-runtime-backed-water-preview-layers.md,
+//        docs/adr/0214-project-owned-3d-material-previews.md,
+//        docs/adr/0215-project-owned-direct-model-previews.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -50,6 +56,7 @@ bind File = Zanna.IO.File;
 bind Path = Zanna.IO.Path;
 bind TempFile = Zanna.IO.TempFile;
 bind Pixels = Zanna.Graphics.Pixels;
+bind Material3D = Zanna.Graphics3D.Material3D;
 bind Terminal = Zanna.Terminal;
 bind Env = Zanna.System.Environment;
 
@@ -68,6 +75,14 @@ func near(actual: Number, expected: Number) -> Boolean {
     var difference = actual - expected;
     if difference < 0.0 { difference = 0.0 - difference; }
     return difference < 0.000001;
+}
+
+func withinPixels(actual: Integer,
+                  expected: Integer,
+                  tolerance: Integer) -> Boolean {
+    var difference = actual - expected;
+    if difference < 0 { difference = 0 - difference; }
+    return difference <= tolerance;
 }
 
 func luminance(pixel: Integer) -> Integer {
@@ -220,14 +235,28 @@ func main() {
     }
     var enemyRecipe:
         scene_component_schema.SceneComponentDefinition = null;
+    var rangerPreview:
+        scene_component_schema.SceneNodePreview3DDefinition = null;
     if editor.componentSchema != null {
         enemyRecipe = editor.componentSchema.Find(
             "enemy-spawn", scene_component_schema.TARGET_3D_NODE);
+        var ruleIndex = 0;
+        while ruleIndex
+              < editor.componentSchema.nodePreviews3D.count() {
+            var candidate =
+                editor.componentSchema.nodePreviews3D.get(ruleIndex);
+            if candidate.matchProperty == "spawn.archetype"
+               and candidate.matchKind == "int"
+               and candidate.matchInteger == 3 {
+                rangerPreview = candidate;
+            }
+            ruleIndex = ruleIndex + 1;
+        }
     }
     if editor.componentSchema == null
        or editor.componentSchema.version
           != scene_component_schema
-              .RUNTIME_WATER_PREVIEW_3D_SCHEMA_VERSION
+              .DIRECT_MODEL_PREVIEW_3D_SCHEMA_VERSION
        or enemyRecipe == null
        or enemyRecipe.createNodeName != "Enemy Spawn"
        or enemyRecipe.FieldNamed("af.kind") == null
@@ -242,17 +271,106 @@ func main() {
               .environmentLayers.count() != 0
        or editor.componentSchema.scenePreview3D
               .waterLayers.count() != 1
+       or editor.componentSchema.nodePreviews3D.count() != 15
+       or editor.componentSchema.materialPreviews3D.count() != 10
+       or rangerPreview == null
+       or rangerPreview.prefab != "assets_src/enemies/ranger.gltf"
+       or near(rangerPreview.scale, 0.95) == false
+       or near(rangerPreview.yawDegrees, 180.0) == false
+       or near(rangerPreview.offsetX, 0.0) == false
+       or near(rangerPreview.offsetY, 0.0) == false
+       or near(rangerPreview.offsetZ, 0.0) == false
        or editor.componentSchema.scenePreview3D
               .EnvironmentPrefabForVariant(1)
           != "assets/editor-previews/environment-terrain-01.scene3d"
        or hasEnvironmentPreview == false
        or editor.projectWaterPreviews.count() != 0
        or editor.projectPreviewInstanceCount <= 0
+       or editor.projectPreviewDirectModelCount != 20
+       or editor.projectPreviewFallbackCount != 0
        or editor.projectPreviewMissingCount != 0
        or editor.projectPreviewClipped {
         fail(shell, project,
              "the runtime terrain did not become a bounded "
              + "scene environment preview");
+        return;
+    }
+
+    // Scene VSCN stores simple tint materials while runtime code selects
+    // TextureLib presentation from typed `surf` metadata. Schema-v16 closes
+    // that gap only in the synchronous render path.
+    var hullIndex = -1;
+    var accentIndex = -1;
+    var surfaceIndex = 0;
+    while surfaceIndex < editor.flatNodes.count() {
+        var surfaceNode = editor.flatNodes.get(surfaceIndex);
+        if surfaceNode.MetadataHas("surf")
+           and surfaceNode.MetadataKind("surf") == "int" {
+            var surfaceKind =
+                surfaceNode.MetadataGetInt("surf", -1);
+            if surfaceKind == 2 and hullIndex < 0 {
+                hullIndex = surfaceIndex;
+            }
+            if surfaceKind == 7 and accentIndex < 0 {
+                accentIndex = surfaceIndex;
+            }
+        }
+        surfaceIndex = surfaceIndex + 1;
+    }
+    var canonicalHullMaterial: Material3D = null;
+    var canonicalAccentMaterial: Material3D = null;
+    if hullIndex >= 0 {
+        canonicalHullMaterial =
+            editor.flatNodes.get(hullIndex).Material;
+    }
+    if accentIndex >= 0 {
+        canonicalAccentMaterial =
+            editor.flatNodes.get(accentIndex).Material;
+    }
+    var hullPreview =
+        editor.ProjectMaterialPreviewForNode(hullIndex);
+    var accentPreview =
+        editor.ProjectMaterialPreviewForNode(accentIndex);
+    if editor.projectMaterialPreviewCount != 64
+       or editor.projectMaterialPreviewMissingCount != 0
+       or hullIndex < 0 or accentIndex < 0
+       or canonicalHullMaterial == null
+       or canonicalAccentMaterial == null
+       or canonicalHullMaterial.HasTexture
+       or canonicalHullMaterial.HasNormalMap
+       or hullPreview == null
+       or hullPreview == canonicalHullMaterial
+       or hullPreview.HasTexture == false
+       or hullPreview.HasNormalMap == false
+       or hullPreview.TexturePixels == null
+       or hullPreview.TexturePixels.Width != 256
+       or hullPreview.TexturePixels.Height != 256
+       or near(hullPreview.Roughness, 0.6) == false
+       or near(hullPreview.Metallic, 0.5) == false
+       or hullPreview.HasEnvMap == false
+       or hullPreview.SsrEnabled == false
+       or accentPreview == null
+       or accentPreview == canonicalAccentMaterial
+       or accentPreview.HasTexture
+       or accentPreview.HasNormalMap
+       or near(accentPreview.Roughness, 0.85) == false
+       or near(accentPreview.Metallic, 0.05) == false
+       or near(accentPreview.EmissiveIntensity, 2.2) == false
+       or editor.flatNodes.get(hullIndex).Material
+          != canonicalHullMaterial
+       or editor.flatNodes.get(accentIndex).Material
+          != canonicalAccentMaterial
+       or sceneDoc.content != baseline
+       or sceneDoc.isModified {
+        fail(
+            shell,
+            project,
+            "typed Ashfall surface materials were not exact, "
+            + "transient runtime previews"
+            + " count=" + editor.projectMaterialPreviewCount
+            + "/64 missing="
+            + editor.projectMaterialPreviewMissingCount
+            + " hull/accent=" + hullIndex + "/" + accentIndex);
         return;
     }
 
@@ -400,9 +518,9 @@ func main() {
         editor.viewportPixels,
         editor.renderedViewportWidth,
         editor.renderedViewportHeight);
-    if meanLuma < 175.0 or meanLuma > 250.0 {
+    if meanLuma < 180.0 or meanLuma > 215.0 {
         fail(shell, project,
-             "finalized Ashfall viewport escaped its pale visual "
+             "finalized Ashfall viewport escaped its runtime-lit visual "
              + "envelope (mean luma " + meanLuma + ")");
         return;
     }
@@ -420,8 +538,8 @@ func main() {
        or near(forward.Y, 0.0) == false
        or near(forward.Z, -1.0) == false
        or projectedCenter.visible == false
-       or projectedCenter.x != expectedCenterX
-       or projectedCenter.y != expectedCenterY {
+       or withinPixels(projectedCenter.x, expectedCenterX, 1) == false
+       or withinPixels(projectedCenter.y, expectedCenterY, 1) == false {
         fail(shell, project,
              "gameplay camera diverged: eye="
              + eye.X + "," + eye.Y + "," + eye.Z
@@ -524,7 +642,7 @@ func main() {
        or editor.projectViewButton.IsEnabled()
        or editor.viewportModeButton.GetAccessibleName()
           != "3D viewport mode: Shaded"
-       or meanLuma < 175.0 or meanLuma > 250.0
+       or meanLuma < 180.0 or meanLuma > 215.0
        or sceneDoc.content != baseline
        or sceneDoc.isModified
        or editor.GetRevision() != baselineRevision
@@ -579,6 +697,9 @@ func main() {
         + " output=1600x900"
         + " frame=" + gameFrameWidth + "x" + gameFrameHeight
         + " previews=" + editor.projectPreviewInstanceCount
+        + " directModels=" + editor.projectPreviewDirectModelCount
+        + " fallbacks=" + editor.projectPreviewFallbackCount
+        + " materials=" + editor.projectMaterialPreviewCount
         + " postfx=" + editor.viewportRenderPostFX.EffectCount
         + " mean_luma=" + meanLuma
         + " screenshot=" + screenshotPath);
@@ -651,7 +772,7 @@ func main() {
     var waterCenter = editor.ProjectWorldPoint(-12.0, 0.28, -14.0);
     if editor.componentSchema.version
           != scene_component_schema
-              .RUNTIME_WATER_PREVIEW_3D_SCHEMA_VERSION
+              .DIRECT_MODEL_PREVIEW_3D_SCHEMA_VERSION
        or editor.componentSchema.scenePreview3D
               .environmentLayers.count() != 0
        or editor.componentSchema.scenePreview3D.waterLayers.count() != 1

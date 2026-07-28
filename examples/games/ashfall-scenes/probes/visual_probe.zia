@@ -10,6 +10,9 @@
 // Key invariants:
 //   - The authored level retains visible scene structure beyond its HUD overlay.
 //   - The probe runs the same deterministic scene on software and window GPU backends.
+//   - ZANNA_ASHFALL_VISUAL_LEVEL may select campaign level 1-9 without
+//     changing the default level-1 CTest contract.
+//   - A wrong working directory fails instead of measuring the recovery room.
 // Ownership/Lifetime:
 //   - The probe owns one Game and its captured Pixels object until process exit.
 // Links: ../game.zia, render_probe.zia, ../../ridgebound/smoke_probe.zia
@@ -24,6 +27,7 @@ bind Zanna.IO.Path as Path;
 bind Zanna.IO.TempFile as TempFile;
 bind Zanna.Math as Math;
 bind Zanna.System.Environment as Env;
+bind Zanna.String as Str;
 bind Zanna.Terminal as Terminal;
 bind Zanna.Text.Fmt as Fmt;
 bind "../config" as config;
@@ -37,14 +41,36 @@ func luminance(px: Integer) -> Integer {
     return (red(px) * 30 + green(px) * 59 + blue(px) * 11) / 100;
 }
 
+func selectedLevel() -> Integer {
+    var requested = Env.GetVariable("ZANNA_ASHFALL_VISUAL_LEVEL");
+    if requested == "2" { return config.LV_L2; }
+    if requested == "3" { return config.LV_L3; }
+    if requested == "4" { return config.LV_L4; }
+    if requested == "5" { return config.LV_L5; }
+    if requested == "6" { return config.LV_L6; }
+    if requested == "7" { return config.LV_L7; }
+    if requested == "8" { return config.LV_L8; }
+    if requested == "9" { return config.LV_L9; }
+    return config.LV_L1;
+}
+
 func start() {
     var g = new game.Game();
     g.initCore(0xA55F011);
     g.setScripted(true);
     g.setFullscreen(false);
     g.getSave().setupTransient();
-    g.setLevel(config.LV_L1);
+    var level = selectedLevel();
+    g.setLevel(level);
     g.boot(false, false);
+    var loadedLevelName = g.getLevelMgr().levelName();
+    if Str.StartsWith(loadedLevelName, "RECOVERY:") {
+        Terminal.Say(
+            "RESULT: fail authored scene was not found; run this probe "
+            + "from examples/games/ashfall-scenes");
+        g.getWorld().Destroy();
+        return;
+    }
     var canvas = g.getCanvas();
     G3D.Canvas3D.SetVSync(canvas, false);
     g.getWorld().OnResize(640, 360);
@@ -80,7 +106,11 @@ func start() {
         g.getWorld().Destroy();
         return;
     }
-    var outputPath = Path.Join(TempFile.Dir(), "ashfall_visual.png");
+    var outputName = "ashfall_visual.png";
+    if Env.GetVariable("ZANNA_ASHFALL_VISUAL_LEVEL") != "" {
+        outputName = "ashfall_visual_level_" + toString(level) + ".png";
+    }
+    var outputPath = Path.Join(TempFile.Dir(), outputName);
     if Pixels.SavePng(frame, outputPath) != 1 {
         Terminal.Say("RESULT: fail Ashfall screenshot write path=" + outputPath);
         g.getWorld().Destroy();
@@ -114,7 +144,8 @@ func start() {
     }
     var meanLuma = (sumLuma + 0.0) / (samples + 0.0);
     var litPercent = (litSamples + 0.0) * 100.0 / (samples + 0.0);
-    Terminal.Say("METRIC: backend=" + canvas.Backend +
+    Terminal.Say("METRIC: level=" + toString(level) +
+                 " backend=" + canvas.Backend +
                  " size=" + toString(width) + "x" + toString(height) +
                  " mean_luma=" + Fmt.NumFixed(meanLuma, 3) +
                  " range=" + toString(minLuma) + ".." + toString(maxLuma) +

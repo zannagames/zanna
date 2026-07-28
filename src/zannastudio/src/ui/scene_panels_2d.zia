@@ -19,6 +19,8 @@
 //     the editor owns state synchronization and command dispatch.
 //   - Progressive disclosure is stable across widths: wider lanes enlarge the
 //     canvas instead of repopulating the chrome with secondary commands.
+//   - Desktop defaults bound both supporting panes so the canvas is wider than
+//     the Objects pane and Inspector without overriding persisted dividers.
 //   - One compact Scene-topic dropdown owns mutually exclusive complete
 //     scene-wide inspector groups; the controller owns its live visibility.
 // Ownership/Lifetime:
@@ -281,7 +283,7 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
         // canvas instead of an inspector slot.
         editor.hierarchySplit = GUI.SplitPane.New(editor.root, 1);
         editor.hierarchySplit.SetFlex(1.0);
-        editor.hierarchySplit.SetPosition(0.20);
+        editor.hierarchySplit.SetPosition(0.18);
         editor.hierarchySplit.SetMinFirst(220.0);
         editor.hierarchySplit.SetMinSecond(520.0);
 
@@ -294,7 +296,7 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
 
         editor.bodySplit = GUI.SplitPane.New(editor.hierarchySplit.Second, 1);
         editor.bodySplit.SetFlex(1.0);
-        editor.bodySplit.SetPosition(0.66);
+        editor.bodySplit.SetPosition(0.72);
         editor.bodySplit.SetMinFirst(280.0);
         editor.bodySplit.SetMinSecond(300.0);
 
@@ -409,7 +411,7 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
             editor.inspectorScroll,
             editor.bodySplit,
             2,
-            0.66,
+            0.72,
             "Inspector",
             inspectorTabRow);
         editor.paletteDock.Setup(
@@ -576,7 +578,7 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
             editor.objectPaneBox,
             editor.hierarchySplit,
             1,
-            0.20,
+            0.18,
             "Objects",
             hierarchySearchRow);
         editor.hierarchySearchInput = GUI.TextInput.New(hierarchySearchRow);

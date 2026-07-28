@@ -843,6 +843,28 @@ production water image, concrete normal map, dimensions, and two game wave
 records. See
 [scene-components.md](scene-components.md#version-15-runtime-backed-3d-water-layers).
 
+Schema version 16 can map exact Boolean, integer, or string node metadata to a
+render-only material overlay. A rule can add project-relative albedo, normal,
+metallic-roughness, ambient-occlusion, and emissive maps; bounded PBR values;
+fixed or scene-root-mapped emissive color; project-environment reflection; and
+SSR intent. Studio clones the canonical material, preserves its tint and every
+unspecified field, uses the clone only during the synchronous shaded draw, and
+restores the original material reference immediately afterward. Missing or
+invalid resources omit the complete node overlay and publish status rather
+than showing a partial material. See
+[scene-components.md](scene-components.md#version-16-project-owned-3d-material-previews).
+
+Schema version 17 extends node previews to exact Boolean, integer, or string
+matches and direct project `.gltf`, `.glb`, `.fbx`, `.obj`, and `.stl` assets.
+Optional bounded scale, Y yaw, and XYZ offsets correct imported-model
+coordinates without moving the canonical marker. Studio tries matching rules
+in declaration order until one asset loads, so an optional production model can
+precede a broader procedural `.scene3d` fallback. The successful rule alone
+owns the live transform, while direct-model, fallback, and missing counts keep
+viewport status honest. The loaded graph remains transient and preserves scene
+bytes, dirty state, revision, selection identity, and history. See
+[scene-components.md](scene-components.md#version-17-direct-model-node-previews).
+
 Schema version 10 can add a portable post-processing recipe to that same
 profile. Complete tonemap, bloom, color-grade, and vignette groups plus optional
 FXAA are validated against runtime bounds and applied in a fixed order to

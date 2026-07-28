@@ -10,11 +10,16 @@
 // Key invariants:
 //   - Frames come from a production AppShell through the normal build,
 //     activate, poll, and render path; no surface is staged for the camera.
+//   - Scene captures adopt the owning project and its normal scene workspace
+//     presentation, so project previews and available authoring width are real.
+//   - The 3D frame enables the same accelerated offscreen viewport as Studio's
+//     production shell instead of silently measuring the software fallback.
 //   - Each capture owns a fresh shell so no shot inherits another's state.
 //   - The probe only reads project files; it never writes into the workspace.
 // Ownership/Lifetime:
-//   - Each capture owns one AppShell and one TestHarness and releases both
-//     before returning, whether or not the capture succeeded.
+//   - Each scene capture owns one AppShell, ProjectManager, and TestHarness;
+//     each code capture owns one AppShell and TestHarness. Every owned value is
+//     released before returning, whether or not the capture succeeded.
 // Links: zannastudio/src/probes/smoke_probe.zia,
 //        zannastudio/src/probes/scene_shaded_viewport_probe.zia,
 //        zannaweb/README.md
@@ -39,9 +44,11 @@ module web_shot_probe;
 // ============================================================================
 
 bind "../core/document_manager";
+bind "../core/project_manager";
 bind "../editor/editor_engine";
 bind "../editor/editor_tabs";
 bind "../services/file_utils";
+bind "../services/project_locator";
 bind "../ui/app_shell";
 bind "../ui/scene_editor_2d";
 bind "../ui/scene_editor_3d";
@@ -68,6 +75,21 @@ func EnvText(name: String, fallback: String) -> String {
 }
 
 func Alpha(px: Integer) -> Integer { return Math.Bits.And(px, 0xFF); }
+
+/// @brief Open the nearest project that owns a scene capture.
+/// @return A live project manager, or null when no owning project can open.
+func OpenOwningProject(scenePath: String) ->
+        project_manager.ProjectManager {
+    var root = project_locator.NearestManifestRoot(scenePath);
+    if root == "" { return null; }
+    var project = new project_manager.ProjectManager();
+    project.Setup(null);
+    if project.OpenFolder(root) == false {
+        project.CloseProject();
+        return null;
+    }
+    return project;
+}
 
 /// @brief Save a capture, reporting the opaque coverage that proves it is real.
 /// @return True when the frame was populated and written.
@@ -124,27 +146,36 @@ func Shoot3D(width: Integer, height: Integer, outDir: String, scenePath: String)
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio", width, height);
     shell.Activate();
+    shell.SetSceneWorkspaceMode(true);
+
+    var project = OpenOwningProject(scenePath);
+    if project == null {
+        Terminal.Say("FAIL scene3d could not open owning project for "
+                     + scenePath);
+        shell.Destroy();
+        return;
+    }
 
     var editor = new scene_editor_3d.SceneEditor3D();
     scene_panels_3d.Build(editor, shell.workbench.scene3DHost, shell.app);
+    editor.SetViewportAcceleration(true);
+    editor.SetWorkspaceContext(project);
 
     var documents = new document_manager.DocumentManager();
     var doc = documents.OpenFile(scenePath);
     if doc == null {
         Terminal.Say("FAIL scene3d could not open " + scenePath);
+        project.CloseProject();
         shell.Destroy();
         return;
     }
 
     shell.SelectSurface(file_utils.DOC_KIND_SCENE_3D);
+    shell.SetBreadcrumbPath(scenePath);
     editor.Activate(doc);
     editor.Pump(doc);
     shell.Poll();
     shell.Render();
-
-    // Frame the authored geometry, which is what an author actually looks at
-    // rather than the default empty-camera view.
-    editor.FrameAll();
     editor.Pump(doc);
     shell.Poll();
     shell.Render();
@@ -157,12 +188,14 @@ func Shoot3D(width: Integer, height: Integer, outDir: String, scenePath: String)
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         Terminal.Say("FAIL scene3d harness binding");
+        project.CloseProject();
         shell.Destroy();
         return;
     }
     harness.RenderFrame(16.0);
     Emit(harness, width, height, outDir + "/studio-scene3d.png", "scene3d");
     harness.UnbindApp();
+    project.CloseProject();
     shell.Destroy();
 }
 
@@ -171,19 +204,31 @@ func Shoot2D(width: Integer, height: Integer, outDir: String, scenePath: String)
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio", width, height);
     shell.Activate();
+    shell.SetSceneWorkspaceMode(true);
+
+    var project = OpenOwningProject(scenePath);
+    if project == null {
+        Terminal.Say("FAIL scene2d could not open owning project for "
+                     + scenePath);
+        shell.Destroy();
+        return;
+    }
 
     var editor = new scene_editor_2d.SceneEditor2D();
     scene_panels_2d.Build(editor, shell.workbench.scene2DHost, shell.app);
+    editor.SetWorkspaceContext(project);
 
     var documents = new document_manager.DocumentManager();
     var doc = documents.OpenFile(scenePath);
     if doc == null {
         Terminal.Say("FAIL scene2d could not open " + scenePath);
+        project.CloseProject();
         shell.Destroy();
         return;
     }
 
     shell.SelectSurface(file_utils.DOC_KIND_SCENE_2D);
+    shell.SetBreadcrumbPath(scenePath);
     editor.Activate(doc);
     editor.Pump(doc);
     shell.Poll();
@@ -200,12 +245,14 @@ func Shoot2D(width: Integer, height: Integer, outDir: String, scenePath: String)
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         Terminal.Say("FAIL scene2d harness binding");
+        project.CloseProject();
         shell.Destroy();
         return;
     }
     harness.RenderFrame(16.0);
     Emit(harness, width, height, outDir + "/studio-scene2d.png", "scene2d");
     harness.UnbindApp();
+    project.CloseProject();
     shell.Destroy();
 }
 

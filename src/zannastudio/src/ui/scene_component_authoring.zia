@@ -13,7 +13,8 @@
 //   - Version inference recognizes object, 2D scene, 3D scene, node,
 //     sky/light, lens/atmosphere, environment, post-FX, 2D object draw stack,
 //     game-output, component-creation, additive 3D environment-layer, and
-//     runtime-backed water-layer extensions before replacing unrelated fields.
+//     runtime-backed water-layer, typed 3D material-preview, and typed direct
+//     model node-preview extensions before replacing unrelated fields.
 //   - Existing files are replaced through expected-metadata workspace edits;
 //     new files use a no-overwrite same-directory atomic create.
 //   - Bounded file snapshots make each accepted edit exactly undoable/redoable.
@@ -32,7 +33,9 @@
 //        docs/adr/0208-project-authored-game-output-frames.md,
 //        docs/adr/0209-project-component-creation-recipes.md,
 //        docs/adr/0212-additive-3d-environment-preview-layers.md,
-//        docs/adr/0213-runtime-backed-water-preview-layers.md
+//        docs/adr/0213-runtime-backed-water-preview-layers.md,
+//        docs/adr/0214-project-owned-3d-material-previews.md,
+//        docs/adr/0215-project-owned-direct-model-previews.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -769,7 +772,20 @@ func SyncSchemaVersion(root: Any) {
     if Map.Has(root, "nodePreviews3D") {
         var nodeVersion =
             scene_component_schema.NODE_PREVIEW_3D_SCHEMA_VERSION;
+        if NodePreviewsRequireDirectModels(
+               Map.Get(root, "nodePreviews3D")) {
+            nodeVersion =
+                scene_component_schema
+                    .DIRECT_MODEL_PREVIEW_3D_SCHEMA_VERSION;
+        }
         if nodeVersion > required { required = nodeVersion; }
+    }
+    if Map.Has(root, "materialPreviews3D") {
+        var materialPreviewVersion =
+            scene_component_schema.MATERIAL_PREVIEW_3D_SCHEMA_VERSION;
+        if materialPreviewVersion > required {
+            required = materialPreviewVersion;
+        }
     }
     if Map.Has(root, "scenePreview3D") {
         var scenePreviewVersion =
@@ -855,6 +871,65 @@ func SyncSchemaVersion(root: Any) {
         }
     }
     Map.SetInt(root, "version", required);
+}
+
+/// @brief Return whether node-preview content requires schema version 17.
+func NodePreviewsRequireDirectModels(raw: Any) -> Boolean {
+    if raw == null or Json.TypeOf(raw) != "array" { return false; }
+    var index = 0;
+    while index < Seq.get_Count(raw) {
+        var preview = Seq.Get(raw, index);
+        index = index + 1;
+        if preview == null or Json.TypeOf(preview) != "object" {
+            continue;
+        }
+        if Map.Has(preview, "matchValue")
+           and Json.TypeOf(Map.Get(preview, "matchValue")) != "string" {
+            return true;
+        }
+        if Map.Has(preview, "scale")
+           or Map.Has(preview, "yawDegrees")
+           or Map.Has(preview, "offsetX")
+           or Map.Has(preview, "offsetY")
+           or Map.Has(preview, "offsetZ") {
+            return true;
+        }
+        if Map.Has(preview, "prefab") {
+            var prefab = Map.Get(preview, "prefab");
+            if prefab != null and Json.TypeOf(prefab) == "string"
+               and DirectModelPreviewPath(
+                   Map.GetStr(preview, "prefab")) {
+                return true;
+            }
+        }
+        if Map.Has(preview, "variantPrefabs") {
+            var variants = Map.Get(preview, "variantPrefabs");
+            if variants != null and Json.TypeOf(variants) == "array" {
+                var variantIndex = 0;
+                while variantIndex < Seq.get_Count(variants) {
+                    var variant = Seq.Get(variants, variantIndex);
+                    if variant != null
+                       and Json.TypeOf(variant) == "string"
+                       and DirectModelPreviewPath(
+                           Seq.GetStr(variants, variantIndex)) {
+                        return true;
+                    }
+                    variantIndex = variantIndex + 1;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+/// @brief Identify a public SceneAsset model extension, excluding VSCN scenes.
+func DirectModelPreviewPath(path: String) -> Boolean {
+    var folded = Str.ToLower(Str.Trim(path));
+    return Str.EndsWith(folded, ".gltf")
+        or Str.EndsWith(folded, ".glb")
+        or Str.EndsWith(folded, ".fbx")
+        or Str.EndsWith(folded, ".obj")
+        or Str.EndsWith(folded, ".stl");
 }
 
 /// @brief Return whether one raw scene profile requires schema version 15.

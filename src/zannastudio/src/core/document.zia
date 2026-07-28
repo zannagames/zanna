@@ -16,6 +16,8 @@
 //     output frame is active without entering canonical document content.
 //   - Scene-inspector topic selection follows its document like camera, split,
 //     scroll, and tool state; it never enters scene content.
+//   - New scene tabs start with compact supporting panes and a dominant
+//     canvas/viewport; restored tabs retain their own divider choices.
 // Ownership/Lifetime:
 //   - DocumentManager owns instances for the lifetime of their editor tabs.
 // Links: zannastudio/src/core/document_manager.zia,
@@ -109,8 +111,8 @@ class Scene2DWorkspaceState {
         selectedCellX = -1;
         selectedCellY = -1;
         tileId = 1;
-        splitPosition = 0.66;
-        hierarchySplitPosition = 0.20;
+        splitPosition = 0.72;
+        hierarchySplitPosition = 0.18;
         canvasSplitPosition = 0.72;
         canvasScrollX = 0.0;
         canvasScrollY = 0.0;
@@ -226,8 +228,8 @@ class Scene3DWorkspaceState {
         gameplayEyeX = 0.0;
         gameplayEyeY = 0.0;
         gameplayEyeZ = 0.0;
-        splitPosition = 0.62;
-        hierarchySplitPosition = 0.22;
+        splitPosition = 0.70;
+        hierarchySplitPosition = 0.18;
         inspectorScrollY = 0.0;
         inspectorSceneSection = 0;
         inspectorRequestedVisible = true;

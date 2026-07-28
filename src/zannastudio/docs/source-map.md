@@ -936,14 +936,15 @@ before either controller can reconstruct selected 2D objects or 3D subtrees.
 ### `ui/scene_component_schema.zia`
 
 Document-independent, fail-closed loader for project-root
-`scene-components.json`. It validates versions 1 through 15, target,
+`scene-components.json`. It validates versions 1 through 16, target,
 identifiers, limits, scalar kinds, exact defaults, asset/object/node preview
 conventions, 3D gameplay-view profiles, scene environments and portable
 post-processing, 2D scene backgrounds, object draw-stack rules, and paired
 project output dimensions plus target-compatible component creation recipes
 and independently matched metadata-transformed 3D environment layers plus
-runtime-water construction inputs into value-only records. It does not own
-widgets, scenes, project state, or document mutation.
+runtime-water construction inputs and typed metadata-selected PBR material
+overlays into value-only records. It does not own widgets, scenes, project
+state, or document mutation.
 
 ### `ui/scene_component_authoring.zia`
 
@@ -1083,6 +1084,11 @@ environment layers that transform ordinary project prefabs from exact typed
 root metadata, schema-v15 bounded runtime `Water3D` construction with exact
 typed dimensions/images/waves and 30 Hz animation, one explicit composition
 frame shared by canonical geometry, project prefabs, and procedural water,
+schema-v16 typed node-metadata material overlays with bounded project maps,
+PBR/emissive/environment state, synchronous clone substitution, and immediate
+canonical-material restoration, schema-v17 exact typed node-preview matching,
+direct project model loading, bounded fixed transforms, and ordered
+successful-load fallback with exact successful-rule retention,
 atomic multi-node
 component application, selection-free schema-v13 gameplay-node creation at the
 viewport target with all metadata staged before one commit, and a per-document
@@ -1436,10 +1442,14 @@ Important probe groups:
   across native control realization.
 - `scene_gameplay_preview_probe.zia`: real Ashfall project loading, exact
   gameplay eye/FOV retention across responsive dock changes, schema-v9 terrain
-  composition, schema-v15 exact runtime `Water3D` dimensions, production image
-  inputs, two wave records, bounded animation pixel changes, and one-frame
+  composition, schema-v16 typed surface selection with exact production
+  maps/PBR/emissive/environment state and canonical-material restoration,
+  schema-v17 direct enemy-rig loading with exact typed archetypes,
+  project paths/transforms, and truthful direct/fallback counts,
+  schema-v15 exact runtime `Water3D` dimensions, production image inputs, two
+  wave records, bounded animation pixel changes, and one-frame
   canonical/preview/water draw accounting, schema-v10 retained five-pass
-  post-FX and finalized high-key luminance, schema-v13 direct spawn creation at the viewport target
+  post-FX and finalized runtime-lit high-key luminance, schema-v13 direct spawn creation at the viewport target
   with exact runtime metadata, immediate prefab preview, and byte-exact
   one-step undo/redo, schema-v12 1600-by-900 render-target
   framing/matte/camera lock and restoration, explicit Gameplay View recovery,

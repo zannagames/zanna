@@ -14,6 +14,8 @@
 //   - Tiny scenes fit above 400%, canvases center, and strokes commit once.
 //   - Large worlds first open at native art scale around the authored start.
 //   - Compact windows wrap actions and show canvas or inspector at full width.
+//   - Standard desktop windows expose three balanced panes with the canvas
+//     wider than either supporting pane.
 //   - Scene metadata, object metadata, typed-property duplication,
 //     transactional batch property edits, precision nudging, selection
 //     arrangement, reusable project components, retained hierarchy, and draw
@@ -223,8 +225,8 @@ func main() {
        or scene_editor_2d.UsesCompactChrome(640.01)
        or scene_editor_2d.UsesCompactPaletteLayout(520.0) == false
        or scene_editor_2d.UsesCompactPaletteLayout(520.01)
-       or scene_editor_2d.UsesDockedHierarchy(1399.99)
-       or scene_editor_2d.UsesDockedHierarchy(1400.0) == false
+       or scene_editor_2d.UsesDockedHierarchy(1199.99)
+       or scene_editor_2d.UsesDockedHierarchy(1200.0) == false
        or scene_editor_2d.UsesDockedHierarchy(0.0) {
         fail(shell, "2D viewport-priority thresholds were unstable");
         return;
@@ -522,6 +524,42 @@ func main() {
         fail(shell, "viewport-safe 2D split did not restore after resize");
         return;
     }
+
+    // A normal 1440-pixel Studio window must already be the productive
+    // three-pane workbench. Waiting for an unusually wide monitor hides
+    // hierarchy context, while proportional side panes can quietly consume
+    // most of the canvas.
+    shell.app.SetWindowSize(1440, 900);
+    shell.SetSceneWorkspaceMode(true);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    var desktopRootWidth2D = editor.root.GetScreenWidth();
+    var desktopHierarchyWidth2D = editor.objectPaneBox.GetScreenWidth();
+    var desktopCanvasWidth2D = editor.canvasScroll.GetScreenWidth();
+    var desktopInspectorWidth2D = editor.inspectorScroll.GetScreenWidth();
+    if editor.hierarchySplit.GetCollapsedSide() != 0
+       or editor.objectPaneBox.IsVisible() == false
+       or desktopHierarchyWidth2D < 210.0
+       or desktopHierarchyWidth2D > desktopRootWidth2D * 0.24
+       or desktopInspectorWidth2D < 280.0
+       or desktopInspectorWidth2D > desktopRootWidth2D * 0.30
+       or desktopCanvasWidth2D < desktopRootWidth2D * 0.45
+       or desktopCanvasWidth2D <= desktopInspectorWidth2D {
+        fail(shell, "desktop 2D workbench was not canvas-first: root="
+             + desktopRootWidth2D + " objects=" + desktopHierarchyWidth2D
+             + " canvas=" + desktopCanvasWidth2D
+             + " inspector=" + desktopInspectorWidth2D
+             + " hierarchy-side="
+             + editor.hierarchySplit.GetCollapsedSide());
+        return;
+    }
+    shell.SetSceneWorkspaceMode(false);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
     editor.canvasSplit.SetPosition(0.61);
     var expectedPaletteSplitPosition = editor.canvasSplit.GetPosition();
 
@@ -652,7 +690,7 @@ func main() {
           != scene_editor_2d.SCENE_INSPECTOR_SETUP
        or editor.CanUndo()
        or editor.compactInspectorShown
-       or near(editor.bodySplit.GetPosition(), 0.66) == false {
+       or near(editor.bodySplit.GetPosition(), 0.72) == false {
         fail(shell, "new 2D tab inherited another scene's workspace or history");
         return;
     }

@@ -1,5 +1,5 @@
 {
-  "version": 15,
+  "version": 17,
   "components": [
     {
       "name": "enemy-spawn",
@@ -22,7 +22,15 @@
             "2",
             "3",
             "4",
-            "5"
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            "10",
+            "11",
+            "12",
+            "13"
           ],
           "default": "0"
         },
@@ -273,6 +281,134 @@
       ]
     }
   ],
+  "materialPreviews3D": [
+    {
+      "matchProperty": "surf",
+      "matchValue": 0,
+      "albedoMap": "assets/editor-previews/surface-00-albedo.png",
+      "normalMap": "assets/editor-previews/surface-00-normal.png",
+      "roughness": 0.85,
+      "metallic": 0.05,
+      "emissiveR": 0.02,
+      "emissiveG": 0.024,
+      "emissiveB": 0.026,
+      "emissiveIntensity": 1.0
+    },
+    {
+      "matchProperty": "surf",
+      "matchValue": 1,
+      "albedoMap": "assets/editor-previews/surface-01-albedo.png",
+      "normalMap": "assets/editor-previews/surface-01-normal.png",
+      "roughness": 0.55,
+      "metallic": 0.55,
+      "emissiveR": 0.02,
+      "emissiveG": 0.024,
+      "emissiveB": 0.026,
+      "emissiveIntensity": 1.0,
+      "useProjectEnvironment": true,
+      "ssrEnabled": true
+    },
+    {
+      "matchProperty": "surf",
+      "matchValue": 2,
+      "albedoMap": "assets/editor-previews/surface-02-albedo.png",
+      "normalMap": "assets/editor-previews/surface-02-normal.png",
+      "roughness": 0.6,
+      "metallic": 0.5,
+      "emissiveR": 0.02,
+      "emissiveG": 0.024,
+      "emissiveB": 0.026,
+      "emissiveIntensity": 1.0,
+      "useProjectEnvironment": true,
+      "ssrEnabled": true
+    },
+    {
+      "matchProperty": "surf",
+      "matchValue": 3,
+      "albedoMap": "assets/editor-previews/surface-03-albedo.png",
+      "normalMap": "assets/editor-previews/surface-03-normal.png",
+      "roughness": 0.95,
+      "metallic": 0.0,
+      "emissiveR": 0.02,
+      "emissiveG": 0.024,
+      "emissiveB": 0.026,
+      "emissiveIntensity": 1.0
+    },
+    {
+      "matchProperty": "surf",
+      "matchValue": 4,
+      "albedoMap": "assets/editor-previews/surface-04-albedo.png",
+      "normalMap": "assets/editor-previews/surface-04-normal.png",
+      "roughness": 0.9,
+      "metallic": 0.0,
+      "emissiveR": 0.02,
+      "emissiveG": 0.024,
+      "emissiveB": 0.026,
+      "emissiveIntensity": 1.0
+    },
+    {
+      "matchProperty": "surf",
+      "matchValue": 5,
+      "albedoMap": "assets/editor-previews/surface-05-albedo.png",
+      "normalMap": "assets/editor-previews/surface-05-normal.png",
+      "roughness": 0.5,
+      "metallic": 0.6,
+      "emissiveR": 0.02,
+      "emissiveG": 0.024,
+      "emissiveB": 0.026,
+      "emissiveIntensity": 1.0,
+      "useProjectEnvironment": true,
+      "ssrEnabled": true
+    },
+    {
+      "matchProperty": "surf",
+      "matchValue": 6,
+      "albedoMap": "assets/editor-previews/surface-06-albedo.png",
+      "normalMap": "assets/editor-previews/surface-06-normal.png",
+      "roughness": 0.7,
+      "metallic": 0.2,
+      "emissiveR": 0.02,
+      "emissiveG": 0.024,
+      "emissiveB": 0.026,
+      "emissiveIntensity": 1.0
+    },
+    {
+      "matchProperty": "surf",
+      "matchValue": 7,
+      "roughness": 0.85,
+      "metallic": 0.05,
+      "emissiveRProperty": "lenv.accR",
+      "emissiveGProperty": "lenv.accG",
+      "emissiveBProperty": "lenv.accB",
+      "emissiveIntensity": 2.2
+    },
+    {
+      "matchProperty": "surf",
+      "matchValue": 8,
+      "albedoMap": "assets/editor-previews/surface-08-albedo.png",
+      "normalMap": "assets/editor-previews/surface-08-normal.png",
+      "emissiveMap": "assets/editor-previews/surface-08-albedo.png",
+      "roughness": 0.85,
+      "metallic": 0.05,
+      "emissiveRProperty": "lenv.accR",
+      "emissiveGProperty": "lenv.accG",
+      "emissiveBProperty": "lenv.accB",
+      "emissiveIntensity": 1.6
+    },
+    {
+      "matchProperty": "surf",
+      "matchValue": 9,
+      "albedoMap": "assets/editor-previews/surface-09-albedo.png",
+      "normalMap": "assets/editor-previews/surface-09-normal.png",
+      "roughness": 0.9,
+      "metallic": 0.0,
+      "emissiveRProperty": "lenv.accR",
+      "emissiveGProperty": "lenv.accG",
+      "emissiveBProperty": "lenv.accB",
+      "emissiveMultiplier": 0.5,
+      "emissiveIntensity": 0.8
+    }
+  ],
   "scenePreview3D": {
     "outputWidth": 1600,
     "outputHeight": 900,
@@ -414,6 +550,93 @@
       "yawProperty": "prop.yaw",
       "yawUnit": "radians",
       "scaleProperty": "prop.scale"
+    },
+    {
+      "matchProperty": "spawn.archetype",
+      "matchValue": 0,
+      "prefab": "assets_src/enemies/husk.gltf",
+      "scale": 0.85,
+      "yawDegrees": 180.0
+    },
+    {
+      "matchProperty": "spawn.archetype",
+      "matchValue": 1,
+      "prefab": "assets_src/enemies/sapper.gltf",
+      "scale": 0.7,
+      "yawDegrees": 180.0
+    },
+    {
+      "matchProperty": "spawn.archetype",
+      "matchValue": 2,
+      "prefab": "assets_src/enemies/drone.gltf",
+      "scale": 0.55,
+      "yawDegrees": 180.0,
+      "offsetY": 4.2
+    },
+    {
+      "matchProperty": "spawn.archetype",
+      "matchValue": 3,
+      "prefab": "assets_src/enemies/ranger.gltf",
+      "scale": 0.95,
+      "yawDegrees": 180.0
+    },
+    {
+      "matchProperty": "spawn.archetype",
+      "matchValue": 4,
+      "prefab": "assets_src/enemies/marauder.gltf",
+      "scale": 1.15,
+      "yawDegrees": 180.0
+    },
+    {
+      "matchProperty": "spawn.archetype",
+      "matchValue": 5,
+      "prefab": "assets_src/enemies/vanguard.gltf",
+      "scale": 1.0,
+      "yawDegrees": 180.0
+    },
+    {
+      "matchProperty": "spawn.archetype",
+      "matchValue": 6,
+      "prefab": "assets_src/enemies/stalker.gltf",
+      "scale": 0.6,
+      "yawDegrees": 180.0
+    },
+    {
+      "matchProperty": "spawn.archetype",
+      "matchValue": 7,
+      "prefab": "assets_src/enemies/wraith.gltf",
+      "scale": 0.9,
+      "yawDegrees": 180.0
+    },
+    {
+      "matchProperty": "spawn.archetype",
+      "matchValue": 9,
+      "prefab": "assets_src/enemies/sapper.gltf",
+      "scale": 0.28,
+      "yawDegrees": 180.0
+    },
+    {
+      "matchProperty": "spawn.archetype",
+      "matchValue": 10,
+      "prefab": "assets_src/enemies/shrike.gltf",
+      "scale": 0.8,
+      "yawDegrees": 180.0,
+      "offsetY": 5.5
+    },
+    {
+      "matchProperty": "spawn.archetype",
+      "matchValue": 11,
+      "prefab": "assets_src/enemies/marauder.gltf",
+      "scale": 2.3,
+      "yawDegrees": 180.0
+    },
+    {
+      "matchProperty": "spawn.archetype",
+      "matchValue": 12,
+      "prefab": "assets_src/enemies/shrike_prime.gltf",
+      "scale": 1.6,
+      "yawDegrees": 180.0,
+      "offsetY": 7.0
     },
     {
       "matchProperty": "af.kind",

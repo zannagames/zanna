@@ -17,7 +17,9 @@
 //     environment prefabs, version-10 post-FX chains, version-11 2D object
 //     draw stacks, version-12 game-output frames, version-13 direct component
 //     creation recipes, version-14 additive 3D environment layers, and
-//     version-15 runtime-backed water layers are bounded and fail closed.
+//     version-15 runtime-backed water layers, version-16 typed 3D material
+//     previews, and version-17 direct model-asset node previews are bounded
+//     and fail closed.
 //   - Limits are below the backing 2D/3D scene metadata limits.
 // Ownership/Lifetime: Returned schemas own value-only component/field records.
 // Links: zannastudio/src/ui/scene_component_authoring.zia,
@@ -37,7 +39,9 @@
 //        docs/adr/0208-project-authored-game-output-frames.md,
 //        docs/adr/0209-project-component-creation-recipes.md,
 //        docs/adr/0212-additive-3d-environment-preview-layers.md,
-//        docs/adr/0213-runtime-backed-water-preview-layers.md
+//        docs/adr/0213-runtime-backed-water-preview-layers.md,
+//        docs/adr/0214-project-owned-3d-material-previews.md,
+//        docs/adr/0215-project-owned-direct-model-previews.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -56,7 +60,7 @@ bind Fmt = Zanna.Text.Fmt;
 
 final SCHEMA_FILE_NAME: String = "scene-components.json";
 final SCHEMA_VERSION: Integer = 1;
-final SCHEMA_VERSION_MAX: Integer = 15;
+final SCHEMA_VERSION_MAX: Integer = 17;
 final OBJECT_PREVIEW_SCHEMA_VERSION: Integer = 3;
 final SCENE_PREVIEW_3D_SCHEMA_VERSION: Integer = 4;
 final NODE_PREVIEW_3D_SCHEMA_VERSION: Integer = 5;
@@ -70,6 +74,8 @@ final GAME_VIEW_OUTPUT_SCHEMA_VERSION: Integer = 12;
 final COMPONENT_CREATION_SCHEMA_VERSION: Integer = 13;
 final ADDITIVE_ENVIRONMENT_LAYERS_SCHEMA_VERSION: Integer = 14;
 final RUNTIME_WATER_PREVIEW_3D_SCHEMA_VERSION: Integer = 15;
+final MATERIAL_PREVIEW_3D_SCHEMA_VERSION: Integer = 16;
+final DIRECT_MODEL_PREVIEW_3D_SCHEMA_VERSION: Integer = 17;
 final MAX_ENUM_CHOICES: Integer = 64;
 final MAX_ENUM_CHOICE_CHARS: Integer = 64;
 final MAX_ASSET_KINDS: Integer = 4;
@@ -100,6 +106,15 @@ final MAX_PREVIEW_AFTER_LAYER: Integer = 15;
 final MAX_NODE_PREVIEWS_3D: Integer = 128;
 final MAX_NODE_PREVIEW_VARIANTS: Integer = 256;
 final MAX_NODE_PREVIEW_PREFAB_CHARS: Integer = 1024;
+final MIN_NODE_PREVIEW_SCALE: Number = 0.001;
+final MAX_NODE_PREVIEW_SCALE: Number = 1000.0;
+final MAX_NODE_PREVIEW_YAW_DEGREES: Number = 36000.0;
+final MAX_NODE_PREVIEW_OFFSET: Number = 1000000.0;
+final MAX_MATERIAL_PREVIEWS_3D: Integer = 128;
+final MAX_MATERIAL_PREVIEW_TEXTURE_CHARS: Integer = 1024;
+final MAX_MATERIAL_PREVIEW_NORMAL_SCALE: Number = 8.0;
+final MAX_MATERIAL_PREVIEW_EMISSIVE_INTENSITY: Number = 64.0;
+final MAX_MATERIAL_PREVIEW_EMISSIVE_MULTIPLIER: Number = 64.0;
 final MAX_SCENE_PREVIEW_2D_VARIANTS: Integer = 64;
 final MAX_SCENE_PREVIEW_2D_IMAGE_CHARS: Integer = 1024;
 final MIN_SCENE_PREVIEW_2D_OFFSET: Integer = -1000000;
@@ -683,22 +698,40 @@ class ScenePreview3DDefinition {
 class SceneNodePreview3DDefinition {
     expose String matchProperty;
     expose String matchValue;
+    expose String matchKind;
+    expose Boolean matchBoolean;
+    expose Integer matchInteger;
+    expose String matchString;
     expose String prefab;
     expose String variantProperty;
     expose List[String] variantPrefabs;
     expose String yawProperty;
     expose String yawUnit;
     expose String scaleProperty;
+    expose Number scale;
+    expose Number yawDegrees;
+    expose Number offsetX;
+    expose Number offsetY;
+    expose Number offsetZ;
 
     expose func init() {
         matchProperty = "";
         matchValue = "";
+        matchKind = "";
+        matchBoolean = false;
+        matchInteger = 0;
+        matchString = "";
         prefab = "";
         variantProperty = "";
         variantPrefabs = [];
         yawProperty = "";
         yawUnit = "";
         scaleProperty = "";
+        scale = 1.0;
+        yawDegrees = 0.0;
+        offsetX = 0.0;
+        offsetY = 0.0;
+        offsetZ = 0.0;
     }
 
     /// @brief Resolve a bounded integer variant or the authored fallback.
@@ -707,6 +740,101 @@ class SceneNodePreview3DDefinition {
             return variantPrefabs.get(value);
         }
         return prefab;
+    }
+}
+
+/// @brief One typed metadata-matched, render-only PBR material overlay.
+/// @details Source albedo tint and every unspecified material field survive.
+///          Texture paths resolve beside the project schema, while optional
+///          emissive properties resolve only against typed scene-root floats.
+class SceneMaterialPreview3DDefinition {
+    expose String matchProperty;
+    expose String matchKind;
+    expose Boolean matchBoolean;
+    expose Integer matchInteger;
+    expose String matchString;
+    expose String albedoMap;
+    expose String normalMap;
+    expose String metallicRoughnessMap;
+    expose String ambientOcclusionMap;
+    expose String emissiveMap;
+    expose Boolean hasMetallic;
+    expose Number metallic;
+    expose Boolean hasRoughness;
+    expose Number roughness;
+    expose Boolean hasAmbientOcclusion;
+    expose Number ambientOcclusion;
+    expose Boolean hasNormalScale;
+    expose Number normalScale;
+    expose Boolean hasEmissiveColor;
+    expose Number emissiveR;
+    expose Number emissiveG;
+    expose Number emissiveB;
+    expose String emissiveRProperty;
+    expose String emissiveGProperty;
+    expose String emissiveBProperty;
+    expose Number emissiveMultiplier;
+    expose Boolean hasEmissiveIntensity;
+    expose Number emissiveIntensity;
+    expose Boolean useProjectEnvironment;
+    expose Boolean hasSsrEnabled;
+    expose Boolean ssrEnabled;
+
+    expose func init() {
+        matchProperty = "";
+        matchKind = "";
+        matchBoolean = false;
+        matchInteger = 0;
+        matchString = "";
+        albedoMap = "";
+        normalMap = "";
+        metallicRoughnessMap = "";
+        ambientOcclusionMap = "";
+        emissiveMap = "";
+        hasMetallic = false;
+        metallic = 0.0;
+        hasRoughness = false;
+        roughness = 0.5;
+        hasAmbientOcclusion = false;
+        ambientOcclusion = 1.0;
+        hasNormalScale = false;
+        normalScale = 1.0;
+        hasEmissiveColor = false;
+        emissiveR = 0.0;
+        emissiveG = 0.0;
+        emissiveB = 0.0;
+        emissiveRProperty = "";
+        emissiveGProperty = "";
+        emissiveBProperty = "";
+        emissiveMultiplier = 1.0;
+        hasEmissiveIntensity = false;
+        emissiveIntensity = 1.0;
+        useProjectEnvironment = false;
+        hasSsrEnabled = false;
+        ssrEnabled = false;
+    }
+
+    expose func HasRootEmissive() -> Boolean {
+        return emissiveRProperty != ""
+            and emissiveGProperty != ""
+            and emissiveBProperty != "";
+    }
+
+    expose func HasOverrides() -> Boolean {
+        return albedoMap != ""
+            or normalMap != ""
+            or metallicRoughnessMap != ""
+            or ambientOcclusionMap != ""
+            or emissiveMap != ""
+            or hasMetallic
+            or hasRoughness
+            or hasAmbientOcclusion
+            or hasNormalScale
+            or hasEmissiveColor
+            or HasRootEmissive()
+            or hasEmissiveIntensity
+            or useProjectEnvironment
+            or hasSsrEnabled;
     }
 }
 
@@ -722,6 +850,7 @@ class SceneComponentSchema {
     expose ScenePreview2DDefinition scenePreview2D;
     expose ScenePreview3DDefinition scenePreview3D;
     expose List[SceneNodePreview3DDefinition] nodePreviews3D;
+    expose List[SceneMaterialPreview3DDefinition] materialPreviews3D;
 
     expose func init() {
         found = false;
@@ -734,6 +863,7 @@ class SceneComponentSchema {
         scenePreview2D = new ScenePreview2DDefinition();
         scenePreview3D = new ScenePreview3DDefinition();
         nodePreviews3D = [];
+        materialPreviews3D = [];
     }
 
     /// @brief Count definitions compatible with one editor target.
@@ -914,6 +1044,7 @@ expose func ParseText(text: String,
     if ParseScenePreview2D(root, schema) == false { return schema; }
     if ParseScenePreview3D(root, schema) == false { return schema; }
     if ParseNodePreviews3D(root, schema) == false { return schema; }
+    if ParseMaterialPreviews3D(root, schema) == false { return schema; }
     schema.valid = true;
     schema.error = "";
     return schema;
@@ -951,7 +1082,43 @@ func ParseNodePreviews3D(root: Any,
     return true;
 }
 
-/// @brief Validate one metadata match and its bounded prefab variants.
+/// @brief Parse one bounded direct-model preview transform scalar.
+func ParseNodePreviewNumber(raw: Any,
+                            name: String,
+                            minimum: Number,
+                            maximum: Number,
+                            fallback: Number,
+                            previewIndex: Integer,
+                            schema: SceneComponentSchema) -> Number {
+    if Map.Has(raw, name) == false { return fallback; }
+    if schema.version < DIRECT_MODEL_PREVIEW_3D_SCHEMA_VERSION {
+        Reject(
+            schema,
+            "3D node preview " + previewIndex + " " + name
+                + " requires schema version 17.");
+        return fallback;
+    }
+    if Json.TypeOf(Map.Get(raw, name)) != "number" {
+        Reject(
+            schema,
+            "3D node preview " + previewIndex + " " + name
+                + " must be a number.");
+        return fallback;
+    }
+    var parsed = Parse.TryDouble(Json.Format(Map.Get(raw, name)));
+    if parsed.IsNone
+       or parsed.UnwrapF64() < minimum
+       or parsed.UnwrapF64() > maximum {
+        Reject(
+            schema,
+            "3D node preview " + previewIndex + " " + name
+                + " is outside its supported range.");
+        return fallback;
+    }
+    return parsed.UnwrapF64();
+}
+
+/// @brief Validate one typed metadata match and bounded asset recipe.
 func ParseNodePreview3D(
     raw: Any,
     index: Integer,
@@ -962,8 +1129,16 @@ func ParseNodePreview3D(
         return null;
     }
     var preview = new SceneNodePreview3DDefinition();
-    preview.matchProperty = Str.Trim(Map.GetStr(raw, "matchProperty"));
-    preview.matchValue = Str.Trim(Map.GetStr(raw, "matchValue"));
+    if Map.Has(raw, "matchProperty") == false
+       or Json.TypeOf(Map.Get(raw, "matchProperty")) != "string" {
+        Reject(
+            schema,
+            "3D node preview " + index
+                + " requires a matchProperty string.");
+        return null;
+    }
+    preview.matchProperty =
+        Str.Trim(Map.GetStr(raw, "matchProperty"));
     if PortableIdentifier(
            preview.matchProperty, MAX_FIELD_KEY_CHARS) == false {
         Reject(
@@ -972,20 +1147,80 @@ func ParseNodePreview3D(
                 + " requires a portable matchProperty.");
         return null;
     }
-    if PortableIdentifier(
-           preview.matchValue, MAX_FIELD_KEY_CHARS) == false {
+    if Map.Has(raw, "matchValue") == false {
         Reject(
             schema,
             "3D node preview " + index
-                + " requires a portable matchValue.");
+                + " requires a Boolean, integer, or string matchValue.");
         return null;
     }
-    var matchKey = preview.matchProperty + "\n" + preview.matchValue;
+    var rawMatch = Map.Get(raw, "matchValue");
+    var matchType = Json.TypeOf(rawMatch);
+    var matchIdentity = "";
+    if matchType == "boolean" {
+        if schema.version < DIRECT_MODEL_PREVIEW_3D_SCHEMA_VERSION {
+            Reject(
+                schema,
+                "Typed 3D node preview matches require schema version 17.");
+            return null;
+        }
+        preview.matchKind = "bool";
+        preview.matchBoolean = Map.GetBool(raw, "matchValue");
+        matchIdentity = "" + preview.matchBoolean;
+    } else if matchType == "number" {
+        if schema.version < DIRECT_MODEL_PREVIEW_3D_SCHEMA_VERSION {
+            Reject(
+                schema,
+                "Typed 3D node preview matches require schema version 17.");
+            return null;
+        }
+        var parsedMatch = Parse.TryInt(Json.Format(rawMatch));
+        if parsedMatch.IsNone {
+            Reject(
+                schema,
+                "3D node preview " + index
+                    + " numeric matchValue must be an integer.");
+            return null;
+        }
+        preview.matchKind = "int";
+        preview.matchInteger = parsedMatch.UnwrapI64();
+        matchIdentity = "" + preview.matchInteger;
+    } else if matchType == "string" {
+        preview.matchKind = "string";
+        preview.matchString = Map.GetStr(raw, "matchValue");
+        preview.matchValue = preview.matchString;
+        if schema.version < DIRECT_MODEL_PREVIEW_3D_SCHEMA_VERSION {
+            if PortableIdentifier(
+                   preview.matchString, MAX_FIELD_KEY_CHARS) == false {
+                Reject(
+                    schema,
+                    "3D node preview " + index
+                        + " requires a portable matchValue.");
+                return null;
+            }
+        } else if Str.get_Length(preview.matchString)
+                  > MAX_FIELD_KEY_CHARS {
+            Reject(
+                schema,
+                "3D node preview " + index
+                    + " string matchValue exceeds 128 characters.");
+            return null;
+        }
+        matchIdentity = preview.matchString;
+    } else {
+        Reject(
+            schema,
+            "3D node preview " + index
+                + " matchValue must be Boolean, integer, or string.");
+        return null;
+    }
+    var matchKey = preview.matchProperty + "\n"
+        + preview.matchKind + "\n" + matchIdentity;
     if Map.Has(seenMatches, matchKey) {
         Reject(
             schema,
-            "Duplicate 3D node preview match \""
-                + preview.matchProperty + "=" + preview.matchValue + "\".");
+            "Duplicate 3D node preview match for \""
+                + preview.matchProperty + "\".");
         return null;
     }
     Map.SetBool(seenMatches, matchKey, true);
@@ -1000,7 +1235,14 @@ func ParseNodePreview3D(
             Reject(
                 schema,
                 "3D node preview prefab must be a safe project-relative "
-                + ".scene3d or .vscn path.");
+                + "3D scene or model asset path.");
+            return null;
+        }
+        if DirectModelPreviewPrefab(preview.prefab)
+           and schema.version < DIRECT_MODEL_PREVIEW_3D_SCHEMA_VERSION {
+            Reject(
+                schema,
+                "Direct-model 3D node previews require schema version 17.");
             return null;
         }
     }
@@ -1059,7 +1301,16 @@ func ParseNodePreview3D(
                 Reject(
                     schema,
                     "3D node preview variants must be safe "
-                    + "project-relative scene paths.");
+                    + "project-relative 3D scene or model asset paths.");
+                return null;
+            }
+            if DirectModelPreviewPrefab(path)
+               and schema.version
+                  < DIRECT_MODEL_PREVIEW_3D_SCHEMA_VERSION {
+                Reject(
+                    schema,
+                    "Direct-model 3D node preview variants require "
+                        + "schema version 17.");
                 return null;
             }
             preview.variantPrefabs.add(path);
@@ -1115,6 +1366,32 @@ func ParseNodePreview3D(
             return null;
         }
     }
+    preview.scale = ParseNodePreviewNumber(
+        raw, "scale",
+        MIN_NODE_PREVIEW_SCALE,
+        MAX_NODE_PREVIEW_SCALE,
+        1.0, index, schema);
+    preview.yawDegrees = ParseNodePreviewNumber(
+        raw, "yawDegrees",
+        0.0 - MAX_NODE_PREVIEW_YAW_DEGREES,
+        MAX_NODE_PREVIEW_YAW_DEGREES,
+        0.0, index, schema);
+    preview.offsetX = ParseNodePreviewNumber(
+        raw, "offsetX",
+        0.0 - MAX_NODE_PREVIEW_OFFSET,
+        MAX_NODE_PREVIEW_OFFSET,
+        0.0, index, schema);
+    preview.offsetY = ParseNodePreviewNumber(
+        raw, "offsetY",
+        0.0 - MAX_NODE_PREVIEW_OFFSET,
+        MAX_NODE_PREVIEW_OFFSET,
+        0.0, index, schema);
+    preview.offsetZ = ParseNodePreviewNumber(
+        raw, "offsetZ",
+        0.0 - MAX_NODE_PREVIEW_OFFSET,
+        MAX_NODE_PREVIEW_OFFSET,
+        0.0, index, schema);
+    if schema.valid == false { return null; }
     if preview.prefab == "" and preview.variantPrefabs.count() == 0 {
         Reject(
             schema,
@@ -1124,7 +1401,364 @@ func ParseNodePreview3D(
     return preview;
 }
 
-/// @brief Validate one project-relative VSCN preview reference.
+/// @brief Parse one optional bounded material-preview scalar.
+func ParseMaterialPreviewNumber(
+    raw: Any,
+    name: String,
+    minimum: Number,
+    maximum: Number,
+    fallback: Number,
+    previewIndex: Integer,
+    schema: SceneComponentSchema) -> Number {
+    if Map.Has(raw, name) == false { return fallback; }
+    if Json.TypeOf(Map.Get(raw, name)) != "number" {
+        Reject(
+            schema,
+            "3D material preview " + previewIndex + " " + name
+                + " must be a number.");
+        return fallback;
+    }
+    var parsed = Parse.TryDouble(Json.Format(Map.Get(raw, name)));
+    if parsed.IsNone
+       or parsed.UnwrapF64() < minimum
+       or parsed.UnwrapF64() > maximum {
+        Reject(
+            schema,
+            "3D material preview " + previewIndex + " " + name
+                + " is outside its supported range.");
+        return fallback;
+    }
+    return parsed.UnwrapF64();
+}
+
+/// @brief Parse optional schema-v16 metadata-driven material overlays.
+/// @details Rules preserve unspecified canonical material state. Exact typed
+///          match identities are unique, and every external texture remains a
+///          safe project-relative reference.
+func ParseMaterialPreviews3D(root: Any,
+                             schema: SceneComponentSchema) -> Boolean {
+    if Map.Has(root, "materialPreviews3D") == false { return true; }
+    if schema.version < MATERIAL_PREVIEW_3D_SCHEMA_VERSION {
+        Reject(
+            schema,
+            "Project 3D material previews require schema version 16.");
+        return false;
+    }
+    var rawPreviews = Map.Get(root, "materialPreviews3D");
+    if rawPreviews == null or Json.TypeOf(rawPreviews) != "array" {
+        Reject(schema, "materialPreviews3D must be an array.");
+        return false;
+    }
+    var count = Seq.get_Count(rawPreviews);
+    if count > MAX_MATERIAL_PREVIEWS_3D {
+        Reject(schema, "Component schema exceeds 128 3D material previews.");
+        return false;
+    }
+
+    var staged: List[SceneMaterialPreview3DDefinition] = [];
+    var seenMatches = Map.New();
+    var index = 0;
+    while index < count {
+        var raw = Seq.Get(rawPreviews, index);
+        if raw == null or Json.TypeOf(raw) != "object" {
+            Reject(
+                schema,
+                "3D material preview " + index + " must be an object.");
+            return false;
+        }
+        var preview = new SceneMaterialPreview3DDefinition();
+        if Map.Has(raw, "matchProperty") == false
+           or Json.TypeOf(Map.Get(raw, "matchProperty")) != "string" {
+            Reject(
+                schema,
+                "3D material preview " + index
+                    + " requires a matchProperty string.");
+            return false;
+        }
+        preview.matchProperty =
+            Str.Trim(Map.GetStr(raw, "matchProperty"));
+        if PortableIdentifier(
+               preview.matchProperty, MAX_FIELD_KEY_CHARS) == false {
+            Reject(
+                schema,
+                "3D material preview " + index
+                    + " matchProperty must be a portable key.");
+            return false;
+        }
+        if Map.Has(raw, "matchValue") == false {
+            Reject(
+                schema,
+                "3D material preview " + index
+                    + " requires a Boolean, integer, or string matchValue.");
+            return false;
+        }
+        var rawMatch = Map.Get(raw, "matchValue");
+        var matchType = Json.TypeOf(rawMatch);
+        var matchIdentity = "";
+        if matchType == "boolean" {
+            preview.matchKind = "bool";
+            preview.matchBoolean = Map.GetBool(raw, "matchValue");
+            matchIdentity = "" + preview.matchBoolean;
+        } else if matchType == "number" {
+            var parsedMatch = Parse.TryInt(Json.Format(rawMatch));
+            if parsedMatch.IsNone {
+                Reject(
+                    schema,
+                    "3D material preview " + index
+                        + " numeric matchValue must be an integer.");
+                return false;
+            }
+            preview.matchKind = "int";
+            preview.matchInteger = parsedMatch.UnwrapI64();
+            matchIdentity = "" + preview.matchInteger;
+        } else if matchType == "string" {
+            preview.matchKind = "string";
+            preview.matchString = Map.GetStr(raw, "matchValue");
+            if Str.get_Length(preview.matchString) > MAX_FIELD_KEY_CHARS {
+                Reject(
+                    schema,
+                    "3D material preview " + index
+                        + " string matchValue exceeds 128 characters.");
+                return false;
+            }
+            matchIdentity = preview.matchString;
+        } else {
+            Reject(
+                schema,
+                "3D material preview " + index
+                    + " matchValue must be Boolean, integer, or string.");
+            return false;
+        }
+        var matchKey = preview.matchProperty + "\n"
+            + preview.matchKind + "\n" + matchIdentity;
+        if Map.Has(seenMatches, matchKey) {
+            Reject(
+                schema,
+                "Duplicate 3D material preview match for \""
+                    + preview.matchProperty + "\".");
+            return false;
+        }
+        Map.SetBool(seenMatches, matchKey, true);
+
+        var textureNames: List[String] = [
+            "albedoMap",
+            "normalMap",
+            "metallicRoughnessMap",
+            "ambientOcclusionMap",
+            "emissiveMap"
+        ];
+        var textureIndex = 0;
+        while textureIndex < textureNames.count() {
+            var textureName = textureNames.get(textureIndex);
+            var texturePath = "";
+            if Map.Has(raw, textureName) {
+                if Json.TypeOf(Map.Get(raw, textureName)) != "string" {
+                    Reject(
+                        schema,
+                        "3D material preview " + index + " "
+                            + textureName + " must be a string.");
+                    return false;
+                }
+                texturePath = Str.Trim(Map.GetStr(raw, textureName));
+                if PortablePreviewTexture(texturePath) == false {
+                    Reject(
+                        schema,
+                        "3D material preview " + index + " "
+                            + textureName + " must be a safe "
+                            + "project-relative texture path.");
+                    return false;
+                }
+            }
+            if textureName == "albedoMap" {
+                preview.albedoMap = texturePath;
+            } else if textureName == "normalMap" {
+                preview.normalMap = texturePath;
+            } else if textureName == "metallicRoughnessMap" {
+                preview.metallicRoughnessMap = texturePath;
+            } else if textureName == "ambientOcclusionMap" {
+                preview.ambientOcclusionMap = texturePath;
+            } else {
+                preview.emissiveMap = texturePath;
+            }
+            textureIndex = textureIndex + 1;
+        }
+
+        if Map.Has(raw, "metallic") {
+            preview.hasMetallic = true;
+            preview.metallic = ParseMaterialPreviewNumber(
+                raw, "metallic", 0.0, 1.0, 0.0, index, schema);
+        }
+        if Map.Has(raw, "roughness") {
+            preview.hasRoughness = true;
+            preview.roughness = ParseMaterialPreviewNumber(
+                raw, "roughness", 0.0, 1.0, 0.5, index, schema);
+        }
+        if Map.Has(raw, "ambientOcclusion") {
+            preview.hasAmbientOcclusion = true;
+            preview.ambientOcclusion = ParseMaterialPreviewNumber(
+                raw, "ambientOcclusion", 0.0, 1.0, 1.0, index, schema);
+        }
+        if Map.Has(raw, "normalScale") {
+            preview.hasNormalScale = true;
+            preview.normalScale = ParseMaterialPreviewNumber(
+                raw, "normalScale", 0.0,
+                MAX_MATERIAL_PREVIEW_NORMAL_SCALE,
+                1.0, index, schema);
+        }
+        if Map.Has(raw, "emissiveIntensity") {
+            preview.hasEmissiveIntensity = true;
+            preview.emissiveIntensity = ParseMaterialPreviewNumber(
+                raw, "emissiveIntensity", 0.0,
+                MAX_MATERIAL_PREVIEW_EMISSIVE_INTENSITY,
+                1.0, index, schema);
+        }
+        if schema.valid == false { return false; }
+
+        var emissiveColorNames: List[String] = [
+            "emissiveR", "emissiveG", "emissiveB"
+        ];
+        var emissiveColorCount = 0;
+        var emissiveIndex = 0;
+        while emissiveIndex < emissiveColorNames.count() {
+            if Map.Has(raw, emissiveColorNames.get(emissiveIndex)) {
+                emissiveColorCount = emissiveColorCount + 1;
+            }
+            emissiveIndex = emissiveIndex + 1;
+        }
+        if emissiveColorCount != 0 and emissiveColorCount != 3 {
+            Reject(
+                schema,
+                "3D material preview " + index
+                    + " emissiveR/G/B members must be complete.");
+            return false;
+        }
+        if emissiveColorCount == 3 {
+            preview.emissiveR = ParseMaterialPreviewNumber(
+                raw, "emissiveR", 0.0, 1.0, 0.0, index, schema);
+            preview.emissiveG = ParseMaterialPreviewNumber(
+                raw, "emissiveG", 0.0, 1.0, 0.0, index, schema);
+            preview.emissiveB = ParseMaterialPreviewNumber(
+                raw, "emissiveB", 0.0, 1.0, 0.0, index, schema);
+            if schema.valid == false { return false; }
+            preview.hasEmissiveColor = true;
+        }
+
+        var emissivePropertyNames: List[String] = [
+            "emissiveRProperty",
+            "emissiveGProperty",
+            "emissiveBProperty"
+        ];
+        var emissivePropertyCount = 0;
+        emissiveIndex = 0;
+        while emissiveIndex < emissivePropertyNames.count() {
+            if Map.Has(raw, emissivePropertyNames.get(emissiveIndex)) {
+                emissivePropertyCount = emissivePropertyCount + 1;
+            }
+            emissiveIndex = emissiveIndex + 1;
+        }
+        if emissivePropertyCount != 0 and emissivePropertyCount != 3 {
+            Reject(
+                schema,
+                "3D material preview " + index
+                    + " emissive property mappings must be complete.");
+            return false;
+        }
+        if emissivePropertyCount == 3 {
+            emissiveIndex = 0;
+            while emissiveIndex < emissivePropertyNames.count() {
+                var propertyName =
+                    emissivePropertyNames.get(emissiveIndex);
+                if Json.TypeOf(Map.Get(raw, propertyName)) != "string" {
+                    Reject(
+                        schema,
+                        "3D material preview " + index + " "
+                            + propertyName + " must be a string.");
+                    return false;
+                }
+                var propertyValue =
+                    Str.Trim(Map.GetStr(raw, propertyName));
+                if PortableIdentifier(
+                       propertyValue, MAX_FIELD_KEY_CHARS) == false {
+                    Reject(
+                        schema,
+                        "3D material preview " + index + " "
+                            + propertyName + " must be a portable key.");
+                    return false;
+                }
+                if propertyName == "emissiveRProperty" {
+                    preview.emissiveRProperty = propertyValue;
+                } else if propertyName == "emissiveGProperty" {
+                    preview.emissiveGProperty = propertyValue;
+                } else {
+                    preview.emissiveBProperty = propertyValue;
+                }
+                emissiveIndex = emissiveIndex + 1;
+            }
+        }
+        if preview.hasEmissiveColor and preview.HasRootEmissive() {
+            Reject(
+                schema,
+                "3D material preview " + index
+                    + " cannot combine fixed and mapped emissive colors.");
+            return false;
+        }
+        if Map.Has(raw, "emissiveMultiplier") {
+            if preview.HasRootEmissive() == false {
+                Reject(
+                    schema,
+                    "3D material preview " + index
+                        + " emissiveMultiplier requires mapped "
+                        + "emissive properties.");
+                return false;
+            }
+            preview.emissiveMultiplier = ParseMaterialPreviewNumber(
+                raw, "emissiveMultiplier", 0.0,
+                MAX_MATERIAL_PREVIEW_EMISSIVE_MULTIPLIER,
+                1.0, index, schema);
+            if schema.valid == false { return false; }
+        }
+
+        if Map.Has(raw, "useProjectEnvironment") {
+            if Json.TypeOf(
+                   Map.Get(raw, "useProjectEnvironment")) != "boolean" {
+                Reject(
+                    schema,
+                    "3D material preview " + index
+                        + " useProjectEnvironment must be Boolean.");
+                return false;
+            }
+            preview.useProjectEnvironment =
+                Map.GetBool(raw, "useProjectEnvironment");
+        }
+        if Map.Has(raw, "ssrEnabled") {
+            if Json.TypeOf(Map.Get(raw, "ssrEnabled")) != "boolean" {
+                Reject(
+                    schema,
+                    "3D material preview " + index
+                        + " ssrEnabled must be Boolean.");
+                return false;
+            }
+            preview.hasSsrEnabled = true;
+            preview.ssrEnabled = Map.GetBool(raw, "ssrEnabled");
+        }
+        if preview.HasOverrides() == false {
+            Reject(
+                schema,
+                "3D material preview " + index
+                    + " requires at least one material override.");
+            return false;
+        }
+        staged.add(preview);
+        index = index + 1;
+    }
+    schema.materialPreviews3D = staged;
+    return true;
+}
+
+/// @brief Validate one project-relative scene or imported-model preview.
+/// @details The runtime's public SceneAsset loader owns extension-specific
+///          validation and dependency traversal. This gate only admits its
+///          portable 3D formats and rejects paths that can escape the project.
 func PortablePreviewPrefab(value: String) -> Boolean {
     var length = Str.get_Length(value);
     if length <= 0 or length > MAX_NODE_PREVIEW_PREFAB_CHARS {
@@ -1141,7 +1775,22 @@ func PortablePreviewPrefab(value: String) -> Boolean {
     }
     var folded = Str.ToLower(value);
     return Str.EndsWith(folded, ".scene3d")
-        or Str.EndsWith(folded, ".vscn");
+        or Str.EndsWith(folded, ".vscn")
+        or Str.EndsWith(folded, ".gltf")
+        or Str.EndsWith(folded, ".glb")
+        or Str.EndsWith(folded, ".fbx")
+        or Str.EndsWith(folded, ".obj")
+        or Str.EndsWith(folded, ".stl");
+}
+
+/// @brief Return whether a portable 3D preview is an imported model asset.
+func DirectModelPreviewPrefab(value: String) -> Boolean {
+    var folded = Str.ToLower(value);
+    return Str.EndsWith(folded, ".gltf")
+        or Str.EndsWith(folded, ".glb")
+        or Str.EndsWith(folded, ".fbx")
+        or Str.EndsWith(folded, ".obj")
+        or Str.EndsWith(folded, ".stl");
 }
 
 /// @brief Validate one project-root-relative 2D preview image reference.
@@ -1165,6 +1814,31 @@ func PortablePreviewImage(value: String) -> Boolean {
         or Str.EndsWith(folded, ".jpeg")
         or Str.EndsWith(folded, ".bmp")
         or Str.EndsWith(folded, ".gif");
+}
+
+/// @brief Validate one project-root-relative PBR texture reference.
+/// @details Material previews additionally accept strict runtime KTX2 assets.
+func PortablePreviewTexture(value: String) -> Boolean {
+    var length = Str.get_Length(value);
+    if length <= 0 or length > MAX_MATERIAL_PREVIEW_TEXTURE_CHARS {
+        return false;
+    }
+    if Path.IsAbsolute(value)
+       or Str.Contains(value, "\\")
+       or Str.Contains(value, ":")
+       or value == ".."
+       or Str.StartsWith(value, "../")
+       or Str.Contains(value, "/../")
+       or Str.EndsWith(value, "/..") {
+        return false;
+    }
+    var folded = Str.ToLower(value);
+    return Str.EndsWith(folded, ".png")
+        or Str.EndsWith(folded, ".jpg")
+        or Str.EndsWith(folded, ".jpeg")
+        or Str.EndsWith(folded, ".bmp")
+        or Str.EndsWith(folded, ".gif")
+        or Str.EndsWith(folded, ".ktx2");
 }
 
 /// @brief Parse the optional schema-v4 project 3D preview profile.
@@ -3533,5 +4207,6 @@ func Reject(schema: SceneComponentSchema,
     schema.scenePreview2D = new ScenePreview2DDefinition();
     schema.scenePreview3D = new ScenePreview3DDefinition();
     schema.nodePreviews3D = [];
+    schema.materialPreviews3D = [];
     return schema;
 }

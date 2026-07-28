@@ -41,8 +41,12 @@
 //     height fog resolve into bounded viewport-only presentation.
 //   - Project node prefab previews render and pick through transient graphs
 //     while variant/yaw/scale metadata leaves source VSCN bytes untouched.
+//   - A failed preferred direct-model rule advances deterministically to the
+//     next matching scene fallback and retains only that successful transform.
 //   - Transform tool/snap state follows its scene tab and session workspace.
 //   - Compact windows wrap actions and show viewport or inspector at full width.
+//   - Standard desktop windows expose three balanced panes with the viewport
+//     wider than either supporting pane.
 //   - Per-document hierarchy selection, camera, inspector split, and undo state
 //     survive scene-to-scene tab switches without leaking across documents.
 //   - Standard clipboard actions preserve selected subtrees across scene tabs.
@@ -63,7 +67,8 @@
 //        docs/adr/0198-project-owned-3d-scene-preview-profiles.md,
 //        docs/adr/0199-project-owned-3d-node-prefab-previews.md,
 //        docs/adr/0200-project-owned-3d-sky-and-light-preview-rigs.md,
-//        docs/adr/0201-project-owned-3d-lens-and-atmosphere-previews.md
+//        docs/adr/0201-project-owned-3d-lens-and-atmosphere-previews.md,
+//        docs/adr/0215-project-owned-direct-model-previews.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -180,8 +185,8 @@ func main() {
        or scene_editor_3d.UsesCompactLayout(0.0)
        or scene_editor_3d.UsesCompactChrome(700.0) == false
        or scene_editor_3d.UsesCompactChrome(700.01)
-       or scene_editor_3d.UsesDockedHierarchy(1399.99)
-       or scene_editor_3d.UsesDockedHierarchy(1400.0) == false
+       or scene_editor_3d.UsesDockedHierarchy(1199.99)
+       or scene_editor_3d.UsesDockedHierarchy(1200.0) == false
        or scene_editor_3d.UsesDockedHierarchy(0.0) {
         fail(shell, tempPath,
              "3D viewport-priority thresholds were unstable");
@@ -753,6 +758,42 @@ func main() {
         return;
     }
 
+    // A normal 1440-pixel Studio window must already be the productive
+    // three-pane workbench, with supporting panes bounded around a viewport
+    // that remains the editor's visual center.
+    shell.app.SetWindowSize(1440, 900);
+    shell.SetSceneWorkspaceMode(true);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    var desktopRootWidth3D = editor.root.GetScreenWidth();
+    var desktopHierarchyWidth3D = editor.hierarchyPaneBox.GetScreenWidth();
+    var desktopViewportWidth3D = editor.viewportScroll.GetScreenWidth();
+    var desktopInspectorWidth3D = editor.inspectorScroll.GetScreenWidth();
+    if editor.hierarchySplit.GetCollapsedSide() != 0
+       or editor.hierarchyPaneBox.IsVisible() == false
+       or desktopHierarchyWidth3D < 210.0
+       or desktopHierarchyWidth3D > desktopRootWidth3D * 0.24
+       or desktopInspectorWidth3D < 300.0
+       or desktopInspectorWidth3D > desktopRootWidth3D * 0.30
+       or desktopViewportWidth3D < desktopRootWidth3D * 0.45
+       or desktopViewportWidth3D <= desktopInspectorWidth3D {
+        fail(shell, tempPath,
+             "desktop 3D workbench was not viewport-first: root="
+             + desktopRootWidth3D + " hierarchy="
+             + desktopHierarchyWidth3D + " viewport="
+             + desktopViewportWidth3D + " inspector="
+             + desktopInspectorWidth3D + " hierarchy-side="
+             + editor.hierarchySplit.GetCollapsedSide());
+        return;
+    }
+    shell.SetSceneWorkspaceMode(false);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+
     editor.ToggleInspectorPane();
     shell.Render();
     if editor.inspectorRequestedVisible
@@ -833,7 +874,7 @@ func main() {
        or editor.gizmoSnapEnabled
        or editor.CanUndo()
        or editor.compactInspectorShown
-       or near(editor.bodySplit.GetPosition(), 0.62) == false {
+       or near(editor.bodySplit.GetPosition(), 0.70) == false {
         fail(shell, tempPath,
              "new 3D tab inherited another scene's camera or history");
         return;
@@ -1113,7 +1154,7 @@ func main() {
     var componentScenePath = Path.Join(componentDir, "level.vscn");
     var componentSchemaText =
         "{"
-        + "\"version\":7,"
+        + "\"version\":17,"
         + "\"components\":["
         + "{"
         + "\"name\":\"enemy-spawn\","
@@ -1199,7 +1240,16 @@ func main() {
         + "\"showColliders\":false,"
         + "\"showRoutes\":true"
         + "},"
-        + "\"nodePreviews3D\":[{"
+        + "\"nodePreviews3D\":["
+        + "{"
+        + "\"matchProperty\":\"preview.variant\","
+        + "\"matchValue\":1,"
+        + "\"prefab\":\"missing-preferred.glb\","
+        + "\"scale\":9.0,"
+        + "\"yawDegrees\":45.0,"
+        + "\"offsetY\":20.0"
+        + "},"
+        + "{"
         + "\"matchProperty\":\"preview.kind\","
         + "\"matchValue\":\"prop\","
         + "\"prefab\":\"preview-red.scene3d\","
@@ -1405,6 +1455,8 @@ func main() {
     }
     if editor.projectPreviewScene == null
        or editor.projectPreviewInstanceCount != 1
+       or editor.projectPreviewDirectModelCount != 0
+       or editor.projectPreviewFallbackCount != 1
        or editor.projectPreviewMissingCount != 0
        or editor.projectPreviewClipped {
         var previewReason = "3D node prefab did not build its transient graph";
@@ -1413,6 +1465,12 @@ func main() {
         } else if editor.projectPreviewInstanceCount != 1 {
             previewReason = previewReason + " (instance count "
                 + editor.projectPreviewInstanceCount + ")";
+        } else if editor.projectPreviewDirectModelCount != 0 {
+            previewReason = previewReason + " (direct model count "
+                + editor.projectPreviewDirectModelCount + ")";
+        } else if editor.projectPreviewFallbackCount != 1 {
+            previewReason = previewReason + " (fallback count "
+                + editor.projectPreviewFallbackCount + ")";
         } else if editor.projectPreviewMissingCount != 0 {
             previewReason = previewReason + " (missing count "
                 + editor.projectPreviewMissingCount + ")";

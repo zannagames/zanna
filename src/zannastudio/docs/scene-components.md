@@ -1,7 +1,7 @@
 ---
 status: active
 audience: users and contributors
-last-verified: 2026-07-27
+last-verified: 2026-07-28
 ---
 
 # Project Scene Components
@@ -178,7 +178,7 @@ always writes the lowest version its content requires, so a file that stops
 using version-2 kinds returns to `"version": 1`. A version-2 file presented to
 an older Studio is rejected wholesale, exactly like any unknown version.
 
-## Versions 3–14: Preview And Creation Extensions
+## Versions 3–17: Preview And Creation Extensions
 
 Later versions add declarative, editor-only visualization conventions while
 keeping component fields and canonical scene formats unchanged:
@@ -197,6 +197,9 @@ keeping component fields and canonical scene formats unchanged:
 | 12 | extended `scenePreview2D` / `scenePreview3D` | Declare the exact project output size used by locked Game View framing. |
 | 13 | component `createObjectType` / `createNodeName` | Create gameplay-ready objects or nodes directly from a component recipe. |
 | 14 | extended `scenePreview3D` | Compose independently matched and metadata-transformed environment layers beside the base environment. |
+| 15 | extended `scenePreview3D` | Construct bounded runtime `Water3D` preview layers from typed root metadata. |
+| 16 | `materialPreviews3D` | Apply typed, render-only project material overlays during shaded drawing. |
+| 17 | extended `nodePreviews3D` | Match typed node metadata and instantiate direct project models with bounded fixed transforms and ordered fallback. |
 
 Studio never executes project code to apply these profiles, and preview
 resolution never writes scene bytes, dirty state, revision, or history. The
@@ -573,9 +576,128 @@ frame statistics therefore see one complete authored view. Water remains
 presentation-only: it is absent from hierarchy, picking, selection, VSCN
 serialization, dirty state, revision, and undo history.
 
+### Version 16 Project-Owned 3D Material Previews
+
+Version 16 can replace a portable placeholder material with a render-only PBR
+overlay selected by exact typed node metadata:
+
+```json
+{
+  "version": 16,
+  "components": [],
+  "materialPreviews3D": [
+    {
+      "matchProperty": "surface.kind",
+      "matchValue": 2,
+      "albedoMap": "assets/editor-previews/hull-albedo.png",
+      "normalMap": "assets/editor-previews/hull-normal.png",
+      "roughness": 0.6,
+      "metallic": 0.5,
+      "emissiveR": 0.02,
+      "emissiveG": 0.024,
+      "emissiveB": 0.026,
+      "emissiveIntensity": 1.0,
+      "useProjectEnvironment": true,
+      "ssrEnabled": true
+    }
+  ]
+}
+```
+
+`materialPreviews3D` contains at most 128 ordered rules. Every rule requires a
+portable `matchProperty` and an exact Boolean, integer, or string
+`matchValue`. Studio compares both metadata kind and value and uses the first
+matching rule. Missing, wrong-typed, or unequal metadata leaves the node's
+canonical material unchanged. Duplicate property/kind/value match identities
+reject the complete schema.
+
+The optional project-relative maps are `albedoMap`, `normalMap`,
+`metallicRoughnessMap`, `ambientOcclusionMap`, and `emissiveMap`. They accept
+bounded PNG, JPEG, BMP, GIF, or strict KTX2 assets. Absolute paths, parent
+traversal, backslashes, drive/URI separators, missing files, oversized sources,
+and decode failures never publish a partial overlay.
+
+`metallic`, `roughness`, and `ambientOcclusion` stay in `[0, 1]`;
+`normalScale` stays in `[0, 8]`; and `emissiveIntensity` stays in `[0, 64]`.
+A fixed emissive color requires the complete `emissiveR/G/B` group in
+`[0, 1]`. A project can instead provide complete
+`emissiveRProperty/GProperty/BProperty` names; those read exact **float**
+metadata from the canonical scene root and may use an `emissiveMultiplier` in
+`[0, 64]`. Fixed and mapped colors cannot be combined. Optional
+`useProjectEnvironment` and `ssrEnabled` values are Booleans. Every rule must
+actually override at least one field.
+
+Studio clones the node's canonical material, preserving its tint and every
+unspecified field. It substitutes that clone only for the synchronous Shaded
+or Shaded+Wire draw and restores the original material reference immediately
+after the shared frame closes. The clone, decoded images, and project
+environment map remain presentation-only: hierarchy, picking, selection, VSCN
+bytes, dirty state, revision, and history still contain only canonical data.
+Missing resources are counted in the viewport status.
+
+### Version 17 Direct Model Node Previews
+
+Version 17 can instantiate the same imported project model used by the game
+instead of requiring an editor-only scene copy:
+
+```json
+{
+  "version": 17,
+  "components": [],
+  "nodePreviews3D": [
+    {
+      "matchProperty": "spawn.archetype",
+      "matchValue": 3,
+      "prefab": "assets/enemies/ranger.gltf",
+      "scale": 0.95,
+      "yawDegrees": 180.0
+    },
+    {
+      "matchProperty": "spawn.kind",
+      "matchValue": "enemy",
+      "prefab": "assets/editor-previews/enemy.scene3d",
+      "variantProperty": "spawn.archetype",
+      "variantPrefabs": [
+        "assets/editor-previews/grunt.scene3d",
+        "assets/editor-previews/ranger.scene3d"
+      ]
+    }
+  ]
+}
+```
+
+Version-17 node rules compare the exact Boolean, integer, or string metadata
+kind and value. Fractional numeric matches are invalid. Versions 5–16 retain
+their string-only match contract, and duplicate property/kind/value identities
+reject the complete schema.
+
+`prefab` and `variantPrefabs` accept safe project-relative `.scene3d`, `.vscn`,
+`.gltf`, `.glb`, `.fbx`, `.obj`, and `.stl` assets. Direct model paths in node
+rules require version 17. The existing absolute-path, backslash, drive/URI, and
+parent-traversal rejection still applies. Studio resolves the path beside the
+owning schema and uses the public runtime `SceneAsset` loader; the parent source
+must stay within the bounded preview limit.
+
+Optional `scale` stays in `[0.001, 1000]`, `yawDegrees` stays in
+`[-36000, 36000]`, and `offsetX/Y/Z` each stay within ±1,000,000. They compose
+over the source node and with existing metadata-driven yaw/scale mappings.
+Omitted values are identity transforms.
+
+Rules remain declaration-ordered. Studio tries matching rules until one asset
+loads completely, so a typed imported-model rule can precede a broader
+procedural scene fallback. A successful fallback uses only its own transform
+recipe and increments the viewport fallback count. If one or more rules match
+but none load, the node increments the missing count. Direct-model and fallback
+instance counts remain separately observable.
+
+Every loaded asset lives under a transient wrapper in the disposable preview
+graph. It can render, contribute visual bounds, participate in surface
+placement, and remap picking to its canonical marker, but it never enters the
+hierarchy, selection identity, VSCN bytes, dirty state, revision, or history.
+
 See [ADR 0197](../../../docs/adr/0197-project-owned-2d-object-preview-profiles.md)
 through
-[ADR 0213](../../../docs/adr/0213-runtime-backed-water-preview-layers.md)
+[ADR 0215](../../../docs/adr/0215-project-owned-direct-model-previews.md)
 for the complete bounds, precedence, and 3D profile contracts.
 
 ## Migration Assistant

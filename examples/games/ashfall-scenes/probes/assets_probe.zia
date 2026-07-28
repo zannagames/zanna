@@ -13,6 +13,7 @@
 //     self-contained preview prefab.
 //   - Procedural terrain variants have deterministic scene-level previews.
 //   - Schema-v15 runtime water owns exact loadable production albedo/normal maps.
+//   - Schema-v16 material overlays own every generated production surface map.
 // Ownership/Lifetime:
 //   - Each probe game and loaded preview graph is process-local and temporary.
 //   - The probe never writes or mutates source assets.
@@ -20,7 +21,8 @@
 //        docs/adr/0199-project-owned-3d-node-prefab-previews.md,
 //        docs/adr/0203-project-owned-3d-scene-environment-previews.md,
 //        docs/adr/0212-additive-3d-environment-preview-layers.md,
-//        docs/adr/0213-runtime-backed-water-preview-layers.md
+//        docs/adr/0213-runtime-backed-water-preview-layers.md,
+//        docs/adr/0214-project-owned-3d-material-previews.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -114,7 +116,42 @@ func validateStudioPreviews() -> Boolean {
         }
         waterIndex = waterIndex + 1;
     }
-    Terminal.Say("studioPreviews=ok prefabs=46 waterImages=2");
+    var surfaceIndex = 0;
+    var surfaceImageCount = 0;
+    while surfaceIndex < 10 {
+        // Surface 7 is the runtime's intentionally textureless emissive accent.
+        if surfaceIndex != 7 {
+            var surfacePrefix =
+                root + "/surface-" + variantSuffix(surfaceIndex);
+            var surfaceImages: List[String] = [
+                surfacePrefix + "-albedo.png",
+                surfacePrefix + "-normal.png"
+            ];
+            var imageIndex = 0;
+            while imageIndex < surfaceImages.Count {
+                var surfacePath = surfaceImages[imageIndex];
+                if File.Exists(surfacePath) == false {
+                    Terminal.Say(
+                        "FAIL: missing Studio surface image " + surfacePath);
+                    return false;
+                }
+                var surface = Pixels.Load(surfacePath);
+                if surface == null
+                   or Pixels.get_Width(surface) != 256
+                   or Pixels.get_Height(surface) != 256 {
+                    Terminal.Say(
+                        "FAIL: invalid Studio surface image " + surfacePath);
+                    return false;
+                }
+                surfaceImageCount = surfaceImageCount + 1;
+                imageIndex = imageIndex + 1;
+            }
+        }
+        surfaceIndex = surfaceIndex + 1;
+    }
+    Terminal.Say(
+        "studioPreviews=ok prefabs=46 waterImages=2 surfaceImages="
+        + surfaceImageCount);
     return true;
 }
 

@@ -18,6 +18,8 @@
 //     handles; the editor owns their state and command dispatch.
 //   - Progressive disclosure is stable across widths: wider lanes enlarge the
 //     viewport instead of repopulating chrome with secondary commands.
+//   - Desktop defaults bound both supporting panes so the viewport is wider
+//     than the Hierarchy and Inspector without overriding persisted dividers.
 //   - One compact Scene-topic dropdown owns mutually exclusive complete
 //     scene-wide inspector groups; the controller owns its live visibility.
 // Ownership/Lifetime:
@@ -413,7 +415,7 @@ expose func Build(editor: scene_editor_3d.SceneEditor3D,
         // name so persisted fractions and probes stay stable.
         editor.hierarchySplit = GUI.SplitPane.New(editor.root, 1);
         editor.hierarchySplit.SetFlex(1.0);
-        editor.hierarchySplit.SetPosition(0.22);
+        editor.hierarchySplit.SetPosition(0.18);
         editor.hierarchySplit.SetMinFirst(220.0);
         editor.hierarchySplit.SetMinSecond(540.0);
 
@@ -426,7 +428,7 @@ expose func Build(editor: scene_editor_3d.SceneEditor3D,
 
         editor.bodySplit = GUI.SplitPane.New(editor.hierarchySplit.Second, 1);
         editor.bodySplit.SetFlex(1.0);
-        editor.bodySplit.SetPosition(0.62);
+        editor.bodySplit.SetPosition(0.70);
         editor.bodySplit.SetMinFirst(320.0);
         editor.bodySplit.SetMinSecond(320.0);
 
@@ -472,7 +474,7 @@ expose func Build(editor: scene_editor_3d.SceneEditor3D,
             editor.inspectorScroll,
             editor.bodySplit,
             2,
-            0.62,
+            0.70,
             "Inspector",
             inspectorTabRow);
         editor.objectTabButton = GUI.Button.New(inspectorTabRow, "Object");
@@ -511,7 +513,7 @@ expose func Build(editor: scene_editor_3d.SceneEditor3D,
             editor.hierarchyPaneBox,
             editor.hierarchySplit,
             1,
-            0.22,
+            0.18,
             "Hierarchy",
             hierarchySearchRow);
         editor.hierarchySearchInput = GUI.TextInput.New(hierarchySearchRow);

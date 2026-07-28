@@ -1,6 +1,6 @@
 # Zanna Studio Current Status
 
-Last reviewed against source: 2026-07-27.
+Last reviewed against source: 2026-07-28.
 
 This file is the current-state reference for Zanna Studio. It intentionally avoids
 future-phase language and records limitations in the same place as shipped
@@ -691,10 +691,12 @@ captured position) and id/type commit on Enter, retiring the explicit Apply
 — while the Scene tab owns setup, imports, scene properties,
 camera/lighting, layers, and tile behavior. A manual tab choice
 holds until the next selection change. All three split positions persist per
-document. Below 1,400 logical pixels the Objects pane collapses before it can
-turn names and actions into clipped slivers; an explicit Objects action opens
-the same hierarchy as a full-width master. Find opens and focuses that master
-without changing the inspector visibility preference.
+document. A standard desktop lane uses compact 18% Objects and roughly 28%
+Inspector defaults so the canvas remains the visual center of the workbench.
+Below 1,200 logical pixels the Objects pane collapses before it can turn names
+and actions into clipped slivers; an explicit Objects action opens the same
+hierarchy as a full-width master. Find opens and focuses that master without
+changing the inspector visibility preference.
 
 The 2D tile toolbox has captured gap-free Paint and Erase strokes, inclusive
 forward/reverse Rectangle painting with a non-destructive preview,
@@ -803,10 +805,12 @@ built-ins (Light, Material, and for single nodes Camera and Collider) with
 defaults as one undoable edit each, while the Scene tab owns imports, bake,
 environment, and the material library. The batch Visible and Static
 checkboxes both present truthful native mixed states for group selections. A manual tab choice holds until the next selection
-change. Both split positions persist per document. Below 1,400 logical pixels
-the Hierarchy pane collapses before it can starve the viewport and inspector;
-an explicit Hierarchy action and standard Find open the same full-width master.
-Complete Scene, Create, Placement, and View menus own secondary document,
+change. Both split positions persist per document. A standard desktop lane uses
+compact 18% Hierarchy and roughly 30% Inspector defaults so the viewport remains
+the visual center of the workbench. Below 1,200 logical pixels the Hierarchy
+pane collapses before it can starve the viewport and inspector; an explicit
+Hierarchy action and standard Find open the same full-width master. Complete
+Scene, Create, Placement, and View menus own secondary document,
 creation, placement, and navigation commands at every width. Active transforms,
 Game View, and contextual hierarchy navigation stay direct. This caps
 command-bar height, gives the authored viewport substantially more vertical
@@ -858,11 +862,28 @@ statistics see the complete authored view. Animation is capped at 30 Hz and a
 100 ms step. Ashfall Mission 05 uses its production water image, concrete
 normal map, full dimensions derived from its half extents, and both game wave
 records while remaining absent from canonical state (ADR 0213).
+Schema-v16 projects can map exact typed node metadata to ordered render-only
+material overlays. Bounded project maps, PBR values, fixed or root-mapped
+emissive color, environment reflection, and SSR intent apply to a clone only
+for the synchronous shaded frame; the canonical material reference is restored
+immediately afterward. Missing resources omit the complete node overlay and
+publish status. Ashfall now maps all ten runtime `surf` classes to the exact
+generated 256-pixel albedo/normal inputs and production PBR/emissive values
+without adding those derived materials to VSCN, dirty state, or history
+(ADR 0214).
+Schema-v17 node previews accept exact typed matches and direct project glTF,
+GLB, FBX, OBJ, and STL assets with bounded fixed scale, yaw, and offsets.
+Matching rules advance until one asset loads, allowing optional production art
+to fall back deterministically to a later procedural scene without inheriting
+the failed rule's transform. Ashfall uses its runtime enemy glTF paths and
+presentation scales directly, retains generated scene prefabs for missing art
+and procedural-only archetypes, and keeps all preview instances outside
+canonical VSCN state (ADR 0215).
 Schema-v10 profiles can also declare the portable tonemap, bloom, color-grade,
 vignette, and FXAA recipe used by the game. Studio retains one runtime
 `PostFX3D` chain, finalizes the shaded offscreen frame before readback, and
 draws editor overlays afterward; pure wireframe and the camera inset remain
-unprocessed. Ashfall's project profile uses this path to keep its pale,
+unprocessed. Ashfall's project profile uses this path to keep its runtime-lit,
 high-key gameplay atmosphere in the editor without executing game code or
 changing canonical scene state (ADR 0204).
 
@@ -870,7 +891,7 @@ Schema-v12 `scenePreview3D` profiles may declare the same bounded output pair.
 Game View then sizes the retained render target to the centered project-aspect
 content frame before finalization and post-FX, copies it into neutral matte,
 and locks navigation. Ashfall's real-project gate pins a 1600x900 content
-target, pale-scene luminance inside the frame, and exact prior-camera
+target, runtime-lit high-key luminance inside the frame, and exact prior-camera
 restoration (ADR 0208).
 
 Camera nodes are first-class authored components (ADR 0184). **+ Camera**

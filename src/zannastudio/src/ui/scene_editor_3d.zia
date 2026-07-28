@@ -14,6 +14,8 @@
 //   - One complete gizmo drag creates one local-transform history snapshot.
 //   - Compact windows cycle hierarchy, viewport, and inspector at full width;
 //     no authoring surface becomes an inaccessible sliver.
+//   - Standard desktop lanes keep Hierarchy docked beside a viewport-first
+//     split; smaller lanes collapse context before starving the viewport.
 //   - Progressive command bars keep active transforms, viewport context, Game
 //     View, and contextual pane navigation direct while complete document,
 //     creation, placement, camera, overlay, and layout commands remain
@@ -64,6 +66,12 @@
 //   - Schema-v15 water layers build the public runtime Water3D path from
 //     bounded project data; canonical, prefab, and procedural presentation
 //     share one deferred frame, depth buffer, transparent sort, and post-FX.
+//   - Schema-v16 material rules clone canonical PBR state and overlay bounded
+//     project textures/scalars only during draw; inspector state, scene bytes,
+//     selection, dirty state, and history always retain authored materials.
+//   - Schema-v17 typed node rules load project model assets through SceneAsset,
+//     retain the exact successful recipe, and fall through unavailable
+//     preferred art without leaking its transform into a later fallback.
 //   - Project gameplay view can be reapplied after navigation without changing
 //     canonical VSCN bytes, dirty state, revision, or undo history.
 //   - Project sky palettes and directional rigs resolve typed root metadata
@@ -149,7 +157,9 @@
 //        docs/adr/0210-read-only-mesh-vertex-positions.md,
 //        docs/adr/0211-canonical-mesh-terrain-sculpting.md,
 //        docs/adr/0212-additive-3d-environment-preview-layers.md,
-//        docs/adr/0213-runtime-backed-water-preview-layers.md
+//        docs/adr/0213-runtime-backed-water-preview-layers.md,
+//        docs/adr/0214-project-owned-3d-material-previews.md,
+//        docs/adr/0215-project-owned-direct-model-previews.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -247,6 +257,7 @@ final MAX_TEXTURE_SOURCE_BYTES: Integer = 16000000;
 final MAX_EDITOR_NODES: Integer = 4096;
 final MAX_PROJECT_PREVIEW_NODES: Integer = 4096;
 final MAX_PROJECT_PREVIEW_ASSETS: Integer = 256;
+final MAX_PROJECT_MATERIAL_PREVIEW_TEXTURES: Integer = 640;
 final PROJECT_WATER_ANIMATION_FRAME_MS: Integer = 33;
 final PROJECT_WATER_MAX_STEP_MS: Integer = 100;
 final MAX_HIERARCHY_DEPTH: Integer = 256;
@@ -273,7 +284,7 @@ final SCENE_INSPECTOR_HISTORY: Integer = 3;
 // Three persistent columns need enough room for readable node paths, a useful
 // viewport, and an inspector that does not collapse every field. Below this
 // width the hierarchy remains one click away as a full-width master.
-final HIERARCHY_PANE_MIN_WIDTH: Number = 1400.0;
+final HIERARCHY_PANE_MIN_WIDTH: Number = 1200.0;
 final RESPONSIVE_WIDTH_EPSILON: Number = 0.01;
 final VIEWPORT_CLEAR_RED: Number = 0.08627450980392157;
 final VIEWPORT_CLEAR_GREEN: Number = 0.10196078431372549;
@@ -1149,11 +1160,17 @@ class SceneEditor3D {
     expose SceneGraph projectPreviewScene;
     expose Integer projectPreviewInstanceCount;
     expose Integer projectPreviewMissingCount;
+    expose Integer projectPreviewFallbackCount;
+    expose Integer projectPreviewDirectModelCount;
     expose Boolean projectPreviewClipped;
     hide List[String] projectPreviewAssetPaths;
     hide List[SceneAsset] projectPreviewAssets;
     hide List[SceneNode] projectPreviewNodes;
     hide List[Integer] projectPreviewOwners;
+    hide List[SceneNode] projectPreviewWrappers;
+    hide List[Integer] projectPreviewWrapperOwners;
+    hide List[scene_component_schema.SceneNodePreview3DDefinition]
+        projectPreviewWrapperRules;
     expose List[Water3D] projectWaterPreviews;
     expose List[Number] projectWaterWidths;
     expose List[Number] projectWaterDepths;
@@ -1164,6 +1181,16 @@ class SceneEditor3D {
     hide List[String] projectWaterImagePaths;
     hide List[Pixels] projectWaterImages;
     hide Integer projectWaterLastAnimationMs;
+    expose Integer projectMaterialPreviewCount;
+    expose Integer projectMaterialPreviewMissingCount;
+    hide List[SceneNode] projectMaterialPreviewNodes;
+    hide List[scene_component_schema.SceneMaterialPreview3DDefinition]
+        projectMaterialPreviewRules;
+    hide List[Material3D] projectMaterialPreviewMaterials;
+    hide List[SceneNode] projectMaterialPreviewFrameNodes;
+    hide List[Material3D] projectMaterialPreviewFrameMaterials;
+    hide List[String] projectMaterialPreviewTexturePaths;
+    hide List[Any] projectMaterialPreviewTextures;
     expose document.Document currentDoc;
     expose SceneGraph scene;
     expose Pixels viewportPixels;
@@ -1614,11 +1641,16 @@ class SceneEditor3D {
         projectPreviewScene = null;
         projectPreviewInstanceCount = 0;
         projectPreviewMissingCount = 0;
+        projectPreviewFallbackCount = 0;
+        projectPreviewDirectModelCount = 0;
         projectPreviewClipped = false;
         projectPreviewAssetPaths = [];
         projectPreviewAssets = [];
         projectPreviewNodes = [];
         projectPreviewOwners = [];
+        projectPreviewWrappers = [];
+        projectPreviewWrapperOwners = [];
+        projectPreviewWrapperRules = [];
         projectWaterPreviews = [];
         projectWaterWidths = [];
         projectWaterDepths = [];
@@ -1629,6 +1661,15 @@ class SceneEditor3D {
         projectWaterImagePaths = [];
         projectWaterImages = [];
         projectWaterLastAnimationMs = 0;
+        projectMaterialPreviewCount = 0;
+        projectMaterialPreviewMissingCount = 0;
+        projectMaterialPreviewNodes = [];
+        projectMaterialPreviewRules = [];
+        projectMaterialPreviewMaterials = [];
+        projectMaterialPreviewFrameNodes = [];
+        projectMaterialPreviewFrameMaterials = [];
+        projectMaterialPreviewTexturePaths = [];
+        projectMaterialPreviewTextures = [];
         currentDoc = null;
         scene = null;
         viewportPixels = null;
@@ -1895,21 +1936,70 @@ class SceneEditor3D {
         return "";
     }
 
-    /// @brief Find the first project rule matching one exact string metadata.
-    hide func ProjectNodePreviewRule(
-        node: SceneNode) -> scene_component_schema.SceneNodePreview3DDefinition {
+    /// @brief Match one exact typed scalar against a canonical scene node.
+    hide func ProjectNodeMetadataMatches(
+        node: SceneNode,
+        matchProperty: String,
+        matchKind: String,
+        matchBoolean: Boolean,
+        matchInteger: Integer,
+        matchString: String) -> Boolean {
+        if node == null or matchProperty == ""
+           or node.MetadataHas(matchProperty) == false
+           or node.MetadataKind(matchProperty) != matchKind {
+            return false;
+        }
+        if matchKind == "bool" {
+            return node.MetadataGetBool(
+                matchProperty, false) == matchBoolean;
+        }
+        if matchKind == "int" {
+            return node.MetadataGetInt(
+                matchProperty, 0) == matchInteger;
+        }
+        if matchKind == "string" {
+            return node.MetadataGetString(
+                matchProperty, "") == matchString;
+        }
+        return false;
+    }
+
+    /// @brief Return whether one typed node-preview rule matches a source node.
+    hide func ProjectNodePreviewRuleMatches(
+        node: SceneNode,
+        rule: scene_component_schema.SceneNodePreview3DDefinition)
+        -> Boolean {
+        if node == null or rule == null {
+            return false;
+        }
+        return ProjectNodeMetadataMatches(
+            node,
+            rule.matchProperty,
+            rule.matchKind,
+            rule.matchBoolean,
+            rule.matchInteger,
+            rule.matchString);
+    }
+
+    /// @brief Find the first typed material rule matching one canonical node.
+    hide func ProjectMaterialPreviewRule(
+        node: SceneNode)
+        -> scene_component_schema.SceneMaterialPreview3DDefinition {
         if node == null or componentSchema == null
            or componentSchema.valid == false {
             return null;
         }
         var index = 0;
-        while index < componentSchema.nodePreviews3D.count() {
-            var rule = componentSchema.nodePreviews3D.get(index);
+        while index < componentSchema.materialPreviews3D.count() {
+            var rule = componentSchema.materialPreviews3D.get(index);
             if rule != null
-               and node.MetadataHas(rule.matchProperty)
-               and node.MetadataKind(rule.matchProperty) == "string"
-               and node.MetadataGetString(rule.matchProperty, "")
-                  == rule.matchValue {
+               and ProjectNodeMetadataMatches(
+                   node,
+                   rule.matchProperty,
+                   rule.matchKind,
+                   rule.matchBoolean,
+                   rule.matchInteger,
+                   rule.matchString) {
                 return rule;
             }
             index = index + 1;
@@ -2220,6 +2310,244 @@ class SceneEditor3D {
         return image;
     }
 
+    /// @brief Load and cache one bounded project material-preview texture.
+    /// @details Raster and strict KTX2 decoding share the material inspector's
+    ///          limits. Failed references are cached as null so one malformed
+    ///          rule cannot repeat filesystem or decoder work for every node.
+    hide func ProjectMaterialPreviewTexture(reference: String) -> Any {
+        if reference == "" { return null; }
+        var index = 0;
+        while index < projectMaterialPreviewTexturePaths.count() {
+            if projectMaterialPreviewTexturePaths.get(index) == reference {
+                return projectMaterialPreviewTextures.get(index);
+            }
+            index = index + 1;
+        }
+        if projectMaterialPreviewTexturePaths.count()
+           >= MAX_PROJECT_MATERIAL_PREVIEW_TEXTURES {
+            projectPreviewClipped = true;
+            return null;
+        }
+        var texture: Any = null;
+        var root = ComponentSchemaRoot();
+        if root != "" {
+            var fullPath = Path.Normalize(Path.Absolute(
+                Path.Join(root, reference)));
+            var sourceBytes = safe_io.SizeBytes(fullPath);
+            if sourceBytes > 0 and sourceBytes <= MAX_TEXTURE_SOURCE_BYTES {
+                texture = scene_material_3d.LoadTexturePath(fullPath);
+            }
+        }
+        projectMaterialPreviewTexturePaths.add(reference);
+        projectMaterialPreviewTextures.add(texture);
+        return texture;
+    }
+
+    /// @brief Clone one canonical material and apply one declarative overlay.
+    /// @details Every configured texture must load before the clone publishes;
+    ///          missing or wrong-typed root emissive mappings fail the complete
+    ///          node overlay rather than showing a misleading partial result.
+    hide func BuildProjectMaterialPreview(
+        node: SceneNode,
+        rule: scene_component_schema.SceneMaterialPreview3DDefinition)
+        -> Material3D {
+        if node == null or rule == null { return null; }
+        var albedo: Any = null;
+        var normal: Any = null;
+        var metallicRoughness: Any = null;
+        var ambientOcclusion: Any = null;
+        var emissive: Any = null;
+        if rule.albedoMap != "" {
+            albedo = ProjectMaterialPreviewTexture(rule.albedoMap);
+            if albedo == null { return null; }
+        }
+        if rule.normalMap != "" {
+            normal = ProjectMaterialPreviewTexture(rule.normalMap);
+            if normal == null { return null; }
+        }
+        if rule.metallicRoughnessMap != "" {
+            metallicRoughness =
+                ProjectMaterialPreviewTexture(
+                    rule.metallicRoughnessMap);
+            if metallicRoughness == null { return null; }
+        }
+        if rule.ambientOcclusionMap != "" {
+            ambientOcclusion =
+                ProjectMaterialPreviewTexture(
+                    rule.ambientOcclusionMap);
+            if ambientOcclusion == null { return null; }
+        }
+        if rule.emissiveMap != "" {
+            emissive = ProjectMaterialPreviewTexture(rule.emissiveMap);
+            if emissive == null { return null; }
+        }
+
+        var emissiveR = rule.emissiveR;
+        var emissiveG = rule.emissiveG;
+        var emissiveB = rule.emissiveB;
+        if rule.HasRootEmissive() {
+            if scene == null or scene.Root == null {
+                return null;
+            }
+            var properties: List[String] = [
+                rule.emissiveRProperty,
+                rule.emissiveGProperty,
+                rule.emissiveBProperty
+            ];
+            var propertyIndex = 0;
+            while propertyIndex < properties.count() {
+                var propertyKey = properties.get(propertyIndex);
+                if scene.Root.MetadataHas(propertyKey) == false
+                   or scene.Root.MetadataKind(propertyKey) != "float" {
+                    return null;
+                }
+                propertyIndex = propertyIndex + 1;
+            }
+            emissiveR = ClampNumber3D(
+                scene.Root.MetadataGetFloat(
+                    rule.emissiveRProperty, 0.0)
+                    * rule.emissiveMultiplier,
+                0.0, 1.0);
+            emissiveG = ClampNumber3D(
+                scene.Root.MetadataGetFloat(
+                    rule.emissiveGProperty, 0.0)
+                    * rule.emissiveMultiplier,
+                0.0, 1.0);
+            emissiveB = ClampNumber3D(
+                scene.Root.MetadataGetFloat(
+                    rule.emissiveBProperty, 0.0)
+                    * rule.emissiveMultiplier,
+                0.0, 1.0);
+        }
+
+        var next: Material3D = null;
+        if node.Material != null {
+            next = Material3D.Clone(node.Material) as Material3D;
+        } else {
+            next = Material3D.PBR(1.0, 1.0, 1.0) as Material3D;
+        }
+        if next == null { return null; }
+        if albedo != null { next.SetTexture(albedo); }
+        if normal != null { next.SetNormalMap(normal); }
+        if metallicRoughness != null {
+            next.SetMetallicRoughnessMap(metallicRoughness);
+        }
+        if ambientOcclusion != null {
+            next.SetAmbientOcclusionMap(ambientOcclusion);
+        }
+        if emissive != null { next.SetEmissiveMap(emissive); }
+        if rule.hasMetallic { next.Metallic = rule.metallic; }
+        if rule.hasRoughness { next.Roughness = rule.roughness; }
+        if rule.hasAmbientOcclusion {
+            next.AmbientOcclusion = rule.ambientOcclusion;
+        }
+        if rule.hasNormalScale { next.NormalScale = rule.normalScale; }
+        if rule.hasEmissiveColor or rule.HasRootEmissive() {
+            Material3D.SetEmissiveColor(
+                next, emissiveR, emissiveG, emissiveB);
+        }
+        if rule.hasEmissiveIntensity {
+            next.EmissiveIntensity = rule.emissiveIntensity;
+        }
+        if rule.hasSsrEnabled { next.SsrEnabled = rule.ssrEnabled; }
+        return next;
+    }
+
+    /// @brief Rebuild render-only material clones without reloading textures.
+    hide func RebuildProjectMaterialPreviews() {
+        projectMaterialPreviewCount = 0;
+        projectMaterialPreviewMissingCount = 0;
+        projectMaterialPreviewNodes = [];
+        projectMaterialPreviewRules = [];
+        projectMaterialPreviewMaterials = [];
+        projectMaterialPreviewFrameNodes = [];
+        projectMaterialPreviewFrameMaterials = [];
+        if scene == null or componentSchema == null
+           or componentSchema.valid == false
+           or componentSchema.materialPreviews3D.count() == 0 {
+            return;
+        }
+        var index = 0;
+        while index < flatNodes.count() {
+            var node = flatNodes.get(index);
+            var rule = ProjectMaterialPreviewRule(node);
+            if rule != null {
+                var material =
+                    BuildProjectMaterialPreview(node, rule);
+                if material == null {
+                    projectMaterialPreviewMissingCount =
+                        projectMaterialPreviewMissingCount + 1;
+                } else {
+                    projectMaterialPreviewNodes.add(node);
+                    projectMaterialPreviewRules.add(rule);
+                    projectMaterialPreviewMaterials.add(material);
+                    projectMaterialPreviewCount =
+                        projectMaterialPreviewCount + 1;
+                }
+            }
+            index = index + 1;
+        }
+    }
+
+    /// @brief Return one node's disposable material clone for focused probes.
+    expose func ProjectMaterialPreviewForNode(
+        nodeIndex: Integer) -> Material3D {
+        if nodeIndex < 0 or nodeIndex >= flatNodes.count() {
+            return null;
+        }
+        var node = flatNodes.get(nodeIndex);
+        var index = 0;
+        while index < projectMaterialPreviewNodes.count()
+              and index < projectMaterialPreviewMaterials.count() {
+            if projectMaterialPreviewNodes.get(index) == node {
+                return projectMaterialPreviewMaterials.get(index);
+            }
+            index = index + 1;
+        }
+        return null;
+    }
+
+    /// @brief Substitute preview clones for one synchronous shaded draw.
+    hide func ApplyProjectMaterialPreviews() {
+        projectMaterialPreviewFrameNodes = [];
+        projectMaterialPreviewFrameMaterials = [];
+        var index = 0;
+        while index < projectMaterialPreviewNodes.count()
+              and index < projectMaterialPreviewRules.count()
+              and index < projectMaterialPreviewMaterials.count() {
+            var node = projectMaterialPreviewNodes.get(index);
+            var rule = projectMaterialPreviewRules.get(index);
+            var material = projectMaterialPreviewMaterials.get(index);
+            if node != null and material != null {
+                if rule.useProjectEnvironment
+                   and projectSkyCubemap != null {
+                    Material3D.SetEnvMap(
+                        material, projectSkyCubemap);
+                }
+                projectMaterialPreviewFrameNodes.add(node);
+                projectMaterialPreviewFrameMaterials.add(node.Material);
+                node.Material = material;
+            }
+            index = index + 1;
+        }
+    }
+
+    /// @brief Restore every canonical material immediately after frame submit.
+    hide func RestoreProjectMaterialPreviews() {
+        var index = 0;
+        while index < projectMaterialPreviewFrameNodes.count()
+              and index < projectMaterialPreviewFrameMaterials.count() {
+            var node = projectMaterialPreviewFrameNodes.get(index);
+            if node != null {
+                node.Material =
+                    projectMaterialPreviewFrameMaterials.get(index);
+            }
+            index = index + 1;
+        }
+        projectMaterialPreviewFrameNodes = [];
+        projectMaterialPreviewFrameMaterials = [];
+    }
+
     /// @brief Construct one bounded public-runtime water surface.
     hide func AddProjectWaterPreview(
         layer: scene_component_schema.SceneWaterLayer3DDefinition)
@@ -2278,7 +2606,20 @@ class SceneEditor3D {
         return true;
     }
 
+    /// @brief Return whether one preview path is a direct imported model.
+    hide func IsProjectDirectModelPath(path: String) -> Boolean {
+        var folded = Str.ToLower(path);
+        return Str.EndsWith(folded, ".gltf")
+            or Str.EndsWith(folded, ".glb")
+            or Str.EndsWith(folded, ".fbx")
+            or Str.EndsWith(folded, ".obj")
+            or Str.EndsWith(folded, ".stl");
+    }
+
     /// @brief Load and cache one validated project preview asset.
+    /// @details The public result API accepts VSCN plus glTF/GLB/FBX/OBJ/STL.
+    ///          Parent bytes are checked before and after the import so a
+    ///          growing or replaced source cannot publish a partial preview.
     hide func ProjectNodePreviewAsset(path: String) -> SceneAsset {
         var index = 0;
         while index < projectPreviewAssetPaths.count() {
@@ -2293,11 +2634,14 @@ class SceneEditor3D {
             return null;
         }
         var asset: SceneAsset = null;
-        var read = safe_io.ReadAllTextBounded(path, MAX_SCENE_BYTES);
-        if read.ok {
-            var loaded = SceneAsset.LoadTextResult(path, read.text);
+        var beforeSize = safe_io.SizeBytes(path);
+        if beforeSize >= 0 and beforeSize <= MAX_SCENE_BYTES {
+            var loaded = SceneAsset.LoadResult(path);
+            var afterSize = safe_io.SizeBytes(path);
             if loaded != null and loaded.IsOk {
-                asset = loaded.Unwrap() as SceneAsset;
+                if afterSize == beforeSize {
+                    asset = loaded.Unwrap() as SceneAsset;
+                }
             }
         }
         projectPreviewAssetPaths.add(path);
@@ -2325,30 +2669,40 @@ class SceneEditor3D {
         if child < node.ChildCount { projectPreviewClipped = true; }
     }
 
-    /// @brief Compose optional project metadata rotation/scale after source TRS.
+    /// @brief Compose bounded recipe and metadata transforms after source TRS.
     hide func ProjectPreviewWorldMatrix(
         node: SceneNode,
         rule: scene_component_schema.SceneNodePreview3DDefinition) -> Mat4 {
         var result = node.WorldMatrix;
-        var yaw = 0.0;
+        var yaw = rule.yawDegrees * DEG_TO_RAD;
         if rule.yawProperty != ""
            and node.MetadataHas(rule.yawProperty)
            and node.MetadataKind(rule.yawProperty) == "float" {
-            yaw = node.MetadataGetFloat(rule.yawProperty, 0.0);
-            if rule.yawUnit == "degrees" { yaw = yaw * DEG_TO_RAD; }
+            var mappedYaw =
+                node.MetadataGetFloat(rule.yawProperty, 0.0);
+            if rule.yawUnit == "degrees" {
+                mappedYaw = mappedYaw * DEG_TO_RAD;
+            }
+            yaw = yaw + mappedYaw;
         }
-        var scale = 1.0;
+        var scale = rule.scale;
         if rule.scaleProperty != ""
            and node.MetadataHas(rule.scaleProperty)
            and node.MetadataKind(rule.scaleProperty) == "float" {
-            scale = ClampNumber3D(
+            var mappedScale = ClampNumber3D(
                 node.MetadataGetFloat(rule.scaleProperty, 1.0),
                 -1000.0,
                 1000.0);
+            scale = scale * mappedScale;
         }
         return Mat4.Mul(
             result,
-            Mat4.Mul(Mat4.RotateY(yaw), Mat4.ScaleUniform(scale)));
+            Mat4.Mul(
+                Mat4.Translate(
+                    rule.offsetX, rule.offsetY, rule.offsetZ),
+                Mat4.Mul(
+                    Mat4.RotateY(yaw),
+                    Mat4.ScaleUniform(scale))));
     }
 
     /// @brief Instantiate one base or additive scene-environment preview.
@@ -2402,17 +2756,75 @@ class SceneEditor3D {
         return true;
     }
 
+    /// @brief Try one matched node-preview recipe without publishing failure.
+    /// @details Callers may continue to a later matching rule when the preferred
+    ///          project model is absent or invalid. Only a complete instantiated
+    ///          graph enters the disposable preview scene.
+    hide func TryAddProjectNodePreview(
+        projectRoot: String,
+        source: SceneNode,
+        sourceIndex: Integer,
+        rule: scene_component_schema.SceneNodePreview3DDefinition)
+        -> Boolean {
+        var reference = ProjectNodePreviewPrefab(source, rule);
+        if reference == "" { return false; }
+        var path = Path.Normalize(Path.Absolute(
+            Path.Join(projectRoot, reference)));
+        var asset = ProjectNodePreviewAsset(path);
+        if asset == null { return false; }
+        var instance = asset.InstantiateScene() as SceneGraph;
+        if instance == null
+           or instance.Root == null
+           or instance.Root.ChildCount == 0 {
+            return false;
+        }
+        if projectPreviewNodes.count() + instance.NodeCount
+           > MAX_PROJECT_PREVIEW_NODES {
+            projectPreviewClipped = true;
+            return false;
+        }
+        var wrapper = SceneNode.New();
+        wrapper.Name = "Preview " + sourceIndex;
+        var prefabRoot = instance.Root;
+        while prefabRoot.ChildCount > 0 {
+            var child = prefabRoot.GetChild(0);
+            prefabRoot.RemoveChild(child);
+            wrapper.AddChild(child);
+        }
+        if wrapper.TrySetWorldMatrix(
+               ProjectPreviewWorldMatrix(source, rule)) == false {
+            return false;
+        }
+        projectPreviewScene.Add(wrapper);
+        AppendProjectPreviewOwners(wrapper, sourceIndex);
+        projectPreviewWrappers.add(wrapper);
+        projectPreviewWrapperOwners.add(sourceIndex);
+        projectPreviewWrapperRules.add(rule);
+        projectPreviewInstanceCount =
+            projectPreviewInstanceCount + 1;
+        if IsProjectDirectModelPath(path) {
+            projectPreviewDirectModelCount =
+                projectPreviewDirectModelCount + 1;
+        }
+        return true;
+    }
+
     /// @brief Rebuild every project preview in a disposable scene graph.
     /// @details No transient node ever enters the canonical scene or history.
     hide func RebuildProjectNodePreviews() {
         projectPreviewScene = null;
         projectPreviewInstanceCount = 0;
         projectPreviewMissingCount = 0;
+        projectPreviewFallbackCount = 0;
+        projectPreviewDirectModelCount = 0;
         projectPreviewClipped = false;
         projectPreviewAssetPaths = [];
         projectPreviewAssets = [];
         projectPreviewNodes = [];
         projectPreviewOwners = [];
+        projectPreviewWrappers = [];
+        projectPreviewWrapperOwners = [];
+        projectPreviewWrapperRules = [];
         projectWaterPreviews = [];
         projectWaterWidths = [];
         projectWaterDepths = [];
@@ -2423,6 +2835,8 @@ class SceneEditor3D {
         projectWaterImagePaths = [];
         projectWaterImages = [];
         projectWaterLastAnimationMs = 0;
+        projectMaterialPreviewTexturePaths = [];
+        projectMaterialPreviewTextures = [];
         var environmentReference =
             ProjectEnvironmentPreviewPrefab();
         var profile:
@@ -2431,12 +2845,16 @@ class SceneEditor3D {
             profile = componentSchema.scenePreview3D;
         }
         if scene == null or componentSchema == null
-           or componentSchema.valid == false
-           or (componentSchema.nodePreviews3D.count() == 0
-               and environmentReference == ""
-               and (profile == null
-                    or (profile.environmentLayers.count() == 0
-                        and profile.waterLayers.count() == 0))) {
+           or componentSchema.valid == false {
+            RebuildProjectMaterialPreviews();
+            return;
+        }
+        RebuildProjectMaterialPreviews();
+        if componentSchema.nodePreviews3D.count() == 0
+           and environmentReference == ""
+           and (profile == null
+                or (profile.environmentLayers.count() == 0
+                    and profile.waterLayers.count() == 0)) {
             return;
         }
         var projectRoot = ComponentSchemaRoot();
@@ -2484,50 +2902,30 @@ class SceneEditor3D {
               and projectPreviewNodes.count()
                   < MAX_PROJECT_PREVIEW_NODES {
             var source = flatNodes.get(sourceIndex);
-            var rule = ProjectNodePreviewRule(source);
-            var reference =
-                ProjectNodePreviewPrefab(source, rule);
-            if reference != "" {
-                var path = Path.Normalize(Path.Absolute(
-                    Path.Join(projectRoot, reference)));
-                var asset = ProjectNodePreviewAsset(path);
-                var instance: SceneGraph = null;
-                if asset != null {
-                    instance = asset.InstantiateScene() as SceneGraph;
+            var matched = 0;
+            var added = false;
+            var ruleIndex = 0;
+            while ruleIndex < componentSchema.nodePreviews3D.count()
+                  and added == false
+                  and projectPreviewClipped == false {
+                var rule =
+                    componentSchema.nodePreviews3D.get(ruleIndex);
+                if ProjectNodePreviewRuleMatches(source, rule) {
+                    matched = matched + 1;
+                    added = TryAddProjectNodePreview(
+                        projectRoot, source, sourceIndex, rule);
                 }
-                if instance == null
-                   or instance.Root == null
-                   or instance.Root.ChildCount == 0 {
-                    projectPreviewMissingCount =
-                        projectPreviewMissingCount + 1;
-                } else if projectPreviewNodes.count()
-                          + instance.NodeCount
-                          > MAX_PROJECT_PREVIEW_NODES {
-                    projectPreviewClipped = true;
-                    break;
-                } else {
-                    var wrapper = SceneNode.New();
-                    wrapper.Name = "Preview " + sourceIndex;
-                    var prefabRoot = instance.Root;
-                    while prefabRoot.ChildCount > 0 {
-                        var child = prefabRoot.GetChild(0);
-                        prefabRoot.RemoveChild(child);
-                        wrapper.AddChild(child);
-                    }
-                    if wrapper.TrySetWorldMatrix(
-                           ProjectPreviewWorldMatrix(
-                               source, rule)) == false {
-                        projectPreviewMissingCount =
-                            projectPreviewMissingCount + 1;
-                    } else {
-                        projectPreviewScene.Add(wrapper);
-                        AppendProjectPreviewOwners(
-                            wrapper, sourceIndex);
-                        projectPreviewInstanceCount =
-                            projectPreviewInstanceCount + 1;
-                    }
-                }
+                ruleIndex = ruleIndex + 1;
             }
+            if added and matched > 1 {
+                projectPreviewFallbackCount =
+                    projectPreviewFallbackCount + 1;
+            } else if matched > 0 and added == false
+                      and projectPreviewClipped == false {
+                projectPreviewMissingCount =
+                    projectPreviewMissingCount + 1;
+            }
+            if projectPreviewClipped { break; }
             sourceIndex = sourceIndex + 1;
         }
         if sourceIndex < flatNodes.count() {
@@ -2540,30 +2938,27 @@ class SceneEditor3D {
     }
 
     /// @brief Follow live source transforms without rebuilding preview assets.
-    /// @details Only direct wrapper children of the disposable preview root
-    ///          receive matrices. Descendants inherit from those wrappers,
-    ///          environment owner -1 remains fixed, and canonical bytes never
-    ///          change. This keeps prefab presentation aligned during a gizmo
-    ///          gesture before the one release-time serialization.
+    /// @details The exact rule that successfully produced each wrapper is
+    ///          retained, so a preferred direct model that fell back to a later
+    ///          recipe never acquires the failed recipe's transform. Canonical
+    ///          bytes remain untouched during live gizmo movement.
     hide func SyncProjectNodePreviewTransforms() {
         if projectPreviewScene == null
            or projectPreviewScene.Root == null {
             return;
         }
         var index = 0;
-        while index < projectPreviewNodes.count()
-              and index < projectPreviewOwners.count() {
-            var preview = projectPreviewNodes.get(index);
-            var owner = projectPreviewOwners.get(index);
-            if preview != null
-               and preview.Parent == projectPreviewScene.Root
+        while index < projectPreviewWrappers.count()
+              and index < projectPreviewWrapperOwners.count()
+              and index < projectPreviewWrapperRules.count() {
+            var preview = projectPreviewWrappers.get(index);
+            var owner = projectPreviewWrapperOwners.get(index);
+            var rule = projectPreviewWrapperRules.get(index);
+            if preview != null and rule != null
                and owner >= 0 and owner < flatNodes.count() {
                 var source = flatNodes.get(owner);
-                var rule = ProjectNodePreviewRule(source);
-                if rule != null {
-                    preview.TrySetWorldMatrix(
-                        ProjectPreviewWorldMatrix(source, rule));
-                }
+                preview.TrySetWorldMatrix(
+                    ProjectPreviewWorldMatrix(source, rule));
             }
             index = index + 1;
         }
@@ -3443,8 +3838,8 @@ class SceneEditor3D {
                 scene_transform_3d.DEFAULT_SCALE_SNAP_INCREMENT;
             flyActive = false;
             flyLastMs = -1;
-            if bodySplit != null { bodySplit.SetPosition(0.62); }
-            if hierarchySplit != null { hierarchySplit.SetPosition(0.22); }
+            if bodySplit != null { bodySplit.SetPosition(0.70); }
+            if hierarchySplit != null { hierarchySplit.SetPosition(0.18); }
             pendingInspectorScrollY = 0.0;
             sceneInspectorSection = SCENE_INSPECTOR_WORLD;
             if sceneSectionDropdown != null {
@@ -8518,6 +8913,10 @@ class SceneEditor3D {
         currentDoc.content = text;
         currentDoc.isModified = currentSerialized != cleanSerialized;
         revision = revision + 1;
+        // Material overlays derive from canonical material objects and root
+        // metadata. Rebuild only their cheap clones after accepted edits;
+        // project textures remain cached and prefab assets are untouched.
+        RebuildProjectMaterialPreviews();
         renderDirty = true;
         toolbarStatus.SetText(message);
         detailLabel.SetText("");
@@ -16778,6 +17177,9 @@ class SceneEditor3D {
         // between canonical, prefab, and procedural presentation.
         Canvas3D.Begin(
             viewportRenderCanvas, viewportRenderCamera);
+        if renderMode != VIEWPORT_MODE_WIREFRAME {
+            ApplyProjectMaterialPreviews();
+        }
         scene.Draw(viewportRenderCanvas, viewportRenderCamera);
         if projectPreviewScene != null {
             projectPreviewScene.Draw(
@@ -16799,6 +17201,7 @@ class SceneEditor3D {
             viewportRenderCanvas.Wireframe = false;
         }
         Canvas3D.End(viewportRenderCanvas);
+        RestoreProjectMaterialPreviews();
         var rendered: Pixels = null;
         if viewportRenderPostFX != null
            and renderMode != VIEWPORT_MODE_WIREFRAME {
@@ -17171,9 +17574,26 @@ class SceneEditor3D {
             previewStatus = "  |  "
                 + projectPreviewInstanceCount + " project preview(s)";
         }
+        if projectPreviewDirectModelCount > 0 {
+            previewStatus = previewStatus + "  |  "
+                + projectPreviewDirectModelCount + " direct model(s)";
+        }
+        if projectPreviewFallbackCount > 0 {
+            previewStatus = previewStatus + "  |  "
+                + projectPreviewFallbackCount + " preview fallback(s)";
+        }
+        if projectMaterialPreviewCount > 0 {
+            previewStatus = previewStatus + "  |  "
+                + projectMaterialPreviewCount + " runtime material(s)";
+        }
         if projectPreviewMissingCount > 0 {
             previewStatus = previewStatus + "  |  "
                 + projectPreviewMissingCount + " preview missing";
+        }
+        if projectMaterialPreviewMissingCount > 0 {
+            previewStatus = previewStatus + "  |  "
+                + projectMaterialPreviewMissingCount
+                + " material preview missing";
         }
         if projectPreviewClipped {
             previewStatus = previewStatus + "  |  preview cap";
@@ -17187,7 +17607,9 @@ class SceneEditor3D {
                 viewportImage.SetAccessibleDescription(
                     count + " scene nodes and " + lightCount
                     + " authored lights plus " + projectPreviewInstanceCount
-                    + " project previews in the locked "
+                    + " project previews and "
+                    + projectMaterialPreviewCount
+                    + " runtime materials in the locked "
                     + GameOutputSizeLabel()
                     + " project gameplay frame. Exit Game View to navigate "
                     + "or edit.");
@@ -17200,7 +17622,9 @@ class SceneEditor3D {
                     count + " scene nodes and " + lightCount
                     + " authored lights plus "
                     + projectPreviewInstanceCount
-                    + " project previews in clean shaded Game View. "
+                    + " project previews and "
+                    + projectMaterialPreviewCount
+                    + " runtime materials in clean shaded Game View. "
                     + "Middle or right drag orbits, Shift pans, the wheel "
                     + "dollies, and right-drag enables fly navigation. "
                     + "Exit to edit.");
@@ -17219,7 +17643,9 @@ class SceneEditor3D {
             viewportImage.SetAccessibleDescription(
                 count + " scene nodes and " + lightCount
                 + " authored lights plus " + projectPreviewInstanceCount
-                + " project previews in " + renderStatus
+                + " project previews and "
+                + projectMaterialPreviewCount
+                + " runtime materials in " + renderStatus
                 + " mode at " + viewScale + " pixels per world unit. "
                 + "Click visible meshes to select; Shift adds and Control or "
                 + "Command toggles. Middle or right drag orbits; add Shift "

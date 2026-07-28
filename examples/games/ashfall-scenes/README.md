@@ -32,12 +32,15 @@ zenith/horizon/ground sky palette, sky IBL, key/fill lights, distance and
 height fog, and overlay defaults into Studio. Large missions therefore open at
 player-eye scale with their runtime atmosphere and diagnostic mesh/collider
 clutter hidden. It also maps every authored prop, enemy spawn, and pickup
-marker to one of 43 real node prefab previews under
-`assets/editor-previews/`. Those self-contained previews are baked from the
-same procedural mesh builders and palette choices as Ashfall's runtime
-fallback art, so Studio shows recognizable gameplay silhouettes instead of
-generic marker glyphs. They are read-only authoring visuals: preview loading
-does not add nodes to the saved mission or change runtime instancing.
+marker to project-owned authoring art. Props and pickups use the checked-in
+prefabs under `assets/editor-previews/`. Schema-v17 typed enemy-archetype rules
+load the same project glTF rigs, scales, facing correction, and flying offsets
+as the runtime registry. The fourteen generated enemy prefabs remain ordered
+fallbacks when optional imported art is missing and for procedural-only
+archetypes. Studio therefore shows the game's actual actors when available
+without losing the runtime fallback contract. All of these are read-only
+authoring visuals: preview loading does not add nodes to the saved mission or
+change runtime instancing.
 Three additional scene-level prefabs sample the runtime's deterministic
 terrain formula across the same 256-meter footprint. The root `af.terrain`
 value selects the canyon, ash-sea, or terrace variant, so the gameplay view
@@ -49,6 +52,13 @@ dimensions, generated production water image, concrete normal map, 64-by-64
 grid, and two wave records as the running game. Studio submits canonical
 geometry, project prefabs, and transparent water in one frame while keeping the
 surface out of hierarchy, picking, save data, dirty state, and history.
+Schema-v16 material rules map each node's typed `surf` value to the exact
+runtime surface presentation. The preview generator runs the production
+`TextureLib` to bake eighteen 256×256 albedo/normal images, while the schema
+retains the game values for roughness, metallic, environment reflection, SSR,
+and fixed or level-colored emissive output. Studio applies those values to
+temporary clones during the shaded frame and restores every canonical VSCN
+material immediately afterward.
 The schema also carries the balanced runtime tonemap, bloom, color-grade,
 vignette, and FXAA values. Studio finalizes that retained chain before viewport
 readback, giving the mission the same pale high-key atmosphere as the running
@@ -74,10 +84,13 @@ surface-class palette. The generic contracts are documented by
 [ADR 0208](../../../docs/adr/0208-project-authored-game-output-frames.md),
 [ADR 0209](../../../docs/adr/0209-project-component-creation-recipes.md),
 [ADR 0212](../../../docs/adr/0212-additive-3d-environment-preview-layers.md),
-and [ADR 0213](../../../docs/adr/0213-runtime-backed-water-preview-layers.md).
+[ADR 0213](../../../docs/adr/0213-runtime-backed-water-preview-layers.md),
+[ADR 0214](../../../docs/adr/0214-project-owned-3d-material-previews.md),
+and [ADR 0215](../../../docs/adr/0215-project-owned-direct-model-previews.md).
 
-Regenerate the preview prefabs and water images deterministically after
-changing production prop, enemy, pickup, terrain, or water presentation:
+Regenerate the procedural fallback prefabs, water images, and surface maps
+deterministically after changing production prop, enemy, pickup, terrain,
+water, or material presentation:
 
 ```sh
 (
@@ -86,9 +99,10 @@ changing production prop, enemy, pickup, terrain, or water presentation:
 )
 ```
 
-`probes/assets_probe.zia` loads all 46 prefab scenes and decodes both 256×256
-water images as part of the portable asset check, in addition to exercising
-optional art and the complete runtime fallback path.
+`probes/assets_probe.zia` loads all 46 prefab scenes, all twelve direct enemy
+model assets, both 256×256 water images, and all eighteen production surface
+maps as part of the portable asset check, in addition to exercising optional
+art and the complete runtime fallback path.
 
 ---
 
@@ -222,13 +236,16 @@ probes/     deterministic Ashfall-specific validation programs
 
 ## Direct validation
 
-The 14 portable probes can be run without ctest:
+The 14 portable probes can be run without ctest. Run them from the game folder
+so every authored `assets/...` reference resolves to this project rather than
+the recovery-room fallback:
 
 ```sh
-zanna check examples/games/ashfall --diagnostic-format=json
+cd examples/games/ashfall-scenes
+zanna check . --diagnostic-format=json
 
 for probe in core movement perf stress_combat combat enemy level manifest meta render campaign menu assets smoke; do
-  zanna run "examples/games/ashfall-scenes/probes/${probe}_probe.zia"
+  zanna run "probes/${probe}_probe.zia"
 done
 ```
 
@@ -244,8 +261,8 @@ registered CTest runs it specifically on Metal and rejects backend fallback:
 ```sh
 ctest --test-dir build -R zia_visual_ashfall_metal --output-on-failure
 
-# Direct run on the selected platform backend; the PNG is written to the OS temp directory.
-ZANNA_3D_BACKEND=metal zanna run examples/games/ashfall-scenes/probes/visual_probe.zia
+# Direct run from examples/games/ashfall-scenes; PNG goes to the OS temp directory.
+ZANNA_3D_BACKEND=metal zanna run probes/visual_probe.zia
 ```
 
 For real GPU timing, build the dedicated benchmark natively. Its default mode

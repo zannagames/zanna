@@ -6,13 +6,16 @@
 //===----------------------------------------------------------------------===//
 //
 // File: examples/games/ashfall-scenes/tools/build_studio_previews.zia
-// Purpose: Bake self-contained Studio prefab previews from production game art.
+// Purpose: Bake self-contained Studio geometry and material previews from
+//          production game art.
 // Key invariants:
 //   - Prop and enemy geometry comes from the exact runtime fallback mesh bakers.
 //   - Environment meshes sample the runtime terrain formula at a bounded,
 //     authoring-friendly resolution without executing game code in Studio.
 //   - Water albedo and normal images come from the exact runtime TextureLib;
 //     schema-v15 constructs the public Water3D path at the authored footprint.
+//   - Surface albedo/normal images come from the same seeded runtime TextureLib;
+//     schema-v16 overlays them on authored tint without replacing scene data.
 //   - Stable numeric ordering matches scene metadata variant ids one-for-one.
 //   - Outputs contain no external dependencies and are deterministic across hosts.
 // Ownership/Lifetime:
@@ -22,7 +25,8 @@
 //        docs/adr/0199-project-owned-3d-node-prefab-previews.md,
 //        docs/adr/0203-project-owned-3d-scene-environment-previews.md,
 //        docs/adr/0212-additive-3d-environment-preview-layers.md,
-//        docs/adr/0213-runtime-backed-water-preview-layers.md
+//        docs/adr/0213-runtime-backed-water-preview-layers.md,
+//        docs/adr/0214-project-owned-3d-material-previews.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -184,6 +188,35 @@ func saveWaterPreviewImages() -> Boolean {
     }
     return Pixels.SavePng(
         normal, OUTPUT_ROOT + "/water-normal.png") == 1;
+}
+
+/// @brief Bake exact runtime surface maps for schema-v16 material overlays.
+/// @details Authored node color remains the tint. Pure accent surfaces have no
+///          runtime maps, so their preview uses only mapped emissive color.
+func saveSurfacePreviewImages() -> Boolean {
+    var library = new textures.TextureLib();
+    library.init();
+    library.setup(false);
+    var surface = 0;
+    while surface < textures.SURF_COUNT {
+        if surface != textures.SURF_ACCENT {
+            var albedo = library.rawAlbedo(surface);
+            var normal = library.rawNormal(surface);
+            if albedo == null or normal == null {
+                return false;
+            }
+            var prefix =
+                OUTPUT_ROOT + "/surface-" + variantSuffix(surface);
+            if Pixels.SavePng(
+                   albedo, prefix + "-albedo.png") != 1
+               or Pixels.SavePng(
+                      normal, prefix + "-normal.png") != 1 {
+                return false;
+            }
+        }
+        surface = surface + 1;
+    }
+    return true;
 }
 
 /// @brief Bake one decimated copy of the runtime's procedural terrain.
@@ -391,9 +424,14 @@ func main() {
         Terminal.Say("RESULT: fail water preview images");
         return;
     }
+    if saveSurfacePreviewImages() == false {
+        Terminal.Say("RESULT: fail surface preview images");
+        return;
+    }
 
     Terminal.Say(
         "Built " + (props.PROP_COUNT + config.EN_TYPE_COUNT + 8)
-        + " Studio preview prefabs and 2 water images in " + OUTPUT_ROOT);
+        + " Studio preview prefabs, 2 water images, and 18 surface "
+        + "images in " + OUTPUT_ROOT);
     Terminal.Say("RESULT: ok");
 }

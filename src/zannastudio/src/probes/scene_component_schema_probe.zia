@@ -28,6 +28,10 @@
 //     independent metadata-driven transforms while malformed layers fail closed.
 //   - Version-15 runtime water layers retain bounded dimensions, images,
 //     colors, animation intent, and complete Gerstner wave records.
+//   - Version-16 3D material previews retain typed matches, safe PBR maps,
+//     bounded scalar overlays, and complete fixed or root-mapped emissive data.
+//   - Version-17 node previews retain typed matches, direct model assets, and
+//     bounded fixed transforms while older schemas remain fail-closed.
 //   - Explicitly opened nested scenes discover their nearest project manifest.
 // Ownership/Lifetime: The probe owns only in-memory schema fixtures.
 // Links: zannastudio/src/ui/scene_component_schema.zia,
@@ -44,7 +48,9 @@
 //        docs/adr/0208-project-authored-game-output-frames.md,
 //        docs/adr/0209-project-component-creation-recipes.md,
 //        docs/adr/0212-additive-3d-environment-preview-layers.md,
-//        docs/adr/0213-runtime-backed-water-preview-layers.md
+//        docs/adr/0213-runtime-backed-water-preview-layers.md,
+//        docs/adr/0214-project-owned-3d-material-previews.md,
+//        docs/adr/0215-project-owned-direct-model-previews.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -174,7 +180,7 @@ func main() {
         + "]}",
         "bad-default");
     var badVersion = scene_component_schema.ParseText(
-        "{\"version\":16,\"components\":[]}", "bad-version");
+        "{\"version\":18,\"components\":[]}", "bad-version");
     if duplicateName.valid or duplicateName.components.count() != 0
        or duplicateKey.valid or duplicateKey.components.count() != 0
        or badDefault.valid or badDefault.components.count() != 0
@@ -1122,6 +1128,236 @@ func main() {
        or invalidWaterProperty.valid
        or unsafeWaterImage.scenePreview3D.waterLayers.count() != 0 {
         fail("invalid version-15 water layers were not fail-closed");
+        return;
+    }
+
+    // ADR 0214: runtime-selected PBR presentation can be represented without
+    // replacing canonical node materials or executing project code.
+    var v16Text =
+        "{\"version\":16,\"components\":[],\"materialPreviews3D\":["
+        + "{\"matchProperty\":\"surf\",\"matchValue\":3,"
+        + "\"albedoMap\":\"assets/rock-albedo.png\","
+        + "\"normalMap\":\"assets/rock-normal.ktx2\","
+        + "\"metallicRoughnessMap\":\"assets/rock-mr.png\","
+        + "\"ambientOcclusionMap\":\"assets/rock-ao.png\","
+        + "\"emissiveMap\":\"assets/rock-emissive.png\","
+        + "\"metallic\":0.0,\"roughness\":0.95,"
+        + "\"ambientOcclusion\":0.8,\"normalScale\":1.25,"
+        + "\"emissiveR\":0.02,\"emissiveG\":0.024,"
+        + "\"emissiveB\":0.026,\"emissiveIntensity\":1.0,"
+        + "\"useProjectEnvironment\":true,\"ssrEnabled\":false},"
+        + "{\"matchProperty\":\"isAccent\",\"matchValue\":true,"
+        + "\"emissiveRProperty\":\"env.accentR\","
+        + "\"emissiveGProperty\":\"env.accentG\","
+        + "\"emissiveBProperty\":\"env.accentB\","
+        + "\"emissiveMultiplier\":0.5,"
+        + "\"emissiveIntensity\":2.2},"
+        + "{\"matchProperty\":\"surface.kind\",\"matchValue\":\"screen\","
+        + "\"emissiveMap\":\"assets/screen.gif\"}"
+        + "]}";
+    var v16 = scene_component_schema.ParseText(
+        v16Text, "v16-material-previews");
+    var materialPreviews = v16.materialPreviews3D;
+    if v16.valid == false or v16.version != 16
+       or materialPreviews.count() != 3
+       or materialPreviews.get(0).matchKind != "int"
+       or materialPreviews.get(0).matchInteger != 3
+       or materialPreviews.get(0).albedoMap
+          != "assets/rock-albedo.png"
+       or materialPreviews.get(0).normalMap
+          != "assets/rock-normal.ktx2"
+       or materialPreviews.get(0).metallicRoughnessMap
+          != "assets/rock-mr.png"
+       or materialPreviews.get(0).ambientOcclusionMap
+          != "assets/rock-ao.png"
+       or materialPreviews.get(0).emissiveMap
+          != "assets/rock-emissive.png"
+       or materialPreviews.get(0).hasMetallic == false
+       or near(materialPreviews.get(0).metallic, 0.0) == false
+       or materialPreviews.get(0).hasRoughness == false
+       or near(materialPreviews.get(0).roughness, 0.95) == false
+       or materialPreviews.get(0).hasAmbientOcclusion == false
+       or near(materialPreviews.get(0).ambientOcclusion, 0.8) == false
+       or materialPreviews.get(0).hasNormalScale == false
+       or near(materialPreviews.get(0).normalScale, 1.25) == false
+       or materialPreviews.get(0).hasEmissiveColor == false
+       or near(materialPreviews.get(0).emissiveB, 0.026) == false
+       or materialPreviews.get(0).hasEmissiveIntensity == false
+       or materialPreviews.get(0).useProjectEnvironment == false
+       or materialPreviews.get(0).hasSsrEnabled == false
+       or materialPreviews.get(0).ssrEnabled
+       or materialPreviews.get(1).matchKind != "bool"
+       or materialPreviews.get(1).matchBoolean == false
+       or materialPreviews.get(1).HasRootEmissive() == false
+       or materialPreviews.get(1).emissiveGProperty
+          != "env.accentG"
+       or near(materialPreviews.get(1).emissiveMultiplier, 0.5)
+          == false
+       or materialPreviews.get(2).matchKind != "string"
+       or materialPreviews.get(2).matchString != "screen"
+       or materialPreviews.get(2).HasOverrides() == false {
+        fail("valid version-16 material previews did not round trip");
+        return;
+    }
+    var v15Materials = scene_component_schema.ParseText(
+        "{\"version\":15,\"components\":[],\"materialPreviews3D\":["
+        + "{\"matchProperty\":\"surf\",\"matchValue\":3,"
+        + "\"roughness\":0.9}]}",
+        "v15-material-previews");
+    var fractionalMaterialMatch = scene_component_schema.ParseText(
+        "{\"version\":16,\"components\":[],\"materialPreviews3D\":["
+        + "{\"matchProperty\":\"surf\",\"matchValue\":1.5,"
+        + "\"roughness\":0.9}]}",
+        "fractional-material-match");
+    var unsafeMaterialMap = scene_component_schema.ParseText(
+        "{\"version\":16,\"components\":[],\"materialPreviews3D\":["
+        + "{\"matchProperty\":\"surf\",\"matchValue\":3,"
+        + "\"albedoMap\":\"../rock.png\"}]}",
+        "unsafe-material-map");
+    var incompleteMaterialEmissive = scene_component_schema.ParseText(
+        "{\"version\":16,\"components\":[],\"materialPreviews3D\":["
+        + "{\"matchProperty\":\"surf\",\"matchValue\":3,"
+        + "\"emissiveR\":0.1,\"emissiveG\":0.2}]}",
+        "incomplete-material-emissive");
+    var incompleteMaterialProperties = scene_component_schema.ParseText(
+        "{\"version\":16,\"components\":[],\"materialPreviews3D\":["
+        + "{\"matchProperty\":\"surf\",\"matchValue\":3,"
+        + "\"emissiveRProperty\":\"env.r\","
+        + "\"emissiveGProperty\":\"env.g\"}]}",
+        "incomplete-material-properties");
+    var mixedMaterialEmissive = scene_component_schema.ParseText(
+        "{\"version\":16,\"components\":[],\"materialPreviews3D\":["
+        + "{\"matchProperty\":\"surf\",\"matchValue\":3,"
+        + "\"emissiveR\":0.1,\"emissiveG\":0.2,\"emissiveB\":0.3,"
+        + "\"emissiveRProperty\":\"env.r\","
+        + "\"emissiveGProperty\":\"env.g\","
+        + "\"emissiveBProperty\":\"env.b\"}]}",
+        "mixed-material-emissive");
+    var orphanMaterialMultiplier = scene_component_schema.ParseText(
+        "{\"version\":16,\"components\":[],\"materialPreviews3D\":["
+        + "{\"matchProperty\":\"surf\",\"matchValue\":3,"
+        + "\"emissiveMultiplier\":2.0}]}",
+        "orphan-material-multiplier");
+    var outOfRangeMaterial = scene_component_schema.ParseText(
+        "{\"version\":16,\"components\":[],\"materialPreviews3D\":["
+        + "{\"matchProperty\":\"surf\",\"matchValue\":3,"
+        + "\"roughness\":1.1}]}",
+        "out-of-range-material");
+    var emptyMaterial = scene_component_schema.ParseText(
+        "{\"version\":16,\"components\":[],\"materialPreviews3D\":["
+        + "{\"matchProperty\":\"surf\",\"matchValue\":3}]}",
+        "empty-material-preview");
+    var duplicateMaterial = scene_component_schema.ParseText(
+        "{\"version\":16,\"components\":[],\"materialPreviews3D\":["
+        + "{\"matchProperty\":\"surf\",\"matchValue\":3,"
+        + "\"roughness\":0.9},"
+        + "{\"matchProperty\":\"surf\",\"matchValue\":3,"
+        + "\"metallic\":0.1}]}",
+        "duplicate-material-preview");
+    if v15Materials.valid or fractionalMaterialMatch.valid
+       or unsafeMaterialMap.valid or incompleteMaterialEmissive.valid
+       or incompleteMaterialProperties.valid
+       or mixedMaterialEmissive.valid or orphanMaterialMultiplier.valid
+       or outOfRangeMaterial.valid or emptyMaterial.valid
+       or duplicateMaterial.valid
+       or unsafeMaterialMap.materialPreviews3D.count() != 0 {
+        fail("invalid version-16 material previews were not fail-closed");
+        return;
+    }
+
+    // ADR 0215: typed metadata can select imported project models directly,
+    // with bounded fixed transforms composed over optional metadata mappings.
+    var v17NodeText =
+        "{\"version\":17,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"spawn.kind\",\"matchValue\":3,"
+        + "\"prefab\":\"assets/enemy.glb\",\"scale\":0.85,"
+        + "\"yawDegrees\":180,\"offsetX\":1.0,\"offsetY\":4.2,"
+        + "\"offsetZ\":-2.0},"
+        + "{\"matchProperty\":\"enabled\",\"matchValue\":true,"
+        + "\"prefab\":\"assets/tree.fbx\"},"
+        + "{\"matchProperty\":\"role\",\"matchValue\":\"boss unit\","
+        + "\"prefab\":\"assets/boss.obj\"}]}";
+    var v17Node = scene_component_schema.ParseText(
+        v17NodeText, "v17-direct-model-node-previews");
+    var directNodePreviews = v17Node.nodePreviews3D;
+    if v17Node.valid == false or v17Node.version != 17
+       or directNodePreviews.count() != 3
+       or directNodePreviews.get(0).matchKind != "int"
+       or directNodePreviews.get(0).matchInteger != 3
+       or directNodePreviews.get(0).prefab != "assets/enemy.glb"
+       or near(directNodePreviews.get(0).scale, 0.85) == false
+       or near(directNodePreviews.get(0).yawDegrees, 180.0) == false
+       or near(directNodePreviews.get(0).offsetX, 1.0) == false
+       or near(directNodePreviews.get(0).offsetY, 4.2) == false
+       or near(directNodePreviews.get(0).offsetZ, -2.0) == false
+       or directNodePreviews.get(1).matchKind != "bool"
+       or directNodePreviews.get(1).matchBoolean == false
+       or directNodePreviews.get(1).prefab != "assets/tree.fbx"
+       or directNodePreviews.get(2).matchKind != "string"
+       or directNodePreviews.get(2).matchString != "boss unit"
+       or directNodePreviews.get(2).prefab != "assets/boss.obj" {
+        fail("valid version-17 direct-model node previews did not round trip");
+        return;
+    }
+    var v16TypedNode = scene_component_schema.ParseText(
+        "{\"version\":16,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"spawn.kind\",\"matchValue\":3,"
+        + "\"prefab\":\"assets/enemy.scene3d\"}]}",
+        "v16-typed-node-preview");
+    var fractionalNodeMatch = scene_component_schema.ParseText(
+        "{\"version\":17,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"spawn.kind\",\"matchValue\":1.5,"
+        + "\"prefab\":\"assets/enemy.glb\"}]}",
+        "fractional-node-match");
+    var v16FixedNode = scene_component_schema.ParseText(
+        "{\"version\":16,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"kind\",\"matchValue\":\"enemy\","
+        + "\"prefab\":\"assets/enemy.scene3d\",\"scale\":0.85}]}",
+        "v16-fixed-node-preview");
+    var v16DirectNode = scene_component_schema.ParseText(
+        "{\"version\":16,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"kind\",\"matchValue\":\"enemy\","
+        + "\"prefab\":\"assets/enemy.gltf\"}]}",
+        "v16-direct-model-node-preview");
+    var zeroNodeScale = scene_component_schema.ParseText(
+        "{\"version\":17,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"kind\",\"matchValue\":\"enemy\","
+        + "\"prefab\":\"assets/enemy.glb\",\"scale\":0.0}]}",
+        "zero-node-scale");
+    var excessiveNodeYaw = scene_component_schema.ParseText(
+        "{\"version\":17,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"kind\",\"matchValue\":\"enemy\","
+        + "\"prefab\":\"assets/enemy.obj\",\"yawDegrees\":36001}]}",
+        "excessive-node-yaw");
+    var excessiveNodeOffset = scene_component_schema.ParseText(
+        "{\"version\":17,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"kind\",\"matchValue\":\"enemy\","
+        + "\"prefab\":\"assets/enemy.stl\",\"offsetY\":1000001}]}",
+        "excessive-node-offset");
+    var unsafeDirectNode = scene_component_schema.ParseText(
+        "{\"version\":17,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"kind\",\"matchValue\":\"enemy\","
+        + "\"prefab\":\"../enemy.gltf\"}]}",
+        "unsafe-direct-node-preview");
+    var unsupportedDirectNode = scene_component_schema.ParseText(
+        "{\"version\":17,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"kind\",\"matchValue\":\"enemy\","
+        + "\"prefab\":\"assets/enemy.dae\"}]}",
+        "unsupported-direct-node-preview");
+    var duplicateTypedNode = scene_component_schema.ParseText(
+        "{\"version\":17,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"spawn.kind\",\"matchValue\":3,"
+        + "\"prefab\":\"assets/enemy.glb\"},"
+        + "{\"matchProperty\":\"spawn.kind\",\"matchValue\":3,"
+        + "\"prefab\":\"assets/enemy.obj\"}]}",
+        "duplicate-typed-node-preview");
+    if v16TypedNode.valid or fractionalNodeMatch.valid
+       or v16FixedNode.valid or v16DirectNode.valid
+       or zeroNodeScale.valid or excessiveNodeYaw.valid
+       or excessiveNodeOffset.valid or unsafeDirectNode.valid
+       or unsupportedDirectNode.valid or duplicateTypedNode.valid
+       or duplicateTypedNode.nodePreviews3D.count() != 0 {
+        fail("invalid version-17 direct-model node previews were not closed");
         return;
     }
 

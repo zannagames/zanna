@@ -244,3 +244,5 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0211](0211-canonical-mesh-terrain-sculpting.md) — Author Terrain as a Canonical Scene Mesh
 - [ADR 0212](0212-additive-3d-environment-preview-layers.md) — Compose Additive 3D Environment Preview Layers
 - [ADR 0213](0213-runtime-backed-water-preview-layers.md) — Render Runtime-Backed Water Preview Layers
+- [ADR 0214](0214-project-owned-3d-material-previews.md) — Render Project-Owned 3D Material Previews
+- [ADR 0215](0215-project-owned-direct-model-previews.md) — Render Project-Owned Direct Model Previews

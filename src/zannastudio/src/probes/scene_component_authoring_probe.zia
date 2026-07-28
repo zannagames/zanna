@@ -15,7 +15,9 @@
 //     version-8 2D backdrop, version-9 3D environment, version-10 post-FX,
 //     version-11 2D object draw stacks, version-12 game-output frames, and
 //     version-13 component creation recipes, version-14 additive 3D
-//     environment layers, and version-15 runtime-backed water layers.
+//     environment layers, version-15 runtime-backed water layers, and
+//     version-16 typed 3D material previews, plus version-17 typed direct
+//     model node previews and their fixed transforms.
 //   - File writes are atomic, conflict-aware, and exactly undoable/redoable.
 // Ownership/Lifetime: The probe owns only temporary schema files and records.
 // Links: zannastudio/src/ui/scene_component_authoring.zia,
@@ -33,7 +35,9 @@
 //        docs/adr/0208-project-authored-game-output-frames.md,
 //        docs/adr/0209-project-component-creation-recipes.md,
 //        docs/adr/0212-additive-3d-environment-preview-layers.md,
-//        docs/adr/0213-runtime-backed-water-preview-layers.md
+//        docs/adr/0213-runtime-backed-water-preview-layers.md,
+//        docs/adr/0214-project-owned-3d-material-previews.md,
+//        docs/adr/0215-project-owned-direct-model-previews.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -764,6 +768,107 @@ func main() {
         fail(
             "",
             "component edit discarded a version-15 runtime water layer");
+        return;
+    }
+
+    var materialPreviewText =
+        "{\"version\":16,\"components\":["
+        + "{\"name\":\"surface\",\"target\":\"3d-node\",\"fields\":["
+        + "{\"key\":\"surface.kind\",\"type\":\"int\","
+        + "\"default\":3}]}],"
+        + "\"materialPreviews3D\":["
+        + "{\"matchProperty\":\"surface.kind\",\"matchValue\":3,"
+        + "\"albedoMap\":\"assets/rock.png\","
+        + "\"normalMap\":\"assets/rock-normal.png\","
+        + "\"roughness\":0.95,\"metallic\":0.0,"
+        + "\"emissiveRProperty\":\"env.r\","
+        + "\"emissiveGProperty\":\"env.g\","
+        + "\"emissiveBProperty\":\"env.b\","
+        + "\"emissiveMultiplier\":0.5,"
+        + "\"emissiveIntensity\":0.8,"
+        + "\"useProjectEnvironment\":true}]}";
+    var materialPreviewEdit =
+        scene_component_authoring.UpdateField(
+            materialPreviewText,
+            "surface",
+            "surface.kind",
+            "surface.kind",
+            "Surface kind",
+            "int",
+            "4",
+            "",
+            "");
+    var materialPreviewSchema =
+        scene_component_schema.ParseText(
+            materialPreviewEdit.content, "memory");
+    var retainedMaterials =
+        materialPreviewSchema.materialPreviews3D;
+    if materialPreviewEdit.ok == false
+       or materialPreviewEdit.changed == false
+       or materialPreviewSchema.valid == false
+       or materialPreviewSchema.version
+          != scene_component_schema.MATERIAL_PREVIEW_3D_SCHEMA_VERSION
+       or retainedMaterials.count() != 1
+       or retainedMaterials.get(0).matchKind != "int"
+       or retainedMaterials.get(0).matchInteger != 3
+       or retainedMaterials.get(0).albedoMap != "assets/rock.png"
+       or retainedMaterials.get(0).normalMap
+          != "assets/rock-normal.png"
+       or near(retainedMaterials.get(0).roughness, 0.95) == false
+       or retainedMaterials.get(0).HasRootEmissive() == false
+       or near(retainedMaterials.get(0).emissiveMultiplier, 0.5)
+          == false
+       or retainedMaterials.get(0).useProjectEnvironment == false {
+        fail(
+            "",
+            "component edit discarded a version-16 material preview");
+        return;
+    }
+
+    var directModelPreviewText =
+        "{\"version\":17,\"components\":["
+        + "{\"name\":\"spawn\",\"target\":\"3d-node\",\"fields\":["
+        + "{\"key\":\"spawn.kind\",\"type\":\"int\","
+        + "\"default\":3}]}],"
+        + "\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"spawn.kind\",\"matchValue\":3,"
+        + "\"prefab\":\"assets/enemy.glb\",\"scale\":0.85,"
+        + "\"yawDegrees\":180.0,\"offsetX\":1.0,"
+        + "\"offsetY\":4.2,\"offsetZ\":-2.0}]}";
+    var directModelPreviewEdit =
+        scene_component_authoring.UpdateField(
+            directModelPreviewText,
+            "spawn",
+            "spawn.kind",
+            "spawn.kind",
+            "Spawn kind",
+            "int",
+            "4",
+            "",
+            "");
+    var directModelPreviewSchema =
+        scene_component_schema.ParseText(
+            directModelPreviewEdit.content, "memory");
+    var retainedDirectModels =
+        directModelPreviewSchema.nodePreviews3D;
+    if directModelPreviewEdit.ok == false
+       or directModelPreviewEdit.changed == false
+       or directModelPreviewSchema.valid == false
+       or directModelPreviewSchema.version
+          != scene_component_schema
+              .DIRECT_MODEL_PREVIEW_3D_SCHEMA_VERSION
+       or retainedDirectModels.count() != 1
+       or retainedDirectModels.get(0).matchKind != "int"
+       or retainedDirectModels.get(0).matchInteger != 3
+       or retainedDirectModels.get(0).prefab != "assets/enemy.glb"
+       or near(retainedDirectModels.get(0).scale, 0.85) == false
+       or near(retainedDirectModels.get(0).yawDegrees, 180.0) == false
+       or near(retainedDirectModels.get(0).offsetX, 1.0) == false
+       or near(retainedDirectModels.get(0).offsetY, 4.2) == false
+       or near(retainedDirectModels.get(0).offsetZ, -2.0) == false {
+        fail(
+            "",
+            "component edit discarded a version-17 direct model preview");
         return;
     }
 
